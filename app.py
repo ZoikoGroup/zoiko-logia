@@ -940,6 +940,7 @@ def main():
     if page_query in PAGES:
         st.session_state.page = page_query
 
+
     page = st.session_state.page
 
     # ── Inject page-specific styles FIRST, before any other rendering ────────
