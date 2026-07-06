@@ -1,24 +1,18 @@
 # Stack per ZoikoLogia_Project_Execution_Roadmap.docx "Recommended tech stack" table.
-# Names only - no versions pinned yet, no code installed/implemented.
+# This slice (Login only) uses SQLite for zero-friction local dev; Postgres+pgvector
+# gets introduced when Source Library/RAG actually needs vector search.
 
-# API framework
 fastapi
-uvicorn
+uvicorn[standard]
 
-# Database (PostgreSQL + pgvector for embeddings)
 sqlalchemy
-alembic
-asyncpg
-pgvector
+aiosqlite
+greenlet
 
-# Source ingestion
-httpx
-pdfplumber
-beautifulsoup4
+python-jose[cryptography]
+bcrypt
+python-multipart
+email-validator
 
-# Background jobs
-celery
-apscheduler
-
-# Validation
 pydantic
+pydantic-settings
