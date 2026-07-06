@@ -1,0 +1,1 @@
+# License lifecycle: PROPOSED/APPROVED/ACTIVE/UNDER_REVIEW/DISPUTED/SUPERSEDED/WITHDRAWN/BLOCKED + tiered renewal grace periods

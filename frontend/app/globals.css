@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+/* Zoiko brand palette — light governance-surface theme */
+:root {
+  --bg: #f7f8fa;
+  --panel: #ffffff;
+  --ink: #151922;
+  --muted: #637083;
+  --line: #d8dde5;
+  --soft: #eef1f5;
+  --chip: #f4f6f8;
+  --brand: #0b5f7a;
+  --brand-2: #0d7898;
+  --gold: #f3c437;
+  --gold-2: #ffd85b;
+  --ok: #1f7a4d;
+  --warn: #9a6700;
+  --bad: #b42318;
+  --info: #295ea7;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-soft: var(--soft);
+  --color-chip: var(--chip);
+  --color-brand: var(--brand);
+  --color-brand-2: var(--brand-2);
+  --color-gold: var(--gold);
+  --color-gold-2: var(--gold-2);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --color-info: var(--info);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 8px;
+}

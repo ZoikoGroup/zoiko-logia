@@ -1,0 +1,24 @@
+# Stack per ZoikoLogia_Project_Execution_Roadmap.docx "Recommended tech stack" table.
+# Names only - no versions pinned yet, no code installed/implemented.
+
+# API framework
+fastapi
+uvicorn
+
+# Database (PostgreSQL + pgvector for embeddings)
+sqlalchemy
+alembic
+asyncpg
+pgvector
+
+# Source ingestion
+httpx
+pdfplumber
+beautifulsoup4
+
+# Background jobs
+celery
+apscheduler
+
+# Validation
+pydantic
