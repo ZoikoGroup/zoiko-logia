@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { BrandMark } from "@/components/layout/AppHeader";
 
 const VALID_EMAIL = "dashboard@zoikologia.com";
-const VALID_PASSWORD = "Password234@";
+const VALID_PASSWORD = "Password@123";
 
 export default function LoginPage() {
   const router = useRouter();
