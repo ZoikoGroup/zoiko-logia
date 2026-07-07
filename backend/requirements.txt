@@ -22,3 +22,7 @@ apscheduler
 
 # Validation
 pydantic
+
+# ML Classification
+transformers
+torch

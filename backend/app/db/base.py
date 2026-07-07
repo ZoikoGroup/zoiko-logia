@@ -1,1 +1,7 @@
-# Declarative base + import hub so Alembic autogenerate sees all domain models
+# Declarative base for all SQLAlchemy ORM models.
+from sqlalchemy.orm import DeclarativeBase
+
+
+class Base(DeclarativeBase):
+    """Base class for all database models across every domain."""
+    pass
