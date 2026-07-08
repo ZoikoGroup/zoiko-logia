@@ -84,59 +84,59 @@ export default function AiSafetyDashboardPage() {
       {/* ── Summary Metrics Grid (Section 15 audit counts) ───────────────── */}
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
         {[
-          { 
-            label: "Classifications", 
-            value: stats.classified, 
-            textColor: "text-ok", 
-            bg: "bg-ok/5 border-ok/20 hover:shadow-ok/5 hover:border-ok/40", 
+          {
+            label: "Classifications",
+            value: stats.classified,
+            textColor: "text-ok",
+            bg: "bg-ok/5 border-ok/20 hover:shadow-ok/5 hover:border-ok/40",
             iconBg: "bg-ok/10 text-ok border-ok/20",
-            icon: ShieldCheck 
+            icon: ShieldCheck
           },
-          { 
-            label: "Blocked Requests", 
-            value: stats.blocked, 
-            textColor: "text-bad", 
-            bg: "bg-bad/5 border-bad/20 hover:shadow-bad/5 hover:border-bad/40", 
+          {
+            label: "Blocked Requests",
+            value: stats.blocked,
+            textColor: "text-bad",
+            bg: "bg-bad/5 border-bad/20 hover:shadow-bad/5 hover:border-bad/40",
             iconBg: "bg-bad/10 text-bad border-bad/20",
-            icon: ShieldOff 
+            icon: ShieldOff
           },
-          { 
-            label: "Uncertain Queries", 
-            value: stats.uncertain, 
-            textColor: "text-warn", 
-            bg: "bg-warn/5 border-warn/20 hover:shadow-warn/5 hover:border-warn/40", 
+          {
+            label: "Uncertain Queries",
+            value: stats.uncertain,
+            textColor: "text-warn",
+            bg: "bg-warn/5 border-warn/20 hover:shadow-warn/5 hover:border-warn/40",
             iconBg: "bg-warn/10 text-warn border-warn/20",
-            icon: AlertTriangle 
+            icon: AlertTriangle
           },
-          { 
-            label: "Security Incidents", 
-            value: stats.incidents, 
-            textColor: "text-bad", 
-            bg: "bg-bad/5 border-bad/20 hover:shadow-bad/5 hover:border-bad/40", 
+          {
+            label: "Security Incidents",
+            value: stats.incidents,
+            textColor: "text-bad",
+            bg: "bg-bad/5 border-bad/20 hover:shadow-bad/5 hover:border-bad/40",
             iconBg: "bg-bad/10 text-bad border-bad/20",
-            icon: XCircle 
+            icon: XCircle
           },
-          { 
-            label: "Pending Review", 
-            value: stats.pendingReview, 
-            textColor: "text-info", 
-            bg: "bg-info/5 border-info/20 hover:shadow-info/5 hover:border-info/40", 
+          {
+            label: "Pending Review",
+            value: stats.pendingReview,
+            textColor: "text-info",
+            bg: "bg-info/5 border-info/20 hover:shadow-info/5 hover:border-info/40",
             iconBg: "bg-info/10 text-info border-info/20",
-            icon: Clock 
+            icon: Clock
           },
-          { 
-            label: "SLA Overdue", 
-            value: stats.overSla, 
-            textColor: "text-bad", 
-            bg: "bg-bad/5 border-bad/20 hover:shadow-bad/5 hover:border-bad/40", 
+          {
+            label: "SLA Overdue",
+            value: stats.overSla,
+            textColor: "text-bad",
+            bg: "bg-bad/5 border-bad/20 hover:shadow-bad/5 hover:border-bad/40",
             iconBg: "bg-bad/10 text-bad border-bad/20",
-            icon: AlertTriangle 
+            icon: AlertTriangle
           },
         ].map((m) => {
           const Icon = m.icon;
           return (
-            <div 
-              key={m.label} 
+            <div
+              key={m.label}
               className={`rounded-2xl border bg-panel/85 p-5 flex flex-col justify-between shadow-[0_4px_12px_rgba(0,0,0,0.01)] transition-all duration-300 ${m.bg} hover:-translate-y-0.5 hover:shadow-lg`}
             >
               <div className="flex items-center justify-between gap-2">
@@ -170,7 +170,7 @@ export default function AiSafetyDashboardPage() {
                 onClick={load}
                 className="flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-semibold text-ink hover:bg-soft transition-all duration-200 cursor-pointer shadow-sm"
               >
-                <RefreshCw size={12} className={loading ? "animate-spin" : ""} /> 
+                <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
                 Sync Log
               </button>
             </div>
@@ -193,7 +193,7 @@ export default function AiSafetyDashboardPage() {
                   const Icon = EVENT_ICONS[evt.event_type] ?? Activity;
                   const tone = EVENT_TONES[evt.event_type] ?? "info";
                   const payload = evt.payload as Record<string, unknown>;
-                  
+
                   return (
                     <div
                       key={evt.id}
@@ -201,11 +201,11 @@ export default function AiSafetyDashboardPage() {
                     >
                       {/* Pulsing Timeline Anchor */}
                       <span className={`absolute -left-[31px] top-[22px] flex h-3 w-3 items-center justify-center rounded-full bg-${tone} border-2 border-panel shadow-sm group-hover:scale-125 transition-transform duration-200`} />
-                      
+
                       <div className={`shrink-0 p-2 rounded-xl bg-${tone}/10 border border-${tone}/20 text-${tone}`}>
                         <Icon size={16} />
                       </div>
-                      
+
                       <div className="min-w-0 flex-1 space-y-1">
                         <div className="flex items-center justify-between gap-4">
                           <span className="text-xs font-bold text-ink uppercase tracking-wide">
@@ -217,7 +217,7 @@ export default function AiSafetyDashboardPage() {
                             </span>
                           )}
                         </div>
-                        
+
                         <div className="flex flex-wrap items-center gap-1.5 pt-1">
                           <span className="text-[10px] text-muted font-mono pr-2">ID: {evt.id}</span>
                           {payload.risk_level != null && (
@@ -269,11 +269,10 @@ export default function AiSafetyDashboardPage() {
                     return (
                       <div
                         key={esc.id}
-                        className={`rounded-xl border p-4 space-y-2.5 transition-all duration-200 hover:shadow-md ${
-                          overdue 
-                            ? "border-bad/30 bg-bad/5 hover:border-bad" 
+                        className={`rounded-xl border p-4 space-y-2.5 transition-all duration-200 hover:shadow-md ${overdue
+                            ? "border-bad/30 bg-bad/5 hover:border-bad"
                             : "border-line/60 bg-soft/30 hover:bg-panel hover:border-line"
-                        }`}
+                          }`}
                       >
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-mono font-bold text-ink">{esc.id}</span>

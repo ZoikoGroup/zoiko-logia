@@ -81,6 +81,16 @@ class EscalationAction(BaseModel):
     reason: str = ""
 
 
+class EscalationStatsOut(BaseModel):
+    total: int
+    pending: int
+    under_review: int
+    resolved: int
+    refused: int
+    escalated: int
+    over_sla: int
+
+
 # ─── Risk Policy Schemas ───────────────────────────────────────────────────
 
 class RiskPolicyOut(BaseModel):
@@ -108,6 +118,22 @@ class OverrideRequest(BaseModel):
     scope: str
     reason: str
     duration_hours: int = Field(default=24, le=72, description="Max 72 hours per ZL-T0-04 §10.1")
+
+
+class SafetyOverrideOut(BaseModel):
+    id: str
+    actor_id: str
+    authority_role: str
+    original_route: str
+    new_route: str
+    scope: str
+    reason: str
+    created_at: datetime
+    expires_at: datetime
+    post_action_review_due: Optional[datetime] = None
+    is_active: bool
+
+    model_config = {"from_attributes": True}
 
 
 class EmergencyBlockRequest(BaseModel):

@@ -127,6 +127,30 @@ export async function getEscalations(): Promise<Escalation[]> {
   return MOCK_ESCALATIONS;
 }
 
+export type EscalationStats = {
+  total: number;
+  pending: number;
+  under_review: number;
+  resolved: number;
+  refused: number;
+  escalated: number;
+  over_sla: number;
+};
+
+export type SafetyOverride = {
+  id: string;
+  actor_id: string;
+  authority_role: string;
+  original_route: string;
+  new_route: string;
+  scope: string;
+  reason: string;
+  created_at: string;
+  expires_at: string;
+  post_action_review_due: string | null;
+  is_active: boolean;
+};
+
 export async function actOnEscalation(
   caseId: string,
   action: string,
@@ -136,6 +160,30 @@ export async function actOnEscalation(
   return tryBackend<Escalation>(`/escalations/${caseId}/action`, {
     method: "POST",
     body: JSON.stringify({ action, reviewer_id: reviewerId, reason }),
+  });
+}
+
+export async function getEscalationStats(): Promise<EscalationStats | null> {
+  return tryBackend<EscalationStats>("/escalations/stats");
+}
+
+export async function getSafetyOverrides(activeOnly = true): Promise<SafetyOverride[]> {
+  const remote = await tryBackend<SafetyOverride[]>(`/overrides?active_only=${activeOnly}`);
+  return remote || [];
+}
+
+export async function createSafetyOverride(payload: {
+  actor_id: string;
+  authority_role: string;
+  original_route: string;
+  new_route: string;
+  scope: string;
+  reason: string;
+  duration_hours: number;
+}): Promise<SafetyOverride | null> {
+  return tryBackend<SafetyOverride>("/overrides", {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 

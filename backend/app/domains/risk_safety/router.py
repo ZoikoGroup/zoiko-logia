@@ -27,6 +27,9 @@ from app.domains.risk_safety.schemas import (
     EscalationOut,
     EscalationAction,
     RiskPolicyOut,
+    EscalationStatsOut,
+    SafetyOverrideOut,
+    OverrideRequest,
 )
 from app.domains.risk_safety.models import RiskPolicy, SafetyEvent
 
@@ -65,6 +68,12 @@ def validate_output(request: ValidateOutputRequest):
 
 # ─── Escalation Queue ───────────────────────────────────────────────────────
 
+@router.get("/escalations/stats", response_model=EscalationStatsOut)
+def get_escalation_stats(db: Session = Depends(get_sync_db)):
+    """Summary counts for the escalation queue dashboard."""
+    return safety_service.get_escalation_stats(db)
+
+
 @router.get("/escalations", response_model=list[EscalationOut])
 def list_escalations(
     status: Optional[str] = None,
@@ -92,6 +101,26 @@ def act_on_escalation(
     if not case:
         raise HTTPException(status_code=404, detail="Escalation case not found.")
     return case
+
+
+# ─── Safety Overrides ───────────────────────────────────────────────────────
+
+@router.get("/overrides", response_model=list[SafetyOverrideOut])
+def list_safety_overrides(
+    active_only: bool = True,
+    db: Session = Depends(get_sync_db),
+):
+    """List safety overrides."""
+    return safety_service.list_safety_overrides(db, active_only=active_only)
+
+
+@router.post("/overrides", response_model=SafetyOverrideOut)
+def create_safety_override(
+    request: OverrideRequest,
+    db: Session = Depends(get_sync_db),
+):
+    """Create a new time-bounded safety override."""
+    return safety_service.create_safety_override(db, request)
 
 
 # ─── Risk Policies ──────────────────────────────────────────────────────────

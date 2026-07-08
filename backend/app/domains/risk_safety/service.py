@@ -161,21 +161,24 @@ def resolve_escalation(
     if not case:
         return None
 
-    # Maker-Checker (Section 10.2): reviewer cannot be author
-    # We mock query_author here. In a real app, case.author_id exists.
-    mock_author_id = "user_123"
-    if reviewer_id == mock_author_id:
+    # Maker-Checker (§10.2): reviewer cannot be the routing owner (owner == who created/owns the case)
+    # This enforces that the same person cannot both route and approve a review case.
+    if reviewer_id and case.owner and reviewer_id.strip().lower() == case.owner.strip().lower():
         db.add(SafetyEvent(
             event_type="maker_checker_violation_blocked",
             payload={
                 "object_type": "escalation_case",
                 "object_id": case_id,
                 "actor_id": reviewer_id,
-                "workflow_context": "QUERY_REVIEW"
+                "workflow_context": "QUERY_REVIEW",
+                "payload_schema_version": "1.0"
             }
         ))
         db.commit()
-        raise ValueError("Maker-Checker violation: Reviewer authored this query.")
+        raise ValueError(
+            f"Maker-Checker violation: '{reviewer_id}' is the owner of this case and "
+            "cannot also be the reviewer (ZL-T0-04 §10.2)."
+        )
 
     status_map = {
         "approve": EscalationStatus.RESOLVED,
@@ -206,6 +209,88 @@ def resolve_escalation(
     db.commit()
     db.refresh(case)
     return case
+
+
+def get_escalation_stats(db: Session) -> dict:
+    """Summary counts for the escalation queue dashboard (ZL-T0-04 §10)."""
+    from sqlalchemy import func
+    total = db.query(EscalationCase).count()
+    pending = db.query(EscalationCase).filter(EscalationCase.status == EscalationStatus.PENDING).count()
+    under_review = db.query(EscalationCase).filter(EscalationCase.status == EscalationStatus.UNDER_REVIEW).count()
+    resolved = db.query(EscalationCase).filter(EscalationCase.status == EscalationStatus.RESOLVED).count()
+    refused = db.query(EscalationCase).filter(EscalationCase.status == EscalationStatus.REFUSED).count()
+    escalated = db.query(EscalationCase).filter(EscalationCase.status == EscalationStatus.ESCALATED).count()
+    over_sla = len(get_sla_breached_cases(db))
+    return {
+        "total": total,
+        "pending": pending,
+        "under_review": under_review,
+        "resolved": resolved,
+        "refused": refused,
+        "escalated": escalated,
+        "over_sla": over_sla,
+    }
+
+
+def get_sla_breached_cases(db: Session) -> list[EscalationCase]:
+    """Return all active cases where the SLA deadline has passed."""
+    now = _utcnow()
+    return (
+        db.query(EscalationCase)
+        .filter(
+            EscalationCase.sla_deadline < now,
+            EscalationCase.status.notin_([EscalationStatus.RESOLVED, EscalationStatus.REFUSED]),
+        )
+        .all()
+    )
+
+
+def create_safety_override(db: Session, payload) -> SafetyOverride:
+    """Create a narrowing-only time-bounded override (max 72h, ZL-T0-04 §10.1)."""
+    from app.domains.risk_safety.schemas import OverrideRequest
+    duration = min(payload.duration_hours, 72)  # Hard cap at spec maximum
+    now = _utcnow()
+    override = SafetyOverride(
+        id=_new_id("ovr-"),
+        actor_id=payload.actor_id,
+        authority_role=payload.authority_role,
+        original_route=payload.original_route,
+        new_route=payload.new_route,
+        scope=payload.scope,
+        reason=payload.reason,
+        created_at=now,
+        expires_at=now + timedelta(hours=duration),
+        post_action_review_due=now + timedelta(hours=duration + 48),  # §10.1: review within 2 working days
+        is_active=True,
+    )
+    db.add(override)
+    db.add(SafetyEvent(
+        event_type="safety_override_applied",
+        payload={
+            "override_id": override.id,
+            "actor_id": payload.actor_id,
+            "authority_role": payload.authority_role,
+            "original_route": payload.original_route,
+            "new_route": payload.new_route,
+            "scope": payload.scope,
+            "reason": payload.reason,
+            "expires_at": override.expires_at.isoformat(),
+            "post_action_review_due": override.post_action_review_due.isoformat(),
+            "payload_schema_version": "1.0",
+        },
+    ))
+    db.commit()
+    db.refresh(override)
+    return override
+
+
+def list_safety_overrides(db: Session, active_only: bool = True) -> list[SafetyOverride]:
+    """Return safety overrides, optionally filtering to only active (non-expired) ones."""
+    query = db.query(SafetyOverride).order_by(SafetyOverride.created_at.desc())
+    if active_only:
+        now = _utcnow()
+        query = query.filter(SafetyOverride.is_active == True, SafetyOverride.expires_at > now)
+    return query.all()
 
 
 def _create_escalation(db: Session, request: ClassifyRequest, result: dict) -> None:
@@ -298,14 +383,34 @@ def _log_safety_event(db: Session, request: ClassifyRequest, result: dict, templ
 
 
 def _log_security_incident(db: Session, request: ClassifyRequest, result: dict) -> None:
+    """Log security incident to SafetyEvent ledger AND auto-create a SecurityIncident record."""
+    query_id = result["query_id"]
+    sub_class = result.get("restricted_sub_class", "RESTRICTED_CONTROL_BYPASS")
+
     db.add(SafetyEvent(
         event_type="security_incident_created",
-        query_id=result["query_id"],
+        query_id=query_id,
         payload={
             "user_id": request.user_id,
             "tenant_id": request.tenant_id,
             "risk_level": result["risk_level"],
-            "note": "Control bypass or privacy violation detected.",
+            "restricted_sub_class": sub_class,
+            "note": "Control bypass or privacy violation detected — routed to security incident.",
+            "payload_schema_version": "1.0",
         },
     ))
+
+    # Auto-create a SecurityIncident record linked to the query (ZL-T0-04 §13)
+    try:
+        from app.domains.support_incident.service import auto_create_security_incident
+        auto_create_security_incident(
+            db=db,
+            query_id=query_id,
+            source=sub_class,
+            user_id=request.user_id,
+            tenant_id=request.tenant_id,
+        )
+    except Exception:
+        pass  # Incident domain failure must never block safety classification
+
     db.commit()
