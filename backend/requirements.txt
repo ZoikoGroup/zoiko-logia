@@ -16,3 +16,8 @@ email-validator
 
 pydantic
 pydantic-settings
+
+# ML Classification
+transformers
+torch
+
