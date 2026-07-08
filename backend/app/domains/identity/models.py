@@ -1,1 +1,42 @@
-# Tenant, Entity, User, Role, Permission, UserRoleAssignment, RoleTaxonomyEvent, GuardianConsent
+import uuid
+
+from sqlalchemy import Boolean, ForeignKey, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.base import Base
+
+
+def _uuid() -> str:
+    return str(uuid.uuid4())
+
+
+class Tenant(Base):
+    __tablename__ = "tenants"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+
+    users: Mapped[list["User"]] = relationship(back_populates="tenant")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    email: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    hashed_password: Mapped[str] = mapped_column(String, nullable=False)
+    full_name: Mapped[str] = mapped_column(String, nullable=False)
+    role: Mapped[str] = mapped_column(String, nullable=False, default="Admin")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    tenant: Mapped["Tenant"] = relationship(back_populates="users")
+
+
+class Role(Base):
+    __tablename__ = "roles"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    description: Mapped[str] = mapped_column(String, nullable=False)
+    permissions_summary: Mapped[str] = mapped_column(String, nullable=False)

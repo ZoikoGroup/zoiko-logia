@@ -1,55 +1,45 @@
-# Settings loader (env vars, tenant defaults, provider keys) - see ZoikoLogia_Back_End_Architecture_Specification
-import os
-from pathlib import Path
 from functools import lru_cache
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Settings:
-    """Application configuration loaded from environment variables.
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    Falls back to SQLite for local development when DATABASE_URL is not set.
-    LLM provider keys are optional — the safety service operates independently
-    of model generation and does not require them.
-    """
+    # ── Database ────────────────────────────────────────────────────────
+    DATABASE_URL: str = "sqlite+aiosqlite:///./dev.db"
 
-    def __init__(self) -> None:
-        # ── Database ────────────────────────────────────────────────────────
-        self.DATABASE_URL: str = os.getenv(
-            "DATABASE_URL",
-            f"sqlite:///{Path(__file__).resolve().parent.parent.parent / 'zoikologia.db'}",
-        )
+    # ── Authentication & CORS ───────────────────────────────────────────
+    JWT_SECRET_KEY: str = "dev-only-insecure-secret-change-me"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+    CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
-        # ── Authentication ──────────────────────────────────────────────────
-        self.JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "dev-secret-change-me")
-        self.OIDC_ISSUER_URL: str = os.getenv("OIDC_ISSUER_URL", "")
-        self.OIDC_CLIENT_ID: str = os.getenv("OIDC_CLIENT_ID", "")
-        self.OIDC_CLIENT_SECRET: str = os.getenv("OIDC_CLIENT_SECRET", "")
+    # ── OIDC (Safety Auth Integration) ──────────────────────────────────
+    OIDC_ISSUER_URL: str = ""
+    OIDC_CLIENT_ID: str = ""
+    OIDC_CLIENT_SECRET: str = ""
 
-        # ── LLM Providers (used by Model Gateway, NOT by Safety Service) ───
-        self.OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-        self.ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-        self.GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
-        self.AZURE_OPENAI_API_KEY: str = os.getenv("AZURE_OPENAI_API_KEY", "")
+    # ── LLM Providers ───────────────────────────────────────────────────
+    OPENAI_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
+    GOOGLE_API_KEY: str = ""
+    AZURE_OPENAI_API_KEY: str = ""
 
-        # ── Infrastructure ──────────────────────────────────────────────────
-        self.VECTOR_INDEX_URL: str = os.getenv("VECTOR_INDEX_URL", "")
-        self.OBJECT_STORAGE_URL: str = os.getenv("OBJECT_STORAGE_URL", "")
-        self.CELERY_BROKER_URL: str = os.getenv("CELERY_BROKER_URL", "")
+    # ── Infrastructure ──────────────────────────────────────────────────
+    VECTOR_INDEX_URL: str = ""
+    OBJECT_STORAGE_URL: str = ""
+    CELERY_BROKER_URL: str = ""
 
-        # ── Safety Service Tuning ───────────────────────────────────────────
-        self.CLASSIFIER_CONFIDENCE_THRESHOLD: float = float(
-            os.getenv("CLASSIFIER_CONFIDENCE_THRESHOLD", "0.70")
-        )
-        self.SAFETY_OVERRIDE_MAX_HOURS: int = int(
-            os.getenv("SAFETY_OVERRIDE_MAX_HOURS", "72")
-        )
+    # ── Safety Service Tuning ───────────────────────────────────────────
+    CLASSIFIER_CONFIDENCE_THRESHOLD: float = 0.65
+    SAFETY_OVERRIDE_MAX_HOURS: int = 72
 
     @property
     def is_sqlite(self) -> bool:
         return self.DATABASE_URL.startswith("sqlite")
 
 
-@lru_cache()
+@lru_cache
 def get_settings() -> Settings:
-    """Singleton settings instance."""
+
     return Settings()

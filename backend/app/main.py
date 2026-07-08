@@ -1,33 +1,14 @@
-"""
-FastAPI application entrypoint.
-
-Creates app instance, mounts /api/v1 router, startup/shutdown hooks.
-Initializes database tables on first boot and seeds default risk policies.
-"""
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.v1.router import api_v1_router
+from app.core.config import get_settings
 from app.core.database import engine, SessionLocal
 from app.db.base import Base
 
-# Import all models so Base.metadata knows about them
-from app.domains.risk_safety import models as _risk_models  # noqa: F401
-
-# Import routers
-from app.domains.risk_safety.router import router as safety_router
-
-
-# ─── Lifespan (startup / shutdown) ──────────────────────────────────────────
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Create tables on startup; seed defaults if empty."""
-    Base.metadata.create_all(bind=engine)
-    _seed_defaults()
-    yield
-    # Shutdown logic (connection pool cleanup etc.) goes here
+settings = get_settings()
 
 
 def _seed_defaults():
@@ -74,32 +55,41 @@ def _seed_defaults():
         db.close()
 
 
-# ─── App Instance ───────────────────────────────────────────────────────────
-
-app = FastAPI(
-    title="ZoikoLogia Safety Service",
-    description=(
-        "AI Safety, Risk Classification & Escalation Service for Kriton™. "
-        "Classifies every request before allowing LLM generation."
-    ),
-    version="1.0.0",
-    lifespan=lifespan,
-)
-
-# ── CORS (allow Next.js frontend on :3000) ──────────────────────────────────
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ── Mount routers under /api/v1 ─────────────────────────────────────────────
-app.include_router(safety_router, prefix="/api/v1")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifecycle events: create tables, seed, and dispose of engine."""
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    _seed_defaults()
+    yield
+    await engine.dispose()
 
 
-@app.get("/health")
-def health():
-    """Health check endpoint."""
-    return {"status": "ok", "service": "zoikologia-safety"}
+def create_app() -> FastAPI:
+    app = FastAPI(
+        title="ZoikoLogia API & Safety Service",
+        description="AI Governance, Safety, Risk Classification & Escalation Service.",
+        version="1.0.0",
+        lifespan=lifespan
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Core API endpoints from main branch
+    app.include_router(api_v1_router, prefix="/api/v1")
+
+    # Safety-specific API endpoints
+    from app.domains.risk_safety.router import router as safety_router
+    app.include_router(safety_router, prefix="/api/v1")
+
+    return app
+
+
+app = create_app()
+

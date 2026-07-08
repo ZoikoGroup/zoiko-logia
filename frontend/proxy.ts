@@ -4,7 +4,7 @@ import type { NextRequest } from "next/server";
 const AUTH_COOKIE = "zoiko_auth";
 
 export function proxy(request: NextRequest) {
-  const isAuthed = request.cookies.get(AUTH_COOKIE)?.value === "1";
+  const isAuthed = Boolean(request.cookies.get(AUTH_COOKIE)?.value);
   if (!isAuthed) {
     return NextResponse.redirect(new URL("/login", request.url));
   }

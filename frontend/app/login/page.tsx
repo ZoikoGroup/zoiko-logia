@@ -2,25 +2,34 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import { login, ApiError } from "@/lib/api";
 import { BrandMark } from "@/components/layout/AppHeader";
 
-const VALID_EMAIL = "dashboard@zoikologia.com";
-const VALID_PASSWORD = "Password@123";
 
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  function handleSubmit(e: FormEvent) {
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (email !== VALID_EMAIL || password !== VALID_PASSWORD) {
-      setError("Incorrect email or password.");
-      return;
+    setError("");
+    setSubmitting(true);
+    try {
+      const { access_token } = await login(email, password);
+      document.cookie = `zoiko_auth=${access_token}; path=/; max-age=${60 * 60 * 24 * 7}`;
+      router.push("/");
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        setError("Incorrect email or password.");
+      } else {
+        setError("Could not reach the server. Please try again.");
+      }
+    } finally {
+      setSubmitting(false);
     }
-    document.cookie = `zoiko_auth=1; path=/; max-age=${60 * 60 * 24 * 7}`;
-    router.push("/");
   }
 
   return (
@@ -58,9 +67,10 @@ export default function LoginPage() {
 
           <button
             type="submit"
-            className="w-full rounded-lg bg-brand text-white text-sm font-semibold py-2.5 hover:bg-brand-2"
+            disabled={submitting}
+            className="w-full rounded-lg bg-brand text-white text-sm font-semibold py-2.5 hover:bg-brand-2 disabled:opacity-60"
           >
-            Sign in
+            {submitting ? "Signing in..." : "Sign in"}
           </button>
         </form>
       </div>

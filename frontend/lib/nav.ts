@@ -4,7 +4,7 @@ import {
   FolderKanban, ClipboardCheck, Paperclip, BarChart3, CalendarClock,
   Database, FileCheck2, Layers, Network, BookOpen, Globe2,
   ShieldAlert, Scale, CheckSquare, Cpu, UserCheck,
-  AlertTriangle, History, Siren, ScrollText,
+  AlertTriangle, History, Siren, ScrollText, LifeBuoy,
   Bell, Building2, Plug, Activity,
   Lock, Users, Building, GitBranch, Settings, CreditCard,
 } from "lucide-react";
@@ -135,6 +135,7 @@ export const NAV_SECTIONS: NavL1Section[] = [
       { label: "Escalation Queue", slug: "escalation-queue", allowedRoles: REVIEW_ESCALATION_AUDIT, icon: AlertTriangle },
       { label: "Audit Replay", slug: "audit-replay", allowedRoles: REVIEW_ESCALATION_AUDIT, icon: History },
       { label: "Incident Response", slug: "incident-response", allowedRoles: REVIEW_ESCALATION_AUDIT, icon: Siren },
+      { label: "Support Tickets", slug: "support-tickets", allowedRoles: REVIEW_ESCALATION_AUDIT, icon: LifeBuoy },
       { label: "Audit Logs", slug: "audit-logs", allowedRoles: REVIEW_ESCALATION_AUDIT, icon: ScrollText },
     ],
   },

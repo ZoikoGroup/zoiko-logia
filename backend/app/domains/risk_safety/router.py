@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.database import get_db
+from app.core.database import get_sync_db
 from app.domains.risk_safety import service as safety_service
 from app.domains.risk_safety import refusal_templates
 from app.domains.risk_safety.schemas import (
@@ -36,7 +36,7 @@ router = APIRouter(prefix="/safety", tags=["AI Safety & Risk Classification"])
 # ─── Classification ─────────────────────────────────────────────────────────
 
 @router.post("/classify", response_model=SafetyDecision)
-def classify_query(request: ClassifyRequest, db: Session = Depends(get_db)):
+def classify_query(request: ClassifyRequest, db: Session = Depends(get_sync_db)):
     """
     Classify a user query against the risk taxonomy.
 
@@ -68,7 +68,7 @@ def validate_output(request: ValidateOutputRequest):
 @router.get("/escalations", response_model=list[EscalationOut])
 def list_escalations(
     status: Optional[str] = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_sync_db),
 ):
     """List escalation cases, optionally filtered by status."""
     cases = safety_service.get_escalations(db, status=status)
@@ -79,7 +79,7 @@ def list_escalations(
 def act_on_escalation(
     case_id: str,
     action: EscalationAction,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_sync_db),
 ):
     """Record a reviewer decision on an escalation case."""
     case = safety_service.resolve_escalation(
@@ -97,7 +97,7 @@ def act_on_escalation(
 # ─── Risk Policies ──────────────────────────────────────────────────────────
 
 @router.get("/policies", response_model=list[RiskPolicyOut])
-def list_policies(db: Session = Depends(get_db)):
+def list_policies(db: Session = Depends(get_sync_db)):
     """List all active risk policies."""
     policies = db.query(RiskPolicy).order_by(RiskPolicy.created_at.desc()).all()
     return policies
@@ -114,7 +114,8 @@ def list_templates():
 # ─── Safety Event Log ──────────────────────────────────────────────────────
 
 @router.get("/events")
-def list_events(limit: int = 50, db: Session = Depends(get_db)):
+def list_events(limit: int = 50, db: Session = Depends(get_sync_db)):
+
     """List recent safety events from the audit ledger."""
     events = (
         db.query(SafetyEvent)
