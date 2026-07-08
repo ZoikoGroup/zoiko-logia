@@ -9,15 +9,12 @@ import {
   ShieldCheck,
   ShieldAlert,
   ShieldOff,
-  FileText,
   AlertTriangle,
-  CheckSquare,
   Loader2,
-  ChevronDown,
+  FileText,
+  Terminal,
 } from "lucide-react";
 import { getTemplates } from "@/lib/safety-api";
-
-/* ── Risk taxonomy data (mirrors ZL-T0-04 §3) ───────────────────────────── */
 
 const RISK_TAXONOMY = [
   {
@@ -27,6 +24,7 @@ const RISK_TAXONOMY = [
     definition: "Informational, navigational, or learning material with no regulated judgment.",
     behavior: "Proceed with ordinary source grounding, boundary language where relevant.",
     examples: "UI help, glossary explanation, general concept overview.",
+    bg: "bg-ok/5 border-ok/20 text-ok hover:shadow-ok/5",
   },
   {
     level: "MEDIUM",
@@ -35,6 +33,7 @@ const RISK_TAXONOMY = [
     definition: "Technical context exists but answer is educational, non-client-specific, or workflow-oriented.",
     behavior: "Requires source bundle; limitation language required.",
     examples: "Worked learning example, generic journal entry explanation.",
+    bg: "bg-info/5 border-info/20 text-info hover:shadow-info/5",
   },
   {
     level: "HIGH",
@@ -43,6 +42,7 @@ const RISK_TAXONOMY = [
     definition: "Answer may affect accounting treatment, tax outcome, audit judgment, or business decision.",
     behavior: "Requires high-confidence sources, jurisdiction scope, citations, and possible human review.",
     examples: "Revenue recognition, payroll filing deadline, lease classification.",
+    bg: "bg-warn/5 border-warn/20 text-warn hover:shadow-warn/5",
   },
   {
     level: "RESTRICTED",
@@ -51,6 +51,7 @@ const RISK_TAXONOMY = [
     definition: "System must not provide a definitive answer without routing through sub-class controls.",
     behavior: "Route per RESTRICTED sub-class — never provide restricted output directly.",
     examples: "Academic integrity, insufficient context advice, prohibited source use, control bypass.",
+    bg: "bg-bad/5 border-bad/20 text-bad hover:shadow-bad/5",
   },
 ];
 
@@ -95,7 +96,6 @@ export default function RiskPolicyPage() {
     { template_id: string; title: string; body: string; safe_alternative: string; restricted_sub_class: string | null }[]
   >([]);
   const [loadingTemplates, setLoadingTemplates] = useState(true);
-  const [expandedSection, setExpandedSection] = useState<string>("taxonomy");
 
   useEffect(() => {
     getTemplates().then((data) => {
@@ -104,152 +104,176 @@ export default function RiskPolicyPage() {
     });
   }, []);
 
-  function toggle(section: string) {
-    setExpandedSection((prev) => (prev === section ? "" : section));
-  }
-
   return (
-    <main className="flex-1 overflow-y-auto p-4 pt-0">
+    <main className="flex-1 overflow-y-auto p-6 pt-0 space-y-6">
       <PageHeader
         title="Risk Policy"
         subtitle="Risk taxonomy, classification rules, restricted sub-classes, and refusal template registry."
       />
 
-      <div className="space-y-6 max-w-5xl">
-        {/* ── Risk Taxonomy ───────────────────────────────────────────── */}
-        <Card
-          title="Risk Taxonomy (ZL-T0-04 §3)"
-          action={<Pill tone="ok">Active — v2026.07.07</Pill>}
-        >
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {RISK_TAXONOMY.map((r) => {
-              const Icon = r.icon;
-              return (
-                <div
-                  key={r.level}
-                  className={`rounded-xl border p-4 space-y-2 ${
-                    r.tone === "ok"
-                      ? "border-ok/30 bg-ok/5"
-                      : r.tone === "info"
-                        ? "border-info/30 bg-info/5"
-                        : r.tone === "warn"
-                          ? "border-warn/30 bg-warn/5"
-                          : "border-bad/30 bg-bad/5"
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <Icon size={16} className={`text-${r.tone}`} />
-                    <span className={`text-sm font-bold text-${r.tone}`}>{r.level}</span>
-                  </div>
-                  <p className="text-xs text-ink leading-relaxed">{r.definition}</p>
-                  <p className="text-[11px] text-muted">{r.behavior}</p>
-                  <p className="text-[11px] text-muted italic">e.g. {r.examples}</p>
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start max-w-7xl">
+        {/* ── Risk Taxonomy & Rules ────────────────────────────────────── */}
+        <div className="lg:col-span-8 space-y-6">
+          {/* Taxonomy Grid */}
+          <div className="rounded-2xl border border-line bg-panel/75 backdrop-blur-md p-6 shadow-[0_12px_30px_rgba(0,0,0,0.02)] space-y-4">
+            <div className="flex items-center justify-between border-b border-line/50 pb-4">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-brand/10 border border-brand/20">
+                  <Scale size={14} className="text-brand" />
                 </div>
-              );
-            })}
-          </div>
-        </Card>
-
-        {/* ── Classification Rules ────────────────────────────────────── */}
-        <Card
-          title="Classification Rules"
-          action={<Pill tone="warn">Draft v2026.07.07</Pill>}
-        >
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-[11px] text-muted">
-                <th className="font-medium pb-2 w-56">Pattern</th>
-                <th className="font-medium pb-2 w-36">Risk Level</th>
-                <th className="font-medium pb-2">Routing Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {CLASSIFICATION_RULES.map((rule) => (
-                <tr key={rule.pattern} className="border-t border-line first:border-t-0">
-                  <td className="py-2.5 font-semibold text-ink align-top">{rule.pattern}</td>
-                  <td className="py-2.5 align-top">
-                    <Pill
-                      tone={
-                        rule.risk.includes("RESTRICTED")
-                          ? "bad"
-                          : rule.risk.includes("HIGH")
-                            ? "warn"
-                            : "info"
-                      }
-                    >
-                      {rule.risk}
-                    </Pill>
-                  </td>
-                  <td className="py-2.5 text-muted align-top">{rule.action}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <button className="rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-medium text-ink hover:bg-soft">
-              Run regression pack
-            </button>
-            <button className="rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-medium text-ink hover:bg-soft">
-              Preview impact
-            </button>
-            <button className="rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-medium text-ink hover:bg-soft">
-              Request approver
-            </button>
-          </div>
-        </Card>
-
-        {/* ── RESTRICTED Sub-Classes ──────────────────────────────────── */}
-        <Card title="RESTRICTED Sub-Classes (ZL-T0-04 §4)">
-          <div className="space-y-3">
-            {RESTRICTED_SUBCLASSES.map((sc) => (
-              <div
-                key={sc.code}
-                className="rounded-xl border border-bad/20 bg-bad/5 p-3.5 space-y-1"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-bold text-ink">{sc.title}</span>
-                  <Pill tone={sc.reclassifiable ? "warn" : "bad"}>
-                    {sc.reclassifiable ? "Can reclassify" : "Hard block"}
-                  </Pill>
+                <div>
+                  <h3 className="text-sm font-bold text-ink">Risk Taxonomy Hierarchy (ZL-T0-04 §3)</h3>
+                  <p className="text-[11px] text-muted">Active policy standard — v2026.07.07</p>
                 </div>
-                <p className="text-xs text-muted">{sc.route}</p>
-                <p className="text-[10px] text-muted font-mono">{sc.code}</p>
               </div>
-            ))}
-          </div>
-        </Card>
-
-        {/* ── Refusal Template Registry ───────────────────────────────── */}
-        <Card title="Refusal Template Registry (ZL-T0-04 §9)">
-          {loadingTemplates ? (
-            <div className="flex items-center justify-center py-8 text-muted">
-              <Loader2 className="animate-spin mr-2" size={16} /> Loading templates…
             </div>
-          ) : (
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {RISK_TAXONOMY.map((r) => {
+                const Icon = r.icon;
+                return (
+                  <div
+                    key={r.level}
+                    className={`rounded-xl border p-4.5 space-y-2.5 transition-all duration-300 hover:shadow-lg ${r.bg}`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <Icon size={16} />
+                      <span className="text-xs font-extrabold uppercase tracking-wide">{r.level} Risk</span>
+                    </div>
+                    <p className="text-xs text-ink leading-relaxed font-semibold">{r.definition}</p>
+                    <div className="border-t border-line/30 pt-2 space-y-1">
+                      <p className="text-[10px] text-muted leading-relaxed"><span className="font-bold">Protocol:</span> {r.behavior}</p>
+                      <p className="text-[10px] text-muted leading-relaxed italic"><span className="font-bold">Examples:</span> {r.examples}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Classification Rules Matrix */}
+          <div className="rounded-2xl border border-line bg-panel/75 backdrop-blur-md p-6 shadow-[0_12px_30px_rgba(0,0,0,0.02)] space-y-4">
+            <div className="flex items-center gap-2 border-b border-line/50 pb-4">
+              <div className="p-1.5 rounded-lg bg-brand/10 border border-brand/20">
+                <Terminal size={14} className="text-brand" />
+              </div>
+              <h3 className="text-sm font-bold text-ink">Governance Resolution Matrix</h3>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-[10px] text-muted uppercase tracking-wider border-b border-line/50 pb-2">
+                    <th className="font-bold pb-2.5 w-60">Pattern Template</th>
+                    <th className="font-bold pb-2.5 w-36">Risk Level</th>
+                    <th className="font-bold pb-2.5">Routing Decision</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-line/40">
+                  {CLASSIFICATION_RULES.map((rule) => (
+                    <tr key={rule.pattern} className="hover:bg-soft/10 transition-colors">
+                      <td className="py-3 font-semibold text-ink">{rule.pattern}</td>
+                      <td className="py-3">
+                        <Pill
+                          tone={
+                            rule.risk.includes("RESTRICTED")
+                              ? "bad"
+                              : rule.risk.includes("HIGH")
+                                ? "warn"
+                                : "info"
+                          }
+                        >
+                          {rule.risk}
+                        </Pill>
+                      </td>
+                      <td className="py-3 text-muted leading-relaxed font-medium">{rule.action}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex flex-wrap gap-2 pt-2 border-t border-line/50">
+              <button className="rounded-lg border border-line bg-panel px-3 py-1.5 text-[10px] font-bold text-ink hover:bg-soft transition-colors cursor-pointer shadow-sm">
+                Run Regression Pack
+              </button>
+              <button className="rounded-lg border border-line bg-panel px-3 py-1.5 text-[10px] font-bold text-ink hover:bg-soft transition-colors cursor-pointer shadow-sm">
+                Preview Policy Impact
+              </button>
+              <button className="rounded-lg border border-line bg-panel px-3 py-1.5 text-[10px] font-bold text-ink hover:bg-soft transition-colors cursor-pointer shadow-sm">
+                Request Auth Sign-off
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* ── RESTRICTED Sub-Classes & Templates ───────────────────────── */}
+        <div className="lg:col-span-4 space-y-6">
+          {/* Sub-classes */}
+          <div className="rounded-2xl border border-line bg-panel/75 backdrop-blur-md p-6 shadow-[0_12px_30px_rgba(0,0,0,0.02)] space-y-4">
+            <div className="flex items-center gap-2 border-b border-line/50 pb-4">
+              <div className="p-1.5 rounded-lg bg-bad/10 border border-bad/20">
+                <ShieldOff size={14} className="text-bad" />
+              </div>
+              <h3 className="text-sm font-bold text-ink">RESTRICTED Sub-Classes (ZL-T0-04 §4)</h3>
+            </div>
+
             <div className="space-y-3">
-              {templates.map((tpl) => (
+              {RESTRICTED_SUBCLASSES.map((sc) => (
                 <div
-                  key={tpl.template_id}
-                  className="rounded-xl border border-line bg-soft p-3.5 space-y-1.5"
+                  key={sc.code}
+                  className="rounded-xl border border-bad/20 bg-bad/5 p-4 space-y-2 hover:shadow-md transition-all duration-200"
                 >
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-bold text-ink">{tpl.title}</span>
-                    <span className="text-[10px] text-muted font-mono">{tpl.template_id}</span>
+                    <span className="text-xs font-bold text-ink">{sc.title}</span>
+                    <Pill tone={sc.reclassifiable ? "warn" : "bad"}>
+                      {sc.reclassifiable ? "Reclassifiable" : "Hard Block"}
+                    </Pill>
                   </div>
-                  <p className="text-xs text-ink leading-relaxed">{tpl.body}</p>
-                  {tpl.safe_alternative && (
-                    <p className="text-xs text-ok">
-                      <span className="font-semibold">Safe alternative:</span> {tpl.safe_alternative}
-                    </p>
-                  )}
-                  {tpl.restricted_sub_class && (
-                    <Pill tone="bad">{tpl.restricted_sub_class.replace("RESTRICTED_", "")}</Pill>
-                  )}
+                  <p className="text-[11px] text-muted leading-relaxed">{sc.route}</p>
+                  <p className="text-[9px] text-muted font-mono bg-panel/60 border border-line/45 px-1.5 py-0.5 rounded w-fit">{sc.code}</p>
                 </div>
               ))}
             </div>
-          )}
-        </Card>
+          </div>
+
+          {/* Refusal Template Registry */}
+          <div className="rounded-2xl border border-line bg-panel/75 backdrop-blur-md p-6 shadow-[0_12px_30px_rgba(0,0,0,0.02)] space-y-4">
+            <div className="flex items-center gap-2 border-b border-line/50 pb-4">
+              <div className="p-1.5 rounded-lg bg-brand/10 border border-brand/20">
+                <FileText size={14} className="text-brand" />
+              </div>
+              <h3 className="text-sm font-bold text-ink">Refusal Template Registry (ZL-T0-04 §9)</h3>
+            </div>
+
+            {loadingTemplates ? (
+              <div className="flex flex-col items-center justify-center py-10 text-muted">
+                <Loader2 className="animate-spin mb-1" size={16} />
+                <span className="text-xs">Fetching template registry...</span>
+              </div>
+            ) : (
+              <div className="space-y-3 max-h-[450px] overflow-y-auto pr-1">
+                {templates.map((tpl) => (
+                  <div
+                    key={tpl.template_id}
+                    className="rounded-xl border border-line/60 bg-soft/30 p-4 space-y-2 transition-all duration-200 hover:bg-panel hover:shadow-md"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-ink">{tpl.title}</span>
+                      <span className="text-[9px] text-muted font-mono">{tpl.template_id}</span>
+                    </div>
+                    <p className="text-[11px] text-muted leading-relaxed">{tpl.body}</p>
+                    {tpl.safe_alternative && (
+                      <div className="text-[10px] text-ok border-t border-line/30 pt-1.5 mt-1.5">
+                        <span className="font-bold uppercase tracking-wider">Alternative:</span> {tpl.safe_alternative}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </main>
   );
