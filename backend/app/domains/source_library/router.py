@@ -26,7 +26,7 @@ async def post_source(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> SourcePublic:
-    source = await create_source(db, admin.id, payload)
+    source = await create_source(db, admin.id, payload, tenant_id=admin.tenant_id)
     return SourcePublic.model_validate(source)
 
 
@@ -37,5 +37,5 @@ async def post_approve(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> SourcePublic:
-    source = await approve_source_version(db, admin.id, source_id, version_id)
+    source = await approve_source_version(db, admin.id, source_id, version_id, tenant_id=admin.tenant_id)
     return SourcePublic.model_validate(source)

@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_v1_router
 from app.core.config import get_settings
-from app.core.database import engine, SessionLocal
+from app.core.database import async_engine, SessionLocal
 from app.db.base import Base
 
 settings = get_settings()
@@ -58,11 +58,11 @@ def _seed_defaults():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle events: create tables, seed, and dispose of engine."""
-    async with engine.begin() as conn:
+    async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     _seed_defaults()
     yield
-    await engine.dispose()
+    await async_engine.dispose()
 
 
 def create_app() -> FastAPI:

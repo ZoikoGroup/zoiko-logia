@@ -2,6 +2,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domains.audit_ledger.event_envelope import record_event_async
 from app.domains.source_library.models import Source, SourceVersion
 from app.domains.source_library.schemas import SourceCreateRequest
 
@@ -29,7 +30,9 @@ async def list_sources(db: AsyncSession, category: str | None = None) -> list[di
     return combined
 
 
-async def create_source(db: AsyncSession, submitted_by: str, payload: SourceCreateRequest) -> dict:
+async def create_source(
+    db: AsyncSession, submitted_by: str, payload: SourceCreateRequest, tenant_id: str = "GLOBAL_CONTROL"
+) -> dict:
     source = Source(
         category=payload.category,
         title=payload.title,
@@ -45,16 +48,36 @@ async def create_source(db: AsyncSession, submitted_by: str, payload: SourceCrea
         status="PROPOSED",
         note=payload.note,
         submitted_by=submitted_by,
+        file_path=payload.file_path,
     )
     db.add(version)
     await db.commit()
     await db.refresh(source)
     await db.refresh(version)
+
+    await record_event_async(
+        db,
+        event_name="source_ingestion_event",
+        emitting_service="source_library",
+        subject_type="source",
+        subject_id=source.id,
+        actor_id=submitted_by,
+        tenant_id=tenant_id,
+        classification="INTERNAL",
+        replay_relevance="REQUIRED",
+        payload={
+            "category": source.category,
+            "title": source.title,
+            "source_class": source.source_class,
+            "version_id": version.id,
+            "status": version.status,
+        },
+    )
     return {**source.__dict__, "latest_version": version}
 
 
 async def approve_source_version(
-    db: AsyncSession, approver_id: str, source_id: str, version_id: str
+    db: AsyncSession, approver_id: str, source_id: str, version_id: str, tenant_id: str = "GLOBAL_CONTROL"
 ) -> dict:
     result = await db.execute(
         select(SourceVersion).where(SourceVersion.id == version_id, SourceVersion.source_id == source_id)
@@ -76,4 +99,22 @@ async def approve_source_version(
 
     source_result = await db.execute(select(Source).where(Source.id == source_id))
     source = source_result.scalar_one()
+
+    await record_event_async(
+        db,
+        event_name="source_version_approved",
+        emitting_service="source_library",
+        subject_type="source",
+        subject_id=source_id,
+        actor_id=approver_id,
+        correlation_id=source_id,
+        tenant_id=tenant_id,
+        classification="INTERNAL",
+        replay_relevance="REQUIRED",
+        payload={
+            "version_id": version_id,
+            "submitted_by": version.submitted_by,
+            "approved_by": approver_id,
+        },
+    )
     return {**source.__dict__, "latest_version": version}

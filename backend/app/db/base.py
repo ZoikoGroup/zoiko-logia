@@ -10,4 +10,5 @@ from app.domains.learning_cpd import models as learning_cpd_models  # noqa: E402
 from app.domains.source_library import models as source_library_models  # noqa: E402,F401
 from app.domains.model_gateway import models as model_gateway_models  # noqa: E402,F401
 from app.domains.risk_safety import models as risk_safety_models  # noqa: E402,F401
+from app.domains.audit_ledger import models as audit_ledger_models  # noqa: E402,F401
 

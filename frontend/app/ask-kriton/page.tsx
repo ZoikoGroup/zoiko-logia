@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { PageHeader } from "@/components/governance/PageHeader";
 import { Card } from "@/components/governance/Card";
 import { Pill } from "@/components/governance/Pill";
@@ -10,12 +11,14 @@ import {
   ShieldAlert,
   ShieldOff,
   AlertTriangle,
-  CheckCircle2,
   Info,
   Loader2,
+  BookOpen,
+  History,
 } from "lucide-react";
 import { ADVISOR } from "@/lib/advisor";
-import { classifyQuery, type SafetyDecision, type RiskLevel } from "@/lib/safety-api";
+import type { RiskLevel } from "@/lib/safety-api";
+import { askKriton, getAuthToken, ApiError, type AskKritonResponse } from "@/lib/api";
 
 const JURISDICTIONS = ["", "UK", "US", "US-CA", "IFRS", "UAE", "India", "EU"];
 
@@ -29,39 +32,44 @@ const RISK_STYLES: Record<
   RESTRICTED: { bg: "bg-bad/10", border: "border-bad/30", text: "text-bad", icon: ShieldOff, label: "Restricted — Blocked" },
 };
 
+const CONFIDENCE_TONE: Record<string, "ok" | "warn" | "bad"> = {
+  HIGH_CONFIDENCE: "ok",
+  LOW_CONFIDENCE: "warn",
+  NO_ELIGIBLE_SOURCE: "bad",
+};
+
 export default function AskKritonPage() {
   const [query, setQuery] = useState("");
   const [jurisdiction, setJurisdiction] = useState("");
-  const [sourceConfidence, setSourceConfidence] = useState("HIGH_CONFIDENCE");
-  const [privacyClass, setPrivacyClass] = useState("NONE");
-  const [preBundleState, setPreBundleState] = useState("OK");
   const [loading, setLoading] = useState(false);
-  const [decision, setDecision] = useState<SafetyDecision | null>(null);
+  const [result, setResult] = useState<AskKritonResponse | null>(null);
+  const [error, setError] = useState("");
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!query.trim()) return;
     setLoading(true);
-    setDecision(null);
+    setResult(null);
+    setError("");
     try {
-      const result = await classifyQuery(
-        query, jurisdiction, "Workflow", 
-        sourceConfidence, preBundleState, privacyClass, false, false
-      );
-      setDecision(result);
+      const response = await askKriton(getAuthToken(), { query, jurisdiction, mode: "Workflow" });
+      setResult(response);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not reach the orchestration service.");
     } finally {
       setLoading(false);
     }
   }
 
-  const style = decision ? RISK_STYLES[decision.risk_level] : null;
+  const decision = result?.safety ?? null;
+  const style = decision ? RISK_STYLES[decision.risk_level as RiskLevel] : null;
   const Icon = style?.icon ?? ShieldCheck;
 
   return (
     <main className="flex-1 overflow-y-auto p-4 pt-0">
       <PageHeader
         title={ADVISOR.navLabel}
-        subtitle="Source-governed query interface. Every question is classified before any response is generated."
+        subtitle="Source-governed query interface. Every question is retrieved, classified, and — when allowed — composed and audited end to end."
       />
 
       <div className="space-y-6 max-w-4xl">
@@ -91,65 +99,73 @@ export default function AskKritonPage() {
                 ))}
               </select>
 
-              <label className="text-xs text-muted font-medium ml-2">Source:</label>
-              <select
-                value={sourceConfidence}
-                onChange={(e) => setSourceConfidence(e.target.value)}
-                className="rounded-lg border border-line bg-soft px-2.5 py-1.5 text-xs text-ink outline-none"
-              >
-                <option value="HIGH_CONFIDENCE">High Confidence</option>
-                <option value="LOW_CONFIDENCE">Low Confidence</option>
-                <option value="NO_ELIGIBLE_SOURCE">No Source</option>
-              </select>
-
-              <label className="text-xs text-muted font-medium ml-2">Privacy:</label>
-              <select
-                value={privacyClass}
-                onChange={(e) => setPrivacyClass(e.target.value)}
-                className="rounded-lg border border-line bg-soft px-2.5 py-1.5 text-xs text-ink outline-none"
-              >
-                <option value="NONE">None</option>
-                <option value="PII">PII Detected</option>
-                <option value="SECRETS">Secrets</option>
-              </select>
-
-              <label className="text-xs text-muted font-medium ml-2">Ontology:</label>
-              <select
-                value={preBundleState}
-                onChange={(e) => setPreBundleState(e.target.value)}
-                className="rounded-lg border border-line bg-soft px-2.5 py-1.5 text-xs text-ink outline-none"
-              >
-                <option value="OK">OK</option>
-                <option value="ONTOLOGY_UNRESOLVED">Unresolved</option>
-                <option value="LICENSE_BLOCKED">License Blocked</option>
-              </select>
-
               <button
                 type="submit"
                 disabled={loading || !query.trim()}
                 className="ml-auto shrink-0 rounded-lg bg-brand text-white text-xs font-semibold px-4 py-2 hover:bg-brand-2 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
               >
                 {loading && <Loader2 size={13} className="animate-spin" />}
-                Classify & Route
+                Ask Kriton
               </button>
             </div>
           </form>
+          {error && <p className="text-xs text-bad mt-3">{error}</p>}
         </Card>
+
+        {/* ── Retrieved sources ────────────────────────────────────────── */}
+        {result && (
+          <Card
+            title="Retrieved sources"
+            action={
+              <Pill tone={CONFIDENCE_TONE[result.source_bundle.confidence_state] ?? "neutral"}>
+                {result.source_bundle.confidence_state}
+              </Pill>
+            }
+          >
+            {result.source_bundle.sources.length === 0 ? (
+              <p className="text-sm text-muted flex items-center gap-2">
+                <BookOpen size={14} /> No eligible sources found for category &ldquo;{result.source_bundle.category}&rdquo;.
+              </p>
+            ) : (
+              <ul className="space-y-1.5">
+                {result.source_bundle.sources.map((s) => (
+                  <li key={s.id} className="flex items-center gap-2 text-sm text-ink">
+                    <BookOpen size={13} className="text-muted shrink-0" />
+                    {s.title}
+                    <span className="text-xs text-muted">
+                      {s.version_label} · {s.jurisdiction_scope} · {s.category}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+        )}
 
         {/* ── Safety Decision Result ───────────────────────────────────── */}
         {decision && style && (
           <div className={`rounded-2xl border ${style.border} ${style.bg} p-5 space-y-4`}>
             {/* Header */}
-            <div className="flex items-center gap-3">
-              <div className={`p-2 rounded-xl ${style.bg} border ${style.border}`}>
-                <Icon size={20} className={style.text} />
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className={`p-2 rounded-xl ${style.bg} border ${style.border}`}>
+                  <Icon size={20} className={style.text} />
+                </div>
+                <div>
+                  <h3 className={`text-sm font-bold ${style.text}`}>{style.label}</h3>
+                  <p className="text-[11px] text-muted">
+                    Confidence: {(decision.confidence * 100).toFixed(0)}% · Route: {decision.route} · Outcome: {result?.outcome}
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className={`text-sm font-bold ${style.text}`}>{style.label}</h3>
-                <p className="text-[11px] text-muted">
-                  Confidence: {(decision.confidence * 100).toFixed(0)}% · Route: {decision.route} · ID: {decision.query_id}
-                </p>
-              </div>
+              {result && (
+                <Link
+                  href={`/audit-replay?correlation_id=${encodeURIComponent(result.query_id)}`}
+                  className="flex items-center gap-1.5 text-xs text-brand hover:underline shrink-0"
+                >
+                  <History size={13} /> View audit trail
+                </Link>
+              )}
             </div>
 
             {/* Refusal / Limitation content */}
@@ -199,34 +215,42 @@ export default function AskKritonPage() {
               </div>
             </div>
 
-            {/* Allowed — simulated LLM response area */}
-            {decision.allowed && (
-              <Card title="Generation Preview" className="mt-2">
-                <p className="text-sm text-muted italic leading-relaxed">
-                  {decision.risk_level === "LOW"
-                    ? "✅ Query classified as LOW risk. Kriton™ would proceed with standard source grounding and generate a response."
-                    : decision.risk_level === "MEDIUM"
-                      ? "ℹ️ Query classified as MEDIUM risk. Kriton™ would generate an educational response with limitation language."
-                      : "⚠️ Query classified as HIGH risk. Kriton™ would generate a response with full citations, limitation language, and professional boundary notice."}
-                </p>
-                {decision.requires_professional_boundary && (
-                  <p className="mt-3 text-[11px] text-muted border-t border-line pt-3">
-                    Kriton™ provides source-governed guidance to support your professional judgment.
-                    It does not act as a licensed accountant, auditor, tax advisor, or legal counsel.
+            {/* Composed answer, or why there isn't one */}
+            <Card title="Kriton response" className="mt-2">
+              {result?.answer ? (
+                <>
+                  <p className="text-sm text-ink leading-relaxed">{result.answer.output_text}</p>
+                  <p className="mt-2 text-[11px] text-muted">
+                    Composed via {result.answer.prompt_name} ({result.answer.prompt_id})
                   </p>
-                )}
-              </Card>
-            )}
+                </>
+              ) : (
+                <p className="text-sm text-muted italic leading-relaxed">
+                  {result?.outcome === "HUMAN_REVIEW"
+                    ? "This query was routed to human review instead of generation — no response is composed until a reviewer clears it."
+                    : result?.outcome === "CLARIFICATION"
+                      ? "The safety classifier could not confidently route this query, so Kriton™ is asking for clarification instead of generating a response."
+                      : result?.outcome === "COMPOSE_UNAVAILABLE"
+                        ? "No approved prompt template is available for this mode, so no response could be composed."
+                        : "This query was refused before reaching generation."}
+                </p>
+              )}
+              {decision.requires_professional_boundary && (
+                <p className="mt-3 text-[11px] text-muted border-t border-line pt-3">
+                  Kriton™ provides source-governed guidance to support your professional judgment.
+                  It does not act as a licensed accountant, auditor, tax advisor, or legal counsel.
+                </p>
+              )}
+            </Card>
           </div>
         )}
 
         {/* ── Example queries ─────────────────────────────────────────── */}
-        {!decision && !loading && (
+        {!result && !loading && (
           <Card title="Try these example queries">
             <div className="space-y-2">
               {[
-                { q: "What is going concern?", j: "", note: "Low risk — general concept" },
-                { q: "Explain journal entry for lease accounting", j: "", note: "Medium risk — educational" },
+                { q: "As a general educational matter, what is the accrual basis of accounting?", j: "", note: "Educational — sources available" },
                 { q: "What is the tax treatment on mixed supply VAT?", j: "UK", note: "High risk — tax advice" },
                 { q: "How should my company recognize revenue?", j: "", note: "Restricted — insufficient context" },
                 { q: "Solve my final exam on IFRS standards", j: "", note: "Restricted — academic integrity" },
@@ -238,7 +262,7 @@ export default function AskKritonPage() {
                   onClick={() => {
                     setQuery(q);
                     setJurisdiction(j);
-                    setDecision(null);
+                    setResult(null);
                   }}
                   className="w-full text-left flex items-center justify-between gap-3 rounded-xl border border-line px-3.5 py-2.5 text-sm hover:bg-soft transition-colors"
                 >
