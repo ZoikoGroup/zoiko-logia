@@ -15,6 +15,9 @@ class AskKritonRequest(BaseModel):
     query: str
     jurisdiction: str = ""
     mode: str = "Workflow"
+    source_confidence: Optional[str] = None
+    pre_bundle_state: Optional[str] = None
+    privacy_class: Optional[str] = None
 
 
 class SourceSummary(BaseModel):

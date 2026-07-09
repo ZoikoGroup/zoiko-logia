@@ -403,6 +403,9 @@ export type AskKritonRequest = {
   query: string;
   jurisdiction?: string;
   mode?: string;
+  source_confidence?: string;
+  pre_bundle_state?: string;
+  privacy_class?: string;
 };
 
 export type SourceSummary = {
