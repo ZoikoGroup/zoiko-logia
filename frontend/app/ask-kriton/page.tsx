@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { PageHeader } from "@/components/governance/PageHeader";
 import { Card } from "@/components/governance/Card";
 import { Pill } from "@/components/governance/Pill";
@@ -14,9 +15,12 @@ import {
   Loader2,
   Sparkles,
   ArrowRight,
+  BookOpen,
+  History,
 } from "lucide-react";
 import { ADVISOR } from "@/lib/advisor";
-import { classifyQuery, type SafetyDecision, type RiskLevel } from "@/lib/safety-api";
+import type { RiskLevel } from "@/lib/safety-api";
+import { askKriton, getAuthToken, ApiError, type AskKritonResponse } from "@/lib/api";
 
 const JURISDICTIONS = ["", "UK", "US", "US-CA", "IFRS", "UAE", "India", "EU"];
 
@@ -58,6 +62,12 @@ const RISK_STYLES: Record<
   },
 };
 
+const CONFIDENCE_TONE: Record<string, "ok" | "warn" | "bad"> = {
+  HIGH_CONFIDENCE: "ok",
+  LOW_CONFIDENCE: "warn",
+  NO_ELIGIBLE_SOURCE: "bad",
+};
+
 export default function AskKritonPage() {
   const [query, setQuery] = useState("");
   const [jurisdiction, setJurisdiction] = useState("");
@@ -65,32 +75,41 @@ export default function AskKritonPage() {
   const [privacyClass, setPrivacyClass] = useState("NONE");
   const [preBundleState, setPreBundleState] = useState("OK");
   const [loading, setLoading] = useState(false);
-  const [decision, setDecision] = useState<SafetyDecision | null>(null);
+  const [result, setResult] = useState<AskKritonResponse | null>(null);
+  const [error, setError] = useState("");
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!query.trim()) return;
     setLoading(true);
-    setDecision(null);
+    setResult(null);
+    setError("");
     try {
-      const result = await classifyQuery(
-        query, jurisdiction, "Workflow", 
-        sourceConfidence, preBundleState, privacyClass, false, false
-      );
-      setDecision(result);
+      const response = await askKriton(getAuthToken(), {
+        query,
+        jurisdiction,
+        mode: "Workflow",
+        source_confidence: sourceConfidence,
+        pre_bundle_state: preBundleState,
+        privacy_class: privacyClass,
+      });
+      setResult(response);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not reach the orchestration service.");
     } finally {
       setLoading(false);
     }
   }
 
-  const style = decision ? RISK_STYLES[decision.risk_level] : null;
+  const decision = result?.safety ?? null;
+  const style = decision ? RISK_STYLES[decision.risk_level as RiskLevel] : null;
   const Icon = style?.icon ?? ShieldCheck;
 
   return (
     <main className="flex-1 overflow-y-auto p-6 pt-0 space-y-6">
       <PageHeader
         title={ADVISOR.navLabel}
-        subtitle="Source-governed query interface. Every question is classified before any response is generated."
+        subtitle="Source-governed query interface. Every question is retrieved, classified, and — when allowed — composed and audited end to end."
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start max-w-7xl">
@@ -197,8 +216,10 @@ export default function AskKritonPage() {
             </form>
           </div>
 
+          {error && <p className="text-xs text-bad mt-3">{error}</p>}
+
           {/* Example Quick Toggles */}
-          {!decision && !loading && (
+          {!result && !loading && (
             <div className="rounded-2xl border border-line bg-panel/50 p-6 space-y-4">
               <h3 className="text-xs font-bold text-ink uppercase tracking-wider">Test Scenarios</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -217,7 +238,7 @@ export default function AskKritonPage() {
                       setQuery(q);
                       setJurisdiction(j);
                       setSourceConfidence(s);
-                      setDecision(null);
+                      setResult(null);
                     }}
                     className="text-left flex flex-col justify-between gap-1 rounded-xl border border-line/60 bg-panel px-4 py-3 text-sm hover:border-brand hover:shadow-md hover:bg-soft/10 transition-all duration-200 cursor-pointer"
                   >
@@ -230,8 +251,39 @@ export default function AskKritonPage() {
           )}
         </div>
 
-        {/* ── Safety Decision Output Area ──────────────────────────────── */}
-        <div className="lg:col-span-5">
+        {/* ── Safety Decision & RAG Output Area ──────────────────────────────── */}
+        <div className="lg:col-span-5 space-y-6">
+          {/* Retrieved sources */}
+          {result?.source_bundle && (
+            <Card
+              title="Retrieved sources"
+              action={
+                <Pill tone={CONFIDENCE_TONE[result.source_bundle.confidence_state] ?? "neutral"}>
+                  {result.source_bundle.confidence_state}
+                </Pill>
+              }
+            >
+              {result.source_bundle.sources.length === 0 ? (
+                <p className="text-sm text-muted flex items-center gap-2">
+                  <BookOpen size={14} /> No eligible sources found for category &ldquo;{result.source_bundle.category}&rdquo;.
+                </p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {result.source_bundle.sources.map((s) => (
+                    <li key={s.id} className="flex items-center gap-2 text-sm text-ink">
+                      <BookOpen size={13} className="text-muted shrink-0" />
+                      {s.title}
+                      <span className="text-xs text-muted">
+                        {s.version_label} · {s.jurisdiction_scope} · {s.category}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          )}
+
+          {/* Safety Decision details */}
           {decision && style ? (
             <div className={`rounded-2xl border-2 ${style.border} ${style.bg} ${style.shadow} p-6 space-y-5 transition-all duration-300 animate-fadeIn`}>
               {/* Header Status */}
@@ -245,6 +297,14 @@ export default function AskKritonPage() {
                     Confidence: {(decision.confidence * 100).toFixed(0)}% · Route: {decision.route}
                   </p>
                 </div>
+                {result && (
+                  <Link
+                    href={`/audit-replay?correlation_id=${encodeURIComponent(result.query_id)}`}
+                    className="flex items-center gap-1.5 text-xs text-brand hover:underline shrink-0 ml-auto"
+                  >
+                    <History size={13} /> View audit trail
+                  </Link>
+                )}
               </div>
 
               {/* Text Block for Refusals */}
@@ -313,7 +373,39 @@ export default function AskKritonPage() {
                 </div>
               )}
             </div>
-          ) : (
+          ) : null}
+
+          {/* Composed answer (RAG output) or outcome details */}
+          {decision && (
+            <Card title="Kriton response">
+              {result?.answer ? (
+                <>
+                  <p className="text-sm text-ink leading-relaxed">{result.answer.output_text}</p>
+                  <p className="mt-2 text-[11px] text-muted">
+                    Composed via {result.answer.prompt_name} ({result.answer.prompt_id})
+                  </p>
+                </>
+              ) : (
+                <p className="text-sm text-muted italic leading-relaxed">
+                  {result?.outcome === "HUMAN_REVIEW"
+                    ? "This query was routed to human review instead of generation — no response is composed until a reviewer clears it."
+                    : result?.outcome === "CLARIFICATION"
+                      ? "The safety classifier could not confidently route this query, so Kriton™ is asking for clarification instead of generating a response."
+                      : result?.outcome === "COMPOSE_UNAVAILABLE"
+                        ? "No approved prompt template is available for this mode, so no response could be composed."
+                        : "This query was refused before reaching generation."}
+                </p>
+              )}
+              {decision.requires_professional_boundary && (
+                <p className="mt-3 text-[11px] text-muted border-t border-line pt-3">
+                  Kriton™ provides source-governed guidance to support your professional judgment.
+                  It does not act as a licensed accountant, auditor, tax advisor, or legal counsel.
+                </p>
+              )}
+            </Card>
+          )}
+
+          {!decision && !loading && (
             <div className="hidden lg:flex flex-col items-center justify-center border-2 border-dashed border-line rounded-2xl p-12 text-center h-full min-h-[350px] bg-panel/30">
               <Sparkles size={32} className="text-muted/40 animate-pulse mb-3" />
               <h3 className="text-sm font-bold text-ink">Awaiting Query Classification</h3>

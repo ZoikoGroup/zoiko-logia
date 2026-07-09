@@ -10,6 +10,7 @@ class SourceCreateRequest(BaseModel):
     jurisdiction_scope: str = "Global"
     framework_scope: str = ""
     note: str = ""
+    file_path: str | None = None
 
 
 class SourceVersionPublic(BaseModel):
@@ -23,6 +24,7 @@ class SourceVersionPublic(BaseModel):
     submitted_by: str
     approved_by: str | None
     created_at: datetime
+    file_path: str | None = None
 
     model_config = {"from_attributes": True}
 

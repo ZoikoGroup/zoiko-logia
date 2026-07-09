@@ -1,13 +1,14 @@
 /**
  * Safety Service API client for the frontend.
  *
- * Tries the backend at http://localhost:8000. When the backend is
- * unreachable it falls back to a LOCAL classifier that mirrors the
- * rule-based engine — keeping the dashboard fully functional for
+ * Tries the configured backend (NEXT_PUBLIC_API_URL, same as lib/api.ts).
+ * When the backend is unreachable it falls back to a LOCAL classifier that
+ * mirrors the rule-based engine — keeping the dashboard fully functional for
  * demo / development without running the Python service.
  */
 
-const BACKEND = "http://localhost:8000/api/v1/safety";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+const BACKEND = `${API_URL}/safety`;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 

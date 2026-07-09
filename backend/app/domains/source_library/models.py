@@ -40,3 +40,4 @@ class SourceVersion(Base):
     submitted_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     approved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    file_path: Mapped[str | None] = mapped_column(String, nullable=True)

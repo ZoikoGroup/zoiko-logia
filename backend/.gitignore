@@ -4,7 +4,7 @@ __pycache__/
 venv/
 .env
 *.db
-<<<<<<< HEAD
-
-=======
->>>>>>> origin/main
+.DS_Store
+data/sources/**/*
+!data/sources/**/
+!data/sources/**/.gitkeep

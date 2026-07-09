@@ -1,3 +1,5 @@
+import type { SafetyDecision } from "@/lib/safety-api";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
 export type UserPublic = {
@@ -300,6 +302,148 @@ export async function runTestPrompt(token: string, promptId: string, inputText: 
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prompt_id: promptId, input_text: inputText }),
+  });
+  return res.json();
+}
+
+export type AuditEvent = {
+  id: string;
+  event_name: string;
+  payload_schema_version: string;
+  event_time: string | null;
+  ingested_at: string | null;
+  emitting_service: string;
+  tenant_id: string;
+  actor_type: string;
+  actor_id: string | null;
+  subject_type: string;
+  subject_id: string;
+  correlation_id: string | null;
+  causation_id: string | null;
+  payload: Record<string, unknown>;
+  payload_hash: string | null;
+  previous_chain_hash: string | null;
+  chain_hash: string | null;
+  classification: string;
+  replay_relevance: string;
+  validation_status: string;
+  legal_hold_id: string | null;
+  archived: boolean;
+  source: string;
+};
+
+export type AuditEventFilters = {
+  eventName?: string;
+  subjectType?: string;
+  subjectId?: string;
+  correlationId?: string;
+  limit?: number;
+};
+
+export async function listAuditEvents(token: string, filters: AuditEventFilters = {}): Promise<AuditEvent[]> {
+  const query = new URLSearchParams();
+  if (filters.eventName) query.set("event_name", filters.eventName);
+  if (filters.subjectType) query.set("subject_type", filters.subjectType);
+  if (filters.subjectId) query.set("subject_id", filters.subjectId);
+  if (filters.correlationId) query.set("correlation_id", filters.correlationId);
+  if (filters.limit) query.set("limit", String(filters.limit));
+  const qs = query.toString();
+  const res = await authedFetch(`/audit/events${qs ? `?${qs}` : ""}`, token);
+  return res.json();
+}
+
+export type ChainVerifyResult = {
+  tenant_id: string;
+  passed: boolean;
+  events_checked: number;
+  first_broken_event_id: string | null;
+};
+
+export async function verifyAuditChain(token: string): Promise<ChainVerifyResult> {
+  const res = await authedFetch("/audit/chain-verify", token);
+  return res.json();
+}
+
+export type ReplayKnownGap = {
+  event_class: string;
+  expected_event_name: string;
+  gap_reason: string;
+  impact_on_replay: string;
+};
+
+export type ReplayTimelineEvent = {
+  event_id: string;
+  event_name: string;
+  event_time: string | null;
+  emitting_service: string;
+  payload: Record<string, unknown>;
+  chain_hash: string | null;
+  replay_relevance: string;
+  source: string;
+};
+
+export type ReplayManifest = {
+  correlation_id: string;
+  completeness_status: "COMPLETE" | "PARTIAL_KNOWN_GAPS" | "INCOMPLETE_UNKNOWN";
+  known_gaps: ReplayKnownGap[];
+  manifest_trustworthiness: "AUTHORITATIVE" | "LIMITED" | "INCONCLUSIVE";
+  chain_verification_result: string;
+  generated_by: string;
+  generated_at: string;
+  events: ReplayTimelineEvent[];
+  manifest_hash: string;
+};
+
+export async function getReplayManifest(token: string, correlationId: string): Promise<ReplayManifest> {
+  const res = await authedFetch(`/audit/replay/${encodeURIComponent(correlationId)}`, token);
+  return res.json();
+}
+
+export type AskKritonRequest = {
+  query: string;
+  jurisdiction?: string;
+  mode?: string;
+  source_confidence?: string;
+  pre_bundle_state?: string;
+  privacy_class?: string;
+};
+
+export type SourceSummary = {
+  id: string;
+  title: string;
+  category: string;
+  jurisdiction_scope: string;
+  version_label: string;
+  status: string;
+};
+
+export type SourceBundle = {
+  bundle_id: string;
+  retrieval_run_id: string;
+  category: string;
+  confidence_state: "HIGH_CONFIDENCE" | "LOW_CONFIDENCE" | "NO_ELIGIBLE_SOURCE";
+  sources: SourceSummary[];
+};
+
+export type ComposedAnswer = {
+  prompt_id: string;
+  prompt_name: string;
+  output_text: string;
+};
+
+export type AskKritonResponse = {
+  query_id: string;
+  outcome: "ANSWERED" | "REFUSED" | "HUMAN_REVIEW" | "CLARIFICATION" | "COMPOSE_UNAVAILABLE";
+  safety: SafetyDecision;
+  source_bundle: SourceBundle;
+  answer: ComposedAnswer | null;
+};
+
+export async function askKriton(token: string, payload: AskKritonRequest): Promise<AskKritonResponse> {
+  const res = await authedFetch("/kriton/ask", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
   });
   return res.json();
 }

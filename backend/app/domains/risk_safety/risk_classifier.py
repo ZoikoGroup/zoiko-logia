@@ -40,7 +40,10 @@ CANDIDATE_LABELS = [
 # ─── L1 Pattern Banks (Defense-in-Depth) ──────────────────────────────────
 
 _ACADEMIC_PATTERNS: list[re.Pattern] = [
-    re.compile(r"\b(solve\s+(my|this)\s+exam|exam\s+answer|quiz\s+answer|complete\s+(my|this)\s+assessment)\b", re.IGNORECASE)
+    re.compile(
+        r"\b(solve\s+(my|this)\s+(\w+\s+){0,2}exam|exam\s+answer|quiz\s+answer|complete\s+(my|this)\s+(\w+\s+){0,2}assessment)\b",
+        re.IGNORECASE,
+    )
 ]
 
 _BYPASS_PATTERNS: list[re.Pattern] = [

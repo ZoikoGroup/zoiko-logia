@@ -39,7 +39,7 @@ async def post_approve_prompt(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> PromptTemplatePublic:
-    prompt = await approve_prompt(db, admin.id, prompt_id)
+    prompt = await approve_prompt(db, admin.id, prompt_id, tenant_id=admin.tenant_id)
     return PromptTemplatePublic.model_validate(prompt)
 
 
@@ -49,5 +49,5 @@ async def post_test_run(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> TestRunResponse:
-    prompt, output = await run_test_prompt(db, payload.prompt_id, payload.input_text)
+    prompt, output = await run_test_prompt(db, payload.prompt_id, payload.input_text, admin.id, tenant_id=admin.tenant_id)
     return TestRunResponse(prompt_id=prompt.id, prompt_name=prompt.name, output_text=output)
