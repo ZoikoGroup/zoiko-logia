@@ -6,7 +6,7 @@
 *.pem
 .env
 .venv/
-docs/
+implementation_plan.md
 
 # Local untracked markdown docs
 /DATA_SOURCES_REFERENCE.md
@@ -16,3 +16,4 @@ docs/
 /README_KRITON.md
 /ZoikoLogia_Kriton_AI_Safety_Risk_Classification_Escalation_Wireframe.md
 /ai_safety_system_documentation.md
+/implementation_plan.md
