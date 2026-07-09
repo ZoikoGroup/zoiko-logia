@@ -19,6 +19,45 @@
   --info: #295ea7;
 }
 
+/* Dark governance-surface theme — follows OS preference by default,
+   overridden in both directions once the header toggle sets data-theme. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1216;
+    --panel: #171b21;
+    --ink: #e7eaee;
+    --muted: #8b96a3;
+    --line: #2a2f37;
+    --soft: #1c2128;
+    --chip: #232830;
+    --brand: #2f9cc2;
+    --brand-2: #4bb4d8;
+    --gold: #f3c437;
+    --gold-2: #ffd85b;
+    --ok: #3fb87d;
+    --warn: #d99a2b;
+    --bad: #e5564a;
+    --info: #5b8fd6;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1216;
+  --panel: #171b21;
+  --ink: #e7eaee;
+  --muted: #8b96a3;
+  --line: #2a2f37;
+  --soft: #1c2128;
+  --chip: #232830;
+  --brand: #2f9cc2;
+  --brand-2: #4bb4d8;
+  --gold: #f3c437;
+  --gold-2: #ffd85b;
+  --ok: #3fb87d;
+  --warn: #d99a2b;
+  --bad: #e5564a;
+  --info: #5b8fd6;
+}
+
 @theme inline {
   --color-bg: var(--bg);
   --color-panel: var(--panel);

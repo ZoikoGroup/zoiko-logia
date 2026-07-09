@@ -3,6 +3,10 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { AppChrome } from "@/components/layout/AppChrome";
 import { RoleProvider } from "@/components/shell/RoleProvider";
+import { ThemeProvider } from "@/components/shell/ThemeProvider";
+import { THEME_COOKIE } from "@/lib/theme";
+
+const THEME_INIT_SCRIPT = `(function(){try{var m=document.cookie.match(/(?:^|; )${THEME_COOKIE}=([^;]*)/);var t=m?decodeURIComponent(m[1]):null;if(!t){t=window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}document.documentElement.setAttribute('data-theme',t);}catch(e){}})();`;
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -25,11 +29,20 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
+    <html
+      lang="en"
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
+    >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body className="min-h-full flex bg-bg text-ink">
-        <RoleProvider>
-          <AppChrome>{children}</AppChrome>
-        </RoleProvider>
+        <ThemeProvider>
+          <RoleProvider>
+            <AppChrome>{children}</AppChrome>
+          </RoleProvider>
+        </ThemeProvider>
       </body>
     </html>
   );
