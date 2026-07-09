@@ -25,7 +25,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`} suppressHydrationWarning>
+
       <body className="min-h-full flex bg-bg text-ink">
         <RoleProvider>
           <AppChrome>{children}</AppChrome>

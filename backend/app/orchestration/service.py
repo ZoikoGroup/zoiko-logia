@@ -45,9 +45,9 @@ async def ask_kriton(
         tenant_id=tenant_id,
         jurisdiction=request.jurisdiction,
         mode=request.mode,
-        source_confidence=bundle.confidence_state,
-        pre_bundle_state="OK",
-        privacy_class="NONE",
+        source_confidence=request.source_confidence or bundle.confidence_state,
+        pre_bundle_state=request.pre_bundle_state or "OK",
+        privacy_class=request.privacy_class or "NONE",
     )
     decision = risk_safety_service.evaluate(classify_request, db=sync_db)
     query_id = decision.query_id or "qry-unknown"
