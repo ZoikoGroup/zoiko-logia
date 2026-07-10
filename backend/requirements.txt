@@ -21,3 +21,17 @@ pydantic-settings
 transformers
 torch
 
+# RAG & Document Processing
+llama-index
+llama-parse
+llama-index-embeddings-huggingface
+llama-index-vector-stores-postgres
+psycopg2-binary
+asyncpg
+sentence-transformers
+openai
+groq
+pypdf
+python-docx
+python-pptx
+openpyxl

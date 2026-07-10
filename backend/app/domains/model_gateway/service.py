@@ -58,6 +58,9 @@ async def approve_prompt(
     return prompt
 
 
+from app.domains.model_gateway.providers.groq_adapter import GroqAdapter
+
+
 async def run_test_prompt(
     db: AsyncSession,
     prompt_id: str,
@@ -71,13 +74,12 @@ async def run_test_prompt(
     if prompt is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prompt template not found")
 
-    # Model Gateway -> Provider Adapter -> Approved Model, per the LLM System
-    # Architecture spec's required flow. MockProviderAdapter stands in until a
-    # real provider is approved.
-    adapter = MockProviderAdapter()
-    output = adapter.complete(f"[{prompt.name} {prompt.version}] {input_text}")
+    # Model Gateway -> Provider Adapter -> Approved Model
+    adapter = GroqAdapter()
+    output = adapter.complete(f"[{prompt.name} {prompt.version}]\n\n{input_text}")
 
     # Store a hash of the output, not the raw text, per the privacy-by-design
+
     # doctrine (Section 9): raw prompt/output retention depends on risk class,
     # tenant, and provider privacy profile, which isn't decided yet.
     await record_event_async(
