@@ -399,10 +399,13 @@ export async function getReplayManifest(token: string, correlationId: string): P
   return res.json();
 }
 
+// ── Ask Kriton™ — ZL-ENG-02 §12 Canonical Response Contract ────────────────
+
 export type AskKritonRequest = {
   query: string;
   jurisdiction?: string;
   mode?: string;
+  /** Playground overrides — not trusted from body in production */
   source_confidence?: string;
   pre_bundle_state?: string;
   privacy_class?: string;
@@ -417,33 +420,123 @@ export type SourceSummary = {
   status: string;
 };
 
+/** §7.2 SourceBundle — six confidence states */
 export type SourceBundle = {
-  bundle_id: string;
-  retrieval_run_id: string;
-  category: string;
-  confidence_state: "HIGH_CONFIDENCE" | "LOW_CONFIDENCE" | "NO_ELIGIBLE_SOURCE";
+  source_bundle_id: string;
+  retrieval_method: string;             // "keyword_mvp" (not RAG until §7 criteria met)
+  eligible_source_count: number;
+  excluded_source_count: number;
   sources: SourceSummary[];
+  exclusion_reasons: string[];
+  jurisdiction: string;
+  authority_level: string;              // primary | secondary | internal
+  freshness_state: string;              // current | stale | unknown
+  licence_state: string;                // permitted | restricted | unknown
+  confidence_state: ConfidenceState;
+};
+
+export type ConfidenceState =
+  | "sufficient"
+  | "limited"
+  | "insufficient"
+  | "conflicting_sources"
+  | "stale_sources"
+  | "restricted_sources";
+
+export type SourceCitation = {
+  ref_id: string;
+  source_id: string;
+  title: string;
 };
 
 export type ComposedAnswer = {
-  prompt_id: string;
-  prompt_name: string;
-  output_text: string;
+  text: string;
+  citations: SourceCitation[];
+  limitations: string[];
+  /** @deprecated use text — retained for backward compatibility */
+  output_text?: string;
 };
 
+/** §12 SafetyState — frontend renders from this, not by parsing answer text */
+export type SafetyState = {
+  risk_level: "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
+  policy_state: "allowed" | "blocked" | "needs_more_context";
+  disclaimer_required: boolean;
+};
+
+export type NextAction = {
+  type: string;  // ask_clarifying_question | escalate | refusal | security_incident | composition_failed
+  message: string;
+};
+
+/** §12 — opaque audit reference; never exposes internal hashes */
+export type AuditReference = {
+  audit_chain_id: string;
+};
+
+export type OutcomeType =
+  | "answered"
+  | "refused"
+  | "clarification_required"
+  | "escalated"
+  | "rejected";
+
+export type RouteType =
+  | "LLM"
+  | "REFUSAL"
+  | "CLARIFICATION"
+  | "HUMAN_REVIEW"
+  | "SECURITY_INCIDENT"
+  | "REJECTED";
+
+/** §12 Canonical response contract — frontend renders from route/outcome ONLY */
 export type AskKritonResponse = {
   query_id: string;
-  outcome: "ANSWERED" | "REFUSED" | "HUMAN_REVIEW" | "CLARIFICATION" | "COMPOSE_UNAVAILABLE";
-  safety: SafetyDecision;
-  source_bundle: SourceBundle;
+  correlation_id: string;
+  outcome: OutcomeType;
+  route: RouteType;
+  safety: SafetyState;
+  confidence_state: ConfidenceState;
+  source_bundle: SourceBundle | null;
   answer: ComposedAnswer | null;
+  next_action: NextAction | null;
+  /** Opaque — never expose audit_chain_id internals to UI rendering logic */
+  audit_reference: AuditReference;
 };
 
-export async function askKriton(token: string, payload: AskKritonRequest): Promise<AskKritonResponse> {
-  const res = await authedFetch("/kriton/ask", token, {
+export async function askKriton(
+  token: string,
+  payload: AskKritonRequest,
+  idempotencyKey?: string,
+): Promise<AskKritonResponse> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
+  const res = await authedFetch("/orchestration/ask", token, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(payload),
   });
   return res.json();
 }
+
+export type UploadResponse = {
+  status: string;
+  title: string;
+  chunks_stored: string;
+  tenant_id: string;
+  jurisdiction: string;
+  file_path: string;
+};
+
+export async function uploadDocument(token: string, file: File): Promise<UploadResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  // Note: do NOT set Content-Type header — browser sets it with boundary automatically
+  const res = await authedFetch("/kriton/upload", token, {
+    method: "POST",
+    body: form,
+  });
+  return res.json();
+}
+
+
