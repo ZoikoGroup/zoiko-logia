@@ -45,7 +45,9 @@ class ComposedAnswer(BaseModel):
 
 class AskKritonResponse(BaseModel):
     query_id: str
-    outcome: str  # ANSWERED | REFUSED | HUMAN_REVIEW | CLARIFICATION | COMPOSE_UNAVAILABLE
+    outcome: str  # ANSWERED | REFUSED | HUMAN_REVIEW | CLARIFICATION | COMPOSE_UNAVAILABLE | REJECTED
     safety: SafetyDecision
-    source_bundle: SourceBundle
+    # None when a pre-screen or schema-validation failure stopped the pipeline
+    # before retrieval ever ran — there is no bundle to report in that case.
+    source_bundle: Optional[SourceBundle] = None
     answer: Optional[ComposedAnswer] = None

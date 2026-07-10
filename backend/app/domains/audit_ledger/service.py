@@ -1,6 +1,7 @@
 # Audit ledger domain business logic - see Kriton Audit Logging Evidence Ledger spec
 from __future__ import annotations
 
+from datetime import timezone
 from typing import Optional
 
 from sqlalchemy import select
@@ -114,7 +115,18 @@ async def list_events(
         safety_query = safety_query.order_by(SafetyEvent.timestamp.desc()).limit(limit)
         merged += [_safety_event_to_dict(e) for e in safety_query.all()]
 
-    merged.sort(key=lambda item: item["ingested_at"] or item["event_time"], reverse=True)
+    def _sort_key(item: dict):
+        # SafetyEvent.timestamp has no timezone=True column (unlike AuditEvent's
+        # columns), so under Postgres it round-trips as a naive datetime even
+        # though _utcnow() wrote it as UTC — SQLite silently returned naive
+        # datetimes on both sides, masking this. Normalize to comparable
+        # tz-aware values instead of migrating the column.
+        value = item["ingested_at"] or item["event_time"]
+        if value is not None and value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value
+
+    merged.sort(key=_sort_key, reverse=True)
     return merged[:limit]
 
 

@@ -40,10 +40,6 @@ export function NavSearch() {
   }, [query, allItems]);
 
   useEffect(() => {
-    setActiveIndex(0);
-  }, [query]);
-
-  useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setOpen(false);
@@ -79,13 +75,14 @@ export function NavSearch() {
 
   return (
     <div ref={containerRef} className="relative w-full max-w-xs">
-      <div className="flex items-center gap-2 rounded-xl bg-soft border border-line px-3.5 py-2.5">
-        <Search size={16} className="text-muted shrink-0" />
+      <div className="zl-search-surface flex items-center gap-2 rounded-xl border px-3.5 py-2.5 transition-shadow">
+        <Search size={16} className="text-brand shrink-0" />
         <input
           type="text"
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
+            setActiveIndex(0);
             setOpen(true);
           }}
           onFocus={() => setOpen(true)}

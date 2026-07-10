@@ -12,4 +12,6 @@ from app.domains.model_gateway import models as model_gateway_models  # noqa: E4
 from app.domains.risk_safety import models as risk_safety_models  # noqa: E402,F401
 from app.domains.evaluation import models as evaluation_models  # noqa: E402,F401
 from app.domains.audit_ledger import models as audit_ledger_models  # noqa: E402,F401
+from app.domains.kriton_workspace import models as kriton_workspace_models  # noqa: E402,F401
+from app.domains.orchestration_state import models as orchestration_state_models  # noqa: E402,F401
 

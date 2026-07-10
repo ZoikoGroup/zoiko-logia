@@ -14,6 +14,7 @@ from typing import Optional
 from transformers import pipeline
 
 from app.domains.risk_safety.models import RiskLevel, RestrictedSubClass, Route
+from app.domains.risk_safety.routing_matrix import ROUTING_MATRIX_VERSION, resolve as resolve_route
 
 # ─── ML Pipeline Initialization ─────────────────────────────────────────────
 # We use a lightweight cross-encoder for fast zero-shot text classification.
@@ -60,24 +61,25 @@ def _new_query_id() -> str:
 
 # ─── Public API ─────────────────────────────────────────────────────────────
 
-def classify(
+def pre_screen(
     query: str,
     jurisdiction: str = "",
-    mode: str = "Workflow",
-    tenant_id: str = "default",
-    source_confidence: str = "HIGH_CONFIDENCE",
-    pre_bundle_state: str = "OK",
     privacy_class: str = "NONE",
-    tenant_policy_conflict: bool = False,
-    tool_required: bool = False,
-) -> dict:
-    """Classify query using L1 regex + L2 ML semantic scoring."""
-    query_id = _new_query_id()
+    pre_bundle_state: str = "OK",
+    query_id: Optional[str] = None,
+) -> Optional[dict]:
+    """L0 (privacy/state) + L1 (regex hard-block) checks — everything that
+    does NOT need retrieval's source_confidence to decide. Runs before
+    retrieval so a manipulation attempt or privacy violation never reaches
+    the source register at all. Returns None if the query passes and the
+    full classify() (L2) should run next; returns a decision dict if it
+    hard-blocks, in which case retrieval/L2 must be skipped entirely.
+    """
+    query_id = query_id or _new_query_id()
     rules_applied: list[str] = []
-    limitations: list[str] = []
 
     # ── L0: Privacy & State Hard Checks (Sections 8 & 12) ────────────────
-    
+
     if privacy_class in ["PII", "MINOR_DATA", "SECRETS"]:
         rules_applied.append("l0-privacy-block")
         return _decision(query_id, False, RiskLevel.RESTRICTED, Route.SECURITY_INCIDENT, 1.0, rules_applied, ["Privacy violation detected."], restricted_sub_class=RestrictedSubClass.CONTROL_BYPASS)
@@ -90,9 +92,8 @@ def classify(
         rules_applied.append("l0-ontology-unresolved")
         return _decision(query_id, False, RiskLevel.MEDIUM, Route.CLARIFICATION, 1.0, rules_applied, ["Ontology concept unresolved."])
 
-
     # ── L1: Regex Hard-Block (Section 4) ─────────────────────────────────
-    
+
     for pat in _ACADEMIC_PATTERNS:
         if pat.search(query):
             rules_applied.append("l1-academic-integrity-block")
@@ -108,9 +109,30 @@ def classify(
         rules_applied.append("l1-advice-insufficient-context")
         return _decision(query_id, False, RiskLevel.RESTRICTED, Route.CLARIFICATION, 0.95, rules_applied, ["Missing jurisdiction for advice."], restricted_sub_class=RestrictedSubClass.ADVICE_INSUFFICIENT_CONTEXT)
 
+    return None
+
+
+def classify(
+    query: str,
+    jurisdiction: str = "",
+    mode: str = "Workflow",
+    tenant_id: str = "default",
+    source_confidence: str = "HIGH_CONFIDENCE",
+    pre_bundle_state: str = "OK",
+    privacy_class: str = "NONE",
+    tenant_policy_conflict: bool = False,
+    tool_required: bool = False,
+    query_id: Optional[str] = None,
+) -> dict:
+    """L2 ML semantic scoring + source-confidence routing. Assumes pre_screen()
+    has already been called for this query and returned None (passed)."""
+    query_id = query_id or _new_query_id()
+    rules_applied: list[str] = []
+    limitations: list[str] = []
+    has_advice_signal = any(pat.search(query) for pat in _ADVICE_SIGNALS)
 
     # ── L2: ML Zero-Shot Semantic Scoring ───────────────────────────────
-    
+
     confidence = 0.5
     top_label = "unknown"
     
@@ -144,37 +166,32 @@ def classify(
         rules_applied.append("l2-semantic-low-risk")
 
     # ── Context & Source Overrides (Section 6 & 8) ──────────────────────
-    
-    if source_confidence == "NO_ELIGIBLE_SOURCE":
-        rules_applied.append("l2-no-source-override")
-        if risk_level == RiskLevel.HIGH:
-            return _decision(query_id, False, risk_level, Route.HUMAN_REVIEW, confidence, rules_applied, ["High risk requires source."])
-        else:
-            return _decision(query_id, False, risk_level, Route.CLARIFICATION, confidence, rules_applied, ["No source available."])
-
-    if source_confidence == "LOW_CONFIDENCE" and risk_level == RiskLevel.HIGH:
-        rules_applied.append("l2-low-confidence-high-risk")
-        return _decision(query_id, False, risk_level, Route.HUMAN_REVIEW, confidence, rules_applied, ["Low confidence source on high risk query."])
-
+    # tenant_policy_conflict is a tenant-level override, not part of the
+    # (risk_level, confidence_state) matrix itself — checked first, same as
+    # before the matrix existed.
     if tenant_policy_conflict:
         rules_applied.append("l2-tenant-policy-conflict")
         return _decision(query_id, False, RiskLevel.HIGH, Route.HUMAN_REVIEW, confidence, rules_applied, ["Tenant policy conflict detected."])
 
+    rule = resolve_route(risk_level.value, source_confidence)
+    rules_applied.append(f"matrix-{risk_level.value.lower()}-{source_confidence.lower()}")
 
-    # Build constraints for allowed requests
-    req_sources = risk_level in [RiskLevel.HIGH, RiskLevel.MEDIUM]
-    req_citation = risk_level == RiskLevel.HIGH
-    req_human = (risk_level == RiskLevel.HIGH and has_advice_signal)
-    req_boundary = risk_level in [RiskLevel.HIGH, RiskLevel.MEDIUM]
+    if rule.limitation:
+        limitations.append(rule.limitation)
 
-    if risk_level == RiskLevel.HIGH:
-        limitations.append("Answer must include source citations and professional boundary notice.")
-    elif risk_level == RiskLevel.MEDIUM:
-        limitations.append("Educational context — not specific professional advice.")
+    if not rule.allowed:
+        return _decision(query_id, False, risk_level, rule.route, confidence, rules_applied, limitations, policy_version=ROUTING_MATRIX_VERSION)
+
+    # has_advice_signal is a query-content signal, not part of the confidence
+    # matrix — a HIGH-risk query that also names "my/our company" always
+    # needs a human in the loop regardless of how strong the sources are.
+    req_human = risk_level == RiskLevel.HIGH and has_advice_signal
 
     return _decision(
-        query_id, True, risk_level, Route.LLM, confidence, rules_applied, limitations,
-        requires_sources=req_sources, requires_human_review=req_human, requires_citation=req_citation, requires_professional_boundary=req_boundary
+        query_id, True, risk_level, rule.route, confidence, rules_applied, limitations,
+        requires_sources=rule.requires_sources, requires_human_review=req_human,
+        requires_citation=rule.requires_citation, requires_professional_boundary=rule.requires_professional_boundary,
+        policy_version=ROUTING_MATRIX_VERSION,
     )
 
 
@@ -191,6 +208,7 @@ def _decision(
     requires_human_review: bool = False,
     requires_citation: bool = False,
     requires_professional_boundary: bool = False,
+    policy_version: Optional[str] = None,
 ) -> dict:
     return {
         "query_id": query_id,
@@ -206,4 +224,5 @@ def _decision(
         "requires_citation": requires_citation,
         "requires_professional_boundary": requires_professional_boundary,
         "classifier_version": CLASSIFIER_VERSION,
+        "policy_version": policy_version,
     }

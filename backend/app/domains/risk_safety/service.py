@@ -36,8 +36,25 @@ _REVIEWER_ROLES = {
 }
 
 
+def pre_screen(request: ClassifyRequest, db: Optional[Session] = None) -> Optional[SafetyDecision]:
+    """L0/L1 checks — must run before retrieval. Returns None if the query
+    passes (caller should proceed to retrieval + evaluate()); returns a
+    finalized SafetyDecision if it hard-blocks, in which case retrieval and
+    full classification must be skipped entirely."""
+    result = risk_classifier.pre_screen(
+        query=request.query,
+        jurisdiction=request.jurisdiction,
+        privacy_class=request.privacy_class,
+        pre_bundle_state=request.pre_bundle_state,
+    )
+    if result is None:
+        return None
+    return _finalize(request, result, db)
+
+
 def evaluate(request: ClassifyRequest, db: Optional[Session] = None) -> SafetyDecision:
-    """Classify query, enrich with templates, create escalations, and log strictly."""
+    """L2 classification, assuming pre_screen() already ran and returned None
+    for this query. Enriches with templates, creates escalations, and logs."""
     result = risk_classifier.classify(
         query=request.query,
         jurisdiction=request.jurisdiction,
@@ -49,15 +66,22 @@ def evaluate(request: ClassifyRequest, db: Optional[Session] = None) -> SafetyDe
         tenant_policy_conflict=request.tenant_policy_conflict,
         tool_required=request.tool_required,
     )
+    return _finalize(request, result, db)
 
+
+def _finalize(request: ClassifyRequest, result: dict, db: Optional[Session] = None) -> SafetyDecision:
+    """Shared by pre_screen() and evaluate(): template lookup, event logging,
+    escalation creation, and security-incident creation — the exact same
+    downstream handling regardless of which stage produced the decision."""
     query_id = result["query_id"]
     refusal_text: Optional[str] = None
     safe_alternative: Optional[str] = None
+    template = None
 
     # Step 2 — Refusals & Limitations
     if not result["allowed"]:
         sub_class = result.get("restricted_sub_class")
-        
+
         # Determine exact template
         if "l0-privacy-block" in result["rules_applied"]:
             template_key = "PRIVACY_SECURITY"
@@ -69,14 +93,14 @@ def evaluate(request: ClassifyRequest, db: Optional[Session] = None) -> SafetyDe
             template_key = "CLASSIFICATION_UNCERTAIN"
         else:
             template_key = sub_class or "SAFETY_DEGRADED"
-            
+
         template = refusal_templates.get_template(template_key)
         refusal_text = f"**{template.title}**\n\n{template.body}"
         safe_alternative = template.safe_alternative
 
     # Step 3 — Escalation & Ledger
     if db is not None:
-        _log_safety_event(db, request, result, template.template_id if not result["allowed"] else None)
+        _log_safety_event(db, request, result, template.template_id if template else None)
 
         if result["requires_human_review"] or (
             result["risk_level"] == RiskLevel.HIGH.value and result["allowed"]
@@ -101,6 +125,8 @@ def evaluate(request: ClassifyRequest, db: Optional[Session] = None) -> SafetyDe
         safe_alternative=safe_alternative,
         rules_applied=result.get("rules_applied", []),
         query_id=query_id,
+        classifier_version=result.get("classifier_version"),
+        policy_version=result.get("policy_version"),
     )
 
 
@@ -371,6 +397,7 @@ def _log_safety_event(db: Session, request: ClassifyRequest, result: dict, templ
             "classifier_version": result.get("classifier_version"),
             "classifier_confidence": result["confidence"],
             "risk_policy_id": "pol-default-v1",
+            "policy_version": result.get("policy_version"),
             "source_bundle_id": request.pre_bundle_state
         }
 

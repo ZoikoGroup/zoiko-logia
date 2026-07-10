@@ -1,0 +1,60 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: zoiko
+      POSTGRES_PASSWORD: zoiko
+      POSTGRES_DB: zoiko
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zoiko -d zoiko"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://zoiko:zoiko@postgres:5432/zoiko
+      # Non-superuser role for request-time queries — provisioned automatically
+      # by app/main.py's lifespan on startup. Needed for Postgres RLS
+      # (sources/source_versions tenant isolation) to actually apply: RLS
+      # always exempts superusers, and DATABASE_URL's "zoiko" role is one.
+      APP_DATABASE_URL: postgresql+asyncpg://zoiko_app:zoiko_app@postgres:5432/zoiko
+      JWT_SECRET_KEY: dev-only-insecure-secret-change-me
+      CORS_ORIGINS: '["http://localhost:3000"]'
+    ports:
+      - "8010:8010"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  seed:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://zoiko:zoiko@postgres:5432/zoiko
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    restart: "no"
+    command: >
+      sh -c "sleep 5 &&
+      python scripts/seed_dev_user.py &&
+      python scripts/ingest_reference_sources.py"
+
+  frontend:
+    build: ./frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8010/api/v1
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

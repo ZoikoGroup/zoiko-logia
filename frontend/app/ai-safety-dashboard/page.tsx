@@ -75,7 +75,7 @@ export default function AiSafetyDashboardPage() {
   const stats = computeStats(events, escalations);
 
   return (
-    <main className="flex-1 overflow-y-auto p-6 pt-0 space-y-6">
+    <main className="flex-1 overflow-y-auto p-6 space-y-6">
       <PageHeader
         title="AI Safety Dashboard"
         subtitle="Real-time view of risk classifications, refusals, escalations, and human review activity."

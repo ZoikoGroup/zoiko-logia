@@ -11,6 +11,8 @@ class SourceCreateRequest(BaseModel):
     framework_scope: str = ""
     note: str = ""
     file_path: str | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
 
 
 class SourceVersionPublic(BaseModel):
@@ -39,3 +41,27 @@ class SourcePublic(BaseModel):
     latest_version: SourceVersionPublic
 
     model_config = {"from_attributes": True}
+
+
+class ExpiringSourceOut(BaseModel):
+    source_id: str
+    version_id: str
+    title: str
+    category: str
+    jurisdiction_scope: str
+    effective_to: date
+    days_remaining: int
+
+
+class JurisdictionCategoryBreakdown(BaseModel):
+    category: str
+    approved_count: int
+    pending_count: int
+
+
+class JurisdictionSummaryOut(BaseModel):
+    jurisdiction_scope: str
+    approved_count: int
+    pending_count: int
+    categories: list[JurisdictionCategoryBreakdown]
+    readiness: str  # READY | PARTIAL | NOT_STARTED

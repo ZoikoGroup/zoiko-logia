@@ -14,6 +14,7 @@ export default function ProviderRegisterPage() {
     <PageShell
       title="Provider Register"
       subtitle="Confirm providers are active for exact data class, region, model class, retention, and use."
+      showMetrics={false}
     >
       <Card title="Provider due-diligence status">
         <table className="w-full text-sm">

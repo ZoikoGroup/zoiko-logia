@@ -7,6 +7,12 @@ class Settings(BaseSettings):
 
     # ── Database ────────────────────────────────────────────────────────
     DATABASE_URL: str = "sqlite+aiosqlite:///./dev.db"
+    # Optional separate, non-superuser connection for request-time queries
+    # (see app/core/database.py) — lets Postgres RLS actually apply, since
+    # RLS always exempts superusers/table owners no matter what FORCE does.
+    # Falls back to DATABASE_URL when unset (SQLite, or a Postgres setup
+    # that hasn't provisioned the low-privilege role).
+    APP_DATABASE_URL: str | None = None
 
     # ── Authentication & CORS ───────────────────────────────────────────
     JWT_SECRET_KEY: str = "dev-only-insecure-secret-change-me"

@@ -19,6 +19,7 @@ export default function RolesPermissionsPage() {
     <PageShell
       title="Roles & Permissions"
       subtitle="Control which roles can access, approve, or publish changes across governance modules."
+      showMetrics={false}
     >
       <Card title="Role matrix">
         {error && <p className="text-xs text-bad mb-3">{error}</p>}

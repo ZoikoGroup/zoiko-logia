@@ -2,10 +2,11 @@
 
 import { Fragment, useEffect, useState } from "react";
 import Link from "next/link";
-import { Loader2, RefreshCw, ShieldCheck, ShieldAlert } from "lucide-react";
+import { Loader2, RefreshCw, ShieldCheck, ShieldAlert, ScrollText, Database, Layers, ListChecks } from "lucide-react";
 import { PageShell } from "@/components/governance/PageShell";
-import { Card } from "@/components/governance/Card";
 import { Pill } from "@/components/governance/Pill";
+import { PanelHeader, PANEL_CLASS } from "@/components/governance/PanelHeader";
+import { StatTile } from "@/components/governance/StatTile";
 import {
   getAuthToken,
   listAuditEvents,
@@ -68,42 +69,33 @@ export default function AuditLogsPage() {
     <PageShell
       title="Audit Logs"
       subtitle="Searchable, append-only log of every governed action in the platform."
+      showMetrics={false}
     >
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <Card className="!p-4">
-          <div className="text-2xl font-extrabold text-ink">{events.length}</div>
-          <div className="text-xs text-muted mt-0.5">Events (this view)</div>
-        </Card>
-        <Card className="!p-4">
-          <div className="text-2xl font-extrabold text-ok">{chainHashedCount}</div>
-          <div className="text-xs text-muted mt-0.5">Chain-hashed (audit_ledger)</div>
-        </Card>
-        <Card className="!p-4">
-          <div className="text-2xl font-extrabold text-info">{events.length - chainHashedCount}</div>
-          <div className="text-xs text-muted mt-0.5">From risk_safety ledger</div>
-        </Card>
-        <Card className="!p-4">
-          <div className={`flex items-center gap-1.5 text-2xl font-extrabold ${chainResult?.passed ? "text-ok" : "text-bad"}`}>
-            {chainResult?.passed ? <ShieldCheck size={20} /> : <ShieldAlert size={20} />}
-            {chainResult ? (chainResult.passed ? "PASS" : "FAIL") : "—"}
-          </div>
-          <div className="text-xs text-muted mt-0.5">
-            Chain verify · {chainResult?.events_checked ?? 0} events
-          </div>
-        </Card>
+        <StatTile label="Events (this view)" value={events.length} tone="brand" icon={Database} />
+        <StatTile label="Chain-hashed (audit_ledger)" value={chainHashedCount} tone="ok" icon={Layers} />
+        <StatTile label="From risk_safety ledger" value={events.length - chainHashedCount} tone="info" icon={ListChecks} />
+        <StatTile
+          label={`Chain verify · ${chainResult?.events_checked ?? 0} events`}
+          value={chainResult ? (chainResult.passed ? "PASS" : "FAIL") : "—"}
+          tone={chainResult ? (chainResult.passed ? "ok" : "bad") : "brand"}
+          icon={chainResult?.passed ? ShieldCheck : ShieldAlert}
+        />
       </div>
 
-      <Card
-        title="Ledger events"
-        action={
-          <button
-            onClick={load}
-            className="flex items-center gap-1.5 rounded-lg border border-line bg-panel px-2.5 py-1.5 text-xs font-medium text-ink hover:bg-soft"
-          >
-            <RefreshCw size={12} /> Refresh
-          </button>
-        }
-      >
+      <div className={PANEL_CLASS}>
+        <PanelHeader
+          icon={ScrollText}
+          title="Ledger events"
+          action={
+            <button
+              onClick={load}
+              className="flex items-center gap-1.5 rounded-lg border border-line bg-panel px-2.5 py-1.5 text-xs font-medium text-ink hover:bg-soft"
+            >
+              <RefreshCw size={12} /> Refresh
+            </button>
+          }
+        />
         <div className="flex flex-wrap gap-3 mb-4">
           <select
             value={eventName}
@@ -200,7 +192,7 @@ export default function AuditLogsPage() {
             </tbody>
           </table>
         )}
-      </Card>
+      </div>
     </PageShell>
   );
 }

@@ -1,9 +1,22 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { LucideIcon } from "lucide-react";
+import {
+  Database,
+  Landmark,
+  ClipboardCheck,
+  Users,
+  Lock,
+  GraduationCap,
+  CheckCircle2,
+  Clock,
+  XCircle,
+} from "lucide-react";
 import { PageShell } from "@/components/governance/PageShell";
-import { Card } from "@/components/governance/Card";
 import { Pill } from "@/components/governance/Pill";
+import { PanelHeader, PANEL_CLASS, type PanelTone } from "@/components/governance/PanelHeader";
+import { StatTile } from "@/components/governance/StatTile";
 import { Tabs } from "@/components/shell/Tabs";
 import { getAuthToken, listSources, Source } from "@/lib/api";
 
@@ -23,6 +36,24 @@ const DESCRIPTIONS: Record<string, string> = {
   "payroll-compliance": "Payroll, employment, and statutory compliance source material.",
   "internal-policies": "Firm- and tenant-specific internal policy documents.",
   "education-content": "Licensed education and CPD source content.",
+};
+
+const TAB_ICON: Record<string, LucideIcon> = {
+  standards: Database,
+  tax: Landmark,
+  audit: ClipboardCheck,
+  "payroll-compliance": Users,
+  "internal-policies": Lock,
+  "education-content": GraduationCap,
+};
+
+const TAB_TONE: Record<string, PanelTone> = {
+  standards: "brand",
+  tax: "warn",
+  audit: "ok",
+  "payroll-compliance": "info",
+  "internal-policies": "brand",
+  "education-content": "warn",
 };
 
 const STATUS_TONE: Record<string, "ok" | "warn" | "bad" | "neutral"> = {
@@ -46,14 +77,31 @@ export default function SourceLibraryPage() {
       .catch(() => setError("Could not load sources from the server."));
   }, [activeTab]);
 
+  const approvedCount = sources.filter((s) => ["ACTIVE", "APPROVED"].includes(s.latest_version.status)).length;
+  const pendingCount = sources.filter((s) => ["PROPOSED", "UNDER_REVIEW"].includes(s.latest_version.status)).length;
+  const disputedCount = sources.filter((s) => ["DISPUTED", "BLOCKED"].includes(s.latest_version.status)).length;
+
   return (
     <PageShell
       title="Source Library"
       subtitle="Browse and manage authoritative source material by category before it enters licensing and RAG bundles."
+      showMetrics={false}
     >
-      <Card>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+        <StatTile label="In this category" value={sources.length} tone={TAB_TONE[activeTab] ?? "brand"} icon={TAB_ICON[activeTab] ?? Database} />
+        <StatTile label="Approved / active" value={approvedCount} tone="ok" icon={CheckCircle2} />
+        <StatTile label="Awaiting review" value={pendingCount} tone="warn" icon={Clock} />
+        <StatTile label="Disputed / blocked" value={disputedCount} tone="bad" icon={XCircle} />
+      </div>
+
+      <div className={PANEL_CLASS}>
+        <PanelHeader
+          icon={TAB_ICON[activeTab] ?? Database}
+          tone={TAB_TONE[activeTab] ?? "brand"}
+          title={TABS.find((t) => t.slug === activeTab)?.label ?? "Sources"}
+          subtitle={DESCRIPTIONS[activeTab]}
+        />
         <Tabs tabs={TABS} activeSlug={activeTab} onChange={setActiveTab} />
-        <p className="text-xs text-muted mt-3 mb-3">{DESCRIPTIONS[activeTab]}</p>
         {error && <p className="text-xs text-bad mb-3">{error}</p>}
 
         {sources.length === 0 && !error && (
@@ -78,7 +126,7 @@ export default function SourceLibraryPage() {
             </li>
           ))}
         </ul>
-      </Card>
+      </div>
     </PageShell>
   );
 }

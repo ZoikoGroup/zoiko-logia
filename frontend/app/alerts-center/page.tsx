@@ -14,6 +14,7 @@ export default function AlertsCenterPage() {
     <PageShell
       title="Alerts Center"
       subtitle="Real-time operational alerts requiring attention, ranked by severity."
+      showMetrics={false}
     >
       <Card title="Active alerts">
         <div className="divide-y divide-line">

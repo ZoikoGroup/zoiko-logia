@@ -19,6 +19,7 @@ class Source(Base):
     __tablename__ = "sources"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False, default="GLOBAL_CONTROL", index=True)
     category: Mapped[str] = mapped_column(String, nullable=False)
     title: Mapped[str] = mapped_column(String, nullable=False)
     source_class: Mapped[str] = mapped_column(String, nullable=False)
@@ -30,6 +31,7 @@ class SourceVersion(Base):
     __tablename__ = "source_versions"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False, default="GLOBAL_CONTROL", index=True)
     source_id: Mapped[str] = mapped_column(ForeignKey("sources.id"), nullable=False)
     version_label: Mapped[str] = mapped_column(String, nullable=False, default="v1")
     status: Mapped[str] = mapped_column(String, nullable=False, default="PROPOSED")

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { PageShell } from "@/components/governance/PageShell";
 import { Card } from "@/components/governance/Card";
 import { EscalationTable } from "@/components/governance/EscalationTable";
@@ -9,9 +10,17 @@ export default function GovernanceDashboardPage() {
     <PageShell
       title="Governance Dashboard"
       subtitle="Cross-module readiness, active approvals, drift alerts, and production blockers."
+      showMetrics={false}
     >
       <div className="grid grid-cols-1 xl:grid-cols-[1.35fr_.9fr] gap-6">
-        <Card title="Escalation queue preview" action={<span className="text-xs text-muted">Click a row to expand</span>}>
+        <Card
+          title="Escalation queue preview"
+          action={
+            <Link href="/escalation-queue" className="text-xs text-brand hover:underline">
+              View full queue
+            </Link>
+          }
+        >
           <EscalationTable />
         </Card>
         <div className="space-y-6">

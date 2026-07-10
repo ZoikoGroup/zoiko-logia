@@ -157,7 +157,7 @@ export default function EvaluationGatesPage() {
   const eligible = pack?.promotion_eligible ?? false;
 
   return (
-    <main className="flex-1 overflow-y-auto p-6 pt-0 space-y-6">
+    <main className="flex-1 overflow-y-auto p-6 space-y-6">
       <PageHeader
         title="Evaluation Gates"
         subtitle="QA benchmark runs, red-team gates, citation checks, and release promotion authorizations — ZL-T0-10 §3, ZL-T0-11."

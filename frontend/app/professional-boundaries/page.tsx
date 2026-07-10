@@ -211,7 +211,7 @@ export default function ProfessionalBoundariesPage() {
   }
 
   return (
-    <main className="flex-1 overflow-y-auto p-6 pt-0 space-y-6">
+    <main className="flex-1 overflow-y-auto p-6 space-y-6">
       <PageHeader
         title="Professional Boundaries"
         subtitle="Rules governing what Kriton™ can and cannot answer without human review — ZL-T0-11 §7. Validate draft LLM outputs against the prohibited output registry."
