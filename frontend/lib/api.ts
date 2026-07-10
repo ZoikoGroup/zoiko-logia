@@ -87,16 +87,6 @@ async function authedFetch(path: string, token: string, init?: RequestInit): Pro
       Authorization: `Bearer ${token}`,
     },
   });
-  if (res.status === 401 && typeof document !== "undefined") {
-    // Stale/invalid session (e.g. the backend's user data was reset since this
-    // token was issued) — clear it and send the user back to log in instead of
-    // letting every caller's unhandled rejection crash the page.
-    document.cookie = "zoiko_auth=; path=/; max-age=0";
-    if (window.location.pathname !== "/login") {
-      window.location.href = "/login";
-    }
-    throw new ApiError(401, "Session expired — please log in again.");
-  }
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new ApiError(res.status, body?.detail ?? `Request to ${path} failed`);
@@ -138,7 +128,6 @@ export type Ticket = {
   severity: string;
   status: string;
   query_id: string | null;
-  source_id: string | null;
   created_by: string;
   assigned_to: string | null;
   created_at: string;
@@ -148,7 +137,6 @@ export type TicketCreateRequest = {
   category: string;
   severity: string;
   query_id?: string;
-  source_id?: string;
 };
 
 export type Incident = {
@@ -244,7 +232,6 @@ export type SourceCreateRequest = {
   jurisdiction_scope?: string;
   framework_scope?: string;
   note?: string;
-  file?: File | null;
 };
 
 export async function listSources(token: string, category?: string): Promise<Source[]> {
@@ -254,18 +241,10 @@ export async function listSources(token: string, category?: string): Promise<Sou
 }
 
 export async function createSource(token: string, payload: SourceCreateRequest): Promise<Source> {
-  const form = new FormData();
-  form.set("category", payload.category);
-  form.set("title", payload.title);
-  form.set("source_class", payload.source_class);
-  if (payload.jurisdiction_scope) form.set("jurisdiction_scope", payload.jurisdiction_scope);
-  if (payload.framework_scope) form.set("framework_scope", payload.framework_scope);
-  if (payload.note) form.set("note", payload.note);
-  if (payload.file) form.set("file", payload.file);
-
   const res = await authedFetch("/sources", token, {
     method: "POST",
-    body: form,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
   });
   return res.json();
 }
@@ -274,21 +253,6 @@ export async function approveSourceVersion(token: string, sourceId: string, vers
   const res = await authedFetch(`/sources/${sourceId}/versions/${versionId}/approve`, token, {
     method: "POST",
   });
-  return res.json();
-}
-
-export type ExpiringSource = {
-  source_id: string;
-  version_id: string;
-  title: string;
-  category: string;
-  jurisdiction_scope: string;
-  effective_to: string;
-  days_remaining: number;
-};
-
-export async function getExpiringSource(token: string): Promise<ExpiringSource | null> {
-  const res = await authedFetch("/sources/expiring", token);
   return res.json();
 }
 
@@ -435,10 +399,13 @@ export async function getReplayManifest(token: string, correlationId: string): P
   return res.json();
 }
 
+// ── Ask Kriton™ — ZL-ENG-02 §12 Canonical Response Contract ────────────────
+
 export type AskKritonRequest = {
   query: string;
   jurisdiction?: string;
   mode?: string;
+  /** Playground overrides — not trusted from body in production */
   source_confidence?: string;
   pre_bundle_state?: string;
   privacy_class?: string;
@@ -453,172 +420,123 @@ export type SourceSummary = {
   status: string;
 };
 
+/** §7.2 SourceBundle — six confidence states */
 export type SourceBundle = {
-  bundle_id: string;
-  retrieval_run_id: string;
-  category: string;
-  confidence_state: "HIGH_CONFIDENCE" | "LOW_CONFIDENCE" | "NO_ELIGIBLE_SOURCE";
+  source_bundle_id: string;
+  retrieval_method: string;             // "keyword_mvp" (not RAG until §7 criteria met)
+  eligible_source_count: number;
+  excluded_source_count: number;
   sources: SourceSummary[];
+  exclusion_reasons: string[];
+  jurisdiction: string;
+  authority_level: string;              // primary | secondary | internal
+  freshness_state: string;              // current | stale | unknown
+  licence_state: string;                // permitted | restricted | unknown
+  confidence_state: ConfidenceState;
+};
+
+export type ConfidenceState =
+  | "sufficient"
+  | "limited"
+  | "insufficient"
+  | "conflicting_sources"
+  | "stale_sources"
+  | "restricted_sources";
+
+export type SourceCitation = {
+  ref_id: string;
+  source_id: string;
+  title: string;
 };
 
 export type ComposedAnswer = {
-  prompt_id: string;
-  prompt_name: string;
-  output_text: string;
+  text: string;
+  citations: SourceCitation[];
+  limitations: string[];
+  /** @deprecated use text — retained for backward compatibility */
+  output_text?: string;
 };
 
+/** §12 SafetyState — frontend renders from this, not by parsing answer text */
+export type SafetyState = {
+  risk_level: "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
+  policy_state: "allowed" | "blocked" | "needs_more_context";
+  disclaimer_required: boolean;
+};
+
+export type NextAction = {
+  type: string;  // ask_clarifying_question | escalate | refusal | security_incident | composition_failed
+  message: string;
+};
+
+/** §12 — opaque audit reference; never exposes internal hashes */
+export type AuditReference = {
+  audit_chain_id: string;
+};
+
+export type OutcomeType =
+  | "answered"
+  | "refused"
+  | "clarification_required"
+  | "escalated"
+  | "rejected";
+
+export type RouteType =
+  | "LLM"
+  | "REFUSAL"
+  | "CLARIFICATION"
+  | "HUMAN_REVIEW"
+  | "SECURITY_INCIDENT"
+  | "REJECTED";
+
+/** §12 Canonical response contract — frontend renders from route/outcome ONLY */
 export type AskKritonResponse = {
   query_id: string;
-  outcome: "ANSWERED" | "REFUSED" | "HUMAN_REVIEW" | "CLARIFICATION" | "COMPOSE_UNAVAILABLE" | "REJECTED";
-  safety: SafetyDecision;
+  correlation_id: string;
+  outcome: OutcomeType;
+  route: RouteType;
+  safety: SafetyState;
+  confidence_state: ConfidenceState;
   source_bundle: SourceBundle | null;
   answer: ComposedAnswer | null;
+  next_action: NextAction | null;
+  /** Opaque — never expose audit_chain_id internals to UI rendering logic */
+  audit_reference: AuditReference;
 };
 
-export async function askKriton(token: string, payload: AskKritonRequest): Promise<AskKritonResponse> {
-  const res = await authedFetch("/kriton/ask", token, {
+export async function askKriton(
+  token: string,
+  payload: AskKritonRequest,
+  idempotencyKey?: string,
+): Promise<AskKritonResponse> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
+  const res = await authedFetch("/orchestration/ask", token, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(payload),
   });
   return res.json();
 }
 
-export type SavedAnswer = {
-  id: string;
-  query_id: string;
-  query_text: string;
-  answer_text: string;
-  risk_level: string;
-  tags: string[];
-  created_at: string;
-};
-
-export type SavedAnswerCreateRequest = {
-  query_id: string;
-  query_text: string;
-  answer_text: string;
-  risk_level: string;
-  tags?: string[];
-};
-
-export async function listSavedAnswers(token: string): Promise<SavedAnswer[]> {
-  const res = await authedFetch("/kriton-workspace/saved-answers", token);
-  return res.json();
-}
-
-export async function createSavedAnswer(token: string, payload: SavedAnswerCreateRequest): Promise<SavedAnswer> {
-  const res = await authedFetch("/kriton-workspace/saved-answers", token, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return res.json();
-}
-
-export async function deleteSavedAnswer(token: string, id: string): Promise<void> {
-  await authedFetch(`/kriton-workspace/saved-answers/${id}`, token, { method: "DELETE" });
-}
-
-export type Draft = {
-  id: string;
-  title: string;
-  content: string;
+export type UploadResponse = {
   status: string;
-  saved_answer_id: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
-export type DraftCreateRequest = {
   title: string;
-  content?: string;
-  saved_answer_id?: string;
+  chunks_stored: string;
+  tenant_id: string;
+  jurisdiction: string;
+  file_path: string;
 };
 
-export type DraftUpdateRequest = {
-  title?: string;
-  content?: string;
-  status?: string;
-};
-
-export async function listDrafts(token: string): Promise<Draft[]> {
-  const res = await authedFetch("/kriton-workspace/drafts", token);
-  return res.json();
-}
-
-export async function createDraft(token: string, payload: DraftCreateRequest): Promise<Draft> {
-  const res = await authedFetch("/kriton-workspace/drafts", token, {
+export async function uploadDocument(token: string, file: File): Promise<UploadResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  // Note: do NOT set Content-Type header — browser sets it with boundary automatically
+  const res = await authedFetch("/kriton/upload", token, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: form,
   });
   return res.json();
 }
 
-export async function updateDraft(token: string, id: string, payload: DraftUpdateRequest): Promise<Draft> {
-  const res = await authedFetch(`/kriton-workspace/drafts/${id}`, token, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return res.json();
-}
 
-export type CPDEntry = {
-  id: string;
-  topic: string;
-  minutes: number;
-  note: string;
-  logged_at: string;
-};
-
-export type CPDEntryCreateRequest = {
-  topic: string;
-  minutes: number;
-  note?: string;
-};
-
-export type CPDSummary = {
-  total_minutes: number;
-  total_hours: number;
-  entries_count: number;
-};
-
-export async function listCPDEntries(token: string): Promise<CPDEntry[]> {
-  const res = await authedFetch("/learning/cpd", token);
-  return res.json();
-}
-
-export async function createCPDEntry(token: string, payload: CPDEntryCreateRequest): Promise<CPDEntry> {
-  const res = await authedFetch("/learning/cpd", token, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return res.json();
-}
-
-export async function getCPDSummary(token: string): Promise<CPDSummary> {
-  const res = await authedFetch("/learning/cpd/summary", token);
-  return res.json();
-}
-
-export type JurisdictionCategoryBreakdown = {
-  category: string;
-  approved_count: number;
-  pending_count: number;
-};
-
-export type JurisdictionSummary = {
-  jurisdiction_scope: string;
-  approved_count: number;
-  pending_count: number;
-  categories: JurisdictionCategoryBreakdown[];
-  readiness: "READY" | "PARTIAL" | "NOT_STARTED";
-};
-
-export async function getJurisdictionSummary(token: string): Promise<JurisdictionSummary[]> {
-  const res = await authedFetch("/sources/jurisdiction-summary", token);
-  return res.json();
-}

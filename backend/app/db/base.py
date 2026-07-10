@@ -14,4 +14,5 @@ from app.domains.evaluation import models as evaluation_models  # noqa: E402,F40
 from app.domains.audit_ledger import models as audit_ledger_models  # noqa: E402,F401
 from app.domains.kriton_workspace import models as kriton_workspace_models  # noqa: E402,F401
 from app.domains.orchestration_state import models as orchestration_state_models  # noqa: E402,F401
+from app.orchestration import models as orchestration_models  # noqa: E402,F401
 

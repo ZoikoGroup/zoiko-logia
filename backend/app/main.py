@@ -303,6 +303,44 @@ def _seed_incidents():
         db.close()
 
 
+def _seed_users():
+    """Seed a default tenant and admin user on first startup."""
+    from app.core.security import hash_password
+    from app.domains.identity.models import Tenant, User
+    db = SessionLocal()
+    try:
+        # Create default tenant if it doesn't exist
+        tenant = db.query(Tenant).filter(Tenant.id == "tenant-default").first()
+        if tenant is None:
+            tenant = Tenant(id="tenant-default", name="ZoikoLogia Default Tenant")
+            db.add(tenant)
+            db.flush()
+
+        # Create default admin user if no users exist
+        if db.query(User).count() == 0:
+            db.add(User(
+                tenant_id="tenant-default",
+                email="admin@zoiko.com",
+                hashed_password=hash_password("Admin@1234"),
+                full_name="System Administrator",
+                role="Admin",
+                is_active=True,
+            ))
+            db.add(User(
+                tenant_id="tenant-default",
+                email="kriton@zoiko.com",
+                hashed_password=hash_password("Kriton@1234"),
+                full_name="Kriton Reviewer",
+                role="SME Reviewer",
+                is_active=True,
+            ))
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle events: create tables, seed, and dispose of engine."""
@@ -314,6 +352,7 @@ async def lifespan(app: FastAPI):
     _seed_evaluation()
     _seed_escalation_rules()
     _seed_incidents()
+    _seed_users()
     yield
     await async_engine.dispose()
 
