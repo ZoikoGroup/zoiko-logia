@@ -51,15 +51,24 @@ npm run dev
 ```
 *The frontend application will be available at `http://localhost:3000`.*
 
+### Accessing the Dashboard (Login)
+Once the frontend and backend servers are running, you can access the ZoikoLogia Governance Dashboard at:
+- **URL**: [http://localhost:3000/login](http://localhost:3000/login)
+
+**Default Admin Credentials:**
+- **Email**: `dashboard@zoikologia.com`
+- **Password**: `Password234@`
+
 ### Useful Testing Scripts
 There are various scripts in the `scripts/` or root directory used for testing individual components:
 - **`python test_vector_load.py`**: Tests the local SQLite vector store loading mechanism.
 - **`python test_routing.py`**: Tests the LLM-based query router.
 - **`python test_apis.py`**: Tests integrations and basic endpoints.
 
-## 4. Environment Variables (`.env`)
+## 4. Environment Configuration (`.env`)
 
-To run the system, you must configure the following environment variables:
+Before running the application, you must configure the backend environment variables. Create a `.env` file in the `backend/` directory (you can copy `.env.example` if available) and add your actual API credentials:
+
 ```env
 # LLM Provider (Groq for high-speed Llama-3 inference)
 GROQ_API_KEY=your_groq_api_key_here
@@ -67,6 +76,7 @@ GROQ_API_KEY=your_groq_api_key_here
 # Document Parsing (LlamaCloud)
 LLAMA_CLOUD_API_KEY=your_llama_cloud_api_key_here
 ```
+*Note: Make sure to replace `your_groq_api_key_here` and `your_llama_cloud_api_key_here` with your actual valid API keys to ensure routing, retrieval, and document ingestion function correctly.*
 
 ## 5. Architectural Naming Conventions (ZL-ENG-01)
 - **Kriton™**: The public-facing name used on all customer-visible surfaces, UI, and API responses.
