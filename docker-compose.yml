@@ -24,8 +24,13 @@ services:
       # (sources/source_versions tenant isolation) to actually apply: RLS
       # always exempts superusers, and DATABASE_URL's "zoiko" role is one.
       APP_DATABASE_URL: postgresql+asyncpg://zoiko_app:zoiko_app@postgres:5432/zoiko
+      # Without this, risk_classifier.py's _get_classifier_pipeline() never
+      # loads the real zero-shot model — every query gets a fixed 0.5
+      # confidence, which is always below the 0.65 routing threshold, so
+      # every query falls back to "needs clarification" regardless of content.
+      ENABLE_ML_CLASSIFIER: "true"
       JWT_SECRET_KEY: dev-only-insecure-secret-change-me
-      CORS_ORIGINS: '["http://localhost:3000"]'
+      CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001"]'
     ports:
       - "8010:8010"
     depends_on:

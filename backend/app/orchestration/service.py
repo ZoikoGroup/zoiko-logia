@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+import os
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,12 +35,12 @@ from app.orchestration.identifiers import (
 from app.orchestration.prescreen import run_prescreen
 from app.orchestration.retrieve import build_source_bundle
 from app.orchestration.routing_matrix import (
-    resolve_route, map_safety_confidence,
+    map_safety_confidence,
     ROUTE_LLM, ROUTE_REFUSAL, ROUTE_CLARIFICATION,
     ROUTE_HUMAN_REVIEW, ROUTE_SECURITY_INCIDENT, ROUTE_REJECTED,
     CONF_INSUFFICIENT,
 )
-from app.orchestration.composition_validator import validate_composition, build_validated_disclaimer
+from app.orchestration.composition_validator import build_validated_disclaimer
 from app.orchestration.persisted_objects import create_review_case, create_security_incident_sync
 from app.orchestration.schemas import (
     AskKritonRequest, AskKritonResponse,
@@ -53,14 +54,25 @@ from app.orchestration.audit_events import (
     audit_composition_rejected, audit_human_review_created, audit_refusal_returned,
     audit_clarification_returned, audit_security_incident_recorded,
     audit_response_finalised, audit_response_returned,
+    audit_licence_prefilter_completed, audit_licence_denied,
+    audit_bundle_built, audit_validation_completed,
 )
-from app.domains.risk_safety import service as risk_safety_service
 from app.domains.risk_safety.schemas import ClassifyRequest
 from app.domains.model_gateway import service as model_gateway_service
 from app.orchestration.compose import select_prompt
 from app.domains.rag.retrieval import retrieve_documents
 from app.domains.rag.reranker import Reranker
 from app.domains.rag.context_fit import build_grounded_context
+
+# Massarius™ retrieval and evidence subsystem — Phase 1 control modules
+# (ZL-ENG-03). These wrap/replace the inline licence filtering, bundle
+# construction, and answer validation that used to happen ad hoc in this
+# file; retrieve.py itself is unchanged — its output is now treated as
+# preliminary retrieval-layer output that these modules gate and finalise.
+from app.domains.massarius import bundle_builder, license_gate
+from app.domains.massarius import risk_safety as massarius_risk_safety
+from app.domains.massarius.answer_validator import validate_answer
+from app.domains.massarius.policy_matrix import resolve_policy
 
 _reranker = Reranker(top_n=5)
 
@@ -159,15 +171,47 @@ async def ask_kriton(
         tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
     )
     try:
-        source_bundle = await build_source_bundle(
+        preliminary_bundle = await build_source_bundle(
             db, query=request.query, jurisdiction=request.jurisdiction, tenant_id=tenant_id
         )
         await audit_retrieval_completed(
             db, query_id=query_id, correlation_id=correlation_id,
             tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
+            source_bundle_id=preliminary_bundle.source_bundle_id,
+            confidence_state=preliminary_bundle.confidence_state,
+            eligible_count=preliminary_bundle.eligible_source_count,
+        )
+
+        # ── Massarius™ Checkpoint A/B + bundle_builder (ZL-ENG-03 §5) ────────
+        # retrieve.py's own bundle is treated as preliminary/keyword_mvp
+        # output; license_gate.py re-verifies eligibility of what it
+        # returned and resolves per-source display states, and
+        # bundle_builder.py is the sole producer of the final, frozen
+        # SourceBundle everything downstream actually uses.
+        licence_result = await license_gate.check_eligibility(
+            db, preliminary_bundle.sources, tenant_id=tenant_id,
+        )
+        await audit_licence_prefilter_completed(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
+            eligible_count=len(licence_result.eligible),
+            excluded_count=len(licence_result.excluded),
+        )
+        if licence_result.excluded:
+            await audit_licence_denied(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
+                checkpoint="A", source_ids=[s.id for s in licence_result.excluded],
+                reason_code=";".join(sorted(set(licence_result.exclusion_reasons.values()))) or "unknown",
+            )
+
+        source_bundle = bundle_builder.build_bundle(preliminary_bundle, licence_result)
+        await audit_bundle_built(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
             source_bundle_id=source_bundle.source_bundle_id,
             confidence_state=source_bundle.confidence_state,
-            eligible_count=source_bundle.eligible_source_count,
+            index_version=source_bundle.index_version,
         )
     except Exception as exc:
         await audit_retrieval_failed(
@@ -177,7 +221,8 @@ async def ask_kriton(
         )
         source_bundle = None
 
-    # ── Step 5: Classify risk + resolve route from policy matrix (§8) ────────
+    # ── Step 5: Classify risk (after bundle_builder.py, ZL-ENG-03 §5.6) +
+    # resolve route from versioned policy matrix (§8) ────────────────────────
     # Override confidence state with playground param if provided
     effective_confidence = (
         map_safety_confidence(request.source_confidence)
@@ -196,7 +241,13 @@ async def ask_kriton(
         pre_bundle_state=request.pre_bundle_state or "OK",
         privacy_class=request.privacy_class or "NONE",
     )
-    decision = risk_safety_service.evaluate(classify_request, db=sync_db)
+    # massarius_risk_safety.classify_after_bundle enforces the ZL-ENG-03 §5.6
+    # ordering guarantee: risk classification cannot run without
+    # bundle_builder.py's step having been attempted above (bundle_attempted
+    # is True here regardless of whether it succeeded — the try/except above
+    # already ran either way; source_bundle itself may still be None if
+    # retrieval failed).
+    decision = massarius_risk_safety.classify_after_bundle(True, classify_request, sync_db)
     risk_level = decision.risk_level
 
     await audit_risk_classified(
@@ -206,9 +257,10 @@ async def ask_kriton(
     )
 
     # Resolve route from versioned policy matrix
-    route_decision = resolve_route(
-        risk_level=risk_level,
+    route_decision = resolve_policy(
         confidence_state=effective_confidence,
+        risk_level=risk_level,
+        jurisdiction=request.jurisdiction,
         clarification_cycle=clarification_cycle,
     )
     route = route_decision.route
@@ -227,6 +279,40 @@ async def ask_kriton(
     )
 
     # ── Step 6: Execute deterministic route (§8, §9) ──────────────────────────
+
+    if not decision.allowed and decision.route == ROUTE_CLARIFICATION:
+        # The classifier's own signal was "needs clarification" (e.g. ambiguous/
+        # low-confidence query), not a hard block — it still sets allowed=False,
+        # but collapsing that into REFUSAL would show a refusal outcome next to
+        # clarification-worded text. Surface it as clarification instead.
+        clarification_msg = decision.refusal_text or (
+            "Could you provide more context about your jurisdiction and reporting framework?"
+        )
+        await audit_clarification_returned(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, clarification_cycle=clarification_cycle,
+        )
+        response = AskKritonResponse(
+            query_id=query_id,
+            correlation_id=correlation_id,
+            outcome="clarification_required",
+            route=ROUTE_CLARIFICATION,
+            safety=safety_state,
+            confidence_state=effective_confidence,
+            source_bundle=source_bundle,
+            answer=None,
+            next_action=NextAction(type="ask_clarifying_question", message=clarification_msg),
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        )
+        await _finalise_and_return(
+            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+            audit_chain_id=audit_chain_id, actor_id=actor_id,
+            outcome=response.outcome, route=ROUTE_CLARIFICATION, start_time=start_time,
+        )
+        if idempotency_key:
+            store_idempotency(idempotency_key, tenant_id, response.model_dump())
+        return response
 
     if not decision.allowed or route == ROUTE_REFUSAL:
         # REFUSAL path
@@ -337,29 +423,32 @@ async def ask_kriton(
         tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
     )
 
-    # Attempt semantic retrieval via RAG layer if available
+    # Attempt semantic retrieval via RAG layer if explicitly enabled.
+    # Local dev should not block on Hugging Face model downloads just to serve
+    # the API shell, login, and deterministic routing flows.
     context_text = ""
     rag_citations: list[SourceCitation] = []
-    try:
-        raw_chunks = await retrieve_documents(
-            query=request.query,
-            tenant_id=tenant_id,
-            jurisdiction=request.jurisdiction or None,
-            top_k=30,
-        )
-        if raw_chunks:
-            reranked = await _reranker.rerank(request.query, raw_chunks)
-            context_text, source_refs = build_grounded_context(reranked)
-            rag_citations = [
-                SourceCitation(
-                    ref_id=f"REF-{i+1}",
-                    source_id=chunk.get("node_id", f"chunk-{i}"),
-                    title=chunk["metadata"].get("title", "Uploaded Document"),
-                )
-                for i, chunk in enumerate(reranked)
-            ]
-    except Exception:
-        context_text = ""
+    if os.getenv("ENABLE_RAG_EMBEDDINGS", "").lower() in {"1", "true", "yes"}:
+        try:
+            raw_chunks = await retrieve_documents(
+                query=request.query,
+                tenant_id=tenant_id,
+                jurisdiction=request.jurisdiction or None,
+                top_k=30,
+            )
+            if raw_chunks:
+                reranked = await _reranker.rerank(request.query, raw_chunks)
+                context_text, source_refs = build_grounded_context(reranked)
+                rag_citations = [
+                    SourceCitation(
+                        ref_id=f"REF-{i+1}",
+                        source_id=chunk.get("node_id", f"chunk-{i}"),
+                        title=chunk["metadata"].get("title", "Uploaded Document"),
+                    )
+                    for i, chunk in enumerate(reranked)
+                ]
+        except Exception:
+            context_text = ""
 
     # Build grounded prompt input
     prompt = await select_prompt(db, request.mode)
@@ -459,8 +548,17 @@ async def ask_kriton(
         actor_id=actor_id, prompt_id=prompt_id, output_hash=output_hash,
     )
 
-    # ── Step 7: Post-composition validation (§10, RG-03) ─────────────────────
-    validation = validate_composition(composed_text, source_bundle) if source_bundle else None
+    # ── Step 7: Post-composition validation — Massarius™ Checkpoint C
+    # (§10, RG-03; ZL-ENG-03 §5.7) ────────────────────────────────────────────
+    validation = (
+        validate_answer(composed_text, source_bundle, disclaimer_required=route_decision.disclaimer_required)
+        if source_bundle else None
+    )
+    await audit_validation_completed(
+        db, query_id=query_id, correlation_id=correlation_id,
+        tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
+        passed=validation.passed if validation else False,
+    )
 
     if validation and not validation.passed:
         await audit_composition_rejected(

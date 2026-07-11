@@ -14,6 +14,7 @@ Application-level filtering alone is not sufficient (§7.1).
 from __future__ import annotations
 
 import uuid
+import os
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domains.source_library.service import list_sources
@@ -61,10 +62,6 @@ async def build_source_bundle(
     """
     category = infer_category(query)
     
-    # ── Vector Search Fallback ──
-    # Check if there are active matching document chunks in the vector store
-    from app.domains.rag.retrieval import retrieve_documents
-    
     eligible = []
     excluded = []
     exclusion_reasons = []
@@ -72,26 +69,31 @@ async def build_source_bundle(
     has_conflict = False
     
     vector_sources = {}
-    try:
-        raw_chunks = await retrieve_documents(
-            query=query,
-            tenant_id=tenant_id,
-            jurisdiction=jurisdiction or None,
-            top_k=5
-        )
-        for chunk in raw_chunks:
-            meta = chunk.get("metadata", {})
-            title = meta.get("title")
-            if title and title not in vector_sources:
-                vector_sources[title] = {
-                    "id": chunk.get("node_id", f"vec-{uuid.uuid4().hex[:8]}"),
-                    "title": title,
-                    "category": meta.get("category", "Regulatory Guidelines"),
-                    "jurisdiction_scope": meta.get("jurisdiction", "Global"),
-                    "latest_version": type('Version', (), {'version_label': meta.get("version", "v1.0"), 'status': 'ACTIVE'})()
-                }
-    except Exception as e:
-        exclusion_reasons.append(f"Vector store search failed: {str(e)}")
+    if os.getenv("ENABLE_RAG_EMBEDDINGS", "").lower() in {"1", "true", "yes"}:
+        # ── Vector Search Fallback ──
+        # Check if there are active matching document chunks in the vector store.
+        from app.domains.rag.retrieval import retrieve_documents
+
+        try:
+            raw_chunks = await retrieve_documents(
+                query=query,
+                tenant_id=tenant_id,
+                jurisdiction=jurisdiction or None,
+                top_k=5
+            )
+            for chunk in raw_chunks:
+                meta = chunk.get("metadata", {})
+                title = meta.get("title")
+                if title and title not in vector_sources:
+                    vector_sources[title] = {
+                        "id": chunk.get("node_id", f"vec-{uuid.uuid4().hex[:8]}"),
+                        "title": title,
+                        "category": meta.get("category", "Regulatory Guidelines"),
+                        "jurisdiction_scope": meta.get("jurisdiction", "Global"),
+                        "latest_version": type('Version', (), {'version_label': meta.get("version", "v1.0"), 'status': 'ACTIVE'})()
+                    }
+        except Exception as e:
+            exclusion_reasons.append(f"Vector store search failed: {str(e)}")
 
     if vector_sources:
         # We found active document sources in the vector store!

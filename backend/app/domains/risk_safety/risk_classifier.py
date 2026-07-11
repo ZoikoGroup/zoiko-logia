@@ -9,26 +9,41 @@ from __future__ import annotations
 
 import re
 import uuid
+import os
 from typing import Optional
 
-from transformers import pipeline
-
+from app.core.config import get_settings
 from app.domains.risk_safety.models import RiskLevel, RestrictedSubClass, Route
 from app.domains.risk_safety.routing_matrix import ROUTING_MATRIX_VERSION, resolve as resolve_route
+
+settings = get_settings()
 
 # ─── ML Pipeline Initialization ─────────────────────────────────────────────
 # We use a lightweight cross-encoder for fast zero-shot text classification.
 # In a real deployed environment, this might run on a dedicated GPU instance.
-try:
-    classifier_pipeline = pipeline(
-        "zero-shot-classification",
-        model="cross-encoder/nli-distilroberta-base"
-    )
-    CLASSIFIER_VERSION = "nli-distilroberta-base-v1"
-except Exception as e:
-    # Fallback if transformers isn't ready
-    classifier_pipeline = None
-    CLASSIFIER_VERSION = "fallback-offline"
+classifier_pipeline = None
+CLASSIFIER_VERSION = "lazy-nli-distilroberta-base-v1"
+
+
+def _get_classifier_pipeline():
+    global classifier_pipeline, CLASSIFIER_VERSION
+    if classifier_pipeline is not None:
+        return classifier_pipeline
+    if os.getenv("ENABLE_ML_CLASSIFIER", "").lower() not in {"1", "true", "yes"}:
+        CLASSIFIER_VERSION = "fallback-offline"
+        return None
+    try:
+        from transformers import pipeline
+
+        classifier_pipeline = pipeline(
+            "zero-shot-classification",
+            model="cross-encoder/nli-distilroberta-base",
+        )
+        CLASSIFIER_VERSION = "nli-distilroberta-base-v1"
+    except Exception:
+        classifier_pipeline = None
+        CLASSIFIER_VERSION = "fallback-offline"
+    return classifier_pipeline
 
 # Semantic classes for the Zero-Shot model
 CANDIDATE_LABELS = [
@@ -136,9 +151,10 @@ def classify(
     confidence = 0.5
     top_label = "unknown"
     
-    if classifier_pipeline:
+    pipeline_instance = _get_classifier_pipeline()
+    if pipeline_instance:
         try:
-            result = classifier_pipeline(query, CANDIDATE_LABELS)
+            result = pipeline_instance(query, CANDIDATE_LABELS)
             top_label = result["labels"][0]
             confidence = result["scores"][0]
         except Exception:
@@ -147,7 +163,7 @@ def classify(
         rules_applied.append("l2-ml-fallback-mode")
 
     # Wireframe Rule: CLASSIFICATION_UNCERTAIN threshold
-    if confidence < 0.65:
+    if confidence < settings.CLASSIFIER_CONFIDENCE_THRESHOLD:
         rules_applied.append("l2-classification-uncertain")
         return _decision(
             query_id, False, RiskLevel.MEDIUM, Route.CLARIFICATION, confidence, rules_applied,

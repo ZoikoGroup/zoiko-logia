@@ -58,9 +58,6 @@ async def approve_prompt(
     return prompt
 
 
-from app.domains.model_gateway.providers.groq_adapter import GroqAdapter
-
-
 async def run_test_prompt(
     db: AsyncSession,
     prompt_id: str,
@@ -74,8 +71,10 @@ async def run_test_prompt(
     if prompt is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prompt template not found")
 
-    # Model Gateway -> Provider Adapter -> Approved Model
-    adapter = GroqAdapter()
+    # Model Gateway -> Provider Adapter -> Approved Model. MockProviderAdapter
+    # stands in until a real provider is approved and API keys are
+    # configured — this project doesn't call any external LLM API.
+    adapter = MockProviderAdapter()
     output = adapter.complete(f"[{prompt.name} {prompt.version}]\n\n{input_text}")
 
     # Store a hash of the output, not the raw text, per the privacy-by-design

@@ -60,19 +60,32 @@ def _tenant_from_request(request: Request) -> str | None:
 
 async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
     """Async session dependency for core domain endpoints. Also tenant-scopes
-    the session for Postgres RLS (RG-02): SET LOCAL app.tenant_id from the
+    the session for Postgres RLS (RG-02): sets app.tenant_id from the
     caller's JWT, so the sources/source_versions RLS policies enforce
-    isolation even if a query forgets to filter by tenant_id itself."""
+    isolation even if a query forgets to filter by tenant_id itself.
+
+    Uses is_local=false (session-scoped), not is_local=true (SET LOCAL,
+    transaction-scoped) — a single request commonly spans multiple
+    transactions (every audit event write commits), and a transaction-local
+    setting is wiped by the very first of those commits, silently making
+    every RLS-protected query afterwards see zero rows.
+
+    Session scope persists on the underlying pooled connection beyond this
+    request, though, so every code path here — including "no valid token" —
+    must explicitly set it (even to ''), never skip the call. Skipping it
+    when tenant_id is falsy would leave whatever a *previous* request left
+    on that same pooled connection in effect for this one."""
     async with RequestSessionLocal() as session:
         if not settings.is_sqlite:
-            tenant_id = _tenant_from_request(request)
-            if tenant_id:
-                # set_config(..., true) == SET LOCAL, but (unlike SET) accepts
-                # a bound parameter — SET's grammar takes a literal, not a
-                # placeholder, so binding tenant_id directly into SET would
-                # require unsafe string formatting.
-                await session.execute(
-                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"), {"tenant_id": tenant_id}
-                )
+            tenant_id = _tenant_from_request(request) or ""
+            # set_config(..., false) accepts a bound parameter, unlike SET,
+            # whose grammar takes a literal, not a placeholder — binding
+            # tenant_id directly into SET would require unsafe string
+            # formatting. Always called, even with "", so a connection
+            # reused from the pool never carries over a prior request's
+            # tenant_id into a request that has none.
+            await session.execute(
+                text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id}
+            )
         yield session
 

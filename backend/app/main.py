@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.core.database import async_engine, SessionLocal
 from app.core.rate_limit import limiter
 from app.db.base import Base
+from app.domains.massarius.tenant_scope import ensure_vector_table_rls
 
 settings = get_settings()
 
@@ -32,12 +33,47 @@ async def _migrate_tenant_columns():
     """
     async with async_engine.begin() as conn:
         for table in _TENANT_SCOPED_TABLES:
-            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS tenant_id VARCHAR"))
+            if settings.is_sqlite:
+                columns = await conn.execute(text(f"PRAGMA table_info({table})"))
+                column_names = {row[1] for row in columns}
+                if "tenant_id" not in column_names:
+                    await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN tenant_id VARCHAR"))
+            else:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS tenant_id VARCHAR"))
             await conn.execute(
                 text(f"UPDATE {table} SET tenant_id = (SELECT id FROM tenants LIMIT 1) WHERE tenant_id IS NULL")
             )
             await conn.execute(text(f"UPDATE {table} SET tenant_id = 'GLOBAL_CONTROL' WHERE tenant_id IS NULL"))
-            await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN tenant_id SET NOT NULL"))
+            if not settings.is_sqlite:
+                await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN tenant_id SET NOT NULL"))
+
+
+async def _migrate_source_licence_columns():
+    """Add licence_state/authority_level/is_tenant_private to `sources` if this
+    DB predates them — ZL-ENG-03 §5.6 Checkpoint A/B needs real per-source
+    eligibility data. Same create_all()-doesn't-alter-existing-tables
+    situation as _migrate_tenant_columns above."""
+    async with async_engine.begin() as conn:
+        if settings.is_sqlite:
+            columns = await conn.execute(text("PRAGMA table_info(sources)"))
+            column_names = {row[1] for row in columns}
+            if "licence_state" not in column_names:
+                await conn.execute(text("ALTER TABLE sources ADD COLUMN licence_state VARCHAR"))
+            if "authority_level" not in column_names:
+                await conn.execute(text("ALTER TABLE sources ADD COLUMN authority_level VARCHAR"))
+            if "is_tenant_private" not in column_names:
+                await conn.execute(text("ALTER TABLE sources ADD COLUMN is_tenant_private BOOLEAN"))
+        else:
+            await conn.execute(text("ALTER TABLE sources ADD COLUMN IF NOT EXISTS licence_state VARCHAR"))
+            await conn.execute(text("ALTER TABLE sources ADD COLUMN IF NOT EXISTS authority_level VARCHAR"))
+            await conn.execute(text("ALTER TABLE sources ADD COLUMN IF NOT EXISTS is_tenant_private BOOLEAN"))
+        await conn.execute(text("UPDATE sources SET licence_state = 'permitted' WHERE licence_state IS NULL"))
+        await conn.execute(text("UPDATE sources SET authority_level = 'secondary' WHERE authority_level IS NULL"))
+        await conn.execute(text("UPDATE sources SET is_tenant_private = FALSE WHERE is_tenant_private IS NULL"))
+        if not settings.is_sqlite:
+            await conn.execute(text("ALTER TABLE sources ALTER COLUMN licence_state SET NOT NULL"))
+            await conn.execute(text("ALTER TABLE sources ALTER COLUMN authority_level SET NOT NULL"))
+            await conn.execute(text("ALTER TABLE sources ALTER COLUMN is_tenant_private SET NOT NULL"))
 
 
 def _pg_ident(name: str) -> str:
@@ -110,6 +146,16 @@ async def _setup_source_rls():
                     "USING (tenant_id = current_setting('app.tenant_id', true))"
                 )
             )
+
+        # ZL-ENG-03 §5.8 — same RLS treatment for the Massarius™ vector-store
+        # table, when it already exists (llama-index creates it lazily on
+        # first retrieval, not via Base.metadata.create_all — see
+        # massarius/tenant_scope.py's docstring for the known limitation that
+        # this doesn't reach the live retrieval query path, which still
+        # connects via the superuser role).
+        if settings.APP_DATABASE_URL:
+            role = make_url(settings.APP_DATABASE_URL).username
+            await ensure_vector_table_rls(conn, role=role)
 
 
 def _seed_defaults():
@@ -347,6 +393,7 @@ async def lifespan(app: FastAPI):
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await _migrate_tenant_columns()
+    await _migrate_source_licence_columns()
     await _setup_source_rls()
     _seed_defaults()
     _seed_evaluation()
@@ -387,4 +434,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-

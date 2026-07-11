@@ -4,13 +4,20 @@ from typing import Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from llama_index.core import VectorStoreIndex, Document, StorageContext
 from llama_index.core.node_parser import SentenceSplitter
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from app.core.config import get_settings
 
 settings = get_settings()
 
-# Initialize embeddings model BAAI/bge-m3 locally via HuggingFace
-embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-m3")
+_embed_model = None
+
+
+def get_embed_model():
+    global _embed_model
+    if _embed_model is None:
+        from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+
+        _embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-m3")
+    return _embed_model
 
 async def ingest_document_content(
     file_path: str,
@@ -23,6 +30,8 @@ async def ingest_document_content(
     Splits text into chunks, generates BAAI bge-m3 embeddings,
     and stores vectors in Supabase pgvector (or fallback local memory vector store).
     """
+    embed_model = get_embed_model()
+
     # Create LlamaIndex document object
     doc = Document(
         text=markdown_content,

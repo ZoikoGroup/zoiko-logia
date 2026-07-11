@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str = "dev-only-insecure-secret-change-me"
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
-    CORS_ORIGINS: list[str] = ["http://localhost:3000"]
+    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001"]
 
     # ── OIDC (Safety Auth Integration) ──────────────────────────────────
     OIDC_ISSUER_URL: str = ""
@@ -37,7 +37,13 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = ""
 
     # ── Safety Service Tuning ───────────────────────────────────────────
-    CLASSIFIER_CONFIDENCE_THRESHOLD: float = 0.65
+    # cross-encoder/nli-distilroberta-base's actual score distribution runs
+    # much lower than the original 0.65 assumed — even unambiguous accounting
+    # questions ("What is the accrual basis of accounting?") score ~0.51, so
+    # 0.65 meant every query fell back to CLASSIFICATION_UNCERTAIN regardless
+    # of content. 0.35 sits below the clear-question range observed in
+    # testing while still catching genuinely vague input.
+    CLASSIFIER_CONFIDENCE_THRESHOLD: float = 0.35
     SAFETY_OVERRIDE_MAX_HOURS: int = 72
 
     @property

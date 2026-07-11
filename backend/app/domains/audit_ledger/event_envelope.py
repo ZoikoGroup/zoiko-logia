@@ -12,12 +12,15 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.domains.audit_ledger.chain_integrity import compute_chain_hash, compute_payload_hash
 from app.domains.audit_ledger.models import AuditEvent, _event_id, _now
+
+settings = get_settings()
 
 
 def _build_row(
@@ -74,6 +77,20 @@ async def record_event_async(db: AsyncSession, *, tenant_id: str = "GLOBAL_CONTR
     db.add(row)
     await db.commit()
     await db.refresh(row)
+
+    # This commit just ended the transaction get_db() originally scoped to
+    # this tenant (app/core/database.py). SQLAlchemy's connection pool may
+    # hand the *next* statement a different physical connection than the one
+    # that had app.tenant_id set on it — under concurrent load this
+    # intermittently makes RLS-protected queries later in the same request
+    # see zero rows, since the new connection never had it set at all.
+    # Every orchestration call site already passes the request's real
+    # tenant_id here, so re-asserting it right after commit is free
+    # insurance against exactly that race, regardless of which connection
+    # the pool hands back next.
+    if not settings.is_sqlite:
+        await db.execute(text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id})
+
     return row
 
 

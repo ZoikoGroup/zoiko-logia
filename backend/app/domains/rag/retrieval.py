@@ -2,13 +2,20 @@ import os
 from typing import List, Dict, Any
 from llama_index.core import VectorStoreIndex, StorageContext
 from llama_index.core.vector_stores.types import MetadataFilters, ExactMatchFilter
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from app.core.config import get_settings
 
 settings = get_settings()
 
-# Embedding model init
-embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-m3")
+_embed_model = None
+
+
+def get_embed_model():
+    global _embed_model
+    if _embed_model is None:
+        from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+
+        _embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-m3")
+    return _embed_model
 
 async def retrieve_documents(
     query: str,
@@ -20,6 +27,8 @@ async def retrieve_documents(
     Retrieves matching document chunks using hybrid search (vector search + keyword search).
     Applies strict tenant isolation and optional jurisdiction metadata filters.
     """
+    embed_model = get_embed_model()
+
     # 1. Setup metadata filters
     filters_list = [ExactMatchFilter(key="tenant_id", value=tenant_id)]
     if jurisdiction:
