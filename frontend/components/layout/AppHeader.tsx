@@ -1,6 +1,6 @@
 "use client";
 
-import { Settings, Bell, Sun, Moon } from "lucide-react";
+import { Settings, Bell, Sun, Moon, Menu } from "lucide-react";
 import { RoleSwitcher } from "@/components/shell/RoleSwitcher";
 import { NavSearch } from "@/components/shell/NavSearch";
 import { useTheme } from "@/components/shell/ThemeProvider";
@@ -17,11 +17,18 @@ export function BrandMark({ className = "h-14 w-14" }: { className?: string }) {
   );
 }
 
-export function AppHeader() {
+export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
   const { theme, toggleTheme } = useTheme();
 
   return (
     <div className="m-4 mb-0 rounded-2xl border border-line bg-panel shadow-[0_1px_2px_rgba(16,24,40,0.04)] px-5 py-3.5 flex items-center gap-4">
+      <button
+        onClick={onMenuClick}
+        aria-label="Open menu"
+        className="lg:hidden h-10 w-10 flex items-center justify-center rounded-xl border border-line bg-panel text-muted hover:bg-soft shrink-0"
+      >
+        <Menu size={17} />
+      </button>
       <NavSearch />
 
       <div className="flex items-center gap-3 justify-end shrink-0 ml-auto">

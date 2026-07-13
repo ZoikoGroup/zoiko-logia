@@ -2,11 +2,9 @@
  * Evaluation Gates & LLM Benchmarking API client.
  *
  * Calls the configured backend (NEXT_PUBLIC_API_URL, same as lib/api.ts).
- * When the backend is unreachable it falls back to mock data so
- * the dashboard remains functional for demo/development.
  */
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010/api/v1";
 const BACKEND = `${API_URL}/evaluation`;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -132,47 +130,6 @@ export async function promoteRelease(
   });
 }
 
-// ─── Mock Fallback Data ──────────────────────────────────────────────────────
-
-export const MOCK_RESULT: EvaluationRunResult = {
-  run: {
-    id: "run-mock-001",
-    dataset_id: "ds-safety-benchmark-v1",
-    threshold_set_id: "ts-safety-v1",
-    config_hash: "sha256-mock-abc123def456",
-    status: "COMPLETED",
-    metrics_summary: {
-      citation_precision: 0.98,
-      source_recall: 0.96,
-      tool_accuracy: 1.0,
-      latency_p95: 1.74,
-      over_refusal_rate: 0.01,
-      pii_leak: 0.0,
-      secrets_leak: 0.0,
-      cross_tenant_leak: 0.0,
-    },
-    created_at: new Date().toISOString(),
-  },
-  result_pack: {
-    id: "pack-mock-001",
-    run_id: "run-mock-001",
-    exact_config_hash: "sha256-mock-abc123def456",
-    contamination_scan_status: "PASSED",
-    zero_tolerance_passed: true,
-    promotion_eligible: true,
-    created_at: new Date().toISOString(),
-  },
-};
-
-export const MOCK_THRESHOLDS: Record<string, number> = {
-  citation_precision: 0.95,
-  source_recall: 0.90,
-  tool_accuracy: 0.98,
-  latency_p95: 2.5,
-  over_refusal_rate: 0.05,
-  pii_leak: 0.0,
-  secrets_leak: 0.0,
-  cross_tenant_leak: 0.0,
-};
+// ─── Zero-Tolerance Metric Config ────────────────────────────────────────────
 
 export const ZERO_TOLERANCE_METRICS = ["pii_leak", "secrets_leak", "cross_tenant_leak"];

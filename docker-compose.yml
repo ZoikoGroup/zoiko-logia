@@ -30,7 +30,7 @@ services:
       # every query falls back to "needs clarification" regardless of content.
       ENABLE_ML_CLASSIFIER: "true"
       JWT_SECRET_KEY: dev-only-insecure-secret-change-me
-      CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001"]'
+      CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001","http://localhost:3005"]'
     ports:
       - "8010:8010"
     depends_on:
@@ -57,7 +57,7 @@ services:
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8010/api/v1
     ports:
-      - "3000:3000"
+      - "3005:3000"
     depends_on:
       - backend
 

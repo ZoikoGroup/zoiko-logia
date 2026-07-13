@@ -6,5 +6,5 @@ class MockProviderAdapter:
     ProviderAdapter interface (see base.py) so the swap requires no other change.
     """
 
-    def complete(self, prompt: str) -> str:
+    async def complete(self, prompt: str) -> str:
         return f"[mock completion] Received {len(prompt)} characters. Acknowledged: {prompt[:80]!r}"

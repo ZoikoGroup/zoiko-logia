@@ -72,10 +72,10 @@ async def run_test_prompt(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prompt template not found")
 
     # Model Gateway -> Provider Adapter -> Approved Model. MockProviderAdapter
-    # stands in until a real provider is approved and API keys are
-    # configured — this project doesn't call any external LLM API.
+    # stands in until a real provider is approved and configured — this
+    # project doesn't call any external LLM API.
     adapter = MockProviderAdapter()
-    output = adapter.complete(f"[{prompt.name} {prompt.version}]\n\n{input_text}")
+    output = await adapter.complete(f"[{prompt.name} {prompt.version}]\n\n{input_text}")
 
     # Store a hash of the output, not the raw text, per the privacy-by-design
 

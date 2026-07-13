@@ -3,11 +3,17 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ChevronDown, LogOut } from "lucide-react";
+import { ChevronDown, LogOut, X } from "lucide-react";
 import { NAV_SECTIONS, isVisible, navHref } from "@/lib/nav";
 import { useRole } from "@/components/shell/RoleProvider";
 
-export function Sidebar() {
+export function Sidebar({
+  mobileOpen,
+  onMobileClose,
+}: {
+  mobileOpen: boolean;
+  onMobileClose: () => void;
+}) {
   const pathname = usePathname();
   const router = useRouter();
   const { role } = useRole();
@@ -31,6 +37,11 @@ export function Sidebar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname, role]);
 
+  useEffect(() => {
+    onMobileClose();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
+
   function toggle(id: string) {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -40,8 +51,8 @@ export function Sidebar() {
     });
   }
 
-  return (
-    <aside className="hidden lg:flex w-72 shrink-0 flex-col border-r border-line bg-panel h-screen sticky top-0 p-3.5">
+  const navContent = (
+    <>
       <div className="flex items-center gap-3.5 px-2 pb-5 mb-2 border-b border-line">
         <div className="shrink-0 p-3 rounded-2xl bg-gradient-to-br from-brand/15 to-gold/15 border border-brand/20">
           <svg viewBox="0 0 64 64" className="h-11 w-11" role="img" aria-label="ZoikoLogia logo">
@@ -114,6 +125,30 @@ export function Sidebar() {
           Sign out
         </button>
       </div>
-    </aside>
+    </>
+  );
+
+  return (
+    <>
+      <aside className="hidden lg:flex w-72 shrink-0 flex-col border-r border-line bg-panel h-screen sticky top-0 p-3.5">
+        {navContent}
+      </aside>
+
+      {mobileOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden">
+          <div className="absolute inset-0 bg-black/40" onClick={onMobileClose} />
+          <aside className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col bg-panel p-3.5 shadow-2xl">
+            <button
+              onClick={onMobileClose}
+              aria-label="Close menu"
+              className="mb-2 flex h-9 w-9 items-center justify-center self-end rounded-lg text-muted hover:bg-soft"
+            >
+              <X size={18} />
+            </button>
+            {navContent}
+          </aside>
+        </div>
+      )}
+    </>
   );
 }
