@@ -1,6 +1,4 @@
-import type { SafetyDecision } from "@/lib/safety-api";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010/api/v1";
 
 export type UserPublic = {
   id: string;
@@ -87,6 +85,13 @@ async function authedFetch(path: string, token: string, init?: RequestInit): Pro
       Authorization: `Bearer ${token}`,
     },
   });
+  if (res.status === 401 && typeof document !== "undefined") {
+    document.cookie = "zoiko_auth=; path=/; max-age=0";
+    if (window.location.pathname !== "/login") {
+      window.location.href = "/login";
+    }
+    throw new ApiError(401, "Session expired — please log in again.");
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new ApiError(res.status, body?.detail ?? `Request to ${path} failed`);
@@ -128,6 +133,7 @@ export type Ticket = {
   severity: string;
   status: string;
   query_id: string | null;
+  source_id?: string | null;
   created_by: string;
   assigned_to: string | null;
   created_at: string;
@@ -137,6 +143,7 @@ export type TicketCreateRequest = {
   category: string;
   severity: string;
   query_id?: string;
+  source_id?: string;
 };
 
 export type Incident = {
@@ -202,6 +209,43 @@ export async function listTopicMapNodes(token: string): Promise<TopicMapNode[]> 
   return res.json();
 }
 
+export type CPDEntry = {
+  id: string;
+  topic: string;
+  minutes: number;
+  logged_at: string;
+};
+
+export type CPDSummary = {
+  total_minutes: number;
+  total_hours: number;
+  entry_count: number;
+};
+
+export type CPDEntryCreateRequest = {
+  topic: string;
+  minutes: number;
+};
+
+export async function listCPDEntries(token: string): Promise<CPDEntry[]> {
+  const res = await authedFetch("/learning/cpd", token);
+  return res.json();
+}
+
+export async function createCPDEntry(token: string, payload: CPDEntryCreateRequest): Promise<CPDEntry> {
+  const res = await authedFetch("/learning/cpd", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+
+export async function getCPDSummary(token: string): Promise<CPDSummary> {
+  const res = await authedFetch("/learning/cpd/summary", token);
+  return res.json();
+}
+
 export type SourceVersion = {
   id: string;
   version_label: string;
@@ -232,6 +276,30 @@ export type SourceCreateRequest = {
   jurisdiction_scope?: string;
   framework_scope?: string;
   note?: string;
+  effective_from?: string;
+  effective_to?: string;
+  file?: File | null;
+};
+
+export type ExpiringSource = {
+  source_id: string;
+  title: string;
+  effective_to: string;
+  days_remaining: number;
+};
+
+export type JurisdictionCategorySummary = {
+  category: string;
+  approved_count: number;
+  pending_count: number;
+};
+
+export type JurisdictionSummary = {
+  jurisdiction_scope: string;
+  approved_count: number;
+  pending_count: number;
+  readiness: "READY" | "PARTIAL" | "NOT_STARTED" | string;
+  categories: JurisdictionCategorySummary[];
 };
 
 export async function listSources(token: string, category?: string): Promise<Source[]> {
@@ -241,11 +309,30 @@ export async function listSources(token: string, category?: string): Promise<Sou
 }
 
 export async function createSource(token: string, payload: SourceCreateRequest): Promise<Source> {
+  const form = new FormData();
+  form.set("category", payload.category);
+  form.set("title", payload.title);
+  form.set("source_class", payload.source_class);
+  form.set("jurisdiction_scope", payload.jurisdiction_scope ?? "Global");
+  form.set("framework_scope", payload.framework_scope ?? "");
+  form.set("note", payload.note ?? "");
+  if (payload.effective_from) form.set("effective_from", payload.effective_from);
+  if (payload.effective_to) form.set("effective_to", payload.effective_to);
+  if (payload.file) form.set("file", payload.file);
   const res = await authedFetch("/sources", token, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: form,
   });
+  return res.json();
+}
+
+export async function getExpiringSource(token: string): Promise<ExpiringSource | null> {
+  const res = await authedFetch("/sources/expiring", token);
+  return res.json();
+}
+
+export async function getJurisdictionSummary(token: string): Promise<JurisdictionSummary[]> {
+  const res = await authedFetch("/sources/jurisdiction-summary", token);
   return res.json();
 }
 
@@ -462,6 +549,7 @@ export type SafetyState = {
   risk_level: "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
   policy_state: "allowed" | "blocked" | "needs_more_context";
   disclaimer_required: boolean;
+  refusal_text?: string;
 };
 
 export type NextAction = {
@@ -519,6 +607,87 @@ export async function askKriton(
   return res.json();
 }
 
+export type SavedAnswer = {
+  id: string;
+  query_id: string;
+  query_text: string;
+  answer_text: string;
+  risk_level: string;
+  tags: string[];
+  created_at: string;
+};
+
+export type SavedAnswerCreateRequest = {
+  query_id: string;
+  query_text: string;
+  answer_text: string;
+  risk_level: string;
+  tags?: string[];
+};
+
+export async function listSavedAnswers(token: string): Promise<SavedAnswer[]> {
+  const res = await authedFetch("/kriton-workspace/saved-answers", token);
+  return res.json();
+}
+
+export async function createSavedAnswer(token: string, payload: SavedAnswerCreateRequest): Promise<SavedAnswer> {
+  const res = await authedFetch("/kriton-workspace/saved-answers", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+
+export async function deleteSavedAnswer(token: string, id: string): Promise<void> {
+  await authedFetch(`/kriton-workspace/saved-answers/${id}`, token, { method: "DELETE" });
+}
+
+export type Draft = {
+  id: string;
+  title: string;
+  content: string;
+  status: string;
+  saved_answer_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DraftCreateRequest = {
+  title: string;
+  content?: string;
+  saved_answer_id?: string;
+};
+
+export type DraftUpdateRequest = {
+  title?: string;
+  content?: string;
+  status?: string;
+};
+
+export async function listDrafts(token: string): Promise<Draft[]> {
+  const res = await authedFetch("/kriton-workspace/drafts", token);
+  return res.json();
+}
+
+export async function createDraft(token: string, payload: DraftCreateRequest): Promise<Draft> {
+  const res = await authedFetch("/kriton-workspace/drafts", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+
+export async function updateDraft(token: string, id: string, payload: DraftUpdateRequest): Promise<Draft> {
+  const res = await authedFetch(`/kriton-workspace/drafts/${id}`, token, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+
 export type UploadResponse = {
   status: string;
   title: string;
@@ -538,5 +707,3 @@ export async function uploadDocument(token: string, file: File): Promise<UploadR
   });
   return res.json();
 }
-
-

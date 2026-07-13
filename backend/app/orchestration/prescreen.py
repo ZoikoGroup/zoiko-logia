@@ -7,6 +7,7 @@ Checks:
   1. Prompt injection — attempts to override system rules, reveal internals
   2. Data exfiltration — attempts to access unauthorised tenant data, credentials, logs
   3. Malicious instruction — commands to ignore governance, jailbreak, act unsafely
+  4. Academic integrity — requests to solve exam/quiz/graded assessment questions
 
 A FAILED pre-screen short-circuits the entire pipeline. No retrieval or model work runs.
 """
@@ -51,6 +52,12 @@ _MALICIOUS_INSTRUCTION_PATTERNS = [
     r"(stolen|hacked|leaked)\s+(credential|data|account)",
 ]
 
+_ACADEMIC_INTEGRITY_PATTERNS = [
+    r"\b(solve\s+(my|this)\s+(\w+\s+){0,2}exam|exam\s+answer|quiz\s+answer|"
+    r"complete\s+(my|this)\s+(\w+\s+){0,2}assessment|do\s+my\s+homework|"
+    r"answer\s+(my|this)\s+(\w+\s+){0,2}assignment)\b",
+]
+
 
 def _compile(patterns: list[str]) -> list[re.Pattern]:
     return [re.compile(p, re.IGNORECASE | re.DOTALL) for p in patterns]
@@ -59,12 +66,14 @@ def _compile(patterns: list[str]) -> list[re.Pattern]:
 _INJECTION = _compile(_PROMPT_INJECTION_PATTERNS)
 _EXFILTRATION = _compile(_DATA_EXFILTRATION_PATTERNS)
 _MALICIOUS = _compile(_MALICIOUS_INSTRUCTION_PATTERNS)
+_ACADEMIC_INTEGRITY = _compile(_ACADEMIC_INTEGRITY_PATTERNS)
 
 
 @dataclass
 class PreScreenResult:
     passed: bool
-    trigger: Optional[str] = None        # "prompt_injection" | "data_exfiltration" | "malicious_instruction"
+    trigger: Optional[str] = None        # "prompt_injection" | "data_exfiltration" |
+                                          # "malicious_instruction" | "academic_integrity"
     trigger_detail: Optional[str] = None  # matched pattern for evidence reference
 
 
@@ -95,6 +104,14 @@ def run_prescreen(query: str) -> PreScreenResult:
             return PreScreenResult(
                 passed=False,
                 trigger="malicious_instruction",
+                trigger_detail=pattern.pattern,
+            )
+
+    for pattern in _ACADEMIC_INTEGRITY:
+        if pattern.search(query):
+            return PreScreenResult(
+                passed=False,
+                trigger="academic_integrity",
                 trigger_detail=pattern.pattern,
             )
 

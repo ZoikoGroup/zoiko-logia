@@ -7,6 +7,7 @@ class TicketCreateRequest(BaseModel):
     category: str
     severity: str = "P3"
     query_id: Optional[str] = None
+    source_id: Optional[str] = None
 
 
 class TicketStatusUpdateRequest(BaseModel):
@@ -20,6 +21,7 @@ class TicketPublic(BaseModel):
     severity: str
     status: str
     query_id: Optional[str]
+    source_id: Optional[str] = None
     created_by: str
     assigned_to: Optional[str]
     created_at: datetime

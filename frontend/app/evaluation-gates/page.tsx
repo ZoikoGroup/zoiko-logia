@@ -23,9 +23,8 @@ import {
 import {
   runEvaluation,
   promoteRelease,
+  getThresholdSet,
   type EvaluationRunResult,
-  MOCK_RESULT,
-  MOCK_THRESHOLDS,
   ZERO_TOLERANCE_METRICS,
 } from "@/lib/evaluation-api";
 
@@ -116,25 +115,27 @@ export default function EvaluationGatesPage() {
 
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<EvaluationRunResult | null>(null);
+  const [thresholds, setThresholds] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
   const [promoting, setPromoting] = useState(false);
   const [promoted, setPromoted] = useState<{ decision: string; id: string } | null>(null);
-  const [usingMock, setUsingMock] = useState(false);
 
   async function handleRun() {
     setRunning(true);
     setResult(null);
     setError(null);
     setPromoted(null);
-    setUsingMock(false);
 
-    const res = await runEvaluation(datasetId, thresholdId, configHash);
+    const [res, thresholdSet] = await Promise.all([
+      runEvaluation(datasetId, thresholdId, configHash),
+      getThresholdSet(thresholdId),
+    ]);
+
     if (res) {
       setResult(res);
+      setThresholds(thresholdSet?.metrics ?? {});
     } else {
-      // Fall back to mock so the UI is always demonstrable
-      setResult(MOCK_RESULT);
-      setUsingMock(true);
+      setError("Could not reach the evaluation backend. The run did not complete.");
     }
     setRunning(false);
   }
@@ -142,12 +143,12 @@ export default function EvaluationGatesPage() {
   async function handlePromote(decision: "APPROVED" | "REJECTED") {
     if (!result) return;
     setPromoting(true);
+    setError(null);
     const auth = await promoteRelease(result.result_pack.id, decision, approverId, false);
     if (auth) {
       setPromoted({ decision: auth.decision, id: auth.id });
     } else {
-      // Mock promotion for demo
-      setPromoted({ decision, id: `auth-mock-${Date.now()}` });
+      setError("Could not reach the backend. The promotion decision was not recorded.");
     }
     setPromoting(false);
   }
@@ -157,7 +158,7 @@ export default function EvaluationGatesPage() {
   const eligible = pack?.promotion_eligible ?? false;
 
   return (
-    <main className="flex-1 overflow-y-auto p-6 pt-0 space-y-6">
+    <main className="flex-1 overflow-y-auto p-6 space-y-6">
       <PageHeader
         title="Evaluation Gates"
         subtitle="QA benchmark runs, red-team gates, citation checks, and release promotion authorizations — ZL-T0-10 §3, ZL-T0-11."
@@ -223,10 +224,10 @@ export default function EvaluationGatesPage() {
               {running ? "Running Evaluation…" : "Execute Evaluation Run"}
             </button>
 
-            {usingMock && (
-              <div className="flex items-center gap-2 rounded-lg border border-warn/30 bg-warn/5 px-3 py-2 text-[10px] text-warn">
+            {error && (
+              <div className="flex items-center gap-2 rounded-lg border border-bad/30 bg-bad/5 px-3 py-2 text-[10px] text-bad">
                 <AlertTriangle size={12} />
-                Backend unreachable — displaying fallback benchmark data. Start the FastAPI server to see live results.
+                {error}
               </div>
             )}
           </div>
@@ -276,7 +277,7 @@ export default function EvaluationGatesPage() {
                         key={key}
                         metricKey={key}
                         value={value as number}
-                        threshold={MOCK_THRESHOLDS[key] ?? 0}
+                        threshold={thresholds[key] ?? 0}
                         isZeroTol={ZERO_TOLERANCE_METRICS.includes(key)}
                       />
                     ))}

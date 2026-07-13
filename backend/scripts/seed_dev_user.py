@@ -8,14 +8,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sqlalchemy import select
 
-from app.core.database import AsyncSessionLocal, engine
+from app.core.database import AsyncSessionLocal, async_engine
 from app.core.security import hash_password
 from app.db.base import Base
 from app.domains.identity.models import Role, Tenant, User
 from app.domains.learning_cpd.models import SyllabusPathway, TopicMapNode
 from app.domains.model_gateway.models import ModelDefinition, PromptTemplate
 from app.domains.source_library.models import Source, SourceVersion
-from app.domains.support_incident.models import Incident, SupportTicket
+from app.domains.support_incident.models import SecurityIncident, SupportTicket
 
 DEMO_EMAIL = "dashboard@zoikologia.com"
 DEMO_PASSWORD = "Password234@"
@@ -93,9 +93,21 @@ async def seed_demo_user(db) -> User:
         is_active=True,
     )
     db.add(user)
+
+    # Second account required by scripts/ingest_reference_sources.py's maker-checker
+    # flow: the submitting admin (above) cannot approve its own source versions.
+    db.add(User(
+        tenant_id=tenant.id,
+        email="source.reviewer@zoikologia.com",
+        hashed_password=hash_password(DEMO_PASSWORD),
+        full_name="Source Reviewer",
+        role="Admin",
+        is_active=True,
+    ))
+
     await db.commit()
     await db.refresh(user)
-    print(f"Seeded tenant '{tenant.name}' and user '{user.email}'.")
+    print(f"Seeded tenant '{tenant.name}', user '{user.email}', and reviewer 'source.reviewer@zoikologia.com'.")
     return user
 
 
@@ -112,13 +124,19 @@ async def seed_roles(db) -> None:
 
 
 async def seed_support_data(db, user: User) -> None:
-    existing = await db.execute(select(Incident))
+    existing = await db.execute(select(SecurityIncident))
     if existing.scalars().first() is not None:
         print("Support/incident sample data already seeded, skipping.")
         return
 
     for title, severity, status in INCIDENTS:
-        db.add(Incident(tenant_id=user.tenant_id, title=title, severity=severity, status=status))
+        db.add(SecurityIncident(
+            tenant_id=user.tenant_id,
+            title=title,
+            severity=severity,
+            containment_status="RESOLVED" if status == "Resolved" else "OPEN",
+            source="dev_seed",
+        ))
 
     db.add(
         SupportTicket(
@@ -202,7 +220,7 @@ async def seed_model_gateway_data(db, user: User) -> None:
 
 
 async def seed() -> None:
-    async with engine.begin() as conn:
+    async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
     async with AsyncSessionLocal() as db:

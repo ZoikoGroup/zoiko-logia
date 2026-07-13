@@ -46,6 +46,8 @@ class SafetyDecision(BaseModel):
     safe_alternative: Optional[str] = None
     rules_applied: list[str] = Field(default_factory=list)
     query_id: Optional[str] = None
+    classifier_version: Optional[str] = None
+    policy_version: Optional[str] = None
 
 
 # ─── Escalation Schemas ────────────────────────────────────────────────────

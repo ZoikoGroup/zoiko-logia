@@ -23,6 +23,7 @@ def create_ticket(
         category=payload.category,
         severity=payload.severity,
         query_id=payload.query_id,
+        source_id=payload.source_id,
         created_by=created_by,
     )
     db.add(ticket)

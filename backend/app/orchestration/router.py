@@ -12,11 +12,13 @@ Controls:
 from __future__ import annotations
 
 from typing import Optional
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db, get_sync_db
+from app.core.rate_limit import limiter
+from app.core.security import decode_access_token
 from app.domains.identity.models import User
 from app.domains.identity.rbac import get_current_user
 from app.orchestration.schemas import AskKritonRequest, AskKritonResponse
@@ -25,8 +27,19 @@ from app.orchestration.service import ask_kriton
 router = APIRouter(prefix="/orchestration", tags=["Ask Kriton™ Orchestration"])
 
 
+def _user_key(request: Request) -> str:
+    """Rate-limit key: the authenticated user's id, not IP — this is an
+    authenticated API and a shared NAT/office IP must not share one bucket."""
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header.removeprefix("Bearer ").strip()
+    payload = decode_access_token(token) if token else None
+    return payload.sub if payload else "anonymous"
+
+
 @router.post("/ask", response_model=AskKritonResponse)
+@limiter.limit("30/minute", key_func=_user_key)
 async def post_ask(
+    request: Request,
     payload: AskKritonRequest,
     db: AsyncSession = Depends(get_db),
     sync_db: Session = Depends(get_sync_db),

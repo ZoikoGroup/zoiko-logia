@@ -1,10 +1,37 @@
-from fastapi import HTTPException, status
+import re
+import uuid
+from datetime import date
+from pathlib import Path
+
+from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domains.audit_ledger.event_envelope import record_event_async
 from app.domains.source_library.models import Source, SourceVersion
 from app.domains.source_library.schemas import SourceCreateRequest
+
+_ELIGIBLE_STATUSES = ("ACTIVE", "APPROVED")
+
+_UPLOAD_ROOT = Path(__file__).resolve().parents[3] / "data" / "uploads"
+_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+async def save_uploaded_file(file: UploadFile, tenant_id: str) -> str:
+    """Persist an uploaded source document to disk and return its relative
+    path (recorded on the SourceVersion, mirroring how ingest_reference_sources.py
+    links records back to the original file that was ingested)."""
+    safe_name = _SAFE_NAME_RE.sub("_", file.filename or "upload")
+    tenant_dir = _UPLOAD_ROOT / _SAFE_NAME_RE.sub("_", tenant_id)
+    tenant_dir.mkdir(parents=True, exist_ok=True)
+
+    stored_name = f"{uuid.uuid4().hex[:12]}_{safe_name}"
+    dest = tenant_dir / stored_name
+    contents = await file.read()
+    dest.write_bytes(contents)
+
+    backend_root = _UPLOAD_ROOT.parents[1]
+    return str(dest.relative_to(backend_root))
 
 
 async def _latest_version(db: AsyncSession, source_id: str) -> SourceVersion:
@@ -34,6 +61,7 @@ async def create_source(
     db: AsyncSession, submitted_by: str, payload: SourceCreateRequest, tenant_id: str = "GLOBAL_CONTROL"
 ) -> dict:
     source = Source(
+        tenant_id=tenant_id,
         category=payload.category,
         title=payload.title,
         source_class=payload.source_class,
@@ -44,11 +72,14 @@ async def create_source(
     await db.flush()
 
     version = SourceVersion(
+        tenant_id=tenant_id,
         source_id=source.id,
         status="PROPOSED",
         note=payload.note,
         submitted_by=submitted_by,
         file_path=payload.file_path,
+        effective_from=payload.effective_from,
+        effective_to=payload.effective_to,
     )
     db.add(version)
     await db.commit()
@@ -74,6 +105,81 @@ async def create_source(
         },
     )
     return {**source.__dict__, "latest_version": version}
+
+
+async def get_soonest_expiring(db: AsyncSession) -> dict | None:
+    """The single approved/active source version with the nearest
+    effective_to date, for the license-expiry countdown. Returns None if
+    nothing has an expiry date on file — an honest "nothing expiring" state
+    rather than fabricating one."""
+    result = await db.execute(
+        select(SourceVersion, Source)
+        .join(Source, Source.id == SourceVersion.source_id)
+        .where(
+            SourceVersion.status.in_(_ELIGIBLE_STATUSES),
+            SourceVersion.effective_to.is_not(None),
+        )
+        .order_by(SourceVersion.effective_to.asc())
+        .limit(1)
+    )
+    row = result.first()
+    if row is None:
+        return None
+
+    version, source = row
+    days_remaining = (version.effective_to - date.today()).days
+    return {
+        "source_id": source.id,
+        "version_id": version.id,
+        "title": source.title,
+        "category": source.category,
+        "jurisdiction_scope": source.jurisdiction_scope,
+        "effective_to": version.effective_to,
+        "days_remaining": days_remaining,
+    }
+
+
+async def get_jurisdiction_summary(db: AsyncSession) -> list[dict]:
+    """Real rollout readiness computed from the actual source register — how
+    many approved/pending sources exist per jurisdiction and category. No
+    fabricated launch-gate checklist; readiness is derived from real counts."""
+    result = await db.execute(select(Source, SourceVersion).join(SourceVersion, SourceVersion.source_id == Source.id))
+    rows = result.all()
+
+    by_jurisdiction: dict[str, dict[str, dict[str, int]]] = {}
+    for source, version in rows:
+        j = by_jurisdiction.setdefault(source.jurisdiction_scope, {})
+        c = j.setdefault(source.category, {"approved": 0, "pending": 0})
+        if version.status in _ELIGIBLE_STATUSES:
+            c["approved"] += 1
+        elif version.status in ("PROPOSED", "UNDER_REVIEW"):
+            c["pending"] += 1
+
+    summaries = []
+    for jurisdiction, categories in by_jurisdiction.items():
+        approved_total = sum(c["approved"] for c in categories.values())
+        pending_total = sum(c["pending"] for c in categories.values())
+        approved_categories = sum(1 for c in categories.values() if c["approved"] > 0)
+
+        if approved_total >= 5 and approved_categories >= 2:
+            readiness = "READY"
+        elif approved_total > 0:
+            readiness = "PARTIAL"
+        else:
+            readiness = "NOT_STARTED"
+
+        summaries.append({
+            "jurisdiction_scope": jurisdiction,
+            "approved_count": approved_total,
+            "pending_count": pending_total,
+            "categories": [
+                {"category": cat, "approved_count": c["approved"], "pending_count": c["pending"]}
+                for cat, c in sorted(categories.items())
+            ],
+            "readiness": readiness,
+        })
+
+    return sorted(summaries, key=lambda s: s["approved_count"], reverse=True)
 
 
 async def approve_source_version(

@@ -2,17 +2,13 @@
 
 import { useRole } from "@/components/shell/RoleProvider";
 import { PageHeader } from "@/components/governance/PageHeader";
-import { MyTasksModule, allowedRoles as myTasksRoles } from "./modules/MyTasksModule";
 import { RecentKritonActivityModule, allowedRoles as recentActivityRoles } from "./modules/RecentKritonActivityModule";
-import { ComplianceDeadlinesModule, allowedRoles as complianceRoles } from "./modules/ComplianceDeadlinesModule";
 import { GovernanceSnapshotModule, allowedRoles as governanceRoles } from "./modules/GovernanceSnapshotModule";
 import { LearningProgressModule, allowedRoles as learningRoles } from "./modules/LearningProgressModule";
 import type { RoleCode } from "@/lib/roles";
 
 const MODULES: { id: string; allowedRoles: RoleCode[]; Component: React.ComponentType }[] = [
   { id: "governance-snapshot", allowedRoles: governanceRoles, Component: GovernanceSnapshotModule },
-  { id: "my-tasks", allowedRoles: myTasksRoles, Component: MyTasksModule },
-  { id: "compliance-deadlines", allowedRoles: complianceRoles, Component: ComplianceDeadlinesModule },
   { id: "learning-progress", allowedRoles: learningRoles, Component: LearningProgressModule },
   { id: "recent-kriton-activity", allowedRoles: recentActivityRoles, Component: RecentKritonActivityModule },
 ];
@@ -22,7 +18,7 @@ export function CommandCenter() {
   const visibleModules = MODULES.filter((m) => m.allowedRoles.includes(role));
 
   return (
-    <main className="flex-1 overflow-y-auto p-4 pt-0">
+    <main className="flex-1 overflow-y-auto p-4">
       <PageHeader
         title="Command Center"
         subtitle={`Composed for your current role: ${role}. Modules below change automatically as role changes.`}

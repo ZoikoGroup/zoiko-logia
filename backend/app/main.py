@@ -2,13 +2,160 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
 
 from app.api.v1.router import api_v1_router
 from app.core.config import get_settings
 from app.core.database import async_engine, SessionLocal
+from app.core.rate_limit import limiter
 from app.db.base import Base
+from app.domains.massarius.tenant_scope import ensure_vector_table_rls
 
 settings = get_settings()
+
+_TENANT_SCOPED_TABLES = ("sources", "source_versions")
+
+
+async def _migrate_tenant_columns():
+    """Add tenant_id to sources/source_versions if this DB predates the
+    column. create_all() only creates missing tables, it never alters
+    existing ones, so this covers upgrading a live DB in place.
+
+    Existing rows are backfilled to whichever tenant already owns the data
+    (the first row in `tenants`) rather than a made-up literal — this repo
+    is single-tenant in every environment seeded so far, and the real
+    tenant_id is a generated UUID (see scripts/seed_dev_user.py), not a
+    fixed string, so hardcoding one would silently orphan every existing
+    source from its own tenant's RLS policy.
+    """
+    async with async_engine.begin() as conn:
+        for table in _TENANT_SCOPED_TABLES:
+            if settings.is_sqlite:
+                columns = await conn.execute(text(f"PRAGMA table_info({table})"))
+                column_names = {row[1] for row in columns}
+                if "tenant_id" not in column_names:
+                    await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN tenant_id VARCHAR"))
+            else:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS tenant_id VARCHAR"))
+            await conn.execute(
+                text(f"UPDATE {table} SET tenant_id = (SELECT id FROM tenants LIMIT 1) WHERE tenant_id IS NULL")
+            )
+            await conn.execute(text(f"UPDATE {table} SET tenant_id = 'GLOBAL_CONTROL' WHERE tenant_id IS NULL"))
+            if not settings.is_sqlite:
+                await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN tenant_id SET NOT NULL"))
+
+
+async def _migrate_source_licence_columns():
+    """Add licence_state/authority_level/is_tenant_private to `sources` if this
+    DB predates them — ZL-ENG-03 §5.6 Checkpoint A/B needs real per-source
+    eligibility data. Same create_all()-doesn't-alter-existing-tables
+    situation as _migrate_tenant_columns above."""
+    async with async_engine.begin() as conn:
+        if settings.is_sqlite:
+            columns = await conn.execute(text("PRAGMA table_info(sources)"))
+            column_names = {row[1] for row in columns}
+            if "licence_state" not in column_names:
+                await conn.execute(text("ALTER TABLE sources ADD COLUMN licence_state VARCHAR"))
+            if "authority_level" not in column_names:
+                await conn.execute(text("ALTER TABLE sources ADD COLUMN authority_level VARCHAR"))
+            if "is_tenant_private" not in column_names:
+                await conn.execute(text("ALTER TABLE sources ADD COLUMN is_tenant_private BOOLEAN"))
+        else:
+            await conn.execute(text("ALTER TABLE sources ADD COLUMN IF NOT EXISTS licence_state VARCHAR"))
+            await conn.execute(text("ALTER TABLE sources ADD COLUMN IF NOT EXISTS authority_level VARCHAR"))
+            await conn.execute(text("ALTER TABLE sources ADD COLUMN IF NOT EXISTS is_tenant_private BOOLEAN"))
+        await conn.execute(text("UPDATE sources SET licence_state = 'permitted' WHERE licence_state IS NULL"))
+        await conn.execute(text("UPDATE sources SET authority_level = 'secondary' WHERE authority_level IS NULL"))
+        await conn.execute(text("UPDATE sources SET is_tenant_private = FALSE WHERE is_tenant_private IS NULL"))
+        if not settings.is_sqlite:
+            await conn.execute(text("ALTER TABLE sources ALTER COLUMN licence_state SET NOT NULL"))
+            await conn.execute(text("ALTER TABLE sources ALTER COLUMN authority_level SET NOT NULL"))
+            await conn.execute(text("ALTER TABLE sources ALTER COLUMN is_tenant_private SET NOT NULL"))
+
+
+def _pg_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _pg_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+async def _provision_app_role(conn):
+    """Create (if missing) the low-privilege role request_engine connects as,
+    and grant it DML on every table. This role must NOT be a superuser and
+    must NOT own these tables — Postgres exempts superusers from RLS
+    unconditionally, and exempts table owners unless FORCE is set, so a
+    non-owner/non-superuser role is the only kind RLS actually restricts.
+
+    (DO blocks can't take bind parameters, so role/password — both fully
+    controlled by our own settings, never user input — are escaped and
+    inlined directly rather than routed through SQLAlchemy bind params.)
+    """
+    if not settings.APP_DATABASE_URL:
+        print("WARNING: APP_DATABASE_URL not set — request traffic will run as the "
+              "superuser role, so the sources/source_versions RLS policies below "
+              "will have no effect. Set APP_DATABASE_URL to a non-superuser role "
+              "for RG-02 tenant isolation to actually apply.")
+        return
+
+    app_url = make_url(settings.APP_DATABASE_URL)
+    role, password = app_url.username, app_url.password
+
+    exists = await conn.execute(text("SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = :role"), {"role": role})
+    if exists.first() is None:
+        await conn.execute(
+            text(
+                f"CREATE ROLE {_pg_ident(role)} LOGIN PASSWORD {_pg_literal(password)} "
+                "NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE"
+            )
+        )
+    await conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {_pg_ident(role)}"))
+    await conn.execute(text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {_pg_ident(role)}"))
+    await conn.execute(text(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {_pg_ident(role)}"))
+    await conn.execute(
+        text(
+            f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {_pg_ident(role)}"
+        )
+    )
+
+
+async def _setup_source_rls():
+    """RG-02: DB-level tenant isolation on sources/source_versions via
+    Postgres RLS — Postgres-only, skipped under SQLite (no RLS there).
+
+    Provisions the non-superuser role request_engine connects as (see
+    app/core/database.py), then enables + forces RLS and installs a policy
+    on each tenant-scoped table.
+    """
+    if settings.is_sqlite:
+        return
+    async with async_engine.begin() as conn:
+        await _provision_app_role(conn)
+        for table in _TENANT_SCOPED_TABLES:
+            policy = f"tenant_isolation_{table}"
+            await conn.execute(text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
+            await conn.execute(text(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY"))
+            await conn.execute(text(f"DROP POLICY IF EXISTS {policy} ON {table}"))
+            await conn.execute(
+                text(
+                    f"CREATE POLICY {policy} ON {table} "
+                    "USING (tenant_id = current_setting('app.tenant_id', true))"
+                )
+            )
+
+        # ZL-ENG-03 §5.8 — same RLS treatment for the Massarius™ vector-store
+        # table, when it already exists (llama-index creates it lazily on
+        # first retrieval, not via Base.metadata.create_all — see
+        # massarius/tenant_scope.py's docstring for the known limitation that
+        # this doesn't reach the live retrieval query path, which still
+        # connects via the superuser role).
+        if settings.APP_DATABASE_URL:
+            role = make_url(settings.APP_DATABASE_URL).username
+            await ensure_vector_table_rls(conn, role=role)
 
 
 def _seed_defaults():
@@ -245,6 +392,9 @@ async def lifespan(app: FastAPI):
     """Lifecycle events: create tables, seed, and dispose of engine."""
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await _migrate_tenant_columns()
+    await _migrate_source_licence_columns()
+    await _setup_source_rls()
     _seed_defaults()
     _seed_evaluation()
     _seed_escalation_rules()
@@ -270,6 +420,9 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
     # Core API endpoints from main branch
     app.include_router(api_v1_router, prefix="/api/v1")
 
@@ -281,4 +434,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-

@@ -62,7 +62,11 @@ export default function UsersTeamsPage() {
   }
 
   return (
-    <PageShell title="Users & Teams" subtitle="Manage user accounts, team membership, and role assignments.">
+    <PageShell
+      title="Users & Teams"
+      subtitle="Manage user accounts, team membership, and role assignments."
+      showMetrics={false}
+    >
       <Card title="Add user" className="mb-4">
         <form onSubmit={handleCreate} className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
           <div>

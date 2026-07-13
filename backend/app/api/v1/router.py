@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.domains.audit_ledger.router import router as audit_router
 from app.domains.identity.router import auth_router, users_router
+from app.domains.kriton_workspace.router import router as kriton_workspace_router
 from app.domains.learning_cpd.router import router as learning_router
 from app.domains.model_gateway.router import router as model_gateway_router
 from app.domains.source_library.router import router as source_router
@@ -20,4 +21,5 @@ api_v1_router.include_router(model_gateway_router)
 api_v1_router.include_router(evaluation_router, prefix="/evaluation", tags=["Evaluation & Release Gates"])
 api_v1_router.include_router(audit_router)
 api_v1_router.include_router(orchestration_router)
+api_v1_router.include_router(kriton_workspace_router)
 api_v1_router.include_router(upload_router)

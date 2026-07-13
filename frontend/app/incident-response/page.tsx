@@ -73,6 +73,7 @@ export default function IncidentResponsePage() {
     <PageShell
       title="Incident Response"
       subtitle="Track incident status from detection through resolution, with full audit linkage (ZL-T0-04)."
+      showMetrics={false}
     >
       <div className="grid grid-cols-4 gap-4 mb-6">
         <Card title="Open Incidents">

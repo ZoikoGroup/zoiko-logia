@@ -1,9 +1,11 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import type { LucideIcon } from "lucide-react";
+import { Cpu, MessageSquare, FileCode, FlaskConical, History } from "lucide-react";
 import { PageShell } from "@/components/governance/PageShell";
-import { Card } from "@/components/governance/Card";
 import { Pill } from "@/components/governance/Pill";
+import { PanelHeader, PANEL_CLASS, type PanelTone } from "@/components/governance/PanelHeader";
 import { Tabs } from "@/components/shell/Tabs";
 import { PlannedModule } from "@/components/shell/PlannedModule";
 import {
@@ -35,6 +37,22 @@ const TABS = [
   { label: "Evaluation Status", slug: "evaluation-status" },
   { label: "Change History", slug: "change-history" },
 ];
+
+const TAB_ICON: Record<string, LucideIcon> = {
+  models: Cpu,
+  prompts: MessageSquare,
+  "system-instructions": FileCode,
+  "evaluation-status": FlaskConical,
+  "change-history": History,
+};
+
+const TAB_TONE: Record<string, PanelTone> = {
+  models: "brand",
+  prompts: "info",
+  "system-instructions": "warn",
+  "evaluation-status": "ok",
+  "change-history": "brand",
+};
 
 export default function ModelPromptRegistryPage() {
   const [activeTab, setActiveTab] = useState("models");
@@ -101,8 +119,14 @@ export default function ModelPromptRegistryPage() {
     <PageShell
       title="Model & Prompt Registry"
       subtitle="Track which models and prompt versions are active in production, staging, or pending approval."
+      showMetrics={false}
     >
-      <Card>
+      <div className={PANEL_CLASS}>
+        <PanelHeader
+          icon={TAB_ICON[activeTab] ?? Cpu}
+          tone={TAB_TONE[activeTab] ?? "brand"}
+          title={TABS.find((t) => t.slug === activeTab)?.label ?? "Registry"}
+        />
         <Tabs tabs={TABS} activeSlug={activeTab} onChange={setActiveTab} />
 
         {activeTab === "models" && (
@@ -228,7 +252,7 @@ export default function ModelPromptRegistryPage() {
         {activeTab === "change-history" && (
           <PlannedModule phase={3} description="Full change history and approval trail for models and prompts." />
         )}
-      </Card>
+      </div>
     </PageShell>
   );
 }

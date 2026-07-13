@@ -1,7 +1,7 @@
 import uuid
 from datetime import date, datetime, timezone
 
-from sqlalchemy import Date, DateTime, ForeignKey, String
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -19,17 +19,25 @@ class Source(Base):
     __tablename__ = "sources"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False, default="GLOBAL_CONTROL", index=True)
     category: Mapped[str] = mapped_column(String, nullable=False)
     title: Mapped[str] = mapped_column(String, nullable=False)
     source_class: Mapped[str] = mapped_column(String, nullable=False)
     jurisdiction_scope: Mapped[str] = mapped_column(String, nullable=False, default="Global")
     framework_scope: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # ZL-ENG-03 §5.6 Checkpoint A/B inputs — added so license_gate.py has real
+    # per-source eligibility data to check, instead of only the jurisdiction/
+    # status fields that already existed.
+    licence_state: Mapped[str] = mapped_column(String, nullable=False, default="permitted")   # permitted | restricted | unknown
+    authority_level: Mapped[str] = mapped_column(String, nullable=False, default="secondary")  # primary | secondary | internal
+    is_tenant_private: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class SourceVersion(Base):
     __tablename__ = "source_versions"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False, default="GLOBAL_CONTROL", index=True)
     source_id: Mapped[str] = mapped_column(ForeignKey("sources.id"), nullable=False)
     version_label: Mapped[str] = mapped_column(String, nullable=False, default="v1")
     status: Mapped[str] = mapped_column(String, nullable=False, default="PROPOSED")

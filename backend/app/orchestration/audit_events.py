@@ -84,6 +84,30 @@ async def audit_retrieval_failed(db, *, query_id, correlation_id, tenant_id, aud
     await _emit(db, "retrieval_failed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"error": error}, replay_relevance="REQUIRED")
 
+# ── Massarius™ Phase 1 control events — ZL-ENG-03 §12 ────────────────────────
+
+async def audit_licence_prefilter_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                             eligible_count: int, excluded_count: int):
+    await _emit(db, "licence_prefilter_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"eligible_count": eligible_count, "excluded_count": excluded_count})
+
+async def audit_licence_denied(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                checkpoint: str, source_ids: list[str], reason_code: str):
+    await _emit(db, "licence_denied", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"checkpoint": checkpoint, "source_ids": source_ids, "reason_code": reason_code},
+                replay_relevance="REQUIRED")
+
+async def audit_bundle_built(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                              source_bundle_id: str, confidence_state: str, index_version: str):
+    await _emit(db, "bundle_built", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"source_bundle_id": source_bundle_id, "confidence_state": confidence_state,
+                 "index_version": index_version}, replay_relevance="REQUIRED")
+
+async def audit_validation_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                      passed: bool):
+    await _emit(db, "validation_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"passed": passed}, replay_relevance="REQUIRED")
+
 async def audit_risk_classified(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                  risk_level: str, confidence_state: str):
     await _emit(db, "risk_classified", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,

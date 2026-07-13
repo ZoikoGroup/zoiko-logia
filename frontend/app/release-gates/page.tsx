@@ -15,6 +15,7 @@ export default function ReleaseGatesPage() {
     <PageShell
       title="Release Gates"
       subtitle="No publish, deploy, launch, or export without rights, approval, risk state, audit event, and rollback point."
+      showMetrics={false}
     >
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <Card title="Release gate checklist">

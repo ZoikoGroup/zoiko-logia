@@ -14,6 +14,7 @@ export default function ComplianceCalendarPage() {
     <PageShell
       title="Compliance Calendar"
       subtitle="Track upcoming compliance deadlines, reviews, and renewal windows across every governance module."
+      showMetrics={false}
     >
       <Card title="Upcoming compliance events">
         <table className="w-full text-sm">

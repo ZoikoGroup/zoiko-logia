@@ -1,21 +1,20 @@
 import { ReactNode } from "react";
 import { PageHeader } from "./PageHeader";
 import { MetricsRow } from "./MetricsRow";
-import { FooterNote } from "./FooterNote";
 
 export function PageShell({
-  title, subtitle, children,
+  title, subtitle, children, showMetrics = true,
 }: {
   title: string;
   subtitle: string;
   children: ReactNode;
+  showMetrics?: boolean;
 }) {
   return (
-    <main className="flex-1 overflow-y-auto p-4 pt-0">
+    <main className="flex-1 overflow-y-auto p-4">
       <PageHeader title={title} subtitle={subtitle} />
-      <MetricsRow />
+      {showMetrics && <MetricsRow />}
       {children}
-      <FooterNote />
     </main>
   );
 }

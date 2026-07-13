@@ -1,6 +1,4 @@
 # Stack per ZoikoLogia_Project_Execution_Roadmap.docx "Recommended tech stack" table.
-# This slice (Login only) uses SQLite for zero-friction local dev; Postgres+pgvector
-# gets introduced when Source Library/RAG actually needs vector search.
 
 fastapi
 uvicorn[standard]
@@ -8,6 +6,8 @@ uvicorn[standard]
 sqlalchemy
 aiosqlite
 greenlet
+asyncpg
+psycopg2-binary
 
 python-jose[cryptography]
 bcrypt
@@ -26,8 +26,6 @@ llama-index
 llama-parse
 llama-index-embeddings-huggingface
 llama-index-vector-stores-postgres
-psycopg2-binary
-asyncpg
 sentence-transformers
 openai
 groq
@@ -35,3 +33,6 @@ pypdf
 python-docx
 python-pptx
 openpyxl
+
+# Rate limiting
+slowapi

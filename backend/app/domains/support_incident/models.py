@@ -24,6 +24,7 @@ class SupportTicket(Base):
     severity: Mapped[str] = mapped_column(String, nullable=False, default="P3")
     status: Mapped[str] = mapped_column(String, nullable=False, default="Open")
     query_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     assigned_to: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

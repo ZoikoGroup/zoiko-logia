@@ -2,8 +2,9 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { PageShell } from "@/components/governance/PageShell";
-import { Card } from "@/components/governance/Card";
 import { Pill } from "@/components/governance/Pill";
+import { PanelHeader, PANEL_CLASS } from "@/components/governance/PanelHeader";
+import { LifeBuoy, ListChecks } from "lucide-react";
 import {
   ApiError,
   createTicket,
@@ -71,8 +72,10 @@ export default function SupportTicketsPage() {
     <PageShell
       title="Support Tickets"
       subtitle="Ticket intake and classification — category, severity, and routing status."
+      showMetrics={false}
     >
-      <Card title="New ticket" className="mb-4">
+      <div className={`${PANEL_CLASS} mb-4`}>
+        <PanelHeader icon={LifeBuoy} tone="warn" title="New ticket" />
         <form onSubmit={handleCreate} className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
           <div>
             <label className="block text-xs font-medium text-muted mb-1.5">Category</label>
@@ -113,9 +116,10 @@ export default function SupportTicketsPage() {
             </button>
           </div>
         </form>
-      </Card>
+      </div>
 
-      <Card title="Tickets">
+      <div className={PANEL_CLASS}>
+        <PanelHeader icon={ListChecks} title="Tickets" subtitle={`${tickets.length} total`} />
         {error && <p className="text-xs text-bad mb-3">{error}</p>}
         <table className="w-full text-sm">
           <thead>
@@ -149,7 +153,7 @@ export default function SupportTicketsPage() {
             ))}
           </tbody>
         </table>
-      </Card>
+      </div>
     </PageShell>
   );
 }

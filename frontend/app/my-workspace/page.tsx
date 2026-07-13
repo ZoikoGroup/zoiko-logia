@@ -16,7 +16,7 @@ const PENDING_TASKS = [
 
 export default function MyWorkspacePage() {
   return (
-    <main className="flex-1 overflow-y-auto p-4 pt-0">
+    <main className="flex-1 overflow-y-auto p-4">
       <PageHeader title="My Workspace" subtitle="Your personal activity, pending tasks, and saved items in one place." />
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">

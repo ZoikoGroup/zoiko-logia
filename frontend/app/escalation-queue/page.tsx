@@ -141,7 +141,7 @@ export default function EscalationQueuePage() {
   }
 
   return (
-    <main className="flex-1 overflow-y-auto p-6 pt-0 space-y-6">
+    <main className="flex-1 overflow-y-auto p-6 space-y-6">
       <PageHeader
         title="Escalation Queue & Governance"
         subtitle="Manage routing cases, monitor SLAs, and apply safety overrides."
