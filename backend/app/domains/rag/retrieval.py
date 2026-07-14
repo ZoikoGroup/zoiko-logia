@@ -1,21 +1,67 @@
+import contextvars
 import os
 from typing import List, Dict, Any
 from llama_index.core import VectorStoreIndex, StorageContext
 from llama_index.core.vector_stores.types import MetadataFilters, ExactMatchFilter
 from app.core.config import get_settings
+from app.domains.rag.embeddings import get_embed_model, EMBED_DIM
 
 settings = get_settings()
 
-_embed_model = None
+
+# Set immediately before every retrieve_documents() call so the pool
+# "checkout" listener below can stamp app.tenant_id onto whichever
+# connection PGVectorStore ends up using for that call. PGVectorStore
+# manages its own connection pool internally rather than reusing
+# app.core.database's request-scoped session, so this is the only hook
+# point available to make massarius/tenant_scope.py's RLS policy on
+# kriton_vector_nodes (current_setting('app.tenant_id')) see per-call
+# tenant context at all.
+_current_tenant_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "rag_retrieval_tenant_id", default=""
+)
+
+_pg_engine_cache: dict[str, tuple] = {}
 
 
-def get_embed_model():
-    global _embed_model
-    if _embed_model is None:
-        from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+def _tenant_scoped_pg_engines(sync_url: str, async_url: str) -> tuple:
+    """Builds (or returns cached, keyed by connection string) a sync+async
+    engine pair for kriton_vector_nodes access where every connection
+    checked out of the pool carries this call's tenant context.
 
-        _embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-m3")
-    return _embed_model
+    Closes the RLS-bypass gap massarius/tenant_scope.py's module docstring
+    flags: this module previously built PGVectorStore straight from
+    settings.DATABASE_URL (the superuser role, which Postgres always
+    exempts from RLS) with no tenant context set at all. Callers should
+    pass settings.APP_DATABASE_URL (the non-superuser, RLS-subject role)
+    here — see retrieve_documents below.
+    """
+    cached = _pg_engine_cache.get(sync_url)
+    if cached is not None:
+        return cached
+
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_engine(sync_url, pool_pre_ping=True)
+    async_engine = create_async_engine(async_url)
+
+    def _set_tenant_on_checkout(dbapi_conn, connection_record, connection_proxy):
+        # Session-scoped (not SET LOCAL): mirrors app/core/database.py's
+        # get_db(), which sets this on every checkout — even to "" — so a
+        # connection reused from the pool never carries over a previous
+        # call's tenant_id into a call that has none.
+        cursor = dbapi_conn.cursor()
+        try:
+            cursor.execute("SELECT set_config('app.tenant_id', %s, false)", (_current_tenant_id.get(),))
+        finally:
+            cursor.close()
+
+    event.listens_for(engine, "checkout")(_set_tenant_on_checkout)
+    event.listens_for(async_engine.sync_engine, "checkout")(_set_tenant_on_checkout)
+
+    _pg_engine_cache[sync_url] = (engine, async_engine)
+    return engine, async_engine
 
 async def retrieve_documents(
     query: str,
@@ -36,31 +82,45 @@ async def retrieve_documents(
         
     filters = MetadataFilters(filters=filters_list)
     
-    if settings.DATABASE_URL.startswith("postgresql"):
+    if not settings.is_sqlite:
         # Real Hybrid PGVector + Full text search using raw SQL or LlamaIndex pgvector extension
         # Let's perform standard LlamaIndex Postgres hybrid search setup
         from llama_index.vector_stores.postgres import PGVectorStore
-        from sqlalchemy.engine import make_url
-        
-        sync_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
-        url_obj = make_url(sync_url)
-        
-        vector_store = PGVectorStore.from_params(
-            host=url_obj.host,
-            port=url_obj.port or 5432,
-            database=url_obj.database,
-            user=url_obj.username,
-            password=url_obj.password,
+        from app.core.database import to_async_url, to_sync_url
+
+        # Non-superuser role (RG-02): connecting as the DATABASE_URL owner
+        # role would make Postgres exempt every query here from RLS
+        # regardless of policy — see _tenant_scoped_pg_engines' docstring.
+        # to_sync_url/to_async_url (not a plain .startswith("postgresql")
+        # check, which misses the legacy postgres:// scheme Supabase's
+        # pooler connection strings use) normalize whichever scheme variant
+        # was pasted into .env into the driver each engine actually needs.
+        conn_url = settings.APP_DATABASE_URL or settings.DATABASE_URL
+        sync_url = to_sync_url(conn_url)
+        async_url = to_async_url(conn_url)
+
+        engine, async_engine = _tenant_scoped_pg_engines(sync_url, async_url)
+
+        vector_store = PGVectorStore(
+            connection_string=sync_url,
+            async_connection_string=async_url,
             table_name="kriton_vector_nodes",
-            embed_dim=1024,
-            hybrid_search=True, # enables BM25 (tsvector) + pgvector hybrid retrieval
+            schema_name="public",
+            embed_dim=EMBED_DIM,
+            hybrid_search=True,  # enables BM25 (tsvector) + pgvector hybrid retrieval
+            engine=engine,
+            async_engine=async_engine,
         )
-        
+
         storage_context = StorageContext.from_defaults(vector_store=vector_store)
         index = VectorStoreIndex.from_vector_store(vector_store, embed_model=embed_model)
-        
+
         retriever = index.as_retriever(similarity_top_k=top_k, filters=filters)
-        nodes = retriever.retrieve(query)
+        token = _current_tenant_id.set(tenant_id)
+        try:
+            nodes = retriever.retrieve(query)
+        finally:
+            _current_tenant_id.reset(token)
         
         results = []
         for n in nodes:

@@ -11,25 +11,30 @@ vector-store table the live semantic retrieval layer uses).
 This module must NOT contain retrieval or licence logic itself — only tenant
 scoping enforcement and the test helpers used to prove it holds.
 
-Known, flagged limitation (see docstring on ensure_vector_table_rls below):
-kriton_vector_nodes RLS can only take effect for a connection made through
-the non-superuser role. The live vector retrieval in
-app/domains/rag/retrieval.py opens its own connection directly from
-settings.DATABASE_URL (the superuser role), which unconditionally bypasses
-RLS — Postgres exempts superusers regardless of any policy. Closing that
-would mean changing which connection string retrieval.py uses, which is
-inside app/domains/rag/ and out of scope here. What this module provides is
-real, correct DB-level enforcement for any connection that *does* go through
-the scoped role (proven by the test helpers below), plus the same enable/
-force/policy setup already applied to sources/source_versions — it does not
-yet reach the vector table's actual live query path.
+Corrected: this previously targeted the wrong table name. LlamaIndex's
+PGVectorStore prefixes whatever table_name you pass with "data_" — this
+project passes table_name="kriton_vector_nodes" (see rag/retrieval.py,
+source_library/ingestion_service.py), so the real table Postgres creates is
+"data_kriton_vector_nodes". VECTOR_TABLE here was "kriton_vector_nodes"
+(no prefix), which never exists — table_exists() always returned False, so
+ensure_vector_table_rls() silently no-op'd on every boot and RLS was never
+actually applied to the vector store at all, independent of the
+superuser-bypass issue below. Found by actually getting rows into the table
+for the first time and checking pg_tables directly.
+
+app/domains/rag/retrieval.py no longer opens a superuser connection for
+live vector retrieval either (it now routes through APP_DATABASE_URL and
+stamps app.tenant_id via a pool checkout listener — see that module's
+docstring) — so with both fixes, this module's RLS setup now actually
+reaches the real table on the real live query path, not just the test
+helpers below.
 """
 from __future__ import annotations
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
-VECTOR_TABLE = "kriton_vector_nodes"
+VECTOR_TABLE = "data_kriton_vector_nodes"
 
 
 def _pg_ident(name: str) -> str:
@@ -42,16 +47,28 @@ async def table_exists(conn: AsyncConnection, table_name: str) -> bool:
 
 
 async def ensure_vector_table_rls(conn: AsyncConnection, *, role: str) -> bool:
-    """Enable + force RLS and install a tenant_id policy on kriton_vector_nodes,
-    matching the same non-superuser role already provisioned for
-    sources/source_versions in app/main.py's _provision_app_role.
+    """Enable + force RLS and install a tenant_id policy on
+    data_kriton_vector_nodes, matching the same non-superuser role already
+    provisioned for sources/source_versions in app/main.py's
+    _provision_app_role.
 
-    kriton_vector_nodes is created lazily by llama-index's PGVectorStore on
-    first real retrieval call, not by Base.metadata.create_all — so this is a
-    no-op (returns False) until that first call has happened at least once.
-    Re-running this after ingestion is safe and idempotent; call it again
-    once you know the table exists (e.g. after a manual ingestion run) if it
-    returned False at startup.
+    The table is created lazily by llama-index's PGVectorStore on first
+    real ingestion/retrieval call, not by Base.metadata.create_all — so this
+    is a no-op (returns False) until that first call has happened at least
+    once. Re-running this after ingestion is safe and idempotent; call it
+    again once you know the table exists (e.g. after a manual ingestion
+    run) if it returned False at startup.
+
+    Known gap, unlike the sources/source_versions policy: this is strict
+    tenant_id equality, not the shared-unless-private model
+    massarius/license_gate.py applies to sources (is_tenant_private=False
+    rows shared across every tenant). Vector chunk metadata (see
+    source_library/ingestion_service.py) has no is_tenant_private field yet,
+    so a standard embedded under one tenant won't be found via vector
+    search by another tenant even when the equivalent Source row is
+    public. That's a functional gap (under-sharing), not a security one —
+    it fails closed, which is the safe direction — but worth knowing before
+    relying on cross-tenant shared standards through the vector path.
     """
     if not await table_exists(conn, VECTOR_TABLE):
         return False

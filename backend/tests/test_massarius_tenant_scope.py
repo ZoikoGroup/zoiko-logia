@@ -28,7 +28,13 @@ async def test_sources_table_isolated_bypassing_application_layer():
     """Proves isolation at the query layer itself: two raw, unfiltered
     `SELECT id FROM sources` calls, one per tenant session, using
     RequestSessionLocal (the non-superuser role) directly — no
-    application-layer WHERE tenant_id=... clause written by this test."""
+    application-layer WHERE tenant_id=... clause written by this test.
+
+    is_tenant_private=True on both: non-private sources are deliberately
+    shared across every tenant (massarius/license_gate.py's Checkpoint A),
+    so an isolation assertion only holds for rows actually marked private —
+    see test_tenant_isolation.py's test_non_private_source_is_shared_across_tenants
+    for the shared-by-design half of this policy."""
     if settings.is_sqlite:
         print("test_sources_table_isolated_bypassing_application_layer: SKIPPED (SQLite has no RLS)")
         return
@@ -37,8 +43,14 @@ async def test_sources_table_isolated_bypassing_application_layer():
     tenant_b = f"tenant-b-{uuid.uuid4().hex[:8]}"
 
     async with AsyncSessionLocal() as db:
-        source_a = Source(tenant_id=tenant_a, category="tax", title="Tenant A Only", source_class="internal")
-        source_b = Source(tenant_id=tenant_b, category="tax", title="Tenant B Only", source_class="internal")
+        source_a = Source(
+            tenant_id=tenant_a, category="tax", title="Tenant A Only", source_class="internal",
+            is_tenant_private=True,
+        )
+        source_b = Source(
+            tenant_id=tenant_b, category="tax", title="Tenant B Only", source_class="internal",
+            is_tenant_private=True,
+        )
         db.add_all([source_a, source_b])
         await db.commit()
         ids = [source_a.id, source_b.id]

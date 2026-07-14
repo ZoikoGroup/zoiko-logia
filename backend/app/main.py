@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -17,6 +18,32 @@ from app.domains.massarius.tenant_scope import ensure_vector_table_rls
 settings = get_settings()
 
 _TENANT_SCOPED_TABLES = ("sources", "source_versions")
+
+# RLS predicate per tenant-scoped table. Not a strict tenant_id equality:
+# massarius/license_gate.py's Checkpoint A already treats non-private
+# sources (is_tenant_private=False) as shared across every tenant by design
+# (e.g. regulatory standards) — only rows actually marked private are
+# boundary-restricted to their owning tenant. A strict-equality policy would
+# hide every shared source from every tenant that doesn't literally own the
+# row, breaking that sharing model as soon as RLS is enforced. source_versions
+# has no is_tenant_private of its own, so its policy joins back to sources.
+#
+# The leading "context set at all" guard is required, not optional: without
+# it, a session with no app.tenant_id (current_setting returns NULL/'') would
+# still see every non-private row, because that half of the OR doesn't
+# reference tenant context at all. The original strict-equality policy only
+# failed closed in that case "by accident" via SQL NULL comparison semantics
+# (tenant_id = NULL is never TRUE) — this makes the same fail-closed
+# guarantee explicit so it survives the OR clause.
+_HAS_TENANT_CONTEXT = "current_setting('app.tenant_id', true) IS NOT NULL AND current_setting('app.tenant_id', true) != ''"
+_TENANT_POLICY_USING = {
+    "sources": f"({_HAS_TENANT_CONTEXT} AND (NOT is_tenant_private OR tenant_id = current_setting('app.tenant_id', true)))",
+    "source_versions": (
+        f"({_HAS_TENANT_CONTEXT} AND ("
+        "tenant_id = current_setting('app.tenant_id', true) "
+        "OR source_id IN (SELECT id FROM sources WHERE NOT is_tenant_private)))"
+    ),
+}
 
 
 async def _migrate_tenant_columns():
@@ -122,6 +149,22 @@ async def _provision_app_role(conn):
         )
     )
 
+    # Supabase installs the `vector` extension (and its <=>/<#>/<-> operators)
+    # into a dedicated "extensions" schema, not "public" — a newly created
+    # role has neither USAGE on that schema nor it on its search_path, so
+    # pgvector queries fail with "operator does not exist: ... <=> unknown"
+    # (Postgres can't even see the operator to consider it, let alone resolve
+    # types). Self-hosted/non-Supabase Postgres installs vector into public,
+    # so this schema simply won't exist there — guard and skip.
+    has_extensions_schema = await conn.execute(
+        text("SELECT 1 FROM pg_namespace WHERE nspname = 'extensions'")
+    )
+    if has_extensions_schema.first() is not None:
+        await conn.execute(text(f"GRANT USAGE ON SCHEMA extensions TO {_pg_ident(role)}"))
+        await conn.execute(
+            text(f'ALTER ROLE {_pg_ident(role)} SET search_path TO "$user", public, extensions')
+        )
+
 
 async def _setup_source_rls():
     """RG-02: DB-level tenant isolation on sources/source_versions via
@@ -141,10 +184,7 @@ async def _setup_source_rls():
             await conn.execute(text(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY"))
             await conn.execute(text(f"DROP POLICY IF EXISTS {policy} ON {table}"))
             await conn.execute(
-                text(
-                    f"CREATE POLICY {policy} ON {table} "
-                    "USING (tenant_id = current_setting('app.tenant_id', true))"
-                )
+                text(f"CREATE POLICY {policy} ON {table} USING {_TENANT_POLICY_USING[table]}")
             )
 
         # ZL-ENG-03 §5.8 — same RLS treatment for the Massarius™ vector-store
@@ -387,6 +427,57 @@ def _seed_users():
         db.close()
 
 
+async def _warm_up_ml_models():
+    """Load the lazy-singleton embedding/reranker/risk-classifier models once
+    here at startup, instead of leaving them to load on whichever request
+    happens to arrive first. Profiling showed each one's first-ever load in a
+    fresh process costs ~40-60s — almost entirely a one-time
+    torch/transformers/sentence-transformers import tax paid once per
+    process, not per query (a second call in the same process is ~0s). Left
+    lazy, that cost silently lands on an arbitrary early user's request
+    instead of here, where it just extends server startup instead.
+
+    Loaded sequentially, not concurrently: this app has been run on a
+    memory-constrained dev machine where loading all three at once (each
+    spinning up its own torch tensors/allocations in parallel) pushed peak
+    memory past what was available and segfaulted the whole process on
+    startup. One at a time keeps peak memory to roughly one model's worth —
+    a few seconds slower startup is a much better trade than crashing.
+    """
+    import asyncio as _asyncio
+
+    loop = _asyncio.get_event_loop()
+
+    def _load_embed():
+        from app.domains.rag.embeddings import get_embed_model
+
+        get_embed_model()
+
+    def _load_reranker():
+        from llama_index.core.postprocessor import SentenceTransformerRerank
+
+        from app.domains.rag.reranker import RERANKER_MODEL
+
+        SentenceTransformerRerank(model=RERANKER_MODEL, top_n=5)
+
+    def _load_classifier():
+        from app.domains.risk_safety.risk_classifier import _get_classifier_pipeline
+
+        _get_classifier_pipeline()
+
+    steps = [("embedding", _load_embed)]
+    if os.getenv("ENABLE_RAG_EMBEDDINGS", "").lower() in {"1", "true", "yes"}:
+        steps.append(("reranker", _load_reranker))
+    if os.getenv("ENABLE_ML_CLASSIFIER", "").lower() in {"1", "true", "yes"}:
+        steps.append(("risk classifier", _load_classifier))
+
+    for name, fn in steps:
+        try:
+            await loop.run_in_executor(None, fn)
+        except Exception as exc:
+            print(f"WARNING: {name} model warmup failed (will still lazy-load on first use): {exc}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle events: create tables, seed, and dispose of engine."""
@@ -400,6 +491,7 @@ async def lifespan(app: FastAPI):
     _seed_escalation_rules()
     _seed_incidents()
     _seed_users()
+    await _warm_up_ml_models()
     yield
     await async_engine.dispose()
 

@@ -121,6 +121,14 @@ async def audit_route_selected(db, *, query_id, correlation_id, tenant_id, audit
                  "classifier_version": CLASSIFIER_VERSION, "policy_version": POLICY_VERSION},
                 replay_relevance="REQUIRED")
 
+async def audit_redaction_applied(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                   redaction_applied: bool, redaction_categories: list[str]):
+    # ZL-ENG-03 §7: record categories and a count only — never the redacted
+    # spans or the encrypted redaction_map reference itself in this event.
+    await _emit(db, "redaction_applied", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"redaction_applied": redaction_applied, "redaction_categories": redaction_categories,
+                 "redaction_count": len(redaction_categories)})
+
 async def audit_composition_started(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id):
     await _emit(db, "composition_started", query_id, correlation_id, tenant_id, audit_chain_id, actor_id, {})
 

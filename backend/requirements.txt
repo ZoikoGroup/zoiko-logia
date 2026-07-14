@@ -4,6 +4,7 @@ fastapi
 uvicorn[standard]
 
 sqlalchemy
+alembic
 aiosqlite
 greenlet
 asyncpg
@@ -27,6 +28,7 @@ llama-parse
 llama-index-embeddings-huggingface
 llama-index-vector-stores-postgres
 sentence-transformers
+docling
 openai
 groq
 pypdf

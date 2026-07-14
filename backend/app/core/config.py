@@ -1,5 +1,19 @@
 from functools import lru_cache
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# pydantic-settings' env_file=".env" below only populates this Settings
+# class's own fields — it never touches the real process environment. But
+# several modules (groq_adapter.py, risk_classifier.py, orchestration's
+# ENABLE_RAG_EMBEDDINGS checks, etc.) read os.getenv(...)/os.environ.get(...)
+# directly for flags/keys that have no Settings field. Without this, those
+# reads only ever see values already present in the OS/container
+# environment (docker-compose's `environment:`/`env_file:` inject there
+# directly) — a plain local `uvicorn` run reading only backend/.env would
+# silently leave them unset, disabling RAG retrieval, the ML classifier, and
+# real LLM providers with no error. load_dotenv() populates os.environ from
+# .env without overriding anything already set there.
+load_dotenv()
 
 
 class Settings(BaseSettings):

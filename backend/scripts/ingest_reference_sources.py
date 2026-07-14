@@ -1,7 +1,13 @@
 """
 Ingest the reference PDFs under data/sources/{uk,us}/ into the source_library
 domain as real, governed Source/SourceVersion records — closing the gap
-where those files sat on disk unconnected to anything.
+where those files sat on disk unconnected to anything — AND into the
+kriton_vector_nodes vector store so they're actually retrievable by Ask
+Kriton. Previously this script only did the former: it created governance
+metadata rows via create_source/approve_source_version but never called the
+embedding pipeline, so nothing it "ingested" was ever findable by real
+retrieval — the only path that populated real vectors was uploading files
+one-by-one through POST /kriton/upload.
 
 Titles/categories below were derived from each PDF's actual first-page text
 (extracted with pypdf), not guessed from filenames. Runs through the same
@@ -14,9 +20,15 @@ submitting admin cannot approve its own submission).
 One file (UK_legislation1.pdf — the Mental Capacity Act 2005) doesn't fit any
 accounting/tax/audit category; it's intentionally left PROPOSED rather than
 auto-approved, exactly like a human reviewer would flag it in the real
-Source Licensing workflow.
+Source Licensing workflow. Embedding only runs for auto_approve=True sources
+— the vector retrieval path (app/domains/rag/retrieval.py) has no
+governance-status filter of its own, unlike the keyword_mvp path, so
+embedding a still-PROPOSED document would make it retrievable before human
+review, defeating the point of leaving it PROPOSED.
 
-Idempotent: re-running skips any title that already exists.
+Idempotent: re-running skips any title that already exists. Embedding
+failures are logged and counted but don't abort the run — a parse failure
+on one PDF shouldn't block governance ingestion of the rest.
 """
 import asyncio
 import sys
@@ -31,6 +43,8 @@ from app.domains.identity.models import User
 from app.domains.source_library.models import Source
 from app.domains.source_library.schemas import SourceCreateRequest
 from app.domains.source_library.service import approve_source_version, create_source
+from app.domains.source_library.parser_service import get_parser
+from app.domains.source_library.ingestion_service import ingest_document_content
 
 SUBMITTER_EMAIL = "dashboard@zoikologia.com"
 APPROVER_EMAIL = "source.reviewer@zoikologia.com"
@@ -114,7 +128,8 @@ async def ingest() -> None:
         submitter = (await db.execute(select(User).where(User.email == SUBMITTER_EMAIL))).scalar_one()
         approver = (await db.execute(select(User).where(User.email == APPROVER_EMAIL))).scalar_one()
 
-        created, approved, skipped, missing = 0, 0, 0, 0
+        parser = get_parser(prefer_cloud=False)
+        created, approved, skipped, missing, embedded, embed_failed = 0, 0, 0, 0, 0, 0
         for filename, folder, title, category, source_class, jurisdiction, auto_approve in MANIFEST:
             file_path = DATA_DIR / folder / filename
             if not file_path.exists():
@@ -154,7 +169,31 @@ async def ingest() -> None:
                 )
                 approved += 1
 
-        print(f"\nDone. created={created} approved={approved} skipped={skipped} missing={missing}")
+                try:
+                    markdown_content = await parser.parse_file(str(file_path))
+                    await ingest_document_content(
+                        str(file_path),
+                        markdown_content,
+                        {
+                            "title": title,
+                            "category": category,
+                            "jurisdiction_scope": jurisdiction,
+                            "version_label": source["latest_version"].version_label,
+                            "tenant_id": submitter.tenant_id,
+                            "source_id": source["id"],
+                        },
+                        db,
+                    )
+                    embedded += 1
+                    print(f"  Embedded into vector store: {title}")
+                except Exception as e:
+                    embed_failed += 1
+                    print(f"  WARNING: embedding failed for {title}: {e}")
+
+        print(
+            f"\nDone. created={created} approved={approved} skipped={skipped} "
+            f"missing={missing} embedded={embedded} embed_failed={embed_failed}"
+        )
 
 
 if __name__ == "__main__":

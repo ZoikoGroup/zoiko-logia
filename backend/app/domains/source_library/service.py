@@ -43,10 +43,22 @@ async def _latest_version(db: AsyncSession, source_id: str) -> SourceVersion:
     return result.scalars().first()
 
 
-async def list_sources(db: AsyncSession, category: str | None = None) -> list[dict]:
+async def list_sources(
+    db: AsyncSession, category: str | None = None, *, tenant_id: str | None = None
+) -> list[dict]:
+    """tenant_id, when given, enforces the same tenant-private boundary
+    massarius/license_gate.py's Checkpoint A applies downstream: non-private
+    sources (is_tenant_private=False) are shared across all tenants by
+    design (e.g. regulatory standards), so only rows actually marked private
+    are restricted to their owning tenant. This mirrors that logic at the
+    data-access layer as well, not just app-layer, per ZL-ENG-03 §7.1 —
+    filtering strictly on tenant_id equality here would incorrectly hide
+    shared sources from every tenant that doesn't literally own the row."""
     query = select(Source)
     if category:
         query = query.where(Source.category == category)
+    if tenant_id is not None:
+        query = query.where((Source.is_tenant_private.is_(False)) | (Source.tenant_id == tenant_id))
     result = await db.execute(query)
     sources = result.scalars().all()
 
@@ -55,6 +67,26 @@ async def list_sources(db: AsyncSession, category: str | None = None) -> list[di
         latest = await _latest_version(db, source.id)
         combined.append({**source.__dict__, "latest_version": latest})
     return combined
+
+
+async def get_source_by_id(
+    db: AsyncSession, source_id: str, *, tenant_id: str | None = None
+) -> dict | None:
+    """Single-row counterpart to list_sources(), for callers (e.g. vector
+    retrieval) that only have a source_id from chunk metadata and need to
+    verify it against a real, tenant-visible governance record — rather than
+    trusting whatever status/jurisdiction the chunk's own metadata claims.
+    Applies the same shared-unless-private tenant boundary as list_sources().
+    Returns None if the id doesn't exist or isn't visible to this tenant."""
+    query = select(Source).where(Source.id == source_id)
+    if tenant_id is not None:
+        query = query.where((Source.is_tenant_private.is_(False)) | (Source.tenant_id == tenant_id))
+    result = await db.execute(query)
+    source = result.scalar_one_or_none()
+    if source is None:
+        return None
+    latest = await _latest_version(db, source.id)
+    return {**source.__dict__, "latest_version": latest}
 
 
 async def create_source(

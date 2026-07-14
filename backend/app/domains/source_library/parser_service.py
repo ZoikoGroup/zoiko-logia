@@ -89,8 +89,18 @@ class DoclingParserAdapter(BaseParser):
         # Extremely basic fallback when no parsing libraries are present
         return f"# Document: {filename}\n\n[Fallback simple text extraction placeholder for {ext} file type.]"
 
-def get_parser(use_fallback: bool = False) -> BaseParser:
-    """Factory helper to obtain the preferred parser service."""
-    if not use_fallback and os.environ.get("LLAMA_CLOUD_API_KEY"):
+def get_parser(prefer_cloud: bool = False) -> BaseParser:
+    """Factory helper to obtain the preferred parser service.
+
+    Docling (local) is the default/primary parser for the Kriton ingestion
+    pipeline — no per-document cloud API cost or external dependency for
+    the common case. prefer_cloud=True opts into LlamaParseAdapter (cloud,
+    requires LLAMA_CLOUD_API_KEY) for documents Docling can't handle;
+    silently falls back to Docling if no cloud key is configured even when
+    requested, since "no key" shouldn't be a hard failure here — the caller
+    (orchestration/upload_router.py) already treats parser failure as a
+    two-step try/fallback itself.
+    """
+    if prefer_cloud and os.environ.get("LLAMA_CLOUD_API_KEY"):
         return LlamaParseAdapter()
     return DoclingParserAdapter()

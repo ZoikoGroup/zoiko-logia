@@ -10,6 +10,7 @@ Envelope rule: payload fields vary by event_name, but envelope fields do not.
 """
 from __future__ import annotations
 
+import contextvars
 from typing import Optional
 
 from sqlalchemy import select, text
@@ -21,6 +22,18 @@ from app.domains.audit_ledger.chain_integrity import compute_chain_hash, compute
 from app.domains.audit_ledger.models import AuditEvent, _event_id, _now
 
 settings = get_settings()
+
+# A single ask_kriton() call emits ~15 audit events in strict sequence, and
+# each one previously re-queried "what was the last chain_hash?" from
+# Postgres before writing — a genuinely unnecessary round-trip, since this
+# process already knows its own immediately-previous write (it just made
+# it). Cached here per async task (i.e. per request — FastAPI/Starlette
+# gives each request its own context, so this never leaks between
+# concurrent requests), and only falls back to a real DB lookup for the
+# first event of a request, when no prior write in this task is known yet.
+_cached_previous_chain_hash: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "audit_previous_chain_hash", default=None
+)
 
 
 def _build_row(
@@ -66,17 +79,28 @@ def _build_row(
 
 
 async def record_event_async(db: AsyncSession, *, tenant_id: str = "GLOBAL_CONTROL", **kwargs) -> AuditEvent:
-    result = await db.execute(
-        select(AuditEvent.chain_hash)
-        .where(AuditEvent.tenant_id == tenant_id)
-        .order_by(AuditEvent.ingested_at.desc())
-        .limit(1)
-    )
-    previous_chain_hash = result.scalar_one_or_none()
+    previous_chain_hash = _cached_previous_chain_hash.get()
+    if previous_chain_hash is None:
+        # Only hit the DB for the first event of this request (task) — every
+        # subsequent event in the same request already knows its own
+        # immediately-previous write from the cache below, with no lookup.
+        result = await db.execute(
+            select(AuditEvent.chain_hash)
+            .where(AuditEvent.tenant_id == tenant_id)
+            .order_by(AuditEvent.ingested_at.desc())
+            .limit(1)
+        )
+        previous_chain_hash = result.scalar_one_or_none()
+
     row = _build_row(tenant_id=tenant_id, previous_chain_hash=previous_chain_hash, **kwargs)
+    # Captured before commit — expire_on_commit invalidates row's attributes
+    # afterward, so reading row.chain_hash post-commit would silently trigger
+    # another round-trip to reload it. Nothing computed it DB-side anyway;
+    # _build_row already derived it in Python.
+    new_chain_hash = row.chain_hash
     db.add(row)
     await db.commit()
-    await db.refresh(row)
+    _cached_previous_chain_hash.set(new_chain_hash)
 
     # This commit just ended the transaction get_db() originally scoped to
     # this tenant (app/core/database.py). SQLAlchemy's connection pool may
