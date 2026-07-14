@@ -54,6 +54,7 @@ async def build_source_bundle(
     query: str,
     jurisdiction: str,
     tenant_id: str,
+    raw_chunks: list | None = None,
 ) -> SourceBundle:
     """
     Build a SourceBundle via keyword-based category retrieval, merged with
@@ -61,6 +62,16 @@ async def build_source_bundle(
     tenant_id is enforced at the data-access layer via list_sources /
     get_source_by_id.
     Returns confidence_state per §7.2 six-state vocabulary.
+
+    raw_chunks: pass already-fetched vector search results (e.g. the same
+    chunks orchestration/service.py separately fetches at a larger top_k for
+    the LLM's grounded context) to skip this function's own retrieve_documents()
+    call entirely. retrieve_documents() embeds the query text and does a real
+    Postgres vector search — profiling showed it costs ~20s per call on this
+    setup, and it was previously being called twice per request (once here at
+    top_k=5, once in service.py at top_k=30) for the exact same query, which
+    is pure waste. Pass None (the old behavior) to have this function fetch
+    its own chunks, e.g. for standalone/test use.
     """
     category = infer_category(query)
 
@@ -107,15 +118,16 @@ async def build_source_bundle(
         # sources/source_versions record by source_id, through the same
         # status/jurisdiction rules as the keyword path above — never taken
         # at face value as "ACTIVE".
-        from app.domains.rag.retrieval import retrieve_documents
-
         try:
-            raw_chunks = await retrieve_documents(
-                query=query,
-                tenant_id=tenant_id,
-                jurisdiction=jurisdiction or None,
-                top_k=5
-            )
+            if raw_chunks is None:
+                from app.domains.rag.retrieval import retrieve_documents
+
+                raw_chunks = await retrieve_documents(
+                    query=query,
+                    tenant_id=tenant_id,
+                    jurisdiction=jurisdiction or None,
+                    top_k=5
+                )
             checked_source_ids = set()
             for chunk in raw_chunks:
                 meta = chunk.get("metadata", {})

@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -426,6 +427,57 @@ def _seed_users():
         db.close()
 
 
+async def _warm_up_ml_models():
+    """Load the lazy-singleton embedding/reranker/risk-classifier models once
+    here at startup, instead of leaving them to load on whichever request
+    happens to arrive first. Profiling showed each one's first-ever load in a
+    fresh process costs ~40-60s — almost entirely a one-time
+    torch/transformers/sentence-transformers import tax paid once per
+    process, not per query (a second call in the same process is ~0s). Left
+    lazy, that cost silently lands on an arbitrary early user's request
+    instead of here, where it just extends server startup instead.
+
+    Loaded sequentially, not concurrently: this app has been run on a
+    memory-constrained dev machine where loading all three at once (each
+    spinning up its own torch tensors/allocations in parallel) pushed peak
+    memory past what was available and segfaulted the whole process on
+    startup. One at a time keeps peak memory to roughly one model's worth —
+    a few seconds slower startup is a much better trade than crashing.
+    """
+    import asyncio as _asyncio
+
+    loop = _asyncio.get_event_loop()
+
+    def _load_embed():
+        from app.domains.rag.embeddings import get_embed_model
+
+        get_embed_model()
+
+    def _load_reranker():
+        from llama_index.core.postprocessor import SentenceTransformerRerank
+
+        from app.domains.rag.reranker import RERANKER_MODEL
+
+        SentenceTransformerRerank(model=RERANKER_MODEL, top_n=5)
+
+    def _load_classifier():
+        from app.domains.risk_safety.risk_classifier import _get_classifier_pipeline
+
+        _get_classifier_pipeline()
+
+    steps = [("embedding", _load_embed)]
+    if os.getenv("ENABLE_RAG_EMBEDDINGS", "").lower() in {"1", "true", "yes"}:
+        steps.append(("reranker", _load_reranker))
+    if os.getenv("ENABLE_ML_CLASSIFIER", "").lower() in {"1", "true", "yes"}:
+        steps.append(("risk classifier", _load_classifier))
+
+    for name, fn in steps:
+        try:
+            await loop.run_in_executor(None, fn)
+        except Exception as exc:
+            print(f"WARNING: {name} model warmup failed (will still lazy-load on first use): {exc}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle events: create tables, seed, and dispose of engine."""
@@ -439,6 +491,7 @@ async def lifespan(app: FastAPI):
     _seed_escalation_rules()
     _seed_incidents()
     _seed_users()
+    await _warm_up_ml_models()
     yield
     await async_engine.dispose()
 
