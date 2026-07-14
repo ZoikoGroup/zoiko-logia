@@ -103,6 +103,88 @@ async def _migrate_source_licence_columns():
             await conn.execute(text("ALTER TABLE sources ALTER COLUMN is_tenant_private SET NOT NULL"))
 
 
+async def _migrate_user_profile_columns():
+    """Add first_name/last_name/created_at/updated_at to `users` and drop
+    hashed_password if this DB predates the Supabase Auth migration — same
+    create_all()-doesn't-alter-existing-tables situation as
+    _migrate_tenant_columns above, so an already-running database picks up
+    the schema change without a manual `alembic upgrade`."""
+    async with async_engine.begin() as conn:
+        if settings.is_sqlite:
+            columns = await conn.execute(text("PRAGMA table_info(users)"))
+            column_names = {row[1] for row in columns}
+            if "first_name" not in column_names:
+                await conn.execute(text("ALTER TABLE users ADD COLUMN first_name VARCHAR NOT NULL DEFAULT ''"))
+            if "last_name" not in column_names:
+                await conn.execute(text("ALTER TABLE users ADD COLUMN last_name VARCHAR NOT NULL DEFAULT ''"))
+            if "created_at" not in column_names:
+                await conn.execute(text("ALTER TABLE users ADD COLUMN created_at TIMESTAMP"))
+            if "updated_at" not in column_names:
+                await conn.execute(text("ALTER TABLE users ADD COLUMN updated_at TIMESTAMP"))
+            # SQLite can't drop columns pre-3.35 without a table rebuild;
+            # dev-only SQLite databases are cheap to delete and recreate,
+            # so this is left as a no-op there rather than a risky rebuild.
+        else:
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name VARCHAR NOT NULL DEFAULT ''"))
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name VARCHAR NOT NULL DEFAULT ''"))
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()"))
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"))
+            await conn.execute(text("ALTER TABLE users DROP COLUMN IF EXISTS hashed_password"))
+
+
+async def _setup_user_rls():
+    """Users can only read/insert/update their own row — except a tenant
+    Admin, who can also see every user in their own tenant (the existing
+    "Users & Teams" admin page lists the whole tenant; a strict self-row
+    policy would silently empty that page under RLS). Keyed off
+    app.user_id (set by get_db from the verified Supabase token), not
+    Supabase's own auth.uid() — that only resolves through Supabase's own
+    PostgREST/GoTrue layer, never through this backend's plain
+    SQLAlchemy/asyncpg connection.
+
+    The admin check runs through a SECURITY DEFINER function rather than a
+    plain subquery on `users` inline in the policy — a policy on `users`
+    that queries `users` again gets that inner query evaluated under the
+    same policy too, and Postgres refuses it outright
+    ("infinite recursion detected in policy for relation \"users\"").
+    A SECURITY DEFINER function executes as its owner (this connection's
+    role, a superuser here) rather than the caller, which bypasses RLS for
+    its internal query and breaks the self-reference.
+    """
+    if settings.is_sqlite:
+        return
+    async with async_engine.begin() as conn:
+        await conn.execute(text("ALTER TABLE users ENABLE ROW LEVEL SECURITY"))
+        await conn.execute(text("ALTER TABLE users FORCE ROW LEVEL SECURITY"))
+        await conn.execute(text("""
+            CREATE OR REPLACE FUNCTION _is_requester_tenant_admin(target_tenant_id VARCHAR)
+            RETURNS boolean
+            LANGUAGE sql
+            SECURITY DEFINER
+            SET search_path = public
+            AS $$
+                SELECT EXISTS (
+                    SELECT 1 FROM users
+                    WHERE id = current_setting('app.user_id', true)
+                      AND role = 'Admin'
+                      AND tenant_id = target_tenant_id
+                )
+            $$
+        """))
+        await conn.execute(text("DROP POLICY IF EXISTS users_self_or_tenant_admin ON users"))
+        # WITH CHECK mirrors USING (not just self-id) so a tenant Admin can
+        # still insert a new teammate row (POST /users) — that row's id is
+        # the new teammate's, not the admin's own app.user_id.
+        admin_or_self_predicate = """(
+            id = current_setting('app.user_id', true)
+            OR _is_requester_tenant_admin(tenant_id)
+        )"""
+        await conn.execute(text(
+            f"CREATE POLICY users_self_or_tenant_admin ON users "
+            f"USING {admin_or_self_predicate} WITH CHECK {admin_or_self_predicate}"
+        ))
+
+
 def _pg_ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
@@ -390,9 +472,20 @@ def _seed_incidents():
 
 
 def _seed_users():
-    """Seed a default tenant and admin user on first startup."""
-    from app.core.security import hash_password
+    """Seed a default tenant and admin user on first startup. Since
+    Supabase now owns credentials, this needs a Supabase auth user created
+    via the Admin API (service-role key) before the local profile row can
+    reference it — skipped (like the APP_DATABASE_URL warning above) when
+    SUPABASE_SERVICE_ROLE_KEY isn't configured, e.g. plain SQLite dev mode."""
+    from app.core import supabase_admin
     from app.domains.identity.models import Tenant, User
+
+    if not supabase_admin.is_configured():
+        print("WARNING: SUPABASE_SERVICE_ROLE_KEY/SUPABASE_URL not set — "
+              "skipping default user seeding (no Supabase auth user can be "
+              "created for admin@zoiko.com / kriton@zoiko.com).")
+        return
+
     db = SessionLocal()
     try:
         # Create default tenant if it doesn't exist
@@ -404,22 +497,25 @@ def _seed_users():
 
         # Create default admin user if no users exist
         if db.query(User).count() == 0:
-            db.add(User(
-                tenant_id="tenant-default",
-                email="admin@zoiko.com",
-                hashed_password=hash_password("Admin@1234"),
-                full_name="System Administrator",
-                role="Admin",
-                is_active=True,
-            ))
-            db.add(User(
-                tenant_id="tenant-default",
-                email="kriton@zoiko.com",
-                hashed_password=hash_password("Kriton@1234"),
-                full_name="Kriton Reviewer",
-                role="SME Reviewer",
-                is_active=True,
-            ))
+            for email, password, full_name, role in (
+                ("admin@zoiko.com", "Admin@1234", "System Administrator", "Admin"),
+                ("kriton@zoiko.com", "Kriton@1234", "Kriton Reviewer", "SME Reviewer"),
+            ):
+                existing_auth_user = supabase_admin.get_user_by_email(email)
+                auth_user = existing_auth_user or supabase_admin.create_user(email, password, email_confirm=True)
+                first_name, _, last_name = full_name.partition(" ")
+                db.add(User(
+                    id=auth_user["id"],
+                    tenant_id="tenant-default",
+                    email=email,
+                    first_name=first_name,
+                    last_name=last_name,
+                    full_name=full_name,
+                    role=role,
+                    is_active=True,
+                ))
+                db.flush()
+                supabase_admin.update_app_metadata(auth_user["id"], "tenant-default", role)
         db.commit()
     except Exception:
         db.rollback()
@@ -485,7 +581,9 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     await _migrate_tenant_columns()
     await _migrate_source_licence_columns()
+    await _migrate_user_profile_columns()
     await _setup_source_rls()
+    await _setup_user_rls()
     _seed_defaults()
     _seed_evaluation()
     _seed_escalation_rules()

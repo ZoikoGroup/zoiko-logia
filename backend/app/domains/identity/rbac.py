@@ -3,11 +3,13 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import decode_access_token
+from app.core.supabase_auth import verify_token
 from app.domains.identity.models import User
 from app.domains.identity.service import get_user_by_id
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login", auto_error=False)
+# tokenUrl is cosmetic here (Supabase issues the tokens now, not this
+# backend) — kept only so Swagger's "Authorize" button still works.
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/provision", auto_error=False)
 
 
 async def get_current_user(
@@ -22,12 +24,19 @@ async def get_current_user(
     if token is None:
         raise credentials_error
 
-    payload = decode_access_token(token)
-    if payload is None:
+    claims = verify_token(token)
+    if claims is None:
         raise credentials_error
 
-    user = await get_user_by_id(db, payload.sub)
-    if user is None or not user.is_active:
+    user = await get_user_by_id(db, claims.sub)
+    if user is None:
+        # Valid Supabase session, but the frontend hasn't called
+        # /auth/provision yet to create the local profile row.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Account not provisioned — sign in again to complete setup",
+        )
+    if not user.is_active:
         raise credentials_error
 
     return user

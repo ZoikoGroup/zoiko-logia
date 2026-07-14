@@ -1,17 +1,22 @@
+import { supabase } from "@/lib/supabase";
+import { getCurrentAccessToken } from "@/lib/session-token";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010/api/v1";
 
 export type UserPublic = {
   id: string;
   email: string;
+  first_name: string;
+  last_name: string;
   full_name: string;
   role: string;
   tenant_id: string;
 };
 
-export type TokenResponse = {
-  access_token: string;
-  token_type: string;
-  user: UserPublic;
+export type ProvisionRequest = {
+  first_name?: string;
+  last_name?: string;
+  company_name?: string;
 };
 
 export class ApiError extends Error {
@@ -22,16 +27,20 @@ export class ApiError extends Error {
   }
 }
 
-export async function login(email: string, password: string): Promise<TokenResponse> {
-  const res = await fetch(`${API_URL}/auth/login`, {
+/** Idempotent — creates the local profile row on first call for a given
+ * Supabase user (self-serve sign-up or first Google login), a no-op on
+ * every call after. Called with the Supabase access token directly (not
+ * getAuthToken()) since this can run before session-token.ts is updated. */
+export async function provisionProfile(accessToken: string, payload: ProvisionRequest = {}): Promise<UserPublic> {
+  const res = await fetch(`${API_URL}/auth/provision`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify(payload),
   });
 
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new ApiError(res.status, body?.detail ?? "Login failed");
+    throw new ApiError(res.status, body?.detail ?? "Could not provision profile");
   }
 
   return res.json();
@@ -50,9 +59,7 @@ export async function getMe(token: string): Promise<UserPublic> {
 }
 
 export function getAuthToken(): string {
-  if (typeof document === "undefined") return "";
-  const match = document.cookie.match(/(?:^|; )zoiko_auth=([^;]*)/);
-  return match ? decodeURIComponent(match[1]) : "";
+  return getCurrentAccessToken();
 }
 
 export type Role = {
@@ -85,8 +92,8 @@ async function authedFetch(path: string, token: string, init?: RequestInit): Pro
       Authorization: `Bearer ${token}`,
     },
   });
-  if (res.status === 401 && typeof document !== "undefined") {
-    document.cookie = "zoiko_auth=; path=/; max-age=0";
+  if (res.status === 401 && typeof window !== "undefined") {
+    supabase.auth.signOut();
     if (window.location.pathname !== "/login") {
       window.location.href = "/login";
     }

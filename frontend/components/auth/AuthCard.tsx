@@ -14,7 +14,14 @@ import {
   ShieldCheck,
   User,
 } from "lucide-react";
-import { login, ApiError } from "@/lib/api";
+import {
+  AuthError,
+  signInWithGoogle,
+  signInWithPassword,
+  signUp,
+  validateSignUp,
+  type FieldErrors,
+} from "@/services/auth.service";
 import { BrandMark } from "@/components/layout/AppHeader";
 
 type Mode = "signin" | "signup";
@@ -97,24 +104,31 @@ function SignInPanel({ active, onSwitchToSignup }: { active: boolean; onSwitchTo
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [googleSubmitting, setGoogleSubmitting] = useState(false);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
     setSubmitting(true);
     try {
-      const { access_token } = await login(email, password);
-      const maxAge = rememberMe ? 60 * 60 * 24 * 7 : 60 * 60 * 12;
-      document.cookie = `zoiko_auth=${access_token}; path=/; max-age=${maxAge}`;
+      await signInWithPassword(email, password);
       router.push("/");
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        setError("Incorrect email or password.");
-      } else {
-        setError("Could not reach the server. Please try again.");
-      }
+      setError(err instanceof AuthError ? err.message : "Could not reach the server. Please try again.");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleGoogle() {
+    setError("");
+    setGoogleSubmitting(true);
+    try {
+      await signInWithGoogle();
+      // Browser navigates away to Google — no further local state change needed.
+    } catch (err) {
+      setError(err instanceof AuthError ? err.message : "Could not start Google sign-in.");
+      setGoogleSubmitting(false);
     }
   }
 
@@ -213,24 +227,16 @@ function SignInPanel({ active, onSwitchToSignup }: { active: boolean; onSwitchTo
           <div className="h-px flex-1 bg-line" />
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3">
           <button
             type="button"
-            title="Coming soon"
+            onClick={handleGoogle}
+            disabled={googleSubmitting}
             tabIndex={active ? 0 : -1}
             className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-line bg-soft text-sm font-semibold text-ink transition-colors hover:bg-line/40 disabled:opacity-60"
           >
             <GoogleIcon />
-            Google
-          </button>
-          <button
-            type="button"
-            title="Coming soon"
-            tabIndex={active ? 0 : -1}
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-line bg-soft text-sm font-semibold text-ink transition-colors hover:bg-line/40 disabled:opacity-60"
-          >
-            <MicrosoftIcon />
-            Microsoft
+            {googleSubmitting ? "Redirecting..." : "Google"}
           </button>
         </div>
       </form>
@@ -262,10 +268,69 @@ function SignInPanel({ active, onSwitchToSignup }: { active: boolean; onSwitchTo
 }
 
 function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchToSignin: () => void }) {
+  const router = useRouter();
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [company, setCompany] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+  const [formError, setFormError] = useState("");
+  const [success, setSuccess] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [googleSubmitting, setGoogleSubmitting] = useState(false);
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    setFormError("");
+    const fields = { firstName, lastName, email, companyName: company, password };
+    const errors = validateSignUp(fields);
+    setFieldErrors(errors);
+    if (Object.keys(errors).length > 0) return;
+
+    setSubmitting(true);
+    try {
+      await signUp(fields);
+      setSuccess(true);
+      setTimeout(() => router.push("/login"), 2000);
+    } catch (err) {
+      setFormError(err instanceof AuthError ? err.message : "Could not create your account. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleGoogle() {
+    setFormError("");
+    setGoogleSubmitting(true);
+    try {
+      await signInWithGoogle();
+    } catch (err) {
+      setFormError(err instanceof AuthError ? err.message : "Could not start Google sign-in.");
+      setGoogleSubmitting(false);
+    }
+  }
+
+  if (success) {
+    return (
+      <div className={panelClassName(active, "right")} aria-hidden={!active}>
+        <div className="mb-3">
+          <h2 className="text-2xl font-bold tracking-normal text-ink">Check your email</h2>
+          <p className="mt-1.5 text-sm leading-6 text-muted">
+            Account created successfully. Please check your email and verify your account before signing in.
+          </p>
+        </div>
+        <p className="mt-3 text-center text-sm text-muted">
+          Redirecting to{" "}
+          <button type="button" onClick={() => router.push("/login")} className="font-semibold text-brand hover:underline">
+            sign in
+          </button>
+          ...
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className={panelClassName(active, "right")} aria-hidden={!active}>
@@ -276,7 +341,7 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
         </p>
       </div>
 
-      <form className="space-y-2" onSubmit={(e) => e.preventDefault()}>
+      <form onSubmit={handleSubmit} className="space-y-2">
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
@@ -294,6 +359,7 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
                 className="h-9 w-full rounded-lg border border-line bg-soft pl-10 pr-3 text-sm text-ink placeholder:text-muted outline-none focus:border-brand"
               />
             </div>
+            {fieldErrors.firstName && <p className="mt-1 text-xs font-medium text-bad">{fieldErrors.firstName}</p>}
           </div>
           <div>
             <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
@@ -311,6 +377,7 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
                 className="h-9 w-full rounded-lg border border-line bg-soft pl-10 pr-3 text-sm text-ink placeholder:text-muted outline-none focus:border-brand"
               />
             </div>
+            {fieldErrors.lastName && <p className="mt-1 text-xs font-medium text-bad">{fieldErrors.lastName}</p>}
           </div>
         </div>
 
@@ -330,6 +397,7 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
               className="h-9 w-full rounded-lg border border-line bg-soft pl-10 pr-3 text-sm text-ink placeholder:text-muted outline-none focus:border-brand"
             />
           </div>
+          {fieldErrors.email && <p className="mt-1 text-xs font-medium text-bad">{fieldErrors.email}</p>}
         </div>
 
         <div>
@@ -348,16 +416,51 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
               className="h-9 w-full rounded-lg border border-line bg-soft pl-10 pr-3 text-sm text-ink placeholder:text-muted outline-none focus:border-brand"
             />
           </div>
+          {fieldErrors.companyName && <p className="mt-1 text-xs font-medium text-bad">{fieldErrors.companyName}</p>}
         </div>
+
+        <div>
+          <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
+            Password
+          </label>
+          <div className="relative">
+            <LockKeyhole size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input
+              type={showPassword ? "text" : "password"}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="At least 8 characters"
+              autoComplete="new-password"
+              tabIndex={active ? 0 : -1}
+              className="h-9 w-full rounded-lg border border-line bg-soft pl-10 pr-10 text-sm text-ink placeholder:text-muted outline-none focus:border-brand"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((v) => !v)}
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              tabIndex={active ? 0 : -1}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-ink"
+            >
+              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+          {fieldErrors.password && <p className="mt-1 text-xs font-medium text-bad">{fieldErrors.password}</p>}
+        </div>
+
+        {formError && (
+          <p className="rounded-lg border border-bad/25 bg-bad/10 px-3 py-2 text-xs font-medium text-bad">
+            {formError}
+          </p>
+        )}
 
         <button
           type="submit"
-          title="Coming soon"
+          disabled={submitting}
           tabIndex={active ? 0 : -1}
-          className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-ink px-4 text-sm font-bold text-panel shadow-[0_12px_28px_rgba(21,25,34,0.18)] transition-colors hover:bg-brand"
+          className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-ink px-4 text-sm font-bold text-panel shadow-[0_12px_28px_rgba(21,25,34,0.18)] transition-colors hover:bg-brand disabled:opacity-60"
         >
-          Continue
-          <ArrowRight size={16} />
+          {submitting ? "Creating account..." : "Continue"}
+          {!submitting && <ArrowRight size={16} />}
         </button>
 
         <div className="flex items-center gap-3 py-0.5">
@@ -366,24 +469,16 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
           <div className="h-px flex-1 bg-line" />
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3">
           <button
             type="button"
-            title="Coming soon"
+            onClick={handleGoogle}
+            disabled={googleSubmitting}
             tabIndex={active ? 0 : -1}
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-line bg-soft text-sm font-semibold text-ink transition-colors hover:bg-line/40"
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-line bg-soft text-sm font-semibold text-ink transition-colors hover:bg-line/40 disabled:opacity-60"
           >
             <GoogleIcon />
-            Google
-          </button>
-          <button
-            type="button"
-            title="Coming soon"
-            tabIndex={active ? 0 : -1}
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-line bg-soft text-sm font-semibold text-ink transition-colors hover:bg-line/40"
-          >
-            <MicrosoftIcon />
-            Microsoft
+            {googleSubmitting ? "Redirecting..." : "Google"}
           </button>
         </div>
       </form>
@@ -428,17 +523,6 @@ function GoogleIcon() {
         fill="#EA4335"
         d="M12 4.75c1.76 0 3.35.61 4.6 1.8l3.44-3.44C17.95 1.19 15.24 0 12 0 7.31 0 3.25 2.7 1.27 6.63l4 3.1C6.22 6.86 8.87 4.75 12 4.75Z"
       />
-    </svg>
-  );
-}
-
-function MicrosoftIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
-      <rect x="1" y="1" width="10.5" height="10.5" fill="#F25022" />
-      <rect x="12.5" y="1" width="10.5" height="10.5" fill="#7FBA00" />
-      <rect x="1" y="12.5" width="10.5" height="10.5" fill="#00A4EF" />
-      <rect x="12.5" y="12.5" width="10.5" height="10.5" fill="#FFB900" />
     </svg>
   );
 }
