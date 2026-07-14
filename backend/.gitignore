@@ -5,6 +5,3 @@ venv/
 .env
 *.db
 .DS_Store
-data/sources/**/*
-!data/sources/**/
-!data/sources/**/.gitkeep
