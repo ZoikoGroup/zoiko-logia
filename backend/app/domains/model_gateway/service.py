@@ -1,4 +1,5 @@
 import hashlib
+import os
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -7,6 +8,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domains.audit_ledger.event_envelope import record_event_async
 from app.domains.model_gateway.models import ModelDefinition, PromptTemplate
 from app.domains.model_gateway.providers.mock_adapter import MockProviderAdapter
+from app.domains.model_gateway.providers.groq_adapter import GroqAdapter
+from app.domains.model_gateway.providers.openai_adapter import OpenAIAdapter
+
+
+def _select_adapter():
+    """Provider selection: real adapters first (in preference order), mock
+    only as the last resort when no provider API key is configured at all.
+    Not yet driven by ModelDefinition.provider per-model routing (§ZL-T0-08
+    envisions Application -> Query Orchestrator -> Model Gateway -> Provider
+    Adapter -> Approved Model Deployment, selecting per model_definitions
+    row) — this is a flat "first configured provider wins" default until a
+    real per-model routing decision is wired to run_test_prompt's caller.
+    """
+    if os.environ.get("GROQ_API_KEY"):
+        return GroqAdapter()
+    if os.environ.get("OPENAI_API_KEY"):
+        return OpenAIAdapter()
+    return MockProviderAdapter()
 
 
 async def list_models(db: AsyncSession) -> list[ModelDefinition]:
@@ -71,14 +90,14 @@ async def run_test_prompt(
     if prompt is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prompt template not found")
 
-    # Model Gateway -> Provider Adapter -> Approved Model. MockProviderAdapter
-    # stands in until a real provider is approved and configured — this
-    # project doesn't call any external LLM API.
-    adapter = MockProviderAdapter()
+    # Model Gateway -> Provider Adapter -> Approved Model. _select_adapter()
+    # picks the first configured real provider (Groq, then OpenAI), falling
+    # back to MockProviderAdapter only when no provider API key is set at all.
+    adapter = _select_adapter()
+    provider_name = type(adapter).__name__.replace("Adapter", "").lower()
     output = await adapter.complete(f"[{prompt.name} {prompt.version}]\n\n{input_text}")
 
     # Store a hash of the output, not the raw text, per the privacy-by-design
-
     # doctrine (Section 9): raw prompt/output retention depends on risk class,
     # tenant, and provider privacy profile, which isn't decided yet.
     await record_event_async(
@@ -95,7 +114,7 @@ async def run_test_prompt(
         payload={
             "prompt_name": prompt.name,
             "prompt_version": prompt.version,
-            "provider": "mock",
+            "provider": provider_name,
             "input_length": len(input_text),
             "output_hash": hashlib.sha256(output.encode("utf-8")).hexdigest(),
         },

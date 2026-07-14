@@ -17,7 +17,7 @@ import uuid
 import os
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domains.source_library.service import list_sources
+from app.domains.source_library.service import list_sources, get_source_by_id
 from app.orchestration.schemas import SourceBundle, SourceSummary
 from app.orchestration.routing_matrix import (
     CONF_SUFFICIENT, CONF_LIMITED, CONF_INSUFFICIENT,
@@ -56,22 +56,57 @@ async def build_source_bundle(
     tenant_id: str,
 ) -> SourceBundle:
     """
-    Build a SourceBundle via keyword-based category retrieval and vector database fallback.
-    tenant_id is enforced at the data-access layer via list_sources.
+    Build a SourceBundle via keyword-based category retrieval, merged with
+    governance-verified vector search hits.
+    tenant_id is enforced at the data-access layer via list_sources /
+    get_source_by_id.
     Returns confidence_state per §7.2 six-state vocabulary.
     """
     category = infer_category(query)
-    
+
     eligible = []
     excluded = []
     exclusion_reasons = []
     has_restricted = False
     has_conflict = False
-    
-    vector_sources = {}
+
+    # Always resolve the governed keyword_mvp candidates first — vector hits
+    # below are additive evidence, never a replacement for this. Previously,
+    # any non-empty vector result short-circuited this list entirely (an
+    # `if vector_sources: ... else: ...` branch), so a single unrelated
+    # vector match — or a chunk embedded outside the governance workflow —
+    # could make a properly registered, ACTIVE source disappear from the
+    # bundle with no error at all.
+    candidates = await list_sources(db, category, tenant_id=tenant_id)
+    seen_ids = set()
+    for c in candidates:
+        version_status = c["latest_version"].status
+        jur_ok = (not jurisdiction) or c["jurisdiction_scope"] in ("Global", jurisdiction)
+
+        if version_status in _RESTRICTED_STATUSES:
+            excluded.append(c)
+            exclusion_reasons.append(f"Source '{c['title']}' has restricted status: {version_status}")
+            has_restricted = True
+        elif version_status not in _ELIGIBLE_STATUSES:
+            excluded.append(c)
+            exclusion_reasons.append(f"Source '{c['title']}' has ineligible status: {version_status}")
+        elif not jur_ok:
+            excluded.append(c)
+            exclusion_reasons.append(f"Source '{c['title']}' outside jurisdiction scope")
+        else:
+            eligible.append(c)
+        seen_ids.add(c["id"])
+
     if os.getenv("ENABLE_RAG_EMBEDDINGS", "").lower() in {"1", "true", "yes"}:
-        # ── Vector Search Fallback ──
-        # Check if there are active matching document chunks in the vector store.
+        # ── Vector Search ──
+        # Chunk metadata is untrusted as far as governance goes — it's
+        # whatever was present at embed time, which can go stale (a source
+        # later deprecated) or never have existed as a real governed record
+        # at all (chunks embedded outside create_source/approve_source_version,
+        # e.g. via the upload path). Every hit is re-checked against the real
+        # sources/source_versions record by source_id, through the same
+        # status/jurisdiction rules as the keyword path above — never taken
+        # at face value as "ACTIVE".
         from app.domains.rag.retrieval import retrieve_documents
 
         try:
@@ -81,43 +116,43 @@ async def build_source_bundle(
                 jurisdiction=jurisdiction or None,
                 top_k=5
             )
+            checked_source_ids = set()
             for chunk in raw_chunks:
                 meta = chunk.get("metadata", {})
-                title = meta.get("title")
-                if title and title not in vector_sources:
-                    vector_sources[title] = {
-                        "id": chunk.get("node_id", f"vec-{uuid.uuid4().hex[:8]}"),
-                        "title": title,
-                        "category": meta.get("category", "Regulatory Guidelines"),
-                        "jurisdiction_scope": meta.get("jurisdiction", "Global"),
-                        "latest_version": type('Version', (), {'version_label': meta.get("version", "v1.0"), 'status': 'ACTIVE'})()
-                    }
+                source_id = meta.get("source_id")
+                title = meta.get("title", "unknown")
+                if not source_id:
+                    exclusion_reasons.append(
+                        f"Vector chunk '{title}' has no linked source_id — not embedded via the governed source workflow, excluded"
+                    )
+                    continue
+                if source_id in seen_ids or source_id in checked_source_ids:
+                    continue
+                checked_source_ids.add(source_id)
+
+                governed = await get_source_by_id(db, source_id, tenant_id=tenant_id)
+                if governed is None:
+                    exclusion_reasons.append(f"{source_id}: source_record_not_found")
+                    continue
+
+                version_status = governed["latest_version"].status if governed["latest_version"] else None
+                jur_ok = (not jurisdiction) or governed["jurisdiction_scope"] in ("Global", jurisdiction)
+
+                if version_status in _RESTRICTED_STATUSES:
+                    excluded.append(governed)
+                    exclusion_reasons.append(f"Source '{governed['title']}' has restricted status: {version_status}")
+                    has_restricted = True
+                elif version_status not in _ELIGIBLE_STATUSES:
+                    excluded.append(governed)
+                    exclusion_reasons.append(f"Source '{governed['title']}' has ineligible status: {version_status}")
+                elif not jur_ok:
+                    excluded.append(governed)
+                    exclusion_reasons.append(f"Source '{governed['title']}' outside jurisdiction scope")
+                else:
+                    eligible.append(governed)
+                    seen_ids.add(source_id)
         except Exception as e:
             exclusion_reasons.append(f"Vector store search failed: {str(e)}")
-
-    if vector_sources:
-        # We found active document sources in the vector store!
-        for title, src in vector_sources.items():
-            eligible.append(src)
-    else:
-        # Fallback to category list in SQL db
-        candidates = await list_sources(db, category)
-        for c in candidates:
-            version_status = c["latest_version"].status
-            jur_ok = (not jurisdiction) or c["jurisdiction_scope"] in ("Global", jurisdiction)
-
-            if version_status in _RESTRICTED_STATUSES:
-                excluded.append(c)
-                exclusion_reasons.append(f"Source '{c['title']}' has restricted status: {version_status}")
-                has_restricted = True
-            elif version_status not in _ELIGIBLE_STATUSES:
-                excluded.append(c)
-                exclusion_reasons.append(f"Source '{c['title']}' has ineligible status: {version_status}")
-            elif not jur_ok:
-                excluded.append(c)
-                exclusion_reasons.append(f"Source '{c['title']}' outside jurisdiction scope")
-            else:
-                eligible.append(c)
 
     # Determine confidence_state per §7.2
     if has_restricted and len(eligible) == 0:

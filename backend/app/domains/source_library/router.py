@@ -30,7 +30,7 @@ async def get_sources(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> list[SourcePublic]:
-    sources = await list_sources(db, category)
+    sources = await list_sources(db, category, tenant_id=admin.tenant_id)
     return [SourcePublic.model_validate(s) for s in sources]
 
 

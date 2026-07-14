@@ -18,6 +18,32 @@ settings = get_settings()
 
 _TENANT_SCOPED_TABLES = ("sources", "source_versions")
 
+# RLS predicate per tenant-scoped table. Not a strict tenant_id equality:
+# massarius/license_gate.py's Checkpoint A already treats non-private
+# sources (is_tenant_private=False) as shared across every tenant by design
+# (e.g. regulatory standards) — only rows actually marked private are
+# boundary-restricted to their owning tenant. A strict-equality policy would
+# hide every shared source from every tenant that doesn't literally own the
+# row, breaking that sharing model as soon as RLS is enforced. source_versions
+# has no is_tenant_private of its own, so its policy joins back to sources.
+#
+# The leading "context set at all" guard is required, not optional: without
+# it, a session with no app.tenant_id (current_setting returns NULL/'') would
+# still see every non-private row, because that half of the OR doesn't
+# reference tenant context at all. The original strict-equality policy only
+# failed closed in that case "by accident" via SQL NULL comparison semantics
+# (tenant_id = NULL is never TRUE) — this makes the same fail-closed
+# guarantee explicit so it survives the OR clause.
+_HAS_TENANT_CONTEXT = "current_setting('app.tenant_id', true) IS NOT NULL AND current_setting('app.tenant_id', true) != ''"
+_TENANT_POLICY_USING = {
+    "sources": f"({_HAS_TENANT_CONTEXT} AND (NOT is_tenant_private OR tenant_id = current_setting('app.tenant_id', true)))",
+    "source_versions": (
+        f"({_HAS_TENANT_CONTEXT} AND ("
+        "tenant_id = current_setting('app.tenant_id', true) "
+        "OR source_id IN (SELECT id FROM sources WHERE NOT is_tenant_private)))"
+    ),
+}
+
 
 async def _migrate_tenant_columns():
     """Add tenant_id to sources/source_versions if this DB predates the
@@ -122,6 +148,22 @@ async def _provision_app_role(conn):
         )
     )
 
+    # Supabase installs the `vector` extension (and its <=>/<#>/<-> operators)
+    # into a dedicated "extensions" schema, not "public" — a newly created
+    # role has neither USAGE on that schema nor it on its search_path, so
+    # pgvector queries fail with "operator does not exist: ... <=> unknown"
+    # (Postgres can't even see the operator to consider it, let alone resolve
+    # types). Self-hosted/non-Supabase Postgres installs vector into public,
+    # so this schema simply won't exist there — guard and skip.
+    has_extensions_schema = await conn.execute(
+        text("SELECT 1 FROM pg_namespace WHERE nspname = 'extensions'")
+    )
+    if has_extensions_schema.first() is not None:
+        await conn.execute(text(f"GRANT USAGE ON SCHEMA extensions TO {_pg_ident(role)}"))
+        await conn.execute(
+            text(f'ALTER ROLE {_pg_ident(role)} SET search_path TO "$user", public, extensions')
+        )
+
 
 async def _setup_source_rls():
     """RG-02: DB-level tenant isolation on sources/source_versions via
@@ -141,10 +183,7 @@ async def _setup_source_rls():
             await conn.execute(text(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY"))
             await conn.execute(text(f"DROP POLICY IF EXISTS {policy} ON {table}"))
             await conn.execute(
-                text(
-                    f"CREATE POLICY {policy} ON {table} "
-                    "USING (tenant_id = current_setting('app.tenant_id', true))"
-                )
+                text(f"CREATE POLICY {policy} ON {table} USING {_TENANT_POLICY_USING[table]}")
             )
 
         # ZL-ENG-03 §5.8 — same RLS treatment for the Massarius™ vector-store

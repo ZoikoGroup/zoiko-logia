@@ -5,19 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from llama_index.core import VectorStoreIndex, Document, StorageContext
 from llama_index.core.node_parser import SentenceSplitter
 from app.core.config import get_settings
+from app.domains.rag.embeddings import get_embed_model, EMBED_DIM
 
 settings = get_settings()
-
-_embed_model = None
-
-
-def get_embed_model():
-    global _embed_model
-    if _embed_model is None:
-        from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-
-        _embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-m3")
-    return _embed_model
 
 async def ingest_document_content(
     file_path: str,
@@ -27,8 +17,9 @@ async def ingest_document_content(
 ) -> str:
     """
     Ingests parsed markdown document content into LlamaIndex.
-    Splits text into chunks, generates BAAI bge-m3 embeddings,
-    and stores vectors in Supabase pgvector (or fallback local memory vector store).
+    Splits text into chunks, generates embeddings (see rag/embeddings.py for
+    the active model), and stores vectors in Supabase pgvector (or fallback
+    local memory vector store).
     """
     embed_model = get_embed_model()
 
@@ -42,6 +33,13 @@ async def ingest_document_content(
             "jurisdiction": metadata["jurisdiction_scope"],
             "version": metadata["version_label"],
             "tenant_id": metadata["tenant_id"],
+            # Real sources.id this chunk was embedded from — orchestration/
+            # retrieve.py looks this up against the governance record (status,
+            # jurisdiction, tenant visibility) rather than trusting this
+            # chunk's own metadata as a stand-in for an ACTIVE/approved
+            # source. Chunks ingested without a real source_id are excluded
+            # there, not silently treated as eligible.
+            "source_id": metadata.get("source_id", ""),
         }
     )
     
@@ -49,24 +47,34 @@ async def ingest_document_content(
     parser = SentenceSplitter(chunk_size=512, chunk_overlap=50)
     nodes = parser.get_nodes_from_documents([doc])
     
-    # Store options
-    if settings.DATABASE_URL.startswith("postgresql"):
+    # Store options — not a plain .startswith("postgresql") check, which
+    # misses the legacy postgres:// scheme (e.g. Supabase pooler URLs);
+    # matches the is_sqlite convention used everywhere else in the app.
+    if not settings.is_sqlite:
         # Supabase/PostgreSQL pgvector store
         from llama_index.vector_stores.postgres import PGVectorStore
-        from sqlalchemy.engine import make_url
-        
-        # Convert asyncpg to standard prefix for pgvector client
-        sync_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
-        url_obj = make_url(sync_url)
-        
+        from app.core.database import to_async_url, to_sync_url
+
+        # Pass whole connection strings, not host=/user=/password= components.
+        # PGVectorStore.from_params only re-encodes user/password into an
+        # f-string URL when you give it components — url_obj.password from
+        # make_url() comes back URL-*decoded*, so a password containing "@"
+        # (e.g. Supabase-issued passwords like "Zoikologia@123@") gets
+        # re-interpolated as a literal "@" and corrupts the host on the
+        # rebuilt string's next parse. Passing connection_string= directly
+        # (already correctly encoded) skips that rebuild entirely.
+        sync_url = to_sync_url(settings.DATABASE_URL)
+        async_url = to_async_url(settings.DATABASE_URL)
+
         vector_store = PGVectorStore.from_params(
-            host=url_obj.host,
-            port=url_obj.port or 5432,
-            database=url_obj.database,
-            user=url_obj.username,
-            password=url_obj.password,
+            connection_string=sync_url,
+            async_connection_string=async_url,
             table_name="kriton_vector_nodes",
-            embed_dim=1024, # BAAI/bge-m3 is 1024 dims
+            embed_dim=EMBED_DIM,
+            hybrid_search=True,  # must match retrieval.py's flag: the BM25/tsvector column
+                                  # this creates on the table is what retrieval-side hybrid
+                                  # search reads from — omitting it here left ingestion and
+                                  # retrieval configuring the table inconsistently.
         )
         
         storage_context = StorageContext.from_defaults(vector_store=vector_store)

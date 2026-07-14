@@ -10,12 +10,44 @@ from app.core.security import decode_access_token
 
 settings = get_settings()
 
-# Sync DB support for Safety Domain (replaces async driver prefix if present)
-sync_db_url = (
-    settings.DATABASE_URL
-    .replace("sqlite+aiosqlite://", "sqlite://")
-    .replace("postgresql+asyncpg://", "postgresql+psycopg2://")
-)
+
+def _normalize_scheme(url: str) -> str:
+    """postgres:// is a legacy alias for postgresql:// — normalize it first
+    so the two driver-specific helpers below only need to handle one scheme."""
+    if url.startswith("postgres://"):
+        return "postgresql://" + url[len("postgres://"):]
+    return url
+
+
+def to_async_url(url: str) -> str:
+    """Normalize a bare postgresql:// URL (what Supabase's own dashboard
+    hands you by default) into the asyncpg form create_async_engine
+    requires. Without this, a correctly-copied Supabase connection string
+    still fails at import time with "the asyncio extension requires an
+    async driver" — SQLAlchemy's async engine doesn't default a driver-less
+    scheme to asyncpg the way the sync engine defaults it to psycopg2."""
+    url = _normalize_scheme(url)
+    if url.startswith("postgresql://"):
+        url = "postgresql+asyncpg://" + url[len("postgresql://"):]
+    return url
+
+
+def to_sync_url(url: str) -> str:
+    """Mirrors to_async_url for the sync engine (Safety Service): collapses
+    any of sqlite+aiosqlite / postgres / postgresql+asyncpg down to the sync
+    driver each dialect uses (pysqlite / psycopg2)."""
+    url = _normalize_scheme(url)
+    if url.startswith("sqlite+aiosqlite://"):
+        return "sqlite://" + url[len("sqlite+aiosqlite://"):]
+    if url.startswith("postgresql+asyncpg://"):
+        return "postgresql+psycopg2://" + url[len("postgresql+asyncpg://"):]
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg2://" + url[len("postgresql://"):]
+    return url
+
+
+# Sync DB support for Safety Domain
+sync_db_url = to_sync_url(settings.DATABASE_URL)
 connect_args = {"check_same_thread": False} if sync_db_url.startswith("sqlite") else {}
 
 engine = create_engine(sync_db_url, connect_args=connect_args, pool_pre_ping=True)
@@ -34,7 +66,7 @@ def get_sync_db() -> Generator[Session, None, None]:
 # main.py's lifespan uses for schema creation/migrations, and what the
 # one-shot seed scripts (scripts/seed_dev_user.py, ingest_reference_sources.py)
 # import directly — those need to write rows unconstrained by RLS.
-async_engine = create_async_engine(settings.DATABASE_URL, echo=False)
+async_engine = create_async_engine(to_async_url(settings.DATABASE_URL), echo=False)
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 
 # Request-time engine — deliberately separate from async_engine. Postgres
@@ -43,7 +75,7 @@ AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 # setup, request traffic must go through a distinct, non-superuser role for
 # RLS to actually apply. Falls back to the same URL when APP_DATABASE_URL
 # isn't set (SQLite, or a Postgres instance without the low-priv role).
-request_engine = create_async_engine(settings.APP_DATABASE_URL or settings.DATABASE_URL, echo=False)
+request_engine = create_async_engine(to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL), echo=False)
 RequestSessionLocal = async_sessionmaker(request_engine, expire_on_commit=False)
 
 def _tenant_from_request(request: Request) -> str | None:

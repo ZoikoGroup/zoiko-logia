@@ -8,4 +8,3 @@ venv/
 data/sources/**/*
 !data/sources/**/
 !data/sources/**/.gitkeep
- backend/uploads/ZL-ENG-03_Massarius_Retrieval_Evidence_Subsystem_Module_Architecture.docx

@@ -56,6 +56,7 @@ from app.orchestration.audit_events import (
     audit_response_finalised, audit_response_returned,
     audit_licence_prefilter_completed, audit_licence_denied,
     audit_bundle_built, audit_validation_completed,
+    audit_redaction_applied,
 )
 from app.domains.risk_safety.schemas import ClassifyRequest
 from app.domains.model_gateway import service as model_gateway_service
@@ -63,6 +64,7 @@ from app.orchestration.compose import select_prompt
 from app.domains.rag.retrieval import retrieve_documents
 from app.domains.rag.reranker import Reranker
 from app.domains.rag.context_fit import build_grounded_context
+from app.domains.rag.redaction import redact_for_external_exposure
 
 # Massarius™ retrieval and evidence subsystem — Phase 1 control modules
 # (ZL-ENG-03). These wrap/replace the inline licence filtering, bundle
@@ -462,6 +464,19 @@ async def ask_kriton(
     else:
         # §2: No unsupported answering — must not answer from model knowledge when sources insufficient
         grounded_input = request.query
+
+    # External-provider exposure boundary (ZL-ENG-03 §5.8): redact before
+    # grounded_input leaves the tenant trust boundary for the model gateway.
+    # Deliberately after prescreen/retrieval, not at pipeline entry — those
+    # steps need the raw query (see redaction.py's module docstring).
+    redaction_result = redact_for_external_exposure(grounded_input)
+    grounded_input = redaction_result.redacted_text
+    await audit_redaction_applied(
+        db, query_id=query_id, correlation_id=correlation_id,
+        tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
+        redaction_applied=redaction_result.redaction_applied,
+        redaction_categories=redaction_result.redaction_categories,
+    )
 
     composed_text: Optional[str] = None
     prompt_id = "inline"

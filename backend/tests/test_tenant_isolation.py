@@ -25,10 +25,20 @@ from app.domains.source_library.models import Source, SourceVersion
 settings = get_settings()
 
 
-async def _make_tenant_with_source(db, *, tenant_name: str, source_title: str) -> tuple[str, str]:
+async def _make_tenant_with_source(
+    db, *, tenant_name: str, source_title: str, is_tenant_private: bool = True
+) -> tuple[str, str]:
     """Writes go through AsyncSessionLocal (the superuser connection) — this
     is trusted setup code, not a tenant-scoped request, so it must bypass
-    RLS's WITH CHECK the same way the seed scripts do."""
+    RLS's WITH CHECK the same way the seed scripts do.
+
+    is_tenant_private=True by default: this test proves *private* sources
+    don't leak across tenants. Non-private sources (the column's own
+    default) are deliberately shared across every tenant per
+    massarius/license_gate.py's Checkpoint A — see
+    test_non_private_source_is_shared_across_tenants below, which locks in
+    that this is by design, not something a future change should "fix"
+    back into strict isolation."""
     tenant = Tenant(name=tenant_name)
     db.add(tenant)
     await db.flush()
@@ -43,7 +53,13 @@ async def _make_tenant_with_source(db, *, tenant_name: str, source_title: str) -
     db.add(user)
     await db.flush()
 
-    source = Source(tenant_id=tenant.id, category="tax", title=source_title, source_class="internal")
+    source = Source(
+        tenant_id=tenant.id,
+        category="tax",
+        title=source_title,
+        source_class="internal",
+        is_tenant_private=is_tenant_private,
+    )
     db.add(source)
     await db.flush()
 
@@ -96,6 +112,41 @@ async def test_tenant_cannot_see_another_tenants_sources():
             await db.commit()
 
 
+async def test_non_private_source_is_shared_across_tenants():
+    """The RLS policy's other half: a source that is NOT marked tenant-private
+    must be visible to every tenant, not just its owning tenant_id — matching
+    massarius/license_gate.py's Checkpoint A, which treats is_tenant_private=False
+    as shared-by-design (e.g. regulatory standards). A strict tenant_id-equality
+    policy would hide these from everyone but the literal owning tenant."""
+    if settings.is_sqlite:
+        print("test_non_private_source_is_shared_across_tenants: SKIPPED (SQLite has no RLS)")
+        return
+
+    async with AsyncSessionLocal() as db:
+        owner_tenant_id, _ = await _make_tenant_with_source(
+            db, tenant_name="Isolation Test Shared Owner", source_title="Shared Standard Doc",
+            is_tenant_private=False,
+        )
+        other_tenant_id, _ = await _make_tenant_with_source(
+            db, tenant_name="Isolation Test Shared Viewer", source_title="Shared Viewer's Own Doc",
+            is_tenant_private=True,
+        )
+
+    try:
+        titles_as_other = await _visible_titles_as_tenant(other_tenant_id)
+        assert "Shared Standard Doc" in titles_as_other, "non-private source must be visible to other tenants"
+        assert "Shared Viewer's Own Doc" in titles_as_other
+        print("test_non_private_source_is_shared_across_tenants: PASSED")
+    finally:
+        async with AsyncSessionLocal() as db:
+            for tid in (owner_tenant_id, other_tenant_id):
+                await db.execute(text("DELETE FROM source_versions WHERE tenant_id = :t"), {"t": tid})
+                await db.execute(text("DELETE FROM sources WHERE tenant_id = :t"), {"t": tid})
+                await db.execute(text("DELETE FROM users WHERE tenant_id = :t"), {"t": tid})
+                await db.execute(text("DELETE FROM tenants WHERE id = :t"), {"t": tid})
+            await db.commit()
+
+
 async def test_no_tenant_context_sees_nothing():
     """A session with no app.tenant_id set (current_setting returns NULL)
     must see zero rows — RLS fails closed, not open."""
@@ -112,6 +163,7 @@ async def test_no_tenant_context_sees_nothing():
 
 async def main():
     await test_tenant_cannot_see_another_tenants_sources()
+    await test_non_private_source_is_shared_across_tenants()
     await test_no_tenant_context_sees_nothing()
     print("All tests passed successfully!")
 
