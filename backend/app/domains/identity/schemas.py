@@ -1,14 +1,11 @@
 from pydantic import BaseModel, EmailStr
 
 
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
-
-
 class UserPublic(BaseModel):
     id: str
     email: str
+    first_name: str
+    last_name: str
     full_name: str
     role: str
     tenant_id: str
@@ -16,10 +13,14 @@ class UserPublic(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    user: UserPublic
+class ProvisionRequest(BaseModel):
+    """Body for POST /auth/provision. Email comes from the verified Supabase
+    token, never trusted from here. Fields are optional so a Google
+    first-sign-in (which supplies its own name via the token/OAuth profile)
+    can call this with an empty body."""
+    first_name: str = ""
+    last_name: str = ""
+    company_name: str = ""
 
 
 class RolePublic(BaseModel):
