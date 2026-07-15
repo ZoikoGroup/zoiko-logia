@@ -1,4 +1,9 @@
 import os
+import uuid
+
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -101,6 +106,53 @@ async def _migrate_source_licence_columns():
             await conn.execute(text("ALTER TABLE sources ALTER COLUMN licence_state SET NOT NULL"))
             await conn.execute(text("ALTER TABLE sources ALTER COLUMN authority_level SET NOT NULL"))
             await conn.execute(text("ALTER TABLE sources ALTER COLUMN is_tenant_private SET NOT NULL"))
+
+
+async def _migrate_user_password_column():
+    """Add hashed_password to `users` if this DB predates it — same
+    create_all()-doesn't-alter-existing-tables situation as
+    _migrate_source_licence_columns above. Known demo accounts (see
+    scripts/seed_dev_user.py / README docs) are backfilled with their
+    documented default passwords so existing demo logins keep working; any
+    other pre-existing row gets a random, unusable placeholder hash and is
+    logged so its owner knows to reset their password."""
+    from app.core.security import hash_password
+
+    _KNOWN_DEFAULTS = {
+        "admin@zoiko.com": "Admin@1234",
+        "kriton@zoiko.com": "Kriton@1234",
+        "dashboard@zoikologia.com": "Password234@",
+        "source.reviewer@zoikologia.com": "Password234@",
+    }
+
+    async with async_engine.begin() as conn:
+        if settings.is_sqlite:
+            columns = await conn.execute(text("PRAGMA table_info(users)"))
+            column_names = {row[1] for row in columns}
+            if "hashed_password" not in column_names:
+                await conn.execute(text("ALTER TABLE users ADD COLUMN hashed_password VARCHAR"))
+        else:
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS hashed_password VARCHAR"))
+
+        rows = await conn.execute(text("SELECT id, email FROM users WHERE hashed_password IS NULL"))
+        locked_out = []
+        for user_id, email in rows.fetchall():
+            plaintext = _KNOWN_DEFAULTS.get((email or "").lower())
+            if plaintext is None:
+                plaintext = uuid.uuid4().hex
+                locked_out.append(email)
+            await conn.execute(
+                text("UPDATE users SET hashed_password = :hp WHERE id = :id"),
+                {"hp": hash_password(plaintext), "id": user_id},
+            )
+        if locked_out:
+            print(
+                "WARNING: backfilled hashed_password for pre-existing user(s) "
+                f"with a random placeholder (password reset required): {locked_out}"
+            )
+
+        if not settings.is_sqlite:
+            await conn.execute(text("ALTER TABLE users ALTER COLUMN hashed_password SET NOT NULL"))
 
 
 def _pg_ident(name: str) -> str:
@@ -485,6 +537,7 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     await _migrate_tenant_columns()
     await _migrate_source_licence_columns()
+    await _migrate_user_password_column()
     await _setup_source_rls()
     _seed_defaults()
     _seed_evaluation()
