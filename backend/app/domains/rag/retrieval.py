@@ -2,7 +2,9 @@ import contextvars
 import os
 from typing import List, Dict, Any
 from llama_index.core import VectorStoreIndex, StorageContext
-from llama_index.core.vector_stores.types import MetadataFilters, ExactMatchFilter
+from llama_index.core.vector_stores.types import (
+    MetadataFilters, MetadataFilter, ExactMatchFilter, FilterOperator, FilterCondition,
+)
 from app.core.config import get_settings
 from app.domains.rag.embeddings import get_embed_model, EMBED_DIM
 
@@ -75,12 +77,28 @@ async def retrieve_documents(
     """
     embed_model = get_embed_model()
 
-    # 1. Setup metadata filters
-    filters_list = [ExactMatchFilter(key="tenant_id", value=tenant_id)]
+    # 1. Setup metadata filters — a chunk is retrievable if it's shared
+    # (is_tenant_private == "false", e.g. a regulatory standard ingested
+    # once but meant for every tenant) OR it belongs to this tenant. A flat
+    # ExactMatchFilter(tenant_id=...) would hide every shared reference
+    # source from any tenant that didn't happen to run ingestion itself —
+    # this mirrors the same shared-or-mine condition source_library/
+    # service.py already applies to the governed `sources` table.
+    # is_tenant_private is stored as the string "true"/"false" (see
+    # ingestion_service.py) rather than a JSON boolean, so this compares
+    # against a string value too.
+    shared_or_mine = MetadataFilters(
+        filters=[
+            MetadataFilter(key="is_tenant_private", value="false", operator=FilterOperator.EQ),
+            MetadataFilter(key="tenant_id", value=tenant_id, operator=FilterOperator.EQ),
+        ],
+        condition=FilterCondition.OR,
+    )
+    filters_list = [shared_or_mine]
     if jurisdiction:
         filters_list.append(ExactMatchFilter(key="jurisdiction", value=jurisdiction))
-        
-    filters = MetadataFilters(filters=filters_list)
+
+    filters = MetadataFilters(filters=filters_list, condition=FilterCondition.AND)
     
     if not settings.is_sqlite:
         # Real Hybrid PGVector + Full text search using raw SQL or LlamaIndex pgvector extension

@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { ChevronDown, LogOut, X } from "lucide-react";
 import { NAV_SECTIONS, isVisible, navHref } from "@/lib/nav";
 import { useRole } from "@/components/shell/RoleProvider";
+import { useAuth } from "@/hooks/useAuth";
 
 export function Sidebar({
   mobileOpen,
@@ -17,10 +18,11 @@ export function Sidebar({
   const pathname = usePathname();
   const router = useRouter();
   const { role } = useRole();
+  const { signOut } = useAuth();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  function handleLogout() {
-    document.cookie = "zoiko_auth=; path=/; max-age=0";
+  async function handleLogout() {
+    await signOut();
     router.push("/login");
   }
 

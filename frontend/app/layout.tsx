@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { AppChrome } from "@/components/layout/AppChrome";
+import { AuthGuard } from "@/components/AuthGuard";
+import { AuthProvider } from "@/contexts/AuthContext";
 import { RoleProvider } from "@/components/shell/RoleProvider";
 import { ThemeProvider } from "@/components/shell/ThemeProvider";
 import { THEME_COOKIE } from "@/lib/theme";
@@ -39,9 +41,13 @@ export default function RootLayout({
       </head>
       <body className="min-h-full flex bg-bg text-ink">
         <ThemeProvider>
-          <RoleProvider>
-            <AppChrome>{children}</AppChrome>
-          </RoleProvider>
+          <AuthProvider>
+            <AuthGuard>
+              <RoleProvider>
+                <AppChrome>{children}</AppChrome>
+              </RoleProvider>
+            </AuthGuard>
+          </AuthProvider>
         </ThemeProvider>
       </body>
     </html>

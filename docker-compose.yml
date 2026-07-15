@@ -29,8 +29,11 @@ services:
       # confidence, which is always below the 0.65 routing threshold, so
       # every query falls back to "needs clarification" regardless of content.
       ENABLE_ML_CLASSIFIER: "true"
-      JWT_SECRET_KEY: dev-only-insecure-secret-change-me
       CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001","http://localhost:3005"]'
+      # Auth is now Supabase-backed — set these to a real Supabase project
+      # for sign-up/sign-in to work (see backend/.env.example).
+      SUPABASE_URL: ""
+      SUPABASE_SERVICE_ROLE_KEY: ""
     ports:
       - "8010:8010"
     depends_on:

@@ -2,23 +2,22 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import create_access_token
+from app.core.supabase_auth import verify_token
 from app.domains.identity.models import User
-from app.domains.identity.rbac import get_current_user, require_admin
+from app.domains.identity.rbac import get_current_user, oauth2_scheme, require_admin
 from app.domains.identity.schemas import (
-    LoginRequest,
+    ProvisionRequest,
     RolePublic,
-    TokenResponse,
     UserActiveUpdateRequest,
     UserCreateRequest,
     UserListItem,
     UserPublic,
 )
 from app.domains.identity.service import (
-    authenticate_user,
     create_user,
     list_roles,
     list_users,
+    provision_profile,
     set_user_active,
 )
 
@@ -26,17 +25,24 @@ auth_router = APIRouter(prefix="/auth", tags=["auth"])
 users_router = APIRouter(tags=["identity"])
 
 
-@auth_router.post("/login", response_model=TokenResponse)
-async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
-    user = await authenticate_user(db, payload.email, payload.password)
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-        )
+@auth_router.post("/provision", response_model=UserPublic)
+async def provision(
+    payload: ProvisionRequest,
+    db: AsyncSession = Depends(get_db),
+    token: str | None = Depends(oauth2_scheme),
+) -> UserPublic:
+    """Called by the frontend right after Supabase sign-up/first OAuth
+    login. Verifies the token itself (rather than depending on
+    get_current_user, which 401s when the local profile doesn't exist
+    yet — exactly the case on someone's very first call here)."""
+    if token is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
+    claims = verify_token(token)
+    if claims is None or claims.email is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session")
 
-    token = create_access_token(subject=user.id, tenant_id=user.tenant_id, role=user.role)
-    return TokenResponse(access_token=token, user=UserPublic.model_validate(user))
+    user = await provision_profile(db, claims.sub, claims.email, payload)
+    return UserPublic.model_validate(user)
 
 
 @auth_router.get("/me", response_model=UserPublic)

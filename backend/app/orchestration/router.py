@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db, get_sync_db
 from app.core.rate_limit import limiter
-from app.core.security import decode_access_token
+from app.core.supabase_auth import verify_token
 from app.domains.identity.models import User
 from app.domains.identity.rbac import get_current_user
 from app.orchestration.schemas import AskKritonRequest, AskKritonResponse
@@ -30,8 +30,8 @@ def _user_key(request: Request) -> str:
     authenticated API and a shared NAT/office IP must not share one bucket."""
     auth_header = request.headers.get("Authorization", "")
     token = auth_header.removeprefix("Bearer ").strip()
-    payload = decode_access_token(token) if token else None
-    return payload.sub if payload else "anonymous"
+    claims = verify_token(token) if token else None
+    return claims.sub if claims else "anonymous"
 
 
 @router.post("/ask", response_model=AskKritonResponse)

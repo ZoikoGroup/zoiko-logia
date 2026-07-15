@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator
 from typing import Generator
 
 from app.core.config import get_settings
-from app.core.security import decode_access_token
+from app.core.supabase_auth import verify_token
 
 settings = get_settings()
 
@@ -78,23 +78,30 @@ AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 request_engine = create_async_engine(to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL), echo=False)
 RequestSessionLocal = async_sessionmaker(request_engine, expire_on_commit=False)
 
-def _tenant_from_request(request: Request) -> str | None:
-    """Pull tenant_id straight off the caller's JWT, without a DB round-trip
-    or a dependency on get_current_user (which itself depends on get_db —
-    depending on it here would be circular)."""
+def _identity_from_request(request: Request) -> tuple[str, str]:
+    """Pull (user_id, tenant_id) straight off the caller's Supabase JWT,
+    without a DB round-trip or a dependency on get_current_user (which
+    itself depends on get_db — depending on it here would be circular).
+    tenant_id comes out of app_metadata, which the backend sets via the
+    Supabase Admin API at /auth/provision time (see supabase_admin.py) —
+    never client-writable."""
     auth_header = request.headers.get("Authorization", "")
     token = auth_header.removeprefix("Bearer ").strip()
     if not token:
-        return None
-    payload = decode_access_token(token)
-    return payload.tenant_id if payload else None
+        return "", ""
+    claims = verify_token(token)
+    if claims is None:
+        return "", ""
+    return claims.sub, claims.tenant_id
 
 
 async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
-    """Async session dependency for core domain endpoints. Also tenant-scopes
-    the session for Postgres RLS (RG-02): sets app.tenant_id from the
-    caller's JWT, so the sources/source_versions RLS policies enforce
-    isolation even if a query forgets to filter by tenant_id itself.
+    """Async session dependency for core domain endpoints. Also identity-
+    scopes the session for Postgres RLS: sets app.tenant_id (RG-02,
+    sources/source_versions isolation) and app.user_id (users table's
+    self-row RLS policy) from the caller's verified Supabase token, so
+    RLS policies enforce isolation even if a query forgets to filter
+    itself.
 
     Uses is_local=false (session-scoped), not is_local=true (SET LOCAL,
     transaction-scoped) — a single request commonly spans multiple
@@ -104,20 +111,23 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
 
     Session scope persists on the underlying pooled connection beyond this
     request, though, so every code path here — including "no valid token" —
-    must explicitly set it (even to ''), never skip the call. Skipping it
-    when tenant_id is falsy would leave whatever a *previous* request left
-    on that same pooled connection in effect for this one."""
+    must explicitly set both (even to ''), never skip the call. Skipping it
+    when they're falsy would leave whatever a *previous* request left on
+    that same pooled connection in effect for this one."""
     async with RequestSessionLocal() as session:
         if not settings.is_sqlite:
-            tenant_id = _tenant_from_request(request) or ""
+            user_id, tenant_id = _identity_from_request(request)
             # set_config(..., false) accepts a bound parameter, unlike SET,
             # whose grammar takes a literal, not a placeholder — binding
-            # tenant_id directly into SET would require unsafe string
+            # these directly into SET would require unsafe string
             # formatting. Always called, even with "", so a connection
             # reused from the pool never carries over a prior request's
-            # tenant_id into a request that has none.
+            # identity into a request that has none.
             await session.execute(
                 text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id}
+            )
+            await session.execute(
+                text("SELECT set_config('app.user_id', :user_id, false)"), {"user_id": user_id}
             )
         yield session
 

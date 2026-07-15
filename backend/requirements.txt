@@ -10,10 +10,12 @@ greenlet
 asyncpg
 psycopg2-binary
 
-python-jose[cryptography]
-bcrypt
 python-multipart
 email-validator
+
+# Supabase Auth — JWKS token verification + Admin API calls
+pyjwt[crypto]
+httpx
 
 pydantic
 pydantic-settings

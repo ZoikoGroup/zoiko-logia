@@ -488,18 +488,49 @@ async def ask_kriton(
         except Exception:
             context_text = ""
 
+    if not context_text:
+        # §2: No unsupported answering — never let the model answer from its
+        # own general knowledge when there's no retrieved context to ground
+        # it. This is a separate guarantee from the risk-routing matrix, so
+        # it applies even under FORCE_DIRECT_ANSWER (that flag only bypasses
+        # the HIGH-risk escalation/refusal policy, not this one) — previously
+        # this fell through to sending the bare query to the LLM instead.
+        await audit_refusal_returned(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, reason="Insufficient sources; cannot answer without grounded content",
+        )
+        response = AskKritonResponse(
+            query_id=query_id, correlation_id=correlation_id,
+            outcome="clarification_required", route=ROUTE_CLARIFICATION,
+            safety=safety_state, confidence_state=effective_confidence,
+            source_bundle=source_bundle, answer=None,
+            next_action=NextAction(
+                type="ask_clarifying_question",
+                message=(
+                    "Kriton™ could not find sufficient sources to answer your query. "
+                    "Could you clarify your jurisdiction, reporting framework, or topic scope?"
+                ),
+            ),
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        )
+        await _finalise_and_return(
+            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+            audit_chain_id=audit_chain_id, actor_id=actor_id,
+            outcome=response.outcome, route=ROUTE_CLARIFICATION, start_time=start_time,
+        )
+        if idempotency_key:
+            store_idempotency(idempotency_key, tenant_id, response.model_dump())
+        return response
+
     # Build grounded prompt input
     prompt = await select_prompt(db, request.mode)
-    if context_text:
-        grounded_input = (
-            f"Use ONLY the following retrieved context to answer the query. "
-            f"Cite sources using [REF-N] markers. Do not use general knowledge.\n\n"
-            f"=== Retrieved Context ===\n{context_text}\n\n"
-            f"=== User Query ===\n{request.query}"
-        )
-    else:
-        # §2: No unsupported answering — must not answer from model knowledge when sources insufficient
-        grounded_input = request.query
+    grounded_input = (
+        f"Use ONLY the following retrieved context to answer the query. "
+        f"Cite sources using [REF-N] markers. Do not use general knowledge.\n\n"
+        f"=== Retrieved Context ===\n{context_text}\n\n"
+        f"=== User Query ===\n{request.query}"
+    )
 
     # External-provider exposure boundary (ZL-ENG-03 §5.8): redact before
     # grounded_input leaves the tenant trust boundary for the model gateway.

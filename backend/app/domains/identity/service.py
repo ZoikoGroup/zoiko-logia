@@ -1,19 +1,9 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import hash_password, verify_password
-from app.domains.identity.models import Role, User
-from app.domains.identity.schemas import UserCreateRequest
-
-
-async def authenticate_user(db: AsyncSession, email: str, password: str) -> User | None:
-    result = await db.execute(select(User).where(User.email == email))
-    user = result.scalar_one_or_none()
-    if user is None or not user.is_active:
-        return None
-    if not verify_password(password, user.hashed_password):
-        return None
-    return user
+from app.core import supabase_admin
+from app.domains.identity.models import Role, Tenant, User
+from app.domains.identity.schemas import ProvisionRequest, UserCreateRequest
 
 
 async def get_user_by_id(db: AsyncSession, user_id: str) -> User | None:
@@ -32,10 +22,19 @@ async def list_users(db: AsyncSession, tenant_id: str) -> list[User]:
 
 
 async def create_user(db: AsyncSession, tenant_id: str, payload: UserCreateRequest) -> User:
+    """Admin-created teammate: creates the Supabase auth user first (service
+    role, auto-confirmed — this isn't the public sign-up flow, so there's
+    no email-verification step to wait on), then the local profile row
+    keyed by the id Supabase assigned."""
+    auth_user = supabase_admin.create_user(payload.email, payload.password, email_confirm=True)
+    first_name, _, last_name = payload.full_name.partition(" ")
+
     user = User(
+        id=auth_user["id"],
         tenant_id=tenant_id,
         email=payload.email,
-        hashed_password=hash_password(payload.password),
+        first_name=first_name,
+        last_name=last_name,
         full_name=payload.full_name,
         role=payload.role,
         is_active=True,
@@ -43,6 +42,39 @@ async def create_user(db: AsyncSession, tenant_id: str, payload: UserCreateReque
     db.add(user)
     await db.commit()
     await db.refresh(user)
+    supabase_admin.update_app_metadata(user.id, tenant_id, payload.role)
+    return user
+
+
+async def provision_profile(db: AsyncSession, user_id: str, email: str, payload: ProvisionRequest) -> User:
+    """Idempotent upsert called by the frontend right after a Supabase
+    sign-up/first OAuth login. First call creates the Tenant (from
+    company_name) + User row and stamps tenant_id/role into the Supabase
+    user's app_metadata. Later calls just return the existing row —
+    provisioning must never create a second Tenant/User for the same
+    Supabase auth user."""
+    existing = await get_user_by_id(db, user_id)
+    if existing is not None:
+        return existing
+
+    tenant = Tenant(name=payload.company_name or "")
+    db.add(tenant)
+    await db.flush()
+
+    user = User(
+        id=user_id,
+        tenant_id=tenant.id,
+        email=email,
+        first_name=payload.first_name,
+        last_name=payload.last_name,
+        full_name=f"{payload.first_name} {payload.last_name}".strip(),
+        role="Admin",
+        is_active=True,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    supabase_admin.update_app_metadata(user.id, user.tenant_id, user.role)
     return user
 
 

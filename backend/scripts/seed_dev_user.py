@@ -8,8 +8,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sqlalchemy import select
 
+from app.core import supabase_admin
 from app.core.database import AsyncSessionLocal, async_engine
-from app.core.security import hash_password
 from app.db.base import Base
 from app.domains.identity.models import Role, Tenant, User
 from app.domains.learning_cpd.models import SyllabusPathway, TopicMapNode
@@ -73,6 +73,12 @@ PROMPTS = [
 ]
 
 
+def _get_or_create_auth_user(email: str, password: str) -> dict:
+    """Supabase now owns credentials — the local `users` row must be keyed
+    by the id Supabase's Admin API assigns, not a locally-generated uuid."""
+    return supabase_admin.get_user_by_email(email) or supabase_admin.create_user(email, password, email_confirm=True)
+
+
 async def seed_demo_user(db) -> User:
     existing = await db.execute(select(User).where(User.email == DEMO_EMAIL))
     user = existing.scalar_one_or_none()
@@ -80,14 +86,24 @@ async def seed_demo_user(db) -> User:
         print(f"User {DEMO_EMAIL} already exists, skipping.")
         return user
 
+    if not supabase_admin.is_configured():
+        raise RuntimeError(
+            "SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY must be set in backend/.env — "
+            "Supabase now owns credentials, so seeding a login-capable demo user "
+            "requires creating it via the Supabase Admin API."
+        )
+
     tenant = Tenant(name=DEMO_TENANT_NAME)
     db.add(tenant)
     await db.flush()
 
+    admin_auth_user = _get_or_create_auth_user(DEMO_EMAIL, DEMO_PASSWORD)
     user = User(
+        id=admin_auth_user["id"],
         tenant_id=tenant.id,
         email=DEMO_EMAIL,
-        hashed_password=hash_password(DEMO_PASSWORD),
+        first_name="Dashboard",
+        last_name="Admin",
         full_name="Dashboard Admin",
         role="Admin",
         is_active=True,
@@ -96,10 +112,13 @@ async def seed_demo_user(db) -> User:
 
     # Second account required by scripts/ingest_reference_sources.py's maker-checker
     # flow: the submitting admin (above) cannot approve its own source versions.
+    reviewer_auth_user = _get_or_create_auth_user("source.reviewer@zoikologia.com", DEMO_PASSWORD)
     db.add(User(
+        id=reviewer_auth_user["id"],
         tenant_id=tenant.id,
         email="source.reviewer@zoikologia.com",
-        hashed_password=hash_password(DEMO_PASSWORD),
+        first_name="Source",
+        last_name="Reviewer",
         full_name="Source Reviewer",
         role="Admin",
         is_active=True,
@@ -107,6 +126,8 @@ async def seed_demo_user(db) -> User:
 
     await db.commit()
     await db.refresh(user)
+    supabase_admin.update_app_metadata(admin_auth_user["id"], user.tenant_id, user.role)
+    supabase_admin.update_app_metadata(reviewer_auth_user["id"], user.tenant_id, "Admin")
     print(f"Seeded tenant '{tenant.name}', user '{user.email}', and reviewer 'source.reviewer@zoikologia.com'.")
     return user
 

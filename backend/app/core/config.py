@@ -28,16 +28,20 @@ class Settings(BaseSettings):
     # that hasn't provisioned the low-privilege role).
     APP_DATABASE_URL: str | None = None
 
-    # ── Authentication & CORS ───────────────────────────────────────────
-    JWT_SECRET_KEY: str = "dev-only-insecure-secret-change-me"
-    JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+    # ── CORS ─────────────────────────────────────────────────────────────
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001"]
 
     # ── OIDC (Safety Auth Integration) ──────────────────────────────────
     OIDC_ISSUER_URL: str = ""
     OIDC_CLIENT_ID: str = ""
     OIDC_CLIENT_SECRET: str = ""
+
+    # ── Supabase Auth ────────────────────────────────────────────────────
+    # Backend verifies Supabase-issued access tokens (JWKS) and, for the
+    # service-role-only Admin API calls (creating auth users, writing
+    # app_metadata), never exposed to the frontend.
+    SUPABASE_URL: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
 
     # ── LLM Providers ───────────────────────────────────────────────────
     OPENAI_API_KEY: str = ""
