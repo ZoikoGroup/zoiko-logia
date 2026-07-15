@@ -1,11 +1,13 @@
 import os
 import asyncio
 from typing import Dict, Any
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from llama_index.core import VectorStoreIndex, Document, StorageContext
 from llama_index.core.node_parser import SentenceSplitter
 from app.core.config import get_settings
 from app.domains.rag.embeddings import get_embed_model, EMBED_DIM
+from app.domains.source_library.models import Source
 
 settings = get_settings()
 
@@ -23,6 +25,24 @@ async def ingest_document_content(
     """
     embed_model = get_embed_model()
 
+    # is_tenant_private is looked up from the real Source record (the single
+    # source of truth also used by source_library/service.py's shared-or-mine
+    # query) rather than trusted from the caller — this is what lets
+    # rag/retrieval.py's tenant filter treat non-private sources (regulatory
+    # standards, etc.) as retrievable by every tenant, not just the one that
+    # happened to run ingestion. Stored as the string "true"/"false", not a
+    # JSON boolean: PGVectorStore's metadata filter builder tries
+    # float(value) before falling back to a string comparison, and
+    # metadata_->>'key' always yields text regardless of the underlying JSON
+    # type, so a bool here would either mis-cast or silently mismatch.
+    source_id = metadata.get("source_id", "")
+    is_tenant_private = False
+    if source_id:
+        result = await db.execute(select(Source.is_tenant_private).where(Source.id == source_id))
+        row = result.scalar_one_or_none()
+        if row is not None:
+            is_tenant_private = row
+
     # Create LlamaIndex document object
     doc = Document(
         text=markdown_content,
@@ -33,13 +53,14 @@ async def ingest_document_content(
             "jurisdiction": metadata["jurisdiction_scope"],
             "version": metadata["version_label"],
             "tenant_id": metadata["tenant_id"],
+            "is_tenant_private": "true" if is_tenant_private else "false",
             # Real sources.id this chunk was embedded from — orchestration/
             # retrieve.py looks this up against the governance record (status,
             # jurisdiction, tenant visibility) rather than trusting this
             # chunk's own metadata as a stand-in for an ACTIVE/approved
             # source. Chunks ingested without a real source_id are excluded
             # there, not silently treated as eligible.
-            "source_id": metadata.get("source_id", ""),
+            "source_id": source_id,
         }
     )
     

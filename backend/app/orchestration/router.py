@@ -9,8 +9,6 @@ Controls:
   - Idempotency: duplicate Idempotency-Key returns original result without re-execution.
   - Rate limiting: enforced before retrieval or model work.
 """
-from __future__ import annotations
-
 from typing import Optional
 from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession

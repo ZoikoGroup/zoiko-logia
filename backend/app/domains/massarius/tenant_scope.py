@@ -59,16 +59,21 @@ async def ensure_vector_table_rls(conn: AsyncConnection, *, role: str) -> bool:
     again once you know the table exists (e.g. after a manual ingestion
     run) if it returned False at startup.
 
-    Known gap, unlike the sources/source_versions policy: this is strict
-    tenant_id equality, not the shared-unless-private model
-    massarius/license_gate.py applies to sources (is_tenant_private=False
-    rows shared across every tenant). Vector chunk metadata (see
-    source_library/ingestion_service.py) has no is_tenant_private field yet,
-    so a standard embedded under one tenant won't be found via vector
-    search by another tenant even when the equivalent Source row is
-    public. That's a functional gap (under-sharing), not a security one —
-    it fails closed, which is the safe direction — but worth knowing before
-    relying on cross-tenant shared standards through the vector path.
+    Mirrors the shared-unless-private model massarius/license_gate.py
+    already applies to the governed `sources` table: a chunk is visible if
+    it belongs to the requesting tenant OR its source was ingested as
+    shared (is_tenant_private == "false" — see
+    source_library/ingestion_service.py, which stamps this onto every
+    chunk's metadata from the real Source record at embed time). Stored as
+    the string "true"/"false", not a JSON boolean — see
+    ingestion_service.py's docstring for why a bool would mis-cast here.
+
+    Previously this was strict tenant_id equality with no sharing
+    exception, which silently hid every shared reference source (FRS,
+    GAAS, etc.) from any tenant other than whichever one ran ingestion —
+    a functional gap, not a security one (it failed closed), but one that
+    made cross-tenant shared standards invisible via the vector path even
+    though the equivalent Source row was correctly marked public.
     """
     if not await table_exists(conn, VECTOR_TABLE):
         return False
@@ -83,7 +88,10 @@ async def ensure_vector_table_rls(conn: AsyncConnection, *, role: str) -> bool:
     await conn.execute(
         text(
             f"CREATE POLICY {policy} ON {VECTOR_TABLE} "
-            "USING (metadata_->>'tenant_id' = current_setting('app.tenant_id', true))"
+            "USING ("
+            "metadata_->>'tenant_id' = current_setting('app.tenant_id', true) "
+            "OR metadata_->>'is_tenant_private' = 'false'"
+            ")"
         )
     )
     await conn.execute(text(f'GRANT SELECT, INSERT, UPDATE, DELETE ON {VECTOR_TABLE} TO {_pg_ident(role)}'))
