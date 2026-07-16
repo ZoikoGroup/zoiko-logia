@@ -1,6 +1,6 @@
 "use client";
 
-import { Settings, Bell, Sun, Moon, Menu } from "lucide-react";
+import { Bell, ChevronDown, Menu, Moon, Sun } from "lucide-react";
 import { RoleSwitcher } from "@/components/shell/RoleSwitcher";
 import { NavSearch } from "@/components/shell/NavSearch";
 import { useTheme } from "@/components/shell/ThemeProvider";
@@ -21,7 +21,7 @@ export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
   const { theme, toggleTheme } = useTheme();
 
   return (
-    <div className="m-4 mb-0 rounded-2xl border border-line bg-panel shadow-[0_1px_2px_rgba(16,24,40,0.04)] px-5 py-3.5 flex items-center gap-4">
+    <header className="mx-4 mt-4 grid min-h-16 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-line bg-panel p-2.5 shadow-[0_1px_2px_rgba(16,24,40,0.04)] sm:gap-3 sm:px-3">
       <button
         onClick={onMenuClick}
         aria-label="Open menu"
@@ -29,26 +29,33 @@ export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
       >
         <Menu size={17} />
       </button>
-      <NavSearch />
 
-      <div className="flex items-center gap-3 justify-end shrink-0 ml-auto">
-        <RoleSwitcher />
+      <div className="min-w-0 md:max-w-xl"><NavSearch /></div>
+
+      <div className="flex shrink-0 items-center justify-end gap-1 sm:gap-1.5">
+        <div className="hidden lg:block"><RoleSwitcher /></div>
         <button
           onClick={toggleTheme}
           aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
           title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-          className="h-10 w-10 flex items-center justify-center rounded-xl border border-line bg-panel text-muted hover:bg-soft"
+          className="flex h-10 w-10 items-center justify-center rounded-xl text-muted hover:bg-soft"
         >
           {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
         </button>
-        <button className="h-10 w-10 flex items-center justify-center rounded-xl border border-line bg-panel text-muted hover:bg-soft">
-          <Settings size={17} />
+        <button aria-label="Notifications" className="relative flex h-10 w-10 items-center justify-center rounded-xl text-muted hover:bg-soft">
+          <Bell size={19} />
+          <span className="absolute right-1.5 top-1 grid h-4 min-w-4 place-items-center rounded-full bg-bad px-1 text-[9px] font-bold text-white">3</span>
         </button>
-        <button className="relative h-10 w-10 flex items-center justify-center rounded-xl border border-line bg-panel text-muted hover:bg-soft">
-          <Bell size={17} />
-          <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-gold" />
+        <button aria-label="Open user menu" className="ml-0.5 flex h-10 items-center gap-2 rounded-xl border border-transparent px-1 hover:border-line hover:bg-soft sm:px-2">
+          <span className="grid h-8 w-8 place-items-center rounded-full bg-brand text-xs font-bold text-white">LM</span>
+          <span className="hidden text-left xl:block"><strong className="block text-xs text-ink">Lennox M.</strong><small className="block text-[10px] text-muted">Administrator</small></span>
+          <ChevronDown size={14} className="hidden text-muted sm:block" />
         </button>
       </div>
-    </div>
+
+      <div className="col-span-3 lg:hidden">
+        <RoleSwitcher />
+      </div>
+    </header>
   );
 }

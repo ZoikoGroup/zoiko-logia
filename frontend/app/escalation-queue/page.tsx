@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { PageHeader } from "@/components/governance/PageHeader";
 import { Pill } from "@/components/governance/Pill";
 import {
   AlertTriangle,
@@ -142,11 +141,6 @@ export default function EscalationQueuePage() {
 
   return (
     <main className="flex-1 overflow-y-auto p-6 space-y-6">
-      <PageHeader
-        title="Escalation Queue & Governance"
-        subtitle="Manage routing cases, monitor SLAs, and apply safety overrides."
-      />
-
       {/* ── Summary Metrics Grid ─────────────────────────────────────── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[

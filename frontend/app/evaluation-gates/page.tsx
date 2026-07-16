@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { PageHeader } from "@/components/governance/PageHeader";
 import { Card } from "@/components/governance/Card";
 import { Pill } from "@/components/governance/Pill";
 import {
@@ -159,11 +158,6 @@ export default function EvaluationGatesPage() {
 
   return (
     <main className="flex-1 overflow-y-auto p-6 space-y-6">
-      <PageHeader
-        title="Evaluation Gates"
-        subtitle="QA benchmark runs, red-team gates, citation checks, and release promotion authorizations — ZL-T0-10 §3, ZL-T0-11."
-      />
-
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start max-w-7xl">
 
         {/* ── Left Column: Run Console ─────────────────────────────────── */}
