@@ -1,7 +1,27 @@
 import os
+import socket
 
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+
+# Some dev networks synthesize NAT64 IPv6 addresses (64:ff9b::...) for
+# IPv4-only hosts like Supabase's pooler, and that synthesized path is
+# unreliable here — asyncio/asyncpg try getaddrinfo()'s results in order,
+# and getaddrinfo() lists those IPv6 addresses before the real IPv4 ones,
+# so a connection attempt hangs on the broken IPv6 path and times out
+# instead of ever reaching the working IPv4 address. Reordering (not
+# removing) results to try IPv4 first fixes this without needing any
+# per-network config — real IPv6 hosts/networks are unaffected since this
+# only changes ordering when both families are present.
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_preferring_getaddrinfo(*args, **kwargs):
+    results = _orig_getaddrinfo(*args, **kwargs)
+    return sorted(results, key=lambda r: r[0] != socket.AF_INET)
+
+
+socket.getaddrinfo = _ipv4_preferring_getaddrinfo
 
 from contextlib import asynccontextmanager
 

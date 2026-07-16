@@ -66,7 +66,19 @@ def get_sync_db() -> Generator[Session, None, None]:
 # main.py's lifespan uses for schema creation/migrations, and what the
 # one-shot seed scripts (scripts/seed_dev_user.py, ingest_reference_sources.py)
 # import directly — those need to write rows unconstrained by RLS.
-async_engine = create_async_engine(to_async_url(settings.DATABASE_URL), echo=False)
+#
+# pool_pre_ping=True mirrors the sync `engine` above — without it, a pooled
+# connection that Supabase's Session Pooler (Supavisor) has silently closed
+# server-side after sitting idle looks perfectly healthy to SQLAlchemy's
+# pool until it's actually used, surfacing as
+# "asyncpg.exceptions.InterfaceError: connection is closed" on whatever
+# query happens to draw that connection next. pre_ping issues a cheap
+# liveness check on checkout and transparently opens a new connection
+# instead of handing back a dead one. pool_recycle recycles connections
+# proactively before the pooler's own idle-timeout would ever close them.
+async_engine = create_async_engine(
+    to_async_url(settings.DATABASE_URL), echo=False, pool_pre_ping=True, pool_recycle=300,
+)
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 
 # Request-time engine — deliberately separate from async_engine. Postgres
@@ -75,7 +87,10 @@ AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 # setup, request traffic must go through a distinct, non-superuser role for
 # RLS to actually apply. Falls back to the same URL when APP_DATABASE_URL
 # isn't set (SQLite, or a Postgres instance without the low-priv role).
-request_engine = create_async_engine(to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL), echo=False)
+request_engine = create_async_engine(
+    to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL), echo=False,
+    pool_pre_ping=True, pool_recycle=300,
+)
 RequestSessionLocal = async_sessionmaker(request_engine, expire_on_commit=False)
 
 def _identity_from_request(request: Request) -> tuple[str, str]:
