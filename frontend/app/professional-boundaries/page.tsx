@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { PageHeader } from "@/components/governance/PageHeader";
 import { Card } from "@/components/governance/Card";
 import { Pill } from "@/components/governance/Pill";
 import {
@@ -212,11 +211,6 @@ export default function ProfessionalBoundariesPage() {
 
   return (
     <main className="flex-1 overflow-y-auto p-6 space-y-6">
-      <PageHeader
-        title="Professional Boundaries"
-        subtitle="Rules governing what Kriton™ can and cannot answer without human review — ZL-T0-11 §7. Validate draft LLM outputs against the prohibited output registry."
-      />
-
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start max-w-7xl">
 
         {/* ── Left Column: Validator Console ─────────────────────────────── */}

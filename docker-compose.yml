@@ -29,6 +29,13 @@ services:
       # confidence, which is always below the 0.65 routing threshold, so
       # every query falls back to "needs clarification" regardless of content.
       ENABLE_ML_CLASSIFIER: "true"
+      # The classifier model is already baked into the image's HF cache.
+      # Without these, huggingface_hub still does an online freshness check
+      # on every load; when that check hangs (flaky/sandboxed Docker
+      # networking), it can add 40+ seconds to every single request instead
+      # of failing over to the cache. Force it to use the local cache only.
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
       CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001","http://localhost:3005"]'
       # Auth is now Supabase-backed — set these to a real Supabase project
       # for sign-up/sign-in to work (see backend/.env.example).

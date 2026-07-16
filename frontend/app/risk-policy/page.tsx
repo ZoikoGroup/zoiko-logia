@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { PageHeader } from "@/components/governance/PageHeader";
 import { Card } from "@/components/governance/Card";
 import { Pill } from "@/components/governance/Pill";
 import {
@@ -106,11 +105,6 @@ export default function RiskPolicyPage() {
 
   return (
     <main className="flex-1 overflow-y-auto p-6 space-y-6">
-      <PageHeader
-        title="Risk Policy"
-        subtitle="Risk taxonomy, classification rules, restricted sub-classes, and refusal template registry."
-      />
-
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start max-w-7xl">
         {/* ── Risk Taxonomy & Rules ────────────────────────────────────── */}
         <div className="lg:col-span-8 space-y-6">

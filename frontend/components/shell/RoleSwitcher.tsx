@@ -7,14 +7,14 @@ export function RoleSwitcher() {
   const { role, setRole } = useRole();
 
   return (
-    <label className="flex items-center gap-1.5 rounded-full border border-line bg-panel pl-3 pr-2 py-1.5 text-xs text-muted">
-      <span className="sr-only">Viewing as role</span>
-      <span className="hidden sm:inline">Viewing as</span>
+    <label className="flex h-10 items-center gap-2 rounded-xl border border-line bg-soft/60 px-3 text-xs">
+      <span className="font-medium text-muted">Role</span>
+      <span className="h-4 w-px bg-line" aria-hidden="true" />
       <select
         value={role}
         onChange={(e) => setRole(e.target.value as RoleCode)}
         aria-label="Viewing as role"
-        className="bg-transparent text-ink font-semibold outline-none"
+        className="min-w-20 bg-transparent font-semibold text-ink outline-none"
       >
         {ROLES.map((r) => (
           <option key={r} value={r}>

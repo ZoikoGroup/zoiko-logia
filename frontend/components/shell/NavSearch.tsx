@@ -74,7 +74,7 @@ export function NavSearch() {
   }
 
   return (
-    <div ref={containerRef} className="relative w-full max-w-xs">
+    <div ref={containerRef} className="relative w-full">
       <div className="zl-search-surface flex items-center gap-2 rounded-xl border px-3.5 py-2.5 transition-shadow">
         <Search size={16} className="text-brand shrink-0" />
         <input
