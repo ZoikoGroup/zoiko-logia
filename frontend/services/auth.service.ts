@@ -5,6 +5,10 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // >=8 chars, at least one uppercase, one lowercase, one digit.
 const PASSWORD_RE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
 
+// Restrict sign-up to specific email domains, e.g. ["gmail.com"] or
+// ["gmail.com", "zoikogroup.com"]. Leave empty to allow any domain.
+const ALLOWED_EMAIL_DOMAINS: string[] = [];
+
 export type SignUpFields = {
   firstName: string;
   lastName: string;
@@ -24,6 +28,11 @@ export function validateSignUp(fields: SignUpFields): FieldErrors {
     errors.email = "Work email is required.";
   } else if (!EMAIL_RE.test(fields.email)) {
     errors.email = "Enter a valid email address.";
+  } else if (ALLOWED_EMAIL_DOMAINS.length > 0) {
+    const domain = fields.email.trim().split("@")[1]?.toLowerCase();
+    if (!ALLOWED_EMAIL_DOMAINS.includes(domain)) {
+      errors.email = `Only ${ALLOWED_EMAIL_DOMAINS.join(", ")} email addresses are allowed.`;
+    }
   }
   if (!PASSWORD_RE.test(fields.password)) {
     errors.password = "Password must be at least 8 characters with an uppercase letter, a lowercase letter, and a number.";
