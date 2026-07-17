@@ -29,7 +29,7 @@ class AskKritonRequest(BaseModel):
 # the typed shape license_gate.py's Checkpoint A reasons about today, and what
 # a future planner module would populate.
 
-RetrievalMethod = Literal["keyword", "vector", "ontology", "citation_anchor", "tenant_private", "hybrid"]
+RetrievalMethod = Literal["keyword", "vector", "ontology", "citation_anchor", "tenant_private", "hybrid", "live_api"]
 
 
 class RetrievalPlan(BaseModel):
@@ -69,6 +69,9 @@ class SourceSummary(BaseModel):
     jurisdiction_scope: str
     version_label: str
     status: str
+    # Live external-data addition (app/domains/live_sources/) — defaulted so
+    # every existing construction site is unaffected.
+    source_type: Literal["document", "live_api"] = "document"
 
 
 SourceDisplayState = Literal["show", "summarise", "internal_reasoning_only"]
@@ -141,6 +144,8 @@ class SourceCitation(BaseModel):
     ref_id: str
     source_id: str
     title: str
+    # Live external-data addition, same rationale as SourceSummary.source_type.
+    source_type: Literal["document", "live_api"] = "document"
 
 
 class ComposedAnswer(BaseModel):

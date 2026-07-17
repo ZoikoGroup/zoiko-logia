@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     OBJECT_STORAGE_URL: str = ""
     CELERY_BROKER_URL: str = ""
 
+    # ── Live External Data Sources (app/domains/live_sources/) ──────────
+    # World Bank Open Data — keyless public API, no key/secret needed.
+    WORLD_BANK_API_BASE_URL: str = "https://api.worldbank.org/v2"
+    LIVE_SOURCE_HTTP_TIMEOUT_SECONDS: float = 10.0
+    # Macro indicators (GDP/inflation) update quarterly/annually at most —
+    # 6h TTL avoids re-fetching World Bank on every request without risking
+    # meaningfully stale figures relative to this data's own update cadence.
+    LIVE_SOURCE_CACHE_TTL_SECONDS: int = 21600
+
     # ── Safety Service Tuning ───────────────────────────────────────────
     # cross-encoder/nli-distilroberta-base's actual score distribution runs
     # much lower than the original 0.65 assumed — even unambiguous accounting

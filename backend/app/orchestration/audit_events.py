@@ -175,3 +175,34 @@ async def audit_response_returned(db, *, query_id, correlation_id, tenant_id, au
                                    latency_ms: float):
     await _emit(db, "response_returned", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"latency_ms": round(latency_ms, 2)})
+
+# ── Live external-data source events (app/domains/live_sources/) ────────────
+# Emitted by orchestration/service.py around its fetch_live_data() call —
+# mirrors how retrieval_completed/retrieval_failed wrap build_source_bundle()
+# rather than being emitted from inside retrieve.py itself.
+
+async def audit_live_intent_detected(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                      provider_key: str, indicator_code: str, country_code: str):
+    await _emit(db, "live_intent_detected", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"provider_key": provider_key, "indicator_code": indicator_code, "country_code": country_code})
+
+async def audit_live_cache_hit(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                provider_key: str, cache_key: str):
+    await _emit(db, "live_cache_hit", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"provider_key": provider_key, "cache_key": cache_key})
+
+async def audit_live_cache_miss(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                 provider_key: str, cache_key: str):
+    await _emit(db, "live_cache_miss", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"provider_key": provider_key, "cache_key": cache_key})
+
+async def audit_live_fetch_succeeded(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                      provider_key: str, indicator_code: str, country_code: str, latency_ms: float):
+    await _emit(db, "live_fetch_succeeded", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"provider_key": provider_key, "indicator_code": indicator_code, "country_code": country_code,
+                 "latency_ms": round(latency_ms, 2)})
+
+async def audit_live_fetch_failed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                   provider_key: str, error: str):
+    await _emit(db, "live_fetch_failed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"provider_key": provider_key, "error": error}, replay_relevance="REQUIRED")

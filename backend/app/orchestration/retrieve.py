@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import uuid
 import os
+from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domains.source_library.service import list_sources, get_source_by_id
@@ -55,6 +56,7 @@ async def build_source_bundle(
     jurisdiction: str,
     tenant_id: str,
     raw_chunks: list | None = None,
+    extra_sources: Optional[list[SourceSummary]] = None,
 ) -> SourceBundle:
     """
     Build a SourceBundle via keyword-based category retrieval, merged with
@@ -72,6 +74,14 @@ async def build_source_bundle(
     top_k=5, once in service.py at top_k=30) for the exact same query, which
     is pure waste. Pass None (the old behavior) to have this function fetch
     its own chunks, e.g. for standalone/test use.
+
+    extra_sources: pre-built SourceSummary entries from a peer retrieval
+    method (currently: app.domains.live_sources — a live external-data fetch
+    already resolved by the caller). These aren't source_library rows, so no
+    status/jurisdiction filtering applies here; they're added straight to
+    eligible and folded into the same confidence_state calculation below.
+    Eligibility/licence checks for them happen downstream in
+    massarius/license_gate.py, same as document sources.
     """
     category = infer_category(query)
 
@@ -166,12 +176,26 @@ async def build_source_bundle(
         except Exception as e:
             exclusion_reasons.append(f"Vector store search failed: {str(e)}")
 
+    # Kept separate from `eligible` (governed source dicts, keyed by c["id"])
+    # rather than merged into it — extra_sources are already-built
+    # SourceSummary objects (e.g. from app.domains.live_sources), not
+    # source_library rows, so they can't go through the c["id"]-style dict
+    # access the final sources= comprehension below uses for `eligible`.
+    eligible_extra: list[SourceSummary] = []
+    for extra in (extra_sources or []):
+        if extra.id in seen_ids:
+            continue
+        eligible_extra.append(extra)
+        seen_ids.add(extra.id)
+
+    total_eligible_count = len(eligible) + len(eligible_extra)
+
     # Determine confidence_state per §7.2
-    if has_restricted and len(eligible) == 0:
+    if has_restricted and total_eligible_count == 0:
         confidence_state = CONF_RESTRICTED
-    elif len(eligible) == 0:
+    elif total_eligible_count == 0:
         confidence_state = CONF_INSUFFICIENT
-    elif len(eligible) == 1:
+    elif total_eligible_count == 1:
         confidence_state = CONF_LIMITED
     elif has_conflict:
         confidence_state = CONF_CONFLICTING
@@ -184,7 +208,7 @@ async def build_source_bundle(
     return SourceBundle(
         source_bundle_id=f"sb-{uuid.uuid4().hex[:12]}",
         retrieval_method="keyword_mvp",  # §7: do not label as RAG
-        eligible_source_count=len(eligible),
+        eligible_source_count=total_eligible_count,
         excluded_source_count=len(excluded),
         sources=[
             SourceSummary(
@@ -196,7 +220,7 @@ async def build_source_bundle(
                 status=c["latest_version"].status,
             )
             for c in eligible
-        ],
+        ] + eligible_extra,
         exclusion_reasons=exclusion_reasons,
         jurisdiction=jurisdiction,
         authority_level=authority_level,

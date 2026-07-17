@@ -57,6 +57,8 @@ from app.orchestration.audit_events import (
     audit_licence_prefilter_completed, audit_licence_denied,
     audit_bundle_built, audit_validation_completed,
     audit_redaction_applied,
+    audit_live_intent_detected, audit_live_cache_hit, audit_live_cache_miss,
+    audit_live_fetch_succeeded, audit_live_fetch_failed,
 )
 from app.domains.risk_safety.schemas import ClassifyRequest
 from app.domains.model_gateway import service as model_gateway_service
@@ -65,6 +67,12 @@ from app.domains.rag.retrieval import retrieve_documents
 from app.domains.rag.reranker import Reranker
 from app.domains.rag.context_fit import build_grounded_context
 from app.domains.rag.redaction import redact_for_external_exposure
+
+# Live/dynamic external data (app/domains/live_sources/) — a peer retrieval
+# method to the static-document path above, gated behind ENABLE_LIVE_SOURCES
+# the same way ENABLE_RAG_EMBEDDINGS gates vector retrieval.
+from app.domains.live_sources import service as live_sources_service
+from app.domains.live_sources.cache import make_cache_key
 
 # Massarius™ retrieval and evidence subsystem — Phase 1 control modules
 # (ZL-ENG-03). These wrap/replace the inline licence filtering, bundle
@@ -98,6 +106,13 @@ def _force_direct_answer() -> bool:
     safeguard for HIGH-risk (tax/audit/legal-adjacent) queries entirely.
     """
     return os.getenv("FORCE_DIRECT_ANSWER", "").lower() in {"1", "true", "yes"}
+
+
+def _enable_live_sources() -> bool:
+    """Gates the live_sources.service.fetch_live_data() call below — same
+    os.getenv() convention as ENABLE_RAG_EMBEDDINGS (see orchestration/retrieve.py
+    and the raw_chunks fetch in Step 4 below)."""
+    return os.getenv("ENABLE_LIVE_SOURCES", "").lower() in {"1", "true", "yes"}
 
 
 async def ask_kriton(
@@ -205,10 +220,58 @@ async def ask_kriton(
             )
         except Exception:
             raw_chunks = []
+
+    # Live/dynamic external data — a peer to the document retrieval above,
+    # never blocking it: a failed/absent live fetch just means no live
+    # source gets added below, not a broken request.
+    live_summary = None
+    live_fetch_start = time.monotonic()
+    live_outcome = await live_sources_service.fetch_live_data(db, query=request.query, tenant_id=tenant_id) \
+        if _enable_live_sources() else None
+    if live_outcome and live_outcome.intent is not None:
+        await audit_live_intent_detected(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
+            provider_key=live_outcome.intent.provider_key,
+            indicator_code=live_outcome.intent.indicator_code,
+            country_code=live_outcome.intent.country_code,
+        )
+        cache_key = make_cache_key(live_outcome.intent)
+        if live_outcome.cache_hit:
+            await audit_live_cache_hit(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
+                provider_key=live_outcome.intent.provider_key, cache_key=cache_key,
+            )
+        else:
+            await audit_live_cache_miss(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
+                provider_key=live_outcome.intent.provider_key, cache_key=cache_key,
+            )
+            if live_outcome.succeeded:
+                await audit_live_fetch_succeeded(
+                    db, query_id=query_id, correlation_id=correlation_id,
+                    tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
+                    provider_key=live_outcome.intent.provider_key,
+                    indicator_code=live_outcome.intent.indicator_code,
+                    country_code=live_outcome.intent.country_code,
+                    latency_ms=(time.monotonic() - live_fetch_start) * 1000,
+                )
+            else:
+                await audit_live_fetch_failed(
+                    db, query_id=query_id, correlation_id=correlation_id,
+                    tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
+                    provider_key=live_outcome.intent.provider_key, error=live_outcome.error or "unknown error",
+                )
+        if live_outcome.succeeded and live_outcome.normalized:
+            live_summary = live_sources_service.to_source_summary(live_outcome.normalized)
+
     try:
         preliminary_bundle = await build_source_bundle(
             db, query=request.query, jurisdiction=request.jurisdiction, tenant_id=tenant_id,
             raw_chunks=raw_chunks,
+            extra_sources=[live_summary] if live_summary else None,
         )
         await audit_retrieval_completed(
             db, query_id=query_id, correlation_id=correlation_id,
@@ -467,9 +530,28 @@ async def ask_kriton(
     # the API shell, login, and deterministic routing flows.
     context_text = ""
     rag_citations: list[SourceCitation] = []
-    if raw_chunks:
+    live_ready = live_summary is not None and live_outcome is not None and live_outcome.normalized is not None
+    if raw_chunks or live_ready:
         try:
-            reranked = await _reranker.rerank(request.query, raw_chunks)
+            reranked = await _reranker.rerank(request.query, raw_chunks) if raw_chunks else []
+            if live_ready:
+                # Rides through the existing [REF-N] citation pipeline
+                # unmodified — a synthetic chunk shaped exactly like a real
+                # vector hit (see live_sources.service.to_synthetic_chunk),
+                # not a parallel citation mechanism.
+                #
+                # Prepended, not appended: build_grounded_context() below has
+                # a fixed max_chars budget and drops whatever doesn't fit,
+                # tail-first. A live source only exists here because the
+                # query itself was classified as wanting live data — it must
+                # never lose that budget to generic document chunks that
+                # merely matched the same keyword category (observed in
+                # testing: 5 reranked document chunks alone exceeded the
+                # budget, silently dropping the live chunk from the model's
+                # actual context while it still appeared in source_bundle —
+                # a separate, non-truncated list — making the answer look
+                # like it had the data when the model never received it).
+                reranked = [live_sources_service.to_synthetic_chunk(live_outcome.normalized, live_summary)] + reranked
             context_text, source_refs = build_grounded_context(reranked)
             rag_citations = [
                 SourceCitation(
@@ -482,6 +564,7 @@ async def ask_kriton(
                     # (e.g. ingested outside the governance workflow).
                     source_id=chunk["metadata"].get("source_id") or chunk.get("node_id", f"chunk-{i}"),
                     title=chunk["metadata"].get("title", "Uploaded Document"),
+                    source_type=chunk["metadata"].get("source_type", "document"),
                 )
                 for i, chunk in enumerate(reranked)
             ]
