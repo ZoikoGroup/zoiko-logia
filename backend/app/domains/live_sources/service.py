@@ -17,7 +17,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.domains.live_sources import cache
-from app.domains.live_sources.classifier import detect_live_data_intent
+from app.domains.live_sources.classifier import detect_company_lookup_intent, detect_live_data_intent
+from app.domains.live_sources.connectors.bank_of_england import BankOfEnglandConnector
+from app.domains.live_sources.connectors.companies_house import CompaniesHouseConnector
+from app.domains.live_sources.connectors.fred import FREDConnector
+from app.domains.live_sources.connectors.frankfurter import FrankfurterConnector
+from app.domains.live_sources.connectors.ons import ONSConnector
+from app.domains.live_sources.connectors.sec_edgar import SECEdgarConnector
 from app.domains.live_sources.connectors.world_bank import WorldBankConnector
 from app.domains.live_sources.schemas import LiveFetchOutcome, NormalizedResponse
 from app.orchestration.schemas import SourceSummary
@@ -26,11 +32,25 @@ settings = get_settings()
 
 _CONNECTORS = {
     "world_bank": WorldBankConnector(base_url=settings.WORLD_BANK_API_BASE_URL),
+    "ons": ONSConnector(base_url=settings.ONS_API_BASE_URL),
+    "bank_of_england": BankOfEnglandConnector(base_url=settings.BANK_OF_ENGLAND_API_BASE_URL),
+    "frankfurter": FrankfurterConnector(base_url=settings.FRANKFURTER_API_BASE_URL),
+    "fred": FREDConnector(base_url=settings.FRED_API_BASE_URL, api_key=settings.FRED_API_KEY),
+    "sec_edgar": SECEdgarConnector(base_url=settings.SEC_EDGAR_API_BASE_URL, user_agent=settings.SEC_EDGAR_USER_AGENT),
+    "companies_house": CompaniesHouseConnector(
+        base_url=settings.COMPANIES_HOUSE_API_BASE_URL, api_key=settings.COMPANIES_HOUSE_API_KEY
+    ),
 }
 
 
-async def fetch_live_data(db: AsyncSession, *, query: str, tenant_id: str) -> LiveFetchOutcome:
-    intent = detect_live_data_intent(query)
+async def fetch_live_data(db: AsyncSession, *, query: str, tenant_id: str, jurisdiction: str = "") -> LiveFetchOutcome:
+    # Company lookup ("tell me about company X") is a different question
+    # than country+indicator — tried second, only if the first finds
+    # nothing, never both (see classifier.py's detect_company_lookup_intent
+    # docstring for why this stays a separate function).
+    intent = detect_live_data_intent(query, jurisdiction=jurisdiction)
+    if intent is None:
+        intent = detect_company_lookup_intent(query, jurisdiction=jurisdiction)
     if intent is None:
         return LiveFetchOutcome(intent=None)
 
@@ -58,7 +78,16 @@ async def fetch_live_data(db: AsyncSession, *, query: str, tenant_id: str) -> Li
 
 
 def make_live_source_id(normalized: NormalizedResponse) -> str:
-    return f"live-{normalized.provider_key}-{normalized.indicator_code}-{normalized.country_code}"
+    base = f"live-{normalized.provider_key}-{normalized.indicator_code}-{normalized.country_code}"
+    # Company-lookup results (SEC EDGAR/Companies House) need the company
+    # in the id too — otherwise two different companies' identical
+    # indicator_code (e.g. both "Assets") would collide onto the same
+    # source_id. license_gate.py's _live_provider_key_of() only ever reads
+    # the second dash-separated segment, so appending more segments here
+    # is always safe regardless of what a company name itself contains.
+    if normalized.company_query:
+        return f"{base}-{normalized.company_query}"
+    return base
 
 
 def to_source_summary(normalized: NormalizedResponse) -> SourceSummary:

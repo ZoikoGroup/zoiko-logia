@@ -17,7 +17,10 @@ from app.domains.live_sources.schemas import LiveDataIntent, NormalizedResponse
 
 
 def make_cache_key(intent: LiveDataIntent) -> str:
-    raw = f"{intent.provider_key}:{intent.indicator_code}:{intent.country_code}"
+    # company_query included when present — otherwise two different
+    # companies' identical indicator_code (e.g. Apple's and Microsoft's
+    # both "Assets") would collide onto the same cache row.
+    raw = f"{intent.provider_key}:{intent.indicator_code}:{intent.country_code}:{intent.company_query or ''}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
 
 

@@ -18,6 +18,11 @@ class LiveDataIntent(BaseModel):
     indicator_label: str
     country_code: str
     country_label: str
+    # Company-lookup intents only (SEC EDGAR / Companies House) — the
+    # extracted company name/ticker. For these, indicator_code is repurposed
+    # as the financial concept to fetch (e.g. "Assets" for SEC EDGAR,
+    # "profile" for Companies House) rather than a World Bank-style code.
+    company_query: Optional[str] = None
 
 
 class NormalizedResponse(BaseModel):
@@ -32,6 +37,11 @@ class NormalizedResponse(BaseModel):
     as_of: str  # fetch timestamp, ISO 8601
     source_url: str
     citation_title: str
+    # Propagated from LiveDataIntent.company_query for company-lookup
+    # results — needed so live_sources.service.make_live_source_id() can
+    # keep two different companies' identical indicator_code from
+    # colliding onto the same source_id.
+    company_query: Optional[str] = None
 
 
 class LiveFetchOutcome(BaseModel):

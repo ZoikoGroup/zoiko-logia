@@ -226,8 +226,9 @@ async def ask_kriton(
     # source gets added below, not a broken request.
     live_summary = None
     live_fetch_start = time.monotonic()
-    live_outcome = await live_sources_service.fetch_live_data(db, query=request.query, tenant_id=tenant_id) \
-        if _enable_live_sources() else None
+    live_outcome = await live_sources_service.fetch_live_data(
+        db, query=request.query, tenant_id=tenant_id, jurisdiction=request.jurisdiction,
+    ) if _enable_live_sources() else None
     if live_outcome and live_outcome.intent is not None:
         await audit_live_intent_detected(
             db, query_id=query_id, correlation_id=correlation_id,

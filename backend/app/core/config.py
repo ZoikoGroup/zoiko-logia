@@ -57,6 +57,27 @@ class Settings(BaseSettings):
     # ── Live External Data Sources (app/domains/live_sources/) ──────────
     # World Bank Open Data — keyless public API, no key/secret needed.
     WORLD_BANK_API_BASE_URL: str = "https://api.worldbank.org/v2"
+    # ONS (Office for National Statistics) — keyless. UK CPIH index.
+    ONS_API_BASE_URL: str = "https://api.beta.ons.gov.uk/v1"
+    # Bank of England IADB — keyless. UK Bank Rate.
+    BANK_OF_ENGLAND_API_BASE_URL: str = "https://www.bankofengland.co.uk/boeapps/database"
+    # Frankfurter — keyless. FX rates. Points at the new host directly;
+    # the historical api.frankfurter.app now 301-redirects here (confirmed
+    # live) — see connectors/frankfurter.py.
+    FRANKFURTER_API_BASE_URL: str = "https://api.frankfurter.dev/v1"
+    # FRED (St. Louis Fed) — needs a free API key. Register at
+    # https://fredaccount.stlouisfed.org/apikeys (see connectors/fred.py).
+    FRED_API_BASE_URL: str = "https://api.stlouisfed.org/fred"
+    FRED_API_KEY: str = ""
+    # SEC EDGAR — keyless, but requires a real contact identifier in the
+    # User-Agent header or requests are blocked (confirmed live). Set this
+    # to "YourApp your-real-email@example.com", not a placeholder.
+    SEC_EDGAR_API_BASE_URL: str = "https://data.sec.gov"
+    SEC_EDGAR_USER_AGENT: str = ""
+    # Companies House — needs a free API key. Register at
+    # https://developer.company-information.service.gov.uk/
+    COMPANIES_HOUSE_API_BASE_URL: str = "https://api.company-information.service.gov.uk"
+    COMPANIES_HOUSE_API_KEY: str = ""
     LIVE_SOURCE_HTTP_TIMEOUT_SECONDS: float = 10.0
     # Macro indicators (GDP/inflation) update quarterly/annually at most —
     # 6h TTL avoids re-fetching World Bank on every request without risking
