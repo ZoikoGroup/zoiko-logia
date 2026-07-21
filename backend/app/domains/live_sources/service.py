@@ -22,6 +22,8 @@ from app.domains.live_sources.connectors.bank_of_england import BankOfEnglandCon
 from app.domains.live_sources.connectors.companies_house import CompaniesHouseConnector
 from app.domains.live_sources.connectors.fred import FREDConnector
 from app.domains.live_sources.connectors.frankfurter import FrankfurterConnector
+from app.domains.live_sources.connectors.gleif import GLEIFConnector
+from app.domains.live_sources.connectors.oecd import OECDConnector
 from app.domains.live_sources.connectors.ons import ONSConnector
 from app.domains.live_sources.connectors.sec_edgar import SECEdgarConnector
 from app.domains.live_sources.connectors.world_bank import WorldBankConnector
@@ -40,6 +42,8 @@ _CONNECTORS = {
     "companies_house": CompaniesHouseConnector(
         base_url=settings.COMPANIES_HOUSE_API_BASE_URL, api_key=settings.COMPANIES_HOUSE_API_KEY
     ),
+    "oecd": OECDConnector(base_url=settings.OECD_API_BASE_URL),
+    "gleif": GLEIFConnector(base_url=settings.GLEIF_API_BASE_URL),
 }
 
 

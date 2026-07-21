@@ -18,6 +18,18 @@ from app.domains.risk_safety.routing_matrix import ROUTING_MATRIX_VERSION, resol
 
 settings = get_settings()
 
+# Same fix as rag/embeddings.py, same reasoning — this is also a
+# HuggingFace/transformers model, cached locally, PyTorch-only. Profiled
+# elsewhere this session: skipping the Hub network-revalidation and
+# TensorFlow backend probing cuts a cold model load from tens of seconds
+# down to under one. setdefault() so an explicit env value elsewhere
+# always wins; harmless if another module already set these first
+# (process-global either way).
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_TORCH", "1")
+
 # ─── ML Pipeline Initialization ─────────────────────────────────────────────
 # We use a lightweight cross-encoder for fast zero-shot text classification.
 # In a real deployed environment, this might run on a dedicated GPU instance.

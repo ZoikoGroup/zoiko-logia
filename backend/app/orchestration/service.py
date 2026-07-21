@@ -19,6 +19,7 @@ Principles (§2):
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 import os
@@ -73,6 +74,7 @@ from app.domains.rag.redaction import redact_for_external_exposure
 # the same way ENABLE_RAG_EMBEDDINGS gates vector retrieval.
 from app.domains.live_sources import service as live_sources_service
 from app.domains.live_sources.cache import make_cache_key
+from app.domains.live_sources.classifier import detect_live_data_intent
 
 # Massarius™ retrieval and evidence subsystem — Phase 1 control modules
 # (ZL-ENG-03). These wrap/replace the inline licence filtering, bundle
@@ -199,9 +201,14 @@ async def ask_kriton(
         return response
 
     # ── Step 4: Retrieve SourceBundle (Massarius™ keyword_mvp layer) (§7) ────
+    # commit=False on every intermediate event in this phase (see
+    # audit_events.py's module docstring) — batched into one round-trip at
+    # audit_bundle_built (or, on the except-branch below, at the next
+    # commit=True call in Step 5's routing phase).
     await audit_retrieval_started(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
+        commit=False,
     )
     # Fetched once here (top_k=30) and reused both for SourceBundle governance
     # merging below and for the LLM's grounded context further down —
@@ -209,26 +216,54 @@ async def ask_kriton(
     # search (profiled at ~20s on this setup), and was previously being
     # called a second time, redundantly, for the exact same query later in
     # this same function.
-    raw_chunks: list = []
-    if os.getenv("ENABLE_RAG_EMBEDDINGS", "").lower() in {"1", "true", "yes"}:
+    #
+    # Run concurrently with the live-data fetch below via asyncio.gather —
+    # the two are fully independent. Safe specifically because
+    # retrieve_documents() manages its own separate DB connection (never
+    # touches the shared `db` AsyncSession) and fetch_live_data() is the
+    # only one of the two that does — SQLAlchemy's AsyncSession is not
+    # safe for concurrent use across tasks, but that hazard only applies
+    # when more than one concurrent coroutine touches the same session.
+    async def _fetch_raw_chunks() -> list:
+        if os.getenv("ENABLE_RAG_EMBEDDINGS", "").lower() not in {"1", "true", "yes"}:
+            return []
+        # Tier 1 latency optimization: skip the ~10-15s Postgres vector
+        # search entirely for queries the live-data classifier is
+        # confident are pure live-data lookups (e.g. "What is the Bank
+        # Rate?") — scoped strictly to LiveDataIntent.skip_document_search
+        # (implies_country rules only: Bank Rate, Fed funds rate, Treasury
+        # yield). A query like "What is UK inflation, and how does IFRS
+        # require disclosing it?" still runs document search normally,
+        # since that flag is deliberately False for the generic
+        # inflation/GDP/unemployment matches — those could legitimately
+        # need real document grounding alongside the live figure.
+        if _enable_live_sources():
+            skip_intent = detect_live_data_intent(request.query, jurisdiction=request.jurisdiction)
+            if skip_intent is not None and skip_intent.skip_document_search:
+                return []
         try:
-            raw_chunks = await retrieve_documents(
+            return await retrieve_documents(
                 query=request.query,
                 tenant_id=tenant_id,
                 jurisdiction=request.jurisdiction or None,
                 top_k=30,
             )
         except Exception:
-            raw_chunks = []
+            return []
 
     # Live/dynamic external data — a peer to the document retrieval above,
     # never blocking it: a failed/absent live fetch just means no live
     # source gets added below, not a broken request.
+    async def _fetch_live():
+        if not _enable_live_sources():
+            return None
+        return await live_sources_service.fetch_live_data(
+            db, query=request.query, tenant_id=tenant_id, jurisdiction=request.jurisdiction,
+        )
+
     live_summary = None
     live_fetch_start = time.monotonic()
-    live_outcome = await live_sources_service.fetch_live_data(
-        db, query=request.query, tenant_id=tenant_id, jurisdiction=request.jurisdiction,
-    ) if _enable_live_sources() else None
+    raw_chunks, live_outcome = await asyncio.gather(_fetch_raw_chunks(), _fetch_live())
     if live_outcome and live_outcome.intent is not None:
         await audit_live_intent_detected(
             db, query_id=query_id, correlation_id=correlation_id,
@@ -236,6 +271,7 @@ async def ask_kriton(
             provider_key=live_outcome.intent.provider_key,
             indicator_code=live_outcome.intent.indicator_code,
             country_code=live_outcome.intent.country_code,
+            commit=False,
         )
         cache_key = make_cache_key(live_outcome.intent)
         if live_outcome.cache_hit:
@@ -243,12 +279,14 @@ async def ask_kriton(
                 db, query_id=query_id, correlation_id=correlation_id,
                 tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
                 provider_key=live_outcome.intent.provider_key, cache_key=cache_key,
+                commit=False,
             )
         else:
             await audit_live_cache_miss(
                 db, query_id=query_id, correlation_id=correlation_id,
                 tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
                 provider_key=live_outcome.intent.provider_key, cache_key=cache_key,
+                commit=False,
             )
             if live_outcome.succeeded:
                 await audit_live_fetch_succeeded(
@@ -258,12 +296,14 @@ async def ask_kriton(
                     indicator_code=live_outcome.intent.indicator_code,
                     country_code=live_outcome.intent.country_code,
                     latency_ms=(time.monotonic() - live_fetch_start) * 1000,
+                    commit=False,
                 )
             else:
                 await audit_live_fetch_failed(
                     db, query_id=query_id, correlation_id=correlation_id,
                     tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
                     provider_key=live_outcome.intent.provider_key, error=live_outcome.error or "unknown error",
+                    commit=False,
                 )
         if live_outcome.succeeded and live_outcome.normalized:
             live_summary = live_sources_service.to_source_summary(live_outcome.normalized)
@@ -280,6 +320,7 @@ async def ask_kriton(
             source_bundle_id=preliminary_bundle.source_bundle_id,
             confidence_state=preliminary_bundle.confidence_state,
             eligible_count=preliminary_bundle.eligible_source_count,
+            commit=False,
         )
 
         # ── Massarius™ Checkpoint A/B + bundle_builder (ZL-ENG-03 §5) ────────
@@ -296,6 +337,7 @@ async def ask_kriton(
             tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
             eligible_count=len(licence_result.eligible),
             excluded_count=len(licence_result.excluded),
+            commit=False,
         )
         if licence_result.excluded:
             await audit_licence_denied(
@@ -303,9 +345,12 @@ async def ask_kriton(
                 tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
                 checkpoint="A", source_ids=[s.id for s in licence_result.excluded],
                 reason_code=";".join(sorted(set(licence_result.exclusion_reasons.values()))) or "unknown",
+                commit=False,
             )
 
         source_bundle = bundle_builder.build_bundle(preliminary_bundle, licence_result)
+        # Last event of the retrieval phase — commit=True (default) flushes
+        # everything batched above in one round-trip.
         await audit_bundle_built(
             db, query_id=query_id, correlation_id=correlation_id,
             tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
@@ -314,6 +359,9 @@ async def ask_kriton(
             index_version=source_bundle.index_version,
         )
     except Exception as exc:
+        # Retrieval failed mid-phase — leave commit=True (default) here so
+        # the failure itself is always durably recorded immediately, rather
+        # than riding on the next phase's batch boundary.
         await audit_retrieval_failed(
             db, query_id=query_id, correlation_id=correlation_id,
             tenant_id=tenant_id, audit_chain_id=audit_chain_id,
@@ -354,6 +402,7 @@ async def ask_kriton(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id,
         actor_id=actor_id, risk_level=risk_level, confidence_state=effective_confidence,
+        commit=False,
     )
 
     # Resolve route from versioned policy matrix
@@ -521,9 +570,14 @@ async def ask_kriton(
     # Model gateway executes ONLY when route == LLM (§9)
     assert route == ROUTE_LLM
 
+    # commit=False on the intermediate events of this phase (see
+    # audit_events.py's module docstring) — batched into one round-trip at
+    # audit_validation_completed, or the next commit=True call on an
+    # error/degraded-route branch below.
     await audit_composition_started(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
+        commit=False,
     )
 
     # Reuses raw_chunks fetched once back in Step 4 — see the comment there.
@@ -566,6 +620,16 @@ async def ask_kriton(
                     source_id=chunk["metadata"].get("source_id") or chunk.get("node_id", f"chunk-{i}"),
                     title=chunk["metadata"].get("title", "Uploaded Document"),
                     source_type=chunk["metadata"].get("source_type", "document"),
+                    # Only live sources have a real, clickable external URL —
+                    # to_synthetic_chunk() puts it in metadata['file_path']
+                    # (same field a document chunk uses for its internal,
+                    # non-public path, which is why this is gated on
+                    # source_type rather than surfaced unconditionally).
+                    source_url=(
+                        chunk["metadata"].get("file_path")
+                        if chunk["metadata"].get("source_type") == "live_api"
+                        else None
+                    ),
                 )
                 for i, chunk in enumerate(reranked)
             ]
@@ -627,6 +691,7 @@ async def ask_kriton(
         tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
         redaction_applied=redaction_result.redaction_applied,
         redaction_categories=redaction_result.redaction_categories,
+        commit=False,
     )
 
     composed_text: Optional[str] = None
@@ -712,6 +777,7 @@ async def ask_kriton(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id,
         actor_id=actor_id, prompt_id=prompt_id, output_hash=output_hash,
+        commit=False,
     )
 
     # ── Step 7: Post-composition validation — Massarius™ Checkpoint C

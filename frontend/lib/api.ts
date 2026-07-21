@@ -541,6 +541,8 @@ export type SourceCitation = {
   ref_id: string;
   source_id: string;
   title: string;
+  /** Only set for live-data citations — a real, clickable external URL (e.g. the ONS dataset page). Document citations have no public URL today. */
+  source_url?: string | null;
 };
 
 export type ComposedAnswer = {

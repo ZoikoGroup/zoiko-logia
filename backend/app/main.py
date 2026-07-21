@@ -574,11 +574,17 @@ async def _warm_up_ml_models():
         get_embed_model()
 
     def _load_reranker():
-        from llama_index.core.postprocessor import SentenceTransformerRerank
+        # get_reranker_pipeline() (not a throwaway SentenceTransformerRerank
+        # construction) — must populate the actual module-level singleton
+        # every Reranker instance shares, or this warmup step does nothing
+        # for real requests: previously this constructed and immediately
+        # discarded its own instance, so the first real request still
+        # reloaded the model from scratch (visible as a second "Loading
+        # weights" bar during the first POST /ask, right after startup had
+        # already logged one).
+        from app.domains.rag.reranker import get_reranker_pipeline
 
-        from app.domains.rag.reranker import RERANKER_MODEL
-
-        SentenceTransformerRerank(model=RERANKER_MODEL, top_n=5)
+        get_reranker_pipeline()
 
     def _load_classifier():
         from app.domains.risk_safety.risk_classifier import _get_classifier_pipeline

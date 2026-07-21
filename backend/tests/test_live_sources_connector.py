@@ -28,7 +28,9 @@ from app.domains.live_sources.connectors.bank_of_england import BankOfEnglandCon
 from app.domains.live_sources.connectors.companies_house import CompaniesHouseConnector
 from app.domains.live_sources.connectors.fred import FREDConnector
 from app.domains.live_sources.connectors.frankfurter import FrankfurterConnector
+from app.domains.live_sources.connectors.oecd import OECDConnector
 from app.domains.live_sources.connectors.ons import ONSConnector
+from app.domains.live_sources.connectors.gleif import GLEIFConnector
 from app.domains.live_sources.connectors.sec_edgar import SECEdgarConnector
 from app.domains.live_sources.connectors.world_bank import WorldBankConnector
 from app.domains.live_sources.models import LiveSourceProvider
@@ -79,6 +81,52 @@ def test_classifier_bank_rate_implies_uk_with_no_country_mentioned():
     assert intent.provider_key == "bank_of_england"
     assert intent.country_code == "GB"
     print("test_classifier_bank_rate_implies_uk_with_no_country_mentioned: PASSED")
+
+
+def test_classifier_implied_country_does_not_override_named_country_in_text():
+    """Regression test for a reported bug: with jurisdiction unset, 'What
+    is the Bank Rate in India?' silently returned the UK's Bank Rate,
+    because the implies_country shortcut fired on 'bank rate' before ever
+    checking whether the query text names a different country. India has
+    no bank-rate connector, so the correct behavior is no live source at
+    all — never substituting the UK's."""
+    intent = detect_live_data_intent("What is the Bank Rate in India?")
+    assert intent is None
+
+    # Sanity check the guard doesn't break the same phrase for its actual
+    # implied country when no OTHER country is named in the text.
+    uk_intent = detect_live_data_intent("What is the Bank Rate in the UK?")
+    assert uk_intent is not None
+    assert uk_intent.provider_key == "bank_of_england"
+    print("test_classifier_implied_country_does_not_override_named_country_in_text: PASSED")
+
+
+def test_classifier_skip_document_search_scoped_to_implies_country_rules():
+    """Tier 1 latency optimization: skip_document_search must be True only
+    for the narrow, unambiguous implies_country rules (Bank Rate, Fed funds
+    rate, Treasury yield) — and False for every other live-data match
+    (inflation, GDP, unemployment), since those could legitimately co-occur
+    with a real document question in the same query."""
+    should_skip = [
+        "What is the Bank Rate?",
+        "What is the fed funds rate?",
+        "What is the 10-year treasury yield?",
+    ]
+    for q in should_skip:
+        intent = detect_live_data_intent(q)
+        assert intent is not None, f"{q!r} expected an intent"
+        assert intent.skip_document_search is True, f"{q!r} expected skip_document_search=True"
+
+    should_not_skip = [
+        ("What is UK inflation?", ""),
+        ("What is the UK GDP?", ""),
+        ("What is India's current GDP?", ""),
+    ]
+    for q, jur in should_not_skip:
+        intent = detect_live_data_intent(q, jurisdiction=jur)
+        assert intent is not None, f"{q!r} expected an intent"
+        assert intent.skip_document_search is False, f"{q!r} expected skip_document_search=False"
+    print("test_classifier_skip_document_search_scoped_to_implies_country_rules: PASSED")
 
 
 def test_classifier_repo_rate_still_requires_explicit_country():
@@ -246,6 +294,48 @@ def test_classifier_company_lookup_picks_provider_by_jurisdiction():
     print("test_classifier_company_lookup_picks_provider_by_jurisdiction: PASSED")
 
 
+def test_classifier_oecd_corporate_tax_rate_routes_by_country():
+    """OECD is a generic 'any resolved country' provider (like World Bank),
+    not a per-country override — verify it fires for all three countries
+    this codebase resolves, encoding both the ISO alpha-3 REF_AREA and the
+    OECD measure code into indicator_code."""
+    gb_intent = detect_live_data_intent("What is the corporate tax rate in the UK?")
+    assert gb_intent is not None
+    assert gb_intent.provider_key == "oecd"
+    assert gb_intent.indicator_code == "GBR:CIT_C"
+
+    us_intent = detect_live_data_intent("What is the corporate income tax rate?", jurisdiction="US")
+    assert us_intent is not None
+    assert us_intent.provider_key == "oecd"
+    assert us_intent.indicator_code == "USA:CIT_C"
+
+    in_intent = detect_live_data_intent("What is the corporate tax rate in India?", jurisdiction="India")
+    assert in_intent is not None
+    assert in_intent.provider_key == "oecd"
+    assert in_intent.indicator_code == "IND:CIT_C"
+    print("test_classifier_oecd_corporate_tax_rate_routes_by_country: PASSED")
+
+
+def test_classifier_gleif_is_fallback_for_non_us_uk_jurisdictions():
+    """GLEIF is the company-lookup fallback for every jurisdiction this
+    codebase resolves EXCEPT US/UK, which keep their own dedicated
+    connectors (SEC EDGAR/Companies House) — this is a regression check
+    that adding the fallback didn't reroute those two."""
+    in_intent = detect_company_lookup_intent("What are the filings for Tata Motors?", jurisdiction="India")
+    assert in_intent is not None
+    assert in_intent.provider_key == "gleif"
+    assert in_intent.company_query == "Tata Motors"
+
+    us_intent = detect_company_lookup_intent("Show me Apple's filings", jurisdiction="US")
+    assert us_intent is not None
+    assert us_intent.provider_key == "sec_edgar"
+
+    uk_intent = detect_company_lookup_intent("What are the financials for Tesco?", jurisdiction="UK")
+    assert uk_intent is not None
+    assert uk_intent.provider_key == "companies_house"
+    print("test_classifier_gleif_is_fallback_for_non_us_uk_jurisdictions: PASSED")
+
+
 async def test_world_bank_connector_fetches_real_data():
     connector = WorldBankConnector(base_url=settings.WORLD_BANK_API_BASE_URL)
     intent = LiveDataIntent(
@@ -332,6 +422,28 @@ async def test_sec_edgar_connector_fetches_real_data():
     print("test_sec_edgar_connector_fetches_real_data: PASSED")
 
 
+async def test_sec_edgar_resolves_punctuated_company_names():
+    """Regression test for a reported bug: 'J.P. Morgan' resolved to
+    nothing, because a plain lowercase substring check compared it against
+    SEC's own title 'JPMORGAN CHASE & CO' — no periods, no matching
+    spacing. _normalize() strips everything but letters/digits from both
+    sides before comparing, so punctuation/spacing differences no longer
+    cause a real company to resolve to nothing."""
+    connector = SECEdgarConnector(
+        base_url=settings.SEC_EDGAR_API_BASE_URL,
+        user_agent=settings.SEC_EDGAR_USER_AGENT or "KritonRAG-test test@example.com",
+    )
+    intent = LiveDataIntent(
+        provider_key="sec_edgar", indicator_code="Assets", indicator_label="Total Assets",
+        country_code="US", country_label="United States", company_query="J.P. Morgan",
+    )
+    normalized = await connector.fetch(intent, timeout=settings.LIVE_SOURCE_HTTP_TIMEOUT_SECONDS)
+    assert normalized.provider_key == "sec_edgar"
+    assert "JPMORGAN" in normalized.citation_title.upper()
+    assert normalized.value not in (None, "")
+    print("test_sec_edgar_resolves_punctuated_company_names: PASSED")
+
+
 async def test_fred_connector_skips_gracefully_without_key():
     """FRED needs a real API key you register for yourself — this test
     stays green either way: it confirms the connector raises a clear,
@@ -375,6 +487,49 @@ async def test_companies_house_connector_skips_gracefully_without_key():
     normalized = await connector.fetch(intent, timeout=settings.LIVE_SOURCE_HTTP_TIMEOUT_SECONDS)
     assert normalized.provider_key == "companies_house"
     print("test_companies_house_connector_skips_gracefully_without_key: PASSED (real key configured)")
+
+
+async def test_oecd_connector_fetches_real_data_for_three_countries():
+    """Keyless — verified this session against GB/US/IN with real,
+    known-correct corporate tax rate figures."""
+    connector = OECDConnector(base_url=settings.OECD_API_BASE_URL)
+    cases = [
+        ("GBR:CIT_C", "GB", "United Kingdom"),
+        ("USA:CIT_C", "US", "United States"),
+        ("IND:CIT_C", "IN", "India"),
+    ]
+    for indicator_code, country_code, country_label in cases:
+        intent = LiveDataIntent(
+            provider_key="oecd", indicator_code=indicator_code,
+            indicator_label="Combined Corporate Income Tax Rate",
+            country_code=country_code, country_label=country_label,
+        )
+        normalized = await connector.fetch(intent, timeout=settings.LIVE_SOURCE_HTTP_TIMEOUT_SECONDS)
+        assert normalized.provider_key == "oecd"
+        assert isinstance(normalized.value, float)
+        assert 0 < normalized.value < 100  # a percentage, sanity bound
+    print("test_oecd_connector_fetches_real_data_for_three_countries: PASSED")
+
+
+async def test_gleif_connector_fetches_real_data_for_three_jurisdictions():
+    """Keyless — verified this session against GB/IN/AE with real,
+    known-correct legal entity records."""
+    connector = GLEIFConnector(base_url=settings.GLEIF_API_BASE_URL)
+    cases = [
+        ("GB", "United Kingdom", "Tesco"),
+        ("IN", "India", "Tata Motors"),
+        ("AE", "United Arab Emirates", "Emirates"),
+    ]
+    for country_code, country_label, company_query in cases:
+        intent = LiveDataIntent(
+            provider_key="gleif", indicator_code="profile", indicator_label="Company Profile",
+            country_code=country_code, country_label=country_label, company_query=company_query,
+        )
+        normalized = await connector.fetch(intent, timeout=settings.LIVE_SOURCE_HTTP_TIMEOUT_SECONDS)
+        assert normalized.provider_key == "gleif"
+        assert normalized.value  # status string, e.g. "ACTIVE"
+        assert "search.gleif.org" in normalized.source_url
+    print("test_gleif_connector_fetches_real_data_for_three_jurisdictions: PASSED")
 
 
 async def test_cache_roundtrip():
@@ -453,6 +608,8 @@ async def main():
     test_classifier_returns_none_for_unrelated_query()
     test_classifier_routes_uk_bank_rate_to_bank_of_england()
     test_classifier_bank_rate_implies_uk_with_no_country_mentioned()
+    test_classifier_implied_country_does_not_override_named_country_in_text()
+    test_classifier_skip_document_search_scoped_to_implies_country_rules()
     test_classifier_repo_rate_still_requires_explicit_country()
     test_classifier_jurisdiction_dropdown_blocks_bank_rate_uk_override()
     test_classifier_jurisdiction_dropdown_supplies_country_when_text_has_none()
@@ -466,14 +623,19 @@ async def main():
     test_classifier_company_lookup_extracts_correct_name()
     test_classifier_company_lookup_requires_resolvable_jurisdiction()
     test_classifier_company_lookup_picks_provider_by_jurisdiction()
+    test_classifier_oecd_corporate_tax_rate_routes_by_country()
+    test_classifier_gleif_is_fallback_for_non_us_uk_jurisdictions()
     await test_world_bank_connector_fetches_real_data()
     await test_ons_connector_fetches_real_data()
     await test_ons_gdp_and_unemployment_connectors_fetch_real_data()
     await test_bank_of_england_connector_fetches_real_data()
     await test_frankfurter_connector_fetches_real_data()
     await test_sec_edgar_connector_fetches_real_data()
+    await test_sec_edgar_resolves_punctuated_company_names()
     await test_fred_connector_skips_gracefully_without_key()
     await test_companies_house_connector_skips_gracefully_without_key()
+    await test_oecd_connector_fetches_real_data_for_three_countries()
+    await test_gleif_connector_fetches_real_data_for_three_jurisdictions()
     await test_cache_roundtrip()
     await test_live_source_survives_license_gate_and_bundle_builder()
     print("All tests passed successfully!")

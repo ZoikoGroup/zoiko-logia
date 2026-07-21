@@ -329,6 +329,7 @@ def _create_escalation(db: Session, request: ClassifyRequest, result: dict) -> N
         query_id=result["query_id"],
         query_text=request.query,
         topic=request.query[:80],
+        tenant_id=request.tenant_id,
         risk_level=RiskLevel(risk_level_str),
         restricted_sub_class=RestrictedSubClass(sub_class) if sub_class else None,
         jurisdiction=request.jurisdiction or "GLOBAL",
@@ -340,11 +341,12 @@ def _create_escalation(db: Session, request: ClassifyRequest, result: dict) -> N
         evidence_refs=[],
     )
     db.add(case)
-    
+
     # Audit Ledger Event (Section 15)
     db.add(SafetyEvent(
         event_type="human_review_case_created",
         query_id=result["query_id"],
+        tenant_id=request.tenant_id,
         payload={
             "case_id": case.id,
             "tenant_id": request.tenant_id,
@@ -404,6 +406,7 @@ def _log_safety_event(db: Session, request: ClassifyRequest, result: dict, templ
     db.add(SafetyEvent(
         event_type=event_type,
         query_id=query_id,
+        tenant_id=request.tenant_id,
         payload=payload,
     ))
     db.commit()
@@ -417,6 +420,7 @@ def _log_security_incident(db: Session, request: ClassifyRequest, result: dict) 
     db.add(SafetyEvent(
         event_type="security_incident_created",
         query_id=query_id,
+        tenant_id=request.tenant_id,
         payload={
             "user_id": request.user_id,
             "tenant_id": request.tenant_id,

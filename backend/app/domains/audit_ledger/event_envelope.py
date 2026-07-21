@@ -78,7 +78,25 @@ def _build_row(
     )
 
 
-async def record_event_async(db: AsyncSession, *, tenant_id: str = "GLOBAL_CONTROL", **kwargs) -> AuditEvent:
+async def record_event_async(
+    db: AsyncSession, *, tenant_id: str = "GLOBAL_CONTROL", commit: bool = True, **kwargs
+) -> AuditEvent:
+    """
+    commit=False batches this event into the session without ending the
+    transaction — used for intermediate events within a hot phase of
+    ask_kriton() (e.g. the several events emitted during retrieval) so a
+    request doesn't pay ~15-20 separate commit round-trips. The row is
+    still `db.add()`-ed and flushed (so constraint errors surface
+    immediately) and the chain-hash contextvar is still updated — both are
+    pure-Python/in-memory operations, correct regardless of commit timing.
+    It's only durably persisted at the next commit=True call in the same
+    request (a phase boundary, or the finalise step) — if the process
+    crashes before that, this row is lost. This is an intentional, narrow
+    trade: batch scope is one phase, not the whole request, so a crash
+    still leaves an audit trail up to the last completed phase. See
+    orchestration/audit_events.py's phase-boundary comments for which
+    calls pass commit=False.
+    """
     previous_chain_hash = _cached_previous_chain_hash.get()
     if previous_chain_hash is None:
         # Only hit the DB for the first event of this request (task) — every
@@ -93,14 +111,19 @@ async def record_event_async(db: AsyncSession, *, tenant_id: str = "GLOBAL_CONTR
         previous_chain_hash = result.scalar_one_or_none()
 
     row = _build_row(tenant_id=tenant_id, previous_chain_hash=previous_chain_hash, **kwargs)
+    new_chain_hash = row.chain_hash
+    db.add(row)
+    _cached_previous_chain_hash.set(new_chain_hash)
+
+    if not commit:
+        await db.flush()
+        return row
+
     # Captured before commit — expire_on_commit invalidates row's attributes
     # afterward, so reading row.chain_hash post-commit would silently trigger
     # another round-trip to reload it. Nothing computed it DB-side anyway;
     # _build_row already derived it in Python.
-    new_chain_hash = row.chain_hash
-    db.add(row)
     await db.commit()
-    _cached_previous_chain_hash.set(new_chain_hash)
 
     # This commit just ended the transaction get_db() originally scoped to
     # this tenant (app/core/database.py). SQLAlchemy's connection pool may
@@ -111,7 +134,9 @@ async def record_event_async(db: AsyncSession, *, tenant_id: str = "GLOBAL_CONTR
     # Every orchestration call site already passes the request's real
     # tenant_id here, so re-asserting it right after commit is free
     # insurance against exactly that race, regardless of which connection
-    # the pool hands back next.
+    # the pool hands back next. Only needed right after an actual commit —
+    # commit=False never ends the transaction, so the connection can't
+    # have changed underneath it.
     if not settings.is_sqlite:
         await db.execute(text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id})
 

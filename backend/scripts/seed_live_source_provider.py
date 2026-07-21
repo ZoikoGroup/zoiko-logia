@@ -40,6 +40,10 @@ PROVIDERS = [
      "company-financials", "none", None),
     ("companies_house", "Companies House", settings.COMPANIES_HOUSE_API_BASE_URL,
      "company-financials", "api_key", "COMPANIES_HOUSE_API_KEY"),
+    ("oecd", "OECD (Corporate Tax Rates)", settings.OECD_API_BASE_URL,
+     "macro-economic-data", "none", None),
+    ("gleif", "GLEIF (Legal Entity Identifier Registry)", settings.GLEIF_API_BASE_URL,
+     "company-financials", "none", None),
 ]
 
 

@@ -23,6 +23,17 @@ class LiveDataIntent(BaseModel):
     # as the financial concept to fetch (e.g. "Assets" for SEC EDGAR,
     # "profile" for Companies House) rather than a World Bank-style code.
     company_query: Optional[str] = None
+    # Latency optimization (Tier 1): True only for classifier.py's
+    # implies_country=True rules ("bank rate", "fed funds rate" — narrow,
+    # unambiguous economic-data phrases). orchestration/service.py uses
+    # this to skip the ~10-15s Postgres vector search entirely for these
+    # queries, since a document match is implausible. Deliberately NOT set
+    # for every live-data match (FX, company lookup, generic World Bank
+    # indicators like "inflation"/"GDP") — those could legitimately
+    # co-occur with a real document question (e.g. "what is UK inflation
+    # and how does IFRS require disclosing it"), so document search must
+    # still run for them.
+    skip_document_search: bool = False
 
 
 class NormalizedResponse(BaseModel):

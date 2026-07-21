@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     # https://developer.company-information.service.gov.uk/
     COMPANIES_HOUSE_API_BASE_URL: str = "https://api.company-information.service.gov.uk"
     COMPANIES_HOUSE_API_KEY: str = ""
+    # OECD — keyless. Corporate income tax rate (see connectors/oecd.py).
+    OECD_API_BASE_URL: str = "https://sdmx.oecd.org/public/rest"
+    # GLEIF — keyless. LEI-registry company lookup fallback for every
+    # jurisdiction outside US/UK (see connectors/gleif.py).
+    GLEIF_API_BASE_URL: str = "https://api.gleif.org/api/v1"
     LIVE_SOURCE_HTTP_TIMEOUT_SECONDS: float = 10.0
     # Macro indicators (GDP/inflation) update quarterly/annually at most —
     # 6h TTL avoids re-fetching World Bank on every request without risking

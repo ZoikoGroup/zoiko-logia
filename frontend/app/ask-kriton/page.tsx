@@ -8,6 +8,7 @@ import {
   BookOpen,
   BriefcaseBusiness,
   CheckCircle2,
+  ExternalLink,
   FileText,
   FolderKanban,
   History,
@@ -30,6 +31,7 @@ import {
   X,
 } from "lucide-react";
 import { askKriton, getAuthToken, ApiError, uploadDocument, type AskKritonResponse } from "@/lib/api";
+import { useTypewriter } from "@/hooks/useTypewriter";
 
 // Web Speech API — not part of TypeScript's default DOM lib.
 interface SpeechRecognitionResultLike {
@@ -106,6 +108,17 @@ function readableState(value: string) {
 
 function cleanDisplayText(value: string) {
   return value.replace(/\*\*(.*?)\*\*/g, "$1").replace(/\*\*/g, "").trim();
+}
+
+// Extracted to its own component (rather than calling useTypewriter directly
+// inside the turns.map() callback below) because Hooks can't be called from
+// inside a loop/callback — this is the one turn's answer text, revealed
+// progressively. The backend already returned the complete, Checkpoint-C-
+// validated text in one response; this is purely a client-side reveal
+// animation, not real streaming of partial/unvalidated model output.
+function TypedAnswerText({ text }: { text: string }) {
+  const revealed = useTypewriter(text);
+  return <>{revealed}</>;
 }
 
 function extractReviewCase(value: string) {
@@ -670,7 +683,7 @@ export default function AskKritonPage() {
                               {turn.result.answer ? (
                                 <>
                                   <div className="kriton-answer-reveal whitespace-pre-line text-[15px] leading-7 text-ink">
-                                    {cleanDisplayText(turn.result.answer.text)}
+                                    <TypedAnswerText text={cleanDisplayText(turn.result.answer.text)} />
                                   </div>
                                     {turn.result.answer.citations.length > 0 && (
                                       <div className="mt-5 border-t border-line/70 pt-3">
@@ -679,7 +692,20 @@ export default function AskKritonPage() {
                                           {turn.result.answer.citations.map((c, index) => (
                                             <li key={c.ref_id} className="flex items-start gap-2 text-xs leading-5 text-muted">
                                               <span className="font-mono font-semibold text-brand">{index + 1}.</span>
-                                              <span>{c.title}</span>
+                                              {c.source_url ? (
+                                                <a
+                                                  href={c.source_url}
+                                                  target="_blank"
+                                                  rel="noopener noreferrer"
+                                                  title={c.title}
+                                                  className="inline-flex min-w-0 items-center gap-1 break-all text-brand hover:underline"
+                                                >
+                                                  {c.source_url}
+                                                  <ExternalLink size={11} className="shrink-0" />
+                                                </a>
+                                              ) : (
+                                                <span>{c.title}</span>
+                                              )}
                                             </li>
                                           ))}
                                         </ol>

@@ -87,6 +87,10 @@ class EscalationCase(Base):
     query_id = Column(String, nullable=False)
     query_text = Column(Text, nullable=False)
     topic = Column(String, nullable=False)
+    # Same schema-drift gap as SafetyEvent.tenant_id above — the live DB has
+    # a NOT NULL tenant_id column here too, added outside this codebase's
+    # own migrations, never declared on this model.
+    tenant_id = Column(String, nullable=True)
     risk_level = Column(Enum(RiskLevel), nullable=False)
     restricted_sub_class = Column(Enum(RestrictedSubClass), nullable=True)
     jurisdiction = Column(String, nullable=False, default="GLOBAL")
@@ -144,6 +148,16 @@ class SafetyEvent(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     event_type = Column(String, nullable=False)
     query_id = Column(String, nullable=True)
+    # The live DB has a NOT NULL tenant_id column added outside this
+    # codebase's own migrations (not in _TENANT_SCOPED_TABLES in
+    # app/main.py) — this model never declared it, so every insert here
+    # silently sent NULL until the DB started enforcing it. Declared now to
+    # match the real schema; nullable=True at the model level since not
+    # every call site here has a tenant_id available yet (see
+    # service.py's _log_safety_event vs. validate_output/
+    # resolve_escalation/create_safety_override — those three don't
+    # currently have tenant_id in scope and are a separate follow-up).
+    tenant_id = Column(String, nullable=True)
     payload = Column(JSON, nullable=False, default=dict)
     timestamp = Column(DateTime, default=_utcnow)
     payload_schema_version = Column(String, default="1.0")

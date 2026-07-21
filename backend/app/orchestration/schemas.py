@@ -146,6 +146,13 @@ class SourceCitation(BaseModel):
     title: str
     # Live external-data addition, same rationale as SourceSummary.source_type.
     source_type: Literal["document", "live_api"] = "document"
+    # Only ever set for source_type="live_api" (a real external URL a user
+    # can click through to — e.g. the ONS dataset page, the SEC EDGAR
+    # company page). Document sources have no public URL today — there's no
+    # file-serving endpoint for uploaded/ingested documents at all, so
+    # `file_path` is just an internal server path, not something a browser
+    # could fetch. Left None rather than fabricating a broken-looking link.
+    source_url: Optional[str] = None
 
 
 class ComposedAnswer(BaseModel):

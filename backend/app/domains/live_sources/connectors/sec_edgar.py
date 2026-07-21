@@ -13,6 +13,7 @@ _FINANCIAL_CONCEPT_KEYWORDS). Confirmed live this session: Apple's
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 import httpx
@@ -26,6 +27,15 @@ _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 # per-query data; re-fetching it on every query would be pure waste. Refreshed
 # once per process lifetime, which is fine for a list that changes rarely.
 _ticker_cache: dict[str, dict] | None = None
+
+
+def _normalize(name: str) -> str:
+    """Strips everything but letters/digits before comparing names — SEC's
+    own titles carry no punctuation or internal spacing consistency (e.g.
+    "JPMORGAN CHASE & CO" for what a user would naturally type as "J.P.
+    Morgan"), so a plain lowercase substring check misses real matches.
+    Confirmed live: without this, "J.P. Morgan" resolved to nothing."""
+    return re.sub(r"[^a-z0-9]", "", name.lower())
 
 
 class SECEdgarConnector(LiveSourceConnector):
@@ -54,8 +64,9 @@ class SECEdgarConnector(LiveSourceConnector):
         for entry in _ticker_cache.values():
             if entry["ticker"].lower() == query_lower:
                 return str(entry["cik_str"]).zfill(10), entry["title"]
+        query_normalized = _normalize(company_query)
         for entry in _ticker_cache.values():
-            if query_lower in entry["title"].lower():
+            if query_normalized in _normalize(entry["title"]):
                 return str(entry["cik_str"]).zfill(10), entry["title"]
 
         raise ValueError(f"SEC EDGAR: no company found matching {company_query!r}")

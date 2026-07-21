@@ -141,6 +141,47 @@ _COUNTRY_PROVIDER_OVERRIDES: dict[str, list[_CountryOverrideRule]] = {
 # maintained as a second, separately-hardcoded mapping.
 _COUNTRY_LABELS: dict[str, str] = dict(_COUNTRY_ALIASES.values())
 
+# OECD tier — a "generic indicator, any resolved country" provider like
+# World Bank, not a per-country override like Bank of England/ONS/FRED
+# (those exist because they're that ONE country's own official source;
+# OECD's corporate tax rate dataflow spans OECD members plus the
+# Inclusive Framework — 140+ jurisdictions — so it's checked once, after
+# the per-country overrides fail to match, before falling through to
+# World Bank). REF_AREA is ISO alpha-3, unlike this module's own alpha-2
+# country_code, hence the small translation table — extend it as more
+# countries are added to _COUNTRY_ALIASES (only extend once a real query
+# against OECD.CTP.TPS,DSD_TAX_CIT@DF_CIT confirms that country has data,
+# same discipline used for every connector this session).
+_OECD_REF_AREA_BY_COUNTRY_CODE: dict[str, str] = {
+    "GB": "GBR",
+    "US": "USA",
+    "IN": "IND",
+}
+_OECD_INDICATOR_KEYWORDS: list[tuple[str, str, str]] = [
+    ("corporate tax rate", "CIT_C", "Combined Corporate Income Tax Rate"),
+    ("corporate income tax rate", "CIT_C", "Combined Corporate Income Tax Rate"),
+]
+
+
+def _match_oecd_indicator(country_code: str, lowered: str) -> LiveDataIntent | None:
+    ref_area = _OECD_REF_AREA_BY_COUNTRY_CODE.get(country_code)
+    if ref_area is None:
+        return None
+    for keyword, indicator_code, indicator_label in _OECD_INDICATOR_KEYWORDS:
+        if keyword in lowered:
+            return LiveDataIntent(
+                provider_key="oecd",
+                # Encodes both the REF_AREA and the OECD measure code in one
+                # string — same composite-encoding convention already used
+                # for Frankfurter's "USD_GBP" — so LiveDataIntent's schema
+                # needs no new field.
+                indicator_code=f"{ref_area}:{indicator_code}",
+                indicator_label=indicator_label,
+                country_code=country_code,
+                country_label=_COUNTRY_LABELS.get(country_code, country_code),
+            )
+    return None
+
 
 def _match_country_in_text(lowered: str) -> tuple[str, str]:
     return next(
@@ -160,14 +201,31 @@ def _rule_to_intent(rule: _CountryOverrideRule, country_code: str) -> LiveDataIn
         indicator_label=rule.indicator_label,
         country_code=country_code,
         country_label=_COUNTRY_LABELS.get(country_code, country_code),
+        # Tier 1 latency optimization — see LiveDataIntent.skip_document_search's
+        # docstring. Reuses implies_country rather than a separate flag:
+        # both mean "this phrase is unambiguous enough to resolve without
+        # any other signal," which is exactly the bar for skipping document
+        # search too.
+        skip_document_search=rule.implies_country,
     )
 
 
 def _match_implied_country_rule(lowered: str) -> LiveDataIntent | None:
     """Only called when jurisdiction is genuinely unset — rules with
     implies_country=True may resolve a country from query text alone
-    (e.g. "Bank Rate" -> UK)."""
+    (e.g. "Bank Rate" -> UK), but ONLY if the query text doesn't already
+    name a different, resolvable country. Without this guard, "What is
+    the Bank Rate in India?" would silently return the UK's Bank Rate —
+    the same "don't substitute a country nobody asked for" bug the
+    jurisdiction-dropdown priority logic guards against above, just
+    reachable through query text instead of the dropdown (a real,
+    reported case: the live Bank of England source was fetched and cited
+    for an India query, even though the LLM itself declined to answer
+    from it)."""
+    text_country_code, _ = _match_country_in_text(lowered)
     for country_code, rules in _COUNTRY_PROVIDER_OVERRIDES.items():
+        if text_country_code != _DEFAULT_COUNTRY[0] and text_country_code != country_code:
+            continue
         for rule in rules:
             if rule.implies_country and any(keyword in lowered for keyword in rule.keywords):
                 return _rule_to_intent(rule, country_code)
@@ -298,7 +356,15 @@ def detect_company_lookup_intent(query: str, jurisdiction: str = "") -> LiveData
             provider_key="companies_house", indicator_code="profile", indicator_label="Company Profile",
             country_code=country_code, country_label=country_label, company_query=company_name,
         )
-    return None
+    # Every other resolved country (currently just India, until more are
+    # added to _COUNTRY_ALIASES) falls back to GLEIF — keyless LEI registry
+    # lookup with coverage beyond a single jurisdiction (see
+    # connectors/gleif.py's docstring for the trade-off: LEI-holding
+    # entities only, not a universal company register like Companies House).
+    return LiveDataIntent(
+        provider_key="gleif", indicator_code="profile", indicator_label="Company Profile",
+        country_code=country_code, country_label=country_label, company_query=company_name,
+    )
 
 
 def detect_live_data_intent(query: str, jurisdiction: str = "") -> LiveDataIntent | None:
@@ -331,7 +397,12 @@ def detect_live_data_intent(query: str, jurisdiction: str = "") -> LiveDataInten
         return override
     # No per-country override matched (either this country has none, or its
     # rules didn't match this indicator, e.g. GDP/unemployment for GB) —
-    # fall through to World Bank below, same for every country.
+    # try OECD's generic (any-resolved-country) indicators next, before
+    # falling through to World Bank.
+
+    oecd_match = _match_oecd_indicator(country_code, lowered)
+    if oecd_match is not None:
+        return oecd_match
 
     indicator = next(
         ((code, label) for keyword, code, label in _INDICATOR_KEYWORDS if keyword in lowered),
