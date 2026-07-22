@@ -24,17 +24,22 @@ class FrankfurterConnector(LiveSourceConnector):
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url.rstrip("/")
 
-    async def fetch(self, intent: LiveDataIntent, *, timeout: float) -> NormalizedResponse:
+    async def fetch(self, intent: LiveDataIntent, *, timeout: float, client: httpx.AsyncClient | None = None) -> NormalizedResponse:
         from_code, _, to_code = intent.indicator_code.partition("_")
         if not from_code or not to_code:
             raise ValueError(f"Frankfurter connector got a malformed currency pair: {intent.indicator_code!r}")
 
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        if client is not None:
             response = await client.get(
                 f"{self.base_url}/latest", params={"from": from_code, "to": to_code}
             )
-            response.raise_for_status()
-            body = response.json()
+        else:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as c:
+                response = await c.get(
+                    f"{self.base_url}/latest", params={"from": from_code, "to": to_code}
+                )
+        response.raise_for_status()
+        body = response.json()
 
         rate = (body.get("rates") or {}).get(to_code)
         if rate is None:

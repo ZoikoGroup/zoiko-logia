@@ -45,26 +45,33 @@ class GLEIFConnector(LiveSourceConnector):
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url.rstrip("/")
 
-    async def fetch(self, intent: LiveDataIntent, *, timeout: float) -> NormalizedResponse:
+    async def fetch(self, intent: LiveDataIntent, *, timeout: float, client: httpx.AsyncClient | None = None) -> NormalizedResponse:
         if not intent.company_query:
             raise ValueError("GLEIF connector requires LiveDataIntent.company_query")
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        params = {
+            "filter[entity.legalName]": intent.company_query,
+            "filter[entity.jurisdiction]": intent.country_code,
+            "page[size]": "1",
+        }
+        if client is not None:
             response = await client.get(
                 f"{self.base_url}/lei-records",
-                params={
-                    "filter[entity.legalName]": intent.company_query,
-                    "filter[entity.jurisdiction]": intent.country_code,
-                    "page[size]": "1",
-                },
+                params=params,
             )
-            response.raise_for_status()
-            records = response.json().get("data") or []
-            if not records:
-                raise ValueError(
-                    f"GLEIF: no LEI record found matching {intent.company_query!r} in {intent.country_code!r}"
+        else:
+            async with httpx.AsyncClient(timeout=timeout) as c:
+                response = await c.get(
+                    f"{self.base_url}/lei-records",
+                    params=params,
                 )
-            attributes = records[0]["attributes"]
+        response.raise_for_status()
+        records = response.json().get("data") or []
+        if not records:
+            raise ValueError(
+                f"GLEIF: no LEI record found matching {intent.company_query!r} in {intent.country_code!r}"
+            )
+        attributes = records[0]["attributes"]
 
         entity = attributes["entity"]
         lei = attributes["lei"]

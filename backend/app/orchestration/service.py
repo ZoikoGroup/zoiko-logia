@@ -64,6 +64,7 @@ from app.orchestration.audit_events import (
 from app.domains.risk_safety.schemas import ClassifyRequest
 from app.domains.model_gateway import service as model_gateway_service
 from app.orchestration.compose import select_prompt
+from app.domains.rag.embeddings import get_query_embedding_cached
 from app.domains.rag.retrieval import retrieve_documents
 from app.domains.rag.reranker import Reranker
 from app.domains.rag.context_fit import build_grounded_context
@@ -224,9 +225,17 @@ async def ask_kriton(
     # only one of the two that does — SQLAlchemy's AsyncSession is not
     # safe for concurrent use across tasks, but that hazard only applies
     # when more than one concurrent coroutine touches the same session.
-    async def _fetch_raw_chunks() -> list:
+    async def _fetch_raw_chunks() -> tuple[list, tuple[float, ...] | None]:
+        """Returns (chunks, query_embedding) — the embedding is computed
+        here (not left implicit inside retrieve_documents()) so it can be
+        reused by build_source_bundle()'s semantic infer_category() step
+        below without a second, redundant embedding call for the same
+        query text. Still fully non-blocking: the embedding call runs in
+        the executor here exactly like retrieve_documents()'s own retriever
+        call already did, so this doesn't add a new blocking cost — it
+        just makes the existing one shareable."""
         if os.getenv("ENABLE_RAG_EMBEDDINGS", "").lower() not in {"1", "true", "yes"}:
-            return []
+            return [], None
         # Tier 1 latency optimization: skip the ~10-15s Postgres vector
         # search entirely for queries the live-data classifier is
         # confident are pure live-data lookups (e.g. "What is the Bank
@@ -240,16 +249,20 @@ async def ask_kriton(
         if _enable_live_sources():
             skip_intent = detect_live_data_intent(request.query, jurisdiction=request.jurisdiction)
             if skip_intent is not None and skip_intent.skip_document_search:
-                return []
+                return [], None
         try:
-            return await retrieve_documents(
+            loop = asyncio.get_event_loop()
+            query_embedding = await loop.run_in_executor(None, get_query_embedding_cached, request.query)
+            chunks = await retrieve_documents(
                 query=request.query,
                 tenant_id=tenant_id,
                 jurisdiction=request.jurisdiction or None,
-                top_k=30,
+                top_k=10,
+                query_embedding=query_embedding,
             )
+            return chunks, query_embedding
         except Exception:
-            return []
+            return [], None
 
     # Live/dynamic external data — a peer to the document retrieval above,
     # never blocking it: a failed/absent live fetch just means no live
@@ -263,7 +276,7 @@ async def ask_kriton(
 
     live_summary = None
     live_fetch_start = time.monotonic()
-    raw_chunks, live_outcome = await asyncio.gather(_fetch_raw_chunks(), _fetch_live())
+    (raw_chunks, query_embedding), live_outcome = await asyncio.gather(_fetch_raw_chunks(), _fetch_live())
     if live_outcome and live_outcome.intent is not None:
         await audit_live_intent_detected(
             db, query_id=query_id, correlation_id=correlation_id,
@@ -313,6 +326,7 @@ async def ask_kriton(
             db, query=request.query, jurisdiction=request.jurisdiction, tenant_id=tenant_id,
             raw_chunks=raw_chunks,
             extra_sources=[live_summary] if live_summary else None,
+            query_embedding=query_embedding,
         )
         await audit_retrieval_completed(
             db, query_id=query_id, correlation_id=correlation_id,

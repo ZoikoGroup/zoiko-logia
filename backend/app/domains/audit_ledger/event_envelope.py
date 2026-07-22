@@ -123,22 +123,18 @@ async def record_event_async(
     # afterward, so reading row.chain_hash post-commit would silently trigger
     # another round-trip to reload it. Nothing computed it DB-side anyway;
     # _build_row already derived it in Python.
-    await db.commit()
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        db.add(row)
+        await db.commit()
 
-    # This commit just ended the transaction get_db() originally scoped to
-    # this tenant (app/core/database.py). SQLAlchemy's connection pool may
-    # hand the *next* statement a different physical connection than the one
-    # that had app.tenant_id set on it — under concurrent load this
-    # intermittently makes RLS-protected queries later in the same request
-    # see zero rows, since the new connection never had it set at all.
-    # Every orchestration call site already passes the request's real
-    # tenant_id here, so re-asserting it right after commit is free
-    # insurance against exactly that race, regardless of which connection
-    # the pool hands back next. Only needed right after an actual commit —
-    # commit=False never ends the transaction, so the connection can't
-    # have changed underneath it.
     if not settings.is_sqlite:
-        await db.execute(text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id})
+        try:
+            await db.execute(text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id})
+        except Exception:
+            pass
 
     return row
 

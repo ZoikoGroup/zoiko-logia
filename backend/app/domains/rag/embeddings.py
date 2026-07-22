@@ -57,6 +57,8 @@ EMBED_DIM = 384
 _embed_model = None
 
 
+from functools import lru_cache
+
 def get_embed_model():
     global _embed_model
     if _embed_model is None:
@@ -64,3 +66,13 @@ def get_embed_model():
 
         _embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME)
     return _embed_model
+
+
+@lru_cache(maxsize=512)
+def get_query_embedding_cached(query: str) -> tuple[float, ...]:
+    """LRU cached vector embedding computation for queries.
+    Returns a tuple of floats for hashability in lru_cache.
+    """
+    model = get_embed_model()
+    return tuple(model.get_query_embedding(query))
+

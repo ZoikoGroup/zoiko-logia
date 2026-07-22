@@ -77,7 +77,11 @@ def get_sync_db() -> Generator[Session, None, None]:
 # instead of handing back a dead one. pool_recycle recycles connections
 # proactively before the pooler's own idle-timeout would ever close them.
 async_engine = create_async_engine(
-    to_async_url(settings.DATABASE_URL), echo=False, pool_pre_ping=True, pool_recycle=300,
+    to_async_url(settings.DATABASE_URL),
+    echo=False,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    connect_args={"statement_cache_size": 0} if not settings.is_sqlite else {},
 )
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 
@@ -88,8 +92,11 @@ AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 # RLS to actually apply. Falls back to the same URL when APP_DATABASE_URL
 # isn't set (SQLite, or a Postgres instance without the low-priv role).
 request_engine = create_async_engine(
-    to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL), echo=False,
-    pool_pre_ping=True, pool_recycle=300,
+    to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL),
+    echo=False,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    connect_args={"statement_cache_size": 0} if not settings.is_sqlite else {},
 )
 RequestSessionLocal = async_sessionmaker(request_engine, expire_on_commit=False)
 

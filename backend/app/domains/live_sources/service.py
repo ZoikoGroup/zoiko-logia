@@ -47,6 +47,9 @@ _CONNECTORS = {
 }
 
 
+from app.domains.live_sources.http_client import get_shared_http_client
+
+
 async def fetch_live_data(db: AsyncSession, *, query: str, tenant_id: str, jurisdiction: str = "") -> LiveFetchOutcome:
     # Company lookup ("tell me about company X") is a different question
     # than country+indicator — tried second, only if the first finds
@@ -68,7 +71,8 @@ async def fetch_live_data(db: AsyncSession, *, query: str, tenant_id: str, juris
         return LiveFetchOutcome(intent=intent, cache_hit=False, succeeded=False, error=f"no connector for {intent.provider_key}")
 
     try:
-        normalized = await connector.fetch(intent, timeout=settings.LIVE_SOURCE_HTTP_TIMEOUT_SECONDS)
+        shared_client = get_shared_http_client()
+        normalized = await connector.fetch(intent, timeout=settings.LIVE_SOURCE_HTTP_TIMEOUT_SECONDS, client=shared_client)
         await cache.set_cached(
             db,
             cache_key=cache_key,
@@ -78,6 +82,11 @@ async def fetch_live_data(db: AsyncSession, *, query: str, tenant_id: str, juris
         )
         return LiveFetchOutcome(intent=intent, cache_hit=False, succeeded=True, normalized=normalized)
     except Exception as exc:
+        # Stale cache fallback: if the live network fetch failed (DNS error, timeout, HTTP 5xx),
+        # return the last known cached record if available, rather than failing the request.
+        stale = await cache.get_cached(db, cache_key, ignore_ttl=True)
+        if stale is not None:
+            return LiveFetchOutcome(intent=intent, cache_hit=True, succeeded=True, normalized=stale)
         return LiveFetchOutcome(intent=intent, cache_hit=False, succeeded=False, error=str(exc))
 
 

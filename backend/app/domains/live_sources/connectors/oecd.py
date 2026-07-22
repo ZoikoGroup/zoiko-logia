@@ -35,7 +35,7 @@ class OECDConnector(LiveSourceConnector):
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url.rstrip("/")
 
-    async def fetch(self, intent: LiveDataIntent, *, timeout: float) -> NormalizedResponse:
+    async def fetch(self, intent: LiveDataIntent, *, timeout: float, client: httpx.AsyncClient | None = None) -> NormalizedResponse:
         ref_area, _, measure = intent.indicator_code.partition(":")
         if not ref_area or not measure:
             raise ValueError(f"OECD connector got a malformed indicator code: {intent.indicator_code!r}")
@@ -52,10 +52,13 @@ class OECDConnector(LiveSourceConnector):
         url = f"{self.base_url}/data/{_DATAFLOW}/{data_key}"
         params = {"format": "jsondata", "lastNObservations": "1"}
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        if client is not None:
             response = await client.get(url, params=params)
-            response.raise_for_status()
-            body = response.json()
+        else:
+            async with httpx.AsyncClient(timeout=timeout) as c:
+                response = await c.get(url, params=params)
+        response.raise_for_status()
+        body = response.json()
 
         try:
             dataset = body["data"]["dataSets"][0]

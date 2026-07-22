@@ -24,12 +24,12 @@ def make_cache_key(intent: LiveDataIntent) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
 
 
-async def get_cached(db: AsyncSession, cache_key: str) -> NormalizedResponse | None:
+async def get_cached(db: AsyncSession, cache_key: str, *, ignore_ttl: bool = False) -> NormalizedResponse | None:
     result = await db.execute(select(LiveFetchCache).where(LiveFetchCache.cache_key == cache_key))
     row = result.scalar_one_or_none()
     if row is None:
         return None
-    if row.expires_at <= datetime.now(timezone.utc):
+    if not ignore_ttl and row.expires_at <= datetime.now(timezone.utc):
         return None
     return NormalizedResponse.model_validate(row.payload)
 

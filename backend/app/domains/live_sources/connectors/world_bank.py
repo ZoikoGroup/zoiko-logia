@@ -22,16 +22,19 @@ class WorldBankConnector(LiveSourceConnector):
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url.rstrip("/")
 
-    async def fetch(self, intent: LiveDataIntent, *, timeout: float) -> NormalizedResponse:
+    async def fetch(self, intent: LiveDataIntent, *, timeout: float, client: httpx.AsyncClient | None = None) -> NormalizedResponse:
         # mrnev=1 = "most recent non-empty value" — answers "what is X's
         # current value" without any date-range logic here.
         url = f"{self.base_url}/country/{intent.country_code}/indicator/{intent.indicator_code}"
         params = {"format": "json", "per_page": "1", "mrnev": "1"}
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        if client is not None:
             response = await client.get(url, params=params)
-            response.raise_for_status()
-            body = response.json()
+        else:
+            async with httpx.AsyncClient(timeout=timeout) as c:
+                response = await c.get(url, params=params)
+        response.raise_for_status()
+        body = response.json()
 
         if not isinstance(body, list) or len(body) < 2 or not body[1]:
             raise ValueError(f"World Bank API returned no observations for {intent.indicator_code}/{intent.country_code}")

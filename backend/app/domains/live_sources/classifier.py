@@ -77,6 +77,18 @@ _COUNTRY_ALIASES: dict[str, tuple[str, str]] = {
     "uk": ("GB", "United Kingdom"),
 }
 
+# Precompiled word-boundary patterns for scanning free-text queries — a
+# plain "alias in lowered" substring check (the original implementation)
+# matched "us" inside "business", silently resolving a query like "What is
+# the inflation rate for our business unit?" to United States. \b...\b
+# requires the alias appear as a standalone token (bounded by whitespace,
+# punctuation, or string edges), not as a fragment of a longer word.
+# _country_from_jurisdiction() below doesn't need this: it looks up the
+# UI dropdown's exact value via a plain dict .get(), never a substring scan.
+_COUNTRY_ALIAS_PATTERNS: dict[str, re.Pattern] = {
+    alias: re.compile(rf"\b{re.escape(alias)}\b") for alias in _COUNTRY_ALIASES
+}
+
 _DEFAULT_COUNTRY = ("WLD", "World")
 
 
@@ -185,7 +197,11 @@ def _match_oecd_indicator(country_code: str, lowered: str) -> LiveDataIntent | N
 
 def _match_country_in_text(lowered: str) -> tuple[str, str]:
     return next(
-        (value for alias, value in _COUNTRY_ALIASES.items() if alias in lowered),
+        (
+            value
+            for alias, value in _COUNTRY_ALIASES.items()
+            if _COUNTRY_ALIAS_PATTERNS[alias].search(lowered)
+        ),
         _DEFAULT_COUNTRY,
     )
 
@@ -298,7 +314,14 @@ _COMPANY_TRIGGER_KEYWORDS = (
 # "me" breaks the run and is excluded.
 _COMPANY_NAME_PATTERNS = (
     re.compile(r"(?i:for|of)\s+((?:[A-Z][\w.&-]*\s*)+)(?:'s)?(?:\s+(?i:filings?|financials?|revenue|assets|10-k|10-q)|\?|$)"),
-    re.compile(r"((?:[A-Z][\w.&-]*\s*)+)'s\s+(?i:filings?|financials?|revenue|assets|net income)"),
+    # 's? (not 's) — a name already ending in "s" takes a bare trailing
+    # apostrophe in standard English possessive form ("Industries'", not
+    # "Industries's"). Requiring the literal "s" made every plural company
+    # name (e.g. "Reliance Industries' filings") fail to extract at all,
+    # silently skipping the live company-lookup path entirely — confirmed
+    # live this session. Singular names ("Apple's", "Tesco's") still match,
+    # since 's? accepts the "s" being present too.
+    re.compile(r"((?:[A-Z][\w.&-]*\s*)+)'s?\s+(?i:filings?|financials?|revenue|assets|net income)"),
 )
 _FINANCIAL_CONCEPT_KEYWORDS: list[tuple[str, str, str]] = [
     ("net income", "NetIncomeLoss", "Net Income"),
@@ -408,14 +431,121 @@ def detect_live_data_intent(query: str, jurisdiction: str = "") -> LiveDataInten
         ((code, label) for keyword, code, label in _INDICATOR_KEYWORDS if keyword in lowered),
         None,
     )
-    if indicator is None:
-        return None
+    if indicator is not None:
+        indicator_code, indicator_label = indicator
+        return LiveDataIntent(
+            provider_key="world_bank",
+            indicator_code=indicator_code,
+            indicator_label=indicator_label,
+            country_code=country_code,
+            country_label=country_label,
+        )
 
-    indicator_code, indicator_label = indicator
-    return LiveDataIntent(
-        provider_key="world_bank",
-        indicator_code=indicator_code,
-        indicator_label=indicator_label,
-        country_code=country_code,
-        country_label=country_label,
-    )
+    # Semantic fallback if keyword check did not match
+    semantic_match = _semantic_indicator_match(query, country_code, country_label)
+    if semantic_match is not None:
+        return semantic_match
+
+    return None
+
+
+import math
+from app.domains.rag.embeddings import get_embed_model, get_query_embedding_cached
+
+_INDICATOR_EXEMPLARS: list[tuple[str, str, str, tuple[str, ...]]] = [
+    ("IUDBEDR", "Bank Rate", "bank_of_england", ("bank rate", "interest rate", "repo rate", "boe rate")),
+    ("FEDFUNDS", "Federal Funds Effective Rate", "fred", ("fed funds rate", "federal funds rate", "fed rate")),
+    ("DGS10", "10-Year Treasury Constant Maturity Rate", "fred", ("treasury yield", "10-year treasury", "treasury rate")),
+    ("CP00", "CPIH Index (Overall Index, 2015=100)", "ons", ("inflation", "cpi", "cpih", "consumer prices", "cost of living", "price index")),
+    ("A--T", "Monthly GDP Index (Seasonally Adjusted, 2016=100)", "ons", ("gdp", "gdp growth", "economic growth", "monthly gdp", "economic output")),
+    ("UNEMPLOYMENT_RATE", "Unemployment Rate (16+, Seasonally Adjusted)", "ons", ("unemployment", "jobless rate", "employment rate")),
+]
+
+_exemplar_embeddings: dict[str, list[list[float]]] = {}
+
+def _get_exemplar_embeddings() -> dict[str, list[list[float]]]:
+    global _exemplar_embeddings
+    if not _exemplar_embeddings:
+        model = get_embed_model()
+        for indicator_code, _, _, exemplars in _INDICATOR_EXEMPLARS:
+            _exemplar_embeddings[indicator_code] = [list(get_query_embedding_cached(ex)) for ex in exemplars]
+    return _exemplar_embeddings
+
+def cosine_similarity(v1: list[float] | tuple[float, ...], v2: list[float] | tuple[float, ...]) -> float:
+    dot = sum(a * b for a, b in zip(v1, v2))
+    mag1 = math.sqrt(sum(a * a for a in v1))
+    mag2 = math.sqrt(sum(a * a for a in v2))
+    if mag1 == 0 or mag2 == 0:
+        return 0.0
+    return dot / (mag1 * mag2)
+
+def _semantic_indicator_match(query: str, country_code: str, country_label: str) -> LiveDataIntent | None:
+    try:
+        q_emb = get_query_embedding_cached(query)
+        exemplar_embs = _get_exemplar_embeddings()
+        
+        best_code = None
+        best_score = 0.40  # similarity threshold
+        
+        for code, p_embs in exemplar_embs.items():
+            max_sim = max(cosine_similarity(q_emb, p_emb) for p_emb in p_embs)
+            if max_sim > best_score:
+                best_score = max_sim
+                best_code = code
+                
+        if not best_code:
+            return None
+            
+        # Map the best matched indicator code to the appropriate provider for this country
+        if best_code == "IUDBEDR" and country_code == "GB":
+            return LiveDataIntent(
+                provider_key="bank_of_england", indicator_code="IUDBEDR", indicator_label="Bank Rate",
+                country_code=country_code, country_label=country_label
+            )
+        if best_code == "FEDFUNDS" and country_code == "US":
+            return LiveDataIntent(
+                provider_key="fred", indicator_code="FEDFUNDS", indicator_label="Federal Funds Effective Rate",
+                country_code=country_code, country_label=country_label
+            )
+        if best_code == "DGS10" and country_code == "US":
+            return LiveDataIntent(
+                provider_key="fred", indicator_code="DGS10", indicator_label="10-Year Treasury Constant Maturity Rate",
+                country_code=country_code, country_label=country_label
+            )
+            
+        if country_code == "GB":
+            if best_code == "CP00":
+                return LiveDataIntent(
+                    provider_key="ons", indicator_code="CP00", indicator_label="CPIH Index (Overall Index, 2015=100)",
+                    country_code=country_code, country_label=country_label
+                )
+            if best_code == "A--T":
+                return LiveDataIntent(
+                    provider_key="ons", indicator_code="A--T", indicator_label="Monthly GDP Index (Seasonally Adjusted, 2016=100)",
+                    country_code=country_code, country_label=country_label
+                )
+            if best_code == "UNEMPLOYMENT_RATE":
+                return LiveDataIntent(
+                    provider_key="ons", indicator_code="UNEMPLOYMENT_RATE", indicator_label="Unemployment Rate (16+, Seasonally Adjusted)",
+                    country_code=country_code, country_label=country_label
+                )
+                
+        if best_code == "CP00":
+            return LiveDataIntent(
+                provider_key="world_bank", indicator_code="FP.CPI.TOTL.ZG", indicator_label="Inflation, consumer prices (annual %)",
+                country_code=country_code, country_label=country_label
+            )
+        if best_code == "A--T":
+            return LiveDataIntent(
+                provider_key="world_bank", indicator_code="NY.GDP.MKTP.CD", indicator_label="GDP (current US$)",
+                country_code=country_code, country_label=country_label
+            )
+        if best_code == "UNEMPLOYMENT_RATE":
+            return LiveDataIntent(
+                provider_key="world_bank", indicator_code="SL.UEM.TOTL.ZS", indicator_label="Unemployment (% of total labor force)",
+                country_code=country_code, country_label=country_label
+            )
+            
+        return None
+    except Exception:
+        return None

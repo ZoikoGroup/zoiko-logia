@@ -32,7 +32,7 @@ class CompaniesHouseConnector(LiveSourceConnector):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
 
-    async def fetch(self, intent: LiveDataIntent, *, timeout: float) -> NormalizedResponse:
+    async def fetch(self, intent: LiveDataIntent, *, timeout: float, client: httpx.AsyncClient | None = None) -> NormalizedResponse:
         if not self.api_key:
             raise ValueError(
                 "COMPANIES_HOUSE_API_KEY is not configured — register a free key at "
@@ -42,9 +42,9 @@ class CompaniesHouseConnector(LiveSourceConnector):
             raise ValueError("Companies House connector requires LiveDataIntent.company_query")
 
         auth = httpx.BasicAuth(self.api_key, "")
-        async with httpx.AsyncClient(timeout=timeout, auth=auth) as client:
+        if client is not None:
             search_response = await client.get(
-                f"{self.base_url}/search/companies", params={"q": intent.company_query, "items_per_page": "1"}
+                f"{self.base_url}/search/companies", params={"q": intent.company_query, "items_per_page": "1"}, auth=auth
             )
             search_response.raise_for_status()
             results = (search_response.json().get("items") or [])
@@ -52,9 +52,23 @@ class CompaniesHouseConnector(LiveSourceConnector):
                 raise ValueError(f"Companies House: no company found matching {intent.company_query!r}")
             company_number = results[0]["company_number"]
 
-            profile_response = await client.get(f"{self.base_url}/company/{company_number}")
+            profile_response = await client.get(f"{self.base_url}/company/{company_number}", auth=auth)
             profile_response.raise_for_status()
             profile = profile_response.json()
+        else:
+            async with httpx.AsyncClient(timeout=timeout, auth=auth) as c:
+                search_response = await c.get(
+                    f"{self.base_url}/search/companies", params={"q": intent.company_query, "items_per_page": "1"}
+                )
+                search_response.raise_for_status()
+                results = (search_response.json().get("items") or [])
+                if not results:
+                    raise ValueError(f"Companies House: no company found matching {intent.company_query!r}")
+                company_number = results[0]["company_number"]
+
+                profile_response = await c.get(f"{self.base_url}/company/{company_number}")
+                profile_response.raise_for_status()
+                profile = profile_response.json()
 
         company_name = profile.get("company_name", intent.company_query)
         status = profile.get("company_status", "unknown")

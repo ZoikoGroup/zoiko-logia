@@ -18,12 +18,27 @@ import os
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domains.jurisdiction_locale.service import acceptable_jurisdiction_scopes
 from app.domains.source_library.service import list_sources, get_source_by_id
 from app.orchestration.schemas import SourceBundle, SourceSummary
 from app.orchestration.routing_matrix import (
     CONF_SUFFICIENT, CONF_LIMITED, CONF_INSUFFICIENT,
     CONF_CONFLICTING, CONF_STALE, CONF_RESTRICTED,
 )
+
+
+def _jurisdiction_ok(source_scope: str, jurisdiction: str) -> bool:
+    """A source is in-scope for the requested jurisdiction when there's no
+    jurisdiction filter at all, the source is globally scoped, or the
+    source's own scope is one of the values acceptable_jurisdiction_scopes()
+    returns for this request (exact match for most jurisdictions; also the
+    bare state code and "US" for a state-qualified one like "US-CA")."""
+    if not jurisdiction:
+        return True
+    return source_scope == "Global" or source_scope in acceptable_jurisdiction_scopes(jurisdiction)
+
+import math
+from app.domains.rag.embeddings import get_embed_model, get_query_embedding_cached
 
 _CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "tax": ["tax"],
@@ -34,19 +49,66 @@ _CATEGORY_KEYWORDS: dict[str, list[str]] = {
 }
 _DEFAULT_CATEGORY = "standards"
 
+_CATEGORY_EXEMPLARS: dict[str, list[str]] = {
+    "tax": ["tax guidelines", "corporate taxation", "vat compliance", "tax filings", "hmrc regulations"],
+    "audit": ["audit procedures", "going concern assessment", "financial auditing standards", "auditor report", "audit testing"],
+    "payroll-compliance": ["payroll processing", "employment regulations", "paye compliance", "national insurance", "payroll compliance"],
+    "internal-policies": ["internal company policy", "firm handbook", "employee guidelines", "internal procedures"],
+    "education-content": ["cpd training syllabus", "accounting exam questions", "study materials", "syllabus", "exam preparation"],
+}
+
+_exemplar_embeddings: dict[str, list[list[float]]] = {}
+
+def _get_exemplar_embeddings() -> dict[str, list[list[float]]]:
+    global _exemplar_embeddings
+    if not _exemplar_embeddings:
+        model = get_embed_model()
+        for category, phrases in _CATEGORY_EXEMPLARS.items():
+            _exemplar_embeddings[category] = [list(get_query_embedding_cached(phrase)) for phrase in phrases]
+    return _exemplar_embeddings
+
+def cosine_similarity(v1: list[float] | tuple[float, ...], v2: list[float] | tuple[float, ...]) -> float:
+    dot = sum(a * b for a, b in zip(v1, v2))
+    mag1 = math.sqrt(sum(a * a for a in v1))
+    mag2 = math.sqrt(sum(a * a for a in v2))
+    if mag1 == 0 or mag2 == 0:
+        return 0.0
+    return dot / (mag1 * mag2)
+
+def infer_category(query: str, query_embedding: tuple[float, ...] | None = None) -> str:
+    """query_embedding: pass an already-computed embedding for this exact
+    query (e.g. the one orchestration/service.py already computed to run
+    the real vector search) to skip embedding it a second time here. A
+    caller with no embedding on hand (e.g. a standalone/test call, or
+    embeddings disabled entirely) still gets one computed inline — that
+    fallback is fine for those rare/non-request-serving paths, but the
+    normal request path must always pass one through to avoid a second,
+    redundant, blocking model call for the same text."""
+    try:
+        q_emb = query_embedding if query_embedding is not None else get_query_embedding_cached(query)
+        exemplar_embs = _get_exemplar_embeddings()
+        
+        best_category = _DEFAULT_CATEGORY
+        best_score = 0.35  # similarity threshold
+        
+        for category, p_embs in exemplar_embs.items():
+            max_sim = max(cosine_similarity(q_emb, p_emb) for p_emb in p_embs)
+            if max_sim > best_score:
+                best_score = max_sim
+                best_category = category
+        return best_category
+    except Exception:
+        lowered = query.lower()
+        for category, keywords in _CATEGORY_KEYWORDS.items():
+            if any(keyword in lowered for keyword in keywords):
+                return category
+        return _DEFAULT_CATEGORY
+
 # Sources with these statuses are eligible for retrieval
 _ELIGIBLE_STATUSES = {"ACTIVE", "APPROVED"}
 
 # Sources with these statuses are excluded as restricted
 _RESTRICTED_STATUSES = {"DRAFT", "DEPRECATED", "BLOCKED", "RESTRICTED"}
-
-
-def infer_category(query: str) -> str:
-    lowered = query.lower()
-    for category, keywords in _CATEGORY_KEYWORDS.items():
-        if any(keyword in lowered for keyword in keywords):
-            return category
-    return _DEFAULT_CATEGORY
 
 
 async def build_source_bundle(
@@ -57,6 +119,7 @@ async def build_source_bundle(
     tenant_id: str,
     raw_chunks: list | None = None,
     extra_sources: Optional[list[SourceSummary]] = None,
+    query_embedding: tuple[float, ...] | None = None,
 ) -> SourceBundle:
     """
     Build a SourceBundle via keyword-based category retrieval, merged with
@@ -64,6 +127,11 @@ async def build_source_bundle(
     tenant_id is enforced at the data-access layer via list_sources /
     get_source_by_id.
     Returns confidence_state per §7.2 six-state vocabulary.
+
+    query_embedding: forwarded to infer_category() — pass the same
+    embedding already computed for raw_chunks' vector search (when one
+    exists) so the semantic category step doesn't redundantly re-embed the
+    same query text. See infer_category()'s docstring.
 
     raw_chunks: pass already-fetched vector search results (e.g. the same
     chunks orchestration/service.py separately fetches at a larger top_k for
@@ -83,7 +151,7 @@ async def build_source_bundle(
     Eligibility/licence checks for them happen downstream in
     massarius/license_gate.py, same as document sources.
     """
-    category = infer_category(query)
+    category = infer_category(query, query_embedding=query_embedding)
 
     eligible = []
     excluded = []
@@ -102,7 +170,7 @@ async def build_source_bundle(
     seen_ids = set()
     for c in candidates:
         version_status = c["latest_version"].status
-        jur_ok = (not jurisdiction) or c["jurisdiction_scope"] in ("Global", jurisdiction)
+        jur_ok = _jurisdiction_ok(c["jurisdiction_scope"], jurisdiction)
 
         if version_status in _RESTRICTED_STATUSES:
             excluded.append(c)
@@ -158,7 +226,7 @@ async def build_source_bundle(
                     continue
 
                 version_status = governed["latest_version"].status if governed["latest_version"] else None
-                jur_ok = (not jurisdiction) or governed["jurisdiction_scope"] in ("Global", jurisdiction)
+                jur_ok = _jurisdiction_ok(governed["jurisdiction_scope"], jurisdiction)
 
                 if version_status in _RESTRICTED_STATUSES:
                     excluded.append(governed)

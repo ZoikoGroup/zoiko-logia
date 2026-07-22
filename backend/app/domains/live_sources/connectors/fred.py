@@ -28,7 +28,7 @@ class FREDConnector(LiveSourceConnector):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
 
-    async def fetch(self, intent: LiveDataIntent, *, timeout: float) -> NormalizedResponse:
+    async def fetch(self, intent: LiveDataIntent, *, timeout: float, client: httpx.AsyncClient | None = None) -> NormalizedResponse:
         if not self.api_key:
             raise ValueError(
                 "FRED_API_KEY is not configured — register a free key at "
@@ -43,10 +43,13 @@ class FREDConnector(LiveSourceConnector):
             "limit": "1",
         }
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        if client is not None:
             response = await client.get(f"{self.base_url}/series/observations", params=params)
-            response.raise_for_status()
-            body = response.json()
+        else:
+            async with httpx.AsyncClient(timeout=timeout) as c:
+                response = await c.get(f"{self.base_url}/series/observations", params=params)
+        response.raise_for_status()
+        body = response.json()
 
         observations = body.get("observations") or []
         if not observations:

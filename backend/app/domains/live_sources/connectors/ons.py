@@ -95,19 +95,16 @@ class ONSConnector(LiveSourceConnector):
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url.rstrip("/")
 
-    async def fetch(self, intent: LiveDataIntent, *, timeout: float) -> NormalizedResponse:
+    async def fetch(self, intent: LiveDataIntent, *, timeout: float, client: httpx.AsyncClient | None = None) -> NormalizedResponse:
         config = _INDICATOR_CONFIG.get(intent.indicator_code)
         if config is None:
             raise ValueError(f"ONS connector has no dataset mapping for indicator {intent.indicator_code}")
 
         dataset_id = config["dataset_id"]
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        if client is not None:
             dataset_response = await client.get(f"{self.base_url}/datasets/{dataset_id}")
             dataset_response.raise_for_status()
-            # links.latest_version.href points at the version metadata
-            # resource itself, not its /observations sub-resource — the
-            # actual data query needs that suffix appended.
             latest_version_href = dataset_response.json()["links"]["latest_version"]["href"]
             observations_url = f"{latest_version_href}/observations"
 
@@ -117,6 +114,19 @@ class ONSConnector(LiveSourceConnector):
             )
             observations_response.raise_for_status()
             body = observations_response.json()
+        else:
+            async with httpx.AsyncClient(timeout=timeout) as c:
+                dataset_response = await c.get(f"{self.base_url}/datasets/{dataset_id}")
+                dataset_response.raise_for_status()
+                latest_version_href = dataset_response.json()["links"]["latest_version"]["href"]
+                observations_url = f"{latest_version_href}/observations"
+
+                observations_response = await c.get(
+                    observations_url,
+                    params={"time": "*", "geography": _UK_GEOGRAPHY_CODE, **config["extra_params"]},
+                )
+                observations_response.raise_for_status()
+                body = observations_response.json()
 
         observations = body.get("observations") or []
         if not observations:

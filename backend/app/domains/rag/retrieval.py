@@ -1,12 +1,15 @@
+import asyncio
 import contextvars
 import os
 from typing import List, Dict, Any
 from llama_index.core import VectorStoreIndex, StorageContext
+from llama_index.core.schema import QueryBundle
 from llama_index.core.vector_stores.types import (
     MetadataFilters, MetadataFilter, ExactMatchFilter, FilterOperator, FilterCondition,
 )
 from app.core.config import get_settings
-from app.domains.rag.embeddings import get_embed_model, EMBED_DIM
+from app.domains.jurisdiction_locale.service import acceptable_jurisdiction_scopes
+from app.domains.rag.embeddings import get_embed_model, get_query_embedding_cached, EMBED_DIM
 
 settings = get_settings()
 
@@ -46,7 +49,12 @@ def _tenant_scoped_pg_engines(sync_url: str, async_url: str) -> tuple:
     from sqlalchemy.ext.asyncio import create_async_engine
 
     engine = create_engine(sync_url, pool_pre_ping=True)
-    async_engine = create_async_engine(async_url)
+    async_engine = create_async_engine(
+        async_url,
+        pool_pre_ping=True,
+        pool_recycle=300,
+        connect_args={"statement_cache_size": 0} if not settings.is_sqlite else {},
+    )
 
     def _set_tenant_on_checkout(dbapi_conn, connection_record, connection_proxy):
         # Session-scoped (not SET LOCAL): mirrors app/core/database.py's
@@ -69,11 +77,24 @@ async def retrieve_documents(
     query: str,
     tenant_id: str,
     jurisdiction: str | None = None,
-    top_k: int = 30
+    top_k: int = 10,
+    query_embedding: tuple[float, ...] | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Retrieves matching document chunks using hybrid search (vector search + keyword search).
     Applies strict tenant isolation and optional jurisdiction metadata filters.
+
+    query_embedding: pass an already-computed embedding (e.g. from
+    get_query_embedding_cached()) to skip re-embedding the query here. A
+    caller that also needs this same query's embedding for something else
+    in the same request (orchestration/retrieve.py's infer_category(), for
+    the semantic-category step) should compute it once and pass it to
+    both, rather than each independently re-embedding identical text.
+    Wrapping it in a QueryBundle with .embedding already set is what makes
+    LlamaIndex skip its own internal embedding call — confirmed via
+    VectorIndexRetriever._retrieve(), which only embeds when
+    query_bundle.embedding is None. Omit this to embed the query here
+    exactly as before (backward compatible).
     """
     embed_model = get_embed_model()
 
@@ -96,10 +117,29 @@ async def retrieve_documents(
     )
     filters_list = [shared_or_mine]
     if jurisdiction:
-        filters_list.append(ExactMatchFilter(key="jurisdiction", value=jurisdiction))
+        scopes = acceptable_jurisdiction_scopes(jurisdiction)
+        if len(scopes) == 1:
+            filters_list.append(ExactMatchFilter(key="jurisdiction", value=scopes[0]))
+        else:
+            # State-qualified jurisdiction (e.g. "US-CA") — a chunk tagged
+            # with ANY of the acceptable scopes is in-scope, not just an
+            # exact "US-CA" match (see acceptable_jurisdiction_scopes()).
+            filters_list.append(
+                MetadataFilters(
+                    filters=[MetadataFilter(key="jurisdiction", value=v, operator=FilterOperator.EQ) for v in scopes],
+                    condition=FilterCondition.OR,
+                )
+            )
 
     filters = MetadataFilters(filters=filters_list, condition=FilterCondition.AND)
-    
+    loop = asyncio.get_event_loop()
+
+    query_input = (
+        QueryBundle(query_str=query, embedding=list(query_embedding))
+        if query_embedding is not None
+        else query
+    )
+
     if not settings.is_sqlite:
         # Real Hybrid PGVector + Full text search using raw SQL or LlamaIndex pgvector extension
         # Let's perform standard LlamaIndex Postgres hybrid search setup
@@ -136,7 +176,7 @@ async def retrieve_documents(
         retriever = index.as_retriever(similarity_top_k=top_k, filters=filters)
         token = _current_tenant_id.set(tenant_id)
         try:
-            nodes = retriever.retrieve(query)
+            nodes = await loop.run_in_executor(None, lambda: retriever.retrieve(query_input))
         finally:
             _current_tenant_id.reset(token)
         
@@ -160,7 +200,7 @@ async def retrieve_documents(
         index = load_index_from_storage(storage_context, embed_model=embed_model)
         
         retriever = index.as_retriever(similarity_top_k=top_k, filters=filters)
-        nodes = retriever.retrieve(query)
+        nodes = await loop.run_in_executor(None, lambda: retriever.retrieve(query_input))
         
         results = []
         for n in nodes:
