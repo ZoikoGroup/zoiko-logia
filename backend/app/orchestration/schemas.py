@@ -17,6 +17,14 @@ class AskKritonRequest(BaseModel):
     query: str
     jurisdiction: str = ""
     mode: str = "Workflow"
+    # Prior user queries in this conversation, most recent last — NOT the
+    # composed answers (those carry disclaimer/citation text that has no
+    # business re-entering the grounded prompt as "context"). Populated by
+    # the frontend from its client-side turn history; empty for a fresh
+    # conversation. Used only to resolve elliptical follow-ups ("what about
+    # for £20,000 instead") that are unclassifiable in isolation — see
+    # orchestration/followup.py's is_elliptical_followup().
+    history: List[str] = Field(default_factory=list)
     # Safety simulation overrides (playground only — not trusted in production)
     source_confidence: Optional[str] = None
     pre_bundle_state: Optional[str] = None

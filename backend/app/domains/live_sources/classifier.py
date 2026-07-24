@@ -267,10 +267,42 @@ _CURRENCY_ALIASES: dict[str, str] = {
     "indian rupee": "INR", "rupee": "INR", "inr": "INR",
 }
 
+# Semantic fallback for the trigger phrase only — same discipline as
+# _semantic_indicator_match below: paraphrases like "how many dollars is
+# 100 pounds worth" contain no literal trigger keyword ("to", "/",
+# "exchange rate") and previously fell straight through to None. The
+# currency-count check a few lines below (>= 2 aliases found) is what
+# actually guards against false positives here, not this threshold alone —
+# confirmed empirically: "What is the price of gold?" scores close to
+# real FX queries on this exemplar set (0.53 vs 0.55-0.56) but mentions no
+# currency at all, so it's rejected downstream regardless.
+_FX_INTENT_EXEMPLARS = (
+    "convert an amount from one currency to another",
+    "how much is this amount worth in a different currency",
+    "how many units of one currency equal this amount in another",
+)
+_fx_exemplar_embeddings: list[list[float]] = []
+
+
+def _get_fx_exemplar_embeddings() -> list[list[float]]:
+    global _fx_exemplar_embeddings
+    if not _fx_exemplar_embeddings:
+        _fx_exemplar_embeddings = [list(get_query_embedding_cached(ex)) for ex in _FX_INTENT_EXEMPLARS]
+    return _fx_exemplar_embeddings
+
+
+def _semantic_fx_trigger_match(query: str) -> bool:
+    try:
+        q_emb = get_query_embedding_cached(query)
+        return max(cosine_similarity(q_emb, e) for e in _get_fx_exemplar_embeddings()) > 0.48
+    except Exception:
+        return False
+
 
 def detect_fx_intent(query: str) -> LiveDataIntent | None:
     lowered = query.lower()
-    if not any(trigger in lowered for trigger in _FX_TRIGGER_KEYWORDS):
+    has_trigger = any(trigger in lowered for trigger in _FX_TRIGGER_KEYWORDS)
+    if not has_trigger and not _semantic_fx_trigger_match(query):
         return None
 
     # Find every currency alias present, keep only the earliest occurrence
@@ -349,27 +381,62 @@ def _extract_financial_concept(lowered: str) -> tuple[str, str]:
     return _DEFAULT_FINANCIAL_CONCEPT
 
 
-def detect_company_lookup_intent(query: str, jurisdiction: str = "") -> LiveDataIntent | None:
-    lowered = query.lower()
-    if not any(keyword in lowered for keyword in _COMPANY_TRIGGER_KEYWORDS):
-        return None
+# Semantic fallback for the TRIGGER only (same discipline as the FX gate
+# above) — verb-based phrasings like "what did Apple make last quarter" or
+# "how much did Microsoft earn last year" contain none of
+# _COMPANY_TRIGGER_KEYWORDS. This doesn't extract the name itself (the
+# regex patterns above still own that, anchored to specific trailing
+# keywords) — it only answers "does this look like a company financial
+# inquiry at all," which is what the async LLM name-extraction fallback in
+# live_sources/llm_fallback.py needs before it's worth a network call.
+_COMPANY_LOOKUP_INTENT_EXEMPLARS = (
+    "what did a company earn or make in a period",
+    "how much profit or revenue did a company report",
+    "tell me about a company's financial results",
+)
+_company_lookup_exemplar_embeddings: list[list[float]] = []
 
-    company_name = _extract_company_name(query)
-    if company_name is None:
-        return None
 
-    # Company lookup requires an explicit, resolvable jurisdiction to know
-    # which registry to query (US -> SEC EDGAR, UK -> Companies House) — no
-    # jurisdiction, or one that doesn't resolve to a country, means we don't
-    # know which registry to check, so this returns None rather than
-    # guessing (same "don't substitute" discipline used throughout).
+def _get_company_lookup_exemplar_embeddings() -> list[list[float]]:
+    global _company_lookup_exemplar_embeddings
+    if not _company_lookup_exemplar_embeddings:
+        _company_lookup_exemplar_embeddings = [
+            list(get_query_embedding_cached(ex)) for ex in _COMPANY_LOOKUP_INTENT_EXEMPLARS
+        ]
+    return _company_lookup_exemplar_embeddings
+
+
+def _semantic_company_lookup_trigger_match(query: str) -> bool:
+    try:
+        q_emb = get_query_embedding_cached(query)
+        return max(cosine_similarity(q_emb, e) for e in _get_company_lookup_exemplar_embeddings()) > 0.30
+    except Exception:
+        return False
+
+
+def build_company_lookup_intent_from_name(
+    company_name: str, jurisdiction: str, query: str = ""
+) -> LiveDataIntent | None:
+    """Shared by both the regex path below and the async LLM-extraction
+    fallback (live_sources/service.py) — same provider-selection rule
+    (US -> SEC EDGAR, GB -> Companies House, else -> GLEIF), so a name found
+    either way resolves identically. Returns None on an unresolvable
+    jurisdiction, same "don't substitute" discipline as the regex path.
+
+    `query` is the full original question, used only for US financial-
+    concept extraction ("revenue"/"net income"/"assets") — deliberately NOT
+    company_name itself, which obviously never contains those words
+    (a real regression caught by test_classifier_company_lookup_picks_
+    provider_by_jurisdiction: searching "microsoft" for "revenue" always
+    falls through to the Assets default, silently ignoring what the user
+    actually asked for)."""
     jurisdiction_country = _country_from_jurisdiction(jurisdiction) if jurisdiction else None
     if jurisdiction_country is None:
         return None
     country_code, country_label = jurisdiction_country
 
     if country_code == "US":
-        indicator_code, indicator_label = _extract_financial_concept(lowered)
+        indicator_code, indicator_label = _extract_financial_concept((query or company_name).lower())
         return LiveDataIntent(
             provider_key="sec_edgar", indicator_code=indicator_code, indicator_label=indicator_label,
             country_code=country_code, country_label=country_label, company_query=company_name,
@@ -388,6 +455,34 @@ def detect_company_lookup_intent(query: str, jurisdiction: str = "") -> LiveData
         provider_key="gleif", indicator_code="profile", indicator_label="Company Profile",
         country_code=country_code, country_label=country_label, company_query=company_name,
     )
+
+
+def detect_company_lookup_intent(query: str, jurisdiction: str = "") -> LiveDataIntent | None:
+    lowered = query.lower()
+    if not any(keyword in lowered for keyword in _COMPANY_TRIGGER_KEYWORDS):
+        return None
+
+    company_name = _extract_company_name(query)
+    if company_name is None:
+        return None
+
+    return build_company_lookup_intent_from_name(company_name, jurisdiction, query=query)
+
+
+def company_lookup_needs_llm_fallback(query: str, jurisdiction: str = "") -> bool:
+    """True only when the regex path (trigger keyword + name pattern) found
+    nothing, but the query semantically resembles a company financial
+    inquiry AND the jurisdiction actually resolves — the async caller in
+    live_sources/service.py uses this to decide whether an LLM call for
+    name extraction is worth making at all, rather than firing one on every
+    unrelated query that happens to mention a capitalized word."""
+    if detect_company_lookup_intent(query, jurisdiction) is not None:
+        return False  # regex path already succeeded, no fallback needed
+    if not jurisdiction or _country_from_jurisdiction(jurisdiction) is None:
+        return False  # can't resolve a provider even if the LLM finds a name
+    lowered = query.lower()
+    has_keyword_trigger = any(keyword in lowered for keyword in _COMPANY_TRIGGER_KEYWORDS)
+    return has_keyword_trigger or _semantic_company_lookup_trigger_match(query)
 
 
 def detect_live_data_intent(query: str, jurisdiction: str = "") -> LiveDataIntent | None:

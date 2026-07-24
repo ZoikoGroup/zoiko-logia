@@ -62,8 +62,15 @@ from app.orchestration.audit_events import (
     audit_live_fetch_succeeded, audit_live_fetch_failed,
 )
 from app.domains.risk_safety.schemas import ClassifyRequest
+from app.domains.risk_safety import service as risk_safety_service
 from app.domains.model_gateway import service as model_gateway_service
 from app.orchestration.compose import select_prompt
+from app.orchestration.followup import is_elliptical_followup
+from app.orchestration.format_intent import build_format_instruction
+from app.orchestration.greeting import is_pure_greeting
+from app.orchestration.security_screen import (
+    screen_for_security_violation, SECURITY_INCIDENT_CONFIDENCE_THRESHOLD,
+)
 from app.domains.rag.embeddings import get_query_embedding_cached
 from app.domains.rag.retrieval import retrieve_documents
 from app.domains.rag.reranker import Reranker
@@ -201,6 +208,124 @@ async def ask_kriton(
             store_idempotency(idempotency_key, tenant_id, response.model_dump())
         return response
 
+    # ── Step 3.5: ML-based pre-screen — risk_classifier.pre_screen(), via
+    # risk_safety_service.pre_screen() (§6, RG-01) ───────────────────────────
+    # Confirmed this session: before this, ask_kriton() only ever called
+    # run_prescreen() above (plain regex: prompt injection, data
+    # exfiltration, malicious instruction, academic integrity). It never
+    # called this function — which additionally covers the privacy_class
+    # hard-block (PII/MINOR_DATA/SECRETS) and, critically, the semantic
+    # evasion gate — meaning that gate, despite being built and tested
+    # earlier, was never actually protecting a live request. Runs alongside
+    # run_prescreen() above, not instead of it: the two check different
+    # things (this one is ML/semantic, that one is deterministic regex) and
+    # neither is a superset of the other.
+    #
+    # pre_bundle_state/source_confidence are left at their ClassifyRequest
+    # defaults ("OK"/"HIGH_CONFIDENCE") since bundle-building hasn't
+    # happened yet at this point in the pipeline — the license/ontology
+    # pre-bundle checks this same function can also perform need real
+    # bundle data, which license_gate.py/bundle_builder.py already provide
+    # after retrieval (Step 4 below); what this call is actually for here
+    # is the privacy_class hard-block plus the L1/L1.5 query-text checks,
+    # both of which only need the query itself, not retrieval results.
+    ml_prescreen_request = ClassifyRequest(
+        query=request.query,
+        user_id=actor_id,
+        role=role,
+        tenant_id=tenant_id,
+        jurisdiction=request.jurisdiction,
+        mode=request.mode,
+        privacy_class=request.privacy_class or "NONE",
+    )
+    # Sync call (risk_safety_service.pre_screen is not async) — it also
+    # persists its own EscalationCase/SafetyEvent/security-incident records
+    # internally via sync_db when the decision warrants it (_finalize()'s
+    # job), so this call site must NOT also create a review case or
+    # security incident itself — that would double-record the same block.
+    ml_prescreen_decision = risk_safety_service.pre_screen(ml_prescreen_request, db=sync_db)
+    if ml_prescreen_decision is not None:
+        await audit_prescreen_completed(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, passed=False,
+            trigger=f"ml_prescreen:{ml_prescreen_decision.restricted_sub_class or ml_prescreen_decision.route}",
+        )
+        response = _make_response_from_prescreen_decision(
+            ml_prescreen_decision, query_id, correlation_id, audit_chain_id,
+        )
+        await _finalise_and_return(
+            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+            audit_chain_id=audit_chain_id, actor_id=actor_id,
+            outcome=response.outcome, route=response.route, start_time=start_time,
+        )
+        if idempotency_key:
+            store_idempotency(idempotency_key, tenant_id, response.model_dump())
+        return response
+
+    # ── Step 3.75: Pure-greeting bypass ──────────────────────────────────────
+    # "Hi"/"Hello Kriton"/"good morning" retrieve zero document context (an
+    # accounting/tax library has nothing matching a greeting), which trips
+    # the §2 "no unsupported answering" rule below (Step 4/5) and returns
+    # the confusing "could not find sufficient sources... clarify your
+    # jurisdiction" message — a wrong response to something this simple.
+    # Skips retrieval and risk classification entirely (there's nothing to
+    # ground and no real risk in a greeting) and calls the LLM with a small,
+    # ungrounded, citation-free prompt instead.
+    if is_pure_greeting(request.query):
+        prompt = await select_prompt(db, request.mode)
+        greeting_input = (
+            "The user sent only a casual greeting, with no accounting, tax, audit, "
+            "or compliance question yet. Respond with one short, warm, professional "
+            "sentence as Kriton — a governed accounting/tax/audit assistant — and "
+            "invite them to ask a real question. Do not cite sources, do not add a "
+            "disclaimer, and do not answer any substantive question — there isn't one.\n\n"
+            f"User's message: {request.query}"
+        )
+        composed_text: Optional[str] = None
+        prompt_id = "inline"
+        prompt_name = "Inline Greeting Prompt"
+        try:
+            if prompt:
+                prompt_row, composed_text = await model_gateway_service.run_test_prompt(
+                    db, prompt.id, greeting_input, actor_id, tenant_id, correlation_id=query_id
+                )
+                prompt_id = prompt_row.id
+                prompt_name = prompt_row.name
+            else:
+                composed_text = "Hello! I'm Kriton — ask me an accounting, tax, or audit question any time."
+        except Exception:
+            composed_text = "Hello! I'm Kriton — ask me an accounting, tax, or audit question any time."
+
+        output_hash = hashlib.sha256(composed_text.encode()).hexdigest()[:32]
+        await audit_composition_completed(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, prompt_id=prompt_id, output_hash=output_hash,
+            commit=False,
+        )
+        response = AskKritonResponse(
+            query_id=query_id, correlation_id=correlation_id,
+            outcome="answered", route=ROUTE_LLM,
+            safety=SafetyState(risk_level="ZERO", policy_state="allowed"),
+            confidence_state="sufficient",
+            source_bundle=None,
+            answer=ComposedAnswer(
+                text=composed_text, citations=[], limitations=[],
+                prompt_id=prompt_id, prompt_name=prompt_name, output_text=composed_text,
+            ),
+            next_action=None,
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        )
+        await _finalise_and_return(
+            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+            audit_chain_id=audit_chain_id, actor_id=actor_id,
+            outcome=response.outcome, route=response.route, start_time=start_time,
+        )
+        if idempotency_key:
+            store_idempotency(idempotency_key, tenant_id, response.model_dump())
+        return response
+
     # ── Step 4: Retrieve SourceBundle (Massarius™ keyword_mvp layer) (§7) ────
     # commit=False on every intermediate event in this phase (see
     # audit_events.py's module docstring) — batched into one round-trip at
@@ -276,7 +401,61 @@ async def ask_kriton(
 
     live_summary = None
     live_fetch_start = time.monotonic()
-    (raw_chunks, query_embedding), live_outcome = await asyncio.gather(_fetch_raw_chunks(), _fetch_live())
+    (raw_chunks, query_embedding), live_outcome, security_screen = await asyncio.gather(
+        _fetch_raw_chunks(), _fetch_live(), screen_for_security_violation(request.query),
+    )
+
+    # Dynamic security screen (§6 equivalent, additive to run_prescreen()/
+    # risk_safety_service.pre_screen() above, never a replacement) — catches
+    # credential-harvesting/phishing/fraud attempts those deterministic
+    # gates structurally can't anticipate (validated this session: 8/8
+    # correct including 3 categories no exemplar set covers). Checked here,
+    # right after the concurrent fetch it rode alongside, before any of
+    # raw_chunks/live_outcome gets used for anything — on a flag, both are
+    # simply discarded.
+    if security_screen is not None and security_screen["flagged"]:
+        category = security_screen.get("category") or "security_policy"
+        if security_screen["confidence"] >= SECURITY_INCIDENT_CONFIDENCE_THRESHOLD:
+            await audit_security_incident_recorded(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+                actor_id=actor_id, incident_id=f"dyn-{query_id}",
+                trigger=category, evidence_reference=query_id,
+            )
+            response = _make_security_incident_response(query_id, correlation_id, audit_chain_id, category)
+        else:
+            review_case = await create_review_case(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, risk_level="HIGH", confidence_state="insufficient",
+                reason=f"Dynamic security screen flagged (uncertain): {category}",
+            )
+            await audit_human_review_created(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+                actor_id=actor_id, review_case_id=review_case.id,
+            )
+            response = AskKritonResponse(
+                query_id=query_id, correlation_id=correlation_id,
+                outcome="escalated", route=ROUTE_HUMAN_REVIEW,
+                safety=SafetyState(risk_level="HIGH", policy_state="blocked"),
+                confidence_state="insufficient", source_bundle=None, answer=None,
+                next_action=NextAction(
+                    type="escalate",
+                    message=(
+                        f"This query has been escalated to a qualified reviewer "
+                        f"(Review Case {review_case.id}). You will be notified when the review is complete."
+                    ),
+                ),
+                audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+            )
+        await _finalise_and_return(
+            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+            audit_chain_id=audit_chain_id, actor_id=actor_id,
+            outcome=response.outcome, route=response.route, start_time=start_time,
+        )
+        if idempotency_key:
+            store_idempotency(idempotency_key, tenant_id, response.model_dump())
+        return response
     if live_outcome and live_outcome.intent is not None:
         await audit_live_intent_detected(
             db, query_id=query_id, correlation_id=correlation_id,
@@ -687,9 +866,50 @@ async def ask_kriton(
 
     # Build grounded prompt input
     prompt = await select_prompt(db, request.mode)
+
+    # Conversation-context injection — the query resolution gap flagged in
+    # the classifier design work: "what about for £20,000 instead" is
+    # unclassifiable in isolation, and no vector/keyword layer has memory
+    # of prior turns to resolve it against. Only attached for queries that
+    # actually look reference-dependent (is_elliptical_followup), and only
+    # ever the prior QUERY text, never the composed answer (which carries
+    # disclaimer/citation text that has no business re-entering the
+    # grounded prompt as conversational context).
+    followup_context = ""
+    if request.history and is_elliptical_followup(request.query):
+        previous_query = request.history[-1]
+        followup_context = (
+            f"=== Conversation Context (for resolving references only — not a retrieved source, do not cite) ===\n"
+            f"The user's previous question in this conversation was: {previous_query!r}\n"
+            f"The current query below likely continues or modifies that request.\n\n"
+        )
+
+    # Format-intent gate — separate from the default "scale to content" rule
+    # below: this only fires when the user explicitly asked for a chart/
+    # table/flowchart, and forces that format (or an honest "can't do that
+    # from what's available") rather than leaving it to the model's own
+    # judgment. See format_intent.py's docstring for why this uses the same
+    # exemplar-similarity technique as intent classification but is NOT
+    # treated with the same caution as the risk_safety evasion gate — the
+    # failure mode here (an unrequested table) has no safety implication.
+    format_instruction = build_format_instruction(request.query)
+
     grounded_input = (
         f"Use ONLY the following retrieved context to answer the query. "
-        f"Cite sources using [REF-N] markers. Do not use general knowledge.\n\n"
+        f"Cite sources using [REF-N] markers. Do not use general knowledge.\n"
+        f"When the answer involves a calculation, show the formula and the "
+        f"substituted values step by step, using only figures and rates "
+        f"present in the retrieved context — never a rate or figure from "
+        f"memory.\n"
+        f"Scale Markdown structure to the content — do not force headings onto a "
+        f"short answer. For a single fact, a definition, or a case where the "
+        f"context doesn't cover the query, respond in one or two plain prose "
+        f"sentences: no title, no subheadings, no bullet list. Reserve a '# Title' "
+        f"line, '###' subheadings, and bullet lists with bold lead-in terms "
+        f"(e.g. '- **Term**: explanation') for answers that genuinely have "
+        f"multiple distinct sections or comparison points.\n"
+        f"{format_instruction}\n\n"
+        f"{followup_context}"
         f"=== Retrieved Context ===\n{context_text}\n\n"
         f"=== User Query ===\n{request.query}"
     )
@@ -967,6 +1187,57 @@ def _make_security_incident_response(query_id, correlation_id, audit_chain_id, t
         next_action=NextAction(
             type="security_incident",
             message="Your request could not be processed due to a security policy violation.",
+        ),
+        audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+    )
+
+
+def _make_response_from_prescreen_decision(decision, query_id, correlation_id, audit_chain_id) -> AskKritonResponse:
+    """Converts a risk_classifier.pre_screen() SafetyDecision (a hard block)
+    into the canonical response contract. decision.route is one of
+    SECURITY_INCIDENT/CLARIFICATION/HUMAN_REVIEW/REFUSAL/LICENSE_PATH —
+    escalation-case/security-incident persistence for these was already
+    handled inside risk_safety_service.pre_screen()'s _finalize() (via
+    sync_db), so this only shapes the API response, it doesn't re-persist
+    anything."""
+    if decision.route == ROUTE_SECURITY_INCIDENT:
+        return _make_security_incident_response(
+            query_id, correlation_id, audit_chain_id,
+            trigger=decision.restricted_sub_class or "security_policy",
+        )
+    if decision.route == ROUTE_CLARIFICATION:
+        return AskKritonResponse(
+            query_id=query_id, correlation_id=correlation_id,
+            outcome="clarification_required", route=ROUTE_CLARIFICATION,
+            safety=SafetyState(risk_level=decision.risk_level, policy_state="needs_more_context"),
+            confidence_state="insufficient", source_bundle=None, answer=None,
+            next_action=NextAction(
+                type="ask_clarifying_question",
+                message=decision.refusal_text or "Could you provide more context, including your jurisdiction?",
+            ),
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        )
+    if decision.route == ROUTE_HUMAN_REVIEW:
+        return AskKritonResponse(
+            query_id=query_id, correlation_id=correlation_id,
+            outcome="escalated", route=ROUTE_HUMAN_REVIEW,
+            safety=SafetyState(risk_level=decision.risk_level, policy_state="blocked"),
+            confidence_state="insufficient", source_bundle=None, answer=None,
+            next_action=NextAction(
+                type="escalate",
+                message="This query has been escalated to a qualified reviewer for review before any response is composed.",
+            ),
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        )
+    # REFUSAL and any other RESTRICTED-tier route (e.g. academic integrity)
+    return AskKritonResponse(
+        query_id=query_id, correlation_id=correlation_id,
+        outcome="refused", route=ROUTE_REFUSAL,
+        safety=SafetyState(risk_level=decision.risk_level, policy_state="blocked"),
+        confidence_state="insufficient", source_bundle=None, answer=None,
+        next_action=NextAction(
+            type="refusal",
+            message=decision.refusal_text or "This request cannot be processed.",
         ),
         audit_reference=AuditReference(audit_chain_id=audit_chain_id),
     )

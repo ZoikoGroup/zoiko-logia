@@ -499,6 +499,8 @@ export type AskKritonRequest = {
   query: string;
   jurisdiction?: string;
   mode?: string;
+  /** Prior user queries this conversation, most recent last — never the composed answers. */
+  history?: string[];
   /** Playground overrides — not trusted from body in production */
   source_confidence?: string;
   pre_bundle_state?: string;
@@ -555,7 +557,7 @@ export type ComposedAnswer = {
 
 /** §12 SafetyState — frontend renders from this, not by parsing answer text */
 export type SafetyState = {
-  risk_level: "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
+  risk_level: "ZERO" | "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
   policy_state: "allowed" | "blocked" | "needs_more_context";
   disclaimer_required: boolean;
   refusal_text?: string;

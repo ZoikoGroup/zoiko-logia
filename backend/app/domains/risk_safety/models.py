@@ -21,6 +21,7 @@ from app.db.base import Base
 # ─── Enumerations ───────────────────────────────────────────────────────────
 
 class RiskLevel(str, enum.Enum):
+    ZERO = "ZERO"
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"

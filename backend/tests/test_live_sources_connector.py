@@ -277,6 +277,33 @@ def test_classifier_fx_intent_detection():
     print("test_classifier_fx_intent_detection: PASSED")
 
 
+def test_classifier_fx_intent_semantic_fallback_for_paraphrased_queries():
+    """Regression test: paraphrases with no literal trigger keyword ('to',
+    '/', 'exchange rate', 'conversion rate') previously fell straight
+    through to None, even with two clear currencies named. The semantic
+    fallback (_semantic_fx_trigger_match) now catches these, gated by the
+    same >= 2 currency requirement as the keyword path — confirmed this
+    session that queries mentioning zero or one currency (e.g. 'What is
+    the price of gold?') still correctly return None regardless of
+    semantic score."""
+    intent = detect_fx_intent("How many dollars is 100 pounds worth")
+    assert intent is not None
+    assert intent.provider_key == "frankfurter"
+    assert intent.indicator_code == "USD_GBP"
+
+    intent2 = detect_fx_intent("How much is 50 euros in rupees")
+    assert intent2 is not None
+    assert intent2.indicator_code == "EUR_INR"
+
+    # No currency mentioned at all -> must still return None even though
+    # this scores close to real FX queries on the semantic exemplar set.
+    assert detect_fx_intent("What is the price of gold?") is None
+    # Two currencies mentioned but no conversion intent -> must not
+    # false-positive just because both currency words are present.
+    assert detect_fx_intent("I have both dollars and pounds saved, how are they each taxed?") is None
+    print("test_classifier_fx_intent_semantic_fallback_for_paraphrased_queries: PASSED")
+
+
 def test_classifier_company_lookup_extracts_correct_name():
     """Regression test for a real extraction bug found during
     implementation: the company-name regex originally captured the whole
@@ -748,6 +775,7 @@ async def main():
     test_classifier_uk_gdp_and_unemployment_now_route_to_ons()
     test_classifier_fred_implies_us_for_fed_funds_and_treasury()
     test_classifier_fx_intent_detection()
+    test_classifier_fx_intent_semantic_fallback_for_paraphrased_queries()
     test_classifier_company_lookup_extracts_correct_name()
     test_classifier_company_lookup_extracts_plural_possessive_name()
     test_classifier_company_lookup_requires_resolvable_jurisdiction()

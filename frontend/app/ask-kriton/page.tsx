@@ -1,7 +1,22 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
+import mermaid from "mermaid";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import {
   AlertTriangle,
   ArrowUp,
@@ -57,7 +72,7 @@ declare global {
   }
 }
 
-type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
+type RiskLevel = "ZERO" | "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
 
 type RecentEntry = { id: string; text: string; pinned: boolean };
 
@@ -78,6 +93,7 @@ const RISK_STYLES: Record<
   RiskLevel,
   { bg: string; border: string; text: string; icon: typeof ShieldCheck; label: string }
 > = {
+  ZERO: { bg: "bg-soft", border: "border-line", text: "text-muted", icon: ShieldCheck, label: "No risk - casual" },
   LOW: { bg: "bg-ok/10", border: "border-ok/30", text: "text-ok", icon: ShieldCheck, label: "Low risk - verified" },
   MEDIUM: { bg: "bg-info/10", border: "border-info/30", text: "text-info", icon: ShieldCheck, label: "Medium risk - educational" },
   HIGH: { bg: "bg-warn/10", border: "border-warn/30", text: "text-warn", icon: ShieldAlert, label: "High risk - boundary applied" },
@@ -110,15 +126,221 @@ function cleanDisplayText(value: string) {
   return value.replace(/\*\*(.*?)\*\*/g, "$1").replace(/\*\*/g, "").trim();
 }
 
+// Calling mermaid.initialize() at module scope (as this originally did)
+// runs it during Next.js's server-side render pass too, before a real
+// window/document exists — confirmed live this session: that leaves
+// Mermaid's internal DOMPurify instance broken ("DOMPurify.addHook is not
+// a function"), and every diagram then fails to render in the browser
+// even though the Mermaid syntax itself was valid. Guarding this to run
+// exactly once, only from inside a mounted client component (so a real
+// DOM is guaranteed to exist), is the fix.
+let mermaidInitialized = false;
+function ensureMermaidInitialized() {
+  if (mermaidInitialized) return;
+  mermaid.initialize({ startOnLoad: false, theme: "neutral", securityLevel: "strict" });
+  mermaidInitialized = true;
+}
+
+// The typewriter effect feeds react-markdown a GROWING, partial string every
+// tick. Headings/bold/lists degrade gracefully mid-reveal (literal '#'/'**'
+// characters for one tick, then resolve) — but a fenced ```mermaid/
+// ```kriton-chart block doesn't have that tolerance: a code fence whose
+// language tag has been revealed but whose content hasn't yet (children
+// still undefined) makes `String(children)` produce the literal 9-character
+// string "undefined", which then gets handed to mermaid.render() or
+// JSON.parse() and fails loudly and confusingly ("No diagram type detected
+// ... for text: undefined"). Confirmed live this session. The fix: don't
+// attempt to render these blocks at all until the reveal is finished —
+// this context carries that signal down from TypedAnswerText, which
+// already knows when revealed === the final text.
+const RevealCompleteContext = createContext(true);
+
+// Renders a ```mermaid fenced block as an actual diagram. mermaid.render()
+// is async and returns an SVG string — can't do this as a plain
+// synchronous component the way the other Markdown overrides are, hence
+// the effect + ref instead of returning JSX directly.
+function MermaidDiagram({ code }: { code: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const isRevealComplete = useContext(RevealCompleteContext);
+  // One id per rendered instance — mermaid.render() writes to a DOM node
+  // it creates internally keyed by this id; reusing one across multiple
+  // diagrams on the same page would collide.
+  const idRef = useRef(`mermaid-${Math.random().toString(36).slice(2, 10)}`);
+
+  useEffect(() => {
+    // Don't even attempt a render against a still-revealing (necessarily
+    // partial/invalid) or empty code string — wait for the real thing.
+    if (!isRevealComplete || !code.trim()) return;
+    let cancelled = false;
+    setError(null); // clear any stale failure from an earlier, unrelated attempt
+    ensureMermaidInitialized();
+    mermaid
+      .render(idRef.current, code)
+      .then(({ svg }) => {
+        if (!cancelled && containerRef.current) containerRef.current.innerHTML = svg;
+      })
+      .catch((err) => {
+        // Logged, not swallowed silently — a genuine Mermaid syntax error
+        // from the model and an environment/init failure (like the
+        // DOMPurify issue above) look identical to the user otherwise,
+        // and only the console message tells them apart during debugging.
+        console.error("Mermaid render failed:", err);
+        // Malformed diagram syntax from the model — degrade to showing
+        // nothing rendered rather than a broken half-drawn diagram; the
+        // raw fenced block staying out of view is preferable to a JS
+        // exception taking down the rest of the answer.
+        if (!cancelled) setError("Diagram could not be rendered.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [code, isRevealComplete]);
+
+  if (!isRevealComplete) return null;
+  if (error) return <p className="text-xs italic text-muted">{error}</p>;
+  return <div ref={containerRef} className="my-3 flex justify-center overflow-x-auto" />;
+}
+
+type KritonChartSpec = {
+  type: "line" | "bar";
+  labels: string[];
+  series: { name: string; values: number[] }[];
+};
+
+// Renders a ```kriton-chart fenced block (JSON, see the format_intent
+// instruction built server-side in orchestration/format_intent.py) as an
+// actual chart instead of raw JSON text.
+function KritonChart({ code }: { code: string }) {
+  // Same reveal-race issue as MermaidDiagram above — a still-typing JSON
+  // block is by definition invalid JSON on every tick but the last one;
+  // don't show a "could not be parsed" flicker for what's just incomplete.
+  const isRevealComplete = useContext(RevealCompleteContext);
+  if (!isRevealComplete) return null;
+
+  let spec: KritonChartSpec | null = null;
+  try {
+    spec = JSON.parse(code);
+  } catch {
+    return <p className="text-xs italic text-muted">Chart data could not be parsed.</p>;
+  }
+  if (!spec || !Array.isArray(spec.labels) || !Array.isArray(spec.series)) {
+    return <p className="text-xs italic text-muted">Chart data was incomplete.</p>;
+  }
+
+  const data = spec.labels.map((label, i) => {
+    const row: Record<string, string | number> = { label };
+    for (const s of spec!.series) row[s.name] = s.values[i];
+    return row;
+  });
+  const seriesColors = ["#2E6F5E", "#C9A227", "#5B7BA6", "#B4563E"];
+  const ChartComponent = spec.type === "bar" ? BarChart : LineChart;
+  const SeriesComponent = spec.type === "bar" ? Bar : Line;
+
+  return (
+    <div className="my-3 h-64 w-full">
+      <ResponsiveContainer width="100%" height="100%">
+        <ChartComponent data={data}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
+          <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+          <YAxis tick={{ fontSize: 11 }} />
+          <Tooltip />
+          {spec.series.length > 1 && <Legend />}
+          {spec.series.map((s, i) => (
+            <SeriesComponent
+              key={s.name}
+              dataKey={s.name}
+              stroke={seriesColors[i % seriesColors.length]}
+              fill={seriesColors[i % seriesColors.length]}
+            />
+          ))}
+        </ChartComponent>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// Maps the model's Markdown output (see the formatting instruction in
+// orchestration/service.py's grounded_input) to the page's existing type
+// scale/colors instead of react-markdown's unstyled defaults.
+const answerMarkdownComponents: Components = {
+  h1: ({ ...props }) => <h1 className="mb-3 mt-1 text-xl font-bold leading-8 text-ink" {...props} />,
+  h2: ({ ...props }) => <h2 className="mb-2 mt-5 text-base font-bold leading-7 text-ink first:mt-0" {...props} />,
+  h3: ({ ...props }) => <h3 className="mb-2 mt-5 text-base font-bold leading-7 text-ink first:mt-0" {...props} />,
+  p: ({ ...props }) => <p className="mb-3 text-[15px] leading-7 text-ink last:mb-0" {...props} />,
+  ul: ({ ...props }) => <ul className="mb-3 ml-5 list-disc space-y-1.5 text-[15px] leading-7 text-ink" {...props} />,
+  ol: ({ ...props }) => <ol className="mb-3 ml-5 list-decimal space-y-1.5 text-[15px] leading-7 text-ink" {...props} />,
+  li: ({ ...props }) => <li className="pl-1" {...props} />,
+  strong: ({ ...props }) => <strong className="font-semibold text-ink" {...props} />,
+  a: ({ ...props }) => <a className="text-brand underline hover:no-underline" target="_blank" rel="noopener noreferrer" {...props} />,
+  table: ({ ...props }) => (
+    <div className="my-3 overflow-x-auto">
+      <table className="w-full border-collapse text-[13px]" {...props} />
+    </div>
+  ),
+  thead: ({ ...props }) => <thead className="border-b border-line/70" {...props} />,
+  th: ({ ...props }) => <th className="px-3 py-1.5 text-left font-semibold text-ink" {...props} />,
+  td: ({ ...props }) => <td className="border-t border-line/40 px-3 py-1.5 text-ink" {...props} />,
+  // react-markdown always wraps a fenced code block in <pre><code>...
+  // — special-cased languages (mermaid/kriton-chart) render as a diagram/
+  // chart instead, so `pre` has to skip its own box styling for those
+  // rather than wrapping a rendered SVG/chart in a code-block frame.
+  pre: ({ children, ...props }) => {
+    const child = children as { props?: { className?: string } };
+    const className = child?.props?.className ?? "";
+    if (className.includes("language-mermaid") || className.includes("language-kriton-chart")) {
+      return <>{children}</>;
+    }
+    return (
+      <pre className="my-3 overflow-x-auto rounded-lg bg-soft p-3 text-[13px] leading-6 text-ink" {...props}>
+        {children}
+      </pre>
+    );
+  },
+  code: ({ className, children, ...props }) => {
+    const raw = String(children).replace(/\n$/, "");
+    if (className?.includes("language-mermaid")) return <MermaidDiagram code={raw} />;
+    if (className?.includes("language-kriton-chart")) return <KritonChart code={raw} />;
+    return (
+      <code className={`${className ?? ""} rounded bg-soft px-1 py-0.5 font-mono text-[13px]`} {...props}>
+        {children}
+      </code>
+    );
+  },
+};
+
+// Display-only — [REF-N] markers stay in turn.result.answer.text for
+// Checkpoint C's grounding validation (massarius/answer_validator.py scans
+// for exactly this pattern against source_bundle) and are never stripped
+// there; this only affects what's rendered on screen. Sources are already
+// shown separately via the citations list below the answer, so the inline
+// marker is pure noise for the reader once it's on screen.
+function stripCitationMarkers(value: string) {
+  return value.replace(/\s?\[REF-\d+\]/g, "");
+}
+
 // Extracted to its own component (rather than calling useTypewriter directly
 // inside the turns.map() callback below) because Hooks can't be called from
 // inside a loop/callback — this is the one turn's answer text, revealed
 // progressively. The backend already returned the complete, Checkpoint-C-
 // validated text in one response; this is purely a client-side reveal
 // animation, not real streaming of partial/unvalidated model output.
+// react-markdown tolerates the mid-reveal, not-yet-closed '**'/'#' tokens
+// useTypewriter hands it word by word — they render as literal characters
+// for one tick, then resolve once the closing token arrives. A [REF-N]
+// token straddling a reveal tick just shows its raw characters for one
+// tick and vanishes once the closing ']' arrives — same graceful
+// degradation already accepted for '**'/'#' tokens.
 function TypedAnswerText({ text }: { text: string }) {
   const revealed = useTypewriter(text);
-  return <>{revealed}</>;
+  const isRevealComplete = revealed.length >= text.length;
+  return (
+    <RevealCompleteContext.Provider value={isRevealComplete}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={answerMarkdownComponents}>
+        {stripCitationMarkers(revealed)}
+      </ReactMarkdown>
+    </RevealCompleteContext.Provider>
+  );
 }
 
 function extractReviewCase(value: string) {
@@ -381,12 +603,17 @@ export default function AskKritonPage() {
 
     try {
       const idempotencyKey = `idem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      // Prior turns' queries only, never the composed answers — capped to
+      // the last few since the backend only ever needs the most recent one
+      // to resolve an elliptical follow-up, not the full conversation.
+      const history = turns.map((t) => t.query).slice(-3);
       const response = await askKriton(
         token,
         {
           query: trimmed,
           jurisdiction,
           mode: "Workflow",
+          history,
         },
         idempotencyKey,
       );
@@ -682,8 +909,8 @@ export default function AskKritonPage() {
                               <section className="mt-3 min-w-0">
                               {turn.result.answer ? (
                                 <>
-                                  <div className="kriton-answer-reveal whitespace-pre-line text-[15px] leading-7 text-ink">
-                                    <TypedAnswerText text={cleanDisplayText(turn.result.answer.text)} />
+                                  <div className="kriton-answer-reveal min-w-0 text-[15px] leading-7 text-ink">
+                                    <TypedAnswerText text={turn.result.answer.text} />
                                   </div>
                                     {turn.result.answer.citations.length > 0 && (
                                       <div className="mt-5 border-t border-line/70 pt-3">

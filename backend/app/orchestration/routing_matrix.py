@@ -37,6 +37,7 @@ CONF_STALE = "stale_sources"
 CONF_RESTRICTED = "restricted_sources"
 
 # Risk level constants
+RISK_ZERO = "ZERO"
 RISK_LOW = "LOW"
 RISK_MEDIUM = "MEDIUM"
 RISK_HIGH = "HIGH"
@@ -48,18 +49,37 @@ MAX_CLARIFICATION_CYCLES = 2  # §8.1 — 3rd unresolved cycle escalates to HUMA
 # ── Policy Matrix — §8 ────────────────────────────────────────────────────────
 # (risk_level, confidence_state) → route
 _MATRIX: dict[tuple[str, str], str] = {
+    # ZERO risk — casual conversation / navigational help (e.g. greetings).
+    # Always LLM regardless of confidence: there's genuinely nothing to
+    # ground or gate on source quality for "hey what's up" — unlike LOW,
+    # even insufficient confidence doesn't warrant a clarification request
+    # here, since there's no real topic to clarify.
+    (RISK_ZERO, CONF_SUFFICIENT):    ROUTE_LLM,
+    (RISK_ZERO, CONF_LIMITED):       ROUTE_LLM,
+    (RISK_ZERO, CONF_INSUFFICIENT):  ROUTE_LLM,
+
     # LOW risk
     (RISK_LOW, CONF_SUFFICIENT):    ROUTE_LLM,
     (RISK_LOW, CONF_LIMITED):       ROUTE_LLM,            # with mandatory caveats
     (RISK_LOW, CONF_INSUFFICIENT):  ROUTE_CLARIFICATION,
 
-    # MEDIUM risk
-    (RISK_MEDIUM, CONF_SUFFICIENT):    ROUTE_LLM,          # disclaimer_required = True
-    (RISK_MEDIUM, CONF_LIMITED):       ROUTE_HUMAN_REVIEW,
-    (RISK_MEDIUM, CONF_INSUFFICIENT):  ROUTE_HUMAN_REVIEW,
+    # MEDIUM risk — always LLM with mandatory disclaimer (see
+    # disclaimer_required below, which must cover MEDIUM regardless of
+    # confidence_state for this to be safe). conflicting_sources/
+    # stale_sources/restricted_sources are NOT included here deliberately —
+    # those are cross-cutting overrides below and still take precedence
+    # over risk level, since they represent a source-quality problem a
+    # disclaimer doesn't fix, not a risk-tolerance question.
+    (RISK_MEDIUM, CONF_SUFFICIENT):    ROUTE_LLM,
+    (RISK_MEDIUM, CONF_LIMITED):       ROUTE_LLM,
+    (RISK_MEDIUM, CONF_INSUFFICIENT):  ROUTE_LLM,
 
-    # HIGH risk — any confidence → HUMAN_REVIEW
-    (RISK_HIGH, CONF_SUFFICIENT):    ROUTE_HUMAN_REVIEW,
+    # HIGH risk — sufficient confidence now answers directly (with mandatory
+    # disclaimer, see disclaimer_required below — this MUST include HIGH or
+    # a HIGH-risk answer ships with no disclaimer at all). Weaker confidence
+    # states still escalate — sufficient confidence is the one case where
+    # the sourcing itself isn't the concern.
+    (RISK_HIGH, CONF_SUFFICIENT):    ROUTE_LLM,
     (RISK_HIGH, CONF_LIMITED):       ROUTE_HUMAN_REVIEW,
     (RISK_HIGH, CONF_INSUFFICIENT):  ROUTE_HUMAN_REVIEW,
     (RISK_HIGH, CONF_CONFLICTING):   ROUTE_HUMAN_REVIEW,
@@ -121,8 +141,9 @@ def resolve_route(
     if route == ROUTE_CLARIFICATION and clarification_cycle >= MAX_CLARIFICATION_CYCLES:
         route = ROUTE_HUMAN_REVIEW
 
-    disclaimer_required = (
+    disclaimer_required = risk_level != RISK_ZERO and (
         risk_level == RISK_MEDIUM
+        or risk_level == RISK_HIGH
         or confidence_state == CONF_LIMITED
     )
 

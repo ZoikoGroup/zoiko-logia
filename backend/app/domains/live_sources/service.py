@@ -17,7 +17,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.domains.live_sources import cache
-from app.domains.live_sources.classifier import detect_company_lookup_intent, detect_live_data_intent
+from app.domains.live_sources.classifier import (
+    build_company_lookup_intent_from_name,
+    company_lookup_needs_llm_fallback,
+    detect_company_lookup_intent,
+    detect_live_data_intent,
+)
+from app.domains.live_sources.llm_fallback import extract_company_name_via_llm
 from app.domains.live_sources.connectors.bank_of_england import BankOfEnglandConnector
 from app.domains.live_sources.connectors.companies_house import CompaniesHouseConnector
 from app.domains.live_sources.connectors.fred import FREDConnector
@@ -58,6 +64,17 @@ async def fetch_live_data(db: AsyncSession, *, query: str, tenant_id: str, juris
     intent = detect_live_data_intent(query, jurisdiction=jurisdiction)
     if intent is None:
         intent = detect_company_lookup_intent(query, jurisdiction=jurisdiction)
+    if intent is None and company_lookup_needs_llm_fallback(query, jurisdiction=jurisdiction):
+        # Tier 2: the regex name-extraction pattern requires a specific
+        # trailing anchor ("X's filings", "revenue of X") and misses
+        # verb-based phrasing ("what did Apple make last quarter"). Only
+        # reached when Tier 1 already confirmed this is worth the round
+        # trip (see classifier.py's company_lookup_needs_llm_fallback) —
+        # extract_company_name_via_llm() never raises, degrades to None on
+        # any failure, same as every other unmatched case here.
+        llm_name = await extract_company_name_via_llm(query)
+        if llm_name is not None:
+            intent = build_company_lookup_intent_from_name(llm_name, jurisdiction, query=query)
     if intent is None:
         return LiveFetchOutcome(intent=None)
 
