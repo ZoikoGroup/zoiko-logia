@@ -92,16 +92,21 @@ def build_validated_disclaimer(
     disclaimer_required: bool,
     confidence_state: str,
 ) -> str:
-    """Append mandatory disclaimers for MEDIUM risk or limited confidence answers (§10)."""
+    """Append mandatory disclaimers for MEDIUM risk or limited confidence answers (§7 —
+    Professional Boundary and Regulated Advice Controls; not §10, which is the
+    human-review workflow section — the exact wording below isn't spec-mandated
+    verbatim, ZL-T0-04 §7/Table row 101 only requires the substance (not-advice
+    framing, professional-consultation caveat, source/limitation caveat) be
+    present, and explicitly leaves final template wording an open decision
+    pending ratification)."""
     if not disclaimer_required:
         return answer_text
 
     disclaimer = (
         "\n\n---\n"
-        "⚠️ **Kriton™ Disclaimer**: This response is provided for educational and informational "
-        "purposes only under source-governed retrieval. It does not constitute professional "
-        "accounting, tax, audit or legal advice. Always consult a qualified professional "
-        "before acting on any guidance. Sources cited reflect available documentation at "
-        "the time of retrieval and may not represent the latest effective standards."
+        "⚠️ **Kriton™ Disclaimer**: Educational information only, not professional "
+        "accounting, tax, audit, or legal advice — consult a qualified professional "
+        "before acting. Sources reflect documentation available at retrieval time "
+        "and may not reflect the latest standards."
     )
     return answer_text + disclaimer

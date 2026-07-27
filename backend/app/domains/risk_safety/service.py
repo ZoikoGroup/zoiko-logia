@@ -16,10 +16,10 @@ from app.domains.risk_safety import refusal_templates
 from app.domains.risk_safety import professional_boundary
 from app.domains.risk_safety.models import (
     RiskLevel, RestrictedSubClass, Route,
-    EscalationCase, EscalationStatus, SafetyOverride, SafetyEvent,
+    EscalationCase, EscalationStatus, SafetyOverride, SafetyEvent, EmergencySafetyBlock,
     _new_id, _utcnow,
 )
-from app.domains.risk_safety.schemas import SafetyDecision, ClassifyRequest
+from app.domains.risk_safety.schemas import SafetyDecision, ClassifyRequest, EmergencyBlockCreateRequest
 
 
 _SLA_HOURS = {
@@ -41,6 +41,20 @@ def pre_screen(request: ClassifyRequest, db: Optional[Session] = None) -> Option
     passes (caller should proceed to retrieval + evaluate()); returns a
     finalized SafetyDecision if it hard-blocks, in which case retrieval and
     full classification must be skipped entirely."""
+    # Emergency block check (ZL-T0-04 §14) runs first — it's meant to stop
+    # a query cold regardless of what the deterministic/ML checks below
+    # would otherwise decide, and only this wrapper (not risk_classifier's
+    # own pure pre_screen()) has db access to check it against.
+    if db is not None:
+        blocked = check_emergency_blocks(db, request.query)
+        if blocked is not None:
+            result = risk_classifier._decision(
+                risk_classifier._new_query_id(), False, RiskLevel.RESTRICTED, Route.REFUSAL, 1.0,
+                ["l0-emergency-block-active"],
+                [f"Blocked by an active emergency safety block: {blocked.reason}"],
+            )
+            return _finalize(request, result, db)
+
     result = risk_classifier.pre_screen(
         query=request.query,
         jurisdiction=request.jurisdiction,
@@ -130,7 +144,7 @@ def _finalize(request: ClassifyRequest, result: dict, db: Optional[Session] = No
     )
 
 
-def validate_output(text: str, db: Optional[Session] = None, answer_id: str = "ans-sim") -> dict:
+def validate_output(text: str, db: Optional[Session] = None, answer_id: str = "ans-sim", tenant_id: str = "default") -> dict:
     is_safe, violations = professional_boundary.validate(text)
 
     violation_dicts = [{"phrase": v.phrase_matched, "category": v.category, "severity": v.severity} for v in violations]
@@ -142,6 +156,7 @@ def validate_output(text: str, db: Optional[Session] = None, answer_id: str = "a
         if db:
             db.add(SafetyEvent(
                 event_type="professional_boundary_notice_applied",
+                tenant_id=tenant_id,
                 payload={
                     "answer_id": answer_id,
                     "boundary_type": "soft",
@@ -157,6 +172,7 @@ def validate_output(text: str, db: Optional[Session] = None, answer_id: str = "a
         if db:
             db.add(SafetyEvent(
                 event_type="unsafe_output_blocked",
+                tenant_id=tenant_id,
                 payload={
                     "answer_id": answer_id,
                     "validator_id": "prof_boundary_v1",
@@ -192,6 +208,7 @@ def resolve_escalation(
     if reviewer_id and case.owner and reviewer_id.strip().lower() == case.owner.strip().lower():
         db.add(SafetyEvent(
             event_type="maker_checker_violation_blocked",
+            tenant_id=case.tenant_id,
             payload={
                 "object_type": "escalation_case",
                 "object_id": case_id,
@@ -223,6 +240,7 @@ def resolve_escalation(
     db.add(SafetyEvent(
         event_type="human_review_decision_recorded",
         query_id=case.query_id,
+        tenant_id=case.tenant_id,
         payload={
             "case_id": case_id,
             "reviewer_id": reviewer_id,
@@ -278,6 +296,7 @@ def create_safety_override(db: Session, payload) -> SafetyOverride:
     now = _utcnow()
     override = SafetyOverride(
         id=_new_id("ovr-"),
+        tenant_id=payload.tenant_id,
         actor_id=payload.actor_id,
         authority_role=payload.authority_role,
         original_route=payload.original_route,
@@ -292,6 +311,7 @@ def create_safety_override(db: Session, payload) -> SafetyOverride:
     db.add(override)
     db.add(SafetyEvent(
         event_type="safety_override_applied",
+        tenant_id=payload.tenant_id,
         payload={
             "override_id": override.id,
             "actor_id": payload.actor_id,
@@ -317,6 +337,125 @@ def list_safety_overrides(db: Session, active_only: bool = True) -> list[SafetyO
         now = _utcnow()
         query = query.filter(SafetyOverride.is_active == True, SafetyOverride.expires_at > now)
     return query.all()
+
+
+# ── Emergency Safety Block (ZL-T0-04 §14) ────────────────────────────────────
+# Was a fully unused model before this — no service function ever created,
+# checked, or disposed of one. Wired in now: create_emergency_block() +
+# check_emergency_blocks() (called from pre_screen() below, the one place
+# in the live request path that already has db access before retrieval).
+
+def create_emergency_block(db: Session, payload: EmergencyBlockCreateRequest) -> EmergencySafetyBlock:
+    """§14: narrowing-only, time-bounded (max 72h), maker-checker enforced —
+    same discipline as create_safety_override(), which this mirrors."""
+    if payload.invoker.strip().lower() == payload.approver.strip().lower():
+        raise ValueError(
+            "Maker-Checker violation: the invoker cannot also be the approver "
+            "of an emergency safety block (ZL-T0-04 §14, same principle as §10.2)."
+        )
+    duration = min(payload.duration_hours, 72)  # Hard cap at spec maximum
+    now = _utcnow()
+    block = EmergencySafetyBlock(
+        id=_new_id("blk-"),
+        invoker=payload.invoker,
+        approver=payload.approver,
+        scope=payload.scope,
+        reason=payload.reason,
+        created_at=now,
+        expires_at=now + timedelta(hours=duration),
+        is_active=True,
+    )
+    db.add(block)
+    db.add(SafetyEvent(
+        event_type="emergency_safety_block_invoked",
+        payload={
+            "block_id": block.id,
+            "invoker": payload.invoker,
+            "approver": payload.approver,
+            "scope": payload.scope,
+            "reason": payload.reason,
+            "expires_at": block.expires_at.isoformat(),
+            "payload_schema_version": "1.0",
+        },
+    ))
+    db.commit()
+    db.refresh(block)
+    return block
+
+
+def list_emergency_blocks(db: Session, active_only: bool = True) -> list[EmergencySafetyBlock]:
+    query = db.query(EmergencySafetyBlock).order_by(EmergencySafetyBlock.created_at.desc())
+    if active_only:
+        now = _utcnow()
+        query = query.filter(EmergencySafetyBlock.is_active == True, EmergencySafetyBlock.expires_at > now)
+    return query.all()
+
+
+def dispose_emergency_block(
+    db: Session, block_id: str, reviewer: str, disposition: str = "released"
+) -> Optional[EmergencySafetyBlock]:
+    """Manual early release/rollback — the other half of §15's
+    emergency_safety_block_disposed event, alongside the automatic
+    expiry path in _expire_stale_emergency_blocks() below."""
+    block = db.query(EmergencySafetyBlock).filter(EmergencySafetyBlock.id == block_id).first()
+    if block is None:
+        return None
+    block.is_active = False
+    block.disposed_at = _utcnow()
+    block.disposition = disposition
+    block.reviewer = reviewer
+    db.add(SafetyEvent(
+        event_type="emergency_safety_block_disposed",
+        payload={
+            "block_id": block.id,
+            "disposition": disposition,
+            "reviewer": reviewer,
+            "payload_schema_version": "1.0",
+        },
+    ))
+    db.commit()
+    db.refresh(block)
+    return block
+
+
+def _expire_stale_emergency_blocks(db: Session) -> None:
+    """Lazily disposes any block past its expires_at that's still marked
+    active — called at the start of check_emergency_blocks() so an expired
+    block both stops matching AND gets its required disposed audit event,
+    without needing a background scheduler for a 72-hour-max control."""
+    now = _utcnow()
+    stale = db.query(EmergencySafetyBlock).filter(
+        EmergencySafetyBlock.is_active == True, EmergencySafetyBlock.expires_at <= now,
+    ).all()
+    for block in stale:
+        block.is_active = False
+        block.disposed_at = now
+        block.disposition = "expired"
+        block.reviewer = "system"
+        db.add(SafetyEvent(
+            event_type="emergency_safety_block_disposed",
+            payload={
+                "block_id": block.id, "disposition": "expired", "reviewer": "system",
+                "payload_schema_version": "1.0",
+            },
+        ))
+    if stale:
+        db.commit()
+
+
+def check_emergency_blocks(db: Session, query: str) -> Optional[EmergencySafetyBlock]:
+    """Returns the first active emergency block whose scope keyword/phrase
+    appears in the query text, or None. Called from pre_screen() before any
+    other check — an emergency block is meant to stop a query cold,
+    regardless of what the deterministic/ML classification would otherwise
+    decide."""
+    _expire_stale_emergency_blocks(db)
+    lowered = query.lower()
+    active = list_emergency_blocks(db, active_only=True)
+    for block in active:
+        if block.scope.strip().lower() in lowered:
+            return block
+    return None
 
 
 def _create_escalation(db: Session, request: ClassifyRequest, result: dict) -> None:

@@ -35,7 +35,6 @@ import {
   MoreVertical,
   Pencil,
   PenLine,
-  Pin,
   Plus,
   Search,
   ShieldAlert,
@@ -45,7 +44,19 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { askKriton, getAuthToken, ApiError, uploadDocument, type AskKritonResponse } from "@/lib/api";
+import {
+  askKriton,
+  getAuthToken,
+  ApiError,
+  uploadDocument,
+  listConversations,
+  getConversation,
+  renameConversation,
+  deleteConversation,
+  type AskKritonResponse,
+  type ConversationSummary,
+  type ChatMessage,
+} from "@/lib/api";
 import { useTypewriter } from "@/hooks/useTypewriter";
 
 // Web Speech API — not part of TypeScript's default DOM lib.
@@ -73,11 +84,6 @@ declare global {
 }
 
 type RiskLevel = "ZERO" | "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
-
-type RecentEntry = { id: string; text: string; pinned: boolean };
-
-const RECENTS_STORAGE_KEY = "kriton_recent_queries";
-const MAX_RECENTS = 12;
 
 const JURISDICTIONS = ["", "UK", "US", "US-CA", "IFRS", "UAE", "India", "EU"];
 
@@ -441,7 +447,8 @@ export default function AskKritonPage() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadStatus, setUploadStatus] = useState<"idle" | "uploading" | "ingested" | "error">("idle");
   const [uploadMsg, setUploadMsg] = useState("");
-  const [recents, setRecents] = useState<RecentEntry[]>([]);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
@@ -454,81 +461,104 @@ export default function AskKritonPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [turns]);
 
-  useEffect(() => {
+  async function refreshConversations() {
+    const token = getAuthToken();
+    if (!token) return;
     try {
-      const stored = window.localStorage.getItem(RECENTS_STORAGE_KEY);
-      if (!stored) return;
-      const parsed = JSON.parse(stored);
-      if (!Array.isArray(parsed)) return;
-      // Older sessions stored plain strings — upgrade them in place.
-      const normalized: RecentEntry[] = parsed.map((item, i) =>
-        typeof item === "string" ? { id: `legacy-${i}-${Date.now()}`, text: item, pinned: false } : item
-      );
-      setRecents(normalized);
+      setConversations(await listConversations(token));
     } catch {
-      // localStorage unavailable (private browsing, etc.) — recents just won't persist.
+      // Sidebar list is best-effort — a failed refresh just leaves the
+      // previous list showing, never blocks the chat itself.
     }
+  }
+
+  useEffect(() => {
+    refreshConversations();
   }, []);
 
-  function persistRecents(next: RecentEntry[]) {
+  /** Rebuild a synthetic AskKritonResponse from a stored ChatMessage — the
+   * DB only keeps role/content/route/risk_level (see chat_history.models),
+   * not the full live-response shape (citations, source_bundle detail),
+   * so a reopened conversation renders text + risk badge faithfully but
+   * without re-fetching citations. */
+  function responseFromMessage(msg: ChatMessage, conversationId: string): AskKritonResponse {
+    const route = (msg.route ?? "LLM") as AskKritonResponse["route"];
+    const outcome: AskKritonResponse["outcome"] =
+      route === "REFUSAL" ? "refused"
+      : route === "CLARIFICATION" ? "clarification_required"
+      : route === "HUMAN_REVIEW" || route === "SECURITY_INCIDENT" ? "escalated"
+      : route === "REJECTED" ? "rejected"
+      : "answered";
+    const answered = outcome === "answered";
+    return {
+      query_id: msg.id,
+      correlation_id: "",
+      outcome,
+      route,
+      safety: { risk_level: (msg.risk_level ?? "LOW") as AskKritonResponse["safety"]["risk_level"], policy_state: "allowed", disclaimer_required: false },
+      confidence_state: "sufficient",
+      source_bundle: null,
+      answer: answered ? { text: msg.content, citations: msg.citations ?? [], limitations: [] } : null,
+      next_action: answered ? null : { type: "history", message: msg.content },
+      audit_reference: { audit_chain_id: "" },
+      conversation_id: conversationId,
+    };
+  }
+
+  async function openConversation(id: string) {
+    const token = getAuthToken();
+    if (!token) return;
+    setOpenMenuId(null);
     try {
-      window.localStorage.setItem(RECENTS_STORAGE_KEY, JSON.stringify(next));
-    } catch {
-      // ignore write failures
+      const detail = await getConversation(token, id);
+      const paired: ConversationTurn[] = [];
+      for (const msg of detail.messages) {
+        if (msg.role === "user") {
+          paired.push({ id: msg.id, query: msg.content, loading: false, error: "", result: null });
+        } else if (paired.length > 0) {
+          paired[paired.length - 1].result = responseFromMessage(msg, id);
+        }
+      }
+      setTurns(paired);
+      setActiveConversationId(id);
+      setQuery("");
+      setFormError("");
+    } catch (err) {
+      setFormError(err instanceof ApiError ? err.message : "Could not load that conversation.");
     }
   }
 
-  function addRecent(q: string) {
-    setRecents((prev) => {
-      const withoutDup = prev.filter((r) => r.text !== q);
-      const entry: RecentEntry = { id: `r-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, text: q, pinned: false };
-      const pinned = withoutDup.filter((r) => r.pinned);
-      const unpinned = withoutDup.filter((r) => !r.pinned);
-      const next = [...pinned, entry, ...unpinned].slice(0, MAX_RECENTS);
-      persistRecents(next);
-      return next;
-    });
-  }
-
-  function togglePin(id: string) {
-    setRecents((prev) => {
-      const toggled = prev.map((r) => (r.id === id ? { ...r, pinned: !r.pinned } : r));
-      const next = [...toggled.filter((r) => r.pinned), ...toggled.filter((r) => !r.pinned)];
-      persistRecents(next);
-      return next;
-    });
-    setOpenMenuId(null);
-  }
-
-  function deleteRecent(id: string) {
-    setRecents((prev) => {
-      const next = prev.filter((r) => r.id !== id);
-      persistRecents(next);
-      return next;
-    });
-    setOpenMenuId(null);
-  }
-
-  function startRename(entry: RecentEntry) {
-    setEditingId(entry.id);
-    setEditText(entry.text);
-    setOpenMenuId(null);
-  }
-
-  function commitRename(id: string) {
+  async function renameConversationEntry(id: string) {
+    const token = getAuthToken();
     const trimmed = editText.trim();
-    setRecents((prev) => {
-      const next = prev.map((r) => (r.id === id ? { ...r, text: trimmed || r.text } : r));
-      persistRecents(next);
-      return next;
-    });
     setEditingId(null);
+    if (!token || !trimmed) return;
+    try {
+      const updated = await renameConversation(token, id, trimmed);
+      setConversations((prev) => prev.map((c) => (c.id === id ? updated : c)));
+    } catch {
+      // best-effort — sidebar just keeps the old title on failure
+    }
+  }
+
+  async function deleteConversationEntry(id: string) {
+    setOpenMenuId(null);
+    const token = getAuthToken();
+    if (!token) return;
+    try {
+      await deleteConversation(token, id);
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+      if (activeConversationId === id) startNewChat();
+    } catch {
+      // best-effort — entry just stays in the sidebar on failure
+    }
   }
 
   function startNewChat() {
     setTurns([]);
     setQuery("");
     setFormError("");
+    setActiveConversationId(null);
   }
 
   function toggleVoiceInput() {
@@ -596,7 +626,6 @@ export default function AskKritonPage() {
     }
     setFormError("");
     setQuery("");
-    addRecent(trimmed);
 
     const turnId = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setTurns((prev) => [...prev, { id: turnId, query: trimmed, loading: true, error: "", result: null }]);
@@ -614,10 +643,21 @@ export default function AskKritonPage() {
           jurisdiction,
           mode: "Workflow",
           history,
+          conversation_id: activeConversationId,
         },
         idempotencyKey,
       );
       setTurns((prev) => prev.map((t) => (t.id === turnId ? { ...t, loading: false, result: response } : t)));
+      if (response.conversation_id) {
+        const isNewConversation = response.conversation_id !== activeConversationId;
+        setActiveConversationId(response.conversation_id);
+        if (isNewConversation) refreshConversations();
+        else setConversations((prev) => {
+          const bumped = prev.find((c) => c.id === response.conversation_id);
+          if (!bumped) return prev;
+          return [{ ...bumped, updated_at: new Date().toISOString() }, ...prev.filter((c) => c.id !== response.conversation_id)];
+        });
+      }
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Could not reach the orchestration service.";
       setTurns((prev) => prev.map((t) => (t.id === turnId ? { ...t, loading: false, error: message } : t)));
@@ -652,20 +692,25 @@ export default function AskKritonPage() {
             <SidebarItem icon={BookOpen} label="Sources" href="/source-licensing" />
           </nav>
 
-          {recents.length > 0 ? (
+          {conversations.length > 0 ? (
             <div className="mt-6 flex min-h-0 flex-1 flex-col px-5">
-              <p className="mb-2 text-xs font-bold text-muted">Recents</p>
+              <p className="mb-2 text-xs font-bold text-muted">Chats</p>
               <div className="min-h-0 space-y-0.5 overflow-y-auto pr-1">
-                {recents.map((entry) => (
-                  <div key={entry.id} className="group relative flex items-center rounded-lg hover:bg-soft">
+                {conversations.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className={`group relative flex items-center rounded-lg hover:bg-soft ${
+                      activeConversationId === entry.id ? "bg-soft" : ""
+                    }`}
+                  >
                     {editingId === entry.id ? (
                       <input
                         autoFocus
                         value={editText}
                         onChange={(e) => setEditText(e.target.value)}
-                        onBlur={() => commitRename(entry.id)}
+                        onBlur={() => renameConversationEntry(entry.id)}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter") commitRename(entry.id);
+                          if (e.key === "Enter") renameConversationEntry(entry.id);
                           if (e.key === "Escape") setEditingId(null);
                         }}
                         className="h-9 w-full rounded-lg border border-brand/40 bg-panel px-2 text-sm text-ink outline-none"
@@ -674,11 +719,10 @@ export default function AskKritonPage() {
                       <>
                         <button
                           type="button"
-                          onClick={() => setQuery(entry.text)}
+                          onClick={() => openConversation(entry.id)}
                           className="flex h-9 min-w-0 flex-1 items-center gap-1.5 truncate rounded-lg px-2 text-left text-sm font-medium text-muted hover:text-ink"
                         >
-                          {entry.pinned && <Pin size={11} className="shrink-0 text-brand" />}
-                          <span className="truncate">{entry.text}</span>
+                          <span className="truncate">{entry.title}</span>
                         </button>
                         <button
                           type="button"
@@ -695,21 +739,18 @@ export default function AskKritonPage() {
                       <div className="absolute right-0 top-9 z-20 w-40 overflow-hidden rounded-xl border border-line bg-panel py-1 shadow-lg">
                         <button
                           type="button"
-                          onClick={() => togglePin(entry.id)}
-                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-soft"
-                        >
-                          <Pin size={13} /> {entry.pinned ? "Unpin" : "Pin"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => startRename(entry)}
+                          onClick={() => {
+                            setEditingId(entry.id);
+                            setEditText(entry.title);
+                            setOpenMenuId(null);
+                          }}
                           className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-soft"
                         >
                           <Pencil size={13} /> Rename
                         </button>
                         <button
                           type="button"
-                          onClick={() => deleteRecent(entry.id)}
+                          onClick={() => deleteConversationEntry(entry.id)}
                           className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-bad hover:bg-bad/10"
                         >
                           <Trash2 size={13} /> Delete

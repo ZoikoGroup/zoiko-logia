@@ -23,10 +23,18 @@ class WorldBankConnector(LiveSourceConnector):
         self.base_url = base_url.rstrip("/")
 
     async def fetch(self, intent: LiveDataIntent, *, timeout: float, client: httpx.AsyncClient | None = None) -> NormalizedResponse:
-        # mrnev=1 = "most recent non-empty value" — answers "what is X's
-        # current value" without any date-range logic here.
+        # World Bank's own mrnev=1 ("most recent non-empty value") param
+        # started returning a bare 500-style "Request Error" HTML page from
+        # their server sometime this session — confirmed by reproducing the
+        # exact same request with and without mrnev=1 directly against the
+        # live API: identical URL minus that one param returns normal JSON.
+        # The API returns observations in descending-date order by default
+        # (confirmed: per_page=5 came back 2025, 2024, 2023...), so fetching
+        # a handful of recent periods and picking the first non-null value
+        # client-side reproduces mrnev's own behavior without depending on
+        # whatever is currently broken server-side for that parameter.
         url = f"{self.base_url}/country/{intent.country_code}/indicator/{intent.indicator_code}"
-        params = {"format": "json", "per_page": "1", "mrnev": "1"}
+        params = {"format": "json", "per_page": "6"}
 
         if client is not None:
             response = await client.get(url, params=params)
@@ -39,10 +47,10 @@ class WorldBankConnector(LiveSourceConnector):
         if not isinstance(body, list) or len(body) < 2 or not body[1]:
             raise ValueError(f"World Bank API returned no observations for {intent.indicator_code}/{intent.country_code}")
 
-        observation = body[1][0]
-        value = observation.get("value")
-        if value is None:
+        observation = next((obs for obs in body[1] if obs.get("value") is not None), None)
+        if observation is None:
             raise ValueError(f"World Bank API has no non-empty value for {intent.indicator_code}/{intent.country_code}")
+        value = observation["value"]
 
         country_label = (observation.get("country") or {}).get("value", intent.country_label)
         period = observation.get("date", "unknown")

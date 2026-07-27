@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 
+from app.domains.massarius.calculation_engine import extract_and_verify_calculations
 from app.domains.massarius.errors import ValidationFailed
 from app.orchestration.schemas import SourceBundle, ValidationResult
 
@@ -72,7 +73,7 @@ def validate_answer_or_raise(
     disclaimer_required: bool = False,
 ) -> None:
     """
-    Run all seven Checkpoint C checks. Raises ValidationFailed listing every
+    Run all eight Checkpoint C checks. Raises ValidationFailed listing every
     failure (not just the first) if any check fails. Returns None on success.
     """
     failures: list[str] = []
@@ -144,6 +145,20 @@ def validate_answer_or_raise(
             f"Licence exposure detected: internal_reasoning_only source(s) {exposed} "
             f"appear in the answer text, citations, or metadata."
         )
+
+    # 8. Deterministic calculation check (Master Architecture Build Doctrine
+    # §3: "amounts... must be produced or validated by deterministic
+    # services," not trusted from the LLM's own arithmetic outright).
+    # grounded_input already instructs the model to show its formula and
+    # substituted values — this recomputes every "<formula> = <result>" it
+    # wrote with a safe, whitelisted evaluator and flags any mismatch.
+    for check in extract_and_verify_calculations(answer_text):
+        if not check.matches:
+            failures.append(
+                f"Calculation error detected: '{check.formula} = {check.stated_result}' "
+                f"does not match the independently recomputed result "
+                f"({check.computed_result})."
+            )
 
     if failures:
         has_prohibited_or_exposure = any(

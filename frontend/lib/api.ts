@@ -501,6 +501,8 @@ export type AskKritonRequest = {
   mode?: string;
   /** Prior user queries this conversation, most recent last — never the composed answers. */
   history?: string[];
+  /** Which persisted conversation to append this turn to — omit/null to start a new one. */
+  conversation_id?: string | null;
   /** Playground overrides — not trusted from body in production */
   source_confidence?: string;
   pre_bundle_state?: string;
@@ -601,6 +603,10 @@ export type AskKritonResponse = {
   next_action: NextAction | null;
   /** Opaque — never expose audit_chain_id internals to UI rendering logic */
   audit_reference: AuditReference;
+  /** Set by the backend after ask_kriton() returns — the persisted
+   * conversation this turn was recorded into (see app/domains/chat_history).
+   * Pass it back on the next AskKritonRequest to continue the same thread. */
+  conversation_id: string | null;
 };
 
 export async function askKriton(
@@ -616,6 +622,52 @@ export async function askKriton(
     body: JSON.stringify(payload),
   });
   return res.json();
+}
+
+export type ConversationSummary = {
+  id: string;
+  title: string;
+  jurisdiction: string;
+  mode: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  route: string | null;
+  risk_level: string | null;
+  citations: SourceCitation[] | null;
+  created_at: string;
+};
+
+export type ConversationDetail = ConversationSummary & {
+  messages: ChatMessage[];
+};
+
+export async function listConversations(token: string): Promise<ConversationSummary[]> {
+  const res = await authedFetch("/conversations", token);
+  return res.json();
+}
+
+export async function getConversation(token: string, id: string): Promise<ConversationDetail> {
+  const res = await authedFetch(`/conversations/${id}`, token);
+  return res.json();
+}
+
+export async function renameConversation(token: string, id: string, title: string): Promise<ConversationSummary> {
+  const res = await authedFetch(`/conversations/${id}`, token, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  return res.json();
+}
+
+export async function deleteConversation(token: string, id: string): Promise<void> {
+  await authedFetch(`/conversations/${id}`, token, { method: "DELETE" });
 }
 
 export type SavedAnswer = {

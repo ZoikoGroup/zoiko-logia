@@ -30,6 +30,9 @@ from app.domains.risk_safety.schemas import (
     EscalationStatsOut,
     SafetyOverrideOut,
     OverrideRequest,
+    EmergencyBlockOut,
+    EmergencyBlockCreateRequest,
+    EmergencyBlockDisposeRequest,
 )
 from app.domains.risk_safety.models import RiskPolicy, SafetyEvent
 
@@ -53,6 +56,7 @@ def classify_query(request: ClassifyRequest, db: Session = Depends(get_sync_db))
 
 class ValidateOutputRequest(BaseModel):
     text: str
+    tenant_id: str = "default"
 
 
 @router.post("/validate-output")
@@ -63,7 +67,7 @@ def validate_output(request: ValidateOutputRequest):
     Scans for prohibited professional assertions and returns cleaned text
     with appropriate disclaimers appended.
     """
-    return safety_service.validate_output(request.text)
+    return safety_service.validate_output(request.text, tenant_id=request.tenant_id)
 
 
 # ─── Escalation Queue ───────────────────────────────────────────────────────
@@ -121,6 +125,43 @@ def create_safety_override(
 ):
     """Create a new time-bounded safety override."""
     return safety_service.create_safety_override(db, request)
+
+
+# ─── Emergency Safety Blocks (ZL-T0-04 §14) ─────────────────────────────────
+
+@router.get("/emergency-blocks", response_model=list[EmergencyBlockOut])
+def list_emergency_blocks(
+    active_only: bool = True,
+    db: Session = Depends(get_sync_db),
+):
+    """List emergency safety blocks."""
+    return safety_service.list_emergency_blocks(db, active_only=active_only)
+
+
+@router.post("/emergency-blocks", response_model=EmergencyBlockOut)
+def create_emergency_block(
+    request: EmergencyBlockCreateRequest,
+    db: Session = Depends(get_sync_db),
+):
+    """Create a new time-bounded (max 72h) emergency safety block. invoker
+    and approver must be different people (maker-checker, ZL-T0-04 §14)."""
+    try:
+        return safety_service.create_emergency_block(db, request)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/emergency-blocks/{block_id}/dispose", response_model=EmergencyBlockOut)
+def dispose_emergency_block(
+    block_id: str,
+    request: EmergencyBlockDisposeRequest,
+    db: Session = Depends(get_sync_db),
+):
+    """Manually release or roll back an emergency block before its natural expiry."""
+    block = safety_service.dispose_emergency_block(db, block_id, request.reviewer, request.disposition)
+    if block is None:
+        raise HTTPException(status_code=404, detail="Emergency safety block not found")
+    return block
 
 
 # ─── Risk Policies ──────────────────────────────────────────────────────────

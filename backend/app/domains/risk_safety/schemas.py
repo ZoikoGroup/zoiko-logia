@@ -119,6 +119,7 @@ class OverrideRequest(BaseModel):
     new_route: str
     scope: str
     reason: str
+    tenant_id: str = Field(default="default")
     duration_hours: int = Field(default=24, le=72, description="Max 72 hours per ZL-T0-04 §10.1")
 
 
@@ -134,6 +135,39 @@ class SafetyOverrideOut(BaseModel):
     expires_at: datetime
     post_action_review_due: Optional[datetime] = None
     is_active: bool
+
+    model_config = {"from_attributes": True}
+
+
+class EmergencyBlockCreateRequest(BaseModel):
+    """Request to create a time-bounded emergency safety block (ZL-T0-04 §14).
+    `scope` is a freeform keyword/phrase matched against query text — see
+    the EmergencySafetyBlock model docstring for why this stays freeform
+    rather than an enum the spec never defines."""
+    invoker: str
+    approver: str
+    scope: str
+    reason: str
+    duration_hours: int = Field(default=24, le=72, description="Max 72 hours per ZL-T0-04 §14")
+
+
+class EmergencyBlockDisposeRequest(BaseModel):
+    reviewer: str
+    disposition: str = Field(default="released", description="released | rolled_back")
+
+
+class EmergencyBlockOut(BaseModel):
+    id: str
+    invoker: str
+    approver: str
+    scope: str
+    reason: str
+    created_at: datetime
+    expires_at: datetime
+    is_active: bool
+    disposed_at: Optional[datetime] = None
+    disposition: Optional[str] = None
+    reviewer: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

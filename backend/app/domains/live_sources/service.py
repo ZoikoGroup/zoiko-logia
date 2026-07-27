@@ -22,8 +22,10 @@ from app.domains.live_sources.classifier import (
     company_lookup_needs_llm_fallback,
     detect_company_lookup_intent,
     detect_live_data_intent,
+    live_data_needs_llm_fallback,
+    resolve_live_data_intent_from_llm_guess,
 )
-from app.domains.live_sources.llm_fallback import extract_company_name_via_llm
+from app.domains.live_sources.llm_fallback import extract_company_name_via_llm, extract_live_data_intent_via_llm
 from app.domains.live_sources.connectors.bank_of_england import BankOfEnglandConnector
 from app.domains.live_sources.connectors.companies_house import CompaniesHouseConnector
 from app.domains.live_sources.connectors.fred import FREDConnector
@@ -57,11 +59,29 @@ from app.domains.live_sources.http_client import get_shared_http_client
 
 
 async def fetch_live_data(db: AsyncSession, *, query: str, tenant_id: str, jurisdiction: str = "") -> LiveFetchOutcome:
+    # Tier 0/1: keyword + semantic exemplar matching (classifier.py) —
+    # handles the large majority of queries at near-zero latency and cost.
+    intent = detect_live_data_intent(query, jurisdiction=jurisdiction)
+
+    # Tier 2: LLM-reasoning fallback, only reached when Tier 0/1 either
+    # found nothing at all, or found a real indicator but silently
+    # defaulted the country to "World" (see
+    # classifier.py's live_data_needs_llm_fallback() for the exact two
+    # cases). Tier 3 validation happens inside
+    # resolve_live_data_intent_from_llm_guess() — the LLM's guess is never
+    # routed to directly, so a failed/malformed call or an unsupported
+    # country/indicator just leaves `intent` exactly as Tier 0/1 left it,
+    # never worse.
+    if live_data_needs_llm_fallback(query, jurisdiction, existing_intent=intent):
+        llm_result = await extract_live_data_intent_via_llm(query)
+        corrected = resolve_live_data_intent_from_llm_guess(llm_result, jurisdiction, existing_intent=intent)
+        if corrected is not None:
+            intent = corrected
+
     # Company lookup ("tell me about company X") is a different question
-    # than country+indicator — tried second, only if the first finds
+    # than country+indicator — tried third, only if the above finds
     # nothing, never both (see classifier.py's detect_company_lookup_intent
     # docstring for why this stays a separate function).
-    intent = detect_live_data_intent(query, jurisdiction=jurisdiction)
     if intent is None:
         intent = detect_company_lookup_intent(query, jurisdiction=jurisdiction)
     if intent is None and company_lookup_needs_llm_fallback(query, jurisdiction=jurisdiction):
@@ -132,6 +152,38 @@ def to_source_summary(normalized: NormalizedResponse) -> SourceSummary:
     )
 
 
+def _format_value(value) -> str:
+    """Human-readable rendering of a raw connector value before it ever
+    enters the model's context — confirmed real failure: World Bank's
+    GDP-in-current-US$ value (a Python float like 3956067115771.6304)
+    landed in context completely unformatted, and the model — correctly
+    following the "cite figures from context, never invent your own" rule
+    — dutifully quoted it verbatim as "$3,956,067,115,771.63" in the final
+    answer. Fixing the model's phrasing alone can't solve this: the
+    instruction not to alter retrieved figures is exactly what makes
+    fixing the number AT THE SOURCE the right layer, not the prompt layer.
+
+    World Bank sets unit="" for every indicator (confirmed: grep across
+    every connector), so unit can't be used to distinguish "this is a
+    percentage" from "this is a dollar figure" — scale is the only signal
+    that generalizes across all 9 connectors without per-indicator special
+    cases. Values under 1000 (every percentage/rate/index this system
+    handles) just get capped to 2 decimal places; anything bigger gets a
+    human-scale suffix instead of raw digits."""
+    if not isinstance(value, (int, float)):
+        return str(value)
+    abs_value = abs(value)
+    if abs_value >= 1_000_000_000_000:
+        return f"{value / 1_000_000_000_000:,.2f} trillion"
+    if abs_value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:,.2f} billion"
+    if abs_value >= 1_000_000:
+        return f"{value / 1_000_000:,.2f} million"
+    if abs_value >= 1000:
+        return f"{value:,.2f}"
+    return f"{value:.2f}"
+
+
 def to_synthetic_chunk(normalized: NormalizedResponse, summary: SourceSummary) -> dict:
     """Shape-matches the dict app.domains.rag.retrieval.retrieve_documents()
     returns for a real vector chunk, so it can ride through the existing
@@ -140,7 +192,7 @@ def to_synthetic_chunk(normalized: NormalizedResponse, summary: SourceSummary) -
     chunk['metadata']['title'/'version'/'jurisdiction'/'file_path'])."""
     text = (
         f"{normalized.indicator_label} for {normalized.country_label} "
-        f"({normalized.observation_period}): {normalized.value}"
+        f"({normalized.observation_period}): {_format_value(normalized.value)}"
         + (f" {normalized.unit}" if normalized.unit else "")
     )
     return {

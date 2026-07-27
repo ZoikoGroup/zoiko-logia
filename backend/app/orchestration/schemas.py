@@ -17,6 +17,9 @@ class AskKritonRequest(BaseModel):
     query: str
     jurisdiction: str = ""
     mode: str = "Workflow"
+    # Which persisted conversation this turn belongs to (see
+    # app/domains/chat_history) — omitted/None starts a new conversation.
+    conversation_id: Optional[str] = None
     # Prior user queries in this conversation, most recent last — NOT the
     # composed answers (those carry disclaimer/citation text that has no
     # business re-entering the grounded prompt as "context"). Populated by
@@ -207,3 +210,8 @@ class AskKritonResponse(BaseModel):
     answer: Optional[ComposedAnswer] = None
     next_action: Optional[NextAction] = None
     audit_reference: AuditReference
+    # Populated by the orchestration router after ask_kriton() returns (see
+    # chat_history.service.resolve_conversation) — never set inside
+    # ask_kriton() itself, so none of its many return branches need to know
+    # about conversation persistence.
+    conversation_id: Optional[str] = None

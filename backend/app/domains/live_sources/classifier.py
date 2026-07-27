@@ -75,6 +75,15 @@ _COUNTRY_ALIASES: dict[str, tuple[str, str]] = {
     "us-ca": ("US", "United States"),
     "united kingdom": ("GB", "United Kingdom"),
     "uk": ("GB", "United Kingdom"),
+    # Common real-world synonyms for the UK missed until a real query
+    # ("How many people are out of work in Britain right now?") silently
+    # defaulted to World Bank's WLD/"World" aggregate instead of GB —
+    # confirmed live. "england"/"scotland"/etc. deliberately NOT added here:
+    # those are constituent countries, not reliably synonymous with "UK" in
+    # every context, unlike "Britain"/"Great Britain" which colloquially
+    # always mean the UK.
+    "britain": ("GB", "United Kingdom"),
+    "great britain": ("GB", "United Kingdom"),
 }
 
 # Precompiled word-boundary patterns for scanning free-text queries — a
@@ -541,6 +550,170 @@ def detect_live_data_intent(query: str, jurisdiction: str = "") -> LiveDataInten
     if semantic_match is not None:
         return semantic_match
 
+    return None
+
+
+# ── Tier 2 (LLM reasoning fallback) + Tier 3 (validation) ────────────────────
+#
+# Generalizes the same shape already proven for company-name extraction
+# (llm_fallback.py) to country+indicator resolution. Reached in two cases:
+#   1. detect_live_data_intent() returned None outright (total miss).
+#   2. It returned a real indicator match but the country silently
+#      defaulted to _DEFAULT_COUNTRY ("WLD") — an indicator matched, but no
+#      known country alias was found in the query text (e.g. "Britain"
+#      before it was added to _COUNTRY_ALIASES above — confirmed live as a
+#      real, reported case: "How many people are out of work in Britain
+#      right now?" silently returned World Bank's global aggregate instead
+#      of the UK's own figure).
+#
+# Tier 3 is the critical safety property: the LLM's own guess is NEVER
+# routed to directly. Both fields get re-validated against the exact same
+# closed tables Tier 0/1 already use — _resolve_country_free_text() only
+# accepts a country already in _COUNTRY_ALIASES, and the indicator concept
+# only ever supplies a representative keyword string that gets fed through
+# _match_country_override()/_match_oecd_indicator()/the generic World Bank
+# keyword table, the SAME functions and SAME substring-matching semantics
+# Tier 0/1 already use. An invented country or an indicator Kriton has no
+# connector for can never produce a fabricated provider_key/indicator_code
+# this way — it just correctly falls through to None, same as any other
+# unmatched case in this module.
+
+# Representative keyword for each indicator concept the LLM may name —
+# reused as the "lowered" text fed into the existing keyword-matching
+# functions below, so a new concept never needs new routing code, only a
+# new entry here (same registry discipline as _COUNTRY_PROVIDER_OVERRIDES).
+_INDICATOR_CONCEPT_KEYWORDS: dict[str, str] = {
+    "gdp": "gdp",
+    "gdp_growth": "gdp growth",
+    "inflation": "inflation",
+    "unemployment": "unemployment",
+    "bank_rate": "bank rate",
+    "fed_funds_rate": "fed funds rate",
+    "treasury_yield": "treasury yield",
+    "corporate_tax_rate": "corporate tax rate",
+}
+
+# Reverse lookup from a World Bank indicator_code back to its concept, used
+# only in case 2 above (existing_intent already has a real indicator; we
+# only need to fix the country, not re-derive the indicator from scratch).
+# Precise by indicator_code rather than re-parsing indicator_label text, so
+# "GDP (current US$)" and "GDP growth (annual %)" — genuinely different
+# concepts that both contain the substring "gdp" — never get confused.
+_WORLD_BANK_CODE_TO_CONCEPT: dict[str, str] = {
+    "NY.GDP.MKTP.KD.ZG": "gdp_growth",
+    "NY.GDP.MKTP.CD": "gdp",
+    "FP.CPI.TOTL.ZG": "inflation",
+    "SL.UEM.TOTL.ZS": "unemployment",
+}
+
+# Soft gate for case 1 (total miss) only — cheap enough to check before
+# spending a real LLM call, without needing a second embedding-similarity
+# threshold to tune. Deliberately broader than any single indicator's own
+# keywords (e.g. "economy"/"growing"/"shrinking" catch phrasings like "How
+# is India's economy performing lately?" that name no indicator word at
+# all) — false positives here just cost one wasted LLM call, not a wrong
+# answer, since Tier 3 validation still gates what comes back.
+_ECONOMIC_CUE_WORDS = (
+    "gdp", "inflation", "unemployment", "economy", "economic", "growth",
+    "growing", "shrinking", "recession", "cost of living", "jobless",
+    "out of work", "interest rate", "tax rate", "yield", "employment",
+)
+
+
+def _resolve_country_free_text(country_guess: str | None) -> tuple[str, str] | None:
+    """Tier 3 validation for the LLM's free-text country guess. Word-
+    boundary substring match (not exact-equals) since the model may answer
+    "the United Kingdom" rather than the bare alias — but every match still
+    has to land on a literal entry in _COUNTRY_ALIASES, the same closed set
+    everything else in this module resolves against."""
+    if not country_guess:
+        return None
+    lowered = country_guess.lower()
+    for alias, value in _COUNTRY_ALIASES.items():
+        if re.search(rf"\b{re.escape(alias)}\b", lowered):
+            return value
+    return None
+
+
+def live_data_needs_llm_fallback(
+    query: str, jurisdiction: str, existing_intent: LiveDataIntent | None
+) -> bool:
+    """Gate before spending a real LLM call — mirrors
+    company_lookup_needs_llm_fallback()'s discipline of only firing when
+    it's actually worth the round trip."""
+    if existing_intent is not None:
+        # Case 2: an indicator already matched — the only thing worth
+        # asking the LLM to fix is a silently-defaulted country. Already a
+        # strong positive signal on its own; no extra cue-word gate needed.
+        return existing_intent.country_code == _DEFAULT_COUNTRY[0]
+
+    # Case 1: total miss. An explicit jurisdiction that doesn't map to a
+    # known country (UAE/IFRS/EU) must stay a hard None, never a query for
+    # the LLM to try substituting a country into — same "don't substitute"
+    # discipline detect_live_data_intent() already enforces for Tier 0/1.
+    if jurisdiction and _country_from_jurisdiction(jurisdiction) is None:
+        return False
+
+    lowered = query.lower()
+    return any(cue in lowered for cue in _ECONOMIC_CUE_WORDS)
+
+
+def resolve_live_data_intent_from_llm_guess(
+    llm_result: dict | None,
+    jurisdiction: str,
+    existing_intent: LiveDataIntent | None,
+) -> LiveDataIntent | None:
+    """Tier 3: validates the LLM's (country, indicator) guess against the
+    same closed tables Tier 0/1 use, then routes through the exact same
+    _match_country_override -> _match_oecd_indicator -> generic World Bank
+    chain — never a new, separate routing path. Returns None (never worse
+    than what Tier 0/1 already had) if either field can't be validated."""
+    if llm_result is None:
+        return None
+
+    if jurisdiction:
+        # An explicit jurisdiction still wins over the LLM's country guess,
+        # same priority rule as Tier 0/1 — and an unmapped one (UAE/IFRS/EU)
+        # was already filtered out by the gate above, so reaching here with
+        # a set jurisdiction means it resolves.
+        jurisdiction_country = _country_from_jurisdiction(jurisdiction)
+        if jurisdiction_country is None:
+            return None
+        country_code, country_label = jurisdiction_country
+    else:
+        resolved_country = _resolve_country_free_text(llm_result.get("country"))
+        if resolved_country is None:
+            return None
+        country_code, country_label = resolved_country
+
+    if existing_intent is not None and existing_intent.provider_key == "world_bank":
+        # Case 2: keep the indicator Tier 0/1 already correctly identified —
+        # only the country was wrong — rather than trusting the LLM's own
+        # indicator guess a second time for something that already matched.
+        concept = _WORLD_BANK_CODE_TO_CONCEPT.get(existing_intent.indicator_code)
+        keyword = _INDICATOR_CONCEPT_KEYWORDS.get(concept or "")
+    else:
+        keyword = _INDICATOR_CONCEPT_KEYWORDS.get(llm_result.get("indicator") or "")
+
+    if keyword is None:
+        return None
+
+    override = _match_country_override(country_code, keyword)
+    if override is not None:
+        return override
+    oecd_match = _match_oecd_indicator(country_code, keyword)
+    if oecd_match is not None:
+        return oecd_match
+    generic = next(
+        ((code, label) for kw, code, label in _INDICATOR_KEYWORDS if kw in keyword),
+        None,
+    )
+    if generic is not None:
+        code, label = generic
+        return LiveDataIntent(
+            provider_key="world_bank", indicator_code=code, indicator_label=label,
+            country_code=country_code, country_label=country_label,
+        )
     return None
 
 

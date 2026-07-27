@@ -52,6 +52,21 @@ class LicenceCheckResult:
     excluded: list[SourceSummary]
     exclusion_reasons: dict[str, str]           # source_id -> reason_code
     display_states: dict[str, SourceDisplayState]  # source_id -> state, eligible sources only
+    # Bundle-level rollup of the real per-source licence/authority data this
+    # module just read from the DB — the only trustworthy source for these
+    # two fields. Found during the enterprise-grade consistency audit:
+    # orchestration/retrieve.py independently guesses a bundle-wide
+    # authority_level from query category ("primary" if category in
+    # ("audit", "tax") else "secondary") and hardcodes licence_state to
+    # "permitted", and bundle_builder.py was copying that guess straight
+    # into the final SourceBundle — meaning answer_validator.py's Authority
+    # ceiling check (source_bundle.authority_level != "primary") was gated
+    # on a category heuristic, not on what Checkpoint A/B actually found
+    # for the sources that survived. A source truly tagged "internal" in
+    # the DB could still produce a bundle claiming "primary", silently
+    # disabling the ceiling check for absolute-certainty language.
+    authority_level: str = "primary"
+    licence_state: str = "permitted"
 
 
 async def _fetch_licence_fields(db: AsyncSession, source_ids: list[str]) -> dict[str, Source]:
@@ -117,6 +132,8 @@ async def check_eligibility(
     excluded: list[SourceSummary] = []
     exclusion_reasons: dict[str, str] = {}
     display_states: dict[str, SourceDisplayState] = {}
+    eligible_authority_levels: list[str] = []
+    eligible_licence_states: list[str] = []
 
     for source in doc_sources:
         record = fields_by_id.get(source.id)
@@ -142,6 +159,8 @@ async def check_eligibility(
 
         eligible.append(source)
         display_states[source.id] = _resolve_display_state(record)
+        eligible_authority_levels.append(record.authority_level)
+        eligible_licence_states.append(record.licence_state)
 
     for source in live_sources:
         provider_key = _live_provider_key_of(source.id)
@@ -168,13 +187,37 @@ async def check_eligibility(
 
         eligible.append(source)
         display_states[source.id] = _resolve_live_display_state(record)
+        eligible_authority_levels.append(record.authority_level)
+        eligible_licence_states.append(record.licence_state)
 
     return LicenceCheckResult(
         eligible=eligible,
         excluded=excluded,
         exclusion_reasons=exclusion_reasons,
         display_states=display_states,
+        authority_level=_weakest_authority_level(eligible_authority_levels),
+        licence_state=_weakest_licence_state(eligible_licence_states),
     )
+
+
+# Most-restrictive-governs, matching this codebase's existing convention
+# (routing_matrix's confidence downgrades, _DOWNGRADE_ON_EXCLUSION below) —
+# a bundle can only claim the authority/licence standing of its WEAKEST
+# eligible source, never its strongest.
+_AUTHORITY_RANK = {"primary": 0, "secondary": 1, "internal": 2}
+_LICENCE_RANK = {"permitted": 0, "unknown": 1}  # "restricted" never reaches here — excluded at Checkpoint A
+
+
+def _weakest_authority_level(levels: list[str]) -> str:
+    if not levels:
+        return "primary"
+    return max(levels, key=lambda lvl: _AUTHORITY_RANK.get(lvl, 2))
+
+
+def _weakest_licence_state(states: list[str]) -> str:
+    if not states:
+        return "permitted"
+    return max(states, key=lambda st: _LICENCE_RANK.get(st, 1))
 
 
 def _resolve_display_state(record: Source) -> SourceDisplayState:

@@ -6,26 +6,38 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domains.audit_ledger.event_envelope import record_event_async
+from app.domains.model_gateway import cost_latency_governance
 from app.domains.model_gateway.models import ModelDefinition, PromptTemplate
 from app.domains.model_gateway.providers.mock_adapter import MockProviderAdapter
 from app.domains.model_gateway.providers.groq_adapter import GroqAdapter
 from app.domains.model_gateway.providers.openai_adapter import OpenAIAdapter
+from app.domains.model_gateway.routing_fallback import complete_with_fallback
 
 
-def _select_adapter():
-    """Provider selection: real adapters first (in preference order), mock
-    only as the last resort when no provider API key is configured at all.
+def _adapter_chain() -> list[tuple[str, object]]:
+    """Provider fallback chain, in preference order — real adapters first,
+    mock only as the last resort. Every configured provider is included
+    (not just the first), so complete_with_fallback() can actually fall
+    through to the next one if the first fails at call time — before this,
+    _select_adapter() picked exactly one provider with no fallback, so a
+    live Groq outage surfaced as a raw error string treated as the model's
+    answer, and OpenAI (even if configured) was never tried.
+
     Not yet driven by ModelDefinition.provider per-model routing (§ZL-T0-08
     envisions Application -> Query Orchestrator -> Model Gateway -> Provider
     Adapter -> Approved Model Deployment, selecting per model_definitions
-    row) — this is a flat "first configured provider wins" default until a
-    real per-model routing decision is wired to run_test_prompt's caller.
+    row) — this is a flat, fixed preference order until a real per-model
+    routing decision is wired to run_test_prompt's caller. Mock is always
+    appended last so a request always resolves to something rather than
+    an empty chain when no provider is configured.
     """
+    chain: list[tuple[str, object]] = []
     if os.environ.get("GROQ_API_KEY"):
-        return GroqAdapter()
+        chain.append(("groq", GroqAdapter()))
     if os.environ.get("OPENAI_API_KEY"):
-        return OpenAIAdapter()
-    return MockProviderAdapter()
+        chain.append(("openai", OpenAIAdapter()))
+    chain.append(("mock", MockProviderAdapter()))
+    return chain
 
 
 async def list_models(db: AsyncSession) -> list[ModelDefinition]:
@@ -90,12 +102,16 @@ async def run_test_prompt(
     if prompt is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prompt template not found")
 
-    # Model Gateway -> Provider Adapter -> Approved Model. _select_adapter()
-    # picks the first configured real provider (Groq, then OpenAI), falling
-    # back to MockProviderAdapter only when no provider API key is set at all.
-    adapter = _select_adapter()
-    provider_name = type(adapter).__name__.replace("Adapter", "").lower()
-    output = await adapter.complete(f"[{prompt.name} {prompt.version}]\n\n{input_text}")
+    # Model Gateway -> Provider Adapter -> Approved Model. Tries every
+    # configured provider in preference order (Groq, then OpenAI, then
+    # Mock as the last resort) — falls through to the next one only if the
+    # current one actually fails at call time, not just "isn't configured."
+    full_prompt = f"[{prompt.name} {prompt.version}]\n\n{input_text}"
+    fallback_result = await complete_with_fallback(full_prompt, _adapter_chain())
+    output = fallback_result.output
+    provider_name = fallback_result.provider_used
+    cost_usd = cost_latency_governance.estimate_cost_usd(provider_name, full_prompt, output)
+    cost_latency_governance.record_cost(cost_usd)
 
     # Store a hash of the output, not the raw text, per the privacy-by-design
     # doctrine (Section 9): raw prompt/output retention depends on risk class,
@@ -115,6 +131,11 @@ async def run_test_prompt(
             "prompt_name": prompt.name,
             "prompt_version": prompt.version,
             "provider": provider_name,
+            "provider_attempts": fallback_result.attempts,
+            "fallback_occurred": len(fallback_result.attempts) > 1,
+            "succeeded": fallback_result.succeeded,
+            "latency_ms": round(fallback_result.latency_ms, 1),
+            "estimated_cost_usd": cost_usd,
             "input_length": len(input_text),
             "output_hash": hashlib.sha256(output.encode("utf-8")).hexdigest(),
         },

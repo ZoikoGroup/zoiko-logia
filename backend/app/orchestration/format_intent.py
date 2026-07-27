@@ -4,27 +4,77 @@ response format (chart, table, flowchart) rather than leaving Markdown
 structure to the model's own "scale to content" judgment (see
 orchestration/service.py's grounded_input).
 
-Same exemplar-similarity technique validated throughout this session for
-intent/context classification, reused here for a much lower-stakes
-decision: a false positive just means an unrequested table appears, not a
-safety gap — so this is a good fit for the technique's actual strengths
-(paraphrase-robust, ~40ms, no external dependency) without the caveats
-that apply to safety-relevant decisions (see risk_classifier.py's
-_semantic_evasion_match, which is NOT built this way for exactly that
-reason — it needs to be independently gated, not competing in an argmax).
+Two-tier detection, same hybrid shape as live_sources/classifier.py's FX
+intent detection: a fast, deterministic keyword-phrase layer for literal,
+explicit mentions ("show me a flow chart...", "put this in a table...")
+tried first, with the semantic exemplar-similarity layer kept only as a
+fallback for paraphrases that don't use the literal words ("diagram the
+steps for this", "lay this out side by side").
 
-Deliberately distinct from that evasion gate in one more way: this picks a
-winner via argmax (there IS a legitimate "no explicit format request" case
-to fall into), where the evasion gate is a standalone yes/no threshold
-with no competing category — the right shape depends on whether "none of
-the above" is itself a valid, common outcome (it is, here) or not.
+This replaced a semantic-only design after a real miss: "show me a flow
+chart for determining the eligibility for the premium tax credit" scored
+0.435 against the FLOWCHART exemplars — a near-miss under the 0.45
+threshold, entirely because a longer, topic-heavy query dilutes a single
+averaged sentence embedding. A literal, explicit "flow chart"/"table
+of"/"as a chart" mention is about as unambiguous a signal as exists; it
+doesn't need to survive an embedding-similarity contest to be honored.
+Same reasoning applies to CHART and TABLE, which had the identical
+near-miss problem (confirmed by testing "give me a chart of VAT rates over
+time" at 0.392 and "put this in a table comparing UK and US tax rates" at
+0.359 — both below threshold on the old semantic-only design).
+
+The keyword layer is deliberately narrow and trap-tested against real
+accounting phrases that contain the same words without meaning a format
+request — "chart of accounts", "table of contents", "cash flow statement",
+"land plot valuation", "graph theory" — all confirmed to NOT trigger.
+
+Still exemplar-similarity, still lower-stakes than the safety-relevant
+_semantic_evasion_match in risk_classifier.py (a false positive here just
+means an unrequested table appears, not a safety gap) — see that module's
+own docstring for why it is NOT built this way.
 """
 from __future__ import annotations
 
+import re
 from typing import Literal, Optional
 
 FormatIntent = Literal["CHART", "TABLE", "FLOWCHART"]
 
+# Tier 1 — deterministic, checked in this order (FLOWCHART/TABLE before
+# CHART) since "chart" is the most trap-prone word (accounting's own "chart
+# of accounts") and flowchart/table phrasing is more distinctive.
+_FLOWCHART_KEYWORD_PATTERNS: tuple[str, ...] = (
+    r'\bflow[\s-]?chart\b',
+    r'\bdecision\s+tree\b',
+)
+_TABLE_KEYWORD_PATTERNS: tuple[str, ...] = (
+    r'\bas\s+a\s+table\b', r'\bin\s+a\s+table\b',
+    r'\ba\s+table\s+of\b(?!\s+contents)',
+    r'\btable\s+comparing\b', r'\bcomparison\s+table\b',
+    r'\btabulate\b',
+    r'\bin\s+tabular\s+form\b',
+)
+_CHART_KEYWORD_PATTERNS: tuple[str, ...] = (
+    r'\bas\s+a\s+chart\b', r'\bin\s+a\s+chart\b',
+    r'\ba\s+chart\s+of\b(?!\s+accounts)',
+    r'\bchart\s+(this|it|these)\b',
+    r'(?<!land\s)\bplot\b(?!\s+of\s+land)',
+    r'\bgraph\b(?!\s+theory)',
+)
+
+
+def _keyword_format_match(query: str) -> Optional[FormatIntent]:
+    ql = query.lower()
+    if any(re.search(p, ql) for p in _FLOWCHART_KEYWORD_PATTERNS):
+        return "FLOWCHART"
+    if any(re.search(p, ql) for p in _TABLE_KEYWORD_PATTERNS):
+        return "TABLE"
+    if any(re.search(p, ql) for p in _CHART_KEYWORD_PATTERNS):
+        return "CHART"
+    return None
+
+
+# Tier 2 — semantic fallback for paraphrases with none of the literal words.
 _FORMAT_EXEMPLARS: dict[FormatIntent, tuple[str, ...]] = {
     "CHART": (
         "show me a chart of this",
@@ -76,10 +126,7 @@ def _cosine_similarity(v1, v2) -> float:
     return dot / (mag1 * mag2) if mag1 and mag2 else 0.0
 
 
-def detect_format_intent(query: str) -> Optional[FormatIntent]:
-    """None means no explicit format request was detected — the caller
-    should fall back to the default 'use structure only if content
-    warrants it' instruction, not force anything."""
+def _semantic_format_match(query: str) -> Optional[FormatIntent]:
     try:
         from app.domains.rag.embeddings import get_query_embedding_cached
         q_emb = get_query_embedding_cached(query)
@@ -95,6 +142,13 @@ def detect_format_intent(query: str) -> Optional[FormatIntent]:
         # codebase — an embedding-model outage degrades to "no explicit
         # format detected," never to forcing (or blocking) anything.
         return None
+
+
+def detect_format_intent(query: str) -> Optional[FormatIntent]:
+    """None means no explicit format request was detected — the caller
+    should fall back to the default 'use structure only if content
+    warrants it' instruction, not force anything."""
+    return _keyword_format_match(query) or _semantic_format_match(query)
 
 
 _FORMAT_DATA_REQUIREMENT: dict[FormatIntent, str] = {
@@ -127,12 +181,30 @@ _TABLE_CELL_CONTENT_RULE = (
 # rule if the model backslides into general knowledge one paragraph later —
 # this has to close off the "offer an alternative anyway" escape hatch by
 # name, not just repeat "don't invent data."
+#
+# A third, quieter variant of the same failure observed later: asked for a
+# Premium Tax Credit eligibility flowchart, the model said the context
+# didn't cover a flowchart, then — without ever saying "general knowledge"
+# — walked through an "illustrative example" assuming a made-up "MAGI
+# percentage of 200%" and a fabricated "Bracket 2," and tried to render
+# those invented numbers as a chart (which then failed to parse, since
+# there was no real data behind it). This slips past the wording above
+# because it never announces itself as a general-knowledge fallback — it
+# just quietly invents placeholder figures framed as an "example." Naming
+# this pattern explicitly, not just the announced-fallback one.
 _NO_FABRICATION_FALLBACK_RULE = (
     "If the retrieved context does not cover the query, state that plainly and "
     "STOP — do not then offer, suggest, or provide a second version 'based on "
     "general knowledge' or a 'generic example' as a fallback. Saying the context "
     "doesn't cover it, and then answering from general knowledge anyway one "
-    "paragraph later, is exactly the outcome this rule forbids."
+    "paragraph later, is exactly the outcome this rule forbids. This also covers "
+    "quieter versions of the same thing: do not invent a numeric 'illustrative "
+    "example' (a made-up percentage, bracket, threshold, or figure not present "
+    "in the retrieved context) to walk through a calculation or to populate a "
+    "chart/table/flowchart, even without labeling it as general knowledge. If "
+    "the real figures needed are not in the retrieved context, say so and stop "
+    "— do not substitute invented placeholder numbers to make the answer, "
+    "chart, or table look complete."
 )
 
 # Mermaid syntax guard — three real failures observed this session:
@@ -156,6 +228,18 @@ _NO_FABRICATION_FALLBACK_RULE = (
 #    enough to get parroted. Two fixes: an abstract, unparrotable example
 #    (no real-sounding content), and an explicit rule that this syntax may
 #    only appear inside a real fenced block, never as bare prose.
+# 4. A node label containing an unescaped parenthesis (e.g.
+#    'D[Tax Credit amount = (Premium Tax Credit - Contribution Amount)]')
+#    broke Mermaid's parser — confirmed by reproducing the exact same parse
+#    error message character for character against the real mermaid
+#    package. Mermaid reads an unquoted '(' inside '[...]' as the start of
+#    a different node-shape token, not literal text. Tested other
+#    punctuation (colon, comma, percent sign, equals sign) unquoted and
+#    they parse fine on their own — parentheses are the one that actually
+#    breaks — but wrapping the whole label in double quotes is safe in
+#    every case tested, so that's the one rule to give: quote it whenever a
+#    label contains any punctuation beyond plain words, not just for
+#    parentheses specifically.
 _MERMAID_SYNTAX_RULE = (
     "The bracket/arrow node syntax below (e.g. 'A[label]', '-->') may ONLY "
     "appear inside an actual ```mermaid``` fenced code block — never as plain "
@@ -171,7 +255,11 @@ _MERMAID_SYNTAX_RULE = (
     "'A -->|Yes| B[<this branch's actual outcome, from the context>]' — never end "
     "a line right after an edge label with no target (e.g. never write 'A -->|End|' "
     "with nothing after it). To represent an ending/terminal state, give it a real "
-    "node with a label describing that actual ending, drawn from the context."
+    "node with a label describing that actual ending, drawn from the context. "
+    "If a node's label text contains a parenthesis, a formula, or any punctuation "
+    "beyond plain words (e.g. 'Amount = (X - Y)'), wrap the ENTIRE label in double "
+    "quotes inside the brackets: N1[\"Amount = (X - Y)\"] — an unquoted parenthesis "
+    "inside a label breaks Mermaid's parser; quoting the label is always safe."
 )
 
 

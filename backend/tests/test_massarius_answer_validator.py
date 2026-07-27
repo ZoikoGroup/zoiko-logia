@@ -93,6 +93,24 @@ def test_internal_reasoning_only_source_never_exposed():
     print("test_internal_reasoning_only_source_never_exposed: PASSED")
 
 
+def test_correct_calculation_passes():
+    result = validate_answer("The VAT due is 1000 * 20% = 200. [REF-1]", _BUNDLE)
+    assert result.passed
+    print("test_correct_calculation_passes: PASSED")
+
+
+def test_wrong_calculation_degrades_to_human_review():
+    """Master Architecture Build Doctrine §3: LLM arithmetic must be
+    validated by a deterministic service, not trusted outright. This is
+    the regression test for that requirement — before calculation_engine.py
+    existed, nothing in the pipeline caught a wrong arithmetic answer."""
+    result = validate_answer("The VAT due is 1000 * 20% = 300. [REF-1]", _BUNDLE)
+    assert not result.passed
+    assert any("Calculation error" in f for f in result.failures)
+    assert result.degraded_route == "HUMAN_REVIEW"
+    print("test_wrong_calculation_degrades_to_human_review: PASSED")
+
+
 def test_validate_answer_or_raise_raises_typed_exception():
     """The literal spec shape — a direct call must raise ValidationFailed,
     not just return a falsy result, for callers that want to catch it."""
@@ -114,5 +132,7 @@ if __name__ == "__main__":
     test_confidence_support_blocks_unhedged_certainty_on_limited_confidence()
     test_disclaimer_presence_required_when_flagged()
     test_internal_reasoning_only_source_never_exposed()
+    test_correct_calculation_passes()
+    test_wrong_calculation_degrades_to_human_review()
     test_validate_answer_or_raise_raises_typed_exception()
     print("All tests passed successfully!")

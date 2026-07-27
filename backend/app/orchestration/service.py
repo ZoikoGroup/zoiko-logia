@@ -125,6 +125,55 @@ def _enable_live_sources() -> bool:
     return os.getenv("ENABLE_LIVE_SOURCES", "").lower() in {"1", "true", "yes"}
 
 
+# Regression guard: two real failures, one for each retrieval path.
+#
+# Live data: "How is India's economy performing lately?" retrieved the
+# right live GDP figure, but the composed answer was a mechanical
+# "According to the World Bank, India's GDP (current US$) for 2025 is
+# $3,956,067,115,771.63" — technically correct, but neither a natural
+# answer to a "how is it doing" question nor pleasant to read. The raw-
+# precision half of that is fixed at the DATA layer (see
+# live_sources/service.py's _format_value() — the value was landing in
+# context completely unformatted, and "cite figures from context, never
+# invent your own" means the model can't be expected to reformat it
+# itself); this instruction is the other half — answering what was
+# actually asked in a natural sentence.
+#
+# Static documents: checked whether the same raw-formatting problem exists
+# there too — retrieved chunks from PDF-extracted tables ARE genuinely
+# messy (e.g. "268,251         0.56    %" with garbled whitespace from a
+# real SEC filing table), but a code-level fix analogous to
+# _format_value() isn't safe here: live data has one clean, well-typed
+# value per connector; a document chunk is unstructured free text with no
+# reliable schema, and blindly regex-reformatting numbers embedded in it
+# risks silently corrupting a real figure (e.g. mishandling accounting's
+# parenthesized-negative convention, "(72,750 )"). Tested live: the model
+# already cleans up messy whitespace sensibly on its own when quoting a
+# figure ("$268,251", not the garbled table row verbatim) — but the answer
+# came back as a bare, contextless fragment with no framing sentence,
+# which isn't genuinely user-friendly either. So the fix for BOTH paths is
+# the same instruction, not two separate ones: always answer in a complete,
+# natural sentence that addresses what was actually asked, regardless of
+# whether the underlying source is live or a retrieved document.
+_NATURAL_PHRASING_RULE = (
+    "Answer the question's own framing directly, in complete, natural "
+    "sentences — never a bare fragment (e.g. just '$268,251 [REF-2]' with "
+    "no framing) even for a short factual answer; give it a plain-prose "
+    "sentence that says what the figure/fact actually answers. When the "
+    "retrieved context includes a live/dynamic data point (a current rate, "
+    "rank, or figure, not a document excerpt), this matters even more — "
+    "e.g. a 'how is the economy doing' question wants a plain-language "
+    "read on the figure (growing/shrinking, high/low, and by how much), "
+    "not a mechanical 'According to [Source], [Indicator] is: [value]' "
+    "template. If a retrieved document chunk has messy extraction "
+    "artifacts (irregular spacing, broken table alignment from a PDF), "
+    "present the actual figure or fact cleanly and readably — do not "
+    "reproduce the garbled spacing/formatting verbatim. In every case: "
+    "still cite the [REF-N] marker, and never alter or invent the "
+    "underlying figure itself — only its presentation."
+)
+
+
 async def ask_kriton(
     db: AsyncSession,
     sync_db: Session,
@@ -908,6 +957,7 @@ async def ask_kriton(
         f"line, '###' subheadings, and bullet lists with bold lead-in terms "
         f"(e.g. '- **Term**: explanation') for answers that genuinely have "
         f"multiple distinct sections or comparison points.\n"
+        f"{_NATURAL_PHRASING_RULE}\n"
         f"{format_instruction}\n\n"
         f"{followup_context}"
         f"=== Retrieved Context ===\n{context_text}\n\n"

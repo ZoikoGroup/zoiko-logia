@@ -755,7 +755,27 @@ def test_semantic_routing():
     print("test_semantic_routing: PASSED")
 
 
+def test_format_value_renders_large_and_small_numbers_readably():
+    """Regression test: World Bank's raw GDP value (a Python float like
+    3956067115771.6304) landed in the model's context completely
+    unformatted, and the model — correctly following the "cite figures
+    from context, never invent your own" rule — echoed it verbatim as
+    "$3,956,067,115,771.63" in a real answer. Fixed at the data layer
+    (live_sources.service._format_value), not the prompt layer, since the
+    model can't be expected to reformat a number it's told not to alter."""
+    from app.domains.live_sources.service import _format_value
+
+    assert _format_value(3956067115771.6304) == "3.96 trillion"
+    assert _format_value(7.56666179284244) == "7.57"  # a rate/percentage, not currency
+    assert _format_value(4.2) == "4.20"
+    assert _format_value(500_000_000) == "500.00 million"
+    assert _format_value(12345) == "12,345.00"
+    assert _format_value(0.03) == "0.03"
+    print("test_format_value_renders_large_and_small_numbers_readably: PASSED")
+
+
 async def main():
+    test_format_value_renders_large_and_small_numbers_readably()
     test_semantic_routing()
     test_classifier_detects_gdp_and_country()
     test_classifier_defaults_to_world_when_no_country_matched()
