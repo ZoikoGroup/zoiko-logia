@@ -262,6 +262,34 @@ _MERMAID_SYNTAX_RULE = (
     "inside a label breaks Mermaid's parser; quoting the label is always safe."
 )
 
+# Regression guard: a real failure — asked for "a chart of the EITC maximum
+# credit amount by number of qualifying children," the model wrote a
+# Markdown TABLE inside the ```kriton-chart``` fence instead of the JSON
+# shape the frontend actually parses (see ask-kriton/page.tsx's
+# KritonChart: `JSON.parse(code)`), so parsing failed outright and the
+# chart never rendered. Root cause: unlike TABLE (_TABLE_CELL_CONTENT_RULE)
+# and FLOWCHART (_MERMAID_SYNTAX_RULE), CHART never had its own syntax
+# rule at all — the instruction named the format but never showed the
+# model the schema it has to produce. Same class of gap as the Mermaid
+# parroting bug from earlier this session: an abstract, unparrotable
+# example (not real-sounding numbers) plus an explicit "never a table,
+# never prose" rule, not just "use a kriton-chart block."
+_KRITON_CHART_SYNTAX_RULE = (
+    "A ```kriton-chart``` block's content must be ONLY a single valid JSON object "
+    "— never a Markdown table, never prose, never anything else — matching exactly "
+    "this shape: {\"type\": \"bar\" or \"line\", \"labels\": [<each category or "
+    "period as a string>], \"series\": [{\"name\": <series name as a string>, "
+    "\"values\": [<one number per label, in the same order as labels>]}]}. "
+    "labels and each series' values arrays must be the same length. Use \"bar\" for "
+    "comparing distinct categories, \"line\" for a trend over time. "
+    "CRITICAL: every entry in a values array MUST be a bare JSON number — no "
+    "currency symbol, no thousands comma, and NEVER a [REF-N] citation marker "
+    "inside the array. WRONG (this breaks JSON parsing, confirmed live): "
+    "\"values\": [$3,526 [REF-3], $5,785 [REF-1]] — RIGHT: \"values\": [3526, 5785], "
+    "with the citations placed in the prose sentence introducing the chart instead "
+    "(e.g. 'shown below [REF-1][REF-3]'), never inside the JSON block itself."
+)
+
 
 def build_format_instruction(query: str) -> str:
     """The instruction fragment to splice into grounded_input — forced
@@ -275,14 +303,15 @@ def build_format_instruction(query: str) -> str:
             "```kriton-chart``` block only for real multi-point numeric data in the "
             "context, and a ```mermaid``` block only for real decision logic or "
             "process steps in the context — omit all three otherwise. "
-            f"{_TABLE_CELL_CONTENT_RULE} {_MERMAID_SYNTAX_RULE} {_NO_FABRICATION_FALLBACK_RULE}"
+            f"{_TABLE_CELL_CONTENT_RULE} {_KRITON_CHART_SYNTAX_RULE} {_MERMAID_SYNTAX_RULE} {_NO_FABRICATION_FALLBACK_RULE}"
         )
     table_note = f" {_TABLE_CELL_CONTENT_RULE}" if detected == "TABLE" else ""
+    chart_note = f" {_KRITON_CHART_SYNTAX_RULE}" if detected == "CHART" else ""
     mermaid_note = f" {_MERMAID_SYNTAX_RULE}" if detected == "FLOWCHART" else ""
     return (
         f"The user explicitly asked for a {detected.lower()}. If the retrieved "
         f"context contains genuine {_FORMAT_DATA_REQUIREMENT[detected]}, represent "
         f"it that way ({'a ```kriton-chart``` block' if detected == 'CHART' else 'a Markdown table' if detected == 'TABLE' else 'a ```mermaid``` block'}). "
         f"If it does not, say so directly — never invent data or structure to "
-        f"satisfy the request.{table_note}{mermaid_note} {_NO_FABRICATION_FALLBACK_RULE}"
+        f"satisfy the request.{table_note}{chart_note}{mermaid_note} {_NO_FABRICATION_FALLBACK_RULE}"
     )

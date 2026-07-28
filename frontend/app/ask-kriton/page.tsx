@@ -9,6 +9,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  LabelList,
   Legend,
   Line,
   LineChart,
@@ -214,6 +215,64 @@ type KritonChartSpec = {
   series: { name: string; values: number[] }[];
 };
 
+// Fixed-order categorical palette (see globals.css --chart-1..8) — validated
+// CVD-safe (dataviz skill's reference set, re-checked against Kriton's own
+// panel surface, not a generic default). Index-based and never reassigned:
+// a series keeps the same color for as long as it's visible, even if a
+// filter changes which series are shown. Distinct from --ok/--warn/--bad —
+// those are reserved status colors elsewhere in the app (risk levels), never
+// borrowed as an arbitrary "series 4."
+const CHART_SERIES_COLORS = [
+  "var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)",
+  "var(--chart-5)", "var(--chart-6)", "var(--chart-7)", "var(--chart-8)",
+];
+function seriesColor(index: number, totalSeries: number): string {
+  // A single series needs no categorical identity at all — it's the one
+  // thing being plotted, so it gets the app's own deliberate brand hue
+  // rather than an arbitrary slot from the multi-series palette.
+  if (totalSeries === 1) return "var(--brand)";
+  return CHART_SERIES_COLORS[index % CHART_SERIES_COLORS.length];
+}
+
+// Custom tooltip: values lead (Strong, primary ink), series name follows
+// (secondary/muted) — the legend's hierarchy inverted, since here the
+// reader already has the series and wants the number. A short line-key
+// swatch carries identity instead of a filled box (tooltip-density ink).
+function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: { name?: string; value?: number; color?: string }[]; label?: string }) {
+  if (!active || !payload || payload.length === 0) return null;
+  return (
+    <div className="rounded-lg border border-line bg-panel px-3 py-2 text-xs shadow-lg">
+      <p className="mb-1 font-medium text-muted">{label}</p>
+      <div className="space-y-1">
+        {payload.map((entry, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <span className="inline-block h-0.5 w-3 shrink-0" style={{ backgroundColor: entry.color }} aria-hidden="true" />
+            <span className="text-muted">{entry.name}:</span>
+            <span className="font-semibold text-ink">{entry.value?.toLocaleString()}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Legend text stays in a text token, never the series color (marks carry
+// color; labels never do) — Recharts' default legend colors the text
+// itself, so this overrides it with a small swatch + muted text instead.
+function ChartLegend({ payload }: { payload?: { value?: string; color?: string }[] }) {
+  if (!payload || payload.length < 2) return null; // single series needs no legend box
+  return (
+    <div className="mt-2 flex flex-wrap justify-center gap-x-4 gap-y-1">
+      {payload.map((entry, i) => (
+        <div key={i} className="flex items-center gap-1.5 text-[11px]">
+          <span className="inline-block h-0.5 w-3 shrink-0" style={{ backgroundColor: entry.color }} aria-hidden="true" />
+          <span className="text-muted">{entry.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // Renders a ```kriton-chart fenced block (JSON, see the format_intent
 // instruction built server-side in orchestration/format_intent.py) as an
 // actual chart instead of raw JSON text.
@@ -222,6 +281,7 @@ function KritonChart({ code }: { code: string }) {
   // block is by definition invalid JSON on every tick but the last one;
   // don't show a "could not be parsed" flicker for what's just incomplete.
   const isRevealComplete = useContext(RevealCompleteContext);
+  const [showTable, setShowTable] = useState(false);
   if (!isRevealComplete) return null;
 
   let spec: KritonChartSpec | null = null;
@@ -239,29 +299,116 @@ function KritonChart({ code }: { code: string }) {
     for (const s of spec!.series) row[s.name] = s.values[i];
     return row;
   });
-  const seriesColors = ["#2E6F5E", "#C9A227", "#5B7BA6", "#B4563E"];
-  const ChartComponent = spec.type === "bar" ? BarChart : LineChart;
-  const SeriesComponent = spec.type === "bar" ? Bar : Line;
+  const isBar = spec.type === "bar";
+  const ChartComponent = isBar ? BarChart : LineChart;
+  // "Label selectively — never a number on every point": direct bar labels
+  // only when there's one series and few enough categories to stay legible;
+  // otherwise every value is still fully reachable via the tooltip (and the
+  // table-view toggle below) without cluttering the chart itself.
+  const canDirectLabelBars = isBar && spec.series.length === 1 && spec.labels.length <= 8;
 
   return (
-    <div className="my-3 h-64 w-full">
-      <ResponsiveContainer width="100%" height="100%">
-        <ChartComponent data={data}>
-          <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
-          <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-          <YAxis tick={{ fontSize: 11 }} />
-          <Tooltip />
-          {spec.series.length > 1 && <Legend />}
-          {spec.series.map((s, i) => (
-            <SeriesComponent
-              key={s.name}
-              dataKey={s.name}
-              stroke={seriesColors[i % seriesColors.length]}
-              fill={seriesColors[i % seriesColors.length]}
-            />
-          ))}
-        </ChartComponent>
-      </ResponsiveContainer>
+    <div className="my-3 w-full">
+      <div className="mb-1.5 flex justify-end">
+        <button
+          type="button"
+          onClick={() => setShowTable((v) => !v)}
+          className="text-[11px] font-medium text-muted underline decoration-line hover:text-brand"
+        >
+          {showTable ? "View as chart" : "View as table"}
+        </button>
+      </div>
+
+      {showTable ? (
+        <div className="overflow-x-auto rounded-lg border border-line">
+          <table className="w-full border-collapse text-[13px]">
+            <thead className="border-b border-line/70 bg-soft">
+              <tr>
+                <th className="px-3 py-1.5 text-left font-semibold text-ink">Label</th>
+                {spec.series.map((s) => (
+                  <th key={s.name} className="px-3 py-1.5 text-right font-semibold text-ink">{s.name}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((row, i) => (
+                <tr key={i}>
+                  <td className="border-t border-line/40 px-3 py-1.5 text-ink">{row.label}</td>
+                  {spec!.series.map((s) => (
+                    <td key={s.name} className="border-t border-line/40 px-3 py-1.5 text-right tabular-nums text-ink">
+                      {(row[s.name] as number)?.toLocaleString()}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="h-64 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <ChartComponent data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid stroke="var(--line)" vertical={false} />
+              <XAxis
+                dataKey="label"
+                tick={{ fontSize: 11, fill: "var(--muted)" }}
+                axisLine={{ stroke: "var(--line)" }}
+                tickLine={{ stroke: "var(--line)" }}
+              />
+              <YAxis
+                tick={{ fontSize: 11, fill: "var(--muted)" }}
+                axisLine={{ stroke: "var(--line)" }}
+                tickLine={{ stroke: "var(--line)" }}
+                width={40}
+              />
+              <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--soft)" }} />
+              {spec.series.length > 1 && <Legend content={<ChartLegend />} />}
+              {spec.series.map((s, i) => {
+                const color = seriesColor(i, spec!.series.length);
+                if (isBar) {
+                  return (
+                    <Bar key={s.name} dataKey={s.name} fill={color} radius={[4, 4, 0, 0]} maxBarSize={24}>
+                      {canDirectLabelBars && (
+                        <LabelList dataKey={s.name} position="top" style={{ fill: "var(--ink)", fontSize: 11 }} />
+                      )}
+                    </Bar>
+                  );
+                }
+                return (
+                  <Line
+                    key={s.name}
+                    dataKey={s.name}
+                    stroke={color}
+                    strokeWidth={2}
+                    dot={{ r: 4, strokeWidth: 2, stroke: "var(--panel)", fill: color }}
+                    activeDot={{ r: 5, strokeWidth: 2, stroke: "var(--panel)" }}
+                    label={(
+                      // Recharts' own label-prop type (Props<RenderableText,...>)
+                      // is broader than any hand-written shape matches (it keeps
+                      // including more of its own internal union on each pass) —
+                      // accepted as `any` at this one boundary and validated at
+                      // runtime below instead, rather than chasing the type.
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                      props: any
+                    ) => {
+                      // Endpoint-only label — the "value at the end" spec for
+                      // lines, never one per point (that reads as chaos).
+                      if (props.index !== data.length - 1) return <></>;
+                      const x = Number(props.x ?? 0) + 6;
+                      const y = Number(props.y ?? 0);
+                      return (
+                        <text x={x} y={y} dy={4} fontSize={11} fill="var(--ink)" fontWeight={600}>
+                          {typeof props.value === "number" ? props.value.toLocaleString() : String(props.value ?? "")}
+                        </text>
+                      );
+                    }}
+                  />
+                );
+              })}
+            </ChartComponent>
+          </ResponsiveContainer>
+        </div>
+      )}
     </div>
   );
 }
