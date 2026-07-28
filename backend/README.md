@@ -1,6 +1,6 @@
-# ZoikoLogia Backend — Structure Only
+# ZoikoLogia Backend
 
-This is a **folder/file skeleton, not an implementation**. Every `.py` file (except `__init__.py`) contains a single one-line comment describing its intended purpose — no classes, no routes, no logic. It was scaffolded by reading all 26 specification documents in `../docs/` and organizing their requirements into a concrete backend layout, so implementation work has a place to land.
+This is the implemented FastAPI backend for the ZoikoLogia governance platform. It includes Supabase authentication, tenant-scoped PostgreSQL access, source governance, Ask Kriton orchestration, model routing, safety controls, review cases, evaluation gates and a chain-hashed audit ledger. Some secondary domain modules remain staged for later implementation.
 
 ## Tech stack (per `ZoikoLogia_Project_Execution_Roadmap.docx`)
 
@@ -53,12 +53,11 @@ Each domain folder generally has `models.py` / `schemas.py` / `router.py` / `ser
 | `zoikosuite_integration/` | ZoikoSuite Embedded Kriton UX Specification | — (embed contract, no admin page) |
 | `notifications_workflow/` | Back-End Architecture Spec (Notification & Workflow Queue Services) | — (cross-cutting SLA/queue engine) |
 
-## What's deliberately not here
+## Current implementation boundaries
 
-- No actual route handlers, ORM column definitions, or business logic — every file is a stub comment.
-- No `alembic.ini` / migration files — `app/db/migrations/` is an empty folder waiting for `alembic init`.
-- No Dockerfile or CI config — not specified in the docs read so far; the docs defer full API contracts to two documents that weren't in this doc set (`ZL-T1-03 API Specification`, `ZL-T1-14` integration architecture).
-- Not wired to the frontend — `frontend/` still runs entirely on static mock data (see `frontend/lib/governance-data.ts`). Connecting the two is a separate step.
+- The canonical Ask Kriton path is implemented and wired to the frontend.
+- Several dashboard pages still use static governance presentation data while their corresponding service domains mature.
+- Schema changes are represented in Alembic; startup compatibility migrations remain for existing development databases.
 
 ## Naming rule for when this gets implemented (ZL-ENG-01)
 

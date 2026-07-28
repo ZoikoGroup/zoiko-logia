@@ -69,7 +69,8 @@ async def retrieve_documents(
     query: str,
     tenant_id: str,
     jurisdiction: str | None = None,
-    top_k: int = 30
+    top_k: int = 30,
+    allowed_source_ids: list[str] | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Retrieves matching document chunks using hybrid search (vector search + keyword search).
@@ -95,6 +96,12 @@ async def retrieve_documents(
         condition=FilterCondition.OR,
     )
     filters_list = [shared_or_mine]
+    if allowed_source_ids is not None:
+        if not allowed_source_ids:
+            return []
+        filters_list.append(
+            MetadataFilter(key="source_id", value=allowed_source_ids, operator=FilterOperator.IN)
+        )
     if jurisdiction:
         filters_list.append(ExactMatchFilter(key="jurisdiction", value=jurisdiction))
 

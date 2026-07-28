@@ -49,3 +49,12 @@ async def require_admin(current_user: User = Depends(get_current_user)) -> User:
             detail="Admin role required",
         )
     return current_user
+
+
+async def require_safety_reviewer(current_user: User = Depends(get_current_user)) -> User:
+    if current_user.role not in {"Admin", "SME Reviewer", "Legal/Compliance", "Security Lead"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Safety reviewer role required",
+        )
+    return current_user

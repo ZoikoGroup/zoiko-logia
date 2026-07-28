@@ -8,19 +8,27 @@ since this file already anchors the live AskKritonResponse contract.
 """
 from __future__ import annotations
 from typing import Literal, Optional, List
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # ── Request ──────────────────────────────────────────────────────────────────
 
 class AskKritonRequest(BaseModel):
-    query: str
+    query: str = Field(min_length=1, max_length=20_000)
     jurisdiction: str = ""
     mode: str = "Workflow"
     # Safety simulation overrides (playground only — not trusted in production)
     source_confidence: Optional[str] = None
     pre_bundle_state: Optional[str] = None
     privacy_class: Optional[str] = None
+    clarification_cycle: int = Field(default=0, ge=0, le=2)
+
+    @field_validator("query")
+    @classmethod
+    def query_must_contain_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query must contain non-whitespace text")
+        return value
 
 
 # ── Retrieval Plan — ZL-ENG-03 §5.1 ──────────────────────────────────────────
@@ -141,12 +149,90 @@ class SourceCitation(BaseModel):
     ref_id: str
     source_id: str
     title: str
+    url: str | None = None
+    evidence_preview: str = ""
+
+
+# ── Calculation widget — governed calculation architecture, interactive
+# rendering (2026-07-23, see docs/calculation_architecture.md). Carries a
+# governed FormulaResult's inputs/output as structured data so the frontend
+# can render live sliders and a chart, instead of only prose. Every value
+# here is the same Decimal-as-string convention used everywhere else in the
+# calculation domain — never a binary float, and every WidgetInput's
+# min/max/step lets the frontend build a slider without guessing sensible
+# bounds. Recomputation on a slider change calls back into
+# app/domains/calculation/router.py's /recompute endpoint (execute_formula()
+# again) rather than duplicating formula math in JavaScript — one verified
+# source of truth for the number, same principle Checkpoint C's provenance
+# model already depends on.
+class WidgetInput(BaseModel):
+    name: str
+    label: str
+    value: str
+    unit: str
+    min: str
+    max: str
+    step: str
+
+
+class ChartPoint(BaseModel):
+    x: str
+    y: str
+
+
+class CalculationWidget(BaseModel):
+    formula_id: str
+    formula_name: str
+    formula_display: str
+    methodology_reference: str
+    inputs: List[WidgetInput] = Field(default_factory=list)
+    output_label: str
+    output_value: str
+    output_unit: str
+    chart_label: str = ""
+    chart_x_label: str = ""
+    chart_y_label: str = ""
+    chart_points: List[ChartPoint] = Field(default_factory=list)
+    calculation_id: str
+
+
+class PresentationSeries(BaseModel):
+    name: str
+    values: List[str] = Field(default_factory=list)
+
+
+class PresentationChart(BaseModel):
+    chart_id: str
+    type: Literal["bar", "line"] = "bar"
+    title: str
+    categories: List[str] = Field(default_factory=list)
+    series: List[PresentationSeries] = Field(default_factory=list)
+    unit: str = ""
+
+
+class PresentationGuide(BaseModel):
+    guide_id: str
+    type: Literal["process", "timeline", "checklist"]
+    title: str
+    items: List[str] = Field(default_factory=list)
+
+
+class AnswerPresentation(BaseModel):
+    layout: Literal["concise", "descriptive", "comparison", "step_by_step", "data_visualization", "calculation"] = "concise"
+    table_count: int = 0
+    has_steps: bool = False
+    charts: List[PresentationChart] = Field(default_factory=list)
+    guides: List[PresentationGuide] = Field(default_factory=list)
+    sections: List[str] = Field(default_factory=list)
+    follow_up_questions: List[str] = Field(default_factory=list)
 
 
 class ComposedAnswer(BaseModel):
     text: str
     citations: List[SourceCitation] = Field(default_factory=list)
     limitations: List[str] = Field(default_factory=list)
+    calculation_widget: Optional[CalculationWidget] = None
+    presentation: Optional[AnswerPresentation] = None
     # Internal fields — kept for model_gateway wiring; never exposed to frontend
     prompt_id: str = "inline"
     prompt_name: str = "Inline RAG Prompt"

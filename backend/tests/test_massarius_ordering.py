@@ -40,7 +40,9 @@ def test_policy_matrix_is_the_single_route_resolution_path():
         jurisdiction="UK",
         clarification_cycle=0,
     )
-    assert decision_high_risk.route == "HUMAN_REVIEW"
+    # 2026-07-22: HIGH+insufficient no longer creates a human-review case
+    # (product vision doc item 3) — it resolves to REFERRAL instead.
+    assert decision_high_risk.route == "REFERRAL"
     print("test_policy_matrix_is_the_single_route_resolution_path: PASSED")
 
 

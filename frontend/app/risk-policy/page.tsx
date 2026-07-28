@@ -1,14 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Card } from "@/components/governance/Card";
 import { Pill } from "@/components/governance/Pill";
 import {
   Scale,
   ShieldCheck,
   ShieldAlert,
   ShieldOff,
-  AlertTriangle,
   Loader2,
   FileText,
   Terminal,

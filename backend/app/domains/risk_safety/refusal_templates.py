@@ -148,6 +148,19 @@ _TEMPLATES: dict[str, RefusalTemplate] = {
         safe_alternative="Please rephrase your question with more specific details.",
     ),
 
+    "AMBIGUOUS_CONTEXT": RefusalTemplate(
+        template_id="tpl-ambiguous-context-001",
+        title="Additional Details Required",
+        body=(
+            "Kriton™ needs the specific transaction or subject before it can determine "
+            "the applicable accounting or tax treatment."
+        ),
+        safe_alternative=(
+            "Please provide the transaction, US reporting framework, entity type, and "
+            "reporting or tax year."
+        ),
+    ),
+
     # No-source state
     "NO_SOURCE": RefusalTemplate(
         template_id="tpl-no-source-001",

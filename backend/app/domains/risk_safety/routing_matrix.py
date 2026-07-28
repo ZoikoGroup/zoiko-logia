@@ -32,6 +32,14 @@ class RouteRule:
 # listed for a risk_level falls back to that risk_level's "default" entry
 # (see _DEFAULTS below) — this is what HIGH_CONFIDENCE rows represent today.
 ROUTING_MATRIX: dict[tuple[str, str], RouteRule] = {
+    # ZERO risk — small talk / navigational, no substantive content. Same
+    # permissive shape as LOW, just the newer, safer-still tier below it.
+    (RiskLevel.ZERO.value, "HIGH_CONFIDENCE"): RouteRule(True, Route.LLM),
+    (RiskLevel.ZERO.value, "LOW_CONFIDENCE"): RouteRule(True, Route.LLM),
+    (RiskLevel.ZERO.value, "NO_ELIGIBLE_SOURCE"): RouteRule(
+        True, Route.CLARIFICATION, limitation="No source available."
+    ),
+
     # LOW risk — always answerable regardless of source strength.
     (RiskLevel.LOW.value, "HIGH_CONFIDENCE"): RouteRule(True, Route.LLM),
     (RiskLevel.LOW.value, "LOW_CONFIDENCE"): RouteRule(True, Route.LLM),
@@ -71,6 +79,7 @@ ROUTING_MATRIX: dict[tuple[str, str], RouteRule] = {
 # as that risk_level's HIGH_CONFIDENCE row rather than failing closed/open
 # silently.
 _DEFAULTS: dict[str, RouteRule] = {
+    RiskLevel.ZERO.value: ROUTING_MATRIX[(RiskLevel.ZERO.value, "HIGH_CONFIDENCE")],
     RiskLevel.LOW.value: ROUTING_MATRIX[(RiskLevel.LOW.value, "HIGH_CONFIDENCE")],
     RiskLevel.MEDIUM.value: ROUTING_MATRIX[(RiskLevel.MEDIUM.value, "HIGH_CONFIDENCE")],
     RiskLevel.HIGH.value: ROUTING_MATRIX[(RiskLevel.HIGH.value, "HIGH_CONFIDENCE")],

@@ -12,13 +12,14 @@ import {
   CheckCircle2,
   Clock,
   XCircle,
+  ExternalLink,
 } from "lucide-react";
 import { PageShell } from "@/components/governance/PageShell";
 import { Pill } from "@/components/governance/Pill";
 import { PanelHeader, PANEL_CLASS, type PanelTone } from "@/components/governance/PanelHeader";
 import { StatTile } from "@/components/governance/StatTile";
 import { Tabs } from "@/components/shell/Tabs";
-import { getAuthToken, listSources, Source } from "@/lib/api";
+import { getAuthToken, listSources, openSourceUrl, Source } from "@/lib/api";
 
 const TABS = [
   { label: "Standards", slug: "standards" },
@@ -122,6 +123,16 @@ export default function SourceLibraryPage() {
               </div>
               {source.latest_version.note && (
                 <div className="text-xs text-ink mt-1">{source.latest_version.note}</div>
+              )}
+              {source.latest_version.url && (
+                <button
+                  type="button"
+                  onClick={() => openSourceUrl(getAuthToken(), source.latest_version.url!)}
+                  className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline"
+                >
+                  View source
+                  <ExternalLink size={11} />
+                </button>
               )}
             </li>
           ))}

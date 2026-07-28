@@ -66,7 +66,7 @@ def get_sync_db() -> Generator[Session, None, None]:
 # main.py's lifespan uses for schema creation/migrations, and what the
 # one-shot seed scripts (scripts/seed_dev_user.py, ingest_reference_sources.py)
 # import directly — those need to write rows unconstrained by RLS.
-async_engine = create_async_engine(to_async_url(settings.DATABASE_URL), echo=False)
+async_engine = create_async_engine(to_async_url(settings.DATABASE_URL), echo=False, pool_pre_ping=True)
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 
 # Request-time engine — deliberately separate from async_engine. Postgres
@@ -75,7 +75,18 @@ AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 # setup, request traffic must go through a distinct, non-superuser role for
 # RLS to actually apply. Falls back to the same URL when APP_DATABASE_URL
 # isn't set (SQLite, or a Postgres instance without the low-priv role).
-request_engine = create_async_engine(to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL), echo=False)
+#
+# pool_pre_ping=True on both engines (matching the sync engine above) —
+# confirmed necessary the hard way: a pooled connection to the remote
+# Supabase host went stale mid-session and the next request crashed the
+# whole server with asyncpg.exceptions.ConnectionDoesNotExistError instead
+# of transparently reconnecting. pre_ping issues a lightweight check before
+# handing out a pooled connection and replaces it silently if it's dead —
+# adds negligible overhead on a healthy connection, and is exactly what
+# would have caught this.
+request_engine = create_async_engine(
+    to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL), echo=False, pool_pre_ping=True
+)
 RequestSessionLocal = async_sessionmaker(request_engine, expire_on_commit=False)
 
 def _identity_from_request(request: Request) -> tuple[str, str]:

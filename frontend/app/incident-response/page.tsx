@@ -41,7 +41,7 @@ export default function IncidentResponsePage() {
       ]);
       setIncidents(resIncidents);
       setStats(resStats);
-    } catch (err) {
+    } catch {
       setError("Could not load incidents from the server.");
     }
   };
@@ -62,7 +62,7 @@ export default function IncidentResponsePage() {
       setSelectedIncident(null);
       setActionNote("");
       await refreshData();
-    } catch (err) {
+    } catch {
       alert("Failed to perform action");
     } finally {
       setLoading(false);

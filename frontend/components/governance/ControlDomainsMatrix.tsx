@@ -12,11 +12,14 @@ type SortKey = "state" | "exceptions" | "obligation";
 function SortableHeader({ label, k, sortKey, onSort }: { label: string; k: SortKey; sortKey: SortKey; onSort: (k: SortKey) => void }) {
   const active = sortKey === k;
   return (
-    <th scope="col" className="px-3 py-2.5 text-left text-[11px] font-bold uppercase tracking-wide text-muted">
+    <th
+      scope="col"
+      aria-sort={active ? "descending" : undefined}
+      className="px-3 py-2.5 text-left text-[11px] font-bold uppercase tracking-wide text-muted"
+    >
       <button
         onClick={() => onSort(k)}
         className={`flex items-center gap-1 hover:text-ink ${active ? "text-ink" : ""}`}
-        aria-sort={active ? "descending" : "none"}
       >
         {label} <ArrowUpDown size={11} />
       </button>

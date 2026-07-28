@@ -7,6 +7,7 @@ import { getEscalations, type Escalation } from "@/lib/safety-api";
 import { Pill } from "./Pill";
 
 const RISK_TONE: Record<string, "ok" | "info" | "warn" | "bad"> = {
+  ZERO: "ok",
   LOW: "ok",
   MEDIUM: "info",
   HIGH: "warn",

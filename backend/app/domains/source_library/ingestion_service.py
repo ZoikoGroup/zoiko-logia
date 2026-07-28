@@ -4,7 +4,7 @@ from typing import Dict, Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from llama_index.core import VectorStoreIndex, Document, StorageContext
-from llama_index.core.node_parser import SentenceSplitter
+from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
 from app.core.config import get_settings
 from app.domains.rag.embeddings import get_embed_model, EMBED_DIM
 from app.domains.source_library.models import Source
@@ -64,9 +64,24 @@ async def ingest_document_content(
         }
     )
     
-    # Sentence splitter setup
-    parser = SentenceSplitter(chunk_size=512, chunk_overlap=50)
-    nodes = parser.get_nodes_from_documents([doc])
+    # Two-stage chunking: markdown headers ("## ...") are a hard chunk
+    # boundary, split first — never merged into a plain SentenceSplitter's
+    # token-count-only view of the document. Confirmed live (2026-07-21):
+    # on a dense reference doc with many short, similarly-worded sections
+    # back-to-back (e.g. "SALT cap" vs. "SALT deduction floor amount", 11
+    # lines apart), a plain 512-token SentenceSplitter merged adjacent
+    # sections into one chunk, and composition then answered the wrong
+    # parameter — a real $ figure, just attached to the wrong label. Each
+    # section is passed through SentenceSplitter only to cap its own size if
+    # it individually exceeds chunk_size; that pass never has the chance to
+    # pull in a neighboring header's content, because by then the neighbor
+    # is already a separate node.
+    section_nodes = MarkdownNodeParser().get_nodes_from_documents([doc])
+    sentence_parser = SentenceSplitter(chunk_size=512, chunk_overlap=50)
+    nodes = []
+    for section_node in section_nodes:
+        section_doc = Document(text=section_node.text, metadata=section_node.metadata)
+        nodes.extend(sentence_parser.get_nodes_from_documents([section_doc]))
     
     # Store options — not a plain .startswith("postgresql") check, which
     # misses the legacy postgres:// scheme (e.g. Supabase pooler URLs);
