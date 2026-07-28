@@ -37,6 +37,7 @@ def resolve_policy(
     framework: str = "",
     tenant_policy: Optional[dict] = None,
     clarification_cycle: int = 0,
+    advice_signal: bool = False,
 ) -> RouteDecision:
     """
     Resolve the route for a query given SourceBundle.confidence_state plus
@@ -68,4 +69,5 @@ def resolve_policy(
         risk_level=risk_level,
         confidence_state=confidence_state,
         clarification_cycle=clarification_cycle,
+        advice_signal=advice_signal,
     )

@@ -21,6 +21,7 @@ from app.db.base import Base
 # ─── Enumerations ───────────────────────────────────────────────────────────
 
 class RiskLevel(str, enum.Enum):
+    ZERO = "ZERO"
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
@@ -84,6 +85,7 @@ class EscalationCase(Base):
     __tablename__ = "escalation_cases"
 
     id = Column(String, primary_key=True, default=lambda: _new_id("ESC-"))
+    tenant_id = Column(String, nullable=False, default="GLOBAL_CONTROL", index=True)
     query_id = Column(String, nullable=False)
     query_text = Column(Text, nullable=False)
     topic = Column(String, nullable=False)
@@ -108,6 +110,7 @@ class SafetyOverride(Base):
     __tablename__ = "safety_overrides"
 
     id = Column(String, primary_key=True, default=lambda: _new_id("ovr-"))
+    tenant_id = Column(String, nullable=False, default="GLOBAL_CONTROL", index=True)
     actor_id = Column(String, nullable=False)
     authority_role = Column(String, nullable=False)
     original_route = Column(String, nullable=False)
@@ -142,6 +145,7 @@ class SafetyEvent(Base):
     __tablename__ = "safety_events"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(String, nullable=False, default="GLOBAL_CONTROL", index=True)
     event_type = Column(String, nullable=False)
     query_id = Column(String, nullable=True)
     payload = Column(JSON, nullable=False, default=dict)
@@ -196,4 +200,3 @@ class RestrictedTopicRule(Base):
     allowed_safe_alternative = Column(Text, nullable=False)
     refusal_template_id = Column(String, nullable=False)
     clarification_permitted = Column(Boolean, nullable=False, default=False)
-

@@ -78,6 +78,42 @@ def _build_row(
     )
 
 
+async def _reassert_tenant_guc(db: AsyncSession, tenant_id: str) -> None:
+    """Re-set app.tenant_id on whatever physical connection this Session
+    currently holds — but skip the round trip if that exact connection is
+    already known to have it set for this tenant.
+
+    set_config(..., false) is session-scoped on Postgres, so it survives on
+    a given physical connection across commits. What changes it is only the
+    *pool* handing this Session a *different* physical connection after a
+    commit releases the previous one back — which is the real scenario the
+    unconditional re-assert below was guarding against. PoolProxiedConnection
+    ("the DBAPI connection fairy").info is the SQLAlchemy-documented spot
+    that persists for the lifetime of that physical connection across
+    checkin/checkout, independent of any particular Session or Connection
+    wrapper object — exactly what's needed to tell "same connection as last
+    time" apart from "pool gave us a new one".
+
+    Deliberately fails open to the old unconditional behavior: if this
+    connection-identity lookup ever breaks (driver internals shift, a
+    dialect that doesn't expose .connection the same way, etc.), we fall
+    straight through to re-asserting every time, same as before this
+    existed. Wrong here costs a redundant round trip, never a wrong tenant.
+    """
+    fairy = None
+    try:
+        conn = await db.connection()
+        fairy = conn.sync_connection.connection
+        if fairy.info.get("app_tenant_id") == tenant_id:
+            return
+    except Exception:
+        fairy = None
+
+    await db.execute(text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id})
+    if fairy is not None:
+        fairy.info["app_tenant_id"] = tenant_id
+
+
 async def record_event_async(db: AsyncSession, *, tenant_id: str = "GLOBAL_CONTROL", **kwargs) -> AuditEvent:
     previous_chain_hash = _cached_previous_chain_hash.get()
     if previous_chain_hash is None:
@@ -109,11 +145,11 @@ async def record_event_async(db: AsyncSession, *, tenant_id: str = "GLOBAL_CONTR
     # intermittently makes RLS-protected queries later in the same request
     # see zero rows, since the new connection never had it set at all.
     # Every orchestration call site already passes the request's real
-    # tenant_id here, so re-asserting it right after commit is free
-    # insurance against exactly that race, regardless of which connection
-    # the pool hands back next.
+    # tenant_id here, so this is insurance against exactly that race — but
+    # see _reassert_tenant_guc: it only pays for a round trip when the pool
+    # actually did hand back a different connection, not on every commit.
     if not settings.is_sqlite:
-        await db.execute(text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id})
+        await _reassert_tenant_guc(db, tenant_id)
 
     return row
 

@@ -255,6 +255,7 @@ export async function getCPDSummary(token: string): Promise<CPDSummary> {
 
 export type SourceVersion = {
   id: string;
+  source_id: string;
   version_label: string;
   status: string;
   effective_from: string | null;
@@ -264,6 +265,9 @@ export type SourceVersion = {
   submitted_by: string;
   approved_by: string | null;
   created_at: string;
+  file_path: string | null;
+  /** Same shape/contract as SourceCitation.url above. */
+  url: string | null;
 };
 
 export type Source = {
@@ -348,6 +352,28 @@ export async function approveSourceVersion(token: string, sourceId: string, vers
     method: "POST",
   });
   return res.json();
+}
+
+/** Opens a SourceCitation/SourceVersion `url` in a new tab. An absolute
+ * external URL (a live-fetched government/API source) is safe to navigate
+ * to directly — no backend auth needed, so it never touches authedFetch.
+ * A relative `/sources/{id}/file` link is our own endpoint and DOES require
+ * auth; the browser's plain navigation can't attach an Authorization
+ * header, so this fetches it as an authenticated blob first and opens that
+ * instead — the same reason no source link in this app is ever rendered as
+ * a plain `<a href>`. */
+export async function openSourceUrl(token: string, url: string): Promise<void> {
+  if (/^https?:\/\//i.test(url)) {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return;
+  }
+  const res = await authedFetch(url, token);
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  window.open(objectUrl, "_blank", "noopener,noreferrer");
+  // Revoked after a delay rather than immediately — the new tab needs the
+  // blob URL to still be valid by the time it finishes loading it.
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
 }
 
 export type ModelDefinition = {
@@ -503,6 +529,7 @@ export type AskKritonRequest = {
   source_confidence?: string;
   pre_bundle_state?: string;
   privacy_class?: string;
+  clarification_cycle?: number;
 };
 
 export type SourceSummary = {
@@ -541,19 +568,95 @@ export type SourceCitation = {
   ref_id: string;
   source_id: string;
   title: string;
+  /** Absolute external URL for a live-fetched source, a relative
+   * `/sources/{id}/file` link for an uploaded/ingested document (requires
+   * auth — see openSourceUrl), or null if this source has no viewable
+   * document (e.g. no file was ever uploaded for it). */
+  url: string | null;
+  /** Exact supporting excerpt selected for this answer. */
+  evidence_preview?: string;
+};
+
+/** Governed calculation architecture — interactive rendering
+ * (2026-07-23, backend/docs/calculation_architecture.md). Every numeric
+ * field is a string (Decimal-as-string), matching the backend's convention
+ * throughout the calculation domain — never parse these as JS `number`
+ * without care for precision. */
+export type WidgetInput = {
+  name: string;
+  label: string;
+  value: string;
+  unit: string;
+  min: string;
+  max: string;
+  step: string;
+};
+
+export type ChartPoint = {
+  x: string;
+  y: string;
+};
+
+export type CalculationWidget = {
+  formula_id: string;
+  formula_name: string;
+  formula_display: string;
+  methodology_reference: string;
+  inputs: WidgetInput[];
+  output_label: string;
+  output_value: string;
+  output_unit: string;
+  chart_label: string;
+  chart_x_label: string;
+  chart_y_label: string;
+  chart_points: ChartPoint[];
+  calculation_id: string;
+};
+
+export type PresentationSeries = {
+  name: string;
+  values: string[];
+};
+
+export type PresentationChart = {
+  chart_id: string;
+  type: "bar" | "line";
+  title: string;
+  categories: string[];
+  series: PresentationSeries[];
+  unit: string;
+};
+
+export type PresentationGuide = {
+  guide_id: string;
+  type: "process" | "timeline" | "checklist";
+  title: string;
+  items: string[];
+};
+
+export type AnswerPresentation = {
+  layout: "concise" | "descriptive" | "comparison" | "step_by_step" | "data_visualization" | "calculation";
+  table_count: number;
+  has_steps: boolean;
+  charts: PresentationChart[];
+  guides: PresentationGuide[];
+  sections: string[];
+  follow_up_questions: string[];
 };
 
 export type ComposedAnswer = {
   text: string;
   citations: SourceCitation[];
   limitations: string[];
+  calculation_widget?: CalculationWidget | null;
+  presentation?: AnswerPresentation | null;
   /** @deprecated use text — retained for backward compatibility */
   output_text?: string;
 };
 
 /** §12 SafetyState — frontend renders from this, not by parsing answer text */
 export type SafetyState = {
-  risk_level: "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
+  risk_level: "ZERO" | "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
   policy_state: "allowed" | "blocked" | "needs_more_context";
   disclaimer_required: boolean;
   refusal_text?: string;
@@ -574,6 +677,7 @@ export type OutcomeType =
   | "refused"
   | "clarification_required"
   | "escalated"
+  | "limited_response"
   | "rejected";
 
 export type RouteType =
@@ -581,6 +685,7 @@ export type RouteType =
   | "REFUSAL"
   | "CLARIFICATION"
   | "HUMAN_REVIEW"
+  | "REFERRAL"
   | "SECURITY_INCIDENT"
   | "REJECTED";
 
@@ -610,6 +715,29 @@ export async function askKriton(
     method: "POST",
     headers,
     body: JSON.stringify(payload),
+    // Never leave the chat composer disabled forever when the API process is
+    // unavailable or a provider stalls. The UI catches this and turns the
+    // pending turn into a retryable error.
+    signal: AbortSignal.timeout(90_000),
+  });
+  return res.json();
+}
+
+/** Called on every slider change in a rendered CalculationWidget — re-runs
+ * the formula server-side (never client-side) so the displayed number is
+ * always the one verified engine's output, never a JS reimplementation of
+ * the formula that could drift from it. See
+ * backend/docs/calculation_architecture.md and
+ * backend/app/domains/calculation/api_router.py. */
+export async function recomputeCalculation(
+  token: string,
+  formulaId: string,
+  inputs: Record<string, { value: string; unit: string }>,
+): Promise<CalculationWidget> {
+  const res = await authedFetch("/calculations/recompute", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ formula_id: formulaId, inputs }),
   });
   return res.json();
 }

@@ -12,9 +12,10 @@ import {
   createSource,
   getAuthToken,
   listSources,
+  openSourceUrl,
   Source,
 } from "@/lib/api";
-import { Database, CheckCircle2, Clock, XCircle, FilePlus2, ListChecks, History, Upload } from "lucide-react";
+import { Database, CheckCircle2, Clock, XCircle, FilePlus2, ListChecks, History, Upload, ExternalLink } from "lucide-react";
 
 const STATUS_TONE: Record<string, "ok" | "warn" | "bad" | "neutral"> = {
   ACTIVE: "ok",
@@ -208,6 +209,16 @@ export default function SourceLicensingPage() {
                       <p className="mt-0.5 text-xs text-muted truncate" title={source.latest_version.note}>
                         {source.latest_version.note}
                       </p>
+                    )}
+                    {source.latest_version.url && (
+                      <button
+                        type="button"
+                        onClick={() => openSourceUrl(getAuthToken(), source.latest_version.url!)}
+                        className="mt-0.5 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline"
+                      >
+                        View source
+                        <ExternalLink size={11} />
+                      </button>
                     )}
                   </div>
                   {["PROPOSED", "UNDER_REVIEW"].includes(source.latest_version.status) && (

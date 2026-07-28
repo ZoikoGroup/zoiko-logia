@@ -13,8 +13,80 @@ from app.domains.source_library.schemas import SourceCreateRequest
 
 _ELIGIBLE_STATUSES = ("ACTIVE", "APPROVED")
 
-_UPLOAD_ROOT = Path(__file__).resolve().parents[3] / "data" / "uploads"
+_BACKEND_ROOT = Path(__file__).resolve().parents[3]
+_UPLOAD_ROOT = _BACKEND_ROOT / "data" / "uploads"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+# The two roots SourceVersion.file_path is ever written under — save_uploaded_file
+# writes into _UPLOAD_ROOT (data/uploads/<tenant>/...), the ingest_*.py scripts
+# write data/sources/<jurisdiction>/<filename> (see e.g.
+# scripts/ingest_reference_sources.py's DATA_DIR). resolve_source_file_path
+# below refuses to serve anything outside these two roots, even if a
+# file_path value somehow contained "..' — defense in depth on top of the
+# _SAFE_NAME_RE sanitization already applied at upload time.
+_SERVABLE_ROOTS = (_UPLOAD_ROOT, _BACKEND_ROOT / "data" / "sources")
+
+
+def resolve_source_url(source_id: str, file_path: str | None) -> str | None:
+    """Single source of truth for turning a SourceVersion.file_path into
+    something a client can actually open — used identically for chat
+    citations (orchestration/service.py) and the admin Source Library/
+    Source Licensing pages, so the two surfaces can never disagree about
+    what a source's link is.
+
+    A live reference-data source's file_path is already a real external URL
+    (see e.g. app/domains/reference_data/service.py's to_rag_chunk functions,
+    which set metadata["file_path"] = bundle.source_url) — passed through
+    unchanged. An uploaded/ingested document's file_path is a local disk
+    path relative to the backend root — turned into this API's own
+    file-serving endpoint instead, since the client has no other way to
+    reach it. None (no file at all — e.g. a PROPOSED source awaiting
+    upload) stays None; callers must not fabricate a link for that case."""
+    if not file_path:
+        return None
+    if file_path.startswith("http://") or file_path.startswith("https://"):
+        return file_path
+    return f"/sources/{source_id}/file"
+
+
+async def get_source_file(db: AsyncSession, source_id: str, *, tenant_id: str) -> Path:
+    """Full authorization + path-resolution chain for GET /sources/{id}/file
+    — the single place that decides whether a given user may actually
+    download a source's file, so the router stays a thin HTTP wrapper
+    around real business logic rather than re-implementing this check
+    itself. All failure modes return the same 404 (never 403) — this
+    endpoint must not let an unauthorized caller distinguish "wrong tenant"
+    from "not governed for viewing" from "doesn't exist" from "no file was
+    ever uploaded," any of which would leak information about a source's
+    existence/governance state to someone not entitled to see it.
+
+    Same tenant boundary as get_source_by_id (shared-unless-private), plus
+    two checks that function doesn't make: the latest version must be in
+    an eligible display status (ACTIVE/APPROVED — the same bar
+    orchestration/retrieve.py applies before a source can ever be cited),
+    and it must actually have a local file_path (a live reference-data
+    source's citation link never reaches this endpoint at all — see
+    resolve_source_url's docstring — so reaching here with no file_path
+    means either a data inconsistency or someone probing an id by hand)."""
+    source = await get_source_by_id(db, source_id, tenant_id=tenant_id)
+    if source is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    latest_version = source.get("latest_version")
+    if latest_version is None or latest_version.status not in _ELIGIBLE_STATUSES:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    file_path = latest_version.file_path
+    if not file_path or file_path.startswith("http://") or file_path.startswith("https://"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    candidate = (_BACKEND_ROOT / file_path).resolve()
+    servable_roots = [root.resolve() for root in _SERVABLE_ROOTS]
+    if not any(candidate == root or root in candidate.parents for root in servable_roots):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    if not candidate.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    return candidate
 
 
 async def save_uploaded_file(file: UploadFile, tenant_id: str) -> str:
@@ -62,11 +134,26 @@ async def list_sources(
     result = await db.execute(query)
     sources = result.scalars().all()
 
-    combined = []
-    for source in sources:
-        latest = await _latest_version(db, source.id)
-        combined.append({**source.__dict__, "latest_version": latest})
-    return combined
+    if not sources:
+        return []
+
+    # Fetch all versions in one round trip and retain the newest per source.
+    # The previous implementation called _latest_version once for every
+    # source (47 sequential database queries in the current catalog), adding
+    # roughly 6-10 seconds to every Kriton request against a remote database.
+    version_result = await db.execute(
+        select(SourceVersion)
+        .where(SourceVersion.source_id.in_([source.id for source in sources]))
+        .order_by(SourceVersion.source_id, SourceVersion.created_at.desc())
+    )
+    latest_by_source: dict[str, SourceVersion] = {}
+    for version in version_result.scalars():
+        latest_by_source.setdefault(version.source_id, version)
+
+    return [
+        {**source.__dict__, "latest_version": latest_by_source.get(source.id)}
+        for source in sources
+    ]
 
 
 async def get_source_by_id(

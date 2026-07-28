@@ -9,7 +9,6 @@ Controls:
   - Idempotency: duplicate Idempotency-Key returns original result without re-execution.
   - Rate limiting: enforced before retrieval or model work.
 """
-from typing import Optional
 from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
@@ -42,7 +41,7 @@ async def post_ask(
     db: AsyncSession = Depends(get_db),
     sync_db: Session = Depends(get_sync_db),
     current_user: User = Depends(get_current_user),
-    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+    idempotency_key: str = Header(alias="Idempotency-Key", min_length=8, max_length=200),
 ) -> AskKritonResponse:
     """
     Submit a query to Kriton™. Returns a deterministic route-driven response contract.
