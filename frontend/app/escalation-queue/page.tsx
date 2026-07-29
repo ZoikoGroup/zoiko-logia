@@ -117,8 +117,8 @@ export default function EscalationQueuePage() {
       await actOnEscalation(caseId, action, reviewerId, actionReason);
       setActionReason("");
       await load();
-    } catch (err: any) {
-      setErrorMsg(err.message || "Failed to resolve case. Maker-checker constraint violation.");
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : "Failed to resolve case. Maker-checker constraint violation.");
     } finally {
       setSubmittingId(null);
     }
@@ -134,8 +134,8 @@ export default function EscalationQueuePage() {
       });
       setShowOverrideForm(false);
       await load();
-    } catch (err: any) {
-      setErrorMsg(err.message || "Failed to create safety override.");
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : "Failed to create safety override.");
     }
   }
 

@@ -19,6 +19,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_sync_db
+from app.domains.identity.models import User
+from app.domains.identity.rbac import get_current_user, require_admin, require_safety_reviewer
 from app.domains.risk_safety import service as safety_service
 from app.domains.risk_safety import refusal_templates
 from app.domains.risk_safety.schemas import (
@@ -42,14 +44,23 @@ router = APIRouter(prefix="/safety", tags=["AI Safety & Risk Classification"])
 # ─── Classification ─────────────────────────────────────────────────────────
 
 @router.post("/classify", response_model=SafetyDecision)
-def classify_query(request: ClassifyRequest, db: Session = Depends(get_sync_db)):
+def classify_query(
+    request: ClassifyRequest,
+    db: Session = Depends(get_sync_db),
+    current_user: User = Depends(get_current_user),
+):
     """
     Classify a user query against the risk taxonomy.
 
     Returns a structured SafetyDecision that tells the Query Orchestrator
     whether generation is allowed and under what constraints.
     """
-    return safety_service.evaluate(request, db=db)
+    trusted_request = request.model_copy(update={
+        "user_id": current_user.id,
+        "tenant_id": current_user.tenant_id,
+        "role": current_user.role,
+    })
+    return safety_service.evaluate(trusted_request, db=db)
 
 
 # ─── Output Validation ──────────────────────────────────────────────────────
@@ -60,7 +71,7 @@ class ValidateOutputRequest(BaseModel):
 
 
 @router.post("/validate-output")
-def validate_output(request: ValidateOutputRequest):
+def validate_output(request: ValidateOutputRequest, _current_user: User = Depends(get_current_user)):
     """
     Post-generation boundary check on LLM output.
 
@@ -73,18 +84,22 @@ def validate_output(request: ValidateOutputRequest):
 # ─── Escalation Queue ───────────────────────────────────────────────────────
 
 @router.get("/escalations/stats", response_model=EscalationStatsOut)
-def get_escalation_stats(db: Session = Depends(get_sync_db)):
+def get_escalation_stats(
+    db: Session = Depends(get_sync_db),
+    current_user: User = Depends(get_current_user),
+):
     """Summary counts for the escalation queue dashboard."""
-    return safety_service.get_escalation_stats(db)
+    return safety_service.get_escalation_stats(db, current_user.tenant_id)
 
 
 @router.get("/escalations", response_model=list[EscalationOut])
 def list_escalations(
     status: Optional[str] = None,
     db: Session = Depends(get_sync_db),
+    current_user: User = Depends(get_current_user),
 ):
     """List escalation cases, optionally filtered by status."""
-    cases = safety_service.get_escalations(db, status=status)
+    cases = safety_service.get_escalations(db, current_user.tenant_id, status=status)
     return cases
 
 
@@ -93,13 +108,15 @@ def act_on_escalation(
     case_id: str,
     action: EscalationAction,
     db: Session = Depends(get_sync_db),
+    current_user: User = Depends(require_safety_reviewer),
 ):
     """Record a reviewer decision on an escalation case."""
     case = safety_service.resolve_escalation(
         db=db,
         case_id=case_id,
         action=action.action,
-        reviewer_id=action.reviewer_id,
+        reviewer_id=current_user.id,
+        tenant_id=current_user.tenant_id,
         reason=action.reason,
     )
     if not case:
@@ -113,18 +130,24 @@ def act_on_escalation(
 def list_safety_overrides(
     active_only: bool = True,
     db: Session = Depends(get_sync_db),
+    current_user: User = Depends(get_current_user),
 ):
     """List safety overrides."""
-    return safety_service.list_safety_overrides(db, active_only=active_only)
+    return safety_service.list_safety_overrides(db, current_user.tenant_id, active_only=active_only)
 
 
 @router.post("/overrides", response_model=SafetyOverrideOut)
 def create_safety_override(
     request: OverrideRequest,
     db: Session = Depends(get_sync_db),
+    current_user: User = Depends(require_admin),
 ):
     """Create a new time-bounded safety override."""
-    return safety_service.create_safety_override(db, request)
+    trusted_request = request.model_copy(update={
+        "actor_id": current_user.id,
+        "authority_role": current_user.role,
+    })
+    return safety_service.create_safety_override(db, trusted_request, current_user.tenant_id)
 
 
 # ─── Emergency Safety Blocks (ZL-T0-04 §14) ─────────────────────────────────
@@ -167,7 +190,10 @@ def dispose_emergency_block(
 # ─── Risk Policies ──────────────────────────────────────────────────────────
 
 @router.get("/policies", response_model=list[RiskPolicyOut])
-def list_policies(db: Session = Depends(get_sync_db)):
+def list_policies(
+    db: Session = Depends(get_sync_db),
+    current_user: User = Depends(get_current_user),
+):
     """List all active risk policies."""
     policies = db.query(RiskPolicy).order_by(RiskPolicy.created_at.desc()).all()
     return policies
@@ -176,7 +202,7 @@ def list_policies(db: Session = Depends(get_sync_db)):
 # ─── Refusal Templates ─────────────────────────────────────────────────────
 
 @router.get("/templates")
-def list_templates():
+def list_templates(_current_user: User = Depends(get_current_user)):
     """List all registered refusal and limitation templates."""
     return refusal_templates.get_all_templates()
 
@@ -184,11 +210,16 @@ def list_templates():
 # ─── Safety Event Log ──────────────────────────────────────────────────────
 
 @router.get("/events")
-def list_events(limit: int = 50, db: Session = Depends(get_sync_db)):
+def list_events(
+    limit: int = 50,
+    db: Session = Depends(get_sync_db),
+    current_user: User = Depends(get_current_user),
+):
 
     """List recent safety events from the audit ledger."""
     events = (
         db.query(SafetyEvent)
+        .filter(SafetyEvent.tenant_id == current_user.tenant_id)
         .order_by(SafetyEvent.timestamp.desc())
         .limit(limit)
         .all()

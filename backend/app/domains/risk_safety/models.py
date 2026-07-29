@@ -85,6 +85,7 @@ class EscalationCase(Base):
     __tablename__ = "escalation_cases"
 
     id = Column(String, primary_key=True, default=lambda: _new_id("ESC-"))
+    tenant_id = Column(String, nullable=False, default="GLOBAL_CONTROL", index=True)
     query_id = Column(String, nullable=False)
     query_text = Column(Text, nullable=False)
     topic = Column(String, nullable=False)
@@ -121,8 +122,10 @@ class SafetyOverride(Base):
     # Same live-schema-drift issue as SafetyEvent.tenant_id above: the real
     # DB has a NOT NULL tenant_id column this model never declared,
     # confirmed by reproducing psycopg2.errors.NotNullViolation on a real
-    # create_safety_override() call.
-    tenant_id = Column(String, nullable=False, default="default")
+    # create_safety_override() call. "GLOBAL_CONTROL" matches the same
+    # default already used throughout audit_ledger/event_envelope.py's
+    # record_event_async/_build_row, rather than an ad-hoc "default" value.
+    tenant_id = Column(String, nullable=False, default="GLOBAL_CONTROL", index=True)
     actor_id = Column(String, nullable=False)
     authority_role = Column(String, nullable=False)
     original_route = Column(String, nullable=False)
@@ -157,6 +160,7 @@ class SafetyEvent(Base):
     __tablename__ = "safety_events"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(String, nullable=False, default="GLOBAL_CONTROL", index=True)
     event_type = Column(String, nullable=False)
     query_id = Column(String, nullable=True)
     # The live DB has a NOT NULL tenant_id column added outside this
@@ -250,4 +254,3 @@ class RestrictedTopicRule(Base):
     allowed_safe_alternative = Column(Text, nullable=False)
     refusal_template_id = Column(String, nullable=False)
     clarification_permitted = Column(Boolean, nullable=False, default=False)
-

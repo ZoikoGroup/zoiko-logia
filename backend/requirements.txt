@@ -23,6 +23,10 @@ pydantic-settings
 # ML Classification
 transformers
 torch
+# Deferred DeBERTa fine-tuning script dependencies (training remains gated by
+# reviewed sample counts in scripts/train_deberta_risk_classifier.py).
+accelerate
+sentencepiece
 
 # RAG & Document Processing
 llama-index
@@ -40,3 +44,15 @@ openpyxl
 
 # Rate limiting
 slowapi
+
+# Deterministic household tax calculation (EITC/CTC/standard deduction/
+# federal income tax/CA & NY state income tax) — replaces LLM-guessed
+# arithmetic with a real computed result. Heavy: pulls in numpy/pandas and
+# a large parameter tree (~15s one-time import cost, isolated behind a
+# lazy import in app/domains/calculation/policyengine_engine.py). Gated at
+# runtime behind ENABLE_TAX_CALCULATION_ENGINE (see .env.example).
+policyengine-us
+
+# Test runner
+pytest
+pytest-asyncio

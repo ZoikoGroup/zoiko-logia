@@ -156,6 +156,29 @@ async def _migrate_user_profile_columns():
             await conn.execute(text("ALTER TABLE users DROP COLUMN IF EXISTS hashed_password"))
 
 
+async def _migrate_safety_tenant_columns():
+    """Backfill tenant ownership for safety queues, overrides and events so
+    authenticated safety APIs cannot expose records across tenants."""
+    tables = ("escalation_cases", "safety_overrides", "safety_events")
+    async with async_engine.begin() as conn:
+        for table in tables:
+            if settings.is_sqlite:
+                columns = await conn.execute(text(f"PRAGMA table_info({table})"))
+                if "tenant_id" not in {row[1] for row in columns}:
+                    await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN tenant_id VARCHAR"))
+            else:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS tenant_id VARCHAR"))
+            await conn.execute(text(
+                f"UPDATE {table} SET tenant_id = (SELECT id FROM tenants LIMIT 1) WHERE tenant_id IS NULL"
+            ))
+            await conn.execute(text(f"UPDATE {table} SET tenant_id = 'GLOBAL_CONTROL' WHERE tenant_id IS NULL"))
+            if not settings.is_sqlite:
+                await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN tenant_id SET NOT NULL"))
+                await conn.execute(text(
+                    f"CREATE INDEX IF NOT EXISTS ix_{table}_tenant_id ON {table} (tenant_id)"
+                ))
+
+
 async def _setup_user_rls():
     """Users can only read/insert/update their own row — except a tenant
     Admin, who can also see every user in their own tenant (the existing
@@ -607,11 +630,32 @@ async def _warm_up_ml_models():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle events: create tables, seed, and dispose of engine."""
+    if (
+        os.getenv("FORCE_DIRECT_ANSWER", "").lower() in {"1", "true", "yes"}
+        and os.getenv("APP_ENV", "").lower() in {"local", "development", "test"}
+        and os.getenv("ALLOW_UNSAFE_DEV_OVERRIDES", "").lower() in {"1", "true", "yes"}
+    ):
+        # Loud, impossible-to-miss startup warning — this flag bypasses the
+        # real HIGH-risk -> human-review safeguard entirely (see
+        # orchestration/service.py's _force_direct_answer docstring). A
+        # misconfigured non-dev deployment silently running with this on is
+        # a genuine production-safety incident, not just a footgun; .env.example
+        # now defaults it to false so a fresh setup must deliberately opt in
+        # rather than deliberately opt out.
+        print(
+            "\n"
+            "!" * 78 + "\n"
+            "!! WARNING: FORCE_DIRECT_ANSWER=true — HIGH-risk human-review safeguard\n"
+            "!! is BYPASSED. This must never be set in a shared or production\n"
+            "!! deployment. See RUNNING_KRITON.md.\n"
+            + "!" * 78 + "\n"
+        )
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await _migrate_tenant_columns()
     await _migrate_source_licence_columns()
     await _migrate_user_profile_columns()
+    await _migrate_safety_tenant_columns()
     await _setup_source_rls()
     await _setup_user_rls()
     _seed_defaults()
@@ -649,6 +693,12 @@ def create_app() -> FastAPI:
     # Safety-specific API endpoints
     from app.domains.risk_safety.router import router as safety_router
     app.include_router(safety_router, prefix="/api/v1")
+
+    # Internal reference-data endpoints (e.g. Treasury Fiscal Data) — not
+    # nested under /api/v1 since these are internal-only, never called
+    # directly by the frontend.
+    from app.domains.reference_data.router import router as reference_data_router
+    app.include_router(reference_data_router)
 
     return app
 

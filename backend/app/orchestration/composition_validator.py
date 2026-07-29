@@ -102,11 +102,21 @@ def build_validated_disclaimer(
     if not disclaimer_required:
         return answer_text
 
+    # Wording per the 2026-07-22 product vision doc (see memory:
+    # product-vision-kriton-tutor-not-search) — kept closer to that exact
+    # text than the previous version, dropping the "source-governed
+    # retrieval" jargon a reader outside this codebase wouldn't parse.
+    # "Kriton™ Disclaimer" is preserved verbatim as the leading phrase
+    # (not just "Disclaimer") because massarius/answer_validator.py's
+    # _DISCLAIMER_MARKER checks for that exact substring — changing the
+    # marker text here without updating that constant would make every
+    # MEDIUM/HIGH-risk answer fail Checkpoint C's disclaimer-presence check.
     disclaimer = (
         "\n\n---\n"
-        "⚠️ **Kriton™ Disclaimer**: Educational information only, not professional "
-        "accounting, tax, audit, or legal advice — consult a qualified professional "
-        "before acting. Sources reflect documentation available at retrieval time "
-        "and may not reflect the latest standards."
+        "⚠️ **Kriton™ Disclaimer:** Kriton provides general educational information "
+        "about accounting and finance. It does not provide legal, tax, audit, or "
+        "accounting advice. If your situation requires professional judgment or "
+        "relates to a specific legal, tax, or financial matter, please consult a "
+        "qualified professional."
     )
     return answer_text + disclaimer

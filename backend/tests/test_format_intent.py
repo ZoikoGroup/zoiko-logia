@@ -19,7 +19,7 @@ import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.orchestration.format_intent import detect_format_intent
+from app.orchestration.format_intent import detect_format_intent, is_decision_judgment_query
 
 # (query, expected) — expected is None for "no explicit format request"
 CASES = [
@@ -72,9 +72,46 @@ def test_format_intent_detects_explicit_requests_and_avoids_traps():
     print(f"\n{correct}/{len(CASES)} correct")
 
 
+# (query, expected) — the demo query and its shape (True), plus negative
+# controls: ordinary checklist/timeline/definitional/comparison queries that
+# must NOT engage the judgment-framework hedging, including one that shares
+# the word "materiality" with the positive cases but isn't a judgment call.
+DECISION_CASES = [
+    ("Does an unexplained variance require additional audit testing?", True),
+    ("When should an audit finding be escalated to the engagement partner?", True),
+    ("How do I decide whether a control deficiency is significant?", True),
+    ("Is this discrepancy material enough to investigate further?", True),
+    ("Give me a checklist for bank reconciliation.", False),
+    ("Show me a timeline for completing month-end close.", False),
+    ("What is materiality?", False),
+    ("Compare cash and accrual accounting.", False),
+    ("What is retained earnings?", False),
+    # Real semantic-tier false positive found during testing: scored 0.564
+    # against an earlier, more generic exemplar phrasing purely from
+    # sharing "account" — an ordinary how-to question, not a judgment call.
+    ("How do I reconcile the account?", False),
+    ("What documents are needed for an audit?", False),
+    ("What is an unqualified audit opinion?", False),
+]
+
+
+def test_decision_judgment_detection_and_false_positives():
+    correct = 0
+    for query, expected in DECISION_CASES:
+        got = is_decision_judgment_query(query)
+        status = "OK" if got == expected else "WRONG"
+        if got == expected:
+            correct += 1
+        print(f"{status}: {query!r} -> {got} (expected {expected})")
+    assert correct == len(DECISION_CASES), f"only {correct}/{len(DECISION_CASES)} correct"
+    print(f"\n{correct}/{len(DECISION_CASES)} correct")
+
+
 def main():
     test_format_intent_detects_explicit_requests_and_avoids_traps()
     print("test_format_intent_detects_explicit_requests_and_avoids_traps: PASSED")
+    test_decision_judgment_detection_and_false_positives()
+    print("test_decision_judgment_detection_and_false_positives: PASSED")
 
 
 if __name__ == "__main__":

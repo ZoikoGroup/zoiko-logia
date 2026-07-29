@@ -76,6 +76,9 @@ def get_sync_db() -> Generator[Session, None, None]:
 # liveness check on checkout and transparently opens a new connection
 # instead of handing back a dead one. pool_recycle recycles connections
 # proactively before the pooler's own idle-timeout would ever close them.
+# (Confirmed necessary the hard way in production: a stale pooled connection
+# surfaced as asyncpg.exceptions.ConnectionDoesNotExistError crashing a live
+# request instead of transparently reconnecting.)
 async_engine = create_async_engine(
     to_async_url(settings.DATABASE_URL),
     echo=False,

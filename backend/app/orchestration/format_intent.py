@@ -240,6 +240,16 @@ _NO_FABRICATION_FALLBACK_RULE = (
 #    every case tested, so that's the one rule to give: quote it whenever a
 #    label contains any punctuation beyond plain words, not just for
 #    parentheses specifically.
+# 5. A labeled edge with a stray extra '>' right after the closing pipe
+#    (e.g. 'A -->|Exceeds Threshold|> B[Qualitative Risk Assessment]') broke
+#    Mermaid's parser — confirmed by reproducing the exact same parse error
+#    ("...got 'TAGEND'") character for character against the real mermaid
+#    package (2026-07-29, from the new decision-flow feature's optional
+#    Mermaid diagram). A '-->|Label|' edge's closing pipe must be followed
+#    directly by the target node — 'A -->|Yes| B[...]', never an extra '>'
+#    first ('A -->|Yes|> B[...]' is invalid, easy to type by analogy with
+#    the '-->' arrow itself, but the label's closing pipe is not part of
+#    the arrow and takes no '>' of its own).
 _MERMAID_SYNTAX_RULE = (
     "The bracket/arrow node syntax below (e.g. 'A[label]', '-->') may ONLY "
     "appear inside an actual ```mermaid``` fenced code block — never as plain "
@@ -256,6 +266,10 @@ _MERMAID_SYNTAX_RULE = (
     "a line right after an edge label with no target (e.g. never write 'A -->|End|' "
     "with nothing after it). To represent an ending/terminal state, give it a real "
     "node with a label describing that actual ending, drawn from the context. "
+    "A labeled edge's closing pipe is followed DIRECTLY by the target node — never "
+    "put an extra '>' after the pipe (e.g. 'A -->|Yes|> B[...]' is invalid and will "
+    "fail to parse; the correct form is exactly 'A -->|Yes| B[...]', with nothing "
+    "between the closing '|' and the target node's ID). "
     "If a node's label text contains a parenthesis, a formula, or any punctuation "
     "beyond plain words (e.g. 'Amount = (X - Y)'), wrap the ENTIRE label in double "
     "quotes inside the brackets: N1[\"Amount = (X - Y)\"] — an unquoted parenthesis "
@@ -289,6 +303,137 @@ _KRITON_CHART_SYNTAX_RULE = (
     "with the citations placed in the prose sentence introducing the chart instead "
     "(e.g. 'shown below [REF-1][REF-3]'), never inside the JSON block itself."
 )
+
+
+# ── Decision-judgment detection (2026-07-29) ─────────────────────────────────
+# Independent of detect_format_intent above — that gate only fires on an
+# EXPLICIT format request ("show me a flowchart," "draw a decision tree").
+# A professional-judgment question like "Does an unexplained variance require
+# additional audit testing?" says neither "flowchart" nor "decision tree" —
+# it's a plain question whose CONTENT needs hedging, not a format request.
+# Keeping the two gates separate means a decision-judgment query gets the
+# framework instruction below regardless of whether it also happens to ask
+# for a visual, and an ordinary flowchart request doesn't get the framework
+# instruction just for sharing FLOWCHART's keyword space.
+#
+# Same two-tier shape as detect_format_intent (keyword tier first, semantic
+# exemplar fallback, fail-closed to False on embedding error) — this is a
+# content-safety gate, not a cosmetic one, so it inherits the same
+# conservative failure mode as the format detectors above, not a looser one.
+_DECISION_JUDGMENT_KEYWORD_PATTERNS: tuple[str, ...] = (
+    r'\b(?:does|would|is)\b.{0,40}\brequire\b.{0,20}\b(?:additional|further)\s+(?:testing|procedures|review|evidence|work)\b',
+    r'\b(?:is|are)\s+(?:additional|further)\s+(?:testing|procedures|review)\s+(?:required|needed|warranted|necessary)\b',
+    r'\bwhen\s+(?:should|does|do)\b.{0,40}\b(?:escalat|refer)\w*\b',
+    r'\bshould\s+(?:this|it|we|that)\s+be\s+escalated\b',
+    r'\bwarrants?\s+(?:additional|further)\s+(?:testing|review|investigation|procedures)\b',
+    r'\bis\s+(?:this|the)\b.{0,20}\b(?:variance|difference|discrepancy|deficiency)\b.{0,30}\bmaterial\b',
+    r'\b(?:is|does)\b.{0,30}\bcontrol\s+deficiency\b.{0,20}\bsignificant\b',
+    r'\bhow\s+do\s+i\s+decide\s+whether\b',
+)
+
+
+def _keyword_decision_match(query: str) -> bool:
+    ql = query.lower()
+    return any(re.search(p, ql) for p in _DECISION_JUDGMENT_KEYWORD_PATTERNS)
+
+
+_DECISION_JUDGMENT_EXEMPLARS: tuple[str, ...] = (
+    "does an unexplained variance require additional audit testing",
+    "when should an audit finding be escalated to the engagement partner",
+    "how do I decide whether this control deficiency is significant",
+    "is this discrepancy material enough to investigate further",
+    "when does a finding need to go to a specialist",
+    "is the evidence sufficient to conclude without performing further testing",
+)
+# Higher floor than the format detectors' 0.45 (see _MIN_SCORE above) —
+# testing found ordinary accounting/audit questions with no real judgment-
+# call shape scoring uncomfortably close to 0.45 purely from sharing
+# domain vocabulary ("audit," "account") with the exemplars: "What
+# documents are needed for an audit?" scored 0.467, "How do I reconcile
+# the account?" scored 0.564 against an earlier, more generic exemplar
+# phrasing. The genuine positives in DECISION_CASES score 0.94+ (they're
+# close paraphrases of the exemplars by construction), so 0.55 keeps a
+# wide margin above the false-positive band without risking the real
+# cases — the keyword tier above is what carries most real detection;
+# this floor keeps the semantic tier a genuine safety net, not a loose
+# classifier that mislabels ordinary questions as needing hedged framing.
+_DECISION_JUDGMENT_MIN_SCORE = 0.55
+
+_decision_exemplar_embeddings: list[list[float]] = []
+
+
+def _get_decision_exemplar_embeddings() -> list[list[float]]:
+    global _decision_exemplar_embeddings
+    if not _decision_exemplar_embeddings:
+        from app.domains.rag.embeddings import get_query_embedding_cached
+        _decision_exemplar_embeddings = [
+            list(get_query_embedding_cached(ex)) for ex in _DECISION_JUDGMENT_EXEMPLARS
+        ]
+    return _decision_exemplar_embeddings
+
+
+def _semantic_decision_match(query: str) -> bool:
+    try:
+        from app.domains.rag.embeddings import get_query_embedding_cached
+        q_emb = get_query_embedding_cached(query)
+        embs = _get_decision_exemplar_embeddings()
+        best_score = max(_cosine_similarity(q_emb, e) for e in embs)
+        return best_score >= _DECISION_JUDGMENT_MIN_SCORE
+    except Exception:
+        return False
+
+
+def is_decision_judgment_query(query: str) -> bool:
+    """True when the query asks Kriton to make (rather than explain) a
+    professional judgment call — the shape this product must never resolve
+    to a confident personal verdict for, since the actual answer depends on
+    facts Kriton doesn't have (exact amounts, the entity's own materiality
+    threshold, other evidence already obtained)."""
+    return _keyword_decision_match(query) or _semantic_decision_match(query)
+
+
+# 2026-07-29 real incident (anticipated from the professional-judgment
+# demo query "Does an unexplained variance require additional audit
+# testing?"): without this rule, a query shaped like a judgment call
+# invites the model to just answer it — "Yes, additional testing is
+# required" — which is exactly the kind of confident, personalized
+# professional conclusion Checkpoint C's prohibited-claim/authority-ceiling
+# checks exist to prevent elsewhere in this pipeline (see
+# massarius/answer_validator.py). This rule heads it off at the prompt
+# level instead of relying solely on a post-hoc regex scan to catch it.
+_DECISION_FRAMEWORK_RULE = (
+    "This question asks you to make a professional judgment call that depends on "
+    "facts you do not have — the actual amounts involved, the entity's specific "
+    "materiality threshold, other evidence already obtained, and its control "
+    "environment. Never render a personal, confident verdict for the reader's own "
+    "situation (never write, e.g., 'Yes, additional testing is required' or 'No, "
+    "this does not need to be escalated'). Instead, present the FRAMEWORK a "
+    "professional applies: walk through, as a numbered list grounded in the "
+    "retrieved context, the considerations that actually drive this kind of "
+    "judgment — typically some combination of (1) materiality: how the amount "
+    "compares to the applicable materiality threshold, (2) qualitative risk "
+    "indicators that matter regardless of size, (3) sufficiency of the evidence "
+    "already obtained, (4) any related control-environment issues, and (5) the "
+    "conditions under which the matter should be escalated to a manager, partner, "
+    "or specialist rather than resolved at the current level. Only include the "
+    "considerations the retrieved context actually supports — never invent a "
+    "materiality figure or threshold not present in the context. If it genuinely "
+    "helps the reader, you may also express this framework as a ```mermaid``` "
+    "decision-tree diagram (see the Mermaid syntax rule) showing the branching "
+    "considerations — but the diagram's terminal nodes must describe conditions "
+    "('escalate to the audit manager', 'document as immaterial and close'), never "
+    "resolve to a single yes/no answer for the reader's own facts. Close with a "
+    "plain statement that the actual conclusion depends on the specific facts of "
+    "the engagement, and that a professional applying judgment to the full "
+    "evidence — not Kriton™ — reaches the final call."
+)
+
+
+def build_decision_framework_instruction(query: str) -> str:
+    """Empty string when not applicable — callers splice this in
+    unconditionally, same convention as orchestration/service.py's
+    followup_context."""
+    return _DECISION_FRAMEWORK_RULE if is_decision_judgment_query(query) else ""
 
 
 def build_format_instruction(query: str) -> str:

@@ -16,17 +16,30 @@ A deterministic Python/FastAPI service that acts as the absolute authority on ri
 - **Audit Ledger:** Records 100% of routing decisions, overrides, escalations, and maker-checker violations in a local SQLite database (`zoikologia.db`), matching the exact payload schema mandated by Section 15 of ZL-T0-04.
 
 ### 2. Frontend: Governance Dashboard (`/frontend`)
-A Next.js 15 application that visualizes the AI safety state and provides operational workflows.
+A Next.js 16 application that visualizes the AI safety state and provides operational workflows.
 - **Ask Kriton™:** An interactive query interface where you can type queries and simulate upstream source/privacy states to see the Risk Engine's real-time routing logic.
 - **Escalation Queue:** A dashboard for reviewing HIGH-risk or RESTRICTED queries, complete with SLA countdowns and Maker-Checker enforcement.
 - **Risk Policy & Taxonomy:** A real-time view of active risk policies and refusal templates.
-- **Offline Fallback Mode:** The frontend's API client (`safety-api.ts`) includes an embedded offline classifier. If the Python backend is offline, the dashboard degrades gracefully but remains fully operational for demonstrations.
+- **Supabase Session Security:** Protected API clients send the current Supabase access token; the backend derives user and tenant identity from verified claims.
+
+## Canonical Ask Kriton workflow
+
+The implementation follows `backend/uploads/ZL-ENG-02` and `ZL-ENG-03`:
+
+1. Authenticate, rate-limit, validate and apply idempotency.
+2. Generate query, request, correlation and audit-chain identifiers.
+3. Run the safety pre-screen before any retrieval.
+4. Plan retrieval and apply licence Checkpoint A to create a tenant-scoped source allow-list.
+5. Retrieve only allowed sources, rerank candidates, and build the immutable SourceBundle with Checkpoint B.
+6. Classify professional risk and select a deterministic route from the versioned policy matrix.
+7. On the LLM route, fit context, re-evaluate downgraded confidence, redact external-provider input, compose, assemble citations and validate output with Checkpoint C.
+8. Persist ordered audit events before returning the structured route/outcome response.
 
 ---
 
 ## Quick Start
 
-You can run the frontend in **Offline Mode**, or you can run the **Full Stack** to leverage the ML Semantic Engine and SQLite Audit Ledger.
+Run the full stack for authenticated, tenant-scoped workflows. A frontend-only start can render public/authentication surfaces but does not provide a governed Ask Kriton backend.
 
 ### Option A: Run Full Stack (Recommended)
 
@@ -49,9 +62,9 @@ npm run dev
 ```
 *Open http://localhost:3000 to access the platform.*
 
-### Option B: Run Frontend Only (Offline Demo Mode)
+### Option B: Run Frontend Only (UI development)
 
-If you just want to view the UI and test basic routing logic without running the Python ML engine:
+If you only need to work on UI rendering:
 ```bash
 cd frontend
 npm install

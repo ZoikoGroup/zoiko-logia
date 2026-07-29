@@ -4,6 +4,9 @@
  * Calls the configured backend (NEXT_PUBLIC_API_URL, same as lib/api.ts).
  */
 
+import { supabase } from "@/lib/supabase";
+import { getCurrentAccessToken } from "@/lib/session-token";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010/api/v1";
 const BACKEND = `${API_URL}/safety`;
 
@@ -41,10 +44,21 @@ export type SafetyEvent = {
 
 async function tryBackend<T>(path: string, options?: RequestInit): Promise<T | null> {
   try {
+    const token = getCurrentAccessToken();
+    if (!token) return null;
     const res = await fetch(`${BACKEND}${path}`, {
-      headers: { "Content-Type": "application/json" },
       ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options?.headers ?? {}),
+        Authorization: `Bearer ${token}`,
+      },
     });
+    if (res.status === 401 && typeof window !== "undefined") {
+      await supabase.auth.signOut();
+      window.location.href = "/login";
+      return null;
+    }
     if (!res.ok) return null;
     return (await res.json()) as T;
   } catch {

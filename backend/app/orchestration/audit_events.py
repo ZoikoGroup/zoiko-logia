@@ -66,9 +66,13 @@ async def _emit(
     )
 
 
-async def audit_query_received(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id, query_hash: str, commit: bool = True):
+async def audit_query_received(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                               query_hash: str, request_id: Optional[str] = None, commit: bool = True):
+    payload = {"query_hash": query_hash}
+    if request_id is not None:
+        payload["request_id"] = request_id
     await _emit(db, "query_received", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
-                {"query_hash": query_hash}, replay_relevance="REQUIRED", commit=commit)
+                payload, replay_relevance="REQUIRED", commit=commit)
 
 async def audit_request_validated(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id, commit: bool = True):
     await _emit(db, "request_validated", query_id, correlation_id, tenant_id, audit_chain_id, actor_id, {}, commit=commit)
@@ -94,6 +98,32 @@ async def audit_retrieval_failed(db, *, query_id, correlation_id, tenant_id, aud
     await _emit(db, "retrieval_failed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"error": error}, replay_relevance="REQUIRED", commit=commit)
 
+async def audit_plan_created(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                             retrieval_plan_id: str, strategy: str, methods: list[str]):
+    await _emit(db, "plan_created", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"retrieval_plan_id": retrieval_plan_id, "strategy": strategy, "methods": methods})
+
+async def audit_rerank_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                 input_count: int, output_count: int):
+    await _emit(db, "rerank_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"input_count": input_count, "output_count": output_count})
+
+async def audit_context_fit_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                      selected_count: int, dropped_count: int):
+    await _emit(db, "context_fit_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"selected_count": selected_count, "dropped_count": dropped_count})
+
+async def audit_route_reevaluated(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                  previous_route: str, new_route: str, reason: str):
+    await _emit(db, "route_reevaluated", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"previous_route": previous_route, "new_route": new_route, "reason": reason},
+                replay_relevance="REQUIRED")
+
+async def audit_citation_assembly_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id,
+                                             actor_id, citation_count: int):
+    await _emit(db, "citation_assembly_completed", query_id, correlation_id, tenant_id,
+                audit_chain_id, actor_id, {"citation_count": citation_count})
+
 # ── Massarius™ Phase 1 control events — ZL-ENG-03 §12 ────────────────────────
 
 async def audit_licence_prefilter_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
@@ -112,6 +142,16 @@ async def audit_bundle_built(db, *, query_id, correlation_id, tenant_id, audit_c
     await _emit(db, "bundle_built", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"source_bundle_id": source_bundle_id, "confidence_state": confidence_state,
                  "index_version": index_version}, replay_relevance="REQUIRED", commit=commit)
+
+async def audit_coverage_assessed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                  applies: bool, covered: bool, domain: str, topic: str,
+                                  required_authority: str):
+    await _emit(
+        db, "coverage_assessed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+        {"applies": applies, "covered": covered, "domain": domain, "topic": topic,
+         "required_authority": required_authority},
+        replay_relevance="REQUIRED" if applies and not covered else "SUPPORTING",
+    )
 
 async def audit_validation_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                       passed: bool, commit: bool = True):

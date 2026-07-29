@@ -11,6 +11,7 @@ from app.domains.support_incident.router import router as support_router
 from app.domains.evaluation.router import router as evaluation_router
 from app.orchestration.router import router as orchestration_router
 from app.orchestration.upload_router import router as upload_router
+from app.domains.calculation.api_router import router as calculation_router
 
 api_v1_router = APIRouter()
 api_v1_router.include_router(auth_router)
@@ -25,3 +26,4 @@ api_v1_router.include_router(chat_history_router)
 api_v1_router.include_router(orchestration_router)
 api_v1_router.include_router(kriton_workspace_router)
 api_v1_router.include_router(upload_router)
+api_v1_router.include_router(calculation_router)

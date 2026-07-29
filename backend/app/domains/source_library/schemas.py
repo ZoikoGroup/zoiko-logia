@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 
 class SourceCreateRequest(BaseModel):
@@ -17,6 +17,7 @@ class SourceCreateRequest(BaseModel):
 
 class SourceVersionPublic(BaseModel):
     id: str
+    source_id: str
     version_label: str
     status: str
     effective_from: date | None
@@ -29,6 +30,15 @@ class SourceVersionPublic(BaseModel):
     file_path: str | None = None
 
     model_config = {"from_attributes": True}
+
+    @computed_field
+    @property
+    def url(self) -> str | None:
+        # Deferred import — service.py imports SourceCreateRequest from this
+        # module, so a top-level import here would be circular.
+        from app.domains.source_library.service import resolve_source_url
+
+        return resolve_source_url(self.source_id, self.file_path)
 
 
 class SourcePublic(BaseModel):

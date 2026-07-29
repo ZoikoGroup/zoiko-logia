@@ -3,15 +3,6 @@ import { FileSpreadsheet, Plus } from "lucide-react";
 import type { ActiveMatter } from "@/types/commandCenter";
 import { StatusChip } from "./shared/StatusChip";
 
-const ACTION_LABEL: Record<string, string> = {
-  OPEN_MATTER: "Open",
-  ASK_KRITON_ABOUT_MATTER: "Ask Kriton",
-  ADD_EVIDENCE: "Add evidence",
-  CREATE_WORKPAPER: "Create workpaper",
-  CREATE_REPORT: "Create report",
-  REQUEST_REVIEW: "Request review",
-};
-
 function relativeTime(iso: string): string {
   const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
   if (minutes < 60) return `${minutes} min ago`;
