@@ -99,7 +99,7 @@ export default function SourceLicensingPage() {
   return (
     <PageShell
       title="Source Licensing"
-      subtitle="Approve, hold, expire, or restrict authoritative sources before they enter RAG/source bundles."
+      subtitle="Approve, hold, expire, or restrict authoritative sources before they enter source bundles."
       showMetrics={false}
     >
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">

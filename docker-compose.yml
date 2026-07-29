@@ -34,11 +34,30 @@ services:
       # for sign-up/sign-in to work (see backend/.env.example).
       SUPABASE_URL: ""
       SUPABASE_SERVICE_ROLE_KEY: ""
+      # Live web-search grounding for Ask Kriton (the searxng service below).
+      SEARXNG_URL: http://searxng:8080
+      # LLM answer composition — set GROQ_API_KEY here (or via env_file) for
+      # real answers; GROQ_MODEL overrides the default model.
+      GROQ_API_KEY: ""
     ports:
       - "8010:8010"
     depends_on:
       postgres:
         condition: service_healthy
+      searxng:
+        condition: service_started
+
+  searxng:
+    image: searxng/searxng
+    environment:
+      # Base URL SearXNG advertises; harmless for internal API use.
+      SEARXNG_BASE_URL: http://localhost:8888/
+    volumes:
+      # Mount a settings dir with the JSON format enabled (see
+      # searxng/settings.yml in this repo).
+      - ./searxng:/etc/searxng
+    ports:
+      - "8888:8080"
 
   seed:
     build: ./backend
@@ -52,8 +71,7 @@ services:
     restart: "no"
     command: >
       sh -c "sleep 5 &&
-      python scripts/seed_dev_user.py &&
-      python scripts/ingest_reference_sources.py"
+      python scripts/seed_dev_user.py"
 
   frontend:
     build: ./frontend

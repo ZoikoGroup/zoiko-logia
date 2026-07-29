@@ -141,6 +141,10 @@ class SourceCitation(BaseModel):
     ref_id: str
     source_id: str
     title: str
+    # Public URL the answer was grounded in (web-search sources) — the
+    # frontend renders this as a clickable link. None for internal/governed
+    # sources with no public URL.
+    url: Optional[str] = None
 
 
 class ComposedAnswer(BaseModel):
@@ -156,7 +160,7 @@ class ComposedAnswer(BaseModel):
 # ── Safety State — §12 ───────────────────────────────────────────────────────
 
 class SafetyState(BaseModel):
-    risk_level: str                          # LOW | MEDIUM | HIGH | RESTRICTED
+    risk_level: str                          # ZERO | LOW | MEDIUM | HIGH | RESTRICTED
     policy_state: str                        # allowed | blocked | needs_more_context
     disclaimer_required: bool = False
 

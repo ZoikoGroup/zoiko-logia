@@ -8,7 +8,7 @@ bottom).
 
 - Python venv set up at project root, `pip install -r requirements.txt` done.
 - Node.js + npm for the frontend.
-- Supabase project with the `vector` extension enabled.
+- A Supabase project (Auth + Postgres).
 - API key for at least one LLM provider (Groq recommended).
 
 ## 1. `backend/.env`
@@ -22,16 +22,15 @@ DATABASE_URL=postgresql://postgres.<project-ref>:<postgres-password>@aws-0-<regi
 # Non-superuser role for request-time queries (auto-created on first boot).
 APP_DATABASE_URL=postgresql://zoiko_app.<project-ref>:<a-password-you-choose>@aws-0-<region>.pooler.supabase.com:5432/postgres
 
-ENABLE_RAG_EMBEDDINGS=true
 ENABLE_ML_CLASSIFIER=true
 
 # Testing only — see warning at the bottom of this file.
 FORCE_DIRECT_ANSWER=true
 
-JWT_SECRET_KEY=<any-random-string>
-OIDC_ISSUER_URL=
-OIDC_CLIENT_ID=
-OIDC_CLIENT_SECRET=
+# Supabase Auth — Project Settings → API. Service role key is secret,
+# server-side only.
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
 
 # console.groq.com
 GROQ_API_KEY=<gsk_...>
@@ -42,34 +41,22 @@ ANTHROPIC_API_KEY=
 GOOGLE_API_KEY=
 AZURE_OPENAI_API_KEY=
 
-# Optional — cloud fallback parser when Docling fails on a document.
-LLAMA_CLOUD_API_KEY=<llx-...>
-
-VECTOR_INDEX_URL=
 OBJECT_STORAGE_URL=
 CELERY_BROKER_URL=
 ```
 
-## 2. One-time Supabase setup
-
-```sql
-create extension if not exists vector;
-```
-
-Tables, RLS policies, and the `zoiko_app` role are provisioned automatically
-on first boot.
-
-## 3. Start the backend
+## 2. Start the backend
 
 ```bash
 cd backend
-../.venv/Scripts/python.exe -m uvicorn app.main:app --reload --port 8000
+../.venv/Scripts/python.exe -m uvicorn app.main:app --reload --port 8010
 ```
 
 Wait for `Application startup complete.` (first boot is slower — it warms up
-the ML models). Verify: `curl http://localhost:8000/health`
+the ML risk classifier, tables/RLS policies, and the `zoiko_app` role are
+provisioned automatically). Verify: `curl http://localhost:8010/health`
 
-## 4. Start the frontend
+## 3. Start the frontend
 
 ```bash
 cd frontend
@@ -77,25 +64,21 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000` and go to the **Ask Kriton** page.
+Open `http://localhost:3000`, sign up/sign in, and go to the **Ask Kriton**
+page.
 
-## 5. Ingest reference documents
+## 4. Add sources to answer from
 
-Drop PDFs into `backend/data/sources/uk/` or `backend/data/sources/us/`, add
-a manifest entry in `scripts/ingest_reference_sources.py`, then:
+Kriton only answers from sources registered in the governed Source Library —
+add some via the **Source Licensing** admin page (or `POST /sources` +
+approve a version) so retrieval has something eligible to match against.
 
-```bash
-cd backend
-../.venv/Scripts/python.exe scripts/ingest_reference_sources.py
-```
+## 5. Verify
 
-Idempotent — re-running only processes documents not already ingested.
-
-## 6. Verify
-
-Ask a question covered by what you ingested (e.g. "What is FRS 100 and what
-does it apply to?"). You should get a direct answer with citations — no
-escalation, no clarification, no refusal (PII/jailbreak blocks still apply).
+Ask a question matching a category/jurisdiction you registered a source for
+(e.g. "What is FRS 100 and what does it apply to?" if you registered an FRS
+100 source). You should get a direct answer — no escalation, no
+clarification, no refusal (PII/jailbreak blocks still apply).
 
 ---
 

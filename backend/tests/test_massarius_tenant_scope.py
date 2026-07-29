@@ -18,7 +18,7 @@ from sqlalchemy import text
 
 from app.core.config import get_settings
 from app.core.database import AsyncSessionLocal, RequestSessionLocal
-from app.domains.massarius.tenant_scope import assert_tenant_isolated, table_exists
+from app.domains.massarius.tenant_scope import assert_tenant_isolated
 from app.domains.source_library.models import Source
 
 settings = get_settings()
@@ -78,30 +78,10 @@ async def test_no_tenant_context_sees_nothing():
     print("test_no_tenant_context_sees_nothing: PASSED")
 
 
-async def test_vector_table_rls_known_limitation():
-    """Documents rather than silently skips the flagged gap: kriton_vector_nodes
-    RLS (if the table exists) only applies to a connection made through the
-    non-superuser role. The live retrieval path in
-    app/domains/rag/retrieval.py connects via the superuser DATABASE_URL
-    directly, so RLS does not reach that query path yet — see
-    massarius/tenant_scope.py's module docstring."""
-    if settings.is_sqlite:
-        print("test_vector_table_rls_known_limitation: SKIPPED (SQLite has no RLS)")
-        return
-    async with AsyncSessionLocal() as db:
-        exists = await table_exists(db, "kriton_vector_nodes")  # type: ignore[arg-type]
-    print(
-        f"test_vector_table_rls_known_limitation: NOTED (table_exists={exists}) — "
-        "RLS policy applies only to non-superuser connections; the live vector "
-        "retrieval path does not use one. This is a known, flagged gap, not a pass."
-    )
-
-
 async def main():
     await test_sources_table_isolated_bypassing_application_layer()
     await test_no_tenant_context_sees_nothing()
-    await test_vector_table_rls_known_limitation()
-    print("All tests completed (see notes above for the flagged vector-table limitation).")
+    print("All tests completed.")
 
 
 if __name__ == "__main__":

@@ -66,7 +66,15 @@ def get_sync_db() -> Generator[Session, None, None]:
 # main.py's lifespan uses for schema creation/migrations, and what the
 # one-shot seed scripts (scripts/seed_dev_user.py, ingest_reference_sources.py)
 # import directly — those need to write rows unconstrained by RLS.
-async_engine = create_async_engine(to_async_url(settings.DATABASE_URL), echo=False)
+# pool_pre_ping revalidates a pooled connection before handing it out, and
+# pool_recycle drops connections older than 5 min — both needed because
+# Supabase's connection pooler silently closes idle connections, and without
+# these a reused-but-dead connection fails a request with
+# "asyncpg ... connection is closed" (intermittent, since it only hits stale
+# ones). Mirrors the sync `engine` above, which already sets pool_pre_ping.
+async_engine = create_async_engine(
+    to_async_url(settings.DATABASE_URL), echo=False, pool_pre_ping=True, pool_recycle=300
+)
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 
 # Request-time engine — deliberately separate from async_engine. Postgres
@@ -75,7 +83,10 @@ AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 # setup, request traffic must go through a distinct, non-superuser role for
 # RLS to actually apply. Falls back to the same URL when APP_DATABASE_URL
 # isn't set (SQLite, or a Postgres instance without the low-priv role).
-request_engine = create_async_engine(to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL), echo=False)
+request_engine = create_async_engine(
+    to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL),
+    echo=False, pool_pre_ping=True, pool_recycle=300,
+)
 RequestSessionLocal = async_sessionmaker(request_engine, expire_on_commit=False)
 
 def _identity_from_request(request: Request) -> tuple[str, str]:

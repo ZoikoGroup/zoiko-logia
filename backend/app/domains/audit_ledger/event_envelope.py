@@ -14,6 +14,7 @@ import contextvars
 from typing import Optional
 
 from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -99,7 +100,21 @@ async def record_event_async(db: AsyncSession, *, tenant_id: str = "GLOBAL_CONTR
     # _build_row already derived it in Python.
     new_chain_hash = row.chain_hash
     db.add(row)
-    await db.commit()
+    try:
+        await db.commit()
+    except DBAPIError as exc:
+        # Supabase's connection pooler can close the pooled connection while
+        # it sits idle during the long web-search + LLM calls that happen
+        # between audit writes in a single ask_kriton() request; the deferred
+        # commit then fails with "connection is closed". pool_pre_ping only
+        # validates at checkout (request start), not mid-request, so recover
+        # here: rollback discards the dead connection, and re-adding +
+        # committing acquires a fresh, pre-pinged one from the pool.
+        if not exc.connection_invalidated:
+            raise
+        await db.rollback()
+        db.add(row)
+        await db.commit()
     _cached_previous_chain_hash.set(new_chain_hash)
 
     # This commit just ended the transaction get_db() originally scoped to
@@ -128,6 +143,16 @@ def record_event_sync(db: Session, *, tenant_id: str = "GLOBAL_CONTROL", **kwarg
     )
     row = _build_row(tenant_id=tenant_id, previous_chain_hash=previous_chain_hash, **kwargs)
     db.add(row)
-    db.commit()
+    try:
+        db.commit()
+    except DBAPIError as exc:
+        # Same pooled-connection-reaped-mid-request recovery as the async
+        # path above (see its comment) — the sync session is likewise held
+        # idle across the slow calls and can be closed by the pooler.
+        if not exc.connection_invalidated:
+            raise
+        db.rollback()
+        db.add(row)
+        db.commit()
     db.refresh(row)
     return row

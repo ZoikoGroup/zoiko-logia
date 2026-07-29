@@ -97,7 +97,7 @@ export const NAV_SECTIONS: NavL1Section[] = [
         ],
       },
       { label: "Source Licensing", slug: "source-licensing", allowedRoles: SOURCE_KNOWLEDGE_GOVERNANCE, icon: FileCheck2 },
-      { label: "RAG Source Bundles", slug: "rag-source-bundles", allowedRoles: SOURCE_KNOWLEDGE_GOVERNANCE, icon: Layers },
+      { label: "Source Bundles", slug: "source-bundles", allowedRoles: SOURCE_KNOWLEDGE_GOVERNANCE, icon: Layers },
       { label: "Accounting Ontology", slug: "accounting-ontology", allowedRoles: SOURCE_KNOWLEDGE_GOVERNANCE, icon: Network },
       { label: "Learning & Syllabus Mapping", slug: "learning-syllabus-mapping", allowedRoles: SOURCE_KNOWLEDGE_GOVERNANCE, icon: BookOpen },
       { label: "Jurisdiction Rollout", slug: "jurisdiction-rollout", allowedRoles: SOURCE_KNOWLEDGE_GOVERNANCE, icon: Globe2 },

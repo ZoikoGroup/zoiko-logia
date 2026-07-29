@@ -7,9 +7,8 @@ This is a **folder/file skeleton, not an implementation**. Every `.py` file (exc
 The other architecture docs (Back-End Architecture Spec, Master Architecture Build Doctrine) deliberately leave the stack as an open decision. The Roadmap doc is the one place a concrete recommendation is made:
 
 - **FastAPI** (async) — API framework
-- **PostgreSQL + pgvector** — relational store + embeddings, in one database
+- **PostgreSQL** — relational store
 - **SQLAlchemy + Alembic** — ORM and migrations
-- **httpx / pdfplumber / BeautifulSoup** — source ingestion
 - **Celery or APScheduler** — background jobs
 - Provider-agnostic **model gateway** in front of Claude / GPT / Gemini / self-hosted models
 
@@ -39,7 +38,6 @@ Each domain folder generally has `models.py` / `schemas.py` / `router.py` / `ser
 | `identity/` | Back-End Architecture Spec | — (cross-cutting auth) |
 | `source_library/` | Kriton Authoritative Source Library & Licensing Register | Source licensing |
 | `ontology/` | Kriton Knowledge Graph Accounting Ontology | Ontology & syllabus (graph half) |
-| `rag/` | Kriton RAG Specification | — (query/answer pipeline, no direct admin page) |
 | `model_gateway/` | Kriton LLM System Architecture & Model Strategy | Model & prompt registry |
 | `risk_safety/` | Kriton AI Safety Risk Classification & Escalation | Risk policy, Escalation queue |
 | `evaluation/` | Kriton LLM Evaluation & Benchmarking, QA Test Plan & Release Gate | Evaluation gates, Release gates |

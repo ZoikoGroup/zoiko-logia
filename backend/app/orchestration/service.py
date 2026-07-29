@@ -19,6 +19,7 @@ Principles (§2):
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 import os
@@ -61,10 +62,9 @@ from app.orchestration.audit_events import (
 from app.domains.risk_safety.schemas import ClassifyRequest
 from app.domains.model_gateway import service as model_gateway_service
 from app.orchestration.compose import select_prompt
-from app.domains.rag.retrieval import retrieve_documents
-from app.domains.rag.reranker import Reranker
-from app.domains.rag.context_fit import build_grounded_context
-from app.domains.rag.redaction import redact_for_external_exposure
+from app.orchestration.redaction import redact_for_external_exposure
+from app.orchestration.websearch import web_search, build_web_grounded_prompt
+from app.orchestration.risk_llm import classify_risk
 
 # Massarius™ retrieval and evidence subsystem — Phase 1 control modules
 # (ZL-ENG-03). These wrap/replace the inline licence filtering, bundle
@@ -75,8 +75,6 @@ from app.domains.massarius import bundle_builder, license_gate
 from app.domains.massarius import risk_safety as massarius_risk_safety
 from app.domains.massarius.answer_validator import validate_answer
 from app.domains.massarius.policy_matrix import resolve_policy
-
-_reranker = Reranker(top_n=5)
 
 
 def _hash_query(query: str) -> str:
@@ -183,32 +181,27 @@ async def ask_kriton(
             store_idempotency(idempotency_key, tenant_id, response.model_dump())
         return response
 
+    # ── Kick off the live web search NOW, concurrently ──────────────────────
+    # SearXNG is the slowest single step (~several seconds waiting on search
+    # engines). It only depends on the query + jurisdiction — both already
+    # known and past the safety pre-screen — so start it here as a background
+    # task and let it run WHILE retrieval, risk classification and routing
+    # happen. We await its result only at composition time (below), where the
+    # answer actually needs the sources. This overlaps the long search with
+    # the rest of the pipeline instead of paying for them one after another.
+    # Fails soft exactly as before (returns [] on any error).
+    web_search_task = asyncio.create_task(
+        web_search(request.query, jurisdiction=request.jurisdiction, limit=5)
+    )
+
     # ── Step 4: Retrieve SourceBundle (Massarius™ keyword_mvp layer) (§7) ────
     await audit_retrieval_started(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
     )
-    # Fetched once here (top_k=30) and reused both for SourceBundle governance
-    # merging below and for the LLM's grounded context further down —
-    # retrieve_documents() embeds the query and runs a real Postgres vector
-    # search (profiled at ~20s on this setup), and was previously being
-    # called a second time, redundantly, for the exact same query later in
-    # this same function.
-    raw_chunks: list = []
-    if os.getenv("ENABLE_RAG_EMBEDDINGS", "").lower() in {"1", "true", "yes"}:
-        try:
-            raw_chunks = await retrieve_documents(
-                query=request.query,
-                tenant_id=tenant_id,
-                jurisdiction=request.jurisdiction or None,
-                top_k=30,
-            )
-        except Exception:
-            raw_chunks = []
     try:
         preliminary_bundle = await build_source_bundle(
             db, query=request.query, jurisdiction=request.jurisdiction, tenant_id=tenant_id,
-            raw_chunks=raw_chunks,
         )
         await audit_retrieval_completed(
             db, query_id=query_id, correlation_id=correlation_id,
@@ -285,6 +278,16 @@ async def ask_kriton(
     # retrieval failed).
     decision = massarius_risk_safety.classify_after_bundle(True, classify_request, sync_db)
     risk_level = decision.risk_level
+
+    # LLM risk override (ZERO/LOW/MEDIUM/HIGH): the built-in zero-shot model is
+    # weak and collapses ordinary questions into "uncertain -> MEDIUM". When a
+    # provider LLM is configured, use its rubric-based judgment instead — much
+    # more accurate ("What is a tax credit?" -> LOW, not MEDIUM). Fails soft:
+    # keeps the ML result if the LLM is unavailable. Never downgrades a
+    # pre-screen hard block — those RESTRICTED cases return before this point.
+    llm_risk = await classify_risk(request.query)
+    if llm_risk:
+        risk_level = llm_risk
 
     await audit_risk_classified(
         db, query_id=query_id, correlation_id=correlation_id,
@@ -462,44 +465,31 @@ async def ask_kriton(
         tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
     )
 
-    # Reuses raw_chunks fetched once back in Step 4 — see the comment there.
-    # Local dev should not block on Hugging Face model downloads just to serve
-    # the API shell, login, and deterministic routing flows.
-    context_text = ""
-    rag_citations: list[SourceCitation] = []
-    if raw_chunks:
-        try:
-            reranked = await _reranker.rerank(request.query, raw_chunks)
-            context_text, source_refs = build_grounded_context(reranked)
-            rag_citations = [
-                SourceCitation(
-                    ref_id=f"REF-{i+1}",
-                    # The chunk's real governed source_id (added to ingestion
-                    # metadata earlier), not its own arbitrary vector node_id —
-                    # citations should point at the actual catalog entry a
-                    # user/reviewer could look up, not an internal chunk id.
-                    # Falls back to node_id for chunks with no source_id
-                    # (e.g. ingested outside the governance workflow).
-                    source_id=chunk["metadata"].get("source_id") or chunk.get("node_id", f"chunk-{i}"),
-                    title=chunk["metadata"].get("title", "Uploaded Document"),
-                )
-                for i, chunk in enumerate(reranked)
-            ]
-        except Exception:
-            context_text = ""
-
-    # Build grounded prompt input
-    prompt = await select_prompt(db, request.mode)
-    if context_text:
-        grounded_input = (
-            f"Use ONLY the following retrieved context to answer the query. "
-            f"Cite sources using [REF-N] markers. Do not use general knowledge.\n\n"
-            f"=== Retrieved Context ===\n{context_text}\n\n"
-            f"=== User Query ===\n{request.query}"
+    # ── Web retrieval (SearXNG) ─────────────────────────────────────────────
+    # The answer is grounded in live web sources found via SearXNG, restricted
+    # (advisory) to authoritative accounting/tax/audit domains per
+    # jurisdiction. Each source becomes a clickable [REF-N] citation. Fails
+    # soft: if SearXNG is unreachable, web_sources is [] and the model answers
+    # from its own knowledge with no source panel.
+    # Started as a background task back at Step 4 so it ran concurrently with
+    # retrieval + risk classification — by now it is usually already done.
+    try:
+        web_sources = await web_search_task
+    except Exception:
+        web_sources = []
+    rag_citations: list[SourceCitation] = [
+        SourceCitation(
+            ref_id=f"REF-{i + 1}",
+            source_id=s.url,
+            title=s.title,
+            url=s.url,
         )
-    else:
-        # §2: No unsupported answering — must not answer from model knowledge when sources insufficient
-        grounded_input = request.query
+        for i, s in enumerate(web_sources)
+    ]
+
+    # Build grounded prompt input from the web sources.
+    prompt = await select_prompt(db, request.mode)
+    grounded_input = build_web_grounded_prompt(request.query, web_sources)
 
     # External-provider exposure boundary (ZL-ENG-03 §5.8): redact before
     # grounded_input leaves the tenant trust boundary for the model gateway.
@@ -516,26 +506,30 @@ async def ask_kriton(
 
     composed_text: Optional[str] = None
     prompt_id = "inline"
-    prompt_name = "Inline Context Prompt"
+    prompt_name = "Web-grounded Prompt"
+
+    # Speed optimisation: simple, low-risk questions (greetings, plain
+    # definitions) don't need the large 70B answer model — a small fast model
+    # answers them well and much quicker. MEDIUM/HIGH-risk questions (real
+    # advice, comparisons, judgment) keep the full GROQ_MODEL for depth and
+    # quality. Only applied when Groq is the active provider (its fast model
+    # names). answer_model=None means "use the provider's default model".
+    answer_model: Optional[str] = None
+    if risk_level in ("ZERO", "LOW") and os.getenv("GROQ_API_KEY"):
+        answer_model = os.getenv("GROQ_FAST_ANSWER_MODEL", "llama-3.1-8b-instant")
 
     try:
         if prompt:
             prompt_row, composed_text = await model_gateway_service.run_test_prompt(
-                db, prompt.id, grounded_input, actor_id, tenant_id, correlation_id=query_id
+                db, prompt.id, grounded_input, actor_id, tenant_id,
+                correlation_id=query_id, model=answer_model,
             )
             prompt_id = prompt_row.id
             prompt_name = prompt_row.name
         else:
-            # No prompt template — use grounded context directly as fallback
-            if context_text:
-                composed_text = (
-                    f"Based on the retrieved sources:\n\n{context_text}\n\n"
-                    f"Please note: This is an educational summary only. "
-                    f"Consult a qualified professional for specific advice."
-                )
-            else:
-                # No context, no prompt — cannot answer safely
-                composed_text = None
+            # No approved prompt template seeded — fall back to a direct
+            # provider completion so web-grounded answering still works.
+            composed_text = await model_gateway_service.run_grounded_completion(grounded_input)
 
     except Exception as exc:
         await audit_composition_failed(
@@ -685,6 +679,14 @@ async def ask_kriton(
 
     # Build limitations list
     limitations: list[str] = list(decision.limitations or [])
+    # When the LLM authoritatively re-classified risk, drop the weak ML
+    # model's "uncertain / needs clarification" artifact — it's noise next to
+    # a confidently-answered response.
+    if llm_risk:
+        limitations = [
+            l for l in limitations
+            if "CLASSIFICATION_UNCERTAIN" not in l and "clarification" not in l.lower()
+        ]
     if route_decision.disclaimer_required:
         limitations.append(
             "This response is for educational purposes only. Consult a qualified professional."

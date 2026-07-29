@@ -31,7 +31,7 @@ type BundlePayload = {
 
 const SOURCES_PREVIEW_COUNT = 4;
 
-export default function RagSourceBundlesPage() {
+export default function SourceBundlesPage() {
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [sourceTitles, setSourceTitles] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -67,17 +67,16 @@ export default function RagSourceBundlesPage() {
 
   return (
     <PageShell
-      title="RAG Source Bundles"
-      subtitle="Source bundles assembled for retrieval-augmented answer generation — one per Ask Kriton query, built by the real orchestration retrieval step."
+      title="Source Bundles"
+      subtitle="Source bundles assembled for each Ask Kriton query — the real sources matched by the orchestration retrieval step."
       showMetrics={false}
     >
       {error && <p className="text-xs text-bad mb-3">{error}</p>}
 
       <div className="rounded-xl border border-line bg-soft p-3 mb-4 text-xs text-muted">
         Showing the 12 most recent bundles. Each shows the real sources matched for one query, by category and
-        jurisdiction — a proportionate retrieval step (category + jurisdiction match), not semantic ranking yet, so a
-        bundle can include sources that turn out not to be relevant to the specific question. Full semantic
-        retrieval (embeddings, reranking, citation anchors) is the still-unbuilt <code>rag</code> domain.
+        jurisdiction — a proportionate retrieval step (category + jurisdiction match), not semantic ranking. A
+        bundle can include sources that turn out not to be relevant to the specific question.
       </div>
 
       {loading ? (

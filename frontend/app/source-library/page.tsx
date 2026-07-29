@@ -84,7 +84,7 @@ export default function SourceLibraryPage() {
   return (
     <PageShell
       title="Source Library"
-      subtitle="Browse and manage authoritative source material by category before it enters licensing and RAG bundles."
+      subtitle="Browse and manage authoritative source material by category before it enters licensing and source bundles."
       showMetrics={false}
     >
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">

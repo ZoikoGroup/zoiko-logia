@@ -45,12 +45,14 @@ def _get_classifier_pipeline():
         CLASSIFIER_VERSION = "fallback-offline"
     return classifier_pipeline
 
-# Semantic classes for the Zero-Shot model
+# Semantic classes for the Zero-Shot model. Each maps to one of the four
+# risk levels (ZERO/LOW/MEDIUM/HIGH) in classify() below.
 CANDIDATE_LABELS = [
-    "regulated tax or legal advice",
-    "accounting or audit opinion",
-    "general educational concept",
-    "casual conversation or navigational help"
+    "regulated tax or legal advice",              # -> HIGH
+    "accounting or audit opinion",                # -> HIGH
+    "applied accounting procedure or how-to",     # -> MEDIUM
+    "general educational concept",                # -> LOW
+    "casual conversation or navigational help",   # -> ZERO
 ]
 
 # ─── L1 Pattern Banks (Defense-in-Depth) ──────────────────────────────────
@@ -170,16 +172,24 @@ def classify(
             ["Query ambiguous; CLASSIFICATION_UNCERTAIN entered. Needs clarification."]
         )
 
-    # Route based on ML semantic intent
+    # Route based on ML semantic intent (ZERO/LOW/MEDIUM/HIGH scheme)
     if top_label in ["regulated tax or legal advice", "accounting or audit opinion"]:
         risk_level = RiskLevel.HIGH
         rules_applied.append("l2-semantic-high-risk")
-    elif top_label == "general educational concept" or mode == "Learning":
+    elif top_label == "applied accounting procedure or how-to" or mode == "Learning":
         risk_level = RiskLevel.MEDIUM
         rules_applied.append("l2-semantic-medium-risk")
-    else:
+    elif top_label == "general educational concept":
         risk_level = RiskLevel.LOW
         rules_applied.append("l2-semantic-low-risk")
+    elif top_label == "casual conversation or navigational help":
+        risk_level = RiskLevel.ZERO
+        rules_applied.append("l2-semantic-zero-risk")
+    else:
+        # Unknown/unscored intent — default to LOW, not ZERO, so an
+        # unclassified accounting question still carries a governance floor.
+        risk_level = RiskLevel.LOW
+        rules_applied.append("l2-semantic-low-risk-default")
 
     # ── Context & Source Overrides (Section 6 & 8) ──────────────────────
     # tenant_policy_conflict is a tenant-level override, not part of the

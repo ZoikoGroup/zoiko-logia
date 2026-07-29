@@ -77,6 +77,16 @@ async def approve_prompt(
     return prompt
 
 
+async def run_grounded_completion(input_text: str) -> str:
+    """Direct provider completion with no approved-prompt-template row —
+    the fallback used by orchestration when no PromptTemplate is seeded yet,
+    so web-grounded answering still works out of the box. Returns the model
+    output text (adapters fail soft, returning an error string rather than
+    raising)."""
+    adapter = _select_adapter()
+    return await adapter.complete(input_text)
+
+
 async def run_test_prompt(
     db: AsyncSession,
     prompt_id: str,
@@ -84,6 +94,7 @@ async def run_test_prompt(
     actor_id: str | None = None,
     tenant_id: str = "GLOBAL_CONTROL",
     correlation_id: str | None = None,
+    model: str | None = None,
 ) -> tuple[PromptTemplate, str]:
     result = await db.execute(select(PromptTemplate).where(PromptTemplate.id == prompt_id))
     prompt = result.scalar_one_or_none()
@@ -95,7 +106,17 @@ async def run_test_prompt(
     # back to MockProviderAdapter only when no provider API key is set at all.
     adapter = _select_adapter()
     provider_name = type(adapter).__name__.replace("Adapter", "").lower()
-    output = await adapter.complete(f"[{prompt.name} {prompt.version}]\n\n{input_text}")
+    full_prompt = f"[{prompt.name} {prompt.version}]\n\n{input_text}"
+    # Optional per-call model override (e.g. a smaller/faster model for
+    # low-risk questions). Falls back gracefully for adapters whose complete()
+    # takes no model argument (the mock adapter).
+    if model:
+        try:
+            output = await adapter.complete(full_prompt, model=model)
+        except TypeError:
+            output = await adapter.complete(full_prompt)
+    else:
+        output = await adapter.complete(full_prompt)
 
     # Store a hash of the output, not the raw text, per the privacy-by-design
     # doctrine (Section 9): raw prompt/output retention depends on risk class,

@@ -13,7 +13,6 @@ from app.core.config import get_settings
 from app.core.database import async_engine, SessionLocal
 from app.core.rate_limit import limiter
 from app.db.base import Base
-from app.domains.massarius.tenant_scope import ensure_vector_table_rls
 
 settings = get_settings()
 
@@ -132,6 +131,37 @@ async def _migrate_user_profile_columns():
             await conn.execute(text("ALTER TABLE users DROP COLUMN IF EXISTS hashed_password"))
 
 
+async def _migrate_orphan_tenant_id_not_null():
+    """Relax stale `tenant_id NOT NULL` constraints left by earlier schema
+    revisions on ledger/case tables (safety_events, escalation_cases,
+    safety_overrides, ...) whose current ORM models no longer define
+    tenant_id and never populate it. On a DB still carrying the old
+    constraint, every insert into those tables fails with a NotNullViolation
+    (e.g. the risk_classification_applied event on every query, or an
+    auto-escalation case on a HIGH-risk query). create_all() never alters an
+    existing table, so this reconciles them in place.
+
+    Generic on purpose — it drops the NOT NULL only where the mapped model
+    lacks a tenant_id column, so tables that legitimately require tenant_id
+    for RLS (sources, source_versions, users, ...) are never touched.
+    Postgres-only — SQLite dev DBs never had the constraint."""
+    if settings.is_sqlite:
+        return
+    async with async_engine.begin() as conn:
+        rows = await conn.execute(text(
+            "SELECT table_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND column_name = 'tenant_id' "
+            "AND is_nullable = 'NO'"
+        ))
+        for (tbl,) in rows.fetchall():
+            model_table = Base.metadata.tables.get(tbl)
+            if model_table is not None and "tenant_id" in model_table.columns:
+                continue  # model owns tenant_id (e.g. RLS tables) — leave as-is
+            await conn.execute(
+                text(f'ALTER TABLE "{tbl}" ALTER COLUMN tenant_id DROP NOT NULL')
+            )
+
+
 async def _setup_user_rls():
     """Users can only read/insert/update their own row — except a tenant
     Admin, who can also see every user in their own tenant (the existing
@@ -231,22 +261,6 @@ async def _provision_app_role(conn):
         )
     )
 
-    # Supabase installs the `vector` extension (and its <=>/<#>/<-> operators)
-    # into a dedicated "extensions" schema, not "public" — a newly created
-    # role has neither USAGE on that schema nor it on its search_path, so
-    # pgvector queries fail with "operator does not exist: ... <=> unknown"
-    # (Postgres can't even see the operator to consider it, let alone resolve
-    # types). Self-hosted/non-Supabase Postgres installs vector into public,
-    # so this schema simply won't exist there — guard and skip.
-    has_extensions_schema = await conn.execute(
-        text("SELECT 1 FROM pg_namespace WHERE nspname = 'extensions'")
-    )
-    if has_extensions_schema.first() is not None:
-        await conn.execute(text(f"GRANT USAGE ON SCHEMA extensions TO {_pg_ident(role)}"))
-        await conn.execute(
-            text(f'ALTER ROLE {_pg_ident(role)} SET search_path TO "$user", public, extensions')
-        )
-
 
 async def _setup_source_rls():
     """RG-02: DB-level tenant isolation on sources/source_versions via
@@ -268,16 +282,6 @@ async def _setup_source_rls():
             await conn.execute(
                 text(f"CREATE POLICY {policy} ON {table} USING {_TENANT_POLICY_USING[table]}")
             )
-
-        # ZL-ENG-03 §5.8 — same RLS treatment for the Massarius™ vector-store
-        # table, when it already exists (llama-index creates it lazily on
-        # first retrieval, not via Base.metadata.create_all — see
-        # massarius/tenant_scope.py's docstring for the known limitation that
-        # this doesn't reach the live retrieval query path, which still
-        # connects via the superuser role).
-        if settings.APP_DATABASE_URL:
-            role = make_url(settings.APP_DATABASE_URL).username
-            await ensure_vector_table_rls(conn, role=role)
 
 
 def _seed_defaults():
@@ -524,46 +528,24 @@ def _seed_users():
 
 
 async def _warm_up_ml_models():
-    """Load the lazy-singleton embedding/reranker/risk-classifier models once
-    here at startup, instead of leaving them to load on whichever request
-    happens to arrive first. Profiling showed each one's first-ever load in a
-    fresh process costs ~40-60s — almost entirely a one-time
-    torch/transformers/sentence-transformers import tax paid once per
-    process, not per query (a second call in the same process is ~0s). Left
-    lazy, that cost silently lands on an arbitrary early user's request
-    instead of here, where it just extends server startup instead.
-
-    Loaded sequentially, not concurrently: this app has been run on a
-    memory-constrained dev machine where loading all three at once (each
-    spinning up its own torch tensors/allocations in parallel) pushed peak
-    memory past what was available and segfaulted the whole process on
-    startup. One at a time keeps peak memory to roughly one model's worth —
-    a few seconds slower startup is a much better trade than crashing.
+    """Load the lazy-singleton risk-classifier model once here at startup,
+    instead of leaving it to load on whichever request happens to arrive
+    first. Profiling showed its first-ever load in a fresh process costs
+    ~40-60s — almost entirely a one-time torch/transformers import tax paid
+    once per process, not per query (a second call in the same process is
+    ~0s). Left lazy, that cost silently lands on an arbitrary early user's
+    request instead of here, where it just extends server startup instead.
     """
     import asyncio as _asyncio
 
     loop = _asyncio.get_event_loop()
-
-    def _load_embed():
-        from app.domains.rag.embeddings import get_embed_model
-
-        get_embed_model()
-
-    def _load_reranker():
-        from llama_index.core.postprocessor import SentenceTransformerRerank
-
-        from app.domains.rag.reranker import RERANKER_MODEL
-
-        SentenceTransformerRerank(model=RERANKER_MODEL, top_n=5)
 
     def _load_classifier():
         from app.domains.risk_safety.risk_classifier import _get_classifier_pipeline
 
         _get_classifier_pipeline()
 
-    steps = [("embedding", _load_embed)]
-    if os.getenv("ENABLE_RAG_EMBEDDINGS", "").lower() in {"1", "true", "yes"}:
-        steps.append(("reranker", _load_reranker))
+    steps = []
     if os.getenv("ENABLE_ML_CLASSIFIER", "").lower() in {"1", "true", "yes"}:
         steps.append(("risk classifier", _load_classifier))
 
@@ -582,6 +564,7 @@ async def lifespan(app: FastAPI):
     await _migrate_tenant_columns()
     await _migrate_source_licence_columns()
     await _migrate_user_profile_columns()
+    await _migrate_orphan_tenant_id_not_null()
     await _setup_source_rls()
     await _setup_user_rls()
     _seed_defaults()

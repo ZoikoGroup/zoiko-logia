@@ -541,6 +541,8 @@ export type SourceCitation = {
   ref_id: string;
   source_id: string;
   title: string;
+  /** Public URL the answer was grounded in (web sources) — clickable in the UI. */
+  url?: string | null;
 };
 
 export type ComposedAnswer = {
@@ -553,7 +555,7 @@ export type ComposedAnswer = {
 
 /** §12 SafetyState — frontend renders from this, not by parsing answer text */
 export type SafetyState = {
-  risk_level: "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
+  risk_level: "ZERO" | "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
   policy_state: "allowed" | "blocked" | "needs_more_context";
   disclaimer_required: boolean;
   refusal_text?: string;
@@ -695,22 +697,3 @@ export async function updateDraft(token: string, id: string, payload: DraftUpdat
   return res.json();
 }
 
-export type UploadResponse = {
-  status: string;
-  title: string;
-  chunks_stored: string;
-  tenant_id: string;
-  jurisdiction: string;
-  file_path: string;
-};
-
-export async function uploadDocument(token: string, file: File): Promise<UploadResponse> {
-  const form = new FormData();
-  form.append("file", file);
-  // Note: do NOT set Content-Type header — browser sets it with boundary automatically
-  const res = await authedFetch("/kriton/upload", token, {
-    method: "POST",
-    body: form,
-  });
-  return res.json();
-}

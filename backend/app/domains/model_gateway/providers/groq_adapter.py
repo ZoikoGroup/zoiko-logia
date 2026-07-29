@@ -2,10 +2,22 @@ import os
 from groq import AsyncGroq
 
 _SYSTEM_PROMPT = (
-    "You are Kriton™, a helpful professional advisor. Answer based only on "
-    "the provided context. If no context is provided, state that you cannot "
-    "answer without sufficient source material."
+    "You are Kriton™, a professional accounting, tax, audit and payroll "
+    "advisor. Answer the user's question using ONLY the numbered web sources "
+    "provided in the prompt, and cite every claim with its matching [REF-N] "
+    "marker. If the sources do not contain the answer, say so plainly rather "
+    "than guessing. Write clear, well-structured answers: use short "
+    "paragraphs, and bullet points or numbered steps where they aid "
+    "readability. Do not give definitive personal financial/legal advice — "
+    "explain the general position and note when a qualified professional "
+    "should be consulted."
 )
+
+# Default Groq model. Override with GROQ_MODEL in the environment. Note: Groq
+# periodically retires models — if you get a "model_decommissioned" error,
+# check console.groq.com/docs/models and update GROQ_MODEL (e.g. to
+# llama-3.3-70b-versatile).
+_DEFAULT_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile")
 
 
 class GroqAdapter:
@@ -21,7 +33,7 @@ class GroqAdapter:
         self.api_key = os.environ.get("GROQ_API_KEY")
         self.client = AsyncGroq(api_key=self.api_key) if self.api_key else None
 
-    async def complete(self, prompt: str, model: str = "llama-3.1-8b-instant") -> str:
+    async def complete(self, prompt: str, model: str = _DEFAULT_MODEL) -> str:
         if not self.client:
             return "[Error: GROQ_API_KEY not found in environment. Please add it to backend/.env]"
 
