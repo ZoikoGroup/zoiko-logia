@@ -46,9 +46,21 @@ async def test_mediator_navigation_fast_path_skips_retrieval_and_model(monkeypat
     monkeypatch.setattr(service, "audit_route_selected", noop)
     monkeypatch.setattr(service, "_finalise_and_return", noop)
     monkeypatch.setattr(
+        service.risk_safety_service,
+        "pre_screen",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
         service,
         "build_source_bundle",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("retrieval must not run")),
+    )
+    monkeypatch.setattr(
+        service,
+        "understand_query",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("query understanding must not run for deterministic navigation")
+        ),
     )
     monkeypatch.setattr(
         service.model_gateway_service,

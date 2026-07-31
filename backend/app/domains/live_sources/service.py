@@ -13,6 +13,9 @@ answers that don't need it).
 """
 from __future__ import annotations
 
+import asyncio
+
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -35,10 +38,37 @@ from app.domains.live_sources.connectors.oecd import OECDConnector
 from app.domains.live_sources.connectors.ons import ONSConnector
 from app.domains.live_sources.connectors.sec_edgar import SECEdgarConnector
 from app.domains.live_sources.connectors.world_bank import WorldBankConnector
+from app.domains.live_sources.connectors.ecb import ECBConnector
+from app.domains.live_sources.connectors.imf import IMFConnector
+from app.domains.live_sources.connectors.vies import VIESConnector
+from app.domains.live_sources.connectors.regulations_gov import RegulationsGovLiveConnector
+from app.domains.live_sources.connectors.evidence_live import EvidenceLiveConnector
+from app.domains.live_sources.connectors.cellar import CellarConnector
+from app.domains.live_sources.connectors.legislation_gov_uk import LegislationGovUKConnector
+from app.domains.live_sources.connectors.ted import TEDConnector
+from app.domains.live_sources.connectors.sam_gov import SAMGovConnector
+from app.domains.live_sources.connectors.sanctions_live import SanctionsLiveConnector
 from app.domains.live_sources.schemas import LiveFetchOutcome, NormalizedResponse
 from app.orchestration.schemas import SourceSummary
 
 settings = get_settings()
+
+_PROVIDER_CATEGORIES = {
+    "vies": "tax-compliance",
+    "regulations_gov": "us-regulations",
+    "cellar": "eu-legislation",
+    "legislation_gov_uk": "uk-legislation",
+    "ted": "public-procurement",
+    "sam_gov": "public-procurement",
+    "ofac": "financial-crime",
+    "un_sanctions": "financial-crime",
+    "uk_sanctions": "financial-crime",
+    "eu_sanctions": "financial-crime",
+    "sec_edgar": "company-financials",
+    "companies_house": "company-financials",
+    "gleif": "company-financials",
+    "frankfurter": "fx-rates",
+}
 
 _CONNECTORS = {
     "world_bank": WorldBankConnector(base_url=settings.WORLD_BANK_API_BASE_URL),
@@ -52,6 +82,32 @@ _CONNECTORS = {
     ),
     "oecd": OECDConnector(base_url=settings.OECD_API_BASE_URL),
     "gleif": GLEIFConnector(base_url=settings.GLEIF_API_BASE_URL),
+    "ecb": ECBConnector(base_url=settings.ECB_API_BASE_URL),
+    "imf": IMFConnector(base_url=settings.IMF_API_BASE_URL),
+    "vies": VIESConnector(base_url=settings.VIES_API_BASE_URL),
+    "regulations_gov": RegulationsGovLiveConnector(
+        base_url=settings.REGULATIONS_GOV_API_BASE_URL, api_key=settings.REGULATIONS_GOV_API_KEY,
+    ),
+    "cellar": EvidenceLiveConnector("cellar", CellarConnector(settings.CELLAR_SPARQL_URL)),
+    "legislation_gov_uk": EvidenceLiveConnector(
+        "legislation_gov_uk", LegislationGovUKConnector(settings.LEGISLATION_GOV_UK_BASE_URL),
+    ),
+    "ted": EvidenceLiveConnector("ted", TEDConnector(settings.TED_API_BASE_URL)),
+    "sam_gov": EvidenceLiveConnector(
+        "sam_gov", SAMGovConnector(settings.SAM_GOV_OPPORTUNITIES_URL, settings.SAM_GOV_API_KEY),
+    ),
+    "ofac": SanctionsLiveConnector("ofac", "OFAC SDN List", "https://ofac.treasury.gov/sanctions-list-service"),
+    "un_sanctions": SanctionsLiveConnector(
+        "un_sanctions", "UN Security Council Consolidated List",
+        "https://main.un.org/securitycouncil/en/content/un-sc-consolidated-list",
+    ),
+    "uk_sanctions": SanctionsLiveConnector(
+        "uk_sanctions", "UK Sanctions List", "https://www.gov.uk/government/publications/the-uk-sanctions-list",
+    ),
+    "eu_sanctions": SanctionsLiveConnector(
+        "eu_sanctions", "EU Consolidated Financial Sanctions List",
+        "https://finance.ec.europa.eu/eu-and-world/sanctions-restrictive-measures_en",
+    ),
 }
 
 
@@ -99,7 +155,12 @@ async def fetch_live_data(db: AsyncSession, *, query: str, tenant_id: str, juris
         return LiveFetchOutcome(intent=None)
 
     cache_key = cache.make_cache_key(intent)
-    cached = await cache.get_cached(db, cache_key)
+    try:
+        cached = await cache.get_cached(db, cache_key)
+    except Exception:
+        # Cache availability must never decide whether authoritative data
+        # can be fetched or whether the enclosing Ask request survives.
+        cached = None
     if cached is not None:
         return LiveFetchOutcome(intent=intent, cache_hit=True, succeeded=True, normalized=cached)
 
@@ -107,24 +168,54 @@ async def fetch_live_data(db: AsyncSession, *, query: str, tenant_id: str, juris
     if connector is None:
         return LiveFetchOutcome(intent=intent, cache_hit=False, succeeded=False, error=f"no connector for {intent.provider_key}")
 
+    last_error: Exception | None = None
+    attempts = max(1, settings.LIVE_SOURCE_MAX_ATTEMPTS)
+    for attempt in range(attempts):
+        try:
+            shared_client = get_shared_http_client()
+            normalized = await connector.fetch(
+                intent,
+                timeout=settings.LIVE_SOURCE_HTTP_TIMEOUT_SECONDS,
+                client=shared_client,
+            )
+            try:
+                await cache.set_cached(
+                    db,
+                    cache_key=cache_key,
+                    provider_key=intent.provider_key,
+                    normalized=normalized,
+                    ttl_seconds=settings.LIVE_SOURCE_CACHE_TTL_SECONDS,
+                )
+            except Exception:
+                await db.rollback()
+            return LiveFetchOutcome(intent=intent, cache_hit=False, succeeded=True, normalized=normalized)
+        except Exception as exc:
+            last_error = exc
+            retryable = isinstance(exc, httpx.TransportError) or (
+                isinstance(exc, httpx.HTTPStatusError)
+                and (exc.response.status_code == 429 or exc.response.status_code >= 500)
+            )
+            if not retryable or attempt + 1 >= attempts:
+                break
+            delay = settings.LIVE_SOURCE_RETRY_BACKOFF_SECONDS * (attempt + 1)
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+                retry_after = exc.response.headers.get("Retry-After", "")
+                if retry_after.isdigit():
+                    delay = min(float(retry_after), 5.0)
+            await asyncio.sleep(delay)
+
     try:
-        shared_client = get_shared_http_client()
-        normalized = await connector.fetch(intent, timeout=settings.LIVE_SOURCE_HTTP_TIMEOUT_SECONDS, client=shared_client)
-        await cache.set_cached(
-            db,
-            cache_key=cache_key,
-            provider_key=intent.provider_key,
-            normalized=normalized,
-            ttl_seconds=settings.LIVE_SOURCE_CACHE_TTL_SECONDS,
-        )
-        return LiveFetchOutcome(intent=intent, cache_hit=False, succeeded=True, normalized=normalized)
-    except Exception as exc:
-        # Stale cache fallback: if the live network fetch failed (DNS error, timeout, HTTP 5xx),
-        # return the last known cached record if available, rather than failing the request.
         stale = await cache.get_cached(db, cache_key, ignore_ttl=True)
-        if stale is not None:
-            return LiveFetchOutcome(intent=intent, cache_hit=True, succeeded=True, normalized=stale)
-        return LiveFetchOutcome(intent=intent, cache_hit=False, succeeded=False, error=str(exc))
+    except Exception:
+        stale = None
+    if stale is not None:
+        return LiveFetchOutcome(intent=intent, cache_hit=True, succeeded=True, normalized=stale)
+    return LiveFetchOutcome(
+        intent=intent,
+        cache_hit=False,
+        succeeded=False,
+        error=str(last_error) if last_error is not None else "live source fetch failed",
+    )
 
 
 def make_live_source_id(normalized: NormalizedResponse) -> str:
@@ -144,7 +235,7 @@ def to_source_summary(normalized: NormalizedResponse) -> SourceSummary:
     return SourceSummary(
         id=make_live_source_id(normalized),
         title=normalized.citation_title,
-        category="macro-economic-data",
+        category=_PROVIDER_CATEGORIES.get(normalized.provider_key, "macro-economic-data"),
         jurisdiction_scope=normalized.country_label,
         version_label=normalized.observation_period,
         status="ACTIVE",

@@ -310,7 +310,8 @@ _FACTUAL_LOOKUP_OVERRIDE_PATTERN = re.compile(
     r"\b(rate|rates|amount|amounts|percentage|percent|threshold|thresholds|"
     r"limit|limits|cap|caps|deduction|deductions|credit|credits|exemption|"
     r"exemptions|price|prices|cost|costs|fee|fees|number|value|values|date|"
-    r"dates|deadline|deadlines|mistake|mistakes|checklist|checklists)\b",
+    r"dates|deadline|deadlines|indicator|indicators|mistake|mistakes|"
+    r"checklist|checklists|process|procedure|step|steps|timeline)\b",
     re.IGNORECASE,
 )
 # 2026-07-23 real incident: "What is $500 minus $200?" also matched the

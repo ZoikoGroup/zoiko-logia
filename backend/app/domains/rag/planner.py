@@ -6,10 +6,20 @@ import uuid
 from app.orchestration.schemas import RetrievalPlan
 
 
-def create_retrieval_plan(query: str, jurisdiction: str, *, embeddings_enabled: bool) -> RetrievalPlan:
+def create_retrieval_plan(
+    query: str,
+    jurisdiction: str,
+    *,
+    embeddings_enabled: bool,
+    requires_current_sources: bool | None = None,
+) -> RetrievalPlan:
     """Declare retrieval intent without reading sources or applying policy."""
     lowered = query.lower()
-    requires_current = any(term in lowered for term in ("current", "today", "latest", "rate", "2026"))
+    requires_current = (
+        requires_current_sources
+        if requires_current_sources is not None
+        else any(term in lowered for term in ("current", "today", "latest", "rate", "2026"))
+    )
     methods = ["keyword"]
     strategy = "keyword"
     if embeddings_enabled:

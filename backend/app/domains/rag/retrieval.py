@@ -1,5 +1,6 @@
 import asyncio
 import contextvars
+import logging
 import os
 from typing import List, Dict, Any
 from llama_index.core import VectorStoreIndex, StorageContext
@@ -12,6 +13,7 @@ from app.domains.jurisdiction_locale.service import acceptable_jurisdiction_scop
 from app.domains.rag.embeddings import get_embed_model, get_query_embedding_cached, EMBED_DIM
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 # Set immediately before every retrieve_documents() call so the pool
@@ -98,6 +100,11 @@ async def retrieve_documents(
     exactly as before (backward compatible).
     """
     embed_model = get_embed_model()
+    jurisdiction_scopes = (
+        acceptable_jurisdiction_scopes(jurisdiction)
+        if jurisdiction
+        else None
+    )
 
     # 1. Setup metadata filters — a chunk is retrievable if it's shared
     # (is_tenant_private == "false", e.g. a regulatory standard ingested
@@ -124,7 +131,7 @@ async def retrieve_documents(
             MetadataFilter(key="source_id", value=allowed_source_ids, operator=FilterOperator.IN)
         )
     if jurisdiction:
-        scopes = acceptable_jurisdiction_scopes(jurisdiction)
+        scopes = jurisdiction_scopes
         if len(scopes) == 1:
             filters_list.append(ExactMatchFilter(key="jurisdiction", value=scopes[0]))
         else:
@@ -198,16 +205,58 @@ async def retrieve_documents(
         return results
     else:
         # Fallback local SimpleVectorStore retrieval for SQLite
-        persist_dir = "./vector_store"
+        persist_dir = settings.LOCAL_VECTOR_STORE_DIR
         if not os.path.exists(persist_dir) or not os.path.exists(os.path.join(persist_dir, "default__vector_store.json")):
             return []
             
         storage_context = StorageContext.from_defaults(persist_dir=persist_dir)
+        stored_dimensions = {
+            len(embedding)
+            for embedding in storage_context.vector_store.data.embedding_dict.values()
+        }
+        if stored_dimensions and stored_dimensions != {EMBED_DIM}:
+            logger.error(
+                "Local vector index uses embedding dimensions %s; expected %s. "
+                "Re-ingest sources before using local retrieval.",
+                sorted(stored_dimensions),
+                EMBED_DIM,
+            )
+            return []
+
         from llama_index.core import load_index_from_storage
         index = load_index_from_storage(storage_context, embed_model=embed_model)
         
-        retriever = index.as_retriever(similarity_top_k=top_k, filters=filters)
-        nodes = await loop.run_in_executor(None, lambda: retriever.retrieve(query_input))
+        # SimpleVectorStore rejects nested AND/OR MetadataFilters. Retrieve
+        # the local candidates and enforce the same scope rules before
+        # returning any result.
+        candidate_count = max(top_k, len(index.docstore.docs))
+        retriever = index.as_retriever(similarity_top_k=candidate_count)
+        nodes = await loop.run_in_executor(
+            None,
+            lambda: retriever.retrieve(query_input),
+        )
+
+        def is_allowed(node) -> bool:
+            metadata = node.node.metadata
+            shared = str(
+                metadata.get("is_tenant_private", "")
+            ).lower() == "false"
+            owned = metadata.get("tenant_id") == tenant_id
+            if not (shared or owned):
+                return False
+            if (
+                allowed_source_ids is not None
+                and metadata.get("source_id") not in allowed_source_ids
+            ):
+                return False
+            if (
+                jurisdiction_scopes is not None
+                and metadata.get("jurisdiction") not in jurisdiction_scopes
+            ):
+                return False
+            return True
+
+        nodes = [node for node in nodes if is_allowed(node)][:top_k]
         
         results = []
         for n in nodes:

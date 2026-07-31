@@ -12,8 +12,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
-os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test.db"
-os.environ.pop("APP_DATABASE_URL", None)
+if os.environ.get("RUN_POSTGRES_TESTS") != "1":
+    os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test.db"
+    os.environ.pop("APP_DATABASE_URL", None)
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 

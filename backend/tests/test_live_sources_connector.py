@@ -16,6 +16,8 @@ import os
 import sys
 import uuid
 
+import pytest
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.core.config import get_settings
@@ -42,6 +44,7 @@ from app.domains.massarius.license_gate import check_eligibility
 from app.orchestration.schemas import SourceBundle
 
 settings = get_settings()
+requires_network = pytest.mark.network
 
 
 def test_classifier_detects_gdp_and_country():
@@ -399,6 +402,7 @@ def test_classifier_gleif_is_fallback_for_non_us_uk_jurisdictions():
     print("test_classifier_gleif_is_fallback_for_non_us_uk_jurisdictions: PASSED")
 
 
+@requires_network
 async def test_world_bank_connector_fetches_real_data():
     connector = WorldBankConnector(base_url=settings.WORLD_BANK_API_BASE_URL)
     intent = LiveDataIntent(
@@ -411,6 +415,7 @@ async def test_world_bank_connector_fetches_real_data():
     print("test_world_bank_connector_fetches_real_data: PASSED")
 
 
+@requires_network
 async def test_ons_connector_fetches_real_data():
     connector = ONSConnector(base_url=settings.ONS_API_BASE_URL)
     intent = LiveDataIntent(
@@ -424,6 +429,7 @@ async def test_ons_connector_fetches_real_data():
     print("test_ons_connector_fetches_real_data: PASSED")
 
 
+@requires_network
 async def test_bank_of_england_connector_fetches_real_data():
     connector = BankOfEnglandConnector(base_url=settings.BANK_OF_ENGLAND_API_BASE_URL)
     intent = LiveDataIntent(
@@ -436,6 +442,7 @@ async def test_bank_of_england_connector_fetches_real_data():
     print("test_bank_of_england_connector_fetches_real_data: PASSED")
 
 
+@requires_network
 async def test_ons_gdp_and_unemployment_connectors_fetch_real_data():
     connector = ONSConnector(base_url=settings.ONS_API_BASE_URL)
 
@@ -457,6 +464,7 @@ async def test_ons_gdp_and_unemployment_connectors_fetch_real_data():
     print("test_ons_gdp_and_unemployment_connectors_fetch_real_data: PASSED")
 
 
+@requires_network
 async def test_frankfurter_connector_fetches_real_data():
     connector = FrankfurterConnector(base_url=settings.FRANKFURTER_API_BASE_URL)
     intent = LiveDataIntent(
@@ -469,6 +477,7 @@ async def test_frankfurter_connector_fetches_real_data():
     print("test_frankfurter_connector_fetches_real_data: PASSED")
 
 
+@requires_network
 async def test_sec_edgar_connector_fetches_real_data():
     connector = SECEdgarConnector(
         base_url=settings.SEC_EDGAR_API_BASE_URL,
@@ -485,6 +494,7 @@ async def test_sec_edgar_connector_fetches_real_data():
     print("test_sec_edgar_connector_fetches_real_data: PASSED")
 
 
+@requires_network
 async def test_sec_edgar_resolves_punctuated_company_names():
     """Regression test for a reported bug: 'J.P. Morgan' resolved to
     nothing, because a plain lowercase substring check compared it against
@@ -552,6 +562,7 @@ def test_sec_edgar_ambiguity_resolution_offline():
     print("test_sec_edgar_ambiguity_resolution_offline: PASSED")
 
 
+@requires_network
 async def test_sec_edgar_rejects_ambiguous_generic_company_name():
     """Regression test for a reported bug: generic/partial company names
     ("West", "General", "American") each matched dozens of real SEC-
@@ -578,6 +589,7 @@ async def test_sec_edgar_rejects_ambiguous_generic_company_name():
     print("test_sec_edgar_rejects_ambiguous_generic_company_name: PASSED")
 
 
+@requires_network
 async def test_fred_connector_skips_gracefully_without_key():
     """FRED needs a real API key you register for yourself — this test
     stays green either way: it confirms the connector raises a clear,
@@ -601,6 +613,7 @@ async def test_fred_connector_skips_gracefully_without_key():
     print("test_fred_connector_skips_gracefully_without_key: PASSED (real key configured)")
 
 
+@requires_network
 async def test_companies_house_connector_skips_gracefully_without_key():
     """Same discipline as FRED above — Companies House needs a real key."""
     connector = CompaniesHouseConnector(
@@ -623,6 +636,7 @@ async def test_companies_house_connector_skips_gracefully_without_key():
     print("test_companies_house_connector_skips_gracefully_without_key: PASSED (real key configured)")
 
 
+@requires_network
 async def test_oecd_connector_fetches_real_data_for_three_countries():
     """Keyless — verified this session against GB/US/IN with real,
     known-correct corporate tax rate figures."""
@@ -645,6 +659,7 @@ async def test_oecd_connector_fetches_real_data_for_three_countries():
     print("test_oecd_connector_fetches_real_data_for_three_countries: PASSED")
 
 
+@requires_network
 async def test_gleif_connector_fetches_real_data_for_three_jurisdictions():
     """Keyless — verified this session against GB/IN/AE with real,
     known-correct legal entity records."""

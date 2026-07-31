@@ -39,11 +39,25 @@ _ADMIN_OR_SELF_PREDICATE = """(
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.add_column('users', sa.Column('first_name', sa.String(), nullable=False, server_default=''))
-    op.add_column('users', sa.Column('last_name', sa.String(), nullable=False, server_default=''))
-    op.add_column('users', sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.text('now()')))
-    op.add_column('users', sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.text('now()')))
-    op.drop_column('users', 'hashed_password')
+    is_sqlite = op.get_bind().dialect.name == "sqlite"
+    timestamp_default = sa.text(
+        "CURRENT_TIMESTAMP" if is_sqlite else "now()"
+    )
+
+    if is_sqlite:
+        with op.batch_alter_table("users") as batch_op:
+            batch_op.add_column(sa.Column("first_name", sa.String(), nullable=False, server_default=""))
+            batch_op.add_column(sa.Column("last_name", sa.String(), nullable=False, server_default=""))
+            batch_op.add_column(sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=timestamp_default))
+            batch_op.add_column(sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=timestamp_default))
+            batch_op.drop_column("hashed_password")
+        return
+
+    op.add_column("users", sa.Column("first_name", sa.String(), nullable=False, server_default=""))
+    op.add_column("users", sa.Column("last_name", sa.String(), nullable=False, server_default=""))
+    op.add_column("users", sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=timestamp_default))
+    op.add_column("users", sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=timestamp_default))
+    op.drop_column("users", "hashed_password")
 
     op.execute('ALTER TABLE users ENABLE ROW LEVEL SECURITY')
     op.execute('ALTER TABLE users FORCE ROW LEVEL SECURITY')
@@ -70,6 +84,22 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
+    if op.get_bind().dialect.name == "sqlite":
+        with op.batch_alter_table("users") as batch_op:
+            batch_op.add_column(
+                sa.Column(
+                    "hashed_password",
+                    sa.String(),
+                    nullable=False,
+                    server_default="",
+                )
+            )
+            batch_op.drop_column("updated_at")
+            batch_op.drop_column("created_at")
+            batch_op.drop_column("last_name")
+            batch_op.drop_column("first_name")
+        return
+
     op.execute('DROP POLICY IF EXISTS users_self_or_tenant_admin ON users')
     op.execute('DROP FUNCTION IF EXISTS _is_requester_tenant_admin(VARCHAR)')
     op.execute('ALTER TABLE users DISABLE ROW LEVEL SECURITY')

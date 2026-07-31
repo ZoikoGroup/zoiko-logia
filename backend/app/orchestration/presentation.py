@@ -80,6 +80,28 @@ _SHARE_HEADER_PATTERN = re.compile(r"\b(share|proportion|composition|breakdown|p
 _MAX_DONUT_SLICES = 6
 
 
+def _chart_display_metadata(
+    *, unit: str, category_label: str, title: str,
+    categories: list[str], series: list[PresentationSeries],
+) -> dict:
+    currency_code = {"$": "USD", "USD": "USD", "£": "GBP", "GBP": "GBP", "€": "EUR", "EUR": "EUR"}.get(unit)
+    value_format = "percent" if unit == "%" else "currency" if currency_code else "number"
+    values = [Decimal(value) for item in series for value in item.values]
+    decimal_places = 0 if values and all(value == value.to_integral_value() for value in values) else 2
+    y_axis_label = "%" if value_format == "percent" else currency_code or unit
+    return {
+        "value_format": value_format,
+        "currency_code": currency_code,
+        "decimal_places": decimal_places,
+        "x_axis_label": category_label,
+        "y_axis_label": y_axis_label,
+        "accessible_summary": (
+            f"{title}. {len(categories)} categories and {len(series)} data "
+            f"series, derived from the validated answer table."
+        ),
+    }
+
+
 def _cells(line: str) -> list[str]:
     stripped = line.strip().strip("|")
     return [cell.strip() for cell in stripped.split("|")]
@@ -305,6 +327,10 @@ def _chart_from_table(
             categories=donut_categories,
             series=donut_series,
             unit=unit,
+            **_chart_display_metadata(
+                unit=unit, category_label=headers[0], title=title,
+                categories=donut_categories, series=donut_series,
+            ),
         )
 
     if is_temporal:
@@ -318,6 +344,10 @@ def _chart_from_table(
         categories=categories,
         series=series[:4],
         unit=unit,
+        **_chart_display_metadata(
+            unit=unit, category_label=headers[0], title=title,
+            categories=categories, series=series[:4],
+        ),
     )
 
 

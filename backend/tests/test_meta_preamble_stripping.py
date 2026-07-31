@@ -12,11 +12,26 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.orchestration.service import (
+    _has_only_presentation_failures,
     _strip_meta_preamble,
     _strip_raw_source_headers,
     _strip_trailing_raw_references,
     _validation_failure_summary,
 )
+
+
+def test_only_style_failures_are_eligible_for_automatic_repair():
+    assert _has_only_presentation_failures([
+        "Summarize-don't-copy check failed: copied passage",
+        "Tutor-depth structure failed: missing purpose",
+    ])
+    assert not _has_only_presentation_failures([
+        "Tutor-depth structure failed: missing purpose",
+        "Numeric fidelity failed: unsupported amount",
+    ])
+    assert not _has_only_presentation_failures([
+        "Prohibited-claim detected: professional advice",
+    ])
 
 
 def test_strips_real_incident_preamble():

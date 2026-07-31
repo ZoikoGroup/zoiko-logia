@@ -3,6 +3,7 @@ from celery import Celery
 from app.core.config import get_settings
 from app.core.database import AsyncSessionLocal
 from app.domains.live_sources.service import fetch_live_data
+from app.domains.live_sources.sanctions_service import refresh_snapshot
 
 settings = get_settings()
 celery_app = Celery("kriton_jobs", broker=settings.CELERY_BROKER_URL or "redis://localhost:6379/0")
@@ -73,3 +74,21 @@ def sync_fx_rates():
             print(f"[Celery Sync] Cached FX pair: '{query}'")
         except Exception as e:
             print(f"[Celery Sync] Failed to cache FX pair '{query}': {e}")
+
+
+@celery_app.task
+def sync_sanctions_snapshots():
+    """Warm hash-addressed official sanctions snapshots outside user requests."""
+    return asyncio.run(_sync_all_sanctions_snapshots())
+
+
+async def _sync_all_sanctions_snapshots():
+    results = {}
+    for provider in ("ofac", "un_sanctions", "uk_sanctions", "eu_sanctions"):
+        try:
+            snapshot = await refresh_snapshot(provider)
+            results[provider] = {"status": "live", "records": len(snapshot.entries),
+                                 "sha256": snapshot.content_sha256}
+        except Exception as exc:
+            results[provider] = {"status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+    return results

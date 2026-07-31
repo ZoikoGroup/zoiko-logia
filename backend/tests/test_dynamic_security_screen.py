@@ -11,6 +11,7 @@ Run with: python tests/test_dynamic_security_screen.py
 import asyncio
 import os
 import sys
+import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -56,6 +57,7 @@ async def _run():
     print(f"\n{correct}/{len(CASES)} correct")
 
 
+@pytest.mark.network
 def test_dynamic_screen_generalizes_to_novel_and_known_categories():
     asyncio.run(_run())
     print("test_dynamic_screen_generalizes_to_novel_and_known_categories: PASSED")

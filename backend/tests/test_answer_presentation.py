@@ -68,6 +68,22 @@ def test_budget_chart_keeps_variance_in_table_but_not_chart_series():
     assert [series.name for series in plan.charts[0].series] == ["Budget", "Actual"]
 
 
+def test_chart_contract_includes_deterministic_format_and_accessibility_metadata():
+    plan = build_answer_presentation(
+        "Show monthly receivables as a chart.",
+        "| Month | Receivables |\n|---|---:|\n| January | $210,000 |\n| February | $195,000 |",
+    )
+
+    chart = plan.charts[0]
+    assert chart.value_format == "currency"
+    assert chart.currency_code == "USD"
+    assert chart.decimal_places == 0
+    assert chart.x_axis_label == "Month"
+    assert chart.y_axis_label == "USD"
+    assert "2 categories" in chart.accessible_summary
+    assert "validated answer table" in chart.accessible_summary
+
+
 def test_incomplete_or_mixed_unit_column_is_not_charted():
     plan = build_answer_presentation(
         "Compare results",

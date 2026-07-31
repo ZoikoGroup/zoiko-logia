@@ -101,13 +101,14 @@ def _jurisdiction_ok(source_scope: str, jurisdiction: str) -> bool:
 _CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "user-provided-data": ["using this data", "use this data", "based on this data", "budget versus actual"],
     "bank-reconciliation": [
-        "bank reconciliation", "reconcile a bank", "reconcile the bank",
+        "bank reconciliation", "bank-reconciliation", "reconcile a bank", "reconcile the bank",
         "reconcile bank account", "cash reconciliation", "outstanding checks",
         "deposits in transit",
     ],
     "month-end-close": [
         "month-end close", "month end close", "financial closing process",
-        "financial close process", "period-end close", "period end close",
+        "financial close process", "month-end financial close", "month end financial close",
+        "period-end close", "period end close",
         "closing checklist", "close calendar",
     ],
     "accounting-fundamentals": [
@@ -183,6 +184,15 @@ _CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "education-content": ["exam", "study", "cpd", "syllabus"],
 }
 _DEFAULT_CATEGORY = "standards"
+
+
+def infer_query_jurisdiction(query: str) -> str:
+    """Infer an explicitly named reporting framework without guessing locale."""
+    if re.search(r"\b(?:ifrs|ias\s*\d+)\b", query, re.I):
+        return "IFRS"
+    if re.search(r"\b(?:us\s+gaap|asc\s*\d+)\b", query, re.I):
+        return "US"
+    return ""
 
 # Fallback for when _CATEGORY_KEYWORDS finds nothing — natural example
 # phrases per category (not keywords), matched by embedding similarity.
@@ -444,6 +454,7 @@ async def build_source_bundle(
     massarius/license_gate.py, same as document sources.
     """
     category = infer_category(query, query_embedding=query_embedding)
+    effective_jurisdiction = jurisdiction or infer_query_jurisdiction(query)
 
     eligible = []
     excluded = []
@@ -489,7 +500,7 @@ async def build_source_bundle(
         # state-qualified jurisdiction like "US-CA" correctly (also matches
         # the bare state code and "US"), which the inline version's plain
         # `in ("Global", jurisdiction)` equality check does not.
-        jur_ok = _jurisdiction_ok(c["jurisdiction_scope"], jurisdiction)
+        jur_ok = _jurisdiction_ok(c["jurisdiction_scope"], effective_jurisdiction)
         is_live_fetch_only = c["id"] in _SINGLE_SOURCE_IS_SUFFICIENT
         has_real_content = chunk_source_ids is None or c["id"] in chunk_source_ids
 
@@ -552,7 +563,7 @@ async def build_source_bundle(
                     continue
 
                 version_status = governed["latest_version"].status if governed["latest_version"] else None
-                jur_ok = _jurisdiction_ok(governed["jurisdiction_scope"], jurisdiction)
+                jur_ok = _jurisdiction_ok(governed["jurisdiction_scope"], effective_jurisdiction)
 
                 if version_status in _RESTRICTED_STATUSES:
                     excluded.append(governed)
@@ -625,8 +636,10 @@ async def build_source_bundle(
     )
     national_us_data = category in {"economic-data", "interest-rate", "exchange-rate"}
     resolved_jurisdiction = (
-        "US" if us_authority_present or national_us_data
-        else jurisdiction
+        effective_jurisdiction
+        if effective_jurisdiction
+        else "US" if us_authority_present or national_us_data
+        else ""
     ) or (
         next(iter(explicit_scopes)) if len(explicit_scopes) == 1
         else ""

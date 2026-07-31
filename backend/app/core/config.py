@@ -1,4 +1,6 @@
 from functools import lru_cache
+from pathlib import Path
+
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -13,11 +15,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # silently leave them unset, disabling RAG retrieval, the ML classifier, and
 # real LLM providers with no error. load_dotenv() populates os.environ from
 # .env without overriding anything already set there.
-load_dotenv()
+_BACKEND_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+load_dotenv(_BACKEND_ENV_FILE)
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_BACKEND_ENV_FILE, extra="ignore")
 
     # ── Database ────────────────────────────────────────────────────────
     DATABASE_URL: str = "sqlite+aiosqlite:///./dev.db"
@@ -51,6 +54,7 @@ class Settings(BaseSettings):
 
     # ── Infrastructure ──────────────────────────────────────────────────
     VECTOR_INDEX_URL: str = ""
+    LOCAL_VECTOR_STORE_DIR: str = "./vector_store"
     OBJECT_STORAGE_URL: str = ""
     CELERY_BROKER_URL: str = ""
 
@@ -85,7 +89,31 @@ class Settings(BaseSettings):
     # GLEIF — keyless. LEI-registry company lookup fallback for every
     # jurisdiction outside US/UK (see connectors/gleif.py).
     GLEIF_API_BASE_URL: str = "https://api.gleif.org/api/v1"
-    LIVE_SOURCE_HTTP_TIMEOUT_SECONDS: float = 10.0
+    # ECB Data Portal SDMX API — keyless official euro-area statistics.
+    ECB_API_BASE_URL: str = "https://data-api.ecb.europa.eu/service"
+    # IMF DataMapper API — keyless official macroeconomic indicators.
+    IMF_API_BASE_URL: str = "https://www.imf.org/external/datamapper/api/v2"
+    # European Commission VIES REST facade — keyless VAT-number validation.
+    VIES_API_BASE_URL: str = "https://ec.europa.eu/taxation_customs/vies/rest-api"
+    # Phase 2 — official legislation and procurement search.
+    CELLAR_SPARQL_URL: str = "https://publications.europa.eu/webapi/rdf/sparql"
+    LEGISLATION_GOV_UK_BASE_URL: str = "https://www.legislation.gov.uk"
+    TED_API_BASE_URL: str = "https://api.ted.europa.eu/v3"
+    SAM_GOV_OPPORTUNITIES_URL: str = "https://api.sam.gov/opportunities/v2/search"
+    SAM_GOV_API_KEY: str = ""
+    # Phase 3 — official sanctions snapshots. EU distribution URLs can
+    # change independently of the catalogue; keep that URL configurable.
+    OFAC_SDN_XML_URL: str = "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.XML"
+    UN_SANCTIONS_XML_URL: str = "https://scsanctions.un.org/resources/xml/en/name/consolidated.xml"
+    UK_SANCTIONS_CSV_URL: str = "https://sanctionslist.fcdo.gov.uk/docs/UK-Sanctions-List.csv"
+    EU_SANCTIONS_CSV_URL: str = "https://webgate.ec.europa.eu/fsd/fsf/public/files/csvFullSanctionsList/content"
+    SANCTIONS_SNAPSHOT_TTL_SECONDS: int = 3600
+    SANCTIONS_MAX_DOWNLOAD_BYTES: int = 75_000_000
+    SANCTIONS_SNAPSHOT_DIR: str = "./data/live_sources"
+    SANCTIONS_ALLOW_INLINE_REFRESH: bool = False
+    LIVE_SOURCE_HTTP_TIMEOUT_SECONDS: float = 20.0
+    LIVE_SOURCE_MAX_ATTEMPTS: int = 2
+    LIVE_SOURCE_RETRY_BACKOFF_SECONDS: float = 0.25
     # Macro indicators (GDP/inflation) update quarterly/annually at most —
     # 6h TTL avoids re-fetching World Bank on every request without risking
     # meaningfully stale figures relative to this data's own update cadence.

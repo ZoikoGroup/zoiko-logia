@@ -2,6 +2,7 @@ import re
 import uuid
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import select
@@ -44,7 +45,15 @@ def resolve_source_url(source_id: str, file_path: str | None) -> str | None:
     upload) stays None; callers must not fabricate a link for that case."""
     if not file_path:
         return None
-    if file_path.startswith("http://") or file_path.startswith("https://"):
+    if re.match(r"^https?://", file_path, re.IGNORECASE):
+        parsed = urlsplit(file_path)
+        # Governed catalog data can still be malformed. Only emit links a
+        # browser can safely navigate: an HTTP(S) URL needs a hostname and
+        # must not contain embedded credentials.
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            return None
+        if parsed.username is not None or parsed.password is not None:
+            return None
         return file_path
     return f"/sources/{source_id}/file"
 
@@ -110,7 +119,10 @@ async def _latest_version(db: AsyncSession, source_id: str) -> SourceVersion:
     result = await db.execute(
         select(SourceVersion)
         .where(SourceVersion.source_id == source_id)
-        .order_by(SourceVersion.created_at.desc())
+        .order_by(
+            SourceVersion.created_at.desc(),
+            SourceVersion.id.desc(),
+        )
     )
     return result.scalars().first()
 
@@ -144,7 +156,11 @@ async def list_sources(
     version_result = await db.execute(
         select(SourceVersion)
         .where(SourceVersion.source_id.in_([source.id for source in sources]))
-        .order_by(SourceVersion.source_id, SourceVersion.created_at.desc())
+        .order_by(
+            SourceVersion.source_id,
+            SourceVersion.created_at.desc(),
+            SourceVersion.id.desc(),
+        )
     )
     latest_by_source: dict[str, SourceVersion] = {}
     for version in version_result.scalars():

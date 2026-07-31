@@ -22,27 +22,62 @@ Requires a live DB + embeddings enabled — run inside the backend container:
 import asyncio
 import os
 import sys
+import pytest
+from llama_index.core import StorageContext
 from unittest.mock import patch
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.domains.rag.embeddings import get_embed_model, get_query_embedding_cached
+from app.core.config import get_settings
+from app.domains.rag.embeddings import (
+    EMBED_DIM,
+    get_embed_model,
+    get_query_embedding_cached,
+)
 from app.domains.rag.retrieval import retrieve_documents
-from app.orchestration.retrieve import infer_category
+from app.orchestration.retrieve import (
+    _get_category_example_embeddings,
+    _infer_category_semantic,
+    infer_category,
+)
+
+
+def _local_vector_index_is_compatible() -> bool:
+    persist_dir = get_settings().LOCAL_VECTOR_STORE_DIR
+    vector_file = os.path.join(
+        persist_dir,
+        "default__vector_store.json",
+    )
+    if not os.path.exists(vector_file):
+        return False
+    storage_context = StorageContext.from_defaults(
+        persist_dir=persist_dir,
+    )
+    dimensions = {
+        len(embedding)
+        for embedding
+        in storage_context.vector_store.data.embedding_dict.values()
+    }
+    return dimensions == {EMBED_DIM}
 
 
 def test_infer_category_reuses_provided_embedding_without_recomputing():
     """When a precomputed embedding is passed in, infer_category() must
     return the correct category without ever calling
     get_query_embedding_cached() again for the same text."""
-    query = "What is the corporate tax rate?"
+    query = "How much extra will I get back on my return this year for having two kids and a low income?"
     real_embedding = get_query_embedding_cached(query)
+    _get_category_example_embeddings()
+    model_cls = type(get_embed_model())
 
     def exploding(*args, **kwargs):
         raise AssertionError("infer_category() re-embedded despite a precomputed embedding being provided")
 
-    with patch("app.orchestration.retrieve.get_query_embedding_cached", exploding):
-        category = infer_category(query, query_embedding=real_embedding)
+    with patch.object(model_cls, "get_text_embedding", exploding):
+        category = _infer_category_semantic(
+            query,
+            query_embedding=real_embedding,
+        )
         assert category == "tax"
     print("test_infer_category_reuses_provided_embedding_without_recomputing: PASSED")
 
@@ -81,6 +116,11 @@ async def test_retrieve_documents_still_embeds_when_none_provided():
     """Sanity check that the test above is meaningful, not vacuous: without
     a precomputed embedding, the same patched method IS still invoked (the
     original, backward-compatible behavior)."""
+    if not _local_vector_index_is_compatible():
+        pytest.skip(
+            "local vector index must be re-ingested with the active "
+            f"{EMBED_DIM}-dimension model"
+        )
     query = "What is the standard deduction for 2026?"
     model_cls = type(get_embed_model())
 

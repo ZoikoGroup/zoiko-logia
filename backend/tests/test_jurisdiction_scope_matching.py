@@ -17,6 +17,7 @@ Run inside the backend container (needs a live DB for the integration test):
 import asyncio
 import os
 import sys
+import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -51,6 +52,7 @@ def test_jurisdiction_ok_accepts_federal_and_state_scope_for_state_jurisdiction(
     print("test_jurisdiction_ok_accepts_federal_and_state_scope_for_state_jurisdiction: PASSED")
 
 
+@pytest.mark.network
 async def test_california_tax_query_finds_federal_and_state_sources_live():
     """Live integration test against the real Supabase-seeded source
     registry — confirmed this session: before the fix, this returned 0

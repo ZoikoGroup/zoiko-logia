@@ -16,6 +16,13 @@ from app.domains.live_sources.models import LiveFetchCache
 from app.domains.live_sources.schemas import LiveDataIntent, NormalizedResponse
 
 
+def _as_utc(value: datetime) -> datetime:
+    """Normalize timestamps returned differently by PostgreSQL and SQLite."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def make_cache_key(intent: LiveDataIntent) -> str:
     # company_query included when present — otherwise two different
     # companies' identical indicator_code (e.g. Apple's and Microsoft's
@@ -29,7 +36,7 @@ async def get_cached(db: AsyncSession, cache_key: str, *, ignore_ttl: bool = Fal
     row = result.scalar_one_or_none()
     if row is None:
         return None
-    if not ignore_ttl and row.expires_at <= datetime.now(timezone.utc):
+    if not ignore_ttl and _as_utc(row.expires_at) <= datetime.now(timezone.utc):
         return None
     return NormalizedResponse.model_validate(row.payload)
 

@@ -89,6 +89,16 @@ def test_standard_deduction_with_year_can_continue():
     assert decision.applies is False
 
 
+def test_conceptual_standard_vs_itemized_flowchart_does_not_require_year():
+    decision = assess_us_professional_coverage(
+        "Show a decision flowchart for determining whether a taxpayer should use the standard deduction or consider itemizing deductions.",
+        _bundle("IRS Direct File Fact Dictionary — Standard Deduction"),
+    )
+
+    assert decision.applies is False
+    assert decision.covered is True
+
+
 def test_bill_status_requires_congress_source_not_policyengine():
     decision = assess_us_professional_coverage(
         "What is the status of H.R. 1 in the 119th Congress?",

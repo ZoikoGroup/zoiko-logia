@@ -103,7 +103,15 @@ def assess_us_professional_coverage(query: str, source_bundle: SourceBundle | No
 
     # Annual dollar amounts cannot be answered honestly without a year. A
     # current-looking source may represent a different tax year.
-    if re.search(r"\bstandard deduction\b", lowered) and not re.search(r"\b(?:19|20)\d{2}\b", lowered):
+    conceptual_standard_deduction = bool(re.search(
+        r"\b(itemiz|whether|decision|flow[ -]?chart|when\s+to|when\s+should|how\s+(?:the\s+)?standard\s+deduction\s+works?|eligib)",
+        lowered,
+    ))
+    if (
+        re.search(r"\bstandard deduction\b", lowered)
+        and not re.search(r"\b(?:19|20)\d{2}\b", lowered)
+        and not conceptual_standard_deduction
+    ):
         return CoverageDecision(
             applies=True, covered=False, domain="tax", topic="standard deduction amount",
             required_authority="applicable tax year", action="clarification_required",

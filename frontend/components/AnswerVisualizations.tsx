@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   Area,
   AreaChart,
@@ -17,9 +18,10 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { ArrowDownRight, ArrowRight, ArrowUpRight, Check, Clock3, GitBranch, Hash, ListTree, Sparkles } from "lucide-react";
-import type { AnswerPresentation } from "@/lib/api";
+import { ArrowDownRight, ArrowRight, ArrowUpRight, Check, Clock3, Copy, Download, GitBranch, Hash, ImageDown, ListTree, Maximize2, Sparkles } from "lucide-react";
+import type { AnswerPresentation, PresentationChart } from "@/lib/api";
 import { CHART_SERIES_COLORS } from "@/lib/chartColors";
+import { formatPresentationValue, presentationChartToCsv, presentationChartToMarkdown, safeDownloadName, writeTextToClipboard } from "@/lib/presentation";
 import { StatTile } from "@/components/governance/StatTile";
 
 
@@ -35,6 +37,94 @@ function formatValue(value: number, unit: string): string {
     return value.toLocaleString(undefined, { style: "currency", currency, maximumFractionDigits: 2 });
   }
   return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+function ChartActions({ chart }: { chart: PresentationChart }) {
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState("");
+
+  async function copyData() {
+    try {
+      await writeTextToClipboard(presentationChartToMarkdown(chart));
+      setCopied(true);
+      setError("");
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setError("Copy failed");
+    }
+  }
+
+  function downloadCsv() {
+    downloadBlob(
+      new Blob([presentationChartToCsv(chart)], { type: "text/csv;charset=utf-8" }),
+      safeDownloadName(chart.title, "csv"),
+    );
+  }
+
+  function downloadSvg(event: React.MouseEvent<HTMLButtonElement>) {
+    const chartRoot = event.currentTarget.closest("figure")?.querySelector("[data-chart-canvas]");
+    const svg = chartRoot?.querySelector("svg");
+    if (!svg) {
+      setError("Image unavailable");
+      return;
+    }
+    const clone = svg.cloneNode(true) as SVGElement;
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    const rootStyles = getComputedStyle(document.documentElement);
+    const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
+    style.textContent = `:root{--ink:${rootStyles.getPropertyValue("--ink")};--muted:${rootStyles.getPropertyValue("--muted")};--line:${rootStyles.getPropertyValue("--line")};--panel:${rootStyles.getPropertyValue("--panel")};}`;
+    clone.prepend(style);
+    downloadBlob(
+      new Blob([new XMLSerializer().serializeToString(clone)], { type: "image/svg+xml;charset=utf-8" }),
+      safeDownloadName(chart.title, "svg"),
+    );
+    setError("");
+  }
+
+  async function openFullscreen(event: React.MouseEvent<HTMLButtonElement>) {
+    const figure = event.currentTarget.closest("figure");
+    if (!figure?.requestFullscreen) {
+      setError("Fullscreen unavailable");
+      return;
+    }
+    try {
+      await figure.requestFullscreen();
+      setError("");
+    } catch {
+      setError("Fullscreen unavailable");
+    }
+  }
+
+  const actionClass = "inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[11px] font-medium text-muted transition hover:bg-soft hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40";
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-1" aria-label="Chart actions">
+      <button type="button" onClick={copyData} className={actionClass} aria-label="Copy chart data as a Markdown table">
+        {copied ? <Check size={13} /> : <Copy size={13} />}{copied ? "Copied" : "Copy"}
+      </button>
+      <button type="button" onClick={downloadCsv} className={actionClass} aria-label="Download chart data as CSV">
+        <Download size={13} />CSV
+      </button>
+      <button type="button" onClick={downloadSvg} className={actionClass} aria-label="Download chart as SVG">
+        <ImageDown size={13} />SVG
+      </button>
+      <button type="button" onClick={openFullscreen} className={actionClass} aria-label="View chart full screen">
+        <Maximize2 size={13} />Full screen
+      </button>
+      {error && <span className="px-2 text-[10px] font-medium text-bad">{error}</span>}
+      <span className="sr-only" role="status" aria-live="polite">{copied ? "Chart data copied" : error}</span>
+    </div>
+  );
 }
 
 export function AnswerVisualizations({
@@ -118,8 +208,8 @@ export function AnswerVisualizations({
             chart.series.map((series) => [series.name, Number(series.values[categoryIndex])]),
           ),
         }));
-        const accessibleSummary = chart.series
-          .map((series) => `${series.name}: ${series.values.map((value, index) => `${chart.categories[index]} ${formatValue(Number(value), chart.unit)}`).join(", ")}`)
+        const accessibleSummary = chart.accessible_summary || chart.series
+          .map((series) => `${series.name}: ${series.values.map((value, index) => `${chart.categories[index]} ${formatPresentationValue(Number(value), chart)}`).join(", ")}`)
           .join(". ");
         // A donut's slices already carry their own direct % labels and a
         // legend — a per-series metric strip on top would just repeat the
@@ -137,12 +227,18 @@ export function AnswerVisualizations({
         });
 
         return (
-          <figure key={chart.chart_id} className="min-w-0 overflow-hidden rounded-2xl border border-line bg-panel shadow-[0_12px_40px_rgba(16,24,40,.08)]">
+          <figure key={chart.chart_id} className="min-w-0 overflow-hidden rounded-2xl border border-line bg-panel shadow-[0_12px_40px_rgba(16,24,40,.08)] fullscreen:h-screen fullscreen:overflow-auto fullscreen:rounded-none fullscreen:p-6">
             <div className="border-b border-line bg-[radial-gradient(circle_at_top_right,var(--soft),transparent_60%)] p-4 sm:p-5">
               <figcaption className="flex items-center justify-between gap-3 text-xs font-bold uppercase tracking-[0.12em] text-muted">
                 <span>{chart.title}</span>
                 <span className="rounded-full border border-brand/15 bg-brand/5 px-2.5 py-1 text-[9px] text-brand">Validated data</span>
               </figcaption>
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[11px] text-muted">
+                  {chart.x_axis_label || "Category"}{chart.y_axis_label ? ` · Values in ${chart.y_axis_label}` : ""}
+                </p>
+                <ChartActions chart={chart} />
+              </div>
               <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 {metrics.slice(0, 3).map((metric, index) => {
                   const rising = metric.change !== null && metric.change >= 0;
@@ -154,7 +250,7 @@ export function AnswerVisualizations({
                         {metric.name}
                       </div>
                       <div className="mt-1 flex items-end justify-between gap-2">
-                        <span className="text-lg font-bold tracking-tight text-ink">{formatValue(metric.value, chart.unit)}</span>
+                        <span className="text-lg font-bold tracking-tight text-ink">{formatPresentationValue(metric.value, chart)}</span>
                         {metric.change !== null && (
                           <span className={`inline-flex items-center text-[10px] font-semibold ${rising ? "text-ok" : "text-bad"}`}>
                             <TrendIcon size={12} aria-hidden="true" />{Math.abs(metric.change).toFixed(1)}%
@@ -168,10 +264,15 @@ export function AnswerVisualizations({
               </div>
             </div>
             <div
-              className="h-[300px] w-full p-3 sm:p-4"
+              data-chart-canvas
+              className="w-full overflow-x-auto p-3 sm:p-4"
               role="img"
               aria-label={`${chart.title}. ${accessibleSummary}`}
             >
+              <div
+                className="h-[300px]"
+                style={{ minWidth: chart.type === "donut" ? 420 : Math.max(480, chart.categories.length * 74) }}
+              >
               <ResponsiveContainer width="100%" height="100%">
                 {chart.type === "line" ? (
                 <LineChart data={data} margin={{ top: 10, right: 12, left: 4, bottom: 20 }}>
@@ -188,12 +289,12 @@ export function AnswerVisualizations({
                   <YAxis
                     stroke="var(--muted)"
                     tick={{ fill: "var(--muted)", fontSize: 11 }}
-                    tickFormatter={(value) => formatValue(Number(value), chart.unit)}
-                    width={78}
+                    tickFormatter={(value) => formatPresentationValue(Number(value), chart, true)}
+                    width={68}
                   />
                   <Tooltip
                     contentStyle={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 8, fontSize: 12 }}
-                    formatter={(value, name) => [formatValue(Number(value), chart.unit), String(name)]}
+                    formatter={(value, name) => [formatPresentationValue(Number(value), chart), String(name)]}
                   />
                   {chart.series.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
                   {chart.series.map((series, index) => (
@@ -223,12 +324,12 @@ export function AnswerVisualizations({
                   <YAxis
                     stroke="var(--muted)"
                     tick={{ fill: "var(--muted)", fontSize: 11 }}
-                    tickFormatter={(value) => formatValue(Number(value), chart.unit)}
-                    width={78}
+                    tickFormatter={(value) => formatPresentationValue(Number(value), chart, true)}
+                    width={68}
                   />
                   <Tooltip
                     contentStyle={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 8, fontSize: 12 }}
-                    formatter={(value, name) => [formatValue(Number(value), chart.unit), String(name)]}
+                    formatter={(value, name) => [formatPresentationValue(Number(value), chart), String(name)]}
                   />
                   {/* A single series is the only shape this branch renders
                       (area is picked only for a one-series temporal table —
@@ -248,7 +349,7 @@ export function AnswerVisualizations({
                 <PieChart>
                   <Tooltip
                     contentStyle={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 8, fontSize: 12 }}
-                    formatter={(value, name) => [formatValue(Number(value), chart.unit), String(name)]}
+                    formatter={(value, name) => [formatPresentationValue(Number(value), chart), String(name)]}
                   />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
                   <Pie
@@ -273,14 +374,41 @@ export function AnswerVisualizations({
                 <BarChart data={data} margin={{ top: 10, right: 12, left: 4, bottom: 20 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
                   <XAxis dataKey="category" stroke="var(--muted)" tick={{ fill: "var(--muted)", fontSize: 11 }} interval={0} height={42} />
-                  <YAxis stroke="var(--muted)" tick={{ fill: "var(--muted)", fontSize: 11 }} tickFormatter={(value) => formatValue(Number(value), chart.unit)} width={78} />
-                  <Tooltip contentStyle={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 12, fontSize: 12 }} formatter={(value, name) => [formatValue(Number(value), chart.unit), String(name)]} />
+                  <YAxis stroke="var(--muted)" tick={{ fill: "var(--muted)", fontSize: 11 }} tickFormatter={(value) => formatPresentationValue(Number(value), chart, true)} width={68} />
+                  <Tooltip contentStyle={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 12, fontSize: 12 }} formatter={(value, name) => [formatPresentationValue(Number(value), chart), String(name)]} />
                   {chart.series.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
                   {chart.series.map((series, index) => <Bar key={series.name} dataKey={series.name} fill={SERIES_COLORS[index % SERIES_COLORS.length]} radius={[7, 7, 2, 2]} maxBarSize={52} />)}
                 </BarChart>
                 )}
               </ResponsiveContainer>
+              </div>
             </div>
+            <details className="border-t border-line px-4 py-3 text-xs text-ink">
+              <summary className="cursor-pointer font-medium text-muted transition hover:text-brand">View accessible data table</summary>
+              <div className="mt-3 overflow-x-auto rounded-lg border border-line">
+                <table className="w-full border-collapse text-xs">
+                  <caption className="sr-only">{chart.title} data</caption>
+                  <thead className="bg-soft">
+                    <tr>
+                      <th scope="col" className="px-3 py-2 text-left font-semibold">{chart.x_axis_label || "Label"}</th>
+                      {chart.series.map((series) => <th key={series.name} scope="col" className="px-3 py-2 text-right font-semibold">{series.name}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {chart.categories.map((category, index) => (
+                      <tr key={`${category}-${index}`} className="border-t border-line/60">
+                        <th scope="row" className="whitespace-nowrap px-3 py-2 text-left font-medium">{category}</th>
+                        {chart.series.map((series) => (
+                          <td key={series.name} className="whitespace-nowrap px-3 py-2 text-right tabular-nums">
+                            {formatPresentationValue(Number(series.values[index]), chart)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
             <p className="border-t border-line px-4 py-3 text-[11px] leading-4 text-muted">
               Visualized from the validated table in the answer above; the table remains the textual source of truth.
             </p>

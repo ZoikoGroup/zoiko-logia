@@ -28,6 +28,8 @@ import asyncio
 import os
 import sys
 
+import pytest
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from dotenv import load_dotenv
@@ -35,6 +37,8 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 from app.core.database import AsyncSessionLocal
 from app.domains.live_sources.service import fetch_live_data
+
+pytestmark = pytest.mark.network
 
 
 async def _resolve(query: str, jurisdiction: str = ""):

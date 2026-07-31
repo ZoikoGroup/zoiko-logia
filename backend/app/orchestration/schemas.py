@@ -163,6 +163,10 @@ class SourceCitation(BaseModel):
     ref_id: str
     source_id: str
     title: str
+    # Makes the evidence hierarchy explicit to both the UI and audit clients.
+    # "controlling" means the answer's claim directly depends on this source;
+    # "supporting" means it adds context but is not the governing authority.
+    evidence_role: Literal["controlling", "supporting"] = "supporting"
     # Live external-data addition, same rationale as SourceSummary.source_type.
     source_type: Literal["document", "live_api"] = "document"
     # Only ever set for source_type="live_api" (a real external URL a user
@@ -242,6 +246,12 @@ class PresentationChart(BaseModel):
     categories: List[str] = Field(default_factory=list)
     series: List[PresentationSeries] = Field(default_factory=list)
     unit: str = ""
+    value_format: Literal["number", "currency", "percent"] = "number"
+    currency_code: Literal["USD", "GBP", "EUR"] | None = None
+    decimal_places: int = Field(default=2, ge=0, le=6)
+    x_axis_label: str = ""
+    y_axis_label: str = ""
+    accessible_summary: str = ""
 
 
 class PresentationGuide(BaseModel):

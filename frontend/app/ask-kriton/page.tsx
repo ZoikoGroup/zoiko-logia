@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import Link from "next/link";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -23,9 +23,14 @@ import { AnswerVisualizations } from "@/components/AnswerVisualizations";
 import {
   AlertTriangle,
   ArrowUp,
+  Bookmark,
   BookOpen,
   BriefcaseBusiness,
+  Check,
   CheckCircle2,
+  ChevronDown,
+  Copy,
+  Download,
   ExternalLink,
   FileText,
   FolderKanban,
@@ -46,6 +51,7 @@ import {
   ShieldCheck,
   ShieldOff,
   Sparkles,
+  RotateCcw,
   Trash2,
   X,
 } from "lucide-react";
@@ -59,12 +65,14 @@ import {
   renameConversation,
   deleteConversation,
   openSourceUrl,
+  createSavedAnswer,
   type AskKritonResponse,
   type ConversationSummary,
   type ChatMessage,
 } from "@/lib/api";
 import { useTypewriter } from "@/hooks/useTypewriter";
 import { seriesColor } from "@/lib/chartColors";
+import { tableRowsToTsv, writeTextToClipboard } from "@/lib/presentation";
 
 // Web Speech API — not part of TypeScript's default DOM lib.
 interface SpeechRecognitionResultLike {
@@ -251,6 +259,25 @@ type KritonChartSpec = {
   series: { name: string; values: number[] }[];
 };
 
+function formatChartAxisValue(value: number) {
+  return new Intl.NumberFormat(undefined, {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function chartSpecAsMarkdown(spec: KritonChartSpec) {
+  const header = ["Label", ...spec.series.map((series) => series.name)];
+  const divider = header.map((_, index) => index === 0 ? "---" : "---:");
+  const rows = spec.labels.map((label, index) => [
+    label,
+    ...spec.series.map((series) => (series.values[index] ?? "").toLocaleString()),
+  ]);
+  return [header, divider, ...rows]
+    .map((row) => `| ${row.join(" | ")} |`)
+    .join("\n");
+}
+
 
 // Custom tooltip: values lead (Strong, primary ink), series name follows
 // (secondary/muted) — the legend's hierarchy inverted, since here the
@@ -300,6 +327,7 @@ function KritonChart({ code }: { code: string }) {
   // don't show a "could not be parsed" flicker for what's just incomplete.
   const isRevealComplete = useContext(RevealCompleteContext);
   const [showTable, setShowTable] = useState(false);
+  const [copied, setCopied] = useState(false);
   if (!isRevealComplete) return null;
 
   let spec: KritonChartSpec | null = null;
@@ -327,7 +355,20 @@ function KritonChart({ code }: { code: string }) {
 
   return (
     <div className="my-3 w-full">
-      <div className="mb-1.5 flex justify-end">
+      <div className="mb-2 flex items-center justify-end gap-3">
+        <button
+          type="button"
+          onClick={async () => {
+            await writeTextToClipboard(chartSpecAsMarkdown(spec!));
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1800);
+          }}
+          className="inline-flex items-center gap-1 text-[11px] font-medium text-muted transition hover:text-brand"
+          aria-label="Copy chart data as a table"
+        >
+          {copied ? <Check size={12} /> : <Copy size={12} />}
+          {copied ? "Copied" : "Copy data"}
+        </button>
         <button
           type="button"
           onClick={() => setShowTable((v) => !v)}
@@ -363,9 +404,9 @@ function KritonChart({ code }: { code: string }) {
           </table>
         </div>
       ) : (
-        <div className="h-64 w-full">
+        <div className="h-64 w-full overflow-visible">
           <ResponsiveContainer width="100%" height="100%">
-            <ChartComponent data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+            <ChartComponent data={data} margin={{ top: 8, right: 12, left: 12, bottom: 0 }}>
               <CartesianGrid stroke="var(--line)" vertical={false} />
               <XAxis
                 dataKey="label"
@@ -377,7 +418,8 @@ function KritonChart({ code }: { code: string }) {
                 tick={{ fontSize: 11, fill: "var(--muted)" }}
                 axisLine={{ stroke: "var(--line)" }}
                 tickLine={{ stroke: "var(--line)" }}
-                width={40}
+                tickFormatter={(value: number) => formatChartAxisValue(value)}
+                width={52}
               />
               <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--soft)" }} />
               {spec.series.length > 1 && <Legend content={<ChartLegend />} />}
@@ -434,6 +476,53 @@ function KritonChart({ code }: { code: string }) {
 // Maps the model's Markdown output (see the formatting instruction in
 // orchestration/service.py's grounded_input) to the page's existing type
 // scale/colors instead of react-markdown's unstyled defaults.
+function CopyableAnswerTable(props: ComponentPropsWithoutRef<"table">) {
+  const tableRef = useRef<HTMLTableElement>(null);
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
+
+  async function copyTable() {
+    const table = tableRef.current;
+    if (!table) return;
+    const rows = Array.from(table.rows, (row) =>
+      Array.from(row.cells, (cell) => cell.textContent ?? ""),
+    );
+    try {
+      await writeTextToClipboard(tableRowsToTsv(rows));
+      setCopied(true);
+      setCopyError(false);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopyError(true);
+    }
+  }
+
+  return (
+    <div className="my-4 overflow-hidden rounded-xl border border-line">
+      <div className="flex items-center justify-between border-b border-line/70 bg-panel px-3 py-1.5">
+        <span className="text-[11px] font-semibold text-muted">Table</span>
+        <button
+          type="button"
+          onClick={copyTable}
+          className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] font-semibold text-muted transition hover:bg-soft hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
+          aria-label="Copy table data"
+        >
+          {copied ? <Check size={12} /> : <Copy size={12} />}
+          {copied ? "Copied" : "Copy table"}
+        </button>
+      </div>
+      <div className="overflow-x-auto">
+        <table ref={tableRef} className="w-full border-collapse text-[13px]" {...props} />
+      </div>
+      {copyError && (
+        <p className="border-t border-line/70 px-3 py-1.5 text-[11px] text-bad" role="status">
+          Table copy failed. Use the response Copy action instead.
+        </p>
+      )}
+    </div>
+  );
+}
+
 const answerMarkdownComponents: Components = {
   h1: ({ ...props }) => <h1 className="mb-3 mt-1 text-xl font-bold leading-8 text-ink" {...props} />,
   h2: ({ ...props }) => <h2 className="mb-2 mt-5 text-base font-bold leading-7 text-ink first:mt-0" {...props} />,
@@ -447,14 +536,13 @@ const answerMarkdownComponents: Components = {
   a: ({ ...props }) => <a className="text-brand underline hover:no-underline" target="_blank" rel="noopener noreferrer" {...props} />,
   blockquote: ({ ...props }) => <blockquote className="mb-3 border-l-2 border-line pl-3 italic text-muted" {...props} />,
   hr: () => <hr className="my-4 border-line" />,
-  table: ({ ...props }) => (
-    <div className="my-3 overflow-x-auto">
-      <table className="w-full border-collapse text-[13px]" {...props} />
-    </div>
-  ),
-  thead: ({ ...props }) => <thead className="border-b border-line/70" {...props} />,
-  th: ({ ...props }) => <th className="px-3 py-1.5 text-left font-semibold text-ink" {...props} />,
-  td: ({ ...props }) => <td className="border-t border-line/40 px-3 py-1.5 text-ink" {...props} />,
+  table: ({ node, ...props }) => {
+    void node;
+    return <CopyableAnswerTable {...props} />;
+  },
+  thead: ({ ...props }) => <thead className="border-b border-line/70 bg-soft" {...props} />,
+  th: ({ ...props }) => <th className="whitespace-nowrap px-3 py-2 text-left font-semibold text-ink" {...props} />,
+  td: ({ ...props }) => <td className="border-t border-line/40 px-3 py-2 text-ink" {...props} />,
   // react-markdown always wraps a fenced code block in <pre><code>...
   // — special-cased languages (mermaid/kriton-chart) render as a diagram/
   // chart instead, so `pre` has to skip its own box styling for those
@@ -491,6 +579,127 @@ const answerMarkdownComponents: Components = {
 // marker is pure noise for the reader once it's on screen.
 function stripCitationMarkers(value: string) {
   return value.replace(/\s?\[REF-\d+\]/g, "");
+}
+
+function copyableAnswerText(value: string) {
+  return stripCitationMarkers(value)
+    .replace(/```kriton-chart\s*\n([\s\S]*?)```/g, (_match, chartJson: string) => {
+      try {
+        const spec = JSON.parse(chartJson.trim()) as KritonChartSpec;
+        return chartSpecAsMarkdown(spec);
+      } catch {
+        return "[Chart data unavailable]";
+      }
+    })
+    .trim();
+}
+
+function answerWithSources(result: AskKritonResponse) {
+  const answer = result.answer;
+  if (!answer) return "";
+  const body = copyableAnswerText(answer.text);
+  if (!answer.citations.length) return body;
+  const sources = answer.citations.map((citation) => {
+    const url = citation.url || citation.source_url;
+    return `- ${citation.ref_id}: ${citation.title}${url ? ` — ${url}` : ""}`;
+  });
+  return `${body}\n\n## Sources\n\n${sources.join("\n")}`;
+}
+
+function downloadMarkdown(value: string, query: string) {
+  const stem = query
+    .normalize("NFKD")
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase()
+    .slice(0, 64) || "kriton-answer";
+  const url = URL.createObjectURL(new Blob([value], { type: "text/markdown;charset=utf-8" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `${stem}.md`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+function ResponseActions({
+  result,
+  query,
+  onReuse,
+}: {
+  result: AskKritonResponse;
+  query: string;
+  onReuse: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState("");
+  const exportText = answerWithSources(result);
+  const actionClass = "inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-muted transition hover:bg-soft hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40";
+
+  return (
+    <div className="flex flex-wrap items-center gap-1" aria-label="Response actions">
+      <button
+        type="button"
+        onClick={async () => {
+          try {
+            await writeTextToClipboard(exportText);
+            setCopied(true);
+            setStatus("Response copied");
+            window.setTimeout(() => setCopied(false), 1800);
+          } catch {
+            setStatus("Copy failed. Use the Markdown download instead.");
+          }
+        }}
+        className={actionClass}
+        aria-label="Copy Kriton response with sources"
+      >
+        {copied ? <Check size={14} /> : <Copy size={14} />}
+        <span>{copied ? "Copied" : "Copy"}</span>
+      </button>
+      <button type="button" onClick={() => downloadMarkdown(exportText, query)} className={actionClass} aria-label="Download response as Markdown">
+        <Download size={14} />Markdown
+      </button>
+      <button
+        type="button"
+        onClick={async () => {
+          const token = getAuthToken();
+          if (!token || !result.answer) {
+            setStatus("Sign in to save this answer.");
+            return;
+          }
+          if (saving || saved) return;
+          setSaving(true);
+          try {
+            await createSavedAnswer(token, {
+              query_id: result.query_id,
+              query_text: query,
+              answer_text: result.answer.text,
+              risk_level: result.safety.risk_level,
+              tags: ["Ask Kriton"],
+            });
+            setSaved(true);
+            setStatus("Answer saved");
+          } catch {
+            setStatus("Could not save this answer.");
+          } finally {
+            setSaving(false);
+          }
+        }}
+        className={actionClass}
+        aria-label="Save answer"
+        disabled={saved || saving}
+      >
+        {saved ? <Check size={14} /> : <Bookmark size={14} />}{saved ? "Saved" : saving ? "Saving…" : "Save"}
+      </button>
+      <button type="button" onClick={onReuse} className={actionClass} aria-label="Reuse this prompt">
+        <RotateCcw size={14} />Reuse prompt
+      </button>
+      <span className="sr-only" role="status" aria-live="polite">{status}</span>
+    </div>
+  );
 }
 
 // Extracted to its own component (rather than calling useTypewriter directly
@@ -784,37 +993,6 @@ export default function AskKritonPage() {
       persistRecents(next);
       return next;
     });
-  }
-
-  function togglePin(id: string) {
-    setRecents((prev) => {
-      const toggled = prev.map((r) => (r.id === id ? { ...r, pinned: !r.pinned } : r));
-      const next = [...toggled.filter((r) => r.pinned), ...toggled.filter((r) => !r.pinned)];
-      persistRecents(next);
-      return next;
-    });
-    setOpenMenuId(null);
-  }
-
-  function deleteRecent(id: string) {
-    setRecents((prev) => {
-      const next = prev.filter((r) => r.id !== id);
-      persistRecents(next);
-      return next;
-    });
-    if (recentConversationIdRef.current === id) {
-      recentConversationIdRef.current = null;
-      setActiveConversationIdValue(null);
-      window.localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
-      setTurns([]);
-    }
-    setOpenMenuId(null);
-  }
-
-  function startRename(entry: RecentEntry) {
-    setEditingId(entry.id);
-    setEditText(entry.text);
-    setOpenMenuId(null);
   }
 
   async function renameConversationEntry(id: string) {
@@ -1332,50 +1510,111 @@ export default function AskKritonPage() {
                                       <CalculationWidget data={turn.result.answer.calculation_widget} />
                                     )}
                                     {turn.result.answer.citations.length > 0 && (
-                                      <div className="mt-5 border-t border-line/70 pt-3">
-                                        <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">Sources</p>
+                                      <details className="group mt-5 border-t border-line/70 pt-3">
+                                        <summary className="inline-flex cursor-pointer list-none items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-semibold text-muted transition hover:bg-soft hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40">
+                                          <BookOpen size={14} />
+                                          View sources
+                                          <span className="rounded-full bg-soft px-1.5 py-0.5 text-[10px] tabular-nums">{turn.result.answer.citations.length}</span>
+                                          <ChevronDown size={13} className="transition-transform group-open:rotate-180" aria-hidden="true" />
+                                        </summary>
                                         <ul className="mt-2 space-y-1.5">
                                           {turn.result.answer.citations.map((c) => {
-                                            const preview = sourcePreview(c.source_id, c.url);
                                             // source_url is the legacy, live-data-only field; url is the
                                             // general one (external link for a live source, or a
                                             // `/sources/{id}/file` internal link for a document) — prefer
                                             // url, fall back to source_url only if url is unset.
                                             const resolvedUrl = c.url || c.source_url || null;
+                                            const preview = sourcePreview(c.source_id, resolvedUrl);
+                                            const isExternalUrl = Boolean(resolvedUrl && /^https?:\/\//i.test(resolvedUrl));
                                             return (
-                                              <li key={c.ref_id} className="flex max-w-full items-center gap-1">
-                                                <button
-                                                  type="button"
-                                                  onClick={() => openEvidenceView(c, turn)}
-                                                  title={preview.detail}
-                                                  className="group inline-flex min-w-0 flex-1 items-center gap-2 text-left text-sm font-medium text-brand hover:text-brand-2 hover:underline hover:underline-offset-2"
-                                                >
-                                                  {c.source_id === "src-kriton-user-provided-data" ? <MessageSquare size={14} className="shrink-0" />
-                                                    : c.source_type === "live_api" ? <Globe size={14} className="shrink-0" />
-                                                    : <FileText size={14} className="shrink-0" />}
-                                                  <span className="truncate">{c.title}</span>
-                                                  <span className="shrink-0 text-[10px] font-normal text-muted">· {preview.label}</span>
-                                                  <ExternalLink size={11} className="shrink-0 opacity-60" />
-                                                </button>
-                                                {resolvedUrl && (
+                                              <li key={c.ref_id} className="rounded-xl border border-line/70 bg-panel px-3 py-2.5">
+                                                <div className="flex max-w-full items-center gap-2">
+                                                  <span className="shrink-0 rounded-md bg-soft px-1.5 py-0.5 font-mono text-[9px] font-semibold text-muted">{c.ref_id}</span>
+                                                  <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${c.evidence_role === "controlling" ? "bg-brand/10 text-brand" : "bg-soft text-muted"}`}>
+                                                    {c.evidence_role === "controlling" ? "Controlling" : "Supporting"}
+                                                  </span>
                                                   <button
                                                     type="button"
-                                                    onClick={() => {
-                                                      const token = getAuthToken();
-                                                      if (token) openSourceUrl(token, resolvedUrl);
-                                                    }}
-                                                    title={`Open source directly: ${resolvedUrl}`}
-                                                    className="shrink-0 rounded-md p-1 text-muted hover:bg-soft hover:text-brand"
+                                                    onClick={() => openEvidenceView(c, turn)}
+                                                    title={preview.detail}
+                                                    className="group inline-flex min-w-0 flex-1 items-center gap-2 text-left text-sm font-medium text-brand hover:text-brand-2"
                                                   >
-                                                    <Link2 size={13} />
+                                                    {c.source_id === "src-kriton-user-provided-data" ? <MessageSquare size={14} className="shrink-0" />
+                                                      : c.source_type === "live_api" ? <Globe size={14} className="shrink-0" />
+                                                      : <FileText size={14} className="shrink-0" />}
+                                                    <span className="truncate">{c.title}</span>
+                                                    <ExternalLink size={11} className="shrink-0 opacity-60" />
                                                   </button>
+                                                  {resolvedUrl && !isExternalUrl && (
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => {
+                                                        const token = getAuthToken();
+                                                        if (token) openSourceUrl(token, resolvedUrl);
+                                                      }}
+                                                      title={`Open source directly: ${resolvedUrl}`}
+                                                      className="shrink-0 rounded-md p-1 text-muted hover:bg-soft hover:text-brand"
+                                                      aria-label={`Open ${c.title} directly`}
+                                                    >
+                                                      <Link2 size={13} />
+                                                    </button>
+                                                  )}
+                                                </div>
+                                                <div className="mt-1.5 flex flex-wrap items-center gap-2 pl-8 text-[10px] text-muted">
+                                                  <span>{preview.label}</span>
+                                                  <span aria-hidden="true">·</span>
+                                                  <span>{c.source_type === "live_api" ? "Live governed source" : "Governed document"}</span>
+                                                </div>
+                                                <div className="mt-2 pl-8 text-[11px] leading-5">
+                                                  <span className="mr-1.5 font-semibold text-muted">Source URL:</span>
+                                                  {resolvedUrl ? (
+                                                    isExternalUrl ? (
+                                                      <a
+                                                        href={resolvedUrl}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="break-all text-brand underline decoration-brand/30 underline-offset-2 hover:text-brand-2"
+                                                      >
+                                                        {resolvedUrl}
+                                                      </a>
+                                                    ) : (
+                                                      <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                          const token = getAuthToken();
+                                                          if (token) openSourceUrl(token, resolvedUrl);
+                                                        }}
+                                                        className="break-all text-left text-brand underline decoration-brand/30 underline-offset-2 hover:text-brand-2"
+                                                      >
+                                                        {resolvedUrl}
+                                                      </button>
+                                                    )
+                                                  ) : (
+                                                    <span className="text-muted">No direct URL available</span>
+                                                  )}
+                                                </div>
+                                                {c.evidence_preview && (
+                                                  <details className="mt-2 pl-8 text-xs leading-5 text-muted">
+                                                    <summary className="cursor-pointer font-medium hover:text-brand">Evidence used</summary>
+                                                    <p className="mt-1.5 border-l-2 border-line pl-3">{c.evidence_preview}</p>
+                                                  </details>
                                                 )}
                                               </li>
                                             );
                                           })}
                                         </ul>
-                                      </div>
+                                      </details>
                                     )}
+                                    <div className="mt-3 flex items-center border-t border-line/50 pt-2">
+                                      <ResponseActions
+                                        result={turn.result}
+                                        query={turn.query}
+                                        onReuse={() => {
+                                          setQuery(turn.query);
+                                          window.requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea[placeholder="Ask a follow-up..."]')?.focus());
+                                        }}
+                                      />
+                                    </div>
                                   </>
                               ) : action ? (
                                 <div>

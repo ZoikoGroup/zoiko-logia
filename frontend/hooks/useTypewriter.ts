@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 /**
  * Progressively reveals `text` word-by-word rather than rendering it all at
@@ -17,16 +17,18 @@ import { useEffect, useRef, useState } from "react";
  */
 export function useTypewriter(text: string, wordsPerTick = 2, tickMs = 28): string {
   const [visibleWordCount, setVisibleWordCount] = useState(0);
-  const wordsRef = useRef<string[]>([]);
+  const words = useMemo(
+    () => text.split(/(\s+)/),
+    [text],
+  );
 
   useEffect(() => {
     const prefersReducedMotion =
       typeof window !== "undefined" &&
       window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
-    wordsRef.current = text.split(/(\s+)/); // keep whitespace tokens so spacing is preserved exactly
-    if (prefersReducedMotion || wordsRef.current.length === 0) {
-      setVisibleWordCount(wordsRef.current.length);
+    if (prefersReducedMotion || words.length === 0) {
+      setVisibleWordCount(words.length);
       return;
     }
 
@@ -34,16 +36,16 @@ export function useTypewriter(text: string, wordsPerTick = 2, tickMs = 28): stri
     const interval = setInterval(() => {
       setVisibleWordCount((count) => {
         const next = count + wordsPerTick;
-        if (next >= wordsRef.current.length) {
+        if (next >= words.length) {
           clearInterval(interval);
-          return wordsRef.current.length;
+          return words.length;
         }
         return next;
       });
     }, tickMs);
 
     return () => clearInterval(interval);
-  }, [text, wordsPerTick, tickMs]);
+  }, [words, wordsPerTick, tickMs]);
 
-  return wordsRef.current.slice(0, visibleWordCount).join("");
+  return words.slice(0, visibleWordCount).join("");
 }

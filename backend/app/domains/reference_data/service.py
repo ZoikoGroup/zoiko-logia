@@ -12,6 +12,7 @@ import html
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from typing import Awaitable, Callable, TypeVar
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +33,28 @@ from app.domains.reference_data.adapters.ecfr_adapter import get_cfr_section as 
 from app.domains.reference_data.adapters.congress_adapter import get_bill as get_congress_bill
 from app.domains.reference_data.adapters.professional_search_adapter import search_tavily, search_serpapi
 from app.domains.reference_data.models import ReferenceSourceBundle
+
+T = TypeVar("T")
+
+
+async def _retry_external(call: Callable[[], Awaitable[T]], *, attempts: int = 2) -> T:
+    """Retry transient transport/server failures at the governed boundary."""
+    last_error: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            return await call()
+        except Exception as exc:
+            last_error = exc
+            message = str(exc).lower()
+            transient = any(token in message for token in (
+                "timed out", "timeout", "request failed", "getaddrinfo",
+                "connection", "returned 500", "returned 502", "returned 503", "returned 504",
+            ))
+            if not transient or attempt + 1 >= attempts:
+                raise
+            await asyncio.sleep(0.25 * (attempt + 1))
+    assert last_error is not None
+    raise last_error
 
 # The governed Source row Kriton's retrieval layer cites for this data (see
 # scripts/seed_dev_user.py) — an explicit fixed id rather than the DB's uuid
@@ -73,7 +96,7 @@ async def get_professional_search_bundle(
     """Use Tavily first and SerpAPI only when Tavily yields no usable page."""
     provider = "tavily"
     try:
-        results = await search_tavily(query)
+        results = await _retry_external(lambda: search_tavily(query))
         status = "200"
     except Exception as exc:
         results, status = [], f"error: {exc}"
@@ -86,7 +109,7 @@ async def get_professional_search_bundle(
     if not results:
         provider = "serpapi"
         try:
-            results = await search_serpapi(query)
+            results = await _retry_external(lambda: search_serpapi(query))
             status = "200"
         except Exception as exc:
             results, status = [], f"error: {exc}"
@@ -181,7 +204,7 @@ async def get_exchange_rate_bundle(
         return bundle
 
     try:
-        data = await get_exchange_rates(currency=currency, since=since)
+        data = await _retry_external(lambda: get_exchange_rates(currency=currency, since=since))
     except Exception as exc:
         await _log_call(
             db, tenant_id=tenant_id, actor_id=actor_id, currency=currency, since=since,
@@ -399,7 +422,7 @@ async def get_payroll_tax_bundle(
         return bundle
 
     try:
-        data = await get_payroll_tax_rates(work_state=work_state, pay_date=pay_date)
+        data = await _retry_external(lambda: get_payroll_tax_rates(work_state=work_state, pay_date=pay_date))
     except Exception as exc:
         await _log_payroll_call(
             db, tenant_id=tenant_id, actor_id=actor_id, work_state=work_state, pay_date=pay_date,
@@ -581,7 +604,7 @@ async def get_census_income_poverty_bundle(
         return bundle
 
     try:
-        data = await get_state_income_poverty(state_fips=state_fips, year=_ACS_YEAR)
+        data = await _retry_external(lambda: get_state_income_poverty(state_fips=state_fips, year=_ACS_YEAR))
     except Exception as exc:
         await _log_census_call(
             db, tenant_id=tenant_id, actor_id=actor_id, state_fips=state_fips,
@@ -724,7 +747,7 @@ async def get_cpi_bundle(
         return bundle
 
     try:
-        data = await get_cpi_series(start_year=start_year, end_year=end_year)
+        data = await _retry_external(lambda: get_cpi_series(start_year=start_year, end_year=end_year))
     except Exception as exc:
         await _log_bls_call(
             db, tenant_id=tenant_id, actor_id=actor_id, start_year=start_year, end_year=end_year,
@@ -897,9 +920,9 @@ async def get_gdp_bundle(
 
     try:
         current_dollar_rows, real_change_rows, annual_real_change_rows = await asyncio.gather(
-            get_gdp_data(years=years, table_name=GDP_TABLE_NAME),
-            get_gdp_data(years=years, table_name=REAL_GDP_CHANGE_TABLE_NAME),
-            get_gdp_data(years=years, table_name=REAL_GDP_CHANGE_TABLE_NAME, frequency="A"),
+            _retry_external(lambda: get_gdp_data(years=years, table_name=GDP_TABLE_NAME)),
+            _retry_external(lambda: get_gdp_data(years=years, table_name=REAL_GDP_CHANGE_TABLE_NAME)),
+            _retry_external(lambda: get_gdp_data(years=years, table_name=REAL_GDP_CHANGE_TABLE_NAME, frequency="A")),
         )
         data = [dict(row, _table=GDP_TABLE_NAME) for row in current_dollar_rows]
         data.extend(dict(row, _table=REAL_GDP_CHANGE_TABLE_NAME, _frequency="Q") for row in real_change_rows)
@@ -1113,9 +1136,9 @@ async def get_interest_rates_bundle(
         observation_start = (datetime.now(timezone.utc) - timedelta(days=370)).date().isoformat()
         results = await asyncio.gather(
             *(
-                get_series_observations(
+                _retry_external(lambda series_id=series_id: get_series_observations(
                     series_id, limit=400, observation_start=observation_start,
-                )
+                ))
                 for series_id in _FRED_SERIES
             )
         )
@@ -1267,7 +1290,7 @@ async def get_cfr_section_bundle(
         return bundle
 
     try:
-        data = await get_cfr_section(section_number)
+        data = await _retry_external(lambda: get_cfr_section(section_number))
     except Exception as exc:
         await _log_cfr_call(
             db, tenant_id=tenant_id, actor_id=actor_id, section_number=section_number,
@@ -1404,7 +1427,7 @@ async def get_federal_register_document_bundle(
         return bundle
 
     try:
-        data = await get_federal_register_document(document_number)
+        data = await _retry_external(lambda: get_federal_register_document(document_number))
     except Exception as exc:
         await _log_federal_register_call(
             db, tenant_id=tenant_id, actor_id=actor_id, document_number=document_number,
@@ -1544,7 +1567,7 @@ async def get_ecfr_section_bundle(
         return bundle
 
     try:
-        data = await get_ecfr_section(section_number)
+        data = await _retry_external(lambda: get_ecfr_section(section_number))
     except Exception as exc:
         await _log_ecfr_call(
             db, tenant_id=tenant_id, actor_id=actor_id, section_number=section_number,
@@ -1681,7 +1704,7 @@ async def get_congress_bill_bundle(
         return bundle
 
     try:
-        data = await get_congress_bill(congress, bill_type, bill_number)
+        data = await _retry_external(lambda: get_congress_bill(congress, bill_type, bill_number))
     except Exception as exc:
         await _log_congress_call(
             db, tenant_id=tenant_id, actor_id=actor_id, identifier=cache_key,

@@ -103,6 +103,34 @@ async def audit_plan_created(db, *, query_id, correlation_id, tenant_id, audit_c
     await _emit(db, "plan_created", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"retrieval_plan_id": retrieval_plan_id, "strategy": strategy, "methods": methods})
 
+
+async def audit_query_understood(
+    db,
+    *,
+    query_id,
+    correlation_id,
+    tenant_id,
+    audit_chain_id,
+    actor_id,
+    understanding: dict,
+    commit: bool = True,
+):
+    # Deliberately excludes both the original and rewritten query text. The
+    # query_received event already carries a one-way hash; understanding audit
+    # needs decision metadata, not another copy of potentially sensitive text.
+    await _emit(
+        db,
+        "query_understood",
+        query_id,
+        correlation_id,
+        tenant_id,
+        audit_chain_id,
+        actor_id,
+        understanding,
+        replay_relevance="REQUIRED",
+        commit=commit,
+    )
+
 async def audit_rerank_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                  input_count: int, output_count: int):
     await _emit(db, "rerank_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,

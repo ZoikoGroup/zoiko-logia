@@ -24,11 +24,9 @@ services:
       # (sources/source_versions tenant isolation) to actually apply: RLS
       # always exempts superusers, and DATABASE_URL's "zoiko" role is one.
       APP_DATABASE_URL: postgresql+asyncpg://zoiko_app:zoiko_app@postgres:5432/zoiko
-      # Without this, risk_classifier.py's _get_classifier_pipeline() never
-      # loads the real zero-shot model — every query gets a fixed 0.5
-      # confidence, which is always below the 0.65 routing threshold, so
-      # every query falls back to "needs clarification" regardless of content.
-      ENABLE_ML_CLASSIFIER: "true"
+      # Deterministic safety gates remain active. Enable the optional local
+      # model only after validating image memory and native libraries.
+      ENABLE_ML_CLASSIFIER: "false"
       # The classifier model is already baked into the image's HF cache.
       # Without these, huggingface_hub still does an online freshness check
       # on every load; when that check hangs (flaky/sandboxed Docker
@@ -43,6 +41,17 @@ services:
       SUPABASE_SERVICE_ROLE_KEY: ""
     ports:
       - "8010:8010"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8010/health/ready', timeout=3)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     depends_on:
       postgres:
         condition: service_healthy
@@ -55,11 +64,10 @@ services:
       postgres:
         condition: service_healthy
       backend:
-        condition: service_started
+        condition: service_healthy
     restart: "no"
     command: >
-      sh -c "sleep 5 &&
-      python scripts/seed_dev_user.py &&
+      sh -c "python scripts/seed_dev_user.py &&
       python scripts/ingest_reference_sources.py"
 
   frontend:
@@ -68,8 +76,20 @@ services:
       NEXT_PUBLIC_API_URL: http://localhost:8010/api/v1
     ports:
       - "3005:3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   postgres_data:

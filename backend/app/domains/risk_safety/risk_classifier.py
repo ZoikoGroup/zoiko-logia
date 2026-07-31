@@ -80,6 +80,11 @@ _BYPASS_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(ignore\s+instructions|jailbreak|system\s+prompt|bypass\s+safety|DAN\s+mode)\b", re.IGNORECASE)
 ]
 
+_SANCTIONS_SCREENING_PATTERN = re.compile(
+    r"\b(?:screen|check|search|is)\b.{1,220}\b(?:OFAC|SDN\s+list|UN\s+sanctions|UN\s+Security\s+Council\s+Consolidated\s+List|UK\s+sanctions|EU\s+sanctions)\b",
+    re.IGNORECASE,
+)
+
 # 2026-07-22 (product vision doc, item 2 — memory:
 # product-vision-kriton-tutor-not-search): the vision doc's own canonical
 # example, "My taxes are being investigated. What should I do?", did NOT
@@ -154,6 +159,21 @@ _FACTUAL_LOOKUP_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(current|latest|today(?:'s)?)\b.*\b(rate|cpi|inflation|gdp|income|yield)\b", re.IGNORECASE),
     re.compile(r"\b(exchange|treasury|federal\s+funds|interest)\s+rate\b", re.IGNORECASE),
     re.compile(r"\bfed(?:eral)?\s+funds\s+rate\b", re.IGNORECASE),
+    # 2026-07-29 real incident: "Look up bill HR 1 from the 118th Congress" —
+    # an unambiguous, objective, public-record citation lookup with no
+    # personal framing at all — fell through this entirely economic-data-
+    # shaped pattern list, landed in the ML/LLM semantic path, came back
+    # low-confidence, and got forced into CLASSIFICATION_UNCERTAIN's fixed
+    # MEDIUM-risk clarification response. Same category as the rate/CPI/GDP
+    # patterns above (a citation lookup, not a risk question) — reusing the
+    # same identifier-shaped patterns extract_congress_bill_identifier() and
+    # extract_cfr_section() already use in reference_data/service.py for the
+    # actual retrieval, so this gate recognizes exactly the query shapes
+    # those connectors do.
+    re.compile(r"\bh\.?\s?r\.?\s*\d+\b", re.IGNORECASE),  # "H.R. 1", "HR1"
+    re.compile(r"\b\d{1,3}(?:st|nd|rd|th)\s+congress\b", re.IGNORECASE),  # "118th Congress"
+    re.compile(r"\b\d+\s*cfr\b", re.IGNORECASE),  # "26 CFR"
+    re.compile(r"\bcfr\s+(?:part\s+|section\s+)?\d", re.IGNORECASE),  # "CFR section 1.61-1"
 ]
 
 _NAVIGATION_PATTERNS: list[re.Pattern] = [
@@ -366,6 +386,14 @@ def classify(
     has_advice_signal = has_advice_signal or signals.personalized_advice
     base_metadata: dict = {"signals": signals.to_dict()}
 
+    if _SANCTIONS_SCREENING_PATTERN.search(query):
+        rules_applied.append("l2-sanctions-screening-human-review")
+        return _decision(
+            query_id, False, RiskLevel.HIGH, Route.HUMAN_REVIEW, 1.0, rules_applied,
+            ["Official-list candidates were retrieved, but sanctions screening requires qualified human review before action."],
+            requires_human_review=True, classification_metadata=base_metadata,
+        )
+
     if is_ambiguous:
         rules_applied.append("l2-ambiguous-context")
         return _decision(
@@ -441,6 +469,10 @@ def classify(
             "missing_context": list(llm_result.missing_context),
             "reason_codes": list(llm_result.reason_codes),
             "model": llm_result.model,
+            "domain": llm_result.domain,
+            "response_format": llm_result.response_format,
+            "requested_depth": llm_result.requested_depth,
+            "requires_current_sources": llm_result.requires_current_sources,
             "shadow": llm_mode == "shadow" and not local_uncertain,
         }
 

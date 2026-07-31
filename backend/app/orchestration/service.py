@@ -37,7 +37,11 @@ from app.orchestration.identifiers import (
 )
 from app.orchestration.prescreen import run_prescreen, is_small_talk, check_off_topic_domain
 from app.orchestration.navigation_answers import resolve_navigation_answer
-from app.orchestration.retrieve import build_source_bundle, infer_category
+from app.orchestration.query_understanding import (
+    build_response_instruction,
+    understand as understand_query,
+)
+from app.orchestration.retrieve import build_source_bundle, infer_category, infer_query_jurisdiction
 from app.domains.source_library.service import list_sources, resolve_source_url
 from app.domains.rag.planner import create_retrieval_plan
 from app.domains.reference_data.service import (
@@ -173,6 +177,7 @@ from app.orchestration.audit_events import (
     audit_citation_assembly_completed, audit_coverage_assessed,
     audit_live_intent_detected, audit_live_cache_hit, audit_live_cache_miss,
     audit_live_fetch_succeeded, audit_live_fetch_failed,
+    audit_query_understood,
 )
 from app.domains.risk_safety.schemas import ClassifyRequest
 from app.domains.risk_safety import service as risk_safety_service
@@ -220,6 +225,20 @@ _NUMERIC_RESULT_QUERY_PATTERN = re.compile(
     r"limit|deduction|credit|price|cost|fee|number|value|calculate|compute|chart|graph)\b|[$£€]\s*\d|\d\s*%",
     re.IGNORECASE,
 )
+
+_PRESENTATION_ONLY_FAILURE_PREFIXES = (
+    "Summarize-don't-copy check failed:",
+    "Tutor-depth structure failed:",
+    "Repetition check failed:",
+)
+
+
+def _has_only_presentation_failures(failures: list[str]) -> bool:
+    """True only for repairable style/coherence failures, never safety failures."""
+    return bool(failures) and all(
+        failure.startswith(_PRESENTATION_ONLY_FAILURE_PREFIXES)
+        for failure in failures
+    )
 
 # Any injected live-data chunk's node_id starts with one of these prefixes —
 # checked by _reinstate_live_chunks below.
@@ -1001,6 +1020,7 @@ class KritonMediator:
         search_source_ids = {TAVILY_GOVERNED_SOURCE_ID, SERPAPI_GOVERNED_SOURCE_ID}
         purpose_built_live_evidence = any(
             str(chunk.get("node_id", "")).startswith(_LIVE_DATA_NODE_PREFIXES)
+            or chunk.get("metadata", {}).get("fact_type") == "standard_deduction"
             for chunk in raw_chunks
         )
         if (
@@ -1431,6 +1451,7 @@ class KritonMediator:
                         ref_id=f"REF-{i+1}",
                         source_id=governed_source_id or chunk.get("node_id", f"chunk-{i}"),
                         title=chunk["metadata"].get("title", "Uploaded Document"),
+                        evidence_role="controlling" if i == 0 else "supporting",
                         url=(
                             resolve_source_url(governed_source_id, chunk["metadata"].get("file_path"))
                             if governed_source_id else None
@@ -2233,7 +2254,8 @@ class KritonMediator:
                 await audit_refusal_returned(
                     db, query_id=query_id, correlation_id=correlation_id,
                     tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-                    actor_id=actor_id, reason="Composition rejected: prohibited claim detected",
+                    actor_id=actor_id,
+                    reason=f"Composition rejected: {'; '.join(validation.failures[:2])}",
                 )
                 # 2026-07-23 real incident: "The IRS sent me an audit notice —
                 # what should I do?" and similarly advice-signal-shaped queries
@@ -2511,6 +2533,11 @@ async def ask_kriton(
             await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
         return response
 
+    # Treat an explicitly named reporting framework as jurisdictional context
+    # when the UI selector is left empty. This recognizes only deterministic
+    # framework identifiers; it does not guess a country from the topic.
+    effective_jurisdiction = request.jurisdiction or infer_query_jurisdiction(request.query)
+
     # ── Step 3.5: ML-based pre-screen — risk_classifier.pre_screen(), via
     # risk_safety_service.pre_screen() (§6, RG-01) ───────────────────────────
     # Confirmed this session: before this, ask_kriton() only ever called
@@ -2537,7 +2564,7 @@ async def ask_kriton(
         user_id=actor_id,
         role=role,
         tenant_id=tenant_id,
-        jurisdiction=request.jurisdiction,
+        jurisdiction=effective_jurisdiction,
         mode=request.mode,
         privacy_class=request.privacy_class or "NONE",
     )
@@ -2566,7 +2593,76 @@ async def ask_kriton(
             await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
         return response
 
-    # ── Step 3.75: Pure-greeting bypass ──────────────────────────────────────
+    # ── Step 3.75: Product-navigation fast path ───────────────────────────
+    # Application routes are product-owned facts. Keep this after both
+    # safety screens, but before retrieval and model generation.
+    navigation = resolve_navigation_answer(request.query)
+    if navigation is not None:
+        await audit_risk_classified(
+            db,
+            query_id=query_id,
+            correlation_id=correlation_id,
+            tenant_id=tenant_id,
+            audit_chain_id=audit_chain_id,
+            actor_id=actor_id,
+            risk_level="ZERO",
+            confidence_state=CONF_SUFFICIENT,
+        )
+        await audit_route_selected(
+            db,
+            query_id=query_id,
+            correlation_id=correlation_id,
+            tenant_id=tenant_id,
+            audit_chain_id=audit_chain_id,
+            actor_id=actor_id,
+            route=ROUTE_LLM,
+            risk_level="ZERO",
+            confidence_state=CONF_SUFFICIENT,
+        )
+        response = AskKritonResponse(
+            query_id=query_id,
+            correlation_id=correlation_id,
+            outcome="answered",
+            route=ROUTE_LLM,
+            safety=SafetyState(
+                risk_level="ZERO",
+                policy_state="allowed",
+                disclaimer_required=False,
+            ),
+            confidence_state=CONF_SUFFICIENT,
+            source_bundle=None,
+            answer=ComposedAnswer(
+                text=navigation.text,
+                citations=[],
+                limitations=[],
+                prompt_id="deterministic-product-navigation",
+                prompt_name="Product navigation",
+                output_text=navigation.text,
+            ),
+            next_action=None,
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        )
+        await _finalise_and_return(
+            db,
+            query_id=query_id,
+            correlation_id=correlation_id,
+            tenant_id=tenant_id,
+            audit_chain_id=audit_chain_id,
+            actor_id=actor_id,
+            outcome=response.outcome,
+            route=ROUTE_LLM,
+            start_time=start_time,
+        )
+        if idempotency_key:
+            await store_idempotency(
+                db,
+                idempotency_key,
+                tenant_id,
+                response.model_dump(),
+            )
+        return response
+
+    # ── Step 4: Pure-greeting bypass ─────────────────────────────────────────
     # "Hi"/"Hello Kriton"/"good morning" retrieve zero document context (an
     # accounting/tax library has nothing matching a greeting), which trips
     # the §2 "no unsupported answering" rule below (Step 4/5) and returns
@@ -2640,15 +2736,36 @@ async def ask_kriton(
     # and the 4 procedure-content sources (bank reconciliation, month-end close,
     # accounting fundamentals, user-provided data) are actually reachable from
     # the live pipeline instead of sitting dormant in the unused class.
+    understanding = await understand_query(
+        request.query,
+        jurisdiction=effective_jurisdiction,
+        mode=request.mode,
+        privacy_class=request.privacy_class or "NONE",
+    )
+    retrieval_query = understanding.retrieval_query
+    await audit_query_understood(
+        db,
+        query_id=query_id,
+        correlation_id=correlation_id,
+        tenant_id=tenant_id,
+        audit_chain_id=audit_chain_id,
+        actor_id=actor_id,
+        understanding=understanding.audit_payload(),
+        commit=False,
+    )
+
     embeddings_enabled = os.getenv("ENABLE_RAG_EMBEDDINGS", "").lower() in {"1", "true", "yes"}
-    retrieval_category = infer_category(request.query)
+    retrieval_category = infer_category(retrieval_query)
     closed_evidence_categories = {
         "exchange-rate", "economic-data", "interest-rates", "tax-regulations",
         "federal-register", "us-legislation", "bank-reconciliation",
         "month-end-close", "accounting-fundamentals", "user-provided-data",
     }
     retrieval_plan = create_retrieval_plan(
-        request.query, request.jurisdiction, embeddings_enabled=embeddings_enabled,
+        retrieval_query,
+        effective_jurisdiction,
+        embeddings_enabled=embeddings_enabled,
+        requires_current_sources=understanding.requires_current_sources,
     )
     await audit_plan_created(
         db, query_id=query_id, correlation_id=correlation_id,
@@ -2672,6 +2789,19 @@ async def ask_kriton(
     ]
     prefilter = await license_gate.check_eligibility(db, catalog_summaries, tenant_id=tenant_id)
     allowed_source_ids = {source.id for source in prefilter.eligible}
+    standard_deduction_request = _standard_deduction_request(request.query)
+    standard_deduction_fact = _standard_deduction_fact(request.query)
+    governed_standard_deduction_source = next(
+        (
+            source for source in prefilter.eligible
+            if "standard deduction" in source.title.lower()
+        ),
+        None,
+    )
+    deterministic_standard_deduction_ready = (
+        standard_deduction_request is not None
+        and governed_standard_deduction_source is not None
+    )
     await audit_licence_prefilter_completed(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
@@ -2695,6 +2825,7 @@ async def ask_kriton(
     verified_calculation_bypasses_coverage_gate = False
     calculation_widget = None
     missing_formula_inputs = None
+    executed_formula_result = None
 
     # ── Step 4: Retrieve SourceBundle (Massarius™ keyword_mvp layer) (§7) ────
     # commit=False on every intermediate event in this phase (see
@@ -2731,6 +2862,12 @@ async def ask_kriton(
         just makes the existing one shareable."""
         if os.getenv("ENABLE_RAG_EMBEDDINGS", "").lower() not in {"1", "true", "yes"}:
             return [], None
+        if deterministic_standard_deduction_ready:
+            # The exact enacted amount is constructed below from the
+            # tenant-eligible IRS source already approved by Checkpoint A.
+            # A vector search cannot add evidence needed by this one-fact
+            # response, so do not pay its measured ~10-20 second cost.
+            return [], None
         # Tier 1 latency optimization: skip the ~10-15s Postgres vector
         # search entirely for queries the live-data classifier is
         # confident are pure live-data lookups (e.g. "What is the Bank
@@ -2742,16 +2879,16 @@ async def ask_kriton(
         # inflation/GDP/unemployment matches — those could legitimately
         # need real document grounding alongside the live figure.
         if _enable_live_sources():
-            skip_intent = detect_live_data_intent(request.query, jurisdiction=request.jurisdiction)
+            skip_intent = detect_live_data_intent(request.query, jurisdiction=effective_jurisdiction)
             if skip_intent is not None and skip_intent.skip_document_search:
                 return [], None
         try:
             loop = asyncio.get_event_loop()
-            query_embedding = await loop.run_in_executor(None, get_query_embedding_cached, request.query)
+            query_embedding = await loop.run_in_executor(None, get_query_embedding_cached, retrieval_query)
             chunks = await retrieve_documents(
-                query=request.query,
+                query=retrieval_query,
                 tenant_id=tenant_id,
-                jurisdiction=request.jurisdiction or None,
+                jurisdiction=effective_jurisdiction or None,
                 top_k=10,
                 query_embedding=query_embedding,
             )
@@ -2766,7 +2903,7 @@ async def ask_kriton(
         if not _enable_live_sources():
             return None
         return await live_sources_service.fetch_live_data(
-            db, query=request.query, tenant_id=tenant_id, jurisdiction=request.jurisdiction,
+            db, query=request.query, tenant_id=tenant_id, jurisdiction=effective_jurisdiction,
         )
 
     live_summary = None
@@ -3015,8 +3152,7 @@ async def ask_kriton(
             except Exception:
                 pass
 
-    standard_deduction_fact = _standard_deduction_fact(request.query)
-    if standard_deduction_fact is not None:
+    if standard_deduction_request is not None:
         governed_tax_chunk = next(
             (
                 chunk for chunk in raw_chunks
@@ -3025,13 +3161,35 @@ async def ask_kriton(
             ),
             None,
         )
+        if governed_tax_chunk is None and governed_standard_deduction_source is not None:
+            governed_tax_chunk = {
+                "text": governed_standard_deduction_source.title,
+                "metadata": {
+                    "source_id": governed_standard_deduction_source.id,
+                    "title": governed_standard_deduction_source.title,
+                    "version": governed_standard_deduction_source.version_label,
+                    "jurisdiction": governed_standard_deduction_source.jurisdiction_scope,
+                    "file_path": _STANDARD_DEDUCTION_URLS[standard_deduction_request["years"][0]],
+                },
+                "score": 1.0,
+                "node_id": (
+                    f"irs-standard-deduction-{standard_deduction_request['years'][0]}"
+                ),
+            }
         if governed_tax_chunk is not None:
-            raw_chunks.insert(0, _standard_deduction_chunk(governed_tax_chunk, standard_deduction_fact))
+            if standard_deduction_fact is not None:
+                raw_chunks.insert(0, _standard_deduction_chunk(governed_tax_chunk, standard_deduction_fact))
+            else:
+                raw_chunks[:0] = [
+                    _standard_deduction_year_chunk(governed_tax_chunk, standard_deduction_request, year)
+                    for year in standard_deduction_request["years"]
+                ]
 
     professional_categories = {"standards", "tax", "audit", "payroll-compliance"}
     search_source_ids = {TAVILY_GOVERNED_SOURCE_ID, SERPAPI_GOVERNED_SOURCE_ID}
     purpose_built_live_evidence = any(
         str(chunk.get("node_id", "")).startswith(_LIVE_DATA_NODE_PREFIXES)
+        or str(chunk.get("metadata", {}).get("fact_type", "")).startswith("standard_deduction")
         for chunk in raw_chunks
     )
     if (
@@ -3165,6 +3323,7 @@ async def ask_kriton(
                 ))
                 if decision.engine == ENGINE_FORMULA_REGISTRY and decision.status == "executed":
                     formula_result = decision.result
+                    executed_formula_result = formula_result
                     # Same fix, same reasoning as the expression evaluator
                     # block above — drop competing real content once a
                     # verified formula result exists.
@@ -3196,7 +3355,7 @@ async def ask_kriton(
 
     try:
         preliminary_bundle = await build_source_bundle(
-            db, query=request.query, jurisdiction=request.jurisdiction, tenant_id=tenant_id,
+            db, query=retrieval_query, jurisdiction=effective_jurisdiction, tenant_id=tenant_id,
             raw_chunks=raw_chunks,
             extra_sources=[live_summary] if live_summary else None,
             query_embedding=query_embedding,
@@ -3320,7 +3479,7 @@ async def ask_kriton(
         user_id=actor_id,
         role=role,
         tenant_id=tenant_id,
-        jurisdiction=request.jurisdiction,
+        jurisdiction=effective_jurisdiction,
         mode=request.mode,
         source_confidence=request.source_confidence or effective_confidence,
         pre_bundle_state=request.pre_bundle_state or "OK",
@@ -3346,7 +3505,7 @@ async def ask_kriton(
     route_decision = resolve_policy(
         confidence_state=effective_confidence,
         risk_level=risk_level,
-        jurisdiction=request.jurisdiction,
+        jurisdiction=effective_jurisdiction,
         clarification_cycle=clarification_cycle,
     )
     route = route_decision.route
@@ -3525,7 +3684,36 @@ async def ask_kriton(
     live_ready = live_summary is not None and live_outcome is not None and live_outcome.normalized is not None
     if raw_chunks or live_ready:
         try:
-            reranked = await _reranker.rerank(request.query, raw_chunks) if raw_chunks else []
+            verified_standard_deduction_chunks = [
+                chunk for chunk in raw_chunks
+                if str(chunk.get("metadata", {}).get("fact_type", "")).startswith("standard_deduction")
+            ]
+            deterministic_fact_lookup = (
+                bool(verified_standard_deduction_chunks)
+                and standard_deduction_request is not None
+            )
+            if deterministic_fact_lookup:
+                # An exact annual IRS fact needs neither a cross-encoder nor
+                # generic supporting prose. This avoids the model-load and
+                # inference cost entirely on the narrow deterministic path.
+                reranked = verified_standard_deduction_chunks
+            else:
+                rerank_candidates = (
+                    [chunk for chunk in raw_chunks if chunk not in verified_standard_deduction_chunks]
+                    if verified_standard_deduction_chunks
+                    else raw_chunks
+                )
+                reranked = await _reranker.rerank(request.query, rerank_candidates) if rerank_candidates else []
+            if verified_standard_deduction_chunks and not deterministic_fact_lookup:
+                # This fact is produced from an enacted IRS annual amount and
+                # the exact year/status in the query. Keep it ahead of generic
+                # tax prose instead of asking a semantic top-5 model whether
+                # the purpose-built evidence deserves to survive.
+                reranked = verified_standard_deduction_chunks + reranked
+            # Purpose-built governed procedure/calculation chunks are already
+            # deterministically relevant. Do not let a semantic reranker drop
+            # them in favour of merely similar generic prose.
+            reranked = _reinstate_live_chunks(raw_chunks, reranked)
             if live_ready:
                 # Rides through the existing [REF-N] citation pipeline
                 # unmodified — a synthetic chunk shaped exactly like a real
@@ -3560,6 +3748,16 @@ async def ask_kriton(
                     ref_id=f"REF-{i+1}",
                     source_id=governed_source_id or chunk.get("node_id", f"chunk-{i}"),
                     title=chunk["metadata"].get("title", "Uploaded Document"),
+                    evidence_role=(
+                        "controlling"
+                        if (
+                            i == 0
+                            or str(chunk["metadata"].get("fact_type", "")).startswith("standard_deduction")
+                            or str(chunk.get("node_id", "")).startswith(FORMULA_REGISTRY_NODE_PREFIX)
+                            or chunk["metadata"].get("source_type") == "live_api"
+                        )
+                        else "supporting"
+                    ),
                     source_type=chunk["metadata"].get("source_type", "document"),
                     # 2026-07-29 real incident: this citation was never given
                     # a `url` at all for document sources — only `source_url`
@@ -3629,8 +3827,22 @@ async def ask_kriton(
             await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
         return response
 
+    # Reviewed procedure routes compose locally and do not need a remote model
+    # or a prompt-table lookup. This also removes the 25–35 second model cost
+    # observed in the failed bank-reconciliation and month-end-close requests.
+    reviewed_source_ids = {
+        BANK_RECONCILIATION_GOVERNED_SOURCE_ID,
+        MONTH_END_CLOSE_GOVERNED_SOURCE_ID,
+        ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID,
+        USER_PROVIDED_DATA_GOVERNED_SOURCE_ID,
+    }
+    has_reviewed_source = any(
+        (chunk.get("metadata") or {}).get("source_id") in reviewed_source_ids
+        for chunk in reranked
+    )
+
     # Build grounded prompt input
-    prompt = await select_prompt(db, request.mode)
+    prompt = None if has_reviewed_source else await select_prompt(db, request.mode)
 
     # Conversation-context injection — the query resolution gap flagged in
     # the classifier design work: "what about for £20,000 instead" is
@@ -3662,6 +3874,7 @@ async def ask_kriton(
     # shape (a professional-judgment call), not an explicit format request.
     # Empty string when not applicable; see format_intent.py's docstring.
     decision_instruction = build_decision_framework_instruction(request.query)
+    response_instruction = build_response_instruction(understanding)
 
     grounded_input = (
         f"Use ONLY the following retrieved context to answer the query. "
@@ -3680,6 +3893,7 @@ async def ask_kriton(
         f"multiple distinct sections or comparison points.\n"
         f"{_RESPONSE_QUALITY_RULE}\n"
         f"{_NATURAL_PHRASING_RULE}\n"
+        f"{response_instruction}\n"
         f"{format_instruction}\n\n"
         f"{decision_instruction}\n\n"
         f"{followup_context}"
@@ -3706,7 +3920,63 @@ async def ask_kriton(
     prompt_name = "Inline Context Prompt"
 
     try:
-        if prompt:
+        standard_deduction_table_chunks = [
+            (index, chunk) for index, chunk in enumerate(reranked)
+            if chunk.get("metadata", {}).get("fact_type") == "standard_deduction_table"
+        ]
+        standard_deduction_chunk = next(
+            (
+                (index, chunk) for index, chunk in enumerate(reranked)
+                if chunk.get("metadata", {}).get("fact_type") == "standard_deduction"
+            ),
+            None,
+        )
+        formula_chunk = next(
+            (
+                (index, chunk) for index, chunk in enumerate(reranked)
+                if str(chunk.get("node_id", "")).startswith(FORMULA_REGISTRY_NODE_PREFIX)
+            ),
+            None,
+        )
+        reviewed_procedure_chunk = next(
+            (
+                (index, chunk) for index, chunk in enumerate(reranked)
+                if (chunk.get("metadata") or {}).get("source_id") in reviewed_source_ids
+            ),
+            None,
+        )
+        if reviewed_procedure_chunk is not None:
+            index, chunk = reviewed_procedure_chunk
+            ref = f"REF-{index + 1}"
+            source_id = (chunk.get("metadata") or {}).get("source_id")
+            if source_id == BANK_RECONCILIATION_GOVERNED_SOURCE_ID:
+                composed_text = compose_bank_reconciliation(request.query, ref)
+                prompt_name = "Deterministic Bank Reconciliation Response"
+            elif source_id == MONTH_END_CLOSE_GOVERNED_SOURCE_ID:
+                composed_text = compose_month_end_close(request.query, ref)
+                prompt_name = "Deterministic Month-End Close Response"
+            elif source_id == ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID:
+                composed_text = compose_accounting_fundamentals(request.query, ref)
+                prompt_name = "Deterministic Accounting Fundamentals Response"
+            else:
+                composed_text = compose_quarterly_results(request.query, ref)
+                prompt_name = "Deterministic User-Provided Data Response"
+            prompt_id = "deterministic-reviewed-education"
+        elif standard_deduction_table_chunks:
+            composed_text = _compose_standard_deduction_table(standard_deduction_table_chunks)
+            prompt_id = "deterministic-standard-deduction-table"
+            prompt_name = "IRS Standard Deduction Comparison Table"
+        elif standard_deduction_chunk is not None:
+            index, chunk = standard_deduction_chunk
+            composed_text = _compose_standard_deduction(chunk, f"REF-{index + 1}")
+            prompt_id = "deterministic-standard-deduction"
+            prompt_name = "IRS Annual Standard Deduction Response"
+        elif executed_formula_result is not None and formula_chunk is not None:
+            index, _chunk = formula_chunk
+            composed_text = _compose_formula_result(executed_formula_result, f"REF-{index + 1}", request.query)
+            prompt_id = "deterministic-formula-result"
+            prompt_name = "Governed Named Formula Response"
+        elif prompt:
             prompt_row, composed_text = await model_gateway_service.run_test_prompt(
                 db, prompt.id, grounded_input, actor_id, tenant_id, correlation_id=query_id
             )
@@ -3779,14 +4049,6 @@ async def ask_kriton(
         )
         return response
 
-    output_hash = hashlib.sha256(composed_text.encode()).hexdigest()[:32]
-    await audit_composition_completed(
-        db, query_id=query_id, correlation_id=correlation_id,
-        tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-        actor_id=actor_id, prompt_id=prompt_id, output_hash=output_hash,
-        commit=False,
-    )
-
     # ── Step 7: Post-composition validation — Massarius™ Checkpoint C
     # (§10, RG-03; ZL-ENG-03 §5.7) ────────────────────────────────────────────
     # Validated against composed_text (the model's own output), not the
@@ -3809,6 +4071,72 @@ async def ask_kriton(
         )
         if source_bundle else None
     )
+
+    # Presentation failures are quality defects, not professional-risk events.
+    # For LOW/MEDIUM educational answers, make one tightly constrained repair
+    # attempt and run the entire validator again. Safety-related failures never
+    # enter this branch. If repair still fails only stylistically, ask the user
+    # to retry rather than creating a human-review case with no expert decision
+    # to make.
+    if (
+        validation
+        and not validation.passed
+        and risk_level in {"LOW", "MEDIUM"}
+        and prompt is not None
+        and _has_only_presentation_failures(validation.failures)
+    ):
+        repair_input = (
+            "Rewrite the draft to fix only the listed presentation problems. "
+            "Use your own concise wording; do not copy a long passage from the context. "
+            "For a genuine explanatory question, include the supported purpose or a "
+            "brief supported example when the context contains one. Preserve every "
+            "material fact, qualification, and valid [REF-N] citation. Do not introduce "
+            "any fact, number, rule, citation, or recommendation absent from the context. "
+            "Return only the repaired answer.\n\n"
+            f"Validation problems:\n- " + "\n- ".join(validation.failures) + "\n\n"
+            f"=== Retrieved Context ===\n{context_text}\n\n"
+            f"=== User Query ===\n{request.query}\n\n"
+            f"=== Draft ===\n{composed_text}"
+        )
+        try:
+            _repair_prompt, repaired_text = await model_gateway_service.run_test_prompt(
+                db, prompt.id, repair_input, actor_id, tenant_id, correlation_id=query_id,
+            )
+            repaired_text = _strip_meta_preamble(repaired_text) if repaired_text else repaired_text
+            repaired_text = _strip_trailing_raw_references(repaired_text) if repaired_text else repaired_text
+            repaired_text = _strip_raw_source_headers(repaired_text) if repaired_text else repaired_text
+            if repaired_text:
+                repaired_validation = validate_answer(
+                    repaired_text, source_bundle, disclaimer_required=False,
+                    grounding_context=context_text, query_text=request.query,
+                    provenance=provenance_store,
+                )
+                composed_text = repaired_text
+                validation = repaired_validation
+                prompt_name = f"{prompt_name} + presentation repair"
+        except Exception:
+            # The original rejected draft remains the validation subject. The
+            # route below handles it without exposing invalid output.
+            pass
+
+    if (
+        validation
+        and not validation.passed
+        and risk_level in {"LOW", "MEDIUM"}
+        and _has_only_presentation_failures(validation.failures)
+    ):
+        validation = validation.model_copy(update={"degraded_route": ROUTE_CLARIFICATION})
+
+    # Hash and audit the final repaired-or-original composition, never an
+    # intermediate draft that was subsequently replaced.
+    output_hash = hashlib.sha256(composed_text.encode()).hexdigest()[:32]
+    await audit_composition_completed(
+        db, query_id=query_id, correlation_id=correlation_id,
+        tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+        actor_id=actor_id, prompt_id=prompt_id, output_hash=output_hash,
+        commit=False,
+    )
+
     final_text = build_validated_disclaimer(
         composed_text, risk_level,
         route_decision.disclaimer_required,
@@ -3848,11 +4176,32 @@ async def ask_kriton(
                 next_action=NextAction(type="escalate", message="Response validation failed; escalated for review."),
                 audit_reference=AuditReference(audit_chain_id=audit_chain_id),
             )
+        elif validation.degraded_route == ROUTE_CLARIFICATION:
+            await audit_clarification_returned(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+                actor_id=actor_id, clarification_cycle=clarification_cycle,
+            )
+            response = AskKritonResponse(
+                query_id=query_id, correlation_id=correlation_id,
+                outcome="clarification_required", route=ROUTE_CLARIFICATION,
+                safety=safety_state, confidence_state=effective_confidence,
+                source_bundle=source_bundle, answer=None,
+                next_action=NextAction(
+                    type="ask_clarifying_question",
+                    message=(
+                        "Kriton could not produce a clean source-grounded response after an "
+                        "automatic rewrite. Please retry with a narrower topic or requested format."
+                    ),
+                ),
+                audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+            )
         else:
             await audit_refusal_returned(
                 db, query_id=query_id, correlation_id=correlation_id,
                 tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-                actor_id=actor_id, reason="Composition rejected: prohibited claim detected",
+                actor_id=actor_id,
+                reason=f"Composition rejected: {'; '.join(validation.failures[:2])}",
             )
             response = AskKritonResponse(
                 query_id=query_id, correlation_id=correlation_id,
@@ -4121,28 +4470,77 @@ _STANDARD_DEDUCTION_AMOUNTS = {
     2026: {"single": 16_100, "married filing separately": 16_100, "head of household": 24_150, "married filing jointly": 32_200},
 }
 
+_STANDARD_DEDUCTION_URLS = {
+    2023: "https://www.irs.gov/pub/irs-prior/p501--2023.pdf",
+    2024: "https://www.irs.gov/publications/p17/ar01.html",
+    2025: "https://www.irs.gov/irb/2025-45_IRB",
+    2026: "https://www.irs.gov/newsroom/irs-releases-tax-inflation-adjustments-for-tax-year-2026-including-amendments-from-the-one-big-beautiful-bill",
+}
 
-def _standard_deduction_fact(query: str) -> dict | None:
-    if not re.search(r"\bstandard deduction\b", query, re.I):
+_STANDARD_DEDUCTION_STATUS_PATTERNS = (
+    ("married filing separately", r"\bmarried(?:\s+(?:couple|individuals?))?\s+filing\s+separately\b"),
+    ("married filing jointly", r"\bmarried(?:\s+(?:couple|individuals?))?\s+filing\s+jointly\b"),
+    ("head of household", r"\bhead\s+of\s+household\b"),
+    ("single", r"\bsingle(?:\s+(?:taxpayer|filer|individual))?\b"),
+)
+
+_STANDARD_DEDUCTION_STATUS_ORDER = (
+    "single", "married filing jointly", "married filing separately", "head of household",
+)
+
+
+def _standard_deduction_request(query: str) -> dict | None:
+    """Resolve every explicitly requested supported year and filing status."""
+    if not re.search(r"\bstandard deductions?\b", query, re.I):
         return None
-    year_match = re.search(r"\b(202[3-6])\b", query)
-    if not year_match:
+    years = sorted({int(year) for year in re.findall(r"\b(202[3-6])\b", query)})
+    if not years:
         return None
     lowered = query.lower()
-    filing_status = next(
-        (status for status in ("married filing separately", "married filing jointly", "head of household", "single") if status in lowered),
-        None,
-    )
-    if filing_status is None:
-        return None
-    year = int(year_match.group(1))
-    urls = {
-        2023: "https://www.irs.gov/pub/irs-prior/p501--2023.pdf",
-        2024: "https://www.irs.gov/publications/p17/ar01.html",
-        2025: "https://www.irs.gov/irb/2025-45_IRB",
-        2026: "https://www.irs.gov/newsroom/irs-releases-tax-inflation-adjustments-for-tax-year-2026-including-amendments-from-the-one-big-beautiful-bill",
+    statuses = {
+        status for status, pattern in _STANDARD_DEDUCTION_STATUS_PATTERNS
+        if re.search(pattern, lowered)
     }
-    return {"year": year, "filing_status": filing_status, "amount": _STANDARD_DEDUCTION_AMOUNTS[year][filing_status], "url": urls[year]}
+    if re.search(r"\b(?:all|each)\s+(?:four\s+)?filing statuses\b", lowered):
+        statuses = set(_STANDARD_DEDUCTION_STATUS_ORDER)
+    ordered_statuses = [status for status in _STANDARD_DEDUCTION_STATUS_ORDER if status in statuses]
+    if not ordered_statuses:
+        return None
+    return {"years": years, "filing_statuses": ordered_statuses}
+
+
+def _standard_deduction_fact(query: str) -> dict | None:
+    request = _standard_deduction_request(query)
+    if request is None or len(request["years"]) != 1 or len(request["filing_statuses"]) != 1:
+        return None
+    year = request["years"][0]
+    filing_status = request["filing_statuses"][0]
+    return {"year": year, "filing_status": filing_status, "amount": _STANDARD_DEDUCTION_AMOUNTS[year][filing_status], "url": _STANDARD_DEDUCTION_URLS[year]}
+
+
+def _standard_deduction_year_chunk(governed_chunk: dict, request: dict, year: int) -> dict:
+    metadata = dict(governed_chunk.get("metadata", {}))
+    amounts = {
+        status: _STANDARD_DEDUCTION_AMOUNTS[year][status]
+        for status in request["filing_statuses"]
+    }
+    metadata.update({
+        "title": f"IRS — {year} Standard Deduction",
+        "jurisdiction": "US",
+        "file_path": _STANDARD_DEDUCTION_URLS[year],
+        "fact_type": "standard_deduction_table",
+        "year": year,
+        "amounts": amounts,
+    })
+    lines = [f"IRS annual standard deductions for tax year {year}:"]
+    lines.extend(f"- {status}: ${amount:,}." for status, amount in amounts.items())
+    return {
+        **governed_chunk,
+        "text": "\n".join(lines),
+        "metadata": metadata,
+        "score": 1.0,
+        "node_id": f"irs-standard-deduction-table-{year}",
+    }
 
 
 def _standard_deduction_chunk(governed_chunk: dict, fact: dict) -> dict:
@@ -4170,10 +4568,34 @@ def _standard_deduction_chunk(governed_chunk: dict, fact: dict) -> dict:
 def _compose_standard_deduction(chunk: dict, ref_id: str) -> str:
     metadata = chunk["metadata"]
     status = metadata["filing_status"]
+    filer_description = {
+        "single": "a single filer",
+        "married filing separately": "a married individual filing separately",
+        "married filing jointly": "a married couple filing jointly",
+        "head of household": "a head-of-household filer",
+    }.get(status, f"a {status} filer")
     return (
-        f"For tax year {metadata['year']}, the basic standard deduction for a "
-        f"{status} filer is ${metadata['amount']:,}. [{ref_id}]"
+        f"For tax year {metadata['year']}, the basic standard deduction for "
+        f"{filer_description} is ${metadata['amount']:,}. [{ref_id}]"
     )
+
+
+def _compose_standard_deduction_table(chunks: list[tuple[int, dict]]) -> str:
+    ordered = sorted(chunks, key=lambda item: item[1]["metadata"]["year"])
+    years = [chunk["metadata"]["year"] for _, chunk in ordered]
+    refs = {chunk["metadata"]["year"]: f"REF-{index + 1}" for index, chunk in ordered}
+    statuses = list(ordered[0][1]["metadata"]["amounts"])
+    header = "| Filing status | " + " | ".join(str(year) for year in years) + " |"
+    divider = "|---|" + "---:|" * len(years)
+    rows = []
+    for status in statuses:
+        label = status.title()
+        values = [
+            f"${chunk['metadata']['amounts'][status]:,} [{refs[year]}]"
+            for year, (_, chunk) in zip(years, ordered)
+        ]
+        rows.append(f"| {label} | " + " | ".join(values) + " |")
+    return "\n".join([header, divider, *rows])
 
 
 def _compose_real_gdp_change(context_text: str, ref_id: str) -> str:

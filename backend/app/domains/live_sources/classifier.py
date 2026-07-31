@@ -84,6 +84,7 @@ _COUNTRY_ALIASES: dict[str, tuple[str, str]] = {
     # always mean the UK.
     "britain": ("GB", "United Kingdom"),
     "great britain": ("GB", "United Kingdom"),
+    "blighty": ("GB", "United Kingdom"),
 }
 
 # Precompiled word-boundary patterns for scanning free-text queries — a
@@ -156,11 +157,24 @@ _COUNTRY_PROVIDER_OVERRIDES: dict[str, list[_CountryOverrideRule]] = {
             implies_country=True,
         ),
     ],
+    "EURO_AREA": [
+        _CountryOverrideRule(
+            keywords=("ecb deposit facility rate", "ecb deposit rate"), provider_key="ecb",
+            indicator_code="FM:D.U2.EUR.4F.KR.DFR.LEV", indicator_label="ECB deposit facility rate",
+            implies_country=True,
+        ),
+        _CountryOverrideRule(
+            keywords=("ecb main refinancing rate", "ecb policy rate"), provider_key="ecb",
+            indicator_code="FM:D.U2.EUR.4F.KR.MRR_FR.LEV", indicator_label="ECB main refinancing operations rate",
+            implies_country=True,
+        ),
+    ],
 }
 
 # country_code -> label, derived from the alias table so it's never
 # maintained as a second, separately-hardcoded mapping.
 _COUNTRY_LABELS: dict[str, str] = dict(_COUNTRY_ALIASES.values())
+_COUNTRY_LABELS["EURO_AREA"] = "Euro area"
 
 # OECD tier — a "generic indicator, any resolved country" provider like
 # World Bank, not a per-country override like Bank of England/ONS/FRED
@@ -182,6 +196,141 @@ _OECD_INDICATOR_KEYWORDS: list[tuple[str, str, str]] = [
     ("corporate tax rate", "CIT_C", "Combined Corporate Income Tax Rate"),
     ("corporate income tax rate", "CIT_C", "Combined Corporate Income Tax Rate"),
 ]
+
+_IMF_ISO3_BY_COUNTRY_CODE = {"GB": "GBR", "US": "USA", "IN": "IND"}
+_IMF_INDICATOR_KEYWORDS = (
+    ("imf gdp growth forecast", "NGDP_RPCH", "Real GDP growth (IMF WEO)"),
+    ("imf inflation forecast", "PCPIPCH", "Inflation rate (IMF WEO)"),
+    ("imf unemployment forecast", "LUR", "Unemployment rate (IMF WEO)"),
+)
+_VAT_NUMBER_PATTERN = re.compile(r"\b((?:AT|BE|BG|HR|CY|CZ|DE|DK|EE|EL|ES|FI|FR|GR|HU|IE|IT|LT|LU|LV|MT|NL|PL|PT|RO|SE|SI|SK)[A-Z0-9]{4,14})\b", re.IGNORECASE)
+_EU_COUNTRY_LABELS = {
+    "AT": "Austria", "BE": "Belgium", "BG": "Bulgaria", "HR": "Croatia", "CY": "Cyprus",
+    "CZ": "Czechia", "DE": "Germany", "DK": "Denmark", "EE": "Estonia", "EL": "Greece",
+    "ES": "Spain", "FI": "Finland", "FR": "France", "GR": "Greece", "HU": "Hungary",
+    "IE": "Ireland", "IT": "Italy", "LT": "Lithuania", "LU": "Luxembourg", "LV": "Latvia",
+    "MT": "Malta", "NL": "Netherlands", "PL": "Poland", "PT": "Portugal", "RO": "Romania",
+    "SE": "Sweden", "SI": "Slovenia", "SK": "Slovakia",
+}
+
+
+def _match_vies_intent(query: str) -> LiveDataIntent | None:
+    lowered = query.lower()
+    if not any(term in lowered for term in ("vat number", "vies", "vat id", "vat registration")):
+        return None
+    match = _VAT_NUMBER_PATTERN.search(query)
+    if match is None:
+        return None
+    vat_number = match.group(1).upper()
+    country_code = vat_number[:2]
+    return LiveDataIntent(
+        provider_key="vies", indicator_code="vat_validation", indicator_label="EU VAT number validation",
+        country_code=country_code, country_label=_EU_COUNTRY_LABELS.get(country_code, country_code),
+        company_query=vat_number, skip_document_search=True,
+    )
+
+
+def _match_regulations_gov_intent(query: str) -> LiveDataIntent | None:
+    lowered = query.lower()
+    explicit = "regulations.gov" in lowered
+    rule_search = any(term in lowered for term in ("proposed rule", "final rule", "rulemaking docket", "comment period"))
+    current_search = any(term in lowered for term in ("latest", "current", "search", "find", "show"))
+    if not explicit and not (rule_search and current_search):
+        return None
+    return LiveDataIntent(
+        provider_key="regulations_gov", indicator_code="document_search",
+        indicator_label="Regulations.gov rulemaking search", country_code="US",
+        country_label="United States", company_query=query,
+    )
+
+
+def _search_subject(query: str) -> str:
+    quoted = re.search(r'["“]([^"”]{2,200})["”]', query)
+    if quoted:
+        return quoted.group(1).strip()
+    for marker in (" about ", " concerning ", " for ", " on "):
+        if marker in query.lower():
+            return query[query.lower().rfind(marker) + len(marker):].strip(" ?.!")
+    return query.strip()
+
+
+def _match_phase2_intent(query: str) -> LiveDataIntent | None:
+    lowered = query.lower()
+    subject = _search_subject(query)
+    if "eur-lex" in lowered or "cellar" in lowered or (
+        any(term in lowered for term in ("eu legislation", "eu regulation", "eu directive"))
+        and any(term in lowered for term in ("find", "search", "latest", "show"))
+    ):
+        return LiveDataIntent(provider_key="cellar", indicator_code="legal_search", indicator_label="EU legal metadata search",
+                              country_code="EU", country_label="European Union", company_query=subject)
+    if "legislation.gov.uk" in lowered or (
+        any(term in lowered for term in ("uk legislation", "uk act", "uk statutory instrument"))
+        and any(term in lowered for term in ("find", "search", "latest", "show"))
+    ):
+        return LiveDataIntent(provider_key="legislation_gov_uk", indicator_code="legal_search",
+                              indicator_label="UK legislation search", country_code="GB",
+                              country_label="United Kingdom", company_query=subject)
+    if "ted api" in lowered or "ted.europa" in lowered or (
+        any(term in lowered for term in ("eu tender", "eu procurement notice"))
+        and any(term in lowered for term in ("find", "search", "latest", "show"))
+    ):
+        return LiveDataIntent(provider_key="ted", indicator_code="notice_search", indicator_label="TED procurement search",
+                              country_code="EU", country_label="European Union", company_query=subject)
+    if "sam.gov" in lowered or (
+        any(term in lowered for term in ("us federal contract", "us contract opportunity"))
+        and any(term in lowered for term in ("find", "search", "latest", "show"))
+    ):
+        return LiveDataIntent(provider_key="sam_gov", indicator_code="opportunity_search",
+                              indicator_label="SAM.gov opportunity search", country_code="US",
+                              country_label="United States", company_query=subject)
+    return None
+
+
+_SANCTIONS_PROVIDERS = (
+    (("ofac", "sdn list"), "ofac", "US", "United States"),
+    (("un sanctions", "un security council consolidated list"), "un_sanctions", "UN", "United Nations"),
+    (("uk sanctions", "uk sanctions list"), "uk_sanctions", "GB", "United Kingdom"),
+    (("eu sanctions", "eu consolidated financial sanctions"), "eu_sanctions", "EU", "European Union"),
+)
+
+
+def _screening_name(query: str) -> str | None:
+    quoted = re.search(r'["“]([^"”]{2,200})["”]', query)
+    if quoted:
+        return quoted.group(1).strip()
+    patterns = (
+        r"\bscreen\s+(.+?)\s+against\b", r"\bcheck\s+(.+?)\s+against\b",
+        r"\bis\s+(.+?)\s+(?:on|listed on)\b", r"\bsearch\s+(.+?)\s+(?:on|in)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, query, re.IGNORECASE)
+        if match:
+            return match.group(1).strip(" ?.!")
+    return None
+
+
+def _match_sanctions_intent(query: str) -> LiveDataIntent | None:
+    lowered = query.lower()
+    name = _screening_name(query)
+    if not name:
+        return None
+    for aliases, provider, country_code, country_label in _SANCTIONS_PROVIDERS:
+        if any(alias in lowered for alias in aliases):
+            return LiveDataIntent(provider_key=provider, indicator_code="exact_name_screening",
+                                  indicator_label="Official sanctions name screening", country_code=country_code,
+                                  country_label=country_label, company_query=name)
+    return None
+
+
+def _match_imf_indicator(country_code: str, lowered: str) -> LiveDataIntent | None:
+    iso3 = _IMF_ISO3_BY_COUNTRY_CODE.get(country_code)
+    if iso3 is None:
+        return None
+    for keyword, code, label in _IMF_INDICATOR_KEYWORDS:
+        if keyword in lowered:
+            return LiveDataIntent(provider_key="imf", indicator_code=f"{code}:{iso3}", indicator_label=label,
+                                  country_code=country_code, country_label=_COUNTRY_LABELS[country_code])
+    return None
 
 
 def _match_oecd_indicator(country_code: str, lowered: str) -> LiveDataIntent | None:
@@ -497,6 +646,22 @@ def company_lookup_needs_llm_fallback(query: str, jurisdiction: str = "") -> boo
 def detect_live_data_intent(query: str, jurisdiction: str = "") -> LiveDataIntent | None:
     lowered = query.lower()
 
+    vies_intent = _match_vies_intent(query)
+    if vies_intent is not None:
+        return vies_intent
+
+    regulations_intent = _match_regulations_gov_intent(query)
+    if regulations_intent is not None:
+        return regulations_intent
+
+    phase2_intent = _match_phase2_intent(query)
+    if phase2_intent is not None:
+        return phase2_intent
+
+    sanctions_intent = _match_sanctions_intent(query)
+    if sanctions_intent is not None:
+        return sanctions_intent
+
     fx_intent = detect_fx_intent(query)
     if fx_intent is not None:
         return fx_intent
@@ -522,6 +687,10 @@ def detect_live_data_intent(query: str, jurisdiction: str = "") -> LiveDataInten
     override = _match_country_override(country_code, lowered)
     if override is not None:
         return override
+
+    imf_match = _match_imf_indicator(country_code, lowered)
+    if imf_match is not None:
+        return imf_match
     # No per-country override matched (either this country has none, or its
     # rules didn't match this indicator, e.g. GDP/unemployment for GB) —
     # try OECD's generic (any-resolved-country) indicators next, before

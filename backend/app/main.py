@@ -27,6 +27,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
@@ -38,6 +39,7 @@ from app.core.database import async_engine, SessionLocal
 from app.core.rate_limit import limiter
 from app.db.base import Base
 from app.domains.massarius.tenant_scope import ensure_vector_table_rls
+from app.domains.live_sources.http_client import close_shared_http_client
 
 settings = get_settings()
 
@@ -518,58 +520,6 @@ def _seed_incidents():
         db.close()
 
 
-def _seed_users():
-    """Seed a default tenant and admin user on first startup. Since
-    Supabase now owns credentials, this needs a Supabase auth user created
-    via the Admin API (service-role key) before the local profile row can
-    reference it — skipped (like the APP_DATABASE_URL warning above) when
-    SUPABASE_SERVICE_ROLE_KEY isn't configured, e.g. plain SQLite dev mode."""
-    from app.core import supabase_admin
-    from app.domains.identity.models import Tenant, User
-
-    if not supabase_admin.is_configured():
-        print("WARNING: SUPABASE_SERVICE_ROLE_KEY/SUPABASE_URL not set — "
-              "skipping default user seeding (no Supabase auth user can be "
-              "created for admin@zoiko.com / kriton@zoiko.com).")
-        return
-
-    db = SessionLocal()
-    try:
-        # Create default tenant if it doesn't exist
-        tenant = db.query(Tenant).filter(Tenant.id == "tenant-default").first()
-        if tenant is None:
-            tenant = Tenant(id="tenant-default", name="ZoikoLogia Default Tenant")
-            db.add(tenant)
-            db.flush()
-
-        # Create default admin user if no users exist
-        if db.query(User).count() == 0:
-            for email, password, full_name, role in (
-                ("admin@zoiko.com", "Admin@1234", "System Administrator", "Admin"),
-                ("kriton@zoiko.com", "Kriton@1234", "Kriton Reviewer", "SME Reviewer"),
-            ):
-                existing_auth_user = supabase_admin.get_user_by_email(email)
-                auth_user = existing_auth_user or supabase_admin.create_user(email, password, email_confirm=True)
-                first_name, _, last_name = full_name.partition(" ")
-                db.add(User(
-                    id=auth_user["id"],
-                    tenant_id="tenant-default",
-                    email=email,
-                    first_name=first_name,
-                    last_name=last_name,
-                    full_name=full_name,
-                    role=role,
-                    is_active=True,
-                ))
-                db.flush()
-                supabase_admin.update_app_metadata(auth_user["id"], "tenant-default", role)
-        db.commit()
-    except Exception:
-        db.rollback()
-    finally:
-        db.close()
-
-
 async def _warm_up_ml_models():
     """Load the lazy-singleton embedding/reranker/risk-classifier models once
     here at startup, instead of leaving them to load on whichever request
@@ -662,10 +612,12 @@ async def lifespan(app: FastAPI):
     _seed_evaluation()
     _seed_escalation_rules()
     _seed_incidents()
-    _seed_users()
     await _warm_up_ml_models()
-    yield
-    await async_engine.dispose()
+    try:
+        yield
+    finally:
+        await close_shared_http_client()
+        await async_engine.dispose()
 
 
 def create_app() -> FastAPI:
@@ -675,6 +627,19 @@ def create_app() -> FastAPI:
         version="1.0.0",
         lifespan=lifespan
     )
+
+    @app.middleware("http")
+    async def add_security_headers(request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=()",
+        )
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+        return response
 
     app.add_middleware(
         CORSMiddleware,
@@ -686,6 +651,28 @@ def create_app() -> FastAPI:
 
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    @app.get("/health/live", include_in_schema=False)
+    async def health_live():
+        return {"status": "live"}
+
+    @app.get("/health/ready", include_in_schema=False)
+    async def health_ready():
+        try:
+            async with async_engine.connect() as connection:
+                await connection.execute(text("SELECT 1"))
+            return {
+                "status": "ready",
+                "database": "available",
+            }
+        except Exception:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "not_ready",
+                    "database": "unavailable",
+                },
+            )
 
     # Core API endpoints from main branch
     app.include_router(api_v1_router, prefix="/api/v1")

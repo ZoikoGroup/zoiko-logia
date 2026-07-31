@@ -14,17 +14,31 @@ depends_on = None
 
 
 def upgrade() -> None:
+    is_sqlite = op.get_bind().dialect.name == "sqlite"
     for table in ("escalation_cases", "safety_overrides", "safety_events"):
         op.add_column(table, sa.Column("tenant_id", sa.String(), nullable=True))
         op.execute(
             f"UPDATE {table} SET tenant_id = COALESCE((SELECT id FROM tenants LIMIT 1), 'GLOBAL_CONTROL') "
             "WHERE tenant_id IS NULL"
         )
-        op.alter_column(table, "tenant_id", nullable=False)
+        if is_sqlite:
+            with op.batch_alter_table(table) as batch_op:
+                batch_op.alter_column(
+                    "tenant_id",
+                    existing_type=sa.String(),
+                    nullable=False,
+                )
+        else:
+            op.alter_column(table, "tenant_id", nullable=False)
         op.create_index(f"ix_{table}_tenant_id", table, ["tenant_id"])
 
 
 def downgrade() -> None:
+    is_sqlite = op.get_bind().dialect.name == "sqlite"
     for table in reversed(("escalation_cases", "safety_overrides", "safety_events")):
         op.drop_index(f"ix_{table}_tenant_id", table_name=table)
-        op.drop_column(table, "tenant_id")
+        if is_sqlite:
+            with op.batch_alter_table(table) as batch_op:
+                batch_op.drop_column("tenant_id")
+        else:
+            op.drop_column(table, "tenant_id")

@@ -572,6 +572,8 @@ export type SourceCitation = {
   ref_id: string;
   source_id: string;
   title: string;
+  /** Whether this source governs a claim or only provides added context. */
+  evidence_role?: "controlling" | "supporting";
   /** "live_api" for a dynamically-fetched source (live_sources/ or
    * reference_data/ connectors — Treasury, Census, FRED, professional
    * search, etc.), "document" for an ingested/uploaded document. */
@@ -645,6 +647,12 @@ export type PresentationChart = {
   categories: string[];
   series: PresentationSeries[];
   unit: string;
+  value_format?: "number" | "currency" | "percent";
+  currency_code?: "USD" | "GBP" | "EUR" | null;
+  decimal_places?: number;
+  x_axis_label?: string;
+  y_axis_label?: string;
+  accessible_summary?: string;
 };
 
 export type PresentationGuide = {
