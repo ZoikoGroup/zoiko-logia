@@ -514,8 +514,12 @@ async def ask_kriton(
     # advice, comparisons, judgment) keep the full GROQ_MODEL for depth and
     # quality. Only applied when Groq is the active provider (its fast model
     # names). answer_model=None means "use the provider's default model".
+    # Only when Groq is the ACTIVE answering provider — if Gemini is configured
+    # it answers instead (and this Groq model id must not be sent to it). Gemini
+    # flash is already fast, so ZERO/LOW questions need no separate fast model.
     answer_model: Optional[str] = None
-    if risk_level in ("ZERO", "LOW") and os.getenv("GROQ_API_KEY"):
+    gemini_active = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+    if risk_level in ("ZERO", "LOW") and os.getenv("GROQ_API_KEY") and not gemini_active:
         answer_model = os.getenv("GROQ_FAST_ANSWER_MODEL", "llama-3.1-8b-instant")
 
     try:

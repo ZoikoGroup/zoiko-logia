@@ -27,6 +27,7 @@ torch
 # LLM providers
 openai
 groq
+google-genai
 
 # Rate limiting
 slowapi

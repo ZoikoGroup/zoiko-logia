@@ -9,6 +9,7 @@ from app.domains.audit_ledger.event_envelope import record_event_async
 from app.domains.model_gateway.models import ModelDefinition, PromptTemplate
 from app.domains.model_gateway.providers.mock_adapter import MockProviderAdapter
 from app.domains.model_gateway.providers.groq_adapter import GroqAdapter
+from app.domains.model_gateway.providers.google_adapter import GeminiAdapter
 from app.domains.model_gateway.providers.openai_adapter import OpenAIAdapter
 
 
@@ -20,12 +21,46 @@ def _select_adapter():
     Adapter -> Approved Model Deployment, selecting per model_definitions
     row) — this is a flat "first configured provider wins" default until a
     real per-model routing decision is wired to run_test_prompt's caller.
+
+    Gemini is preferred for answering when configured (far more reliable at
+    emitting the ```chart / ```mermaid blocks than Llama), with Groq as the
+    fallback — see _complete_with_fallback.
     """
+    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+        return GeminiAdapter()
     if os.environ.get("GROQ_API_KEY"):
         return GroqAdapter()
     if os.environ.get("OPENAI_API_KEY"):
         return OpenAIAdapter()
     return MockProviderAdapter()
+
+
+async def _try_complete(adapter, prompt: str, model: str | None) -> str:
+    """Call an adapter's complete(), passing an optional per-call model
+    override. Adapters whose complete() takes no `model` argument (the mock)
+    raise TypeError — fall back to the no-arg form for them."""
+    if model:
+        try:
+            return await adapter.complete(prompt, model=model)
+        except TypeError:
+            return await adapter.complete(prompt)
+    return await adapter.complete(prompt)
+
+
+async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
+    """Answer via the preferred provider, and if that provider is Gemini and it
+    fails (network blip, quota, bad model id — adapters fail soft with an
+    "[Error…]" string), transparently fall back to Groq so the user still gets
+    an answer. The `model` override is a Groq-specific fast-model name, so it is
+    only forwarded when Groq is the one actually answering."""
+    adapter = _select_adapter()
+    is_gemini = isinstance(adapter, GeminiAdapter)
+    # A Gemini answer must not receive a Groq model id — only pass `model`
+    # through when the answering adapter is Groq.
+    output = await _try_complete(adapter, prompt, None if is_gemini else model)
+    if output.startswith("[Error") and is_gemini and os.environ.get("GROQ_API_KEY"):
+        output = await _try_complete(GroqAdapter(), prompt, model)
+    return output
 
 
 async def list_models(db: AsyncSession) -> list[ModelDefinition]:
@@ -77,14 +112,13 @@ async def approve_prompt(
     return prompt
 
 
-async def run_grounded_completion(input_text: str) -> str:
+async def run_grounded_completion(input_text: str, model: str | None = None) -> str:
     """Direct provider completion with no approved-prompt-template row —
     the fallback used by orchestration when no PromptTemplate is seeded yet,
     so web-grounded answering still works out of the box. Returns the model
     output text (adapters fail soft, returning an error string rather than
-    raising)."""
-    adapter = _select_adapter()
-    return await adapter.complete(input_text)
+    raising). Uses the preferred provider with Groq fallback."""
+    return await _complete_with_fallback(input_text, model)
 
 
 async def run_test_prompt(
@@ -107,16 +141,11 @@ async def run_test_prompt(
     adapter = _select_adapter()
     provider_name = type(adapter).__name__.replace("Adapter", "").lower()
     full_prompt = f"[{prompt.name} {prompt.version}]\n\n{input_text}"
-    # Optional per-call model override (e.g. a smaller/faster model for
-    # low-risk questions). Falls back gracefully for adapters whose complete()
-    # takes no model argument (the mock adapter).
-    if model:
-        try:
-            output = await adapter.complete(full_prompt, model=model)
-        except TypeError:
-            output = await adapter.complete(full_prompt)
-    else:
-        output = await adapter.complete(full_prompt)
+    # Preferred provider (Gemini when configured) with Groq fallback. The
+    # optional per-call `model` override (a Groq fast-model name for low-risk
+    # questions) is only applied when Groq actually answers — see
+    # _complete_with_fallback.
+    output = await _complete_with_fallback(full_prompt, model)
 
     # Store a hash of the output, not the raw text, per the privacy-by-design
     # doctrine (Section 9): raw prompt/output retention depends on risk class,
