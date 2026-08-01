@@ -11,6 +11,14 @@ from app.domains.live_sources.evidence_schemas import EvidenceRecord, EvidenceSe
 from app.domains.live_sources.schemas import LiveDataIntent, NormalizedResponse
 
 
+# Regulations.gov v4 rejects page[size] below 5 with a bare HTTP 400.
+# EvidenceSearchIntent allows page_size >= 1, so a caller asking for a
+# single record — which the evidence-search endpoint permits, and which the
+# upstream canary did — got a 400 rather than one result. Request the
+# supported minimum and let the caller's own limit apply to the response.
+_MIN_PAGE_SIZE = 5
+
+
 class RegulationsGovConnector(EvidenceSearchConnector):
     provider_key = "regulations_gov"
 
@@ -23,7 +31,7 @@ class RegulationsGovConnector(EvidenceSearchConnector):
             raise ValueError("REGULATIONS_GOV_API_KEY is not configured — obtain a free data.gov API key")
         params: dict[str, str | int] = {
             "filter[searchTerm]": intent.query,
-            "page[size]": intent.page_size,
+            "page[size]": max(intent.page_size, _MIN_PAGE_SIZE),
             "sort": "-postedDate",
             "api_key": self.api_key,
         }
@@ -54,7 +62,10 @@ class RegulationsGovConnector(EvidenceSearchConnector):
                           "comment_end_date": attrs.get("commentEndDate")},
             ))
         return EvidenceSearchResponse(
-            provider_key=self.provider_key, query=intent.query, records=records,
+            provider_key=self.provider_key, query=intent.query,
+            # Trimmed back to what was actually asked for, since the request
+            # above may have been widened to the upstream's minimum.
+            records=records[: intent.page_size],
             fetched_at=datetime.now(timezone.utc).isoformat(),
         )
 

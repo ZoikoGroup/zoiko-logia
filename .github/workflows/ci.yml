@@ -5,6 +5,9 @@ on:
   pull_request:
   schedule:
     - cron: "17 5 * * *"
+  # So the upstream canary can be run on demand when a source is suspected
+  # of having changed, without waiting for the next scheduled run.
+  workflow_dispatch:
 
 jobs:
   backend:
@@ -95,8 +98,16 @@ jobs:
       - run: npm run lint
       - run: npm run build
 
+  # Upstream canary. Every other job here mocks its network calls, which is
+  # correct — a merge must not fail because a government web server is slow.
+  # The cost of that is that nothing else in this workflow would ever notice
+  # an upstream quietly changing its contract, so this job exists to talk to
+  # the real authorities on a schedule and report what came back.
   provider-health:
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Reports, never blocks. An upstream outage is not a broken commit, and
+    # a job that fails the build for one teaches everyone to ignore it.
+    continue-on-error: true
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -119,4 +130,25 @@ jobs:
           CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           SERP_API_KEY: ${{ secrets.SERP_API_KEY }}
-        run: python scripts/check_external_sources.py
+          # Both are free to obtain. Until they are set, Regulations.gov and
+          # SAM.gov report "unconfigured" and this run covers two fewer
+          # sources — visible in the summary counts, not silently skipped.
+          REGULATIONS_GOV_API_KEY: ${{ secrets.REGULATIONS_GOV_API_KEY }}
+          SAM_GOV_API_KEY: ${{ secrets.SAM_GOV_API_KEY }}
+        # --skip-registry: this job has no database, and an absent one is
+        # not an upstream fault. Run the registry check where a database
+        # exists (locally, or against a deployed environment).
+        run: >
+          python scripts/check_external_sources.py
+          --concurrency 6
+          --skip-registry
+          --json provider-health.json
+      - name: Upload the report
+        # if: always() — the report is most valuable precisely on the runs
+        # where a probe failed.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: provider-health-${{ github.run_id }}
+          path: backend/provider-health.json
+          retention-days: 90

@@ -8,3 +8,7 @@ venv/
 data/sources/**/*
 !data/sources/**/
 !data/sources/**/.gitkeep
+
+# Sanctions snapshots are synced at runtime, never committed.
+data/live_sources/*.json
+data/live_sources/*.tmp

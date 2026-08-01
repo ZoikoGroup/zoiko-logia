@@ -1,7 +1,7 @@
 # Kriton Authoritative Sources Catalog
 
 **Status:** Working source-integration register  
-**Last reviewed:** 31 July 2026  
+**Last reviewed:** 1 August 2026  
 **Scope:** Accounting, audit, tax, law, regulation, compliance, corporate data, economic data, sanctions, and procurement
 
 This catalog records the official and authoritative sources Kriton may use, their intended integration method, access model, implementation status, and official URL. Free access does not automatically grant permission to reproduce, redistribute, train on, or export complete source content.
@@ -21,7 +21,9 @@ This catalog records the official and authoritative sources Kriton may use, thei
 
 ## Current Kriton baseline
 
-Implemented integrations include World Bank, ONS, Bank of England, Frankfurter FX, FRED, SEC EDGAR, Companies House, OECD, GLEIF, US Treasury Fiscal Data, Census, BLS, BEA, GovInfo, eCFR, Federal Register, and Congress.gov. IRS, FASB, PCAOB, SEC filing retrieval, Companies House documents, and US tax-regulation coverage are partial.
+Implemented integrations include World Bank, ONS, Bank of England, Frankfurter FX, FRED, SEC EDGAR, Companies House, OECD, GLEIF, US Treasury Fiscal Data, Census, BLS, BEA, GovInfo, eCFR, Federal Register, and Congress.gov, plus the Phase 1-3 additions registered below (ECB, IMF, VIES, Regulations.gov, Cellar, legislation.gov.uk, TED, SAM.gov, and the four sanctions feeds). IRS, FASB, PCAOB, SEC filing retrieval, Companies House documents, and US tax-regulation coverage are partial.
+
+Two coverage limits are deliberate rather than pending. IMF routing resolves only the countries with a confirmed ISO3 mapping (GB, US, IN), and OECD only those confirmed against its corporate-tax dataflow: a country is added once a real query proves the upstream holds data for it, never by constructing a plausible code and citing whatever comes back. Naming the IMF in a query selects it over the domestic provider for that country; a query that does not name it keeps its domestic source.
 
 ## 1. Accounting standards
 
@@ -131,7 +133,7 @@ FederalRegister.gov should be used for discovery; controlling US legal citations
 | ESMA | EU | Registers, datasets, and `VERSIONED_DOC` | Mostly free/service-specific | Not implemented | [ESMA data](https://www.esma.europa.eu/databases-library/registers-and-data) |
 | ASIC | Australia | Restricted API plus documents | Mixed | Not implemented | [ASIC](https://www.asic.gov.au/) |
 | MAS | Singapore | Supported APIs/datasets plus documents | Mostly free/service-specific | Not implemented | [MAS](https://www.mas.gov.sg/) |
-| Regulations.gov | US | `LIVE_API` | Free API key | Configured, adapter missing | [Regulations.gov API](https://open.gsa.gov/api/regulationsgov/) |
+| Regulations.gov | US | `LIVE_API` | Free API key | Implemented (search + answer adapters) | [Regulations.gov API](https://open.gsa.gov/api/regulationsgov/) |
 
 ## 11. Accounting guidance
 
@@ -183,6 +185,8 @@ Binding answers must prioritize the ratified treaty text over model conventions 
 | FinCEN advisories | `VERSIONED_DOC` | Free | Not implemented | [FinCEN advisories](https://www.fincen.gov/resources/advisoriesbulletinsfact-sheets) |
 
 Sanctions screening must record the list version, update timestamp, matching method, identifiers, and source URL. Possible matches require review and must not automatically become adverse decisions.
+
+Implemented as follows. Every screening result carries the list version (`SanctionsSnapshot.list_version`, the first 12 characters of the content hash — the only identifier these authorities publish that changes when and only when the list does), the synchronisation timestamp, the matching method, and the identifiers held on the matched entry. Matching runs in two tiers: exact on the normalised primary name or any alias, then a fuzzy tier above `SANCTIONS_FUZZY_MATCH_THRESHOLD`, narrowed by shared token so the comparison stays bounded on lists of tens of thousands of entries. Identifiers, nationalities, and dates of birth are parsed from all four feeds. Where an entry publishes no identifier, the result says so explicitly rather than omitting the field — a reviewer must never be left to assume an identifier check happened when none was possible. No result is ever phrased as a finding or as clearance.
 
 ## 16. Economic and financial indicators
 
@@ -238,28 +242,30 @@ Professional-body guidance does not override legislation, regulators, courts, or
 
 ## Required source metadata
 
-```text
-source_id
-authority_name
-authority_rank
-jurisdiction
-domain
-integration_type
-official_url
-api_base_url
-authentication_type
-pricing_model
-licence_terms_url
-publication_date
-effective_date
-superseded_date
-last_successful_sync
-freshness_sla
-content_hash
-display_permission
-export_permission
-tenant_entitlement
-```
+Recorded on `live_source_providers` (`app/domains/live_sources/models.py`) and populated by `scripts/seed_live_source_provider.py`, which is re-runnable: an existing row has its catalogue metadata refreshed in place, so correcting a rank or a licence URL is a re-run rather than a manual `UPDATE`.
+
+| Catalogue field | Column |
+|---|---|
+| `source_id` | `provider_key` |
+| `authority_name` | `display_name` |
+| `authority_rank` | `authority_rank` (1-6, see hierarchy below) |
+| `jurisdiction` | `jurisdiction` |
+| `domain` | `category` |
+| `integration_type` | `integration_type` |
+| `official_url` | `official_url` |
+| `api_base_url` | `base_url` |
+| `authentication_type` | `auth_mode` (+ `api_key_env_var`, never the key itself) |
+| `pricing_model` | `pricing_model` |
+| `licence_terms_url` | `licence_terms_url` |
+| `publication_date` / `effective_date` / `superseded_date` | `effective_date` / `superseded_date` — at provider level these mean when the integration became and ceased authoritative. Document-level dates belong to the retrieved record, not the registry row. |
+| `last_successful_sync` | `last_successful_sync` (written by the sanctions sync task) |
+| `freshness_sla` | `freshness_sla_seconds` |
+| `content_hash` | `last_content_hash` |
+| `display_permission` | `display_permission` (empty = derive from the licence gate) |
+| `export_permission` | `export_permission` |
+| `tenant_entitlement` | `tenant_id` + `is_tenant_private` |
+
+The table is created by `Base.metadata.create_all`, not by an Alembic revision, and `create_all` never alters an existing table. Adding a column therefore also needs an entry in `app/domains/live_sources/schema_sync.py`, which both the API's startup and the test suite apply.
 
 ## Default authority hierarchy
 
@@ -271,6 +277,10 @@ tenant_entitlement
 6. Commercial or secondary discovery source
 
 The hierarchy must also account for jurisdiction, effective date, entity type, reporting framework, and the exact query. International models and professional guidance must not override binding domestic implementation.
+
+Implemented in `app/domains/live_sources/authority.py` and applied when a bundle decides which citation is `controlling`. Jurisdiction is applied **before** rank, so a rank-1 foreign statute cannot outrank the rank-2 domestic regulator that actually governs the answer, and an international model cannot displace a domestic source on that source's own jurisdiction. Effective date breaks ties between equals, so a superseded instrument of identical standing is not treated as controlling. A source with no recorded rank defaults to the weakest, not the neutral, position — an unranked source must never displace one whose standing is known. Where nothing in a bundle carries a rank (the normal case for ingested documents), retrieval order is retained, so this changes behaviour only where authority is actually known.
+
+Entity type and reporting framework are not yet inputs to the ranking; they remain a judgement made in the answer, not in the sort.
 
 ## Recommended implementation order
 
@@ -295,19 +305,45 @@ Status is intentionally stricter than configuration: `QUERY_READY` means a norma
 | 1 | IMF DataMapper v2 | `QUERY_READY` | Keyless; upstream CDN availability; seeded provider |
 | 1 | European Commission VIES | `QUERY_READY` | Keyless; current-date validation only; seeded provider |
 | 1 | Regulations.gov v4 | `QUERY_READY_AFTER_KEY` | Free `REGULATIONS_GOV_API_KEY`; seeded provider |
-| 2 | EUR-Lex / Cellar | `IMPLEMENTED_UPSTREAM_TIMEOUT` | Public SPARQL connector complete; live probe exceeded 30 seconds; registered SOAP remains optional |
-| 2 | legislation.gov.uk | `IMPLEMENTED_UPSTREAM_202` | Atom connector complete; current host repeatedly returned asynchronous HTTP 202 |
+| 2 | EUR-Lex / Cellar | `IMPLEMENTED_TIMEOUT_MITIGATED` | Query bounded to English expressions of works carrying a CELEX id, and given its own `CELLAR_SPARQL_TIMEOUT_SECONDS` budget rather than the shared 20s one; registered SOAP remains optional |
+| 2 | legislation.gov.uk | `IMPLEMENTED_202_MITIGATED` | Atom connector polls a configurable ladder (`LEGISLATION_GOV_UK_RETRY_DELAYS`, default 0.5/1/2/4s) instead of the original fixed 1.5s |
 | 2 | TED | `LIVE_VERIFIED` | Keyless TED v3 published-notice search; supported-field contract verified |
 | 2 | SAM.gov | `QUERY_READY_AFTER_KEY` | Free `SAM_GOV_API_KEY`; public opportunities only |
-| 3 | OFAC SLS | `IMPLEMENTED_UPSTREAM_403` | Parser/scheduler complete; official redirect blocked this deployment network |
+| 3 | OFAC SLS | `IMPLEMENTED_UPSTREAM_403` | Parser/scheduler complete; official redirect returned 403 to this deployment's egress. Failover to `OFAC_SDN_XML_FALLBACK_URLS` is now attempted; a 403 caused by egress rather than by the address is a network fix, not a code fix |
 | 3 | UN sanctions | `LIVE_VERIFIED_SYNC_REQUIRED` | 1,011 records observed 31 July 2026; pre-warmed hashed snapshot required |
 | 3 | UK sanctions | `LIVE_VERIFIED_SYNC_REQUIRED` | Official ~49 MB CSV reachable; pre-warmed hashed snapshot required |
-| 3 | EU sanctions | `IMPLEMENTED_UPSTREAM_403` | Parser/scheduler complete; official FSF distribution denied this deployment network |
-
-Sanctions feeds are never downloaded in an Ask Kriton request. Run `python scripts/sync_sanctions_sources.py` from `backend`, or schedule the `sync_sanctions_snapshots` Celery task. Queries use only a fresh atomic snapshot under `backend/data/live_sources`. Missing/stale snapshots fail closed and fall back to other governed retrieval.
+| 3 | EU sanctions | `IMPLEMENTED_UPSTREAM_403` | Parser/scheduler complete; official FSF distribution denied this deployment's egress. `EU_SANCTIONS_CSV_FALLBACK_URLS` accepts an alternate distribution once one is confirmed |
 | 4 | HMRC | `PENDING_OAUTH_APPROVAL` | Developer account, sandbox, OAuth scopes, Fraud Prevention Headers, production approval |
 
+### Running the scheduled sync
+
+Sanctions feeds are never downloaded in an Ask Kriton request. Queries use only a fresh atomic snapshot under `SANCTIONS_SNAPSHOT_DIR` (default `backend/data/live_sources`); a missing or stale snapshot fails closed and falls back to other governed retrieval.
+
+The schedule is defined in `app/jobs/live_sources_tasks.py` (`celery_app.conf.beat_schedule`) and needs both a worker and a beat process to exist — defining a Celery task schedules nothing on its own:
+
+```
+celery -A app.jobs.live_sources_tasks worker --loglevel=info --concurrency=2
+celery -A app.jobs.live_sources_tasks beat   --loglevel=info
+```
+
+`docker compose up` runs both, against a `redis` broker, with the snapshot directory on a named volume shared with the API container. The first sync also runs during `seed`, so screening works from first boot rather than at the next tick. For a one-off refresh, run `python scripts/sync_sanctions_sources.py` from `backend`.
+
+Two deployment requirements that are easy to miss:
+
+- **The snapshot directory must be persistent and shared.** The worker writes it and the API reads it. On an ephemeral filesystem (Railway's default) snapshots vanish on every redeploy and screening silently returns to failing closed. Attach a volume, or accept a warm-up window.
+- **Railway runs one process per service.** The worker and beat need their own services; `railway.json`'s start command covers the API only.
+
+After each successful sync the provider's registry row records `last_successful_sync` and `last_content_hash`, so list freshness is answerable from the database rather than by inspecting a file on the worker's disk.
+
 Phase 1 code lives under `backend/app/domains/live_sources/`. Metric providers use `LiveSourceConnector`; record providers use `EvidenceSearchConnector`. Later phases must extend these contracts rather than bypassing the governed retrieval and citation path.
+
+### Two ways to reach a record provider
+
+An Ask Kriton query answers a question and cites the single best record: `EvidenceLiveConnector` adapts an `EvidenceSearchConnector` down to one `NormalizedResponse`.
+
+`POST /api/v1/live-sources/evidence/search` returns the full result set instead, for the reviewer question an answer cannot express — "every current official record matching this". It is authenticated, rate limited, and gated on the same `LiveSourceProvider` row the licence gate applies to a live source used in an answer: unknown or tenant-private providers return 404, disabled 409, licence-restricted 403. `GET /api/v1/live-sources/evidence/providers` lists the searchable keys.
+
+Both paths share one retry policy (`app/domains/live_sources/retry.py`): transport failures, 429 and 5xx are retried; 403 and 404 are stable answers and are not.
 
 ## Governing rule
 

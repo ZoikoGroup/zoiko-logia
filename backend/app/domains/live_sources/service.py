@@ -16,10 +16,13 @@ from __future__ import annotations
 import asyncio
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.domains.live_sources import cache
+from app.domains.live_sources.authority import UNKNOWN_RANK
+from app.domains.live_sources.models import LiveSourceProvider
 from app.domains.live_sources.classifier import (
     build_company_lookup_intent_from_name,
     company_lookup_needs_llm_fallback,
@@ -48,6 +51,7 @@ from app.domains.live_sources.connectors.legislation_gov_uk import LegislationGo
 from app.domains.live_sources.connectors.ted import TEDConnector
 from app.domains.live_sources.connectors.sam_gov import SAMGovConnector
 from app.domains.live_sources.connectors.sanctions_live import SanctionsLiveConnector
+from app.domains.live_sources.retry import call_with_retries
 from app.domains.live_sources.schemas import LiveFetchOutcome, NormalizedResponse
 from app.orchestration.schemas import SourceSummary
 
@@ -169,40 +173,31 @@ async def fetch_live_data(db: AsyncSession, *, query: str, tenant_id: str, juris
         return LiveFetchOutcome(intent=intent, cache_hit=False, succeeded=False, error=f"no connector for {intent.provider_key}")
 
     last_error: Exception | None = None
-    attempts = max(1, settings.LIVE_SOURCE_MAX_ATTEMPTS)
-    for attempt in range(attempts):
-        try:
-            shared_client = get_shared_http_client()
-            normalized = await connector.fetch(
+    try:
+        # Retry policy lives in live_sources.retry so this path and the
+        # evidence-search path cannot drift apart on what counts as
+        # transient (see that module's docstring).
+        normalized = await call_with_retries(
+            lambda: connector.fetch(
                 intent,
                 timeout=settings.LIVE_SOURCE_HTTP_TIMEOUT_SECONDS,
-                client=shared_client,
+                client=get_shared_http_client(),
             )
-            try:
-                await cache.set_cached(
-                    db,
-                    cache_key=cache_key,
-                    provider_key=intent.provider_key,
-                    normalized=normalized,
-                    ttl_seconds=settings.LIVE_SOURCE_CACHE_TTL_SECONDS,
-                )
-            except Exception:
-                await db.rollback()
-            return LiveFetchOutcome(intent=intent, cache_hit=False, succeeded=True, normalized=normalized)
-        except Exception as exc:
-            last_error = exc
-            retryable = isinstance(exc, httpx.TransportError) or (
-                isinstance(exc, httpx.HTTPStatusError)
-                and (exc.response.status_code == 429 or exc.response.status_code >= 500)
+        )
+    except Exception as exc:
+        last_error = exc
+    else:
+        try:
+            await cache.set_cached(
+                db,
+                cache_key=cache_key,
+                provider_key=intent.provider_key,
+                normalized=normalized,
+                ttl_seconds=settings.LIVE_SOURCE_CACHE_TTL_SECONDS,
             )
-            if not retryable or attempt + 1 >= attempts:
-                break
-            delay = settings.LIVE_SOURCE_RETRY_BACKOFF_SECONDS * (attempt + 1)
-            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
-                retry_after = exc.response.headers.get("Retry-After", "")
-                if retry_after.isdigit():
-                    delay = min(float(retry_after), 5.0)
-            await asyncio.sleep(delay)
+        except Exception:
+            await db.rollback()
+        return LiveFetchOutcome(intent=intent, cache_hit=False, succeeded=True, normalized=normalized)
 
     try:
         stale = await cache.get_cached(db, cache_key, ignore_ttl=True)
@@ -275,7 +270,43 @@ def _format_value(value) -> str:
     return f"{value:.2f}"
 
 
-def to_synthetic_chunk(normalized: NormalizedResponse, summary: SourceSummary) -> dict:
+# provider_key -> (authority_rank, jurisdiction). Registry ranks change only
+# when the catalogue is re-seeded, so this is cached for the process
+# lifetime. Governance decisions that must take effect immediately —
+# DISABLED status, a restricted licence — are NOT cached here: the licence
+# gate reads the live row on every request for those (license_gate.py's
+# _fetch_live_provider_fields). This cache only affects citation ordering.
+_provider_authority_cache: dict[str, tuple[int, str]] = {}
+
+
+async def get_provider_authority(db: AsyncSession, provider_key: str) -> tuple[int, str]:
+    cached = _provider_authority_cache.get(provider_key)
+    if cached is not None:
+        return cached
+    try:
+        result = await db.execute(
+            select(LiveSourceProvider.authority_rank, LiveSourceProvider.jurisdiction)
+            .where(LiveSourceProvider.provider_key == provider_key)
+        )
+        row = result.first()
+    except Exception:
+        # An unreadable registry must not decide an answer's authority
+        # ordering either way — fall back to "unknown", the weak default.
+        return UNKNOWN_RANK, ""
+    if row is None:
+        return UNKNOWN_RANK, ""
+    resolved = (int(row[0] or UNKNOWN_RANK), str(row[1] or ""))
+    _provider_authority_cache[provider_key] = resolved
+    return resolved
+
+
+def to_synthetic_chunk(
+    normalized: NormalizedResponse,
+    summary: SourceSummary,
+    *,
+    authority_rank: int = UNKNOWN_RANK,
+    authority_jurisdiction: str = "",
+) -> dict:
     """Shape-matches the dict app.domains.rag.retrieval.retrieve_documents()
     returns for a real vector chunk, so it can ride through the existing
     reranked-chunk -> build_grounded_context() -> [REF-N] citation pipeline
@@ -296,5 +327,11 @@ def to_synthetic_chunk(normalized: NormalizedResponse, summary: SourceSummary) -
             "file_path": normalized.source_url,
             "source_id": summary.id,
             "source_type": "live_api",
+            # Carried on the chunk so the citation layer can decide which
+            # source is controlling from the catalogue's authority
+            # hierarchy rather than from retrieval position.
+            "authority_rank": authority_rank,
+            "authority_jurisdiction": authority_jurisdiction,
+            "effective_date": normalized.observation_period,
         },
     }

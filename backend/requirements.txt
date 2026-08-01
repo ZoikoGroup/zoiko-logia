@@ -46,7 +46,10 @@ openpyxl==3.1.5
 
 # Rate limiting
 slowapi==0.1.10
-celery==5.6.3
+# [redis] extra, not bare celery: CELERY_BROKER_URL defaults to a redis://
+# URL, and without the redis driver the worker/beat processes fail at
+# connect time rather than at import, which reads as a broker outage.
+celery[redis]==5.6.3
 
 # Deterministic household tax calculation (EITC/CTC/standard deduction/
 # federal income tax/CA & NY state income tax) — replaces LLM-guessed

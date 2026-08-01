@@ -5,6 +5,7 @@ from app.domains.chat_history.router import router as chat_history_router
 from app.domains.identity.router import auth_router, users_router
 from app.domains.kriton_workspace.router import router as kriton_workspace_router
 from app.domains.learning_cpd.router import router as learning_router
+from app.domains.live_sources.router import router as live_sources_router
 from app.domains.model_gateway.router import router as model_gateway_router
 from app.domains.source_library.router import router as source_router
 from app.domains.support_incident.router import router as support_router
@@ -27,3 +28,4 @@ api_v1_router.include_router(orchestration_router)
 api_v1_router.include_router(kriton_workspace_router)
 api_v1_router.include_router(upload_router)
 api_v1_router.include_router(calculation_router)
+api_v1_router.include_router(live_sources_router)

@@ -17,7 +17,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, JSON, String
+from sqlalchemy import Boolean, DateTime, Integer, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -48,6 +48,56 @@ class LiveSourceProvider(Base):
     is_tenant_private: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     status: Mapped[str] = mapped_column(String, nullable=False, default="ACTIVE")  # ACTIVE | DISABLED
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    # ── Catalogue-required source metadata ──────────────────────────────
+    # docs/Kriton_Authoritative_Sources_Catalog.md §"Required source
+    # metadata" mandates these for every source Kriton relies on. The
+    # columns above already covered source_id (provider_key),
+    # authority_name (display_name), domain (category), api_base_url
+    # (base_url), authentication_type (auth_mode) and tenant_entitlement
+    # (tenant_id + is_tenant_private); the rest were documented but never
+    # recorded, which made the catalogue unenforceable at runtime.
+    #
+    # Where the catalogue's field is inherently per-document rather than
+    # per-provider (publication/effective/superseded dates), the column here
+    # carries the PROVIDER-level meaning: when this integration became
+    # authoritative for Kriton and when it stopped being so. Document-level
+    # dates belong to the retrieved record, not to the registry row.
+
+    # 1-6 from the catalogue's default authority hierarchy: 1 = enacted
+    # legislation/regulation/binding decisions, 6 = commercial or secondary
+    # discovery. Finer-grained than authority_level, which stays as the
+    # licence gate's three-value vocabulary.
+    authority_rank: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
+    # ISO-ish scope this provider is authoritative FOR ("GB", "US", "EU",
+    # "UN", or "INTL" for an international organisation). Not the same as a
+    # query's country: GLEIF is INTL but answers about a UK company.
+    jurisdiction: Mapped[str] = mapped_column(String, nullable=False, default="INTL")
+    # LIVE_API | SCHEDULED_FEED | VERSIONED_DOC | LICENSED_DOC | DISCOVERY_ONLY
+    integration_type: Mapped[str] = mapped_column(String, nullable=False, default="LIVE_API")
+    # Human-facing landing page. Distinct from base_url, which is the machine
+    # endpoint and is frequently not a page a person can open.
+    official_url: Mapped[str] = mapped_column(String, nullable=False, default="")
+    licence_terms_url: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # free | mixed | paid | restricted — "free access does not remove
+    # copyright, attribution, licensing or redistribution obligations", so
+    # this is recorded separately from licence_state.
+    pricing_model: Mapped[str] = mapped_column(String, nullable=False, default="free")
+    # How stale this provider's data may be before an answer built on it
+    # should be treated as unsupported. None = no stated SLA.
+    freshness_sla_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_successful_sync: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Content hash of the last synchronised payload, for feed-backed
+    # providers. Mirrors SanctionsSnapshot.content_sha256.
+    last_content_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    # show | summarise | internal_reasoning_only — an explicit override of
+    # the state the licence gate would otherwise derive. Empty means derive.
+    display_permission: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # permitted | attribution_required | prohibited — whether content from
+    # this source may leave Kriton in an export.
+    export_permission: Mapped[str] = mapped_column(String, nullable=False, default="attribution_required")
+    effective_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    superseded_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class LiveFetchCache(Base):

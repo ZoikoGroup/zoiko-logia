@@ -69,6 +69,31 @@ async def test_regulations_gov_returns_direct_official_record_urls():
     assert str(result.records[0].source_url) == "https://www.regulations.gov/document/IRS-2026-0001-0001"
 
 
+@pytest.mark.asyncio
+async def test_regulations_gov_requests_the_upstream_minimum_page_size():
+    """Regulations.gov v4 rejects page[size] below 5 with a bare HTTP 400,
+    so a caller asking for fewer records got an error instead of fewer
+    records. Confirmed live against the real API."""
+    captured = {}
+
+    def handler(request):
+        captured["page_size"] = request.url.params["page[size]"]
+        return httpx.Response(200, json={"data": [
+            {"id": f"IRS-2026-0001-{index}", "type": "documents",
+             "attributes": {"title": f"Rule {index}", "documentType": "Proposed Rule"}}
+            for index in range(5)
+        ]})
+
+    intent = EvidenceSearchIntent(provider_key="regulations_gov", query="tax reporting", page_size=1)
+    async with _client(handler) as client:
+        result = await RegulationsGovConnector("https://example.test/v4", "test-key").search(
+            intent, timeout=1, client=client)
+
+    assert captured["page_size"] == "5"
+    # ...and the caller still gets back only what it asked for.
+    assert len(result.records) == 1
+
+
 def test_phase1_queries_route_deterministically():
     assert detect_live_data_intent("What is the ECB deposit facility rate?").provider_key == "ecb"
     assert detect_live_data_intent("Show the IMF GDP growth forecast for India").provider_key == "imf"

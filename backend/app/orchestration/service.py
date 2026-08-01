@@ -200,6 +200,8 @@ from app.domains.rag.redaction import redact_for_external_exposure
 # method to the static-document path above, gated behind ENABLE_LIVE_SOURCES
 # the same way ENABLE_RAG_EMBEDDINGS gates vector retrieval.
 from app.domains.live_sources import service as live_sources_service
+from app.domains.live_sources.authority import UNKNOWN_RANK as AUTHORITY_UNKNOWN_RANK
+from app.domains.live_sources.authority import AuthorityCandidate, order_by_authority
 from app.domains.live_sources.cache import make_cache_key
 from app.domains.live_sources.classifier import detect_live_data_intent
 
@@ -252,6 +254,36 @@ _LIVE_DATA_NODE_PREFIXES = (
     ACCOUNTING_FUNDAMENTALS_NODE_PREFIX,
     USER_PROVIDED_DATA_NODE_PREFIX,
 )
+
+
+def _controlling_chunk_index(reranked: list, query_jurisdiction: str) -> int:
+    """Index of the chunk that should be cited as controlling authority.
+
+    Falls back to 0 — the previous behaviour — when nothing in the bundle
+    carries a recorded authority rank, which is the normal case for a bundle
+    of ingested documents. A live source seeded from the catalogue does
+    carry one, so where a bundle mixes the two, the authority hierarchy
+    decides rather than retrieval order. See live_sources/authority.py for
+    the ranks and the jurisdiction rule.
+    """
+    if not reranked:
+        return 0
+    candidates = [
+        AuthorityCandidate(
+            # Zero-padded: source_id is the hierarchy's final tie-break and
+            # it compares as a string, so an unpadded "10" would sort before
+            # "2" and quietly reorder equally-authoritative chunks.
+            source_id=f"{index:04d}",
+            rank=int(chunk.get("metadata", {}).get("authority_rank") or AUTHORITY_UNKNOWN_RANK),
+            jurisdiction=str(chunk.get("metadata", {}).get("authority_jurisdiction") or ""),
+            effective_date=str(chunk.get("metadata", {}).get("effective_date") or ""),
+        )
+        for index, chunk in enumerate(reranked)
+    ]
+    if all(candidate.rank == AUTHORITY_UNKNOWN_RANK for candidate in candidates):
+        return 0
+    best = order_by_authority(candidates, query_jurisdiction=query_jurisdiction)[0]
+    return int(best.source_id)
 
 
 def _reinstate_live_chunks(raw_chunks: list, reranked: list) -> list:
@@ -2907,6 +2939,7 @@ async def ask_kriton(
         )
 
     live_summary = None
+    live_authority: tuple[int, str] = (AUTHORITY_UNKNOWN_RANK, "")
     live_fetch_start = time.monotonic()
     (raw_chunks, query_embedding), live_outcome, security_screen = await asyncio.gather(
         _fetch_raw_chunks(), _fetch_live(), screen_for_security_violation(request.query),
@@ -3006,6 +3039,11 @@ async def ask_kriton(
                 )
         if live_outcome.succeeded and live_outcome.normalized:
             live_summary = live_sources_service.to_source_summary(live_outcome.normalized)
+            # Read once here rather than at chunk-build time, so the
+            # citation layer never issues a query inside its own loop.
+            live_authority = await live_sources_service.get_provider_authority(
+                db, live_outcome.intent.provider_key
+            )
 
     # ── Governed reference_data sources (ported from KritonMediator, see
     # module note above) — each gated on retrieval_category and/or its own
@@ -3731,8 +3769,17 @@ async def ask_kriton(
                 # actual context while it still appeared in source_bundle —
                 # a separate, non-truncated list — making the answer look
                 # like it had the data when the model never received it).
-                reranked = [live_sources_service.to_synthetic_chunk(live_outcome.normalized, live_summary)] + reranked
+                reranked = [live_sources_service.to_synthetic_chunk(
+                    live_outcome.normalized, live_summary,
+                    authority_rank=live_authority[0], authority_jurisdiction=live_authority[1],
+                )] + reranked
             context_text, source_refs = build_grounded_context(reranked)
+            # Which source is CONTROLLING is an authority question, not a
+            # relevance one. Position 0 is a relevance signal, and using it
+            # meant a semantically excellent match to secondary commentary
+            # could be cited as controlling over the instrument it was
+            # commenting on. See live_sources/authority.py.
+            controlling_index = _controlling_chunk_index(reranked, request.jurisdiction)
             rag_citations = []
             for i, chunk in enumerate(reranked):
                 # The chunk's real governed source_id (added to ingestion
@@ -3751,7 +3798,7 @@ async def ask_kriton(
                     evidence_role=(
                         "controlling"
                         if (
-                            i == 0
+                            i == controlling_index
                             or str(chunk["metadata"].get("fact_type", "")).startswith("standard_deduction")
                             or str(chunk.get("node_id", "")).startswith(FORMULA_REGISTRY_NODE_PREFIX)
                             or chunk["metadata"].get("source_type") == "live_api"

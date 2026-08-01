@@ -40,6 +40,7 @@ from app.core.rate_limit import limiter
 from app.db.base import Base
 from app.domains.massarius.tenant_scope import ensure_vector_table_rls
 from app.domains.live_sources.http_client import close_shared_http_client
+from app.domains.live_sources.schema_sync import ensure_provider_columns
 
 settings = get_settings()
 
@@ -156,6 +157,19 @@ async def _migrate_user_profile_columns():
             await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()"))
             await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"))
             await conn.execute(text("ALTER TABLE users DROP COLUMN IF EXISTS hashed_password"))
+
+
+async def _migrate_live_source_provider_columns():
+    """Add the catalogue's required source-metadata columns to
+    `live_source_providers` if this DB predates them.
+
+    Same create_all()-doesn't-alter-existing-tables situation as
+    _migrate_source_licence_columns above. The column definitions live in
+    live_sources/schema_sync.py so the test suite reconciles its own
+    database identically — a test schema that drifts from the runtime's is
+    testing a schema nobody deploys.
+    """
+    await ensure_provider_columns(async_engine, is_sqlite=settings.is_sqlite)
 
 
 async def _migrate_safety_tenant_columns():
@@ -606,6 +620,7 @@ async def lifespan(app: FastAPI):
     await _migrate_source_licence_columns()
     await _migrate_user_profile_columns()
     await _migrate_safety_tenant_columns()
+    await _migrate_live_source_provider_columns()
     await _setup_source_rls()
     await _setup_user_rls()
     _seed_defaults()

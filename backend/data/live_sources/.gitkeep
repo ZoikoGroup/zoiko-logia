@@ -1,0 +1,5 @@
+# Snapshot target for scheduled sanctions syncs (SANCTIONS_SNAPSHOT_DIR).
+# Tracked so the directory exists in the Docker image with appuser
+# ownership — a named volume mounted over a path that does not exist in the
+# image is created owned by root, and the non-root container user then
+# cannot write snapshots into it.

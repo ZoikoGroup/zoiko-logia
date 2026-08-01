@@ -97,7 +97,16 @@ class Settings(BaseSettings):
     VIES_API_BASE_URL: str = "https://ec.europa.eu/taxation_customs/vies/rest-api"
     # Phase 2 — official legislation and procurement search.
     CELLAR_SPARQL_URL: str = "https://publications.europa.eu/webapi/rdf/sparql"
+    # Cellar is a public SPARQL endpoint over a very large graph; a title
+    # scan there is an order of magnitude slower than a REST search API and
+    # legitimately exceeds the shared 20s live-source budget. Given its own
+    # timeout rather than raising the global one for every fast connector.
+    CELLAR_SPARQL_TIMEOUT_SECONDS: float = 60.0
     LEGISLATION_GOV_UK_BASE_URL: str = "https://www.legislation.gov.uk"
+    # legislation.gov.uk answers Atom feed requests with HTTP 202 while it
+    # builds the feed asynchronously. The delays are the poll ladder, in
+    # seconds; the total must stay under the caller's own request budget.
+    LEGISLATION_GOV_UK_RETRY_DELAYS: str = "0.5,1.0,2.0,4.0"
     TED_API_BASE_URL: str = "https://api.ted.europa.eu/v3"
     SAM_GOV_OPPORTUNITIES_URL: str = "https://api.sam.gov/opportunities/v2/search"
     SAM_GOV_API_KEY: str = ""
@@ -107,6 +116,27 @@ class Settings(BaseSettings):
     UN_SANCTIONS_XML_URL: str = "https://scsanctions.un.org/resources/xml/en/name/consolidated.xml"
     UK_SANCTIONS_CSV_URL: str = "https://sanctionslist.fcdo.gov.uk/docs/UK-Sanctions-List.csv"
     EU_SANCTIONS_CSV_URL: str = "https://webgate.ec.europa.eu/fsd/fsf/public/files/csvFullSanctionsList/content"
+    # Comma-separated alternate distributions, tried in order after the
+    # primary URL fails. The OFAC and EU primaries returned HTTP 403 to this
+    # deployment's egress, and both authorities publish the same list at
+    # more than one official address; a failover list keeps that an operator
+    # configuration change rather than a code change. An empty value means
+    # "primary only". A 403 caused by network egress rather than by the URL
+    # is NOT fixable here — see the catalogue's runtime notes.
+    OFAC_SDN_XML_FALLBACK_URLS: str = "https://www.treasury.gov/ofac/downloads/sdn.xml"
+    UN_SANCTIONS_XML_FALLBACK_URLS: str = ""
+    UK_SANCTIONS_CSV_FALLBACK_URLS: str = ""
+    EU_SANCTIONS_CSV_FALLBACK_URLS: str = ""
+    # Sent on every official-feed download. Several government hosts reject
+    # or throttle unidentified clients; SEC already requires a contact
+    # address (SEC_EDGAR_USER_AGENT) and the same courtesy applies here.
+    # Operators should append a real contact address.
+    SANCTIONS_FEED_USER_AGENT: str = "Kriton/1.0 (authoritative-source-monitor)"
+    # Similarity floor for a fuzzy screening candidate. Deliberately high:
+    # a false candidate costs a reviewer's time, but a flood of them makes
+    # the review itself useless, which is the failure mode that matters for
+    # a control someone is supposed to act on.
+    SANCTIONS_FUZZY_MATCH_THRESHOLD: float = 0.88
     SANCTIONS_SNAPSHOT_TTL_SECONDS: int = 3600
     SANCTIONS_MAX_DOWNLOAD_BYTES: int = 75_000_000
     SANCTIONS_SNAPSHOT_DIR: str = "./data/live_sources"

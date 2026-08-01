@@ -198,10 +198,16 @@ _OECD_INDICATOR_KEYWORDS: list[tuple[str, str, str]] = [
 ]
 
 _IMF_ISO3_BY_COUNTRY_CODE = {"GB": "GBR", "US": "USA", "IN": "IND"}
+# Naming the IMF is what selects this provider; the concept words only pick
+# the series. The original table required one of three exact phrases
+# ("imf gdp growth forecast"), so every natural variation — "the IMF's
+# inflation projection for India", "what does the IMF forecast for US
+# growth" — silently missed and fell through to a different provider.
+_IMF_MENTION = re.compile(r"\bimf\b")
 _IMF_INDICATOR_KEYWORDS = (
-    ("imf gdp growth forecast", "NGDP_RPCH", "Real GDP growth (IMF WEO)"),
-    ("imf inflation forecast", "PCPIPCH", "Inflation rate (IMF WEO)"),
-    ("imf unemployment forecast", "LUR", "Unemployment rate (IMF WEO)"),
+    (("gdp growth", "real gdp", "economic growth", "growth forecast"), "NGDP_RPCH", "Real GDP growth (IMF WEO)"),
+    (("inflation", "cpi", "consumer prices", "price growth"), "PCPIPCH", "Inflation rate (IMF WEO)"),
+    (("unemployment", "jobless", "employment rate"), "LUR", "Unemployment rate (IMF WEO)"),
 )
 _VAT_NUMBER_PATTERN = re.compile(r"\b((?:AT|BE|BG|HR|CY|CZ|DE|DK|EE|EL|ES|FI|FR|GR|HU|IE|IT|LT|LU|LV|MT|NL|PL|PT|RO|SE|SI|SK)[A-Z0-9]{4,14})\b", re.IGNORECASE)
 _EU_COUNTRY_LABELS = {
@@ -325,9 +331,16 @@ def _match_sanctions_intent(query: str) -> LiveDataIntent | None:
 def _match_imf_indicator(country_code: str, lowered: str) -> LiveDataIntent | None:
     iso3 = _IMF_ISO3_BY_COUNTRY_CODE.get(country_code)
     if iso3 is None:
+        # No verified IMF ISO3 mapping for this country. Deliberately not
+        # derived from the alpha-2 code: the same discipline every connector
+        # here follows — a country is added only once a real query has
+        # confirmed the upstream actually holds data for it, rather than
+        # constructing a plausible code and citing whatever comes back.
         return None
-    for keyword, code, label in _IMF_INDICATOR_KEYWORDS:
-        if keyword in lowered:
+    if not _IMF_MENTION.search(lowered):
+        return None
+    for keywords, code, label in _IMF_INDICATOR_KEYWORDS:
+        if any(keyword in lowered for keyword in keywords):
             return LiveDataIntent(provider_key="imf", indicator_code=f"{code}:{iso3}", indicator_label=label,
                                   country_code=country_code, country_label=_COUNTRY_LABELS[country_code])
     return None
@@ -684,18 +697,27 @@ def detect_live_data_intent(query: str, jurisdiction: str = "") -> LiveDataInten
             return implied
         country_code, country_label = _match_country_in_text(lowered)
 
+    # Checked BEFORE the per-country overrides, unlike every other provider
+    # here, because naming the IMF is an explicit choice of source and the
+    # overrides match on bare concept words. With the old ordering, "What is
+    # the IMF inflation forecast for the United Kingdom?" matched the GB
+    # override's "inflation" keyword and returned the ONS CPIH index — a
+    # different institution's different measure than the one asked for,
+    # with nothing in the answer to say so. Every keyword on this path
+    # requires a literal "imf" token, so it cannot capture a query that
+    # did not name the IMF.
+    imf_match = _match_imf_indicator(country_code, lowered)
+    if imf_match is not None:
+        return imf_match
+
     override = _match_country_override(country_code, lowered)
     if override is not None:
         return override
 
-    imf_match = _match_imf_indicator(country_code, lowered)
-    if imf_match is not None:
-        return imf_match
     # No per-country override matched (either this country has none, or its
     # rules didn't match this indicator, e.g. GDP/unemployment for GB) —
     # try OECD's generic (any-resolved-country) indicators next, before
     # falling through to World Bank.
-
     oecd_match = _match_oecd_indicator(country_code, lowered)
     if oecd_match is not None:
         return oecd_match

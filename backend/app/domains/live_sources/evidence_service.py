@@ -1,10 +1,6 @@
 """Reliability boundary for official evidence-search APIs."""
 from __future__ import annotations
 
-import asyncio
-
-import httpx
-
 from app.core.config import get_settings
 from app.domains.live_sources.connectors.evidence_base import EvidenceSearchConnector
 from app.domains.live_sources.connectors.regulations_gov import RegulationsGovConnector
@@ -14,6 +10,7 @@ from app.domains.live_sources.connectors.ted import TEDConnector
 from app.domains.live_sources.connectors.sam_gov import SAMGovConnector
 from app.domains.live_sources.evidence_schemas import EvidenceSearchIntent, EvidenceSearchResponse
 from app.domains.live_sources.http_client import get_shared_http_client
+from app.domains.live_sources.retry import call_with_retries
 
 settings = get_settings()
 
@@ -28,30 +25,25 @@ _EVIDENCE_CONNECTORS: dict[str, EvidenceSearchConnector] = {
 }
 
 
+def available_providers() -> tuple[str, ...]:
+    return tuple(_EVIDENCE_CONNECTORS)
+
+
 async def search_authoritative_evidence(intent: EvidenceSearchIntent) -> EvidenceSearchResponse:
+    """Multi-record search against one official evidence API.
+
+    Distinct from live_sources.service.fetch_live_data(), which answers a
+    question with a single figure or the single newest record. This returns
+    the full result set, which is what a user reviewing "every current
+    rulemaking on X" actually needs — an answer path that keeps only
+    records[0] cannot express that.
+    """
     connector = _EVIDENCE_CONNECTORS.get(intent.provider_key)
     if connector is None:
         raise ValueError(f"No evidence-search connector for {intent.provider_key}")
-    last_error: Exception | None = None
-    for attempt in range(max(1, settings.LIVE_SOURCE_MAX_ATTEMPTS)):
-        try:
-            return await connector.search(
-                intent, timeout=settings.LIVE_SOURCE_HTTP_TIMEOUT_SECONDS,
-                client=get_shared_http_client(),
-            )
-        except Exception as exc:
-            last_error = exc
-            retryable = isinstance(exc, httpx.TransportError) or (
-                isinstance(exc, httpx.HTTPStatusError)
-                and (exc.response.status_code == 429 or exc.response.status_code >= 500)
-            )
-            if not retryable or attempt + 1 >= settings.LIVE_SOURCE_MAX_ATTEMPTS:
-                break
-            delay = settings.LIVE_SOURCE_RETRY_BACKOFF_SECONDS * (attempt + 1)
-            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
-                retry_after = exc.response.headers.get("Retry-After", "")
-                if retry_after.isdigit():
-                    delay = min(float(retry_after), 5.0)
-            await asyncio.sleep(delay)
-    assert last_error is not None
-    raise last_error
+    return await call_with_retries(
+        lambda: connector.search(
+            intent, timeout=settings.LIVE_SOURCE_HTTP_TIMEOUT_SECONDS,
+            client=get_shared_http_client(),
+        )
+    )

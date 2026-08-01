@@ -1178,6 +1178,19 @@ export default function AskKritonPage() {
 
   const hasConversation = turns.length > 0;
   const isLoading = turns.some((t) => t.loading);
+  // Enter submits; Shift+Enter keeps the newline the textarea is there for.
+  // isComposing guards IME input, where Enter commits the candidate word and
+  // must never be read as "send". Blocked while a document is still being
+  // ingested, otherwise Enter can outrun the upload and the answer is
+  // composed without the file the user just attached.
+  const canSubmitComposer = !isLoading && query.trim().length > 0 && uploadStatus !== "uploading";
+
+  function handleComposerKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+    e.preventDefault();
+    if (!canSubmitComposer) return;
+    void handleSubmit(e);
+  }
 
   return (
     <main className="relative h-screen w-full min-w-0 overflow-hidden bg-soft text-ink">
@@ -1350,6 +1363,7 @@ export default function AskKritonPage() {
                       <textarea
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
+                        onKeyDown={handleComposerKeyDown}
                         placeholder="Ask Kriton..."
                         rows={2}
                         className="min-h-20 w-full resize-none rounded-xl !border-transparent !bg-transparent px-1 py-1 text-base font-medium leading-7 text-ink !shadow-none outline-none placeholder:text-muted"
@@ -1408,7 +1422,7 @@ export default function AskKritonPage() {
                           </button>
                           <button
                             type="submit"
-                            disabled={isLoading || !query.trim()}
+                            disabled={!canSubmitComposer}
                             className="flex h-9 w-9 items-center justify-center rounded-full bg-brand text-white transition hover:bg-brand-2 disabled:opacity-40"
                             aria-label="Ask Kriton"
                           >
@@ -1686,6 +1700,7 @@ export default function AskKritonPage() {
                       <textarea
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
+                        onKeyDown={handleComposerKeyDown}
                         placeholder="Ask a follow-up..."
                         rows={2}
                         className="min-h-14 w-full resize-none rounded-xl !border-transparent !bg-transparent px-1 py-1 text-sm font-medium leading-6 text-ink !shadow-none outline-none placeholder:text-muted"
@@ -1744,7 +1759,7 @@ export default function AskKritonPage() {
                           </button>
                           <button
                             type="submit"
-                            disabled={isLoading || !query.trim()}
+                            disabled={!canSubmitComposer}
                             className="flex h-9 w-9 items-center justify-center rounded-full bg-brand text-white transition hover:bg-brand-2 disabled:opacity-40"
                             aria-label="Ask follow-up"
                           >

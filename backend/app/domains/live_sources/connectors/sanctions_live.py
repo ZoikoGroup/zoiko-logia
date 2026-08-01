@@ -1,11 +1,61 @@
-"""Ask-Kriton adapter for exact-name candidate lookup in cached sanctions snapshots."""
+"""Ask-Kriton adapter for name-candidate lookup in cached sanctions snapshots."""
 from __future__ import annotations
 
 import httpx
 
 from app.domains.live_sources.connectors.base import LiveSourceConnector
-from app.domains.live_sources.sanctions_service import find_exact_candidates
+from app.domains.live_sources.feed_schemas import SanctionsMatch, SanctionsSnapshot
+from app.domains.live_sources.sanctions_service import find_candidates
 from app.domains.live_sources.schemas import LiveDataIntent, NormalizedResponse
+
+# The catalogue requires every screening record to carry the list version,
+# the update timestamp, the matching method, the identifiers, and the source
+# URL. Version, timestamp and URL travel in NormalizedResponse's own fields;
+# method and identifiers have no field of their own, so they are stated in
+# the value text that reaches both the model and the citation.
+_REVIEW_NOTICE = (
+    "This is a screening candidate for human review, not a sanctions finding "
+    "and not clearance."
+)
+
+
+def _describe(match: SanctionsMatch) -> str:
+    entry = match.entry
+    parts = [
+        f"Candidate: {entry.primary_name}",
+        f'matched on: "{match.matched_name}"',
+        f"matching method: {match.method} (score {match.score:g})",
+        f"type: {entry.entity_type}",
+        f"programs: {', '.join(entry.programs) or 'not stated'}",
+    ]
+    # Identifiers are the difference between "someone with this name is
+    # listed" and "this party is listed". Their absence is stated rather
+    # than omitted, so a reviewer is never left to assume an identifier
+    # check happened when none was possible.
+    parts.append(
+        f"identifiers on record: {'; '.join(entry.identifiers)}" if entry.identifiers
+        else "identifiers on record: none published for this entry"
+    )
+    if entry.dates_of_birth:
+        parts.append(f"date(s) of birth: {', '.join(entry.dates_of_birth)}")
+    if entry.nationalities:
+        parts.append(f"nationality: {', '.join(entry.nationalities)}")
+    if entry.listed_on:
+        parts.append(f"listed on: {entry.listed_on}")
+    return "; ".join(parts)
+
+
+def _value_text(name: str, snapshot: SanctionsSnapshot, matches: list[SanctionsMatch]) -> str:
+    provenance = f"List version {snapshot.list_version}, synchronised {snapshot.fetched_at}."
+    if not matches:
+        return (
+            f'No name candidate was found for "{name}" using exact and fuzzy name matching. '
+            f"{provenance} An absent name match is not sanctions clearance: identifiers, "
+            "transliterations, and non-Latin scripts are not covered by name matching alone."
+        )
+    described = " | ".join(_describe(match) for match in matches)
+    plural = "candidate" if len(matches) == 1 else "candidates"
+    return f"{len(matches)} screening {plural}. {provenance} {described}. {_REVIEW_NOTICE}"
 
 
 class SanctionsLiveConnector(LiveSourceConnector):
@@ -14,18 +64,18 @@ class SanctionsLiveConnector(LiveSourceConnector):
 
     async def fetch(self, intent: LiveDataIntent, *, timeout: float, client: httpx.AsyncClient | None = None) -> NormalizedResponse:
         name = intent.company_query or ""
-        snapshot, matches = await find_exact_candidates(self.provider_key, name)
-        if not matches:
-            value = f"No exact-name candidate was found for {name}. This is not sanctions clearance; identifiers and fuzzy aliases require human review."
-            record_id = f"no-exact-match-{snapshot.content_sha256[:12]}"
-        else:
-            top = matches[0]
-            value = (f"Potential exact-name candidate: {top.primary_name}; type: {top.entity_type}; "
-                     f"programs: {', '.join(top.programs) or 'not stated'}. Human review is required.")
-            record_id = top.record_id
+        # Bounded on purpose: a screening answer a person is meant to read
+        # and act on degrades past a handful of candidates. The unbounded
+        # result set belongs to a review tool, not to an answer.
+        snapshot, matches = await find_candidates(self.provider_key, name, limit=5)
+        record_id = matches[0].entry.record_id if matches else f"no-match-{snapshot.list_version}"
         return NormalizedResponse(
-            provider_key=self.provider_key, indicator_code=record_id, indicator_label=f"{self.display_name} name screening",
-            country_code=intent.country_code, country_label=intent.country_label, value=value, unit="",
-            observation_period=snapshot.fetched_at, as_of=snapshot.fetched_at, source_url=self.landing_url,
-            citation_title=f"{self.display_name} — official sanctions snapshot", company_query=name,
+            provider_key=self.provider_key, indicator_code=record_id,
+            indicator_label=f"{self.display_name} name screening",
+            country_code=intent.country_code, country_label=intent.country_label,
+            value=_value_text(name, snapshot, matches), unit="",
+            observation_period=snapshot.fetched_at, as_of=snapshot.fetched_at,
+            source_url=self.landing_url,
+            citation_title=f"{self.display_name} — official snapshot, list version {snapshot.list_version}",
+            company_query=name,
         )
