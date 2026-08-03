@@ -186,7 +186,17 @@ Binding answers must prioritize the ratified treaty text over model conventions 
 
 Sanctions screening must record the list version, update timestamp, matching method, identifiers, and source URL. Possible matches require review and must not automatically become adverse decisions.
 
-Implemented as follows. Every screening result carries the list version (`SanctionsSnapshot.list_version`, the first 12 characters of the content hash — the only identifier these authorities publish that changes when and only when the list does), the synchronisation timestamp, the matching method, and the identifiers held on the matched entry. Matching runs in two tiers: exact on the normalised primary name or any alias, then a fuzzy tier above `SANCTIONS_FUZZY_MATCH_THRESHOLD`, narrowed by shared token so the comparison stays bounded on lists of tens of thousands of entries. Identifiers, nationalities, and dates of birth are parsed from all four feeds. Where an entry publishes no identifier, the result says so explicitly rather than omitting the field — a reviewer must never be left to assume an identifier check happened when none was possible. No result is ever phrased as a finding or as clearance.
+Implemented as follows. Every screening result carries the list version (`SanctionsSnapshot.list_version`, the first 12 characters of the content hash — the only identifier these authorities publish that changes when and only when the list does), the synchronisation timestamp, the matching method, and the identifiers held on the matched entry.
+
+Matching runs in three tiers, strongest first:
+
+1. **Identifier** — passport, national ID, or registration number, compared on alphanumerics only so `P1234567`, `p 1234 567` and `P-1234567` all reach the same listing. Reported **even when the name does not match**: a number identifies a party where a name only describes one, and suppressing that because a transliteration differs would discard the strongest signal the list carries. Identifiers below five characters are ignored — too generic to assert identity.
+2. **Exact name**, on the normalised primary name or any published alias.
+3. **Fuzzy name**, above `SANCTIONS_FUZZY_MATCH_THRESHOLD`, narrowed by shared token so the comparison stays bounded on lists of tens of thousands of entries.
+
+Identifiers are extracted from a query only behind an explicit label (`passport P1234567`, `registration number 7788990`); an unlabelled number in a sentence is never screened as one, because a false identifier match is the most damaging result this path can produce.
+
+The record states what was compared, not only what was found — a name-only screen and a name-plus-passport screen carry very different weight, and an unqualified "no match" implies the stronger one. Where an entry publishes no identifier, the result says so rather than omitting the field. No result is ever phrased as a finding or as clearance.
 
 ## 16. Economic and financial indicators
 
@@ -259,9 +269,9 @@ Recorded on `live_source_providers` (`app/domains/live_sources/models.py`) and p
 | `licence_terms_url` | `licence_terms_url` |
 | `publication_date` / `effective_date` / `superseded_date` | `effective_date` / `superseded_date` — at provider level these mean when the integration became and ceased authoritative. Document-level dates belong to the retrieved record, not the registry row. |
 | `last_successful_sync` | `last_successful_sync` (written by the sanctions sync task) |
-| `freshness_sla` | `freshness_sla_seconds` |
+| `freshness_sla` | `freshness_sla_seconds` — enforced at answer time: a figure older than its source's own SLA is labelled NOT CURRENT in the model's context and qualified in the citation title, because a failed live fetch falls back to a stale cache entry and otherwise presents it as current |
 | `content_hash` | `last_content_hash` |
-| `display_permission` | `display_permission` (empty = derive from the licence gate) |
+| `display_permission` | `display_permission` (empty = derive from the licence gate). Honoured at Checkpoint B, and can only ever tighten: a row asking for `show` on a source whose licence is unknown is still held at `internal_reasoning_only`, because a licence state is a legal fact and a display preference is not permission to override it |
 | `export_permission` | `export_permission` |
 | `tenant_entitlement` | `tenant_id` + `is_tenant_private` |
 
@@ -279,6 +289,8 @@ The table is created by `Base.metadata.create_all`, not by an Alembic revision, 
 The hierarchy must also account for jurisdiction, effective date, entity type, reporting framework, and the exact query. International models and professional guidance must not override binding domestic implementation.
 
 Implemented in `app/domains/live_sources/authority.py` and applied when a bundle decides which citation is `controlling`. Jurisdiction is applied **before** rank, so a rank-1 foreign statute cannot outrank the rank-2 domestic regulator that actually governs the answer, and an international model cannot displace a domestic source on that source's own jurisdiction. Effective date breaks ties between equals, so a superseded instrument of identical standing is not treated as controlling. A source with no recorded rank defaults to the weakest, not the neutral, position — an unranked source must never displace one whose standing is known. Where nothing in a bundle carries a rank (the normal case for ingested documents), retrieval order is retained, so this changes behaviour only where authority is actually known.
+
+Ranks reach both kinds of source. A live provider's rank is read from its registry row; a governed document's is derived by the licence gate from the `authority_level` and `source_class` it already reads for eligibility, so the hierarchy applies to the existing corpus with no schema change and no re-ingestion. `SourceVersion.effective_from` supplies the effective-date tie-break.
 
 Entity type and reporting framework are not yet inputs to the ranking; they remain a judgement made in the answer, not in the sort.
 
@@ -306,7 +318,7 @@ Status is intentionally stricter than configuration: `QUERY_READY` means a norma
 | 1 | European Commission VIES | `QUERY_READY` | Keyless; current-date validation only; seeded provider |
 | 1 | Regulations.gov v4 | `QUERY_READY_AFTER_KEY` | Free `REGULATIONS_GOV_API_KEY`; seeded provider |
 | 2 | EUR-Lex / Cellar | `IMPLEMENTED_TIMEOUT_MITIGATED` | Query bounded to English expressions of works carrying a CELEX id, and given its own `CELLAR_SPARQL_TIMEOUT_SECONDS` budget rather than the shared 20s one; registered SOAP remains optional |
-| 2 | legislation.gov.uk | `IMPLEMENTED_202_MITIGATED` | Atom connector polls a configurable ladder (`LEGISLATION_GOV_UK_RETRY_DELAYS`, default 0.5/1/2/4s) instead of the original fixed 1.5s |
+| 2 | legislation.gov.uk | `IMPLEMENTED_EDGE_BLOCKED` | The HTTP 202 is **not** an asynchronous feed build. Measured 1 August 2026: every endpoint — search feed, dated feed, and a direct document URI — returns 202 with `Content-Length: 0`, `Cache-Control: no-store` and `x-cache: Error from cloudfront`, and does not resolve after 26s of polling. That is a CDN edge rejection; the request is not reaching the origin from this network. The connector now fails fast on an empty 202 and only polls a 202 that carries a `Retry-After`, a `Location`, or a body |
 | 2 | TED | `LIVE_VERIFIED` | Keyless TED v3 published-notice search; supported-field contract verified |
 | 2 | SAM.gov | `QUERY_READY_AFTER_KEY` | Free `SAM_GOV_API_KEY`; public opportunities only |
 | 3 | OFAC SLS | `IMPLEMENTED_UPSTREAM_403` | Parser/scheduler complete; official redirect returned 403 to this deployment's egress. Failover to `OFAC_SDN_XML_FALLBACK_URLS` is now attempted; a 403 caused by egress rather than by the address is a network fix, not a code fix |
@@ -334,6 +346,20 @@ Two deployment requirements that are easy to miss:
 - **Railway runs one process per service.** The worker and beat need their own services; `railway.json`'s start command covers the API only.
 
 After each successful sync the provider's registry row records `last_successful_sync` and `last_content_hash`, so list freshness is answerable from the database rather than by inspecting a file on the worker's disk.
+
+### Monitoring
+
+`scripts/check_external_sources.py` is the upstream canary: it contacts every configured source for real, on a schedule, and is the only thing in the repository that does — the test suite mocks all of them, correctly, so a merge never fails because a government web server is slow.
+
+Three rules it is built around, each learned from a real failure:
+
+- **A response is only healthy if it carries content.** A 200 with zero records is the signature of contract drift, and the previous check reported it as `live`.
+- **Probes target the current period.** A probe pinned to a past year answers forever out of an archive while current data quietly stops flowing.
+- **Nothing here downloads a bulk feed.** Sanctions lists are checked with a ranged request; the previous check read the local snapshot file and so reported `live` for lists nobody had been able to download in weeks.
+
+Reports are printed with credentials redacted — several of these APIs take their key as a query parameter, and `httpx` puts the full URL into its exceptions, so an upstream 4xx would otherwise reproduce the key in a retained CI artifact.
+
+`scripts/diff_provider_health.py` compares two reports and alerts on a **transition**, not a state. Two sources fail persistently for reasons no code change fixes; a job that goes red for those every day is a job everyone learns to ignore. `GET /api/v1/live-sources/health` exposes the same freshness data from the registry, and the Status & Health page renders it.
 
 Phase 1 code lives under `backend/app/domains/live_sources/`. Metric providers use `LiveSourceConnector`; record providers use `EvidenceSearchConnector`. Later phases must extend these contracts rather than bypassing the governed retrieval and citation path.
 

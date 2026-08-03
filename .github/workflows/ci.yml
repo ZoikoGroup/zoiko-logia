@@ -118,6 +118,17 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install -r requirements.txt
+      # The previous run's report, so the next step can alert on a CHANGE
+      # rather than on a state. Two sources fail persistently for reasons no
+      # code change fixes; a job that goes red for those every day is a job
+      # everyone learns to ignore. restore-keys picks up the most recent
+      # cache under the prefix, so this needs no artifact API access.
+      - name: Restore the previous report
+        uses: actions/cache/restore@v4
+        with:
+          path: backend/previous-provider-health.json
+          key: provider-health-${{ github.run_id }}
+          restore-keys: provider-health-
       - name: Probe configured external providers
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
@@ -143,6 +154,23 @@ jobs:
           --concurrency 6
           --skip-registry
           --json provider-health.json
+      # Red here means "something that was working stopped working today".
+      # A known, persistent failure exits 0 and stays quiet.
+      - name: Report only what changed
+        if: always()
+        run: >
+          python scripts/diff_provider_health.py
+          previous-provider-health.json
+          provider-health.json
+      - name: Save this report as the next run's baseline
+        if: always()
+        run: cp provider-health.json previous-provider-health.json
+      - name: Persist the baseline
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: backend/previous-provider-health.json
+          key: provider-health-${{ github.run_id }}
       - name: Upload the report
         # if: always() — the report is most valuable precisely on the runs
         # where a probe failed.

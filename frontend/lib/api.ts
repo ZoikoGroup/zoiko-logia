@@ -662,6 +662,35 @@ export type PresentationGuide = {
   items: string[];
 };
 
+/**
+ * One visual, described by what it IS rather than how to draw it — so the
+ * renderer for a `kind` can be swapped or lazily loaded without this contract
+ * moving. Carries no values: those live in the dataset it names, which is what
+ * makes it impossible for a visual to introduce a number the answer did not
+ * already support.
+ *
+ * Emitted by the backend today and deliberately not yet rendered — `charts`,
+ * `metrics` and `guides` remain the rendered contract. Reading `blocks` is the
+ * migration, and keeping both means it happens on this side's own schedule
+ * rather than as a coordinated break. Mirrors `VisualBlock` in
+ * backend/app/orchestration/schemas.py.
+ */
+export type VisualBlock = {
+  block_id: string;
+  kind: "metric" | "bar" | "line" | "area" | "donut" | "table" | "text";
+  title: string;
+  dataset_id: string;
+  /** Hash of the dataset's data — a cache key, and an audit reproducibility check. */
+  dataset_hash: string;
+  citations: string[];
+  /** Always present. A renderer failure must degrade to the truth, not an empty box. */
+  text_fallback: string;
+  /** Why no chart was produced ("mixed_units", "too_many_rows", …). */
+  reasons: string[];
+  /** Set when rows were dropped to fit a rendering bound. */
+  truncated_from?: number | null;
+};
+
 export type AnswerPresentation = {
   layout: "concise" | "descriptive" | "comparison" | "step_by_step" | "data_visualization" | "calculation";
   table_count: number;
@@ -671,6 +700,7 @@ export type AnswerPresentation = {
   guides: PresentationGuide[];
   sections: string[];
   follow_up_questions: string[];
+  blocks?: VisualBlock[];
 };
 
 export type ComposedAnswer = {
@@ -910,6 +940,65 @@ export type UploadResponse = {
   jurisdiction: string;
   file_path: string;
 };
+
+// ── Authoritative live sources ──────────────────────────────────────────
+
+export type ProviderHealth = {
+  provider_key: string;
+  display_name: string;
+  status: string;
+  integration_type: string;
+  jurisdiction: string;
+  authority_rank: number;
+  last_successful_sync: string | null;
+  last_content_hash: string | null;
+  freshness_sla_seconds: number | null;
+  age_seconds: number | null;
+  freshness: "fresh" | "stale" | "unknown" | "unmonitored";
+};
+
+export async function getProviderHealth(token: string): Promise<ProviderHealth[]> {
+  const res = await authedFetch("/live-sources/health", token);
+  return res.json();
+}
+
+export type EvidenceRecord = {
+  provider_key: string;
+  record_id: string;
+  record_type: string;
+  title: string;
+  summary: string;
+  jurisdiction: string;
+  published_at: string | null;
+  effective_at: string | null;
+  source_url: string;
+};
+
+export type EvidenceSearchResponse = {
+  provider_key: string;
+  query: string;
+  records: EvidenceRecord[];
+  fetched_at: string;
+};
+
+export async function listEvidenceProviders(token: string): Promise<string[]> {
+  const res = await authedFetch("/live-sources/evidence/providers", token);
+  return res.json();
+}
+
+export async function searchEvidence(
+  token: string,
+  providerKey: string,
+  query: string,
+  pageSize = 10,
+): Promise<EvidenceSearchResponse> {
+  const res = await authedFetch("/live-sources/evidence/search", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider_key: providerKey, query, page_size: pageSize }),
+  });
+  return res.json();
+}
 
 export async function uploadDocument(token: string, file: File): Promise<UploadResponse> {
   const form = new FormData();
