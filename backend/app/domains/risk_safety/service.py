@@ -79,6 +79,7 @@ def evaluate(request: ClassifyRequest, db: Optional[Session] = None) -> SafetyDe
         privacy_class=request.privacy_class,
         tenant_policy_conflict=request.tenant_policy_conflict,
         tool_required=request.tool_required,
+        history=request.history,
     )
     return _finalize(request, result, db)
 

@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time
 from dataclasses import asdict, dataclass, replace
 from functools import lru_cache
 
-from app.domains.risk_safety import llm_classifier
+from app.domains.risk_safety import classifier_metrics, llm_classifier
 from app.domains.risk_safety.query_signals import analyze as analyze_query_signals
 
 
@@ -78,6 +79,13 @@ class QueryUnderstanding:
     source: str
     latency_ms: float
     version: str = QUERY_UNDERSTANDING_VERSION
+    # "none" | "compositional" | "comparative" | "chronological" — the reader's
+    # presentation intent, which the data cannot supply. Never a chart type:
+    # the kind is chosen from the dataset's shape (orchestration/dataset.py),
+    # and this only breaks a tie the data leaves open. "none" on the
+    # deterministic path, so a query that never reached the classifier lets
+    # the data decide alone.
+    presentation_hint: str = "none"
 
     def audit_payload(self) -> dict:
         payload = asdict(self)
@@ -160,6 +168,73 @@ def understand_fast(query: str, jurisdiction: str = "") -> QueryUnderstanding:
     )
 
 
+_DEFAULT_REMOTE_TIMEOUT_SECONDS = 3.0
+
+
+def _remote_timeout() -> float:
+    """Budget for the pre-retrieval classification call.
+
+    Raised from 1.25s, which was too tight for the configured providers to
+    win reliably — a hosted model answering a 19-field strict-JSON schema
+    behind a long system prompt rarely returns inside it, so the semantic
+    rewrite silently never arrived while the post-bundle risk path paid the
+    full cost anyway.
+
+    Timing out here is cheap, which is what makes a larger budget safe to
+    spend: asyncio.wait_for cannot cancel the thread, so the request runs to
+    completion and its result lands in llm_classifier's cache under the same
+    key the post-bundle risk call uses. A timeout costs this request its
+    rewrite, never the risk verdict.
+
+    Clamped to the classifier's own per-attempt budget: asking to wait
+    longer than the client will ever take is a bound that can never bind.
+    """
+    configured = max(0.1, _env_float("QUERY_UNDERSTANDING_REMOTE_TIMEOUT_SECONDS",
+                                     _DEFAULT_REMOTE_TIMEOUT_SECONDS))
+    return min(configured, llm_classifier.risk_classifier_timeout())
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+# Words that invert or restrict what a query is asking for. Dropping one
+# does not degrade a rewrite, it reverses its meaning — "which leases are NOT
+# in scope of IFRS 16" and "which leases are in scope of IFRS 16" are
+# opposite questions that retrieve the same documents and support opposite
+# answers. The numeric guard below already protects "IFRS 16" and "2026";
+# nothing protected these, even though the failure is worse: a lost number
+# usually produces visibly irrelevant results, while a lost negation
+# produces confidently relevant results for the wrong question.
+#
+# Deliberately restricted to inversion and restriction. Ordinary content
+# words are not listed, because requiring every one of them to survive would
+# forbid the paraphrasing this rewrite exists to do.
+# Stems, not literal words: a rewrite legitimately changes the inflection
+# ("excluding" -> "excluded from scope"), and matching only the exact form
+# would reject correct rewrites while claiming to catch dropped negations.
+# `n['’]t` is separate because \b does not fall where the apostrophe does, so
+# "doesn't" would otherwise register no negation at all.
+_SCOPE_PATTERN = re.compile(
+    r"(?:"
+    r"\b(?:not|no|never|neither|nor|without|unless|only|solely)\b"
+    r"|\bexclu\w*\b"           # exclude(d/s) / excluding / exclusion / exclusive(ly)
+    r"|\bexcept\w*\b"          # except / excepted / excepting / exception
+    r"|\b(?:other|apart)\s+(?:than|from)\b"
+    r"|\b(?:rather\s+than|instead\s+of)\b"
+    r"|n['’]t\b"
+    r")",
+    re.I,
+)
+
+
+def _restricts_scope(text: str) -> bool:
+    return bool(_SCOPE_PATTERN.search(text))
+
+
 def _safe_remote_retrieval_query(original: str, proposed: str, jurisdiction: str) -> str:
     proposed = re.sub(r"\s+", " ", proposed).strip()
     if len(proposed) < 8:
@@ -169,6 +244,11 @@ def _safe_remote_retrieval_query(original: str, proposed: str, jurisdiction: str
     original_numbers = set(re.findall(r"\b\d[\d,./%-]*\b", original))
     proposed_numbers = set(re.findall(r"\b\d[\d,./%-]*\b", proposed))
     if not original_numbers.issubset(proposed_numbers):
+        return _safe_retrieval_query(original, jurisdiction)
+    # A negation may be rephrased ("not in scope" -> "excluded from scope"),
+    # so this requires only that SOME inversion survives, not the same word.
+    # Losing every one of them is what must never pass.
+    if _restricts_scope(original) and not _restricts_scope(proposed):
         return _safe_retrieval_query(original, jurisdiction)
     if jurisdiction and jurisdiction.lower() not in proposed.lower():
         proposed = f"{proposed} Jurisdiction: {jurisdiction}"
@@ -181,34 +261,44 @@ async def understand(
     jurisdiction: str = "",
     mode: str = "Workflow",
     privacy_class: str = "NONE",
+    history: tuple[str, ...] | list[str] = (),
 ) -> QueryUnderstanding:
     """Return fast understanding, using one bounded remote fallback only for uncertainty."""
     fast = understand_fast(query, jurisdiction)
+    classifier_mode = llm_classifier.configured_mode()
     if (
-        fast.confidence >= 0.65
-        or llm_classifier.configured_mode() != "fallback"
+        (fast.confidence >= 0.65 and classifier_mode != "primary")
+        or classifier_mode not in {"fallback", "primary"}
         or privacy_class != "NONE"
     ):
+        classifier_metrics.record_understanding("not_consulted")
         return fast
 
     started = time.perf_counter()
     try:
-        timeout = max(0.1, float(__import__("os").getenv(
-            "QUERY_UNDERSTANDING_REMOTE_TIMEOUT_SECONDS", "1.25",
-        )))
+        timeout = _remote_timeout()
         remote = await asyncio.wait_for(
             asyncio.to_thread(
                 llm_classifier.classify,
                 query,
                 jurisdiction=jurisdiction,
                 mode=mode,
+                history=history,
             ),
             timeout=timeout,
         )
     except (TimeoutError, ValueError):
+        # Asked, and the budget expired first. Distinct from "never asked":
+        # this one says the timeout is too tight for the configured model.
+        classifier_metrics.record_understanding("timed_out")
         return replace(fast, latency_ms=(time.perf_counter() - started) * 1000)
     if remote is None:
+        # Asked, and the provider returned nothing usable — a missing key, a
+        # bad model name, or an outage.
+        classifier_metrics.record_understanding("provider_failed")
         return replace(fast, latency_ms=(time.perf_counter() - started) * 1000)
+
+    classifier_metrics.record_understanding("semantic_applied")
 
     return QueryUnderstanding(
         primary_intent=remote.intent or fast.primary_intent,
@@ -225,6 +315,7 @@ async def understand(
         confidence=remote.confidence,
         source="semantic_fallback",
         latency_ms=(time.perf_counter() - started) * 1000,
+        presentation_hint=remote.presentation_hint,
     )
 
 

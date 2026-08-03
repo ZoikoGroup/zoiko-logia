@@ -32,7 +32,18 @@ class SanctionsEntry(BaseModel):
 # no-match — because "we found nothing" is only meaningful alongside the
 # method that found nothing, and the catalogue requires the matching method
 # to be part of the screening record.
-MatchMethod = Literal["exact_primary_name", "exact_alias", "fuzzy_name", "no_match"]
+MatchMethod = Literal[
+    # An identifier match is listed first because it is the strongest thing
+    # this screening can produce: a passport or registration number
+    # identifies a party, where a name merely describes one. Name matching
+    # alone cannot tell two people who share a name apart, which is exactly
+    # the case where acting on an unreviewed match harms the wrong person.
+    "exact_identifier",
+    "exact_primary_name",
+    "exact_alias",
+    "fuzzy_name",
+    "no_match",
+]
 
 
 class SanctionsMatch(BaseModel):
@@ -40,10 +51,14 @@ class SanctionsMatch(BaseModel):
     method: MatchMethod
     # 1.0 for an exact normalised-name hit; the similarity ratio otherwise.
     score: float = Field(ge=0.0, le=1.0)
-    # Which stored name actually matched — for an alias or fuzzy hit this is
-    # not the primary name, and a reviewer needs to see the string that
-    # triggered the candidate.
+    # Which stored value actually matched — for an alias, fuzzy or
+    # identifier hit this is not the primary name, and a reviewer needs to
+    # see the string that triggered the candidate.
     matched_name: str
+    # Set only for method="exact_identifier": the identifier as published on
+    # the listing, so the record states what was compared rather than
+    # implying a name match.
+    matched_identifier: str | None = None
 
 
 class SanctionsSnapshot(BaseModel):

@@ -63,6 +63,53 @@ def _tokens(value: str) -> frozenset[str]:
     return frozenset(_normal(value).split())
 
 
+def _identifier_key(value: str) -> str:
+    """Comparable form of an identifier: alphanumerics only, uppercased.
+
+    Authorities publish the same passport number as "P1234567",
+    "p 1234 567" and "No. P-1234567", so a literal comparison finds none of
+    them. Everything non-alphanumeric is discarded, including the "Passport:"
+    label this codebase prefixes when it stores them.
+    """
+    return "".join(ch for ch in value.upper() if ch.isalnum())
+
+
+# Below this length an "identifier" is too generic to assert identity — a
+# 3-character token will collide with fragments of unrelated numbers and
+# produce confident false matches on the one signal a reviewer trusts most.
+_MIN_IDENTIFIER_LENGTH = 5
+
+# Tie-break order when two candidates score equally, strongest first.
+_METHOD_ORDER = {"exact_identifier": 0, "exact_primary_name": 1, "exact_alias": 2, "fuzzy_name": 3}
+
+# The label this codebase prefixes onto stored identifiers
+# (connectors/sanctions_feeds.py's _labelled_identifier). Stripped before
+# comparison so "Passport: P123" matches a query of "P123" — and so a query
+# of "PASSPORT" cannot match every passport on the list.
+_IDENTIFIER_LABELS = ("passport", "national id", "registration", "id")
+
+
+def _identifier_candidates(value: str) -> set[str]:
+    """Every comparable form of one published identifier.
+
+    Stored identifiers look like "Passport: P1234567 (RU)" — a label, the
+    number, and an issuing-country qualifier. A user supplies some subset of
+    that: "P1234567", "passport P1234567", "P-1234567". Indexing all four
+    combinations of label-present/absent and qualifier-present/absent means
+    any of those forms finds the listing, instead of only a byte-identical
+    repetition of how the authority happened to print it.
+    """
+    without_qualifier = re.sub(r"\([^)]*\)", " ", value)
+    forms = {_identifier_key(value), _identifier_key(without_qualifier)}
+    for text in (value, without_qualifier):
+        lowered = text.lower()
+        for label in _IDENTIFIER_LABELS:
+            prefix = f"{label}:"
+            if lowered.startswith(prefix):
+                forms.add(_identifier_key(text[len(prefix):]))
+    return {form for form in forms if len(form) >= _MIN_IDENTIFIER_LENGTH}
+
+
 @dataclass(frozen=True)
 class _NameIndex:
     """Per-snapshot lookup structures, built once and reused for every
@@ -82,6 +129,8 @@ class _NameIndex:
     by_exact_name: dict[str, tuple[int, ...]]
     # normalised token -> indices of entries with that token in any name
     by_token: dict[str, tuple[int, ...]]
+    # comparable identifier -> (entry index, identifier as published)
+    by_identifier: dict[str, tuple[int, str]]
 
 
 _indexes: dict[str, _NameIndex] = {}
@@ -90,6 +139,7 @@ _indexes: dict[str, _NameIndex] = {}
 def _build_index(snapshot: SanctionsSnapshot) -> _NameIndex:
     exact: dict[str, list[int]] = {}
     tokens: dict[str, list[int]] = {}
+    identifiers: dict[str, tuple[int, str]] = {}
     for position, entry in enumerate(snapshot.entries):
         for name in entry.searchable_names:
             normalized = _normal(name)
@@ -98,10 +148,17 @@ def _build_index(snapshot: SanctionsSnapshot) -> _NameIndex:
             exact.setdefault(normalized, []).append(position)
             for token in normalized.split():
                 tokens.setdefault(token, []).append(position)
+        for published in entry.identifiers:
+            for form in _identifier_candidates(published):
+                # First listing wins on a collision: two entries publishing
+                # the same identifier is a data-quality problem in the
+                # source, not something to resolve by guessing here.
+                identifiers.setdefault(form, (position, published))
     return _NameIndex(
         entries=tuple(snapshot.entries),
         by_exact_name={key: tuple(dict.fromkeys(value)) for key, value in exact.items()},
         by_token={key: tuple(dict.fromkeys(value)) for key, value in tokens.items()},
+        by_identifier=identifiers,
     )
 
 
@@ -176,13 +233,19 @@ async def refresh_snapshot(provider_key: str) -> SanctionsSnapshot:
 
 
 async def find_candidates(
-    provider_key: str, name: str, *, limit: int = 10,
+    provider_key: str, name: str, *, identifiers: tuple[str, ...] = (), limit: int = 10,
 ) -> tuple[SanctionsSnapshot, list[SanctionsMatch]]:
-    """Screening candidates for `name`, best first.
+    """Screening candidates for `name`, and for any `identifiers` supplied,
+    best first.
 
     Never a decision. Every result is a candidate for human review, and the
     caller is responsible for saying so — a returned match is not a finding
     of sanctions exposure, and an empty list is not clearance.
+
+    An identifier match is reported even when the name does not match at
+    all: a passport or registration number identifies a party regardless of
+    how their name was transliterated, and suppressing that because the name
+    differs would discard the strongest signal the list carries.
     """
     target = _normal(name)
     if len(target) < 3:
@@ -192,6 +255,21 @@ async def find_candidates(
     threshold = settings.SANCTIONS_FUZZY_MATCH_THRESHOLD
     target_tokens = frozenset(target.split())
 
+    identifier_matches: dict[int, SanctionsMatch] = {}
+    for supplied in identifiers:
+        key = _identifier_key(supplied)
+        if len(key) < _MIN_IDENTIFIER_LENGTH:
+            continue
+        hit = index.by_identifier.get(key)
+        if hit is None:
+            continue
+        position, published = hit
+        entry = index.entries[position]
+        identifier_matches[position] = SanctionsMatch(
+            entry=entry, method="exact_identifier", score=1.0,
+            matched_name=entry.primary_name, matched_identifier=published,
+        )
+
     considered = set(index.by_exact_name.get(target, ()))
     for token in target_tokens:
         considered.update(index.by_token.get(token, ()))
@@ -200,10 +278,15 @@ async def find_candidates(
         match for match in (
             _match_for_entry(index.entries[position], target, target_tokens, threshold)
             for position in sorted(considered)
+            # An entry already matched on an identifier keeps that stronger
+            # method rather than being downgraded to a name match.
+            if position not in identifier_matches
         ) if match is not None
     ]
-    # Exact before fuzzy at equal score, then by record id so a repeat
-    # screening of the same name against the same list version returns the
-    # same order — an audit record that reshuffles is not reproducible.
-    matches.sort(key=lambda item: (-item.score, item.method != "exact_primary_name", item.entry.record_id))
+    matches.extend(identifier_matches.values())
+    # Identifier before exact name before alias before fuzzy at equal score,
+    # then by record id, so a repeat screening of the same input against the
+    # same list version returns the same order — an audit record that
+    # reshuffles is not reproducible.
+    matches.sort(key=lambda item: (-item.score, _METHOD_ORDER.get(item.method, 9), item.entry.record_id))
     return snapshot, matches[:limit]

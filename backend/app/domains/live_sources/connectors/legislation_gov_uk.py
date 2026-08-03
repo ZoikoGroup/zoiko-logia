@@ -26,16 +26,36 @@ def _parse_delays(raw: str) -> tuple[float, ...]:
     return tuple(delays)
 
 
+def _is_async_job(response: httpx.Response) -> bool:
+    """Whether a 202 is really "come back shortly" or an edge rejection.
+
+    Measured against the live host: every endpoint on legislation.gov.uk —
+    the search feed, a dated feed, and even a direct document URI — returns
+    202 with `Content-Length: 0`, `Cache-Control: no-store` and
+    `x-cache: Error from cloudfront`. That is CloudFront rejecting the
+    request at the edge, not the origin queueing work, and it never resolves:
+    confirmed by polling for 26 seconds across four attempts.
+
+    The original code (and the catalogue note derived from it) read this as
+    an asynchronous feed build and retried. It cannot succeed, so retrying
+    only spends a user's latency budget to arrive at the same answer. A
+    genuine async 202 says so — with a Retry-After, a Location, or a body —
+    and those are still polled.
+    """
+    if response.headers.get("Retry-After") or response.headers.get("Location"):
+        return True
+    if response.content:
+        return True
+    return "error from cloudfront" not in response.headers.get("x-cache", "").lower()
+
+
 class LegislationGovUKConnector(EvidenceSearchConnector):
     provider_key = "legislation_gov_uk"
 
     def __init__(self, base_url: str, retry_delays: str | None = None) -> None:
         self.base_url = base_url.rstrip("/")
-        # The published ladder was (0.5, 1.0) — 1.5 seconds total, against a
-        # host observed to sit on HTTP 202 well past that, which is why every
-        # live probe gave up before the feed was ever built. Configurable and
-        # longer by default; still bounded, since a caller waiting on this is
-        # a user waiting on an answer.
+        # Only used for a 202 that actually looks like a queued job; an edge
+        # rejection is terminal and is never polled (see _is_async_job).
         configured = retry_delays if retry_delays is not None else get_settings().LEGISLATION_GOV_UK_RETRY_DELAYS
         self.retry_delays = _parse_delays(configured) or (0.5, 1.0, 2.0, 4.0)
 
@@ -50,13 +70,21 @@ class LegislationGovUKConnector(EvidenceSearchConnector):
         url = f"{self.base_url}/all/data.feed"
         params = {"title": intent.query, "results-count": intent.page_size}
         response = await self._get(url, params, timeout=timeout, client=client)
+        waited = 0.0
         for delay in self.retry_delays:
             if response.status_code != 202:
                 break
+            if not _is_async_job(response):
+                raise ValueError(
+                    "legislation.gov.uk returned an empty HTTP 202 from its CDN edge "
+                    "(x-cache: Error from cloudfront). This is a rejection, not a queued "
+                    "feed build, and does not resolve on retry — the request is not "
+                    "reaching the origin from this network."
+                )
             await asyncio.sleep(delay)
+            waited += delay
             response = await self._get(url, params, timeout=timeout, client=client)
         if response.status_code == 202:
-            waited = sum(self.retry_delays)
             raise ValueError(
                 f"legislation.gov.uk was still preparing the Atom feed after {waited:g}s; "
                 "raise LEGISLATION_GOV_UK_RETRY_DELAYS or retry later"

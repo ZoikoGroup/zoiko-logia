@@ -10,6 +10,12 @@ from __future__ import annotations
 import re
 from decimal import Decimal, InvalidOperation
 
+from app.orchestration.dataset import (
+    Dataset,
+    VisualDecision,
+    build_dataset,
+    select_visual_kind,
+)
 from app.orchestration.format_intent import is_decision_judgment_query
 from app.orchestration.schemas import (
     AnswerPresentation,
@@ -17,6 +23,7 @@ from app.orchestration.schemas import (
     PresentationGuide,
     PresentationMetric,
     PresentationSeries,
+    VisualBlock,
 )
 
 
@@ -80,11 +87,26 @@ _SHARE_HEADER_PATTERN = re.compile(r"\b(share|proportion|composition|breakdown|p
 _MAX_DONUT_SLICES = 6
 
 
+# Unit symbol/code as it appears in an answer table -> the ISO code the
+# chart contract carries. Extracted from inline so it has one home, and so
+# the test suite can hold it against PresentationChart.currency_code's own
+# Literal: those were two independent lists of permitted currencies, and
+# adding a symbol here without widening the Literal makes pydantic reject
+# the chart inside _chart_from_table — which has no try/except, and neither
+# does build_answer_presentation, so it would surface as a failed ANSWER
+# rather than a missing chart.
+_CURRENCY_BY_UNIT: dict[str, str] = {
+    "$": "USD", "USD": "USD",
+    "£": "GBP", "GBP": "GBP",
+    "€": "EUR", "EUR": "EUR",
+}
+
+
 def _chart_display_metadata(
     *, unit: str, category_label: str, title: str,
     categories: list[str], series: list[PresentationSeries],
 ) -> dict:
-    currency_code = {"$": "USD", "USD": "USD", "£": "GBP", "GBP": "GBP", "€": "EUR", "EUR": "EUR"}.get(unit)
+    currency_code = _CURRENCY_BY_UNIT.get(unit)
     value_format = "percent" if unit == "%" else "currency" if currency_code else "number"
     values = [Decimal(value) for item in series for value in item.values]
     decimal_places = 0 if values and all(value == value.to_integral_value() for value in values) else 2
@@ -257,6 +279,26 @@ def _is_donut_candidate(
     )
 
 
+def _composition_hint(headers: list[str], query: str) -> str:
+    """The tie-break the DATA cannot supply.
+
+    Whether two non-negative values are a composition or a magnitude
+    comparison is a fact about the reader's intent, not about the numbers, so
+    it reaches dataset.select_visual_kind() as a hint rather than being
+    inferred. Percentage units need no hint — those ARE a property of the
+    data, and the dataset layer reads them itself.
+
+    Two sources feed the same hint and the dataset layer does not care which:
+    this local share/composition wording, and the classifier's own
+    presentation_hint once that is enabled.
+    """
+    if _SHARE_HEADER_PATTERN.search(query) or any(
+        _SHARE_HEADER_PATTERN.search(header) for header in headers
+    ):
+        return "compositional"
+    return ""
+
+
 def _cap_donut_slices(
     categories: list[str], series: PresentationSeries,
 ) -> tuple[list[str], list[PresentationSeries]]:
@@ -275,8 +317,57 @@ def _cap_donut_slices(
     return capped_categories, [PresentationSeries(name=series.name, values=capped_values)]
 
 
+def _dataset_for_table(
+    headers: list[str], rows: list[list[str]], position: int,
+) -> Dataset:
+    """Every table becomes an addressable dataset, whether or not it charts.
+
+    Built even for tables that will only ever render as text: the dataset is
+    what makes a *declined* visual explainable, and its content hash is what
+    makes the outcome reproducible.
+    """
+    return build_dataset(
+        dataset_id=f"answer-dataset-{position + 1}",
+        title=headers[0] if headers else f"Table {position + 1}",
+        headers=headers,
+        rows=rows,
+        source_kind="answer_table",
+    )
+
+
+def _visual_block(
+    dataset: Dataset, decision: VisualDecision, position: int, citations: list[str],
+) -> VisualBlock:
+    return VisualBlock(
+        block_id=f"answer-block-{position + 1}",
+        kind=decision.kind,
+        title=dataset.title,
+        dataset_id=dataset.dataset_id,
+        dataset_hash=dataset.content_hash,
+        citations=list(citations),
+        text_fallback=_dataset_text_fallback(dataset),
+        reasons=list(decision.reasons),
+        truncated_from=dataset.total_row_count if dataset.is_truncated else None,
+    )
+
+
+def _dataset_text_fallback(dataset: Dataset) -> str:
+    """The dataset as a sentence, for when no renderer runs at all.
+
+    Deliberately not the Markdown table: that is already in the answer text a
+    reader can see. This is the one-line description a screen reader or a
+    failed render needs in its place.
+    """
+    columns = ", ".join(column.name for column in dataset.columns[1:]) or "no measures"
+    return (
+        f"{dataset.title}: {len(dataset.rows)} rows covering {columns}."
+        + (f" Showing {len(dataset.rows)} of {dataset.total_row_count}." if dataset.is_truncated else "")
+    )
+
+
 def _chart_from_table(
     headers: list[str], rows: list[list[str]], position: int, query: str,
+    decision: VisualDecision | None = None,
 ) -> PresentationChart | None:
     if not 2 <= len(rows) <= 12 or len(headers) > 6:
         return None
@@ -318,7 +409,14 @@ def _chart_from_table(
     title = headers[0] if len(series) == 1 else f"{headers[0]} comparison"
     is_temporal = bool(re.search(r"\b(period|quarter|month|year|date)\b", headers[0], re.I))
 
-    if _is_donut_candidate(headers, series, unit, is_temporal, query):
+    # The dataset layer's verdict wins where it has one, so the emitted chart
+    # and the emitted block can never disagree about the kind — two places
+    # deciding the same thing is how they drift.
+    wants_donut = (
+        decision.kind == "donut" if decision is not None and decision.renders_chart
+        else _is_donut_candidate(headers, series, unit, is_temporal, query)
+    )
+    if wants_donut and len(series) == 1 and not is_temporal:
         donut_categories, donut_series = _cap_donut_slices(categories, series[0])
         return PresentationChart(
             chart_id=f"answer-table-{position + 1}",
@@ -333,7 +431,15 @@ def _chart_from_table(
             ),
         )
 
-    if is_temporal:
+    # The dataset layer decides between area/line/bar from the same shape
+    # facts this function computes locally. Its verdict is preferred when
+    # available so there is one place that maps shape to kind; the local
+    # derivation stays as the fallback for a table the dataset layer declined
+    # for a reason this builder does not model (variance-column filtering
+    # above can leave a plottable series set where the raw dataset had none).
+    if decision is not None and decision.kind in {"area", "line", "bar"}:
+        chart_type = decision.kind
+    elif is_temporal:
         chart_type = "area" if len(series) == 1 else "line"
     else:
         chart_type = "bar"
@@ -371,7 +477,13 @@ def _metric_from_table(headers: list[str], rows: list[list[str]], position: int)
     return None
 
 
-def build_answer_presentation(query: str, answer_text: str) -> AnswerPresentation:
+def build_answer_presentation(
+    query: str,
+    answer_text: str,
+    *,
+    presentation_hint: str = "",
+    citation_refs: list[str] | None = None,
+) -> AnswerPresentation:
     tables = _extract_tables(answer_text)
     is_calculation = bool(_CALCULATION_ANSWER.search(answer_text))
     is_missing_input = bool(_MISSING_INPUT_ANSWER.search(answer_text))
@@ -380,10 +492,30 @@ def build_answer_presentation(query: str, answer_text: str) -> AnswerPresentatio
         for headers, _rows in tables
     )
     allow_automatic_chart = bool(_VISUAL_REQUEST.search(query)) or (temporal_table and not is_calculation)
+
+    # One dataset per table, and one recorded decision per dataset — built
+    # before any chart so that a declined visual carries the reason it was
+    # declined rather than simply being absent.
+    datasets = [
+        _dataset_for_table(headers, rows, position)
+        for position, (headers, rows) in enumerate(tables)
+    ]
+    decisions = [
+        select_visual_kind(
+            dataset,
+            # The classifier's hint, or the local share/composition wording —
+            # whichever is present. The dataset layer does not distinguish.
+            presentation_hint=presentation_hint or _composition_hint(list(headers), query),
+            allow_chart=allow_automatic_chart,
+        )
+        for dataset, (headers, _rows) in zip(datasets, tables)
+    ]
+
     charts = [
         chart
         for position, (headers, rows) in enumerate(tables)
-        if allow_automatic_chart and (chart := _chart_from_table(headers, rows, position, query)) is not None
+        if allow_automatic_chart
+        and (chart := _chart_from_table(headers, rows, position, query, decisions[position])) is not None
     ]
     # Not gated by allow_automatic_chart — a table that reduces to one row is
     # already shown as accessible text; rendering it as a stat tile too is a
@@ -432,6 +564,16 @@ def build_answer_presentation(query: str, answer_text: str) -> AnswerPresentatio
             title=guide_title,
             items=ordered_items,
         ))
+    # Populated but not yet rendered — see VisualBlock's docstring. Emitting
+    # it now means the frontend can migrate on its own schedule instead of
+    # this becoming a coordinated breaking change, and it means the recorded
+    # decisions are observable in the API response today.
+    refs = list(citation_refs or [])
+    blocks = [
+        _visual_block(dataset, decision, position, refs)
+        for position, (dataset, decision) in enumerate(zip(datasets, decisions))
+    ]
+
     return AnswerPresentation(
         layout=layout,
         table_count=len(tables),
@@ -445,4 +587,5 @@ def build_answer_presentation(query: str, answer_text: str) -> AnswerPresentatio
             else []
         ),
         follow_up_questions=[] if is_missing_input else _follow_ups(layout, query),
+        blocks=blocks,
     )

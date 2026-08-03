@@ -85,7 +85,53 @@ _COUNTRY_ALIASES: dict[str, tuple[str, str]] = {
     "britain": ("GB", "United Kingdom"),
     "great britain": ("GB", "United Kingdom"),
     "blighty": ("GB", "United Kingdom"),
+    # The jurisdiction dropdown's "EU" used to resolve to nothing, which meant
+    # selecting it disabled live data entirely — a real reported case: "What is
+    # the ECB deposit facility rate?" with EU selected returned "the retrieved
+    # context does not mention the ECB deposit facility rate", because the
+    # explicit-selection rule below correctly refuses to fall back to
+    # query-text matching, and there was nothing for EU to match.
+    #
+    # EURO_AREA rather than a country: it is the scope the ECB's own series are
+    # published for, and it is already the key _COUNTRY_PROVIDER_OVERRIDES uses
+    # for them. Providers that have no euro-area aggregate simply return None
+    # for it, which is the correct outcome — see _WORLD_BANK_COUNTRY_CODES for
+    # the one translation this needs.
+    "eu": ("EURO_AREA", "Euro area"),
+    "euro area": ("EURO_AREA", "Euro area"),
+    "eurozone": ("EURO_AREA", "Euro area"),
 }
+
+# World Bank uses its own aggregate codes, not this module's internal country
+# codes — same shape as _OECD_REF_AREA_BY_COUNTRY_CODE and
+# _IMF_ISO3_BY_COUNTRY_CODE below, which already translate for their own
+# providers. "XC" confirmed live against
+# api.worldbank.org/v2/country/XC/indicator/FP.CPI.TOTL.ZG (returns "Euro
+# area"); EMU and EUU both error on that endpoint.
+#
+# Anything absent here passes its country_code through unchanged, so adding a
+# country to _COUNTRY_ALIASES needs an entry here only when World Bank spells
+# it differently.
+_WORLD_BANK_COUNTRY_CODES: dict[str, str] = {"EURO_AREA": "XC"}
+
+
+def _world_bank_intent(
+    indicator_code: str, indicator_label: str, country_code: str, country_label: str,
+) -> LiveDataIntent:
+    """Single constructor for every World Bank intent in this module.
+
+    Centralised because the country-code translation has to apply on all five
+    paths that can reach World Bank (keyword match, semantic fallback's three
+    branches, and the LLM-guess resolver). Building one of them inline is how
+    an untranslated code reaches the API and 502s.
+    """
+    return LiveDataIntent(
+        provider_key="world_bank",
+        indicator_code=indicator_code,
+        indicator_label=indicator_label,
+        country_code=_WORLD_BANK_COUNTRY_CODES.get(country_code, country_code),
+        country_label=country_label,
+    )
 
 # Precompiled word-boundary patterns for scanning free-text queries — a
 # plain "alias in lowered" substring check (the original implementation)
@@ -315,16 +361,42 @@ def _screening_name(query: str) -> str | None:
     return None
 
 
+# Identifiers a screening query may supply alongside a name. Anchored to an
+# explicit label so an arbitrary alphanumeric token in a sentence is never
+# screened as a passport number — a false identifier match is the most
+# damaging result this path can produce, because an identifier hit is the one
+# signal a reviewer treats as identifying rather than describing a party.
+_SCREENING_IDENTIFIER_PATTERN = re.compile(
+    r"\b(?:passport|national\s+id(?:entification)?(?:\s+number)?|id\s+number|"
+    r"registration\s+(?:number|no\.?)|company\s+number|reg\.?\s*no\.?)"
+    r"\s*[:#]?\s*([A-Z0-9][A-Z0-9\-/\s]{3,20}[A-Z0-9])",
+    re.IGNORECASE,
+)
+
+
+def _screening_identifiers(query: str) -> tuple[str, ...]:
+    found = (match.group(1).strip() for match in _SCREENING_IDENTIFIER_PATTERN.finditer(query))
+    return tuple(dict.fromkeys(value for value in found if value))
+
+
 def _match_sanctions_intent(query: str) -> LiveDataIntent | None:
     lowered = query.lower()
     name = _screening_name(query)
     if not name:
         return None
+    identifiers = _screening_identifiers(query)
     for aliases, provider, country_code, country_label in _SANCTIONS_PROVIDERS:
         if any(alias in lowered for alias in aliases):
-            return LiveDataIntent(provider_key=provider, indicator_code="exact_name_screening",
-                                  indicator_label="Official sanctions name screening", country_code=country_code,
-                                  country_label=country_label, company_query=name)
+            return LiveDataIntent(
+                provider_key=provider,
+                # Reflects what will actually be compared, so the audit
+                # record does not claim a name-only screen when identifiers
+                # were supplied.
+                indicator_code="name_and_identifier_screening" if identifiers else "exact_name_screening",
+                indicator_label="Official sanctions screening", country_code=country_code,
+                country_label=country_label, company_query=name,
+                screening_identifiers=identifiers,
+            )
     return None
 
 
@@ -728,13 +800,7 @@ def detect_live_data_intent(query: str, jurisdiction: str = "") -> LiveDataInten
     )
     if indicator is not None:
         indicator_code, indicator_label = indicator
-        return LiveDataIntent(
-            provider_key="world_bank",
-            indicator_code=indicator_code,
-            indicator_label=indicator_label,
-            country_code=country_code,
-            country_label=country_label,
-        )
+        return _world_bank_intent(indicator_code, indicator_label, country_code, country_label)
 
     # Semantic fallback if keyword check did not match
     semantic_match = _semantic_indicator_match(query, country_code, country_label)
@@ -901,10 +967,7 @@ def resolve_live_data_intent_from_llm_guess(
     )
     if generic is not None:
         code, label = generic
-        return LiveDataIntent(
-            provider_key="world_bank", indicator_code=code, indicator_label=label,
-            country_code=country_code, country_label=country_label,
-        )
+        return _world_bank_intent(code, label, country_code, country_label)
     return None
 
 
@@ -990,20 +1053,16 @@ def _semantic_indicator_match(query: str, country_code: str, country_label: str)
                 )
                 
         if best_code == "CP00":
-            return LiveDataIntent(
-                provider_key="world_bank", indicator_code="FP.CPI.TOTL.ZG", indicator_label="Inflation, consumer prices (annual %)",
-                country_code=country_code, country_label=country_label
-            )
+            return _world_bank_intent(
+                "FP.CPI.TOTL.ZG", "Inflation, consumer prices (annual %)",
+                country_code, country_label)
         if best_code == "A--T":
-            return LiveDataIntent(
-                provider_key="world_bank", indicator_code="NY.GDP.MKTP.CD", indicator_label="GDP (current US$)",
-                country_code=country_code, country_label=country_label
-            )
+            return _world_bank_intent(
+                "NY.GDP.MKTP.CD", "GDP (current US$)", country_code, country_label)
         if best_code == "UNEMPLOYMENT_RATE":
-            return LiveDataIntent(
-                provider_key="world_bank", indicator_code="SL.UEM.TOTL.ZS", indicator_label="Unemployment (% of total labor force)",
-                country_code=country_code, country_label=country_label
-            )
+            return _world_bank_intent(
+                "SL.UEM.TOTL.ZS", "Unemployment (% of total labor force)",
+                country_code, country_label)
             
         return None
     except Exception:

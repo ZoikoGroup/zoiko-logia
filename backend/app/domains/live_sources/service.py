@@ -14,6 +14,8 @@ answers that don't need it).
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy import select
@@ -226,10 +228,13 @@ def make_live_source_id(normalized: NormalizedResponse) -> str:
     return base
 
 
-def to_source_summary(normalized: NormalizedResponse) -> SourceSummary:
+def to_source_summary(normalized: NormalizedResponse, *, is_stale: bool = False) -> SourceSummary:
     return SourceSummary(
         id=make_live_source_id(normalized),
-        title=normalized.citation_title,
+        # A stale figure must not be cited as though it were current. The
+        # title is what a reader sees next to the number, so the qualifier
+        # belongs there and not only in the model's context.
+        title=f"{normalized.citation_title} (cached — may not be current)" if is_stale else normalized.citation_title,
         category=_PROVIDER_CATEGORIES.get(normalized.provider_key, "macro-economic-data"),
         jurisdiction_scope=normalized.country_label,
         version_label=normalized.observation_period,
@@ -270,34 +275,96 @@ def _format_value(value) -> str:
     return f"{value:.2f}"
 
 
-# provider_key -> (authority_rank, jurisdiction). Registry ranks change only
-# when the catalogue is re-seeded, so this is cached for the process
-# lifetime. Governance decisions that must take effect immediately —
-# DISABLED status, a restricted licence — are NOT cached here: the licence
-# gate reads the live row on every request for those (license_gate.py's
-# _fetch_live_provider_fields). This cache only affects citation ordering.
-_provider_authority_cache: dict[str, tuple[int, str]] = {}
+@dataclass(frozen=True)
+class ProviderGovernance:
+    """The catalogue facts about a provider that shape an answer rather than
+    gate it. Eligibility (DISABLED, restricted licence, tenant boundary) is
+    deliberately NOT here — the licence gate reads those from the live row on
+    every request, and caching them would delay a governance decision."""
+    authority_rank: int = UNKNOWN_RANK
+    jurisdiction: str = ""
+    freshness_sla_seconds: int | None = None
 
 
-async def get_provider_authority(db: AsyncSession, provider_key: str) -> tuple[int, str]:
-    cached = _provider_authority_cache.get(provider_key)
+_UNKNOWN_GOVERNANCE = ProviderGovernance()
+
+# Cached for the process lifetime: these change only when the catalogue is
+# re-seeded. See ProviderGovernance for what deliberately isn't cached.
+_provider_governance_cache: dict[str, ProviderGovernance] = {}
+
+
+async def get_provider_governance(db: AsyncSession, provider_key: str) -> ProviderGovernance:
+    cached = _provider_governance_cache.get(provider_key)
     if cached is not None:
         return cached
     try:
         result = await db.execute(
-            select(LiveSourceProvider.authority_rank, LiveSourceProvider.jurisdiction)
-            .where(LiveSourceProvider.provider_key == provider_key)
+            select(
+                LiveSourceProvider.authority_rank,
+                LiveSourceProvider.jurisdiction,
+                LiveSourceProvider.freshness_sla_seconds,
+            ).where(LiveSourceProvider.provider_key == provider_key)
         )
         row = result.first()
     except Exception:
         # An unreadable registry must not decide an answer's authority
-        # ordering either way — fall back to "unknown", the weak default.
-        return UNKNOWN_RANK, ""
+        # ordering or staleness either way — fall back to "unknown", which
+        # is the weak default for rank and "no SLA" for freshness.
+        return _UNKNOWN_GOVERNANCE
     if row is None:
-        return UNKNOWN_RANK, ""
-    resolved = (int(row[0] or UNKNOWN_RANK), str(row[1] or ""))
-    _provider_authority_cache[provider_key] = resolved
+        return _UNKNOWN_GOVERNANCE
+    resolved = ProviderGovernance(
+        authority_rank=int(row[0] or UNKNOWN_RANK),
+        jurisdiction=str(row[1] or ""),
+        freshness_sla_seconds=int(row[2]) if row[2] else None,
+    )
+    _provider_governance_cache[provider_key] = resolved
     return resolved
+
+
+def _age_seconds(as_of: str) -> int | None:
+    """Seconds since a connector's own fetch timestamp. Returns None when the
+    timestamp is unparseable rather than guessing an age, since an invented
+    age would drive a staleness claim nobody can check."""
+    try:
+        stamped = datetime.fromisoformat(as_of)
+    except (TypeError, ValueError):
+        return None
+    if stamped.tzinfo is None:
+        stamped = stamped.replace(tzinfo=timezone.utc)
+    return int((datetime.now(timezone.utc) - stamped).total_seconds())
+
+
+def evaluate_freshness(
+    normalized: NormalizedResponse, governance: ProviderGovernance,
+) -> tuple[bool, int | None]:
+    """(is_stale, age_seconds) for a figure about to be presented.
+
+    Judged against the provider's own declared SLA, not a global constant:
+    a World Bank annual series 200 days old is normal and an ECB reference
+    rate 200 days old is broken.
+
+    This matters because of what happens on failure elsewhere in this module:
+    when every retry fails, fetch_live_data falls back to a stale cache entry
+    and returns succeeded=True, cache_hit=True — which orchestration audits
+    as an ordinary cache hit. Without this check, a source dead for six weeks
+    presents its last known figure as current, indefinitely, and neither the
+    answer nor the audit trail says otherwise.
+    """
+    age = _age_seconds(normalized.as_of)
+    if age is None or not governance.freshness_sla_seconds:
+        return False, age
+    return age > governance.freshness_sla_seconds, age
+
+
+def _humanise_age(age_seconds: int) -> str:
+    days = age_seconds // 86400
+    if days >= 1:
+        return f"{days} day{'s' if days != 1 else ''}"
+    hours = age_seconds // 3600
+    if hours >= 1:
+        return f"{hours} hour{'s' if hours != 1 else ''}"
+    return f"{max(age_seconds // 60, 1)} minutes"
 
 
 def to_synthetic_chunk(
@@ -306,6 +373,8 @@ def to_synthetic_chunk(
     *,
     authority_rank: int = UNKNOWN_RANK,
     authority_jurisdiction: str = "",
+    is_stale: bool = False,
+    age_seconds: int | None = None,
 ) -> dict:
     """Shape-matches the dict app.domains.rag.retrieval.retrieve_documents()
     returns for a real vector chunk, so it can ride through the existing
@@ -317,6 +386,19 @@ def to_synthetic_chunk(
         f"({normalized.observation_period}): {_format_value(normalized.value)}"
         + (f" {normalized.unit}" if normalized.unit else "")
     )
+    if is_stale:
+        # Stated IN the context, not bolted on afterwards, for the same
+        # reason _format_value() formats the number at this layer: the model
+        # is instructed to report what the retrieved source says and not to
+        # alter it. A caveat added after composition is a caveat the model
+        # never saw and may contradict.
+        aged = f", last refreshed {_humanise_age(age_seconds)} ago" if age_seconds else ""
+        text += (
+            f" [NOT CURRENT: this figure comes from a cached copy{aged}, which is older"
+            " than this source's own publication cadence. The live source could not be"
+            " reached. State clearly that the figure may be out of date and must be"
+            " confirmed against the official source before it is relied on.]"
+        )
     return {
         "text": text,
         "node_id": summary.id,
@@ -333,5 +415,7 @@ def to_synthetic_chunk(
             "authority_rank": authority_rank,
             "authority_jurisdiction": authority_jurisdiction,
             "effective_date": normalized.observation_period,
+            "is_stale": is_stale,
+            "age_seconds": age_seconds,
         },
     }

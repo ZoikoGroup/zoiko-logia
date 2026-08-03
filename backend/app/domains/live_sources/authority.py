@@ -57,6 +57,49 @@ class AuthorityCandidate:
     payload: object = field(default=None, compare=False)
 
 
+# Governed documents carry source_library.models.Source's three-value
+# authority_level and a free-text source_class, not a 1-6 rank. Deriving the
+# rank from what is already recorded means the hierarchy applies to the
+# existing corpus immediately, with no schema change and no re-ingestion —
+# which matters because until now every document defaulted to the weakest
+# rank, so a document-only bundle fell back to retrieval order and the
+# hierarchy never applied at all.
+#
+# Keys are matched case-insensitively as substrings of source_class, since
+# these values are assembled by metadata_service.extract_metadata() and by
+# hand in the seed scripts, and are not a closed enum.
+_DOCUMENT_CLASS_RANKS: tuple[tuple[str, int], ...] = (
+    ("statutory authority", 1),
+    ("legislation", 1),
+    ("regulator", 2),
+    ("standard setter", 2),
+    ("official filing", 3),
+    ("registry", 3),
+    ("professional guidelines", 5),
+    ("syllabus", 5),
+    ("proprietary document", 6),
+    ("first-party request data", 6),
+    # "External Reference" is deliberately absent. It is
+    # metadata_service.extract_metadata()'s baseline default, so it carries
+    # no information — matching on it would discard an explicit
+    # authority_level someone actually set and rank the source weakest.
+)
+
+# Fallback when source_class says nothing recognised. "primary" is the
+# licence gate's strongest value but is far coarser than the catalogue's
+# rank 1, so it maps to 2 (regulator/standard setter) rather than claiming
+# the enacted-legislation tier a document has not evidenced.
+_DOCUMENT_LEVEL_RANKS = {"primary": 2, "secondary": 5, "internal": 6}
+
+
+def rank_for_document(authority_level: str, source_class: str = "") -> int:
+    lowered = (source_class or "").lower()
+    for marker, rank in _DOCUMENT_CLASS_RANKS:
+        if marker in lowered:
+            return rank
+    return _DOCUMENT_LEVEL_RANKS.get((authority_level or "").lower(), UNKNOWN_RANK)
+
+
 def _jurisdiction_penalty(candidate: AuthorityCandidate, query_jurisdiction: str) -> int:
     """0 when this source is authoritative for the jurisdiction asked about,
     1 for a non-domestic scope, 2 for a different country's domestic source.

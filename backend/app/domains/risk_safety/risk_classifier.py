@@ -15,7 +15,7 @@ from typing import Optional
 from app.core.config import get_settings
 from app.domains.risk_safety.models import RiskLevel, RestrictedSubClass, Route
 from app.domains.risk_safety.routing_matrix import ROUTING_MATRIX_VERSION
-from app.domains.risk_safety import llm_classifier
+from app.domains.risk_safety import classifier_metrics, llm_classifier
 from app.domains.risk_safety.query_signals import analyze as analyze_query_signals
 
 settings = get_settings()
@@ -353,7 +353,7 @@ def pre_screen(
         )
 
     has_advice_signal = any(pat.search(query) for pat in _ADVICE_SIGNALS)
-    if has_advice_signal and not jurisdiction:
+    if llm_classifier.configured_mode() != "primary" and has_advice_signal and not jurisdiction:
         rules_applied.append("l1-advice-insufficient-context")
         return _decision(query_id, False, RiskLevel.RESTRICTED, Route.CLARIFICATION, 0.95, rules_applied, ["Missing jurisdiction for advice."], restricted_sub_class=RestrictedSubClass.ADVICE_INSUFFICIENT_CONTEXT)
 
@@ -371,19 +371,23 @@ def classify(
     tenant_policy_conflict: bool = False,
     tool_required: bool = False,
     query_id: Optional[str] = None,
+    history: tuple[str, ...] | list[str] = (),
 ) -> dict:
     """L2 ML semantic scoring + source-confidence routing. Assumes pre_screen()
     has already been called for this query and returned None (passed)."""
     query_id = query_id or _new_query_id()
     rules_applied: list[str] = []
     limitations: list[str] = []
-    has_advice_signal = any(pat.search(query) for pat in _ADVICE_SIGNALS)
+    llm_mode = llm_classifier.configured_mode()
+    semantic_primary = llm_mode == "primary"
+    has_advice_signal = False if semantic_primary else any(pat.search(query) for pat in _ADVICE_SIGNALS)
     stripped_query = _strip_wrapping_quotes(query)
     is_ambiguous = any(pat.search(stripped_query) for pat in _AMBIGUOUS_PATTERNS)
     signals = analyze_query_signals(query, jurisdiction=jurisdiction, ambiguous=is_ambiguous)
     # The structured analyzer recognizes recommendation language beyond the
     # original narrow pattern bank. It can raise, never lower, the advice floor.
-    has_advice_signal = has_advice_signal or signals.personalized_advice
+    if not semantic_primary:
+        has_advice_signal = has_advice_signal or signals.personalized_advice
     base_metadata: dict = {"signals": signals.to_dict()}
 
     if _SANCTIONS_SCREENING_PATTERN.search(query):
@@ -394,7 +398,7 @@ def classify(
             requires_human_review=True, classification_metadata=base_metadata,
         )
 
-    if is_ambiguous:
+    if is_ambiguous and not semantic_primary:
         rules_applied.append("l2-ambiguous-context")
         return _decision(
             query_id, False, RiskLevel.MEDIUM, Route.CLARIFICATION, 1.0,
@@ -403,13 +407,13 @@ def classify(
         )
 
     deterministic_label: Optional[str] = None
-    if not has_advice_signal and any(pat.search(stripped_query) for pat in _NAVIGATION_PATTERNS):
+    if not semantic_primary and not has_advice_signal and any(pat.search(stripped_query) for pat in _NAVIGATION_PATTERNS):
         deterministic_label = "casual conversation or navigational help"
         rules_applied.append("l2-deterministic-navigation")
-    elif not has_advice_signal and any(pat.search(query) for pat in _FACTUAL_LOOKUP_PATTERNS):
+    elif not semantic_primary and not has_advice_signal and any(pat.search(query) for pat in _FACTUAL_LOOKUP_PATTERNS):
         deterministic_label = "factual lookup"
         rules_applied.append("l2-deterministic-factual-lookup")
-    elif not has_advice_signal and any(pat.search(stripped_query) for pat in _EDUCATIONAL_PATTERNS):
+    elif not semantic_primary and not has_advice_signal and any(pat.search(stripped_query) for pat in _EDUCATIONAL_PATTERNS):
         deterministic_label = "general educational concept"
         rules_applied.append("l2-deterministic-educational")
 
@@ -419,10 +423,35 @@ def classify(
     top_label = "unknown"
     local_classifier_failed = False
     
-    pipeline_instance = None if deterministic_label else _get_classifier_pipeline()
+    llm_result = None
+    if semantic_primary and privacy_class == "NONE":
+        llm_result = llm_classifier.classify(
+            query, jurisdiction=jurisdiction, mode=mode, history=history,
+        )
+        rules_applied.append(
+            "l2-llm-primary-applied" if llm_result else "l2-llm-primary-unavailable"
+        )
+        classifier_metrics.record_classification(
+            "llm_applied" if llm_result else "llm_unavailable"
+        )
+    elif semantic_primary:
+        rules_applied.append("l2-llm-primary-skipped-sensitive")
+        classifier_metrics.record_classification("llm_skipped_sensitive")
+
+    pipeline_instance = None if deterministic_label or semantic_primary else _get_classifier_pipeline()
     if deterministic_label:
         top_label = deterministic_label
         confidence = 1.0
+    elif llm_result:
+        top_label = {
+            "RESTRICTED": "restricted harmful intent",
+            "HIGH": "regulated tax or legal advice",
+            "MEDIUM": "accounting or audit opinion",
+            "LOW": "general educational concept",
+            "ZERO": "casual conversation or navigational help",
+        }[llm_result.risk_level]
+        confidence = llm_result.confidence
+        has_advice_signal = llm_result.advice_signal
     elif pipeline_instance:
         try:
             result = pipeline_instance(query, CANDIDATE_LABELS)
@@ -440,19 +469,30 @@ def classify(
     # top_label="unknown". Since 0.5 exceeded the configured threshold, that
     # silently flowed to ZERO. Unknown and provider failure now always take
     # the conservative path unless a validated LLM fallback resolves them.
-    llm_mode = llm_classifier.configured_mode()
     predicted_risk = _risk_for_label(top_label, mode)
     threshold = _confidence_threshold(predicted_risk)
     local_uncertain = local_classifier_failed or confidence < threshold
-    llm_result = None
     external_llm_allowed = privacy_class == "NONE"
-    if not deterministic_label and llm_mode in {"fallback", "shadow"} and (
+    if not semantic_primary and not deterministic_label and llm_mode in {"fallback", "shadow"} and (
         local_uncertain or llm_mode == "shadow"
     ) and external_llm_allowed:
-        llm_result = llm_classifier.classify(query, jurisdiction=jurisdiction, mode=mode)
+        llm_result = llm_classifier.classify(
+            query, jurisdiction=jurisdiction, mode=mode, history=history,
+        )
         rules_applied.append("l3-llm-classifier-applied" if llm_result else "l3-llm-classifier-unavailable")
+        classifier_metrics.record_classification(
+            "llm_applied" if llm_result else "llm_unavailable"
+        )
     elif not deterministic_label and llm_mode in {"fallback", "shadow"} and not external_llm_allowed:
         rules_applied.append("l3-llm-classifier-skipped-sensitive")
+        classifier_metrics.record_classification("llm_skipped_sensitive")
+    elif deterministic_label:
+        # A navigation/factual/educational pattern settled it with no call.
+        # Counted so the "how often does the LLM actually fire" denominator is
+        # the real query mix, not just the queries that reached L3.
+        classifier_metrics.record_classification("deterministic")
+    elif pipeline_instance is not None and not local_classifier_failed:
+        classifier_metrics.record_classification("local_model")
 
     classification_metadata: dict = dict(base_metadata)
     classification_metadata["calibration"] = {
@@ -473,11 +513,21 @@ def classify(
             "response_format": llm_result.response_format,
             "requested_depth": llm_result.requested_depth,
             "requires_current_sources": llm_result.requires_current_sources,
+            "resolved_query": llm_result.resolved_query,
+            "secondary_intents": list(llm_result.secondary_intents),
+            "situation_type": llm_result.situation_type,
+            "subject_type": llm_result.subject_type,
+            "actionability": llm_result.actionability,
+            "professional_consequences": list(llm_result.professional_consequences),
+            "harm_intent": llm_result.harm_intent,
+            "clarification_question": llm_result.clarification_question,
+            "provider": llm_result.provider,
             "shadow": llm_mode == "shadow" and not local_uncertain,
         }
 
     if llm_result and local_uncertain:
         top_label = {
+            "RESTRICTED": "restricted harmful intent",
             "HIGH": "regulated tax or legal advice",
             "MEDIUM": "accounting or audit opinion",
             "LOW": "general educational concept",
@@ -494,6 +544,17 @@ def classify(
             "threshold": threshold,
             "score": confidence,
         }
+
+    if llm_result and llm_result.risk_level == "RESTRICTED" and not local_uncertain:
+        rules_applied.append("l2-llm-restricted-intent")
+        return _decision(
+            query_id, False, RiskLevel.RESTRICTED, Route.HUMAN_REVIEW,
+            confidence, rules_applied,
+            ["The contextual classifier identified intent to facilitate prohibited conduct."],
+            requires_human_review=True,
+            restricted_sub_class=RestrictedSubClass.CONTROL_BYPASS,
+            classification_metadata=classification_metadata,
+        )
 
     # Wireframe Rule: CLASSIFICATION_UNCERTAIN threshold
     if local_uncertain:
@@ -625,6 +686,8 @@ def _professional_boundary_requirements(risk_level: RiskLevel) -> tuple[bool, bo
 
 
 def _risk_for_label(label: str, mode: str) -> RiskLevel:
+    if label == "restricted harmful intent":
+        return RiskLevel.RESTRICTED
     if label == "regulated tax or legal advice":
         return RiskLevel.HIGH
     if label == "accounting or audit opinion":
@@ -640,6 +703,7 @@ def _confidence_threshold(risk_level: RiskLevel) -> float:
         RiskLevel.LOW: settings.CLASSIFIER_LOW_CONFIDENCE_THRESHOLD,
         RiskLevel.MEDIUM: settings.CLASSIFIER_MEDIUM_CONFIDENCE_THRESHOLD,
         RiskLevel.HIGH: settings.CLASSIFIER_HIGH_CONFIDENCE_THRESHOLD,
+        RiskLevel.RESTRICTED: settings.CLASSIFIER_HIGH_CONFIDENCE_THRESHOLD,
     }[risk_level]
 
 

@@ -261,6 +261,45 @@ class PresentationGuide(BaseModel):
     items: List[str] = Field(default_factory=list)
 
 
+class VisualBlock(BaseModel):
+    """One visual, described by what it IS rather than by how to draw it.
+
+    Renderer-agnostic on purpose: the client maps `kind` to a component, so a
+    renderer can be swapped or lazily loaded without the contract moving. The
+    block never carries chart values — those live in the dataset it names, so
+    a block cannot introduce a number the answer did not already support.
+
+    Additive alongside `layout`/`charts`/`metrics`, which remain the rendered
+    contract. This is the shape the client migrates to; until then it is
+    populated and unread, so the migration can happen on the frontend's own
+    schedule rather than as a coordinated break.
+    """
+    block_id: str
+    kind: Literal["metric", "bar", "line", "area", "donut", "table", "text"]
+    title: str = ""
+    # Identifies the dataset a renderer must resolve values from.
+    dataset_id: str = ""
+    # Hash of the dataset's DATA. Two purposes: a cache key that hits when the
+    # same figures recur, and a reproducibility check — an audit export can be
+    # compared against what the user was actually shown.
+    dataset_hash: str = ""
+    # Answer-level [REF-N] ids supporting this block. Answer-level, not
+    # row-level: markdown parsing cannot attribute a single table row to a
+    # single citation. Row-level provenance is carried by the Dataset and
+    # becomes populated when composition emits blocks directly.
+    citations: List[str] = Field(default_factory=list)
+    # Always present. A renderer failure must degrade to the truth rather than
+    # to an empty box, so this is never optional in practice.
+    text_fallback: str = ""
+    # Why a chart was not produced ("mixed_units", "too_many_rows",
+    # "rows_without_citation"). A missing visual should be explainable rather
+    # than mysterious.
+    reasons: List[str] = Field(default_factory=list)
+    # Set when rows were dropped to fit a rendering bound, so "20 of 340 rows"
+    # can be stated instead of silently shown.
+    truncated_from: Optional[int] = None
+
+
 class AnswerPresentation(BaseModel):
     layout: Literal["concise", "descriptive", "comparison", "step_by_step", "data_visualization", "calculation"] = "concise"
     table_count: int = 0
@@ -270,6 +309,7 @@ class AnswerPresentation(BaseModel):
     guides: List[PresentationGuide] = Field(default_factory=list)
     sections: List[str] = Field(default_factory=list)
     follow_up_questions: List[str] = Field(default_factory=list)
+    blocks: List[VisualBlock] = Field(default_factory=list)
 
 
 class ComposedAnswer(BaseModel):

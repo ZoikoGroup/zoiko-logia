@@ -23,6 +23,12 @@ class LiveDataIntent(BaseModel):
     # as the financial concept to fetch (e.g. "Assets" for SEC EDGAR,
     # "profile" for Companies House) rather than a World Bank-style code.
     company_query: Optional[str] = None
+    # Sanctions screening only — passport/national-ID/registration numbers
+    # the query supplied alongside the name. Separate from company_query
+    # because they are compared against different fields on a listing and
+    # produce a different, stronger match method (see
+    # sanctions_service.find_candidates).
+    screening_identifiers: tuple[str, ...] = ()
     # Latency optimization (Tier 1): True only for classifier.py's
     # implies_country=True rules ("bank rate", "fed funds rate" — narrow,
     # unambiguous economic-data phrases). orchestration/service.py uses

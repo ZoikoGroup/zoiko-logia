@@ -470,3 +470,46 @@ def test_evidence_search_does_not_leak_upstream_detail_on_an_unexpected_fault(mo
                                json={"provider_key": "ted", "query": "audit services"})
     assert response.status_code == 502
     assert "secret-key" not in response.text
+
+
+# ── Jurisdiction dropdown coverage ───────────────────────────────────────
+
+
+def test_selecting_eu_reaches_the_ecb_instead_of_disabling_live_data():
+    """Reported case: "What is the ECB deposit facility rate?" with EU
+    selected answered "the retrieved context does not mention the ECB deposit
+    facility rate". The explicit-selection rule correctly refuses to fall back
+    to query-text matching, and EU resolved to nothing — so selecting the
+    ECB's own jurisdiction disabled the ECB."""
+    for query, expected_code in (
+        ("What is the ECB deposit facility rate?", "FM:D.U2.EUR.4F.KR.DFR.LEV"),
+        ("What is the ECB main refinancing rate?", "FM:D.U2.EUR.4F.KR.MRR_FR.LEV"),
+    ):
+        intent = detect_live_data_intent(query, "EU")
+        assert intent is not None, query
+        assert (intent.provider_key, intent.indicator_code) == ("ecb", expected_code)
+        assert intent.country_code == "EURO_AREA"
+
+
+def test_a_generic_eu_indicator_uses_world_banks_own_aggregate_code():
+    # World Bank spells the euro area "XC"; EMU and EUU both error on its
+    # indicator endpoint, and EURO_AREA is this module's internal code.
+    intent = detect_live_data_intent("What is the inflation rate?", "EU")
+    assert (intent.provider_key, intent.country_code) == ("world_bank", "XC")
+
+
+def test_the_world_bank_translation_applies_on_the_semantic_path_too():
+    # Five code paths can reach World Bank; an untranslated code on any of
+    # them reaches the API and errors.
+    from app.domains.live_sources.classifier import _world_bank_intent
+    assert _world_bank_intent("X", "x", "EURO_AREA", "Euro area").country_code == "XC"
+    # A country World Bank spells the same way passes through untouched.
+    assert _world_bank_intent("X", "x", "IN", "India").country_code == "IN"
+
+
+def test_an_unmapped_jurisdiction_still_refuses_to_substitute_a_country():
+    # UAE has no confirmed live source: api.worldbank.org returns HTTP 502 for
+    # ARE and AE while serving IN and XC, so no provider is verified to hold
+    # the data. None is the correct answer — never another country's figure.
+    assert detect_live_data_intent("What is the current UAE inflation rate?", "UAE") is None
+    assert detect_live_data_intent("What is the Bank Rate?", "UAE") is None

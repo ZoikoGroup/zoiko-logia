@@ -21,9 +21,14 @@ _REVIEW_NOTICE = (
 
 def _describe(match: SanctionsMatch) -> str:
     entry = match.entry
+    matched_on = (
+        f'matched on identifier: "{match.matched_identifier}"'
+        if match.method == "exact_identifier" and match.matched_identifier
+        else f'matched on name: "{match.matched_name}"'
+    )
     parts = [
         f"Candidate: {entry.primary_name}",
-        f'matched on: "{match.matched_name}"',
+        matched_on,
         f"matching method: {match.method} (score {match.score:g})",
         f"type: {entry.entity_type}",
         f"programs: {', '.join(entry.programs) or 'not stated'}",
@@ -45,17 +50,28 @@ def _describe(match: SanctionsMatch) -> str:
     return "; ".join(parts)
 
 
-def _value_text(name: str, snapshot: SanctionsSnapshot, matches: list[SanctionsMatch]) -> str:
+def _value_text(
+    name: str, snapshot: SanctionsSnapshot, matches: list[SanctionsMatch],
+    identifiers: tuple[str, ...] = (),
+) -> str:
     provenance = f"List version {snapshot.list_version}, synchronised {snapshot.fetched_at}."
+    # The record must state what was compared, not just what was found. A
+    # name-only screen and a name-plus-passport screen carry very different
+    # weight, and an unqualified "no match" implies the stronger one.
+    scope = (
+        f"Screened on name and {len(identifiers)} supplied identifier"
+        f"{'s' if len(identifiers) != 1 else ''}."
+        if identifiers else "Screened on name only; no identifiers were supplied."
+    )
     if not matches:
         return (
-            f'No name candidate was found for "{name}" using exact and fuzzy name matching. '
-            f"{provenance} An absent name match is not sanctions clearance: identifiers, "
-            "transliterations, and non-Latin scripts are not covered by name matching alone."
+            f'No candidate was found for "{name}". {scope} {provenance} '
+            "This is not sanctions clearance: transliterations and non-Latin scripts are "
+            "not covered by name matching, and any identifier not supplied was not checked."
         )
     described = " | ".join(_describe(match) for match in matches)
     plural = "candidate" if len(matches) == 1 else "candidates"
-    return f"{len(matches)} screening {plural}. {provenance} {described}. {_REVIEW_NOTICE}"
+    return f"{len(matches)} screening {plural}. {scope} {provenance} {described}. {_REVIEW_NOTICE}"
 
 
 class SanctionsLiveConnector(LiveSourceConnector):
@@ -67,13 +83,15 @@ class SanctionsLiveConnector(LiveSourceConnector):
         # Bounded on purpose: a screening answer a person is meant to read
         # and act on degrades past a handful of candidates. The unbounded
         # result set belongs to a review tool, not to an answer.
-        snapshot, matches = await find_candidates(self.provider_key, name, limit=5)
+        snapshot, matches = await find_candidates(
+            self.provider_key, name, identifiers=intent.screening_identifiers, limit=5,
+        )
         record_id = matches[0].entry.record_id if matches else f"no-match-{snapshot.list_version}"
         return NormalizedResponse(
             provider_key=self.provider_key, indicator_code=record_id,
-            indicator_label=f"{self.display_name} name screening",
+            indicator_label=f"{self.display_name} screening",
             country_code=intent.country_code, country_label=intent.country_label,
-            value=_value_text(name, snapshot, matches), unit="",
+            value=_value_text(name, snapshot, matches, intent.screening_identifiers), unit="",
             observation_period=snapshot.fetched_at, as_of=snapshot.fetched_at,
             source_url=self.landing_url,
             citation_title=f"{self.display_name} — official snapshot, list version {snapshot.list_version}",

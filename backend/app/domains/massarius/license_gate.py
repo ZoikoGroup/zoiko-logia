@@ -35,11 +35,12 @@ and how each source may be displayed.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domains.live_sources.authority import rank_for_document
 from app.domains.massarius.errors import LicenceDenied
 from app.domains.source_library.models import Source
 from app.domains.live_sources.models import LiveSourceProvider
@@ -67,6 +68,12 @@ class LicenceCheckResult:
     # disabling the ceiling check for absolute-certainty language.
     authority_level: str = "primary"
     licence_state: str = "permitted"
+    # source_id -> the catalogue's 1-6 authority rank, for eligible document
+    # sources. Derived from the Source rows this module already reads for
+    # eligibility, so it costs no extra query — and without it the authority
+    # hierarchy (live_sources/authority.py) has nothing to rank a
+    # document-only bundle by, and silently falls back to retrieval order.
+    authority_ranks: dict[str, int] = field(default_factory=dict)
 
 
 async def _fetch_licence_fields(db: AsyncSession, source_ids: list[str]) -> dict[str, Source]:
@@ -132,6 +139,7 @@ async def check_eligibility(
     excluded: list[SourceSummary] = []
     exclusion_reasons: dict[str, str] = {}
     display_states: dict[str, SourceDisplayState] = {}
+    authority_ranks: dict[str, int] = {}
     eligible_authority_levels: list[str] = []
     eligible_licence_states: list[str] = []
 
@@ -159,6 +167,7 @@ async def check_eligibility(
 
         eligible.append(source)
         display_states[source.id] = _resolve_display_state(record)
+        authority_ranks[source.id] = rank_for_document(record.authority_level, record.source_class)
         eligible_authority_levels.append(record.authority_level)
         eligible_licence_states.append(record.licence_state)
 
@@ -187,6 +196,9 @@ async def check_eligibility(
 
         eligible.append(source)
         display_states[source.id] = _resolve_live_display_state(record)
+        # The registry already holds the catalogue's rank for a live source,
+        # so it is read rather than derived.
+        authority_ranks[source.id] = record.authority_rank
         eligible_authority_levels.append(record.authority_level)
         eligible_licence_states.append(record.licence_state)
 
@@ -197,6 +209,7 @@ async def check_eligibility(
         display_states=display_states,
         authority_level=_weakest_authority_level(eligible_authority_levels),
         licence_state=_weakest_licence_state(eligible_licence_states),
+        authority_ranks=authority_ranks,
     )
 
 
@@ -229,13 +242,49 @@ def _resolve_display_state(record: Source) -> SourceDisplayState:
     return "show"
 
 
+# The catalogue records display_permission per provider using the same
+# vocabulary Checkpoint B resolves to. Anything outside it is ignored rather
+# than trusted: a typo in a registry row must not silently widen exposure.
+_VALID_DISPLAY_PERMISSIONS: frozenset[str] = frozenset(
+    {"show", "summarise", "internal_reasoning_only"}
+)
+
+
 def _resolve_live_display_state(record: LiveSourceProvider) -> SourceDisplayState:
-    """Checkpoint B for live sources — same vocabulary as _resolve_display_state."""
+    """Checkpoint B for live sources — same vocabulary as _resolve_display_state.
+
+    An explicit display_permission on the registry row wins over the derived
+    state. That column existed but nothing read it, so a provider recorded as
+    restricted-display was still shown in full — governance that is recorded
+    but unenforced reads as a control while behaving as none.
+
+    It can only ever tighten, never widen: a row asking for "show" on a
+    source whose licence is unknown is still held at
+    internal_reasoning_only, because a licence state is a legal fact and a
+    display preference is not permission to override it.
+    """
+    derived = _derive_live_display_state(record)
+    override = (record.display_permission or "").strip().lower()
+    if override not in _VALID_DISPLAY_PERMISSIONS:
+        return derived
+    return _stricter_display_state(derived, override)  # type: ignore[arg-type]
+
+
+def _derive_live_display_state(record: LiveSourceProvider) -> SourceDisplayState:
     if record.licence_state == "unknown":
         return "internal_reasoning_only"
     if record.authority_level == "internal":
         return "summarise"
     return "show"
+
+
+# Most-restrictive-governs, the same convention _weakest_authority_level
+# above already follows.
+_DISPLAY_RESTRICTION_RANK = {"show": 0, "summarise": 1, "internal_reasoning_only": 2}
+
+
+def _stricter_display_state(left: SourceDisplayState, right: SourceDisplayState) -> SourceDisplayState:
+    return max(left, right, key=lambda state: _DISPLAY_RESTRICTION_RANK.get(state, 2))
 
 
 def raise_if_denied(result: LicenceCheckResult, *, checkpoint: str = "A") -> None:

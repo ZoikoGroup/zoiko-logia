@@ -256,30 +256,37 @@ _LIVE_DATA_NODE_PREFIXES = (
 )
 
 
-def _controlling_chunk_index(reranked: list, query_jurisdiction: str) -> int:
+def _controlling_chunk_index(
+    reranked: list, query_jurisdiction: str, document_ranks: dict[str, int] | None = None,
+) -> int:
     """Index of the chunk that should be cited as controlling authority.
 
-    Falls back to 0 — the previous behaviour — when nothing in the bundle
-    carries a recorded authority rank, which is the normal case for a bundle
-    of ingested documents. A live source seeded from the catalogue does
-    carry one, so where a bundle mixes the two, the authority hierarchy
-    decides rather than retrieval order. See live_sources/authority.py for
-    the ranks and the jurisdiction rule.
+    Ranks come from two places, neither of which costs an extra query: a
+    live source carries its catalogue rank on the chunk itself, and a
+    document's rank is derived by the licence gate from the Source row it
+    already reads for eligibility (`document_ranks`, keyed by source_id).
+
+    Falls back to 0 — the previous behaviour — only when nothing in the
+    bundle has a rank at all. See live_sources/authority.py for the ranks
+    and for why jurisdiction is applied before rank.
     """
     if not reranked:
         return 0
-    candidates = [
-        AuthorityCandidate(
+    ranks = document_ranks or {}
+    candidates = []
+    for index, chunk in enumerate(reranked):
+        metadata = chunk.get("metadata", {}) or {}
+        source_id = str(metadata.get("source_id") or "")
+        rank = metadata.get("authority_rank") or ranks.get(source_id) or AUTHORITY_UNKNOWN_RANK
+        candidates.append(AuthorityCandidate(
             # Zero-padded: source_id is the hierarchy's final tie-break and
             # it compares as a string, so an unpadded "10" would sort before
             # "2" and quietly reorder equally-authoritative chunks.
             source_id=f"{index:04d}",
-            rank=int(chunk.get("metadata", {}).get("authority_rank") or AUTHORITY_UNKNOWN_RANK),
-            jurisdiction=str(chunk.get("metadata", {}).get("authority_jurisdiction") or ""),
-            effective_date=str(chunk.get("metadata", {}).get("effective_date") or ""),
-        )
-        for index, chunk in enumerate(reranked)
-    ]
+            rank=int(rank),
+            jurisdiction=str(metadata.get("authority_jurisdiction") or metadata.get("jurisdiction") or ""),
+            effective_date=str(metadata.get("effective_date") or metadata.get("version") or ""),
+        ))
     if all(candidate.rank == AUTHORITY_UNKNOWN_RANK for candidate in candidates):
         return 0
     best = order_by_authority(candidates, query_jurisdiction=query_jurisdiction)[0]
@@ -1200,6 +1207,7 @@ class KritonMediator:
 
         classify_request = ClassifyRequest(
             query=request.query,
+            history=request.history,
             user_id=actor_id,
             role=role,
             tenant_id=tenant_id,
@@ -2773,6 +2781,7 @@ async def ask_kriton(
         jurisdiction=effective_jurisdiction,
         mode=request.mode,
         privacy_class=request.privacy_class or "NONE",
+        history=request.history,
     )
     retrieval_query = understanding.retrieval_query
     await audit_query_understood(
@@ -2940,6 +2949,13 @@ async def ask_kriton(
 
     live_summary = None
     live_authority: tuple[int, str] = (AUTHORITY_UNKNOWN_RANK, "")
+    live_is_stale = False
+    live_age_seconds: int | None = None
+    # Filled from the licence gate below, which derives it from Source rows
+    # it already reads — see LicenceCheckResult.authority_ranks. Empty here
+    # so the citation layer degrades to retrieval order rather than raising
+    # on any path that never reaches Checkpoint A/B.
+    document_authority_ranks: dict[str, int] = {}
     live_fetch_start = time.monotonic()
     (raw_chunks, query_embedding), live_outcome, security_screen = await asyncio.gather(
         _fetch_raw_chunks(), _fetch_live(), screen_for_security_violation(request.query),
@@ -3038,12 +3054,21 @@ async def ask_kriton(
                     commit=False,
                 )
         if live_outcome.succeeded and live_outcome.normalized:
-            live_summary = live_sources_service.to_source_summary(live_outcome.normalized)
             # Read once here rather than at chunk-build time, so the
             # citation layer never issues a query inside its own loop.
-            live_authority = await live_sources_service.get_provider_authority(
+            live_governance = await live_sources_service.get_provider_governance(
                 db, live_outcome.intent.provider_key
             )
+            # fetch_live_data() reports succeeded=True even when every retry
+            # failed and it fell back to a stale cache entry, so "succeeded"
+            # alone cannot tell a current figure from a preserved one.
+            live_is_stale, live_age_seconds = live_sources_service.evaluate_freshness(
+                live_outcome.normalized, live_governance
+            )
+            live_summary = live_sources_service.to_source_summary(
+                live_outcome.normalized, is_stale=live_is_stale
+            )
+            live_authority = (live_governance.authority_rank, live_governance.jurisdiction)
 
     # ── Governed reference_data sources (ported from KritonMediator, see
     # module note above) — each gated on retrieval_category and/or its own
@@ -3416,6 +3441,7 @@ async def ask_kriton(
         licence_result = await license_gate.check_eligibility(
             db, preliminary_bundle.sources, tenant_id=tenant_id,
         )
+        document_authority_ranks = licence_result.authority_ranks
         await audit_licence_prefilter_completed(
             db, query_id=query_id, correlation_id=correlation_id,
             tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
@@ -3514,6 +3540,7 @@ async def ask_kriton(
 
     classify_request = ClassifyRequest(
         query=request.query,
+        history=request.history,
         user_id=actor_id,
         role=role,
         tenant_id=tenant_id,
@@ -3529,7 +3556,23 @@ async def ask_kriton(
     # is True here regardless of whether it succeeded — the try/except above
     # already ran either way; source_bundle itself may still be None if
     # retrieval failed).
-    decision = massarius_risk_safety.classify_after_bundle(True, classify_request, sync_db)
+    #
+    # Run off the event loop thread. classify_after_bundle() is entirely
+    # synchronous and can block for a long time inside: a HuggingFace
+    # zero-shot inference when ENABLE_ML_CLASSIFIER is on, and — once
+    # RISK_LLM_CLASSIFIER_MODE is anything but "off" — a real HTTPS request
+    # to the classification provider, plus a threading.Event wait when
+    # another request already has the same query in flight. Called directly,
+    # any of those stalls every other request this worker is serving, not
+    # just this one. The dormant KritonMediator sibling above already does
+    # this correctly; the live path did not.
+    #
+    # sync_db is only touched sequentially inside this awaited call, never
+    # concurrently from another thread, so handing it to a worker thread is
+    # safe here for the same reason it is there.
+    decision = await asyncio.to_thread(
+        massarius_risk_safety.classify_after_bundle, True, classify_request, sync_db
+    )
     risk_level = decision.risk_level
 
     await audit_risk_classified(
@@ -3772,6 +3815,7 @@ async def ask_kriton(
                 reranked = [live_sources_service.to_synthetic_chunk(
                     live_outcome.normalized, live_summary,
                     authority_rank=live_authority[0], authority_jurisdiction=live_authority[1],
+                    is_stale=live_is_stale, age_seconds=live_age_seconds,
                 )] + reranked
             context_text, source_refs = build_grounded_context(reranked)
             # Which source is CONTROLLING is an authority question, not a
@@ -3779,7 +3823,9 @@ async def ask_kriton(
             # meant a semantically excellent match to secondary commentary
             # could be cited as controlling over the instrument it was
             # commenting on. See live_sources/authority.py.
-            controlling_index = _controlling_chunk_index(reranked, request.jurisdiction)
+            controlling_index = _controlling_chunk_index(
+                reranked, request.jurisdiction, document_authority_ranks,
+            )
             rag_citations = []
             for i, chunk in enumerate(reranked):
                 # The chunk's real governed source_id (added to ingestion
@@ -4285,7 +4331,14 @@ async def ask_kriton(
         prompt_id=prompt_id,
         prompt_name=prompt_name,
         output_text=final_text,
-        presentation=build_answer_presentation(request.query, final_text),
+        presentation=build_answer_presentation(
+            request.query, final_text,
+            # The reader's presentation intent, from the classifier when it
+            # ran. The visual KIND is still chosen from the dataset's shape;
+            # this only breaks a tie the data leaves open.
+            presentation_hint=understanding.presentation_hint,
+            citation_refs=[citation.ref_id for citation in rag_citations],
+        ),
         calculation_widget=calculation_widget,
     )
 

@@ -193,18 +193,47 @@ def test_classifier_jurisdiction_dropdown_wins_over_conflicting_query_text():
 
 def test_classifier_explicit_unmapped_jurisdiction_returns_none_not_fallback():
     """Regression test for the reported bug: an EXPLICIT jurisdiction
-    selection with no live-data country mapping (UAE/IFRS/EU) must return
-    no live source at all — never fall back to query-text matching or an
-    implied-country shortcut, since both could substitute a country the
-    user never asked for. Selecting 'UAE' and asking 'What is the Bank
-    Rate?' previously fell back to the UK-implied shortcut and silently
-    returned the UK's Bank Rate; it must now return None."""
-    for jurisdiction in ("UAE", "IFRS", "EU"):
+    selection with no live-data country mapping must return no live source at
+    all — never fall back to query-text matching or an implied-country
+    shortcut, since both could substitute a country the user never asked for.
+    Selecting 'UAE' and asking 'What is the Bank Rate?' previously fell back
+    to the UK-implied shortcut and silently returned the UK's Bank Rate; it
+    must now return None.
+
+    'EU' was in this list until it gained a euro-area mapping — see
+    test_classifier_eu_jurisdiction_resolves_to_the_euro_area below, which
+    keeps the same no-substitution guarantee for it. UAE and IFRS remain
+    genuinely unmapped: no provider is confirmed to hold UAE data
+    (api.worldbank.org returns HTTP 502 for ARE and AE while serving IN), and
+    IFRS is a reporting framework rather than a jurisdiction at all."""
+    for jurisdiction in ("UAE", "IFRS"):
         intent = detect_live_data_intent("What is the Bank Rate?", jurisdiction=jurisdiction)
         assert intent is None, f"jurisdiction={jurisdiction!r} should yield no live source, got {intent}"
         intent = detect_live_data_intent("What is inflation?", jurisdiction=jurisdiction)
         assert intent is None, f"jurisdiction={jurisdiction!r} should yield no live source, got {intent}"
     print("test_classifier_explicit_unmapped_jurisdiction_returns_none_not_fallback: PASSED")
+
+
+def test_classifier_eu_jurisdiction_resolves_to_the_euro_area():
+    """Selecting 'EU' used to disable live data entirely, so asking for the
+    ECB's own policy rate with the ECB's own jurisdiction selected returned
+    "the retrieved context does not mention the ECB deposit facility rate".
+
+    The no-substitution guarantee is unchanged: a UK-specific phrase must
+    still not return the UK's figure just because EU is a resolvable
+    selection."""
+    ecb = detect_live_data_intent("What is the ECB deposit facility rate?", jurisdiction="EU")
+    assert ecb is not None and ecb.provider_key == "ecb"
+    assert ecb.country_code == "EURO_AREA"
+
+    # World Bank spells the euro area "XC" — its own aggregate code, not this
+    # module's internal one.
+    inflation = detect_live_data_intent("What is inflation?", jurisdiction="EU")
+    assert inflation is not None and inflation.provider_key == "world_bank"
+    assert inflation.country_code == "XC"
+
+    # "Bank Rate" is UK vocabulary; EU must not inherit the UK's figure.
+    assert detect_live_data_intent("What is the Bank Rate?", jurisdiction="EU") is None
 
 
 def test_classifier_unset_jurisdiction_still_falls_back_to_query_text():

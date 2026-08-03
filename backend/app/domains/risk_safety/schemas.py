@@ -28,6 +28,11 @@ class ClassifyRequest(BaseModel):
     privacy_class: str = Field(default="NONE", description="NONE, PII, MINOR_DATA, TENANT_CONFIDENTIAL, LEGAL_HOLD, SECRETS, PROTECTED_SOURCE")
     tenant_policy_conflict: bool = Field(default=False)
     tool_required: bool = Field(default=False)
+    history: list[str] = Field(
+        default_factory=list,
+        max_length=3,
+        description="Prior user queries, most recent last, for contextual intent resolution",
+    )
 
 
 class SafetyDecision(BaseModel):

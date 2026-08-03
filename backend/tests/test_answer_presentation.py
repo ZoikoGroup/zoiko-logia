@@ -299,3 +299,45 @@ def test_plain_two_item_comparison_is_bar_not_donut():
     )
     assert len(plan.charts) == 1
     assert plan.charts[0].type == "bar"
+
+
+def test_every_recognised_currency_is_permitted_by_the_chart_contract():
+    """_CURRENCY_BY_UNIT and PresentationChart.currency_code's Literal were
+    two independent lists of permitted currencies. Adding a symbol to the map
+    without widening the Literal makes pydantic reject the chart inside
+    _chart_from_table — which has no try/except, and neither does
+    build_answer_presentation — so it surfaces as a failed answer rather than
+    a missing chart.
+    """
+    from typing import get_args, get_type_hints
+
+    from app.orchestration.presentation import _CURRENCY_BY_UNIT
+    from app.orchestration.schemas import PresentationChart
+
+    annotation = get_type_hints(PresentationChart)["currency_code"]
+    # Optional[Literal[...]] -> pull the Literal's members out of the union.
+    permitted = {
+        member
+        for arg in get_args(annotation)
+        for member in get_args(arg)
+        if isinstance(member, str)
+    }
+    unmapped = set(_CURRENCY_BY_UNIT.values()) - permitted
+    assert not unmapped, (
+        f"{sorted(unmapped)} can be produced by _CURRENCY_BY_UNIT but would be "
+        f"rejected by PresentationChart.currency_code (permits {sorted(permitted)})"
+    )
+
+
+def test_a_recognised_currency_symbol_actually_builds_a_chart():
+    # The guard above is static; this proves the round trip for each symbol.
+    from app.orchestration.presentation import _CURRENCY_BY_UNIT
+
+    for symbol in ("$", "£", "€"):
+        answer = (
+            f"| Segment | Revenue |\n| --- | --- |\n"
+            f"| Retail | {symbol}60,000 |\n| Wholesale | {symbol}40,000 |\n"
+        )
+        presentation = build_answer_presentation("chart revenue by segment", answer)
+        assert presentation.charts, f"{symbol} produced no chart"
+        assert presentation.charts[0].currency_code == _CURRENCY_BY_UNIT[symbol]
