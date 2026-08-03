@@ -64,7 +64,7 @@ from app.domains.model_gateway import service as model_gateway_service
 from app.orchestration.compose import select_prompt
 from app.orchestration.redaction import redact_for_external_exposure
 from app.orchestration.websearch import web_search, build_web_grounded_prompt
-from app.orchestration.risk_llm import classify_risk
+from app.orchestration.risk_llm import classify_risk, classify_risk_gemini
 
 # Massarius™ retrieval and evidence subsystem — Phase 1 control modules
 # (ZL-ENG-03). These wrap/replace the inline licence filtering, bundle
@@ -286,6 +286,11 @@ async def ask_kriton(
     # keeps the ML result if the LLM is unavailable. Never downgrades a
     # pre-screen hard block — those RESTRICTED cases return before this point.
     llm_risk = await classify_risk(request.query)
+    if not llm_risk:
+        # Primary Groq classifier unavailable/failed — try Gemini as the
+        # fallback LLM classifier (provider-level redundancy) before falling
+        # back to the ML zero-shot result already in risk_level.
+        llm_risk = await classify_risk_gemini(request.query)
     if llm_risk:
         risk_level = llm_risk
 
