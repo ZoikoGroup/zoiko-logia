@@ -701,6 +701,15 @@ async def ask_kriton(
             "This response is for educational purposes only. Consult a qualified professional."
         )
 
+    # Off-domain refusal: when the domain gate declined the question (it is not
+    # about accounting/tax/payroll/finance/audit/bookkeeping/commerce), the
+    # web-search results are irrelevant to the reply — so return NO sources and
+    # NO disclaimer. Sources are shown only for genuine in-domain answers.
+    is_offdomain_refusal = "designed to answer questions related to Accounting" in (composed_text or "")
+    if is_offdomain_refusal:
+        rag_citations = []
+        limitations = []
+
     answer = ComposedAnswer(
         text=final_text,
         citations=rag_citations,
