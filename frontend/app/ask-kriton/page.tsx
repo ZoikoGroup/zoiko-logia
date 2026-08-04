@@ -1342,7 +1342,22 @@ export default function AskKritonPage() {
           )}
 
           <div className="relative z-10 flex-1 overflow-y-auto px-4">
-            <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col items-center justify-center pb-16 pt-6 md:pb-24 md:pt-8">
+            {/*
+              justify-center is correct ONLY for the empty state, where the
+              hero block should sit in the middle of the viewport. Applying it
+              once a conversation exists is a real bug: in a scrollable flex
+              container, `justify-content: center` distributes overflow to
+              BOTH ends, and the overflow above the centre point is outside
+              the scrollable area entirely — scrollTop 0 already shows the
+              middle of the content and there is no way to scroll up to the
+              start. That is why a long answer appeared to begin partway down
+              the page with a large blank region above it.
+            */}
+            <div
+              className={`mx-auto flex min-h-full w-full max-w-5xl flex-col items-center pb-16 pt-6 md:pb-24 md:pt-8 ${
+                hasConversation ? "justify-start" : "justify-center"
+              }`}
+            >
               {!hasConversation ? (
                 <div className="flex w-full max-w-3xl flex-col items-center text-center">
                   <div className="w-full">
@@ -1454,6 +1469,7 @@ export default function AskKritonPage() {
                   </div>
                 </div>
               ) : (
+                <>
                 <div className="mx-auto w-full max-w-3xl space-y-8 md:translate-x-8 lg:translate-x-12">
                   {turns.map((turn) => {
                     const safety = turn.result?.safety ?? null;
@@ -1694,8 +1710,25 @@ export default function AskKritonPage() {
                   })}
 
                   <div ref={bottomRef} />
+                </div>
 
-                  <form onSubmit={handleSubmit} className="sticky bottom-5 mx-auto max-w-2xl">
+                {/*
+                  A sibling of the turns column, not its last child. `sticky`
+                  resolves against the nearest scrolling ancestor but only has
+                  range while its CONTAINING BLOCK is in view — as the final
+                  child of the turns div that range was effectively zero, so
+                  the composer behaved like a static element and painted over
+                  whatever answer content happened to be beneath it.
+
+                  mt-auto pushes it to the bottom of the full-height wrapper,
+                  so it sits at the bottom on a short conversation; sticky
+                  then keeps it pinned while a long one scrolls. The translate
+                  offsets match the turns column so the two stay aligned.
+                */}
+                <form
+                  onSubmit={handleSubmit}
+                  className="sticky bottom-5 z-20 mt-auto w-full max-w-2xl pt-6 md:translate-x-8 lg:translate-x-12"
+                >
                     <div className="rounded-[1.5rem] border border-line bg-panel p-3 shadow-[0_18px_48px_rgba(18,34,32,0.08)]">
                       <textarea
                         value={query}
@@ -1775,7 +1808,7 @@ export default function AskKritonPage() {
                       </p>
                     )}
                   </form>
-                </div>
+                </>
               )}
             </div>
           </div>
