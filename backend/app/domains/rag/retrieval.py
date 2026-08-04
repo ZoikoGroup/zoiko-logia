@@ -1,14 +1,19 @@
+import asyncio
 import contextvars
+import logging
 import os
 from typing import List, Dict, Any
 from llama_index.core import VectorStoreIndex, StorageContext
+from llama_index.core.schema import QueryBundle
 from llama_index.core.vector_stores.types import (
     MetadataFilters, MetadataFilter, ExactMatchFilter, FilterOperator, FilterCondition,
 )
 from app.core.config import get_settings
-from app.domains.rag.embeddings import get_embed_model, EMBED_DIM
+from app.domains.jurisdiction_locale.service import acceptable_jurisdiction_scopes
+from app.domains.rag.embeddings import get_embed_model, get_query_embedding_cached, EMBED_DIM
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 # Set immediately before every retrieve_documents() call so the pool
@@ -46,7 +51,12 @@ def _tenant_scoped_pg_engines(sync_url: str, async_url: str) -> tuple:
     from sqlalchemy.ext.asyncio import create_async_engine
 
     engine = create_engine(sync_url, pool_pre_ping=True)
-    async_engine = create_async_engine(async_url)
+    async_engine = create_async_engine(
+        async_url,
+        pool_pre_ping=True,
+        pool_recycle=300,
+        connect_args={"statement_cache_size": 0} if not settings.is_sqlite else {},
+    )
 
     def _set_tenant_on_checkout(dbapi_conn, connection_record, connection_proxy):
         # Session-scoped (not SET LOCAL): mirrors app/core/database.py's
@@ -70,13 +80,31 @@ async def retrieve_documents(
     tenant_id: str,
     jurisdiction: str | None = None,
     top_k: int = 30,
+    query_embedding: tuple[float, ...] | None = None,
     allowed_source_ids: list[str] | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Retrieves matching document chunks using hybrid search (vector search + keyword search).
     Applies strict tenant isolation and optional jurisdiction metadata filters.
+
+    query_embedding: pass an already-computed embedding (e.g. from
+    get_query_embedding_cached()) to skip re-embedding the query here. A
+    caller that also needs this same query's embedding for something else
+    in the same request (orchestration/retrieve.py's infer_category(), for
+    the semantic-category step) should compute it once and pass it to
+    both, rather than each independently re-embedding identical text.
+    Wrapping it in a QueryBundle with .embedding already set is what makes
+    LlamaIndex skip its own internal embedding call — confirmed via
+    VectorIndexRetriever._retrieve(), which only embeds when
+    query_bundle.embedding is None. Omit this to embed the query here
+    exactly as before (backward compatible).
     """
     embed_model = get_embed_model()
+    jurisdiction_scopes = (
+        acceptable_jurisdiction_scopes(jurisdiction)
+        if jurisdiction
+        else None
+    )
 
     # 1. Setup metadata filters — a chunk is retrievable if it's shared
     # (is_tenant_private == "false", e.g. a regulatory standard ingested
@@ -103,10 +131,29 @@ async def retrieve_documents(
             MetadataFilter(key="source_id", value=allowed_source_ids, operator=FilterOperator.IN)
         )
     if jurisdiction:
-        filters_list.append(ExactMatchFilter(key="jurisdiction", value=jurisdiction))
+        scopes = jurisdiction_scopes
+        if len(scopes) == 1:
+            filters_list.append(ExactMatchFilter(key="jurisdiction", value=scopes[0]))
+        else:
+            # State-qualified jurisdiction (e.g. "US-CA") — a chunk tagged
+            # with ANY of the acceptable scopes is in-scope, not just an
+            # exact "US-CA" match (see acceptable_jurisdiction_scopes()).
+            filters_list.append(
+                MetadataFilters(
+                    filters=[MetadataFilter(key="jurisdiction", value=v, operator=FilterOperator.EQ) for v in scopes],
+                    condition=FilterCondition.OR,
+                )
+            )
 
     filters = MetadataFilters(filters=filters_list, condition=FilterCondition.AND)
-    
+    loop = asyncio.get_event_loop()
+
+    query_input = (
+        QueryBundle(query_str=query, embedding=list(query_embedding))
+        if query_embedding is not None
+        else query
+    )
+
     if not settings.is_sqlite:
         # Real Hybrid PGVector + Full text search using raw SQL or LlamaIndex pgvector extension
         # Let's perform standard LlamaIndex Postgres hybrid search setup
@@ -143,7 +190,7 @@ async def retrieve_documents(
         retriever = index.as_retriever(similarity_top_k=top_k, filters=filters)
         token = _current_tenant_id.set(tenant_id)
         try:
-            nodes = retriever.retrieve(query)
+            nodes = await loop.run_in_executor(None, lambda: retriever.retrieve(query_input))
         finally:
             _current_tenant_id.reset(token)
         
@@ -158,16 +205,58 @@ async def retrieve_documents(
         return results
     else:
         # Fallback local SimpleVectorStore retrieval for SQLite
-        persist_dir = "./vector_store"
+        persist_dir = settings.LOCAL_VECTOR_STORE_DIR
         if not os.path.exists(persist_dir) or not os.path.exists(os.path.join(persist_dir, "default__vector_store.json")):
             return []
             
         storage_context = StorageContext.from_defaults(persist_dir=persist_dir)
+        stored_dimensions = {
+            len(embedding)
+            for embedding in storage_context.vector_store.data.embedding_dict.values()
+        }
+        if stored_dimensions and stored_dimensions != {EMBED_DIM}:
+            logger.error(
+                "Local vector index uses embedding dimensions %s; expected %s. "
+                "Re-ingest sources before using local retrieval.",
+                sorted(stored_dimensions),
+                EMBED_DIM,
+            )
+            return []
+
         from llama_index.core import load_index_from_storage
         index = load_index_from_storage(storage_context, embed_model=embed_model)
         
-        retriever = index.as_retriever(similarity_top_k=top_k, filters=filters)
-        nodes = retriever.retrieve(query)
+        # SimpleVectorStore rejects nested AND/OR MetadataFilters. Retrieve
+        # the local candidates and enforce the same scope rules before
+        # returning any result.
+        candidate_count = max(top_k, len(index.docstore.docs))
+        retriever = index.as_retriever(similarity_top_k=candidate_count)
+        nodes = await loop.run_in_executor(
+            None,
+            lambda: retriever.retrieve(query_input),
+        )
+
+        def is_allowed(node) -> bool:
+            metadata = node.node.metadata
+            shared = str(
+                metadata.get("is_tenant_private", "")
+            ).lower() == "false"
+            owned = metadata.get("tenant_id") == tenant_id
+            if not (shared or owned):
+                return False
+            if (
+                allowed_source_ids is not None
+                and metadata.get("source_id") not in allowed_source_ids
+            ):
+                return False
+            if (
+                jurisdiction_scopes is not None
+                and metadata.get("jurisdiction") not in jurisdiction_scopes
+            ):
+                return False
+            return True
+
+        nodes = [node for node in nodes if is_allowed(node)][:top_k]
         
         results = []
         for n in nodes:

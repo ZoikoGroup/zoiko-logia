@@ -32,6 +32,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 from app.domains.calculation.provenance import ProvenanceStore
+from app.domains.massarius.calculation_engine import extract_and_verify_calculations
 from app.domains.massarius.errors import ValidationFailed
 from app.orchestration.schemas import SourceBundle, ValidationResult
 
@@ -309,7 +310,8 @@ _FACTUAL_LOOKUP_OVERRIDE_PATTERN = re.compile(
     r"\b(rate|rates|amount|amounts|percentage|percent|threshold|thresholds|"
     r"limit|limits|cap|caps|deduction|deductions|credit|credits|exemption|"
     r"exemptions|price|prices|cost|costs|fee|fees|number|value|values|date|"
-    r"dates|deadline|deadlines|mistake|mistakes|checklist|checklists)\b",
+    r"dates|deadline|deadlines|indicator|indicators|mistake|mistakes|"
+    r"checklist|checklists|process|procedure|step|steps|timeline)\b",
     re.IGNORECASE,
 )
 # 2026-07-23 real incident: "What is $500 minus $200?" also matched the
@@ -371,7 +373,7 @@ def validate_answer_or_raise(
     provenance: Optional["ProvenanceStore"] = None,
 ) -> None:
     """
-    Run all twelve Checkpoint C checks. Raises ValidationFailed listing every
+    Run all thirteen Checkpoint C checks. Raises ValidationFailed listing every
     failure (not just the first) if any check fails. Returns None on success.
 
     provenance (2026-07-23, governed calculation architecture — see
@@ -418,10 +420,18 @@ def validate_answer_or_raise(
             f"Citation binding failed: answer references [REF-{','.join(sorted(unbound_refs))}] "
             f"which are not present in eligible_sources."
         )
-    if source_bundle.eligible_source_count > 0 and len(answer_text.strip()) > 50 and not ref_ids_in_answer:
-        failures.append(
-            "Citation binding failed: substantive answer contains no source citation markers."
-        )
+    # A substantive answer with zero [REF-N] markers at all is deliberately
+    # NOT flagged here anymore (2026-07-29): the Sources list the frontend
+    # renders (orchestration/service.py's rag_citations) is built from every
+    # retrieved chunk unconditionally, not from which [REF-N] markers appear
+    # in the text — so a marker-free answer already shows correct source
+    # attribution to the user regardless. The old hard-fail here was
+    # rejecting well-formed list/timeline/checklist answers (e.g. "Create a
+    # timeline for month-end close") that don't have a natural place to drop
+    # an inline marker into every step, escalating them to Human Review for
+    # no substantive reason. The check above (any marker that DOES appear
+    # must be real) still applies — this only removes the requirement that
+    # one exists at all.
 
     # 3. Prohibited-claim scan
     for pattern in _PROHIBITED:
@@ -482,7 +492,12 @@ def validate_answer_or_raise(
     # flagged — query_text (the user stated this figure themselves) and
     # provenance (a governed calculation actually produced this figure) —
     # neither replaces the context-text check, both only widen what counts
-    # as supported.
+    # as supported. This checks a claimed figure's PROVENANCE (did it come
+    # from somewhere legitimate) — check 9 below is complementary, not a
+    # duplicate: it checks the claimed figure's ARITHMETIC (is the stated
+    # formula/result internally correct). A figure can pass one and fail the
+    # other independently (a real, grounded number used in a wrong
+    # calculation; or an internally-consistent but fully invented figure).
     if grounding_context:
         context_numbers = _extract_normalized_numbers(grounding_context)
         query_numbers = _extract_normalized_numbers(query_text) if query_text else set()
@@ -502,7 +517,21 @@ def validate_answer_or_raise(
             )
             break
 
-    # 9. Repetition / degenerate output — a coherence failure, not a policy
+    # 9. Deterministic calculation check (Master Architecture Build Doctrine
+    # §3: "amounts... must be produced or validated by deterministic
+    # services," not trusted from the LLM's own arithmetic outright).
+    # grounded_input already instructs the model to show its formula and
+    # substituted values — this recomputes every "<formula> = <result>" it
+    # wrote with a safe, whitelisted evaluator and flags any mismatch.
+    for check in extract_and_verify_calculations(answer_text):
+        if not check.matches:
+            failures.append(
+                f"Calculation error detected: '{check.formula} = {check.stated_result}' "
+                f"does not match the independently recomputed result "
+                f"({check.computed_result})."
+            )
+
+    # 10. Repetition / degenerate output — a coherence failure, not a policy
     # violation, so it degrades to HUMAN_REVIEW like every non-prohibited/
     # non-exposure failure below, never REFUSAL.
     if _has_degenerate_repetition(answer_text):
@@ -512,7 +541,7 @@ def validate_answer_or_raise(
             "on a conclusion rather than stating a false claim outright."
         )
 
-    # 10. Missing requested fact — an honest admission is better than a
+    # 11. Missing requested fact — an honest admission is better than a
     # hallucination, but it is still not an "Answer ready" outcome. Route it
     # to clarification so the user can supply a year or an authority can be
     # added, instead of escalating an otherwise safe non-answer to a reviewer.
@@ -522,7 +551,7 @@ def validate_answer_or_raise(
             "evidence does not contain the exact information requested."
         )
 
-    # 11. Summarize, don't copy — skipped when no grounding_context is
+    # 12. Summarize, don't copy — skipped when no grounding_context is
     # supplied, matching this module's existing convention (see checks 8, 2).
     if grounding_context and _has_verbatim_copy(answer_text, grounding_context):
         failures.append(
@@ -531,7 +560,7 @@ def validate_answer_or_raise(
             "context instead of explaining it in Kriton's own words."
         )
 
-    # 12. Tutor-depth structure — skipped when no query_text is supplied
+    # 13. Tutor-depth structure — skipped when no query_text is supplied
     # (existing callers/tests that don't pass one), and only engaged for
     # queries matching the concept-explanation shape and long enough to be
     # a genuine (if underdeveloped) attempt at one.

@@ -36,6 +36,33 @@ def test_fed_funds_history_wording_is_not_ml_uncertain():
     assert "l2-deterministic-factual-lookup" in decision["rules_applied"]
 
 
+def test_congress_bill_lookup_is_not_ml_uncertain():
+    """Real incident (2026-07-29): "Look up bill HR 1 from the 118th
+    Congress" — an unambiguous, objective, public-record citation lookup
+    with no personal framing at all — fell through to the ML/LLM path, came
+    back low-confidence, and was forced into CLASSIFICATION_UNCERTAIN's
+    fixed MEDIUM-risk clarification response instead of being answered."""
+    decision = classify(
+        "Look up bill HR 1 from the 118th Congress.",
+        source_confidence="HIGH_CONFIDENCE",
+    )
+    assert decision["allowed"] is True
+    assert decision["risk_level"] == "LOW"
+    assert decision["route"] == "LLM"
+    assert "l2-deterministic-factual-lookup" in decision["rules_applied"]
+
+
+def test_cfr_section_lookup_is_not_ml_uncertain():
+    decision = classify(
+        "What does 26 CFR section 1.61-1 say?",
+        source_confidence="HIGH_CONFIDENCE",
+    )
+    assert decision["allowed"] is True
+    assert decision["risk_level"] == "LOW"
+    assert decision["route"] == "LLM"
+    assert "l2-deterministic-factual-lookup" in decision["rules_applied"]
+
+
 def test_context_free_treatment_question_requests_clarification():
     decision = classify(
         "How should this be reported?",

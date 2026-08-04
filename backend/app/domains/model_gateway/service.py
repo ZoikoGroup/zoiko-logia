@@ -8,11 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domains.audit_ledger.event_envelope import record_event_async
+from app.domains.model_gateway import cost_latency_governance
 from app.domains.model_gateway.models import ModelDefinition, PromptTemplate
 from app.domains.model_gateway.providers.base import ProviderAdapter
 from app.domains.model_gateway.providers.mock_adapter import MockProviderAdapter
 from app.domains.model_gateway.providers.groq_adapter import GroqAdapter
 from app.domains.model_gateway.providers.openai_adapter import OpenAIAdapter
+from app.domains.model_gateway.routing_fallback import complete_with_fallback
 
 # §ZL-T0-08 envisions Application -> Query Orchestrator -> Model Gateway ->
 # Provider Adapter -> Approved Model Deployment, selecting per
@@ -106,6 +108,35 @@ async def _select_model_and_adapter(db: AsyncSession) -> ModelSelection:
     return ModelSelection(None, MockProviderAdapter(), "fallback_chain", tuple(skip_trace))
 
 
+def _fallback_chain_from_selection(selection: ModelSelection) -> list[tuple[str, object]]:
+    """Bridges the registry-driven selection above with call-time fallback
+    (routing_fallback.py's complete_with_fallback) — the two are
+    complementary, not alternatives: _select_model_and_adapter() decides
+    which model SHOULD be tried first (respecting Active status, role/
+    provider preference, and the registry's own audit trail), but a single
+    adapter.complete() call still has no protection against THAT specific
+    provider failing at request time (a live Groq outage, a timeout). Every
+    other configured, implemented provider not already the primary choice
+    is appended in preference order — mock always last — so a call-time
+    failure still falls through, the exact gap routing_fallback.py's own
+    docstring was written to close (a Groq outage previously surfaced as a
+    raw error string treated as the model's own answer, with nothing else
+    ever attempted)."""
+    primary_name = type(selection.adapter).__name__.replace("Adapter", "").lower()
+    chain: list[tuple[str, object]] = [(primary_name, selection.adapter)]
+    for provider_name in _PROVIDER_PREFERENCE_ORDER:
+        if provider_name == primary_name:
+            continue
+        factory = _IMPLEMENTED_ADAPTER_FACTORIES.get(provider_name)
+        if factory is None:
+            continue
+        adapter = factory()
+        if provider_name != "mock" and not _adapter_is_configured(adapter):
+            continue
+        chain.append((provider_name, adapter))
+    return chain
+
+
 async def list_models(db: AsyncSession) -> list[ModelDefinition]:
     result = await db.execute(select(ModelDefinition))
     return list(result.scalars().all())
@@ -170,12 +201,17 @@ async def run_test_prompt(
 
     # Model Gateway -> Provider Adapter -> Approved Model, driven by the real
     # ModelDefinition registry (see _select_model_and_adapter's docstring)
-    # rather than a flat env-var chain — that chain now only runs as a
-    # bottom-rung fallback when the registry itself can't resolve anything.
+    # for WHICH model to try first, then wrapped in call-time fallback (see
+    # _fallback_chain_from_selection's docstring) so a live failure of that
+    # specific provider still falls through to the next configured one
+    # instead of surfacing as a raw error string treated as the answer.
     selection = await _select_model_and_adapter(db)
-    adapter = selection.adapter
-    provider_name = type(adapter).__name__.replace("Adapter", "").lower()
-    output = await adapter.complete(f"[{prompt.name} {prompt.version}]\n\n{input_text}")
+    full_prompt = f"[{prompt.name} {prompt.version}]\n\n{input_text}"
+    fallback_result = await complete_with_fallback(full_prompt, _fallback_chain_from_selection(selection))
+    output = fallback_result.output
+    provider_name = fallback_result.provider_used
+    cost_usd = cost_latency_governance.estimate_cost_usd(provider_name, full_prompt, output)
+    cost_latency_governance.record_cost(cost_usd)
 
     # Store a hash of the output, not the raw text, per the privacy-by-design
     # doctrine (Section 9): raw prompt/output retention depends on risk class,
@@ -184,6 +220,18 @@ async def run_test_prompt(
         "prompt_name": prompt.name,
         "prompt_version": prompt.version,
         "provider": provider_name,
+        # provider_attempts/fallback_occurred/succeeded/latency_ms/
+        # estimated_cost_usd are the call-time fallback + cost governance
+        # audit trail (routing_fallback.py/cost_latency_governance.py) —
+        # complementary to model_definition_id/selection_path below, which
+        # is the registry-selection audit trail. Together they answer both
+        # "which model did the registry pick" and "what actually happened
+        # when the gateway tried to reach it."
+        "provider_attempts": fallback_result.attempts,
+        "fallback_occurred": len(fallback_result.attempts) > 1,
+        "succeeded": fallback_result.succeeded,
+        "latency_ms": round(fallback_result.latency_ms, 1),
+        "estimated_cost_usd": cost_usd,
         "input_length": len(input_text),
         "output_hash": hashlib.sha256(output.encode("utf-8")).hexdigest(),
         # model_definition_id/selection_path are the concrete, auditable

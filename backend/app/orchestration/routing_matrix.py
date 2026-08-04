@@ -203,7 +203,7 @@ def resolve_route(
     if route == ROUTE_CLARIFICATION and clarification_cycle >= MAX_CLARIFICATION_CYCLES:
         route = ROUTE_REFERRAL
 
-    disclaimer_required = (
+    disclaimer_required = risk_level != RISK_ZERO and (
         risk_level == RISK_MEDIUM
         or risk_level == RISK_HIGH  # mandatory professional-boundary notice on every HIGH-risk answer
         or confidence_state == CONF_LIMITED

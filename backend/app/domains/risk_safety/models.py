@@ -89,6 +89,15 @@ class EscalationCase(Base):
     query_id = Column(String, nullable=False)
     query_text = Column(Text, nullable=False)
     topic = Column(String, nullable=False)
+    # Same schema-drift gap as SafetyEvent.tenant_id above — the live DB has
+    # a NOT NULL tenant_id column here too, added outside this codebase's
+    # own migrations. The only construction site (_create_escalation in
+    # service.py) already always supplies request.tenant_id, so this was
+    # never actually crashing — but nullable=True still misdeclared the
+    # real constraint. Confirmed via a full live-DB schema sweep (comparing
+    # every declared model against information_schema) that this and
+    # SafetyEvent/SafetyOverride were the only three such landmines.
+    tenant_id = Column(String, nullable=False, default="default")
     risk_level = Column(Enum(RiskLevel), nullable=False)
     restricted_sub_class = Column(Enum(RestrictedSubClass), nullable=True)
     jurisdiction = Column(String, nullable=False, default="GLOBAL")
@@ -110,6 +119,12 @@ class SafetyOverride(Base):
     __tablename__ = "safety_overrides"
 
     id = Column(String, primary_key=True, default=lambda: _new_id("ovr-"))
+    # Same live-schema-drift issue as SafetyEvent.tenant_id above: the real
+    # DB has a NOT NULL tenant_id column this model never declared,
+    # confirmed by reproducing psycopg2.errors.NotNullViolation on a real
+    # create_safety_override() call. "GLOBAL_CONTROL" matches the same
+    # default already used throughout audit_ledger/event_envelope.py's
+    # record_event_async/_build_row, rather than an ad-hoc "default" value.
     tenant_id = Column(String, nullable=False, default="GLOBAL_CONTROL", index=True)
     actor_id = Column(String, nullable=False)
     authority_role = Column(String, nullable=False)
@@ -148,13 +163,44 @@ class SafetyEvent(Base):
     tenant_id = Column(String, nullable=False, default="GLOBAL_CONTROL", index=True)
     event_type = Column(String, nullable=False)
     query_id = Column(String, nullable=True)
+    # The live DB has a NOT NULL tenant_id column added outside this
+    # codebase's own migrations (not in _TENANT_SCOPED_TABLES in
+    # app/main.py) — this model never declared it, so every insert here
+    # silently sent NULL until the DB started enforcing it, which meant
+    # resolve_escalation() (the reviewer approve/refuse/escalate action —
+    # a live, reachable endpoint) threw psycopg2.errors.NotNullViolation on
+    # every call, confirmed by reproducing it against the real DB. Fixed:
+    # all 8 call sites in service.py now pass tenant_id (resolve_escalation
+    # from the loaded EscalationCase.tenant_id already in scope;
+    # create_safety_override/validate_output via a new tenant_id field
+    # threaded through their request schemas, matching ClassifyRequest's
+    # existing convention of a plain client-supplied field, not one derived
+    # from auth). Declared nullable=False now to match the real schema and
+    # prevent a new call site from silently reintroducing the gap.
+    tenant_id = Column(String, nullable=False, default="default")
     payload = Column(JSON, nullable=False, default=dict)
     timestamp = Column(DateTime, default=_utcnow)
     payload_schema_version = Column(String, default="1.0")
 
 
 class EmergencySafetyBlock(Base):
-    """Time-bounded emergency block (max 72 hours) - ZL-T0-04 §14."""
+    """Time-bounded emergency block (max 72 hours) - ZL-T0-04 §14.
+
+    `scope` is deliberately a freeform keyword/phrase, not an enum — §14
+    reuses the same bare field name across risk_policy/safety_override/
+    emergency_safety_block with no controlled vocabulary defined anywhere
+    in the spec (confirmed by reading it directly). Matched as a case-
+    insensitive substring against incoming query text in service.py's
+    check_emergency_blocks() — the simplest interpretation that needs no
+    unspecified schema the spec never commits to.
+
+    is_active/disposed_at/disposition/reviewer added beyond the original
+    spec table row (id/invoker/approver/scope/reason/expires_at) because
+    §15's own audit catalog requires an emergency_safety_block_disposed
+    event covering "both expiry and manual release/rollback" — that needs
+    somewhere to record which disposition happened and who reviewed it,
+    not just a timestamp comparison against expires_at.
+    """
     __tablename__ = "emergency_safety_blocks"
 
     id = Column(String, primary_key=True, default=lambda: _new_id("blk-"))
@@ -164,6 +210,14 @@ class EmergencySafetyBlock(Base):
     reason = Column(Text, nullable=False)
     created_at = Column(DateTime, default=_utcnow)
     expires_at = Column(DateTime, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    disposed_at = Column(DateTime, nullable=True)
+    disposition = Column(String, nullable=True)  # "expired" | "released" | "rolled_back"
+    reviewer = Column(String, nullable=True)
+
+
+
+
 
 
 class RollbackRecord(Base):

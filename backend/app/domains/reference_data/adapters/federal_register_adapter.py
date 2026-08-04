@@ -29,10 +29,19 @@ class FederalRegisterAPIError(Exception):
 
 async def get_document(document_number: str) -> dict:
     settings = get_settings()
+    # Some NAT64 Windows resolvers intermittently fail async lookups for the
+    # ``www`` CNAME while the apex A record remains reachable. Connect to the
+    # apex but retain the canonical Host header; Federal Register serves the
+    # same API without the apex-to-www redirect in that form.
+    base_url = settings.FEDERAL_REGISTER_API_BASE_URL.replace(
+        "://www.federalregister.gov", "://federalregister.gov"
+    )
 
     try:
         async with httpx.AsyncClient(
-            base_url=settings.FEDERAL_REGISTER_API_BASE_URL, timeout=_REQUEST_TIMEOUT_SECONDS
+            base_url=base_url,
+            timeout=_REQUEST_TIMEOUT_SECONDS,
+            headers={"Host": "www.federalregister.gov"},
         ) as client:
             response = await client.get(
                 f"/documents/{document_number}.json", params={"fields[]": _FIELDS}

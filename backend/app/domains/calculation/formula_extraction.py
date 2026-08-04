@@ -29,7 +29,18 @@ class MissingFormulaInputs:
     calculation_type: str
     missing_inputs: tuple[str, ...]
 
-_DEPRECIATION_TRIGGER_PATTERN = re.compile(r"straight[\s-]*line\s+depreciation", re.IGNORECASE)
+# 2026-07-29 real incident: "Calculate straight-line annual depreciation for
+# an asset costing $120,000..." never matched — "line" and "depreciation"
+# had to be directly adjacent, so the single inserted word "annual" broke
+# the match entirely. That silently routed the query into the generic
+# depreciation fallback further down (which claims ALL FOUR inputs are
+# missing regardless of what's actually in the query, since it does no
+# per-field checking), rather than the correct, precise extraction path
+# below — even though asset_cost and useful_life_years were both present
+# and cleanly extractable. Tolerates one adjective ("annual"/"yearly"/
+# "monthly"/etc.) between "line" and "depreciation" without becoming
+# permissive enough to match unrelated phrasing.
+_DEPRECIATION_TRIGGER_PATTERN = re.compile(r"straight[\s-]*line(?:\s+\w+)?\s+depreciation", re.IGNORECASE)
 _ASSET_COST_PATTERN = re.compile(
     r"(?:\$\s?([\d,]+(?:\.\d+)?)\s*asset|"
     r"asset(?:\s+costing|\s+cost(?:\s+of)?)?\s*\$\s?([\d,]+(?:\.\d+)?))",
@@ -42,10 +53,15 @@ _USEFUL_LIFE_PATTERN = re.compile(
     r")",
     re.IGNORECASE,
 )
-_NO_SALVAGE_PATTERN = re.compile(r"no\s+salvage\s+value", re.IGNORECASE)
+# "residual value" is the same 2026-07-29 incident as the trigger fix above
+# — a real query used it as a synonym for "salvage value" (both name the
+# same input: the asset's expected value at the end of its useful life,
+# per US GAAP ASC 360 / IFRS IAS 16) and it wasn't recognized at all,
+# contributing to the same false "missing input" result.
+_NO_SALVAGE_PATTERN = re.compile(r"no\s+(?:salvage|residual)\s+value", re.IGNORECASE)
 _SALVAGE_VALUE_PATTERN = re.compile(
-    r"(?:salvage\s+value\s+(?:of\s+)?\$\s?([\d,]+(?:\.\d+)?)|"
-    r"\$\s?([\d,]+(?:\.\d+)?)\s+salvage\s+value)",
+    r"(?:(?:salvage|residual)\s+value\s+(?:of\s+)?\$\s?([\d,]+(?:\.\d+)?)|"
+    r"\$\s?([\d,]+(?:\.\d+)?)\s+(?:salvage|residual)\s+value)",
     re.IGNORECASE,
 )
 # The trigger phrase alone also matches a purely definitional question like

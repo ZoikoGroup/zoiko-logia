@@ -3,13 +3,19 @@ import asyncio
 from typing import Dict, Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from llama_index.core import VectorStoreIndex, Document, StorageContext
+from llama_index.core import (
+    VectorStoreIndex,
+    Document,
+    StorageContext,
+    load_index_from_storage,
+)
 from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
 from app.core.config import get_settings
 from app.domains.rag.embeddings import get_embed_model, EMBED_DIM
 from app.domains.source_library.models import Source
 
 settings = get_settings()
+_local_index_lock = asyncio.Lock()
 
 async def ingest_document_content(
     file_path: str,
@@ -125,17 +131,58 @@ async def ingest_document_content(
             )
         )
     else:
-        # Fallback local SimpleVectorStore for zero-friction local SQLite testing
-        persist_dir = "./vector_store"
-        os.makedirs(persist_dir, exist_ok=True)
-        
-        storage_context = StorageContext.from_defaults()
-        index = VectorStoreIndex(
-            nodes,
-            storage_context=storage_context,
-            embed_model=embed_model
+        # Local SimpleVectorStore writes are serialized because persistence
+        # replaces several JSON files and is not transaction-safe.
+        persist_dir = settings.LOCAL_VECTOR_STORE_DIR
+        vector_file = os.path.join(
+            persist_dir,
+            "default__vector_store.json",
         )
-        # Persist index locally
-        index.storage_context.persist(persist_dir=persist_dir)
+
+        async with _local_index_lock:
+            os.makedirs(persist_dir, exist_ok=True)
+            loop = asyncio.get_running_loop()
+
+            if os.path.exists(vector_file):
+                storage_context = StorageContext.from_defaults(
+                    persist_dir=persist_dir,
+                )
+                stored_dimensions = {
+                    len(embedding)
+                    for embedding
+                    in storage_context.vector_store.data.embedding_dict.values()
+                }
+                if stored_dimensions and stored_dimensions != {EMBED_DIM}:
+                    raise RuntimeError(
+                        "Local vector index uses embedding dimensions "
+                        f"{sorted(stored_dimensions)}; expected {EMBED_DIM}. "
+                        "Back up and re-index the local store before ingestion."
+                    )
+
+                index = load_index_from_storage(
+                    storage_context,
+                    embed_model=embed_model,
+                )
+                await loop.run_in_executor(
+                    None,
+                    lambda: index.insert_nodes(nodes),
+                )
+            else:
+                storage_context = StorageContext.from_defaults()
+                index = await loop.run_in_executor(
+                    None,
+                    lambda: VectorStoreIndex(
+                        nodes,
+                        storage_context=storage_context,
+                        embed_model=embed_model,
+                    ),
+                )
+
+            await loop.run_in_executor(
+                None,
+                lambda: index.storage_context.persist(
+                    persist_dir=persist_dir,
+                ),
+            )
         
     return f"Ingested {len(nodes)} chunks successfully."

@@ -58,9 +58,13 @@ def build_bundle(preliminary: SourceBundle, licence_result: LicenceCheckResult) 
         sources=licence_result.eligible,
         exclusion_reasons=exclusion_reasons,
         jurisdiction=preliminary.jurisdiction,
-        authority_level=preliminary.authority_level,
+        # Real per-source rollup from license_gate.py's DB read, not
+        # retrieve.py's category-based guess — see LicenceCheckResult's
+        # authority_level/licence_state docstring for why the guess was
+        # unsafe to pass through here.
+        authority_level=licence_result.authority_level,
         freshness_state=preliminary.freshness_state,
-        licence_state=preliminary.licence_state,
+        licence_state=licence_result.licence_state,
         confidence_state=confidence_state,
         source_display_states=licence_result.display_states,
         index_version=INDEX_VERSION,

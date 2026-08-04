@@ -149,7 +149,7 @@ def test_advice_signal_forces_referral_on_high_risk_even_when_sufficient():
     assert with_signal.route == ROUTE_REFERRAL
     assert with_signal.disclaimer_required is True
     assert with_signal.professional_referral_required is True
-    print("test_advice_signal_forces_hedged_referral_on_high_risk_even_when_sufficient: PASSED")
+    print("test_advice_signal_forces_referral_on_high_risk_even_when_sufficient: PASSED")
 
 
 def test_advice_signal_only_overrides_high_risk():
@@ -184,7 +184,7 @@ if __name__ == "__main__":
     test_cross_cutting_confidence_overrides_apply_to_high_risk_too()
     test_clarification_cycle_escalates_to_referral()
     test_zero_risk_answers_directly_like_low()
-    test_advice_signal_forces_hedged_referral_on_high_risk_even_when_sufficient()
+    test_advice_signal_forces_referral_on_high_risk_even_when_sufficient()
     test_advice_signal_only_overrides_high_risk()
     test_advice_signal_does_not_override_licence_restriction()
     print("All tests passed successfully!")

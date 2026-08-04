@@ -66,7 +66,26 @@ def get_sync_db() -> Generator[Session, None, None]:
 # main.py's lifespan uses for schema creation/migrations, and what the
 # one-shot seed scripts (scripts/seed_dev_user.py, ingest_reference_sources.py)
 # import directly — those need to write rows unconstrained by RLS.
-async_engine = create_async_engine(to_async_url(settings.DATABASE_URL), echo=False, pool_pre_ping=True)
+#
+# pool_pre_ping=True mirrors the sync `engine` above — without it, a pooled
+# connection that Supabase's Session Pooler (Supavisor) has silently closed
+# server-side after sitting idle looks perfectly healthy to SQLAlchemy's
+# pool until it's actually used, surfacing as
+# "asyncpg.exceptions.InterfaceError: connection is closed" on whatever
+# query happens to draw that connection next. pre_ping issues a cheap
+# liveness check on checkout and transparently opens a new connection
+# instead of handing back a dead one. pool_recycle recycles connections
+# proactively before the pooler's own idle-timeout would ever close them.
+# (Confirmed necessary the hard way in production: a stale pooled connection
+# surfaced as asyncpg.exceptions.ConnectionDoesNotExistError crashing a live
+# request instead of transparently reconnecting.)
+async_engine = create_async_engine(
+    to_async_url(settings.DATABASE_URL),
+    echo=False,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    connect_args={"statement_cache_size": 0} if not settings.is_sqlite else {},
+)
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 
 # Request-time engine — deliberately separate from async_engine. Postgres
@@ -75,17 +94,12 @@ AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 # setup, request traffic must go through a distinct, non-superuser role for
 # RLS to actually apply. Falls back to the same URL when APP_DATABASE_URL
 # isn't set (SQLite, or a Postgres instance without the low-priv role).
-#
-# pool_pre_ping=True on both engines (matching the sync engine above) —
-# confirmed necessary the hard way: a pooled connection to the remote
-# Supabase host went stale mid-session and the next request crashed the
-# whole server with asyncpg.exceptions.ConnectionDoesNotExistError instead
-# of transparently reconnecting. pre_ping issues a lightweight check before
-# handing out a pooled connection and replaces it silently if it's dead —
-# adds negligible overhead on a healthy connection, and is exactly what
-# would have caught this.
 request_engine = create_async_engine(
-    to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL), echo=False, pool_pre_ping=True
+    to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL),
+    echo=False,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    connect_args={"statement_cache_size": 0} if not settings.is_sqlite else {},
 )
 RequestSessionLocal = async_sessionmaker(request_engine, expire_on_commit=False)
 

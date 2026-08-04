@@ -44,6 +44,68 @@ def test_depreciation_accepts_life_of_years_word_order():
     assert result.inputs["useful_life_years"]["value"] == "10"
 
 
+def test_depreciation_accepts_an_adjective_between_line_and_depreciation():
+    """Real incident (2026-07-29): "straight-line ANNUAL depreciation" never
+    matched the trigger pattern at all (it required "line" directly followed
+    by "depreciation"), which silently routed the query into the generic
+    catch-all fallback (claims all 4 inputs missing regardless of what's
+    actually present) instead of this precise extraction path — even though
+    every input was cleanly present and extractable."""
+    result = extract_named_formula(
+        "Calculate straight-line annual depreciation for an asset costing "
+        "$120,000, with a $20,000 residual value and a useful life of 10 years."
+    )
+    assert result is not None
+    assert result.calculation_type == "straight_line_depreciation"
+    assert result.inputs["asset_cost"]["value"] == "120000"
+    assert result.inputs["salvage_value"]["value"] == "20000"
+    assert result.inputs["useful_life_years"]["value"] == "10"
+    calculated = execute_formula("accounting.straight_line_depreciation.v1", result.inputs)
+    assert calculated.output_value == "10000.00"
+
+
+def test_depreciation_accepts_residual_value_as_salvage_value_synonym():
+    """"Residual value" is the same input as "salvage value" (the asset's
+    expected value at the end of its useful life) — a real query used the
+    synonym and it wasn't recognized at all."""
+    result = extract_named_formula(
+        "Calculate straight-line depreciation for an asset costing $50,000, "
+        "with a $5,000 residual value and a useful life of 10 years."
+    )
+    assert result is not None
+    assert result.inputs["salvage_value"]["value"] == "5000"
+
+
+def test_depreciation_adjective_tolerance_does_not_break_plain_phrasing():
+    """Regression guard: the trigger fix must not require the adjective —
+    plain 'straight-line depreciation' (no inserted word) still matches."""
+    result = extract_named_formula(
+        "Calculate straight-line depreciation for an asset costing $80,000, "
+        "with a $10,000 salvage value and a useful life of 5 years."
+    )
+    assert result is not None
+
+
+def test_depreciation_definitional_question_still_has_no_calculation_intent():
+    """Regression guard: the trigger fix must not make a purely definitional
+    question ("what is X") look like a calculation request."""
+    assert extract_named_formula("What is straight-line annual depreciation?") is None
+    assert identify_missing_formula_inputs("What is straight-line annual depreciation?") is None
+
+
+def test_genuinely_missing_one_depreciation_input_reports_only_that_one():
+    """Regression guard for the trigger fix: when the trigger correctly
+    matches and exactly one input is genuinely absent, only that one field
+    is reported — not the generic catch-all's blanket 'all 4 missing'."""
+    missing = identify_missing_formula_inputs(
+        "Calculate straight-line depreciation for an asset costing $50,000 "
+        "with a $5,000 salvage value."
+    )
+    assert missing is not None
+    assert missing.calculation_type == "straight_line_depreciation"
+    assert missing.missing_inputs == ("useful_life_years",)
+
+
 def test_generic_depreciation_asks_for_specific_calculation_inputs():
     missing = identify_missing_formula_inputs("Calculate my depreciation.")
     assert missing is not None

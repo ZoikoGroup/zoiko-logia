@@ -15,8 +15,25 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build: ./backend
+    volumes:
+      # Sanctions snapshots are written by the worker and read by the API.
+      # Both must see the same directory, and it must survive a container
+      # restart — otherwise every redeploy silently un-warms the snapshots
+      # and screening queries start failing closed again.
+      - sanctions_snapshots:/app/data/live_sources
     environment:
       DATABASE_URL: postgresql+asyncpg://zoiko:zoiko@postgres:5432/zoiko
       # Non-superuser role for request-time queries — provisioned automatically
@@ -24,11 +41,9 @@ services:
       # (sources/source_versions tenant isolation) to actually apply: RLS
       # always exempts superusers, and DATABASE_URL's "zoiko" role is one.
       APP_DATABASE_URL: postgresql+asyncpg://zoiko_app:zoiko_app@postgres:5432/zoiko
-      # Without this, risk_classifier.py's _get_classifier_pipeline() never
-      # loads the real zero-shot model — every query gets a fixed 0.5
-      # confidence, which is always below the 0.65 routing threshold, so
-      # every query falls back to "needs clarification" regardless of content.
-      ENABLE_ML_CLASSIFIER: "true"
+      # Deterministic safety gates remain active. Enable the optional local
+      # model only after validating image memory and native libraries.
+      ENABLE_ML_CLASSIFIER: "false"
       # The classifier model is already baked into the image's HF cache.
       # Without these, huggingface_hub still does an online freshness check
       # on every load; when that check hangs (flaky/sandboxed Docker
@@ -41,26 +56,88 @@ services:
       # for sign-up/sign-in to work (see backend/.env.example).
       SUPABASE_URL: ""
       SUPABASE_SERVICE_ROLE_KEY: ""
+      CELERY_BROKER_URL: redis://redis:6379/0
+      SANCTIONS_SNAPSHOT_DIR: /app/data/live_sources
     ports:
       - "8010:8010"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8010/health/ready', timeout=3)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Executes the scheduled jobs. Sanctions snapshots are downloaded here and
+  # never in an Ask Kriton request — a ~49 MB official CSV has no business on
+  # a user's latency path.
+  worker:
+    build: ./backend
+    volumes:
+      - sanctions_snapshots:/app/data/live_sources
+    environment:
+      DATABASE_URL: postgresql+asyncpg://zoiko:zoiko@postgres:5432/zoiko
+      CELERY_BROKER_URL: redis://redis:6379/0
+      SANCTIONS_SNAPSHOT_DIR: /app/data/live_sources
+      ENABLE_ML_CLASSIFIER: "false"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    # --concurrency 2: these tasks are network-bound and hold whole feeds in
+    # memory while parsing. More workers multiplies peak RSS without making
+    # the upstream any faster.
+    command: ["celery", "-A", "app.jobs.live_sources_tasks", "worker", "--loglevel=info", "--concurrency=2"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: ./backend
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+    # Beat only enqueues; it needs no snapshot volume or database of its own.
+    command: ["celery", "-A", "app.jobs.live_sources_tasks", "beat", "--loglevel=info"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      worker:
+        condition: service_started
 
   seed:
     build: ./backend
+    volumes:
+      - sanctions_snapshots:/app/data/live_sources
     environment:
       DATABASE_URL: postgresql+asyncpg://zoiko:zoiko@postgres:5432/zoiko
+      SANCTIONS_SNAPSHOT_DIR: /app/data/live_sources
     depends_on:
       postgres:
         condition: service_healthy
       backend:
-        condition: service_started
+        condition: service_healthy
     restart: "no"
+    # The live-source provider registry must be seeded or every live query
+    # is rejected by the licence gate before a connector is ever reached.
+    # The first sanctions sync runs here too, so screening works immediately
+    # rather than at the next beat tick. Its exit code is tolerated on
+    # purpose: some deployment networks are blocked from the OFAC and EU
+    # distributions, and that must not fail the whole dev stack — those two
+    # providers simply stay fail-closed until the network allows them.
     command: >
-      sh -c "sleep 5 &&
-      python scripts/seed_dev_user.py &&
-      python scripts/ingest_reference_sources.py"
+      sh -c "python scripts/seed_dev_user.py &&
+      python scripts/ingest_reference_sources.py &&
+      python scripts/seed_live_source_provider.py &&
+      (python scripts/sync_sanctions_sources.py || echo 'WARNING: one or more sanctions feeds are unreachable from this network; screening stays fail-closed for those providers')"
 
   frontend:
     build: ./frontend
@@ -68,8 +145,21 @@ services:
       NEXT_PUBLIC_API_URL: http://localhost:8010/api/v1
     ports:
       - "3005:3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   postgres_data:
+  sanctions_snapshots:

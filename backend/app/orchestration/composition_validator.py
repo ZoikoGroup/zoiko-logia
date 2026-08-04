@@ -92,7 +92,13 @@ def build_validated_disclaimer(
     disclaimer_required: bool,
     confidence_state: str,
 ) -> str:
-    """Append mandatory disclaimers for MEDIUM risk or limited confidence answers (§10)."""
+    """Append mandatory disclaimers for MEDIUM risk or limited confidence answers (§7 —
+    Professional Boundary and Regulated Advice Controls; not §10, which is the
+    human-review workflow section — the exact wording below isn't spec-mandated
+    verbatim, ZL-T0-04 §7/Table row 101 only requires the substance (not-advice
+    framing, professional-consultation caveat, source/limitation caveat) be
+    present, and explicitly leaves final template wording an open decision
+    pending ratification)."""
     if not disclaimer_required:
         return answer_text
 

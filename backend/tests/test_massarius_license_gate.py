@@ -94,6 +94,51 @@ async def test_tenant_private_source_excluded_for_other_tenant():
     print("test_tenant_private_source_excluded_for_other_tenant: PASSED")
 
 
+async def test_bundle_authority_level_reflects_real_source_data_not_category_guess():
+    """Regression test (enterprise-grade consistency audit): retrieve.py's
+    preliminary bundle guesses authority_level from query category
+    ("primary" if category in ("audit", "tax") else "secondary"), ignoring
+    each source's real authority_level column. Before this fix,
+    build_bundle() copied that guess straight through, so a query tagged
+    category="tax" got authority_level="primary" on the final bundle even
+    when every actual eligible source was DB-tagged "internal" — silently
+    disabling answer_validator.py's Authority ceiling check for
+    absolute-certainty language. The final bundle must instead reflect the
+    weakest real authority_level among the sources that actually survived
+    Checkpoint A."""
+    tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
+    async with AsyncSessionLocal() as db:
+        internal_source = Source(
+            tenant_id=tenant_id, category="tax", title=f"Internal Source {uuid.uuid4().hex[:8]}",
+            source_class="internal", licence_state="permitted", authority_level="internal",
+        )
+        db.add(internal_source)
+        await db.flush()
+        await db.commit()
+
+        # Simulates retrieve.py's preliminary bundle: category="tax" forces
+        # its category-based heuristic to authority_level="primary",
+        # regardless of the real source data.
+        preliminary = SourceBundle(
+            source_bundle_id="sb-test-authority",
+            confidence_state="sufficient",
+            authority_level="primary",
+            sources=[_summary_for(internal_source)],
+        )
+
+        licence_result = await check_eligibility(db, preliminary.sources, tenant_id=tenant_id)
+        final_bundle = build_bundle(preliminary, licence_result)
+
+        assert final_bundle.authority_level == "internal", (
+            f"expected the bundle to reflect the real source's authority_level "
+            f"('internal'), got '{final_bundle.authority_level}' (the category guess)"
+        )
+
+        await db.execute(Source.__table__.delete().where(Source.id == internal_source.id))
+        await db.commit()
+    print("test_bundle_authority_level_reflects_real_source_data_not_category_guess: PASSED")
+
+
 async def test_raise_if_denied_hard_stops_when_everything_excluded():
     tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
     async with AsyncSessionLocal() as db:
@@ -116,6 +161,7 @@ async def test_raise_if_denied_hard_stops_when_everything_excluded():
 async def main():
     await test_restricted_licence_source_excluded_from_final_bundle()
     await test_tenant_private_source_excluded_for_other_tenant()
+    await test_bundle_authority_level_reflects_real_source_data_not_category_guess()
     await test_raise_if_denied_hard_stops_when_everything_excluded()
     print("All tests passed successfully!")
 

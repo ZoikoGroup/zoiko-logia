@@ -1,4 +1,6 @@
 from functools import lru_cache
+from pathlib import Path
+
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -13,11 +15,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # silently leave them unset, disabling RAG retrieval, the ML classifier, and
 # real LLM providers with no error. load_dotenv() populates os.environ from
 # .env without overriding anything already set there.
-load_dotenv()
+_BACKEND_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+load_dotenv(_BACKEND_ENV_FILE)
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_BACKEND_ENV_FILE, extra="ignore")
 
     # ── Database ────────────────────────────────────────────────────────
     DATABASE_URL: str = "sqlite+aiosqlite:///./dev.db"
@@ -51,10 +54,102 @@ class Settings(BaseSettings):
 
     # ── Infrastructure ──────────────────────────────────────────────────
     VECTOR_INDEX_URL: str = ""
+    LOCAL_VECTOR_STORE_DIR: str = "./vector_store"
     OBJECT_STORAGE_URL: str = ""
     CELERY_BROKER_URL: str = ""
 
-    # ── External reference data ─────────────────────────────────────────
+    # ── Live External Data Sources (app/domains/live_sources/) ──────────
+    # World Bank Open Data — keyless public API, no key/secret needed.
+    WORLD_BANK_API_BASE_URL: str = "https://api.worldbank.org/v2"
+    # ONS (Office for National Statistics) — keyless. UK CPIH index.
+    ONS_API_BASE_URL: str = "https://api.beta.ons.gov.uk/v1"
+    # Bank of England IADB — keyless. UK Bank Rate.
+    BANK_OF_ENGLAND_API_BASE_URL: str = "https://www.bankofengland.co.uk/boeapps/database"
+    # Frankfurter — keyless. FX rates. Points at the new host directly;
+    # the historical api.frankfurter.app now 301-redirects here (confirmed
+    # live) — see connectors/frankfurter.py.
+    FRANKFURTER_API_BASE_URL: str = "https://api.frankfurter.dev/v1"
+    # FRED (St. Louis Fed) — needs a free API key. Register at
+    # https://fredaccount.stlouisfed.org/apikeys (see connectors/fred.py).
+    # Also used by app/domains/reference_data's own FRED adapter below —
+    # same field, one declaration, shared by both.
+    FRED_API_BASE_URL: str = "https://api.stlouisfed.org/fred"
+    FRED_API_KEY: str = ""
+    # SEC EDGAR — keyless, but requires a real contact identifier in the
+    # User-Agent header or requests are blocked (confirmed live). Set this
+    # to "YourApp your-real-email@example.com", not a placeholder.
+    SEC_EDGAR_API_BASE_URL: str = "https://data.sec.gov"
+    SEC_EDGAR_USER_AGENT: str = ""
+    # Companies House — needs a free API key. Register at
+    # https://developer.company-information.service.gov.uk/
+    COMPANIES_HOUSE_API_BASE_URL: str = "https://api.company-information.service.gov.uk"
+    COMPANIES_HOUSE_API_KEY: str = ""
+    # OECD — keyless. Corporate income tax rate (see connectors/oecd.py).
+    OECD_API_BASE_URL: str = "https://sdmx.oecd.org/public/rest"
+    # GLEIF — keyless. LEI-registry company lookup fallback for every
+    # jurisdiction outside US/UK (see connectors/gleif.py).
+    GLEIF_API_BASE_URL: str = "https://api.gleif.org/api/v1"
+    # ECB Data Portal SDMX API — keyless official euro-area statistics.
+    ECB_API_BASE_URL: str = "https://data-api.ecb.europa.eu/service"
+    # IMF DataMapper API — keyless official macroeconomic indicators.
+    IMF_API_BASE_URL: str = "https://www.imf.org/external/datamapper/api/v2"
+    # European Commission VIES REST facade — keyless VAT-number validation.
+    VIES_API_BASE_URL: str = "https://ec.europa.eu/taxation_customs/vies/rest-api"
+    # Phase 2 — official legislation and procurement search.
+    CELLAR_SPARQL_URL: str = "https://publications.europa.eu/webapi/rdf/sparql"
+    # Cellar is a public SPARQL endpoint over a very large graph; a title
+    # scan there is an order of magnitude slower than a REST search API and
+    # legitimately exceeds the shared 20s live-source budget. Given its own
+    # timeout rather than raising the global one for every fast connector.
+    CELLAR_SPARQL_TIMEOUT_SECONDS: float = 60.0
+    LEGISLATION_GOV_UK_BASE_URL: str = "https://www.legislation.gov.uk"
+    # legislation.gov.uk answers Atom feed requests with HTTP 202 while it
+    # builds the feed asynchronously. The delays are the poll ladder, in
+    # seconds; the total must stay under the caller's own request budget.
+    LEGISLATION_GOV_UK_RETRY_DELAYS: str = "0.5,1.0,2.0,4.0"
+    TED_API_BASE_URL: str = "https://api.ted.europa.eu/v3"
+    SAM_GOV_OPPORTUNITIES_URL: str = "https://api.sam.gov/opportunities/v2/search"
+    SAM_GOV_API_KEY: str = ""
+    # Phase 3 — official sanctions snapshots. EU distribution URLs can
+    # change independently of the catalogue; keep that URL configurable.
+    OFAC_SDN_XML_URL: str = "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.XML"
+    UN_SANCTIONS_XML_URL: str = "https://scsanctions.un.org/resources/xml/en/name/consolidated.xml"
+    UK_SANCTIONS_CSV_URL: str = "https://sanctionslist.fcdo.gov.uk/docs/UK-Sanctions-List.csv"
+    EU_SANCTIONS_CSV_URL: str = "https://webgate.ec.europa.eu/fsd/fsf/public/files/csvFullSanctionsList/content"
+    # Comma-separated alternate distributions, tried in order after the
+    # primary URL fails. The OFAC and EU primaries returned HTTP 403 to this
+    # deployment's egress, and both authorities publish the same list at
+    # more than one official address; a failover list keeps that an operator
+    # configuration change rather than a code change. An empty value means
+    # "primary only". A 403 caused by network egress rather than by the URL
+    # is NOT fixable here — see the catalogue's runtime notes.
+    OFAC_SDN_XML_FALLBACK_URLS: str = "https://www.treasury.gov/ofac/downloads/sdn.xml"
+    UN_SANCTIONS_XML_FALLBACK_URLS: str = ""
+    UK_SANCTIONS_CSV_FALLBACK_URLS: str = ""
+    EU_SANCTIONS_CSV_FALLBACK_URLS: str = ""
+    # Sent on every official-feed download. Several government hosts reject
+    # or throttle unidentified clients; SEC already requires a contact
+    # address (SEC_EDGAR_USER_AGENT) and the same courtesy applies here.
+    # Operators should append a real contact address.
+    SANCTIONS_FEED_USER_AGENT: str = "Kriton/1.0 (authoritative-source-monitor)"
+    # Similarity floor for a fuzzy screening candidate. Deliberately high:
+    # a false candidate costs a reviewer's time, but a flood of them makes
+    # the review itself useless, which is the failure mode that matters for
+    # a control someone is supposed to act on.
+    SANCTIONS_FUZZY_MATCH_THRESHOLD: float = 0.88
+    SANCTIONS_SNAPSHOT_TTL_SECONDS: int = 3600
+    SANCTIONS_MAX_DOWNLOAD_BYTES: int = 75_000_000
+    SANCTIONS_SNAPSHOT_DIR: str = "./data/live_sources"
+    SANCTIONS_ALLOW_INLINE_REFRESH: bool = False
+    LIVE_SOURCE_HTTP_TIMEOUT_SECONDS: float = 20.0
+    LIVE_SOURCE_MAX_ATTEMPTS: int = 2
+    LIVE_SOURCE_RETRY_BACKOFF_SECONDS: float = 0.25
+    # Macro indicators (GDP/inflation) update quarterly/annually at most —
+    # 6h TTL avoids re-fetching World Bank on every request without risking
+    # meaningfully stale figures relative to this data's own update cadence.
+    LIVE_SOURCE_CACHE_TTL_SECONDS: int = 21600
+
+    # ── External reference data (app/domains/reference_data/) ───────────
     # Public, no-auth API — no key needed, but the base URL lives here
     # rather than hardcoded in the adapter so it can be repointed (a new
     # API version, a mirror, a test double) without a code change.
@@ -83,13 +178,6 @@ class Settings(BaseSettings):
     BEA_API_BASE_URL: str = "https://apps.bea.gov/api/data"
     BEA_API_KEY: str = ""
 
-    # Federal Reserve Economic Data (FRED, St. Louis Fed) — free with
-    # registration, keyed via a query param like Census/BEA. Used for
-    # interest-rate series (Fed funds rate, Treasury yields, prime rate,
-    # mortgage rates).
-    FRED_API_BASE_URL: str = "https://api.stlouisfed.org/fred"
-    FRED_API_KEY: str = ""
-
     # US Government Publishing Office GovInfo API — free with registration,
     # keyed via a query param. Used for on-demand lookup of specific 26 CFR
     # (Internal Revenue) regulation sections — the actual regulatory text,
@@ -109,8 +197,11 @@ class Settings(BaseSettings):
     # rather than a static annual edition.
     ECFR_API_BASE_URL: str = "https://www.ecfr.gov/api/versioner/v1"
 
-    # SEC EDGAR public data. SEC requires a descriptive User-Agent identifying
-    # the application and a monitored contact address.
+    # SEC EDGAR public data via app/domains/reference_data's own adapter —
+    # distinct field names from SEC_EDGAR_API_BASE_URL/SEC_EDGAR_USER_AGENT
+    # above (that pair belongs to live_sources/connectors/sec_edgar.py);
+    # kept as two separate declarations rather than unified, since renaming
+    # either would break whichever module already depends on its own name.
     SEC_DATA_API_BASE_URL: str = "https://data.sec.gov"
     SEC_USER_AGENT: str = ""
 

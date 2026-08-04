@@ -17,6 +17,17 @@ class AskKritonRequest(BaseModel):
     query: str = Field(min_length=1, max_length=20_000)
     jurisdiction: str = ""
     mode: str = "Workflow"
+    # Which persisted conversation this turn belongs to (see
+    # app/domains/chat_history) — omitted/None starts a new conversation.
+    conversation_id: Optional[str] = None
+    # Prior user queries in this conversation, most recent last — NOT the
+    # composed answers (those carry disclaimer/citation text that has no
+    # business re-entering the grounded prompt as "context"). Populated by
+    # the frontend from its client-side turn history; empty for a fresh
+    # conversation. Used only to resolve elliptical follow-ups ("what about
+    # for £20,000 instead") that are unclassifiable in isolation — see
+    # orchestration/followup.py's is_elliptical_followup().
+    history: List[str] = Field(default_factory=list)
     # Safety simulation overrides (playground only — not trusted in production)
     source_confidence: Optional[str] = None
     pre_bundle_state: Optional[str] = None
@@ -37,7 +48,7 @@ class AskKritonRequest(BaseModel):
 # the typed shape license_gate.py's Checkpoint A reasons about today, and what
 # a future planner module would populate.
 
-RetrievalMethod = Literal["keyword", "vector", "ontology", "citation_anchor", "tenant_private", "hybrid"]
+RetrievalMethod = Literal["keyword", "vector", "ontology", "citation_anchor", "tenant_private", "hybrid", "live_api"]
 
 
 class RetrievalPlan(BaseModel):
@@ -77,6 +88,9 @@ class SourceSummary(BaseModel):
     jurisdiction_scope: str
     version_label: str
     status: str
+    # Live external-data addition (app/domains/live_sources/) — defaulted so
+    # every existing construction site is unaffected.
+    source_type: Literal["document", "live_api"] = "document"
 
 
 SourceDisplayState = Literal["show", "summarise", "internal_reasoning_only"]
@@ -149,6 +163,19 @@ class SourceCitation(BaseModel):
     ref_id: str
     source_id: str
     title: str
+    # Makes the evidence hierarchy explicit to both the UI and audit clients.
+    # "controlling" means the answer's claim directly depends on this source;
+    # "supporting" means it adds context but is not the governing authority.
+    evidence_role: Literal["controlling", "supporting"] = "supporting"
+    # Live external-data addition, same rationale as SourceSummary.source_type.
+    source_type: Literal["document", "live_api"] = "document"
+    # Only ever set for source_type="live_api" (a real external URL a user
+    # can click through to — e.g. the ONS dataset page, the SEC EDGAR
+    # company page). Document sources have no public URL today — there's no
+    # file-serving endpoint for uploaded/ingested documents at all, so
+    # `file_path` is just an internal server path, not something a browser
+    # could fetch. Left None rather than fabricating a broken-looking link.
+    source_url: Optional[str] = None
     url: str | None = None
     evidence_preview: str = ""
 
@@ -201,20 +228,76 @@ class PresentationSeries(BaseModel):
     values: List[str] = Field(default_factory=list)
 
 
+class PresentationMetric(BaseModel):
+    """A single headline number derived from a table that reduces to one row
+    (e.g. "Total revenue: $482,000") — a chart with one data point isn't a
+    chart, it's a stat. No delta/trend in v1: a single row has no second
+    point to diff against, so nothing is computed rather than guessed."""
+    metric_id: str
+    label: str
+    value: str
+    unit: str = ""
+
+
 class PresentationChart(BaseModel):
     chart_id: str
-    type: Literal["bar", "line"] = "bar"
+    type: Literal["bar", "line", "area", "donut"] = "bar"
     title: str
     categories: List[str] = Field(default_factory=list)
     series: List[PresentationSeries] = Field(default_factory=list)
     unit: str = ""
+    value_format: Literal["number", "currency", "percent"] = "number"
+    currency_code: Literal["USD", "GBP", "EUR"] | None = None
+    decimal_places: int = Field(default=2, ge=0, le=6)
+    x_axis_label: str = ""
+    y_axis_label: str = ""
+    accessible_summary: str = ""
 
 
 class PresentationGuide(BaseModel):
     guide_id: str
-    type: Literal["process", "timeline", "checklist"]
+    type: Literal["process", "timeline", "checklist", "decision_flow"]
     title: str
     items: List[str] = Field(default_factory=list)
+
+
+class VisualBlock(BaseModel):
+    """One visual, described by what it IS rather than by how to draw it.
+
+    Renderer-agnostic on purpose: the client maps `kind` to a component, so a
+    renderer can be swapped or lazily loaded without the contract moving. The
+    block never carries chart values — those live in the dataset it names, so
+    a block cannot introduce a number the answer did not already support.
+
+    Additive alongside `layout`/`charts`/`metrics`, which remain the rendered
+    contract. This is the shape the client migrates to; until then it is
+    populated and unread, so the migration can happen on the frontend's own
+    schedule rather than as a coordinated break.
+    """
+    block_id: str
+    kind: Literal["metric", "bar", "line", "area", "donut", "table", "text"]
+    title: str = ""
+    # Identifies the dataset a renderer must resolve values from.
+    dataset_id: str = ""
+    # Hash of the dataset's DATA. Two purposes: a cache key that hits when the
+    # same figures recur, and a reproducibility check — an audit export can be
+    # compared against what the user was actually shown.
+    dataset_hash: str = ""
+    # Answer-level [REF-N] ids supporting this block. Answer-level, not
+    # row-level: markdown parsing cannot attribute a single table row to a
+    # single citation. Row-level provenance is carried by the Dataset and
+    # becomes populated when composition emits blocks directly.
+    citations: List[str] = Field(default_factory=list)
+    # Always present. A renderer failure must degrade to the truth rather than
+    # to an empty box, so this is never optional in practice.
+    text_fallback: str = ""
+    # Why a chart was not produced ("mixed_units", "too_many_rows",
+    # "rows_without_citation"). A missing visual should be explainable rather
+    # than mysterious.
+    reasons: List[str] = Field(default_factory=list)
+    # Set when rows were dropped to fit a rendering bound, so "20 of 340 rows"
+    # can be stated instead of silently shown.
+    truncated_from: Optional[int] = None
 
 
 class AnswerPresentation(BaseModel):
@@ -222,9 +305,11 @@ class AnswerPresentation(BaseModel):
     table_count: int = 0
     has_steps: bool = False
     charts: List[PresentationChart] = Field(default_factory=list)
+    metrics: List[PresentationMetric] = Field(default_factory=list)
     guides: List[PresentationGuide] = Field(default_factory=list)
     sections: List[str] = Field(default_factory=list)
     follow_up_questions: List[str] = Field(default_factory=list)
+    blocks: List[VisualBlock] = Field(default_factory=list)
 
 
 class ComposedAnswer(BaseModel):
@@ -273,3 +358,8 @@ class AskKritonResponse(BaseModel):
     answer: Optional[ComposedAnswer] = None
     next_action: Optional[NextAction] = None
     audit_reference: AuditReference
+    # Populated by the orchestration router after ask_kriton() returns (see
+    # chat_history.service.resolve_conversation) — never set inside
+    # ask_kriton() itself, so none of its many return branches need to know
+    # about conversation persistence.
+    conversation_id: Optional[str] = None

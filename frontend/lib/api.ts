@@ -525,6 +525,10 @@ export type AskKritonRequest = {
   query: string;
   jurisdiction?: string;
   mode?: string;
+  /** Prior user queries this conversation, most recent last — never the composed answers. */
+  history?: string[];
+  /** Which persisted conversation to append this turn to — omit/null to start a new one. */
+  conversation_id?: string | null;
   /** Playground overrides — not trusted from body in production */
   source_confidence?: string;
   pre_bundle_state?: string;
@@ -568,6 +572,14 @@ export type SourceCitation = {
   ref_id: string;
   source_id: string;
   title: string;
+  /** Whether this source governs a claim or only provides added context. */
+  evidence_role?: "controlling" | "supporting";
+  /** "live_api" for a dynamically-fetched source (live_sources/ or
+   * reference_data/ connectors — Treasury, Census, FRED, professional
+   * search, etc.), "document" for an ingested/uploaded document. */
+  source_type?: "document" | "live_api";
+  /** Only set for live-data citations — a real, clickable external URL (e.g. the ONS dataset page). Document citations have no public URL today. */
+  source_url?: string | null;
   /** Absolute external URL for a live-fetched source, a relative
    * `/sources/{id}/file` link for an uploaded/ingested document (requires
    * auth — see openSourceUrl), or null if this source has no viewable
@@ -618,20 +630,65 @@ export type PresentationSeries = {
   values: string[];
 };
 
+/** A single headline number from a table that reduces to one row (e.g.
+ * "Total revenue: $482,000") — no delta/trend in v1, a single row has no
+ * second point to diff against. */
+export type PresentationMetric = {
+  metric_id: string;
+  label: string;
+  value: string;
+  unit: string;
+};
+
 export type PresentationChart = {
   chart_id: string;
-  type: "bar" | "line";
+  type: "bar" | "line" | "area" | "donut";
   title: string;
   categories: string[];
   series: PresentationSeries[];
   unit: string;
+  value_format?: "number" | "currency" | "percent";
+  currency_code?: "USD" | "GBP" | "EUR" | null;
+  decimal_places?: number;
+  x_axis_label?: string;
+  y_axis_label?: string;
+  accessible_summary?: string;
 };
 
 export type PresentationGuide = {
   guide_id: string;
-  type: "process" | "timeline" | "checklist";
+  type: "process" | "timeline" | "checklist" | "decision_flow";
   title: string;
   items: string[];
+};
+
+/**
+ * One visual, described by what it IS rather than how to draw it — so the
+ * renderer for a `kind` can be swapped or lazily loaded without this contract
+ * moving. Carries no values: those live in the dataset it names, which is what
+ * makes it impossible for a visual to introduce a number the answer did not
+ * already support.
+ *
+ * Emitted by the backend today and deliberately not yet rendered — `charts`,
+ * `metrics` and `guides` remain the rendered contract. Reading `blocks` is the
+ * migration, and keeping both means it happens on this side's own schedule
+ * rather than as a coordinated break. Mirrors `VisualBlock` in
+ * backend/app/orchestration/schemas.py.
+ */
+export type VisualBlock = {
+  block_id: string;
+  kind: "metric" | "bar" | "line" | "area" | "donut" | "table" | "text";
+  title: string;
+  dataset_id: string;
+  /** Hash of the dataset's data — a cache key, and an audit reproducibility check. */
+  dataset_hash: string;
+  citations: string[];
+  /** Always present. A renderer failure must degrade to the truth, not an empty box. */
+  text_fallback: string;
+  /** Why no chart was produced ("mixed_units", "too_many_rows", …). */
+  reasons: string[];
+  /** Set when rows were dropped to fit a rendering bound. */
+  truncated_from?: number | null;
 };
 
 export type AnswerPresentation = {
@@ -639,9 +696,11 @@ export type AnswerPresentation = {
   table_count: number;
   has_steps: boolean;
   charts: PresentationChart[];
+  metrics: PresentationMetric[];
   guides: PresentationGuide[];
   sections: string[];
   follow_up_questions: string[];
+  blocks?: VisualBlock[];
 };
 
 export type ComposedAnswer = {
@@ -702,6 +761,10 @@ export type AskKritonResponse = {
   next_action: NextAction | null;
   /** Opaque — never expose audit_chain_id internals to UI rendering logic */
   audit_reference: AuditReference;
+  /** Set by the backend after ask_kriton() returns — the persisted
+   * conversation this turn was recorded into (see app/domains/chat_history).
+   * Pass it back on the next AskKritonRequest to continue the same thread. */
+  conversation_id: string | null;
 };
 
 export async function askKriton(
@@ -740,6 +803,52 @@ export async function recomputeCalculation(
     body: JSON.stringify({ formula_id: formulaId, inputs }),
   });
   return res.json();
+}
+
+export type ConversationSummary = {
+  id: string;
+  title: string;
+  jurisdiction: string;
+  mode: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  route: string | null;
+  risk_level: string | null;
+  citations: SourceCitation[] | null;
+  created_at: string;
+};
+
+export type ConversationDetail = ConversationSummary & {
+  messages: ChatMessage[];
+};
+
+export async function listConversations(token: string): Promise<ConversationSummary[]> {
+  const res = await authedFetch("/conversations", token);
+  return res.json();
+}
+
+export async function getConversation(token: string, id: string): Promise<ConversationDetail> {
+  const res = await authedFetch(`/conversations/${id}`, token);
+  return res.json();
+}
+
+export async function renameConversation(token: string, id: string, title: string): Promise<ConversationSummary> {
+  const res = await authedFetch(`/conversations/${id}`, token, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  return res.json();
+}
+
+export async function deleteConversation(token: string, id: string): Promise<void> {
+  await authedFetch(`/conversations/${id}`, token, { method: "DELETE" });
 }
 
 export type SavedAnswer = {
@@ -831,6 +940,65 @@ export type UploadResponse = {
   jurisdiction: string;
   file_path: string;
 };
+
+// ── Authoritative live sources ──────────────────────────────────────────
+
+export type ProviderHealth = {
+  provider_key: string;
+  display_name: string;
+  status: string;
+  integration_type: string;
+  jurisdiction: string;
+  authority_rank: number;
+  last_successful_sync: string | null;
+  last_content_hash: string | null;
+  freshness_sla_seconds: number | null;
+  age_seconds: number | null;
+  freshness: "fresh" | "stale" | "unknown" | "unmonitored";
+};
+
+export async function getProviderHealth(token: string): Promise<ProviderHealth[]> {
+  const res = await authedFetch("/live-sources/health", token);
+  return res.json();
+}
+
+export type EvidenceRecord = {
+  provider_key: string;
+  record_id: string;
+  record_type: string;
+  title: string;
+  summary: string;
+  jurisdiction: string;
+  published_at: string | null;
+  effective_at: string | null;
+  source_url: string;
+};
+
+export type EvidenceSearchResponse = {
+  provider_key: string;
+  query: string;
+  records: EvidenceRecord[];
+  fetched_at: string;
+};
+
+export async function listEvidenceProviders(token: string): Promise<string[]> {
+  const res = await authedFetch("/live-sources/evidence/providers", token);
+  return res.json();
+}
+
+export async function searchEvidence(
+  token: string,
+  providerKey: string,
+  query: string,
+  pageSize = 10,
+): Promise<EvidenceSearchResponse> {
+  const res = await authedFetch("/live-sources/evidence/search", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider_key: providerKey, query, page_size: pageSize }),
+  });
+  return res.json();
+}
 
 export async function uploadDocument(token: string, file: File): Promise<UploadResponse> {
   const form = new FormData();

@@ -13,6 +13,11 @@ A deterministic Python/FastAPI service that acts as the absolute authority on ri
 - **L1 Fast Scan:** Regex-based defense-in-depth for PII, explicit bypass attempts, and academic integrity violations.
 - **L2 ML Semantic Engine:** A Zero-Shot Classification pipeline (powered by HuggingFace `transformers`) that mathematically scores the intent of a prompt against semantic labels (e.g., "regulated tax advice" vs "general educational concept").
 - **Strict Governance:** Automatically triggers `CLASSIFICATION_UNCERTAIN` states for ambiguous queries, routing them to clarification workflows instead of guessing.
+- **Contextual Groq Classification:** Set `RISK_LLM_CLASSIFIER_PROVIDER=groq` and
+  `RISK_LLM_CLASSIFIER_MODE=primary` to make a strict-schema Groq model the
+  semantic authority for multi-label intent and contextual risk. Up to three
+  prior user queries are used to resolve follow-ups; deterministic privacy,
+  licence, emergency, security, and routing controls remain authoritative.
 - **Audit Ledger:** Records 100% of routing decisions, overrides, escalations, and maker-checker violations in a local SQLite database (`zoikologia.db`), matching the exact payload schema mandated by Section 15 of ZL-T0-04.
 
 ### 2. Frontend: Governance Dashboard (`/frontend`)

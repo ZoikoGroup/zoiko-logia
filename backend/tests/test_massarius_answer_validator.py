@@ -198,6 +198,24 @@ def test_internal_reasoning_only_source_never_exposed():
     print("test_internal_reasoning_only_source_never_exposed: PASSED")
 
 
+def test_correct_calculation_passes():
+    result = validate_answer("The VAT due is 1000 * 20% = 200. [REF-1]", _BUNDLE)
+    assert result.passed
+    print("test_correct_calculation_passes: PASSED")
+
+
+def test_wrong_calculation_degrades_to_human_review():
+    """Master Architecture Build Doctrine §3: LLM arithmetic must be
+    validated by a deterministic service, not trusted outright. This is
+    the regression test for that requirement — before calculation_engine.py
+    existed, nothing in the pipeline caught a wrong arithmetic answer."""
+    result = validate_answer("The VAT due is 1000 * 20% = 300. [REF-1]", _BUNDLE)
+    assert not result.passed
+    assert any("Calculation error" in f for f in result.failures)
+    assert result.degraded_route == "HUMAN_REVIEW"
+    print("test_wrong_calculation_degrades_to_human_review: PASSED")
+
+
 def test_fabricated_figure_fails_numeric_fidelity():
     """The exact real incident this check was added for: a model cites a
     real, eligible source but invents a dollar figure nowhere in the text
@@ -600,6 +618,24 @@ def test_concept_question_missing_depth_fails_tutor_structure_check():
     print("test_concept_question_missing_depth_fails_tutor_structure_check: PASSED")
 
 
+def test_factual_indicator_list_does_not_require_tutor_example():
+    result = validate_answer(
+        "External indicators include adverse market changes, while internal indicators include physical damage and weaker-than-expected performance. [REF-1]",
+        _BUNDLE,
+        query_text="What are the impairment indicators under IAS 36?",
+    )
+    assert result.passed, result.failures
+
+
+def test_step_by_step_process_does_not_require_tutor_example():
+    result = validate_answer(
+        "1. Compare the ledger and statement. [REF-1]\n2. Identify timing differences. [REF-1]\n3. Record supported book adjustments and verify agreement. [REF-1]",
+        _BUNDLE,
+        query_text="Explain the complete bank-reconciliation process step by step.",
+    )
+    assert result.passed, result.failures
+
+
 def test_concept_question_with_full_depth_passes_tutor_structure_check():
     """A genuinely tutor-depth answer to the same kind of question — covers
     what/why/example — must pass."""
@@ -735,6 +771,8 @@ if __name__ == "__main__":
     test_confidence_support_blocks_unhedged_certainty_on_limited_confidence()
     test_disclaimer_presence_required_when_flagged()
     test_internal_reasoning_only_source_never_exposed()
+    test_correct_calculation_passes()
+    test_wrong_calculation_degrades_to_human_review()
     test_fabricated_figure_fails_numeric_fidelity()
     test_grounded_figure_passes_numeric_fidelity()
     test_no_grounding_context_skips_numeric_fidelity_check()

@@ -10,21 +10,41 @@ from __future__ import annotations
 import re
 from decimal import Decimal, InvalidOperation
 
+from app.orchestration.dataset import (
+    Dataset,
+    VisualDecision,
+    build_dataset,
+    select_visual_kind,
+)
+from app.orchestration.format_intent import is_decision_judgment_query
 from app.orchestration.schemas import (
     AnswerPresentation,
     PresentationChart,
     PresentationGuide,
+    PresentationMetric,
     PresentationSeries,
+    VisualBlock,
 )
 
 
 _TABLE_SEPARATOR = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
 _CITATION = re.compile(r"\s*\[REF-\d+\]\s*")
 _MARKDOWN = re.compile(r"[*_`]")
-_ORDERED_STEP = re.compile(r"(?m)^\s*\d+[.)]\s+")
+# 2026-07-29 real incident: an audit checklist ("Control Environment... -
+# Evaluate the company's control environment... Risk Assessment... - Identify
+# the locations...") rendered as plain text with zero chart/metric/guide
+# panel, even though it's exactly the kind of content the checklist guide
+# exists for. Root cause: the model wrote it as bullet lines ('- item'), and
+# both patterns below only ever matched a literal numbered prefix ('1.'/'1)')
+# — a bulleted procedure or checklist is at least as common in real model
+# output as a numbered one, and previously produced nothing at all. Extended
+# to accept '-', '*', or '•' as an alternative to a digit prefix; a numbered
+# list is still recognized exactly as before, this only adds a second,
+# equally common shape rather than replacing the first.
+_ORDERED_STEP = re.compile(r"(?m)^\s*(?:\d+[.)]|[-*•])\s+")
 _HEADING = re.compile(r"(?m)^#{1,4}\s+")
 _HEADING_LINE = re.compile(r"^#{1,4}\s+(.+?)\s*$")
-_ORDERED_LINE = re.compile(r"^\s*\d+[.)]\s+(.+?)\s*$")
+_ORDERED_LINE = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s+(.+?)\s*$")
 _COMPARE_QUERY = re.compile(r"\b(compare|comparison|difference|versus|vs\.?|pros?\s+and\s+cons?)\b", re.IGNORECASE)
 _TIMELINE_QUERY = re.compile(r"\b(timeline|schedule|deadline|due date|chronolog(?:y|ical)?)\b", re.IGNORECASE)
 _CHECKLIST_QUERY = re.compile(r"\b(checklist|check list|review|verify|validation)\b", re.IGNORECASE)
@@ -43,7 +63,10 @@ _CALCULATION_ANSWER = re.compile(
     re.IGNORECASE,
 )
 _MISSING_INPUT_ANSWER = re.compile(r"(?m)^## Information needed\s*$")
-_VISUAL_REQUEST = re.compile(r"\b(chart|graph|visuali[sz]e|plot)\b", re.IGNORECASE)
+_VISUAL_REQUEST = re.compile(
+    r"\b(chart|graph|visuali[sz]e|plot|breakdown|composition|proportion|share of|percentage of)\b",
+    re.IGNORECASE,
+)
 _BROAD_EXPLANATION_QUERY = re.compile(
     r"\b(complete picture|full picture|comprehensive|detailed|in depth|overview)\b",
     re.IGNORECASE,
@@ -54,6 +77,51 @@ _NUMBER = re.compile(
     r"(?P<code>USD|GBP|EUR)?\s*\)?\s*$",
     re.IGNORECASE,
 )
+# A donut is a weaker general-purpose form than a bar-of-shares (angle/area
+# is harder to compare than aligned length), but it's the form actually
+# requested for "composition" answers — kept intentionally narrow (exactly
+# one category column + one numeric series, capped slice count) so it only
+# ever fires for genuine part-of-a-whole data, never as a substitute for an
+# ordinary 2-column bar comparison.
+_SHARE_HEADER_PATTERN = re.compile(r"\b(share|proportion|composition|breakdown|percent(?:age)?|mix)\b", re.IGNORECASE)
+_MAX_DONUT_SLICES = 6
+
+
+# Unit symbol/code as it appears in an answer table -> the ISO code the
+# chart contract carries. Extracted from inline so it has one home, and so
+# the test suite can hold it against PresentationChart.currency_code's own
+# Literal: those were two independent lists of permitted currencies, and
+# adding a symbol here without widening the Literal makes pydantic reject
+# the chart inside _chart_from_table — which has no try/except, and neither
+# does build_answer_presentation, so it would surface as a failed ANSWER
+# rather than a missing chart.
+_CURRENCY_BY_UNIT: dict[str, str] = {
+    "$": "USD", "USD": "USD",
+    "£": "GBP", "GBP": "GBP",
+    "€": "EUR", "EUR": "EUR",
+}
+
+
+def _chart_display_metadata(
+    *, unit: str, category_label: str, title: str,
+    categories: list[str], series: list[PresentationSeries],
+) -> dict:
+    currency_code = _CURRENCY_BY_UNIT.get(unit)
+    value_format = "percent" if unit == "%" else "currency" if currency_code else "number"
+    values = [Decimal(value) for item in series for value in item.values]
+    decimal_places = 0 if values and all(value == value.to_integral_value() for value in values) else 2
+    y_axis_label = "%" if value_format == "percent" else currency_code or unit
+    return {
+        "value_format": value_format,
+        "currency_code": currency_code,
+        "decimal_places": decimal_places,
+        "x_axis_label": category_label,
+        "y_axis_label": y_axis_label,
+        "accessible_summary": (
+            f"{title}. {len(categories)} categories and {len(series)} data "
+            f"series, derived from the validated answer table."
+        ),
+    }
 
 
 def _cells(line: str) -> list[str]:
@@ -192,7 +260,115 @@ def _extract_tables(markdown: str) -> list[tuple[list[str], list[list[str]]]]:
     return tables
 
 
-def _chart_from_table(headers: list[str], rows: list[list[str]], position: int) -> PresentationChart | None:
+def _is_donut_candidate(
+    headers: list[str], series: list[PresentationSeries], unit: str, is_temporal: bool, query: str,
+) -> bool:
+    """Donut is opt-in only, never inferred from value sign — an ordinary
+    2-column comparison (e.g. "Cash | 50000" vs "Receivables | 30000") is
+    still a bar comparison, not a proportion, even though both values happen
+    to be non-negative. Requires an explicit share/composition/breakdown
+    signal in the table's own headers or the user's query, matching the
+    same wording that gates automatic charting at all (see _VISUAL_REQUEST)."""
+    if is_temporal or len(headers) != 2 or len(series) != 1:
+        return False
+    return bool(
+        unit == "%"
+        or _SHARE_HEADER_PATTERN.search(headers[0])
+        or _SHARE_HEADER_PATTERN.search(headers[1])
+        or _SHARE_HEADER_PATTERN.search(query)
+    )
+
+
+def _composition_hint(headers: list[str], query: str) -> str:
+    """The tie-break the DATA cannot supply.
+
+    Whether two non-negative values are a composition or a magnitude
+    comparison is a fact about the reader's intent, not about the numbers, so
+    it reaches dataset.select_visual_kind() as a hint rather than being
+    inferred. Percentage units need no hint — those ARE a property of the
+    data, and the dataset layer reads them itself.
+
+    Two sources feed the same hint and the dataset layer does not care which:
+    this local share/composition wording, and the classifier's own
+    presentation_hint once that is enabled.
+    """
+    if _SHARE_HEADER_PATTERN.search(query) or any(
+        _SHARE_HEADER_PATTERN.search(header) for header in headers
+    ):
+        return "compositional"
+    return ""
+
+
+def _cap_donut_slices(
+    categories: list[str], series: PresentationSeries,
+) -> tuple[list[str], list[PresentationSeries]]:
+    """Never render an illegible many-slice donut — beyond the cap, keep the
+    largest slices and roll the remainder into one "Other" slice rather than
+    silently truncating data out of the chart."""
+    if len(categories) <= _MAX_DONUT_SLICES:
+        return categories, [series]
+    paired = sorted(
+        zip(categories, series.values), key=lambda pair: abs(Decimal(pair[1])), reverse=True,
+    )
+    top = paired[:_MAX_DONUT_SLICES - 1]
+    other_total = sum((Decimal(value) for _, value in paired[_MAX_DONUT_SLICES - 1:]), start=Decimal(0))
+    capped_categories = [category for category, _ in top] + ["Other"]
+    capped_values = [value for _, value in top] + [format(other_total, "f")]
+    return capped_categories, [PresentationSeries(name=series.name, values=capped_values)]
+
+
+def _dataset_for_table(
+    headers: list[str], rows: list[list[str]], position: int,
+) -> Dataset:
+    """Every table becomes an addressable dataset, whether or not it charts.
+
+    Built even for tables that will only ever render as text: the dataset is
+    what makes a *declined* visual explainable, and its content hash is what
+    makes the outcome reproducible.
+    """
+    return build_dataset(
+        dataset_id=f"answer-dataset-{position + 1}",
+        title=headers[0] if headers else f"Table {position + 1}",
+        headers=headers,
+        rows=rows,
+        source_kind="answer_table",
+    )
+
+
+def _visual_block(
+    dataset: Dataset, decision: VisualDecision, position: int, citations: list[str],
+) -> VisualBlock:
+    return VisualBlock(
+        block_id=f"answer-block-{position + 1}",
+        kind=decision.kind,
+        title=dataset.title,
+        dataset_id=dataset.dataset_id,
+        dataset_hash=dataset.content_hash,
+        citations=list(citations),
+        text_fallback=_dataset_text_fallback(dataset),
+        reasons=list(decision.reasons),
+        truncated_from=dataset.total_row_count if dataset.is_truncated else None,
+    )
+
+
+def _dataset_text_fallback(dataset: Dataset) -> str:
+    """The dataset as a sentence, for when no renderer runs at all.
+
+    Deliberately not the Markdown table: that is already in the answer text a
+    reader can see. This is the one-line description a screen reader or a
+    failed render needs in its place.
+    """
+    columns = ", ".join(column.name for column in dataset.columns[1:]) or "no measures"
+    return (
+        f"{dataset.title}: {len(dataset.rows)} rows covering {columns}."
+        + (f" Showing {len(dataset.rows)} of {dataset.total_row_count}." if dataset.is_truncated else "")
+    )
+
+
+def _chart_from_table(
+    headers: list[str], rows: list[list[str]], position: int, query: str,
+    decision: VisualDecision | None = None,
+) -> PresentationChart | None:
     if not 2 <= len(rows) <= 12 or len(headers) > 6:
         return None
     categories = [row[0] for row in rows]
@@ -229,19 +405,85 @@ def _chart_from_table(headers: list[str], rows: list[list[str]], position: int) 
 
     if not series or len(units) > 1:
         return None
+    unit = next(iter(units), "")
     title = headers[0] if len(series) == 1 else f"{headers[0]} comparison"
-    chart_type = "line" if re.search(r"\b(period|quarter|month|year|date)\b", headers[0], re.I) else "bar"
+    is_temporal = bool(re.search(r"\b(period|quarter|month|year|date)\b", headers[0], re.I))
+
+    # The dataset layer's verdict wins where it has one, so the emitted chart
+    # and the emitted block can never disagree about the kind — two places
+    # deciding the same thing is how they drift.
+    wants_donut = (
+        decision.kind == "donut" if decision is not None and decision.renders_chart
+        else _is_donut_candidate(headers, series, unit, is_temporal, query)
+    )
+    if wants_donut and len(series) == 1 and not is_temporal:
+        donut_categories, donut_series = _cap_donut_slices(categories, series[0])
+        return PresentationChart(
+            chart_id=f"answer-table-{position + 1}",
+            type="donut",
+            title=title,
+            categories=donut_categories,
+            series=donut_series,
+            unit=unit,
+            **_chart_display_metadata(
+                unit=unit, category_label=headers[0], title=title,
+                categories=donut_categories, series=donut_series,
+            ),
+        )
+
+    # The dataset layer decides between area/line/bar from the same shape
+    # facts this function computes locally. Its verdict is preferred when
+    # available so there is one place that maps shape to kind; the local
+    # derivation stays as the fallback for a table the dataset layer declined
+    # for a reason this builder does not model (variance-column filtering
+    # above can leave a plottable series set where the raw dataset had none).
+    if decision is not None and decision.kind in {"area", "line", "bar"}:
+        chart_type = decision.kind
+    elif is_temporal:
+        chart_type = "area" if len(series) == 1 else "line"
+    else:
+        chart_type = "bar"
     return PresentationChart(
         chart_id=f"answer-table-{position + 1}",
         type=chart_type,
         title=title,
         categories=categories,
         series=series[:4],
-        unit=next(iter(units), ""),
+        unit=unit,
+        **_chart_display_metadata(
+            unit=unit, category_label=headers[0], title=title,
+            categories=categories, series=series[:4],
+        ),
     )
 
 
-def build_answer_presentation(query: str, answer_text: str) -> AnswerPresentation:
+def _metric_from_table(headers: list[str], rows: list[list[str]], position: int) -> PresentationMetric | None:
+    """A table that reduces to exactly one row isn't a chart — it's one
+    headline number (e.g. "Total revenue: $482,000"). `_chart_from_table`
+    already declines any table with fewer than 2 rows, so this is the
+    dedicated path for that case rather than an extension of it."""
+    if len(rows) != 1:
+        return None
+    row = rows[0]
+    for column in range(1, len(headers)):
+        parsed = _numeric(row[column])
+        if parsed is None:
+            continue
+        value, unit = parsed
+        label = _compact(row[0], 60) if not _numeric(row[0]) else headers[column]
+        return PresentationMetric(
+            metric_id=f"answer-metric-{position + 1}", label=label, value=value, unit=unit,
+        )
+    return None
+
+
+def build_answer_presentation(
+    query: str,
+    answer_text: str,
+    *,
+    presentation_hint: str = "",
+    citation_refs: list[str] | None = None,
+) -> AnswerPresentation:
     tables = _extract_tables(answer_text)
     is_calculation = bool(_CALCULATION_ANSWER.search(answer_text))
     is_missing_input = bool(_MISSING_INPUT_ANSWER.search(answer_text))
@@ -250,10 +492,39 @@ def build_answer_presentation(query: str, answer_text: str) -> AnswerPresentatio
         for headers, _rows in tables
     )
     allow_automatic_chart = bool(_VISUAL_REQUEST.search(query)) or (temporal_table and not is_calculation)
+
+    # One dataset per table, and one recorded decision per dataset — built
+    # before any chart so that a declined visual carries the reason it was
+    # declined rather than simply being absent.
+    datasets = [
+        _dataset_for_table(headers, rows, position)
+        for position, (headers, rows) in enumerate(tables)
+    ]
+    decisions = [
+        select_visual_kind(
+            dataset,
+            # The classifier's hint, or the local share/composition wording —
+            # whichever is present. The dataset layer does not distinguish.
+            presentation_hint=presentation_hint or _composition_hint(list(headers), query),
+            allow_chart=allow_automatic_chart,
+        )
+        for dataset, (headers, _rows) in zip(datasets, tables)
+    ]
+
     charts = [
         chart
         for position, (headers, rows) in enumerate(tables)
-        if allow_automatic_chart and (chart := _chart_from_table(headers, rows, position)) is not None
+        if allow_automatic_chart
+        and (chart := _chart_from_table(headers, rows, position, query, decisions[position])) is not None
+    ]
+    # Not gated by allow_automatic_chart — a table that reduces to one row is
+    # already shown as accessible text; rendering it as a stat tile too is a
+    # presentation enhancement of data already displayed, not a new chart the
+    # user didn't ask for.
+    metrics = [
+        metric
+        for position, (headers, rows) in enumerate(tables)
+        if (metric := _metric_from_table(headers, rows, position)) is not None
     ]
     has_steps = bool(_ORDERED_STEP.search(answer_text))
     has_headings = bool(_HEADING.search(answer_text))
@@ -263,7 +534,7 @@ def build_answer_presentation(query: str, answer_text: str) -> AnswerPresentatio
         layout = "calculation"
     elif has_steps and _TIMELINE_QUERY.search(query):
         layout = "step_by_step"
-    elif charts:
+    elif charts or metrics:
         layout = "data_visualization"
     elif tables or _COMPARE_QUERY.search(query):
         layout = "comparison"
@@ -276,7 +547,12 @@ def build_answer_presentation(query: str, answer_text: str) -> AnswerPresentatio
     ordered_items = _extract_ordered_items(answer_text)
     guides: list[PresentationGuide] = []
     if ordered_items and not is_calculation and not is_missing_input:
-        if _TIMELINE_QUERY.search(query):
+        # Checked first — a decision-judgment query's numbered considerations
+        # take priority over an incidental timeline/checklist keyword also
+        # appearing in the same query.
+        if is_decision_judgment_query(query):
+            guide_type, guide_title = "decision_flow", "Decision considerations"
+        elif _TIMELINE_QUERY.search(query):
             guide_type, guide_title = "timeline", "Timeline"
         elif _CHECKLIST_QUERY.search(query):
             guide_type, guide_title = "checklist", "Review checklist"
@@ -288,11 +564,22 @@ def build_answer_presentation(query: str, answer_text: str) -> AnswerPresentatio
             title=guide_title,
             items=ordered_items,
         ))
+    # Populated but not yet rendered — see VisualBlock's docstring. Emitting
+    # it now means the frontend can migrate on its own schedule instead of
+    # this becoming a coordinated breaking change, and it means the recorded
+    # decisions are observable in the API response today.
+    refs = list(citation_refs or [])
+    blocks = [
+        _visual_block(dataset, decision, position, refs)
+        for position, (dataset, decision) in enumerate(zip(datasets, decisions))
+    ]
+
     return AnswerPresentation(
         layout=layout,
         table_count=len(tables),
         has_steps=has_steps,
         charts=charts,
+        metrics=metrics,
         guides=guides,
         sections=(
             _extract_sections(answer_text)
@@ -300,4 +587,5 @@ def build_answer_presentation(query: str, answer_text: str) -> AnswerPresentatio
             else []
         ),
         follow_up_questions=[] if is_missing_input else _follow_ups(layout, query),
+        blocks=blocks,
     )

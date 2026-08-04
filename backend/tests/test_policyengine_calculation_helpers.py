@@ -9,6 +9,8 @@ Run locally (from backend/, venv active):
 """
 import os
 import sys
+from importlib.metadata import PackageNotFoundError, version
+import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -24,6 +26,12 @@ from app.domains.calculation.household_extraction import (
 )
 from app.domains.calculation.policyengine_engine import run_calculation
 from app.domains.calculation.service import to_calculation_rag_chunk, POLICYENGINE_NODE_PREFIX
+
+try:
+    version("policyengine-us")
+    POLICYENGINE_AVAILABLE = True
+except PackageNotFoundError:
+    POLICYENGINE_AVAILABLE = False
 
 
 # ── extract_annual_income ────────────────────────────────────────────────
@@ -273,6 +281,10 @@ def test_extract_household_params_none_when_compound_comparison_query():
 import asyncio
 
 
+@pytest.mark.skipif(
+    not POLICYENGINE_AVAILABLE,
+    reason="policyengine-us is not installed",
+)
 def test_real_calculation_known_scenario():
     household = HouseholdParams(
         annual_income=32000.0,
@@ -289,6 +301,10 @@ def test_real_calculation_known_scenario():
     print("test_real_calculation_known_scenario: PASSED")
 
 
+@pytest.mark.skipif(
+    not POLICYENGINE_AVAILABLE,
+    reason="policyengine-us is not installed",
+)
 def test_to_calculation_rag_chunk_shape():
     household = HouseholdParams(
         annual_income=32000.0,

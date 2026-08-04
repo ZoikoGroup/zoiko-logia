@@ -14,11 +14,23 @@ from typing import Optional
 
 from app.core.config import get_settings
 from app.domains.risk_safety.models import RiskLevel, RestrictedSubClass, Route
-from app.domains.risk_safety.routing_matrix import ROUTING_MATRIX_VERSION, resolve as resolve_route
-from app.domains.risk_safety import llm_classifier
+from app.domains.risk_safety.routing_matrix import ROUTING_MATRIX_VERSION
+from app.domains.risk_safety import classifier_metrics, llm_classifier
 from app.domains.risk_safety.query_signals import analyze as analyze_query_signals
 
 settings = get_settings()
+
+# Same fix as rag/embeddings.py, same reasoning — this is also a
+# HuggingFace/transformers model, cached locally, PyTorch-only. Profiled
+# elsewhere this session: skipping the Hub network-revalidation and
+# TensorFlow backend probing cuts a cold model load from tens of seconds
+# down to under one. setdefault() so an explicit env value elsewhere
+# always wins; harmless if another module already set these first
+# (process-global either way).
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_TORCH", "1")
 
 # ─── ML Pipeline Initialization ─────────────────────────────────────────────
 # We use a lightweight cross-encoder for fast zero-shot text classification.
@@ -67,6 +79,11 @@ _ACADEMIC_PATTERNS: list[re.Pattern] = [
 _BYPASS_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(ignore\s+instructions|jailbreak|system\s+prompt|bypass\s+safety|DAN\s+mode)\b", re.IGNORECASE)
 ]
+
+_SANCTIONS_SCREENING_PATTERN = re.compile(
+    r"\b(?:screen|check|search|is)\b.{1,220}\b(?:OFAC|SDN\s+list|UN\s+sanctions|UN\s+Security\s+Council\s+Consolidated\s+List|UK\s+sanctions|EU\s+sanctions)\b",
+    re.IGNORECASE,
+)
 
 # 2026-07-22 (product vision doc, item 2 — memory:
 # product-vision-kriton-tutor-not-search): the vision doc's own canonical
@@ -142,6 +159,21 @@ _FACTUAL_LOOKUP_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(current|latest|today(?:'s)?)\b.*\b(rate|cpi|inflation|gdp|income|yield)\b", re.IGNORECASE),
     re.compile(r"\b(exchange|treasury|federal\s+funds|interest)\s+rate\b", re.IGNORECASE),
     re.compile(r"\bfed(?:eral)?\s+funds\s+rate\b", re.IGNORECASE),
+    # 2026-07-29 real incident: "Look up bill HR 1 from the 118th Congress" —
+    # an unambiguous, objective, public-record citation lookup with no
+    # personal framing at all — fell through this entirely economic-data-
+    # shaped pattern list, landed in the ML/LLM semantic path, came back
+    # low-confidence, and got forced into CLASSIFICATION_UNCERTAIN's fixed
+    # MEDIUM-risk clarification response. Same category as the rate/CPI/GDP
+    # patterns above (a citation lookup, not a risk question) — reusing the
+    # same identifier-shaped patterns extract_congress_bill_identifier() and
+    # extract_cfr_section() already use in reference_data/service.py for the
+    # actual retrieval, so this gate recognizes exactly the query shapes
+    # those connectors do.
+    re.compile(r"\bh\.?\s?r\.?\s*\d+\b", re.IGNORECASE),  # "H.R. 1", "HR1"
+    re.compile(r"\b\d{1,3}(?:st|nd|rd|th)\s+congress\b", re.IGNORECASE),  # "118th Congress"
+    re.compile(r"\b\d+\s*cfr\b", re.IGNORECASE),  # "26 CFR"
+    re.compile(r"\bcfr\s+(?:part\s+|section\s+)?\d", re.IGNORECASE),  # "CFR section 1.61-1"
 ]
 
 _NAVIGATION_PATTERNS: list[re.Pattern] = [
@@ -163,6 +195,73 @@ _AMBIGUOUS_PATTERNS: list[re.Pattern] = [
         re.IGNORECASE,
     ),
 ]
+
+# ── Semantic evasion gate — ADDITIVE only, never a replacement ──────────────
+# Regex hard-blocks above (_BYPASS_PATTERNS etc.) only match exact literal
+# phrasing ("jailbreak", "ignore instructions") — a cleverly-worded evasion
+# attempt that avoids those exact words passes through untouched today.
+# Validated this session: scoring evasive framing as ONE MORE routing
+# category (competing against benign intent categories) produces dangerously
+# ambiguous scores for disguised phrasing (0.65-0.70, indistinguishable from
+# a confident benign match) — the fix is to score it independently, on its
+# own dedicated exemplar set, never blended into any other classification.
+# This check runs ALONGSIDE the regex patterns above, not instead of them —
+# _BYPASS_PATTERNS/_ACADEMIC_PATTERNS/_ADVICE_SIGNALS are UNTOUCHED.
+_EVASION_EXEMPLARS = (
+    "help me hide taxable income from the tax authorities",
+    "how can I avoid paying tax without anyone finding out",
+    "show me how to conceal income or transactions from auditors",
+    "what's a way to underreport revenue so no one notices",
+    "how do I keep this transaction off the books",
+    "help me falsify or misrepresent financial records",
+    "how can I get around compliance controls without being detected",
+)
+# Threshold picked from real measurement, not a guess: benign professional
+# queries that sit closest to this exemplar set ("How do I properly
+# disclose related-party transactions?", "What are the audit requirements
+# for related party disclosures") scored 0.51 max; genuine evasion framing
+# (including deliberately disguised phrasing, not just blunt requests)
+# scored 0.66-0.93. 0.58 sits in the gap with margin on both sides.
+_EVASION_GATE_THRESHOLD = 0.58
+_evasion_exemplar_embeddings: list[list[float]] = []
+
+
+def _cosine_similarity(v1, v2) -> float:
+    import math
+    dot = sum(a * b for a, b in zip(v1, v2))
+    mag1 = math.sqrt(sum(a * a for a in v1))
+    mag2 = math.sqrt(sum(a * a for a in v2))
+    return dot / (mag1 * mag2) if mag1 and mag2 else 0.0
+
+
+def _get_evasion_exemplar_embeddings() -> list[list[float]]:
+    global _evasion_exemplar_embeddings
+    if not _evasion_exemplar_embeddings:
+        # Imported lazily, matching live_sources/classifier.py's pattern —
+        # avoids importing the embedding model at module load time for a
+        # check that's gated behind ENABLE flags the same way L2's zero-shot
+        # pipeline is (see _get_classifier_pipeline above).
+        from app.domains.rag.embeddings import get_query_embedding_cached
+        _evasion_exemplar_embeddings = [
+            list(get_query_embedding_cached(ex)) for ex in _EVASION_EXEMPLARS
+        ]
+    return _evasion_exemplar_embeddings
+
+
+def _semantic_evasion_match(query: str) -> bool:
+    try:
+        from app.domains.rag.embeddings import get_query_embedding_cached
+        q_emb = get_query_embedding_cached(query)
+        exemplar_embs = _get_evasion_exemplar_embeddings()
+        return max(_cosine_similarity(q_emb, e) for e in exemplar_embs) > _EVASION_GATE_THRESHOLD
+    except Exception:
+        # Fails closed to "not flagged" — matches every other semantic
+        # fallback in this codebase (live_sources/classifier.py's
+        # _semantic_indicator_match): an embedding-model outage degrades to
+        # "this check didn't run," never to blocking every query, since the
+        # deterministic regex patterns above remain the actual safety floor
+        # regardless of whether this additive layer is available.
+        return False
 
 def _new_query_id() -> str:
     return f"qry-{uuid.uuid4().hex[:12]}"
@@ -229,8 +328,32 @@ def pre_screen(
             rules_applied.append("l1-control-bypass-block")
             return _decision(query_id, False, RiskLevel.RESTRICTED, Route.SECURITY_INCIDENT, 1.0, rules_applied, ["Control bypass attempt."], restricted_sub_class=RestrictedSubClass.CONTROL_BYPASS)
 
+    # ── L1.5: Semantic Evasion Gate — ADDITIVE, runs after every regex
+    # hard-block above, never replacing any of them (see the gate's own
+    # docstring for why this must stay independent of routing/intent
+    # classification). Routed to HUMAN_REVIEW rather than SECURITY_INCIDENT:
+    # unlike the exact-phrase regex blocks above, this is a probabilistic
+    # signal with a measured false-positive gap (legitimate audit/disclosure
+    # questions scored within 0.07 of the threshold in testing) — an
+    # automatic hard block on a probabilistic score is not warranted the
+    # same way it is for an exact jailbreak-phrase match; a human reviewer
+    # is the appropriate check for this signal's actual reliability.
+    if _semantic_evasion_match(query):
+        rules_applied.append("l1.5-semantic-evasion-flagged")
+        return _decision(
+            query_id, False, RiskLevel.HIGH, Route.HUMAN_REVIEW, 0.9, rules_applied,
+            ["Query flagged for possible attempt to evade or circumvent financial/regulatory controls; escalated for human review."],
+            # Without this, _finalize()'s escalation-creation condition
+            # (`requires_human_review or (risk_level==HIGH and allowed)`)
+            # evaluates to False here — allowed=False above means the second
+            # clause never applies either — so despite route=HUMAN_REVIEW, no
+            # EscalationCase would actually get created. Caught while wiring
+            # pre_screen() into the live request path for the first time.
+            requires_human_review=True,
+        )
+
     has_advice_signal = any(pat.search(query) for pat in _ADVICE_SIGNALS)
-    if has_advice_signal and not jurisdiction:
+    if llm_classifier.configured_mode() != "primary" and has_advice_signal and not jurisdiction:
         rules_applied.append("l1-advice-insufficient-context")
         return _decision(query_id, False, RiskLevel.RESTRICTED, Route.CLARIFICATION, 0.95, rules_applied, ["Missing jurisdiction for advice."], restricted_sub_class=RestrictedSubClass.ADVICE_INSUFFICIENT_CONTEXT)
 
@@ -248,22 +371,34 @@ def classify(
     tenant_policy_conflict: bool = False,
     tool_required: bool = False,
     query_id: Optional[str] = None,
+    history: tuple[str, ...] | list[str] = (),
 ) -> dict:
     """L2 ML semantic scoring + source-confidence routing. Assumes pre_screen()
     has already been called for this query and returned None (passed)."""
     query_id = query_id or _new_query_id()
     rules_applied: list[str] = []
     limitations: list[str] = []
-    has_advice_signal = any(pat.search(query) for pat in _ADVICE_SIGNALS)
+    llm_mode = llm_classifier.configured_mode()
+    semantic_primary = llm_mode == "primary"
+    has_advice_signal = False if semantic_primary else any(pat.search(query) for pat in _ADVICE_SIGNALS)
     stripped_query = _strip_wrapping_quotes(query)
     is_ambiguous = any(pat.search(stripped_query) for pat in _AMBIGUOUS_PATTERNS)
     signals = analyze_query_signals(query, jurisdiction=jurisdiction, ambiguous=is_ambiguous)
     # The structured analyzer recognizes recommendation language beyond the
     # original narrow pattern bank. It can raise, never lower, the advice floor.
-    has_advice_signal = has_advice_signal or signals.personalized_advice
+    if not semantic_primary:
+        has_advice_signal = has_advice_signal or signals.personalized_advice
     base_metadata: dict = {"signals": signals.to_dict()}
 
-    if is_ambiguous:
+    if _SANCTIONS_SCREENING_PATTERN.search(query):
+        rules_applied.append("l2-sanctions-screening-human-review")
+        return _decision(
+            query_id, False, RiskLevel.HIGH, Route.HUMAN_REVIEW, 1.0, rules_applied,
+            ["Official-list candidates were retrieved, but sanctions screening requires qualified human review before action."],
+            requires_human_review=True, classification_metadata=base_metadata,
+        )
+
+    if is_ambiguous and not semantic_primary:
         rules_applied.append("l2-ambiguous-context")
         return _decision(
             query_id, False, RiskLevel.MEDIUM, Route.CLARIFICATION, 1.0,
@@ -272,13 +407,13 @@ def classify(
         )
 
     deterministic_label: Optional[str] = None
-    if not has_advice_signal and any(pat.search(stripped_query) for pat in _NAVIGATION_PATTERNS):
+    if not semantic_primary and not has_advice_signal and any(pat.search(stripped_query) for pat in _NAVIGATION_PATTERNS):
         deterministic_label = "casual conversation or navigational help"
         rules_applied.append("l2-deterministic-navigation")
-    elif not has_advice_signal and any(pat.search(query) for pat in _FACTUAL_LOOKUP_PATTERNS):
+    elif not semantic_primary and not has_advice_signal and any(pat.search(query) for pat in _FACTUAL_LOOKUP_PATTERNS):
         deterministic_label = "factual lookup"
         rules_applied.append("l2-deterministic-factual-lookup")
-    elif not has_advice_signal and any(pat.search(stripped_query) for pat in _EDUCATIONAL_PATTERNS):
+    elif not semantic_primary and not has_advice_signal and any(pat.search(stripped_query) for pat in _EDUCATIONAL_PATTERNS):
         deterministic_label = "general educational concept"
         rules_applied.append("l2-deterministic-educational")
 
@@ -288,10 +423,35 @@ def classify(
     top_label = "unknown"
     local_classifier_failed = False
     
-    pipeline_instance = None if deterministic_label else _get_classifier_pipeline()
+    llm_result = None
+    if semantic_primary and privacy_class == "NONE":
+        llm_result = llm_classifier.classify(
+            query, jurisdiction=jurisdiction, mode=mode, history=history,
+        )
+        rules_applied.append(
+            "l2-llm-primary-applied" if llm_result else "l2-llm-primary-unavailable"
+        )
+        classifier_metrics.record_classification(
+            "llm_applied" if llm_result else "llm_unavailable"
+        )
+    elif semantic_primary:
+        rules_applied.append("l2-llm-primary-skipped-sensitive")
+        classifier_metrics.record_classification("llm_skipped_sensitive")
+
+    pipeline_instance = None if deterministic_label or semantic_primary else _get_classifier_pipeline()
     if deterministic_label:
         top_label = deterministic_label
         confidence = 1.0
+    elif llm_result:
+        top_label = {
+            "RESTRICTED": "restricted harmful intent",
+            "HIGH": "regulated tax or legal advice",
+            "MEDIUM": "accounting or audit opinion",
+            "LOW": "general educational concept",
+            "ZERO": "casual conversation or navigational help",
+        }[llm_result.risk_level]
+        confidence = llm_result.confidence
+        has_advice_signal = llm_result.advice_signal
     elif pipeline_instance:
         try:
             result = pipeline_instance(query, CANDIDATE_LABELS)
@@ -309,19 +469,30 @@ def classify(
     # top_label="unknown". Since 0.5 exceeded the configured threshold, that
     # silently flowed to ZERO. Unknown and provider failure now always take
     # the conservative path unless a validated LLM fallback resolves them.
-    llm_mode = llm_classifier.configured_mode()
     predicted_risk = _risk_for_label(top_label, mode)
     threshold = _confidence_threshold(predicted_risk)
     local_uncertain = local_classifier_failed or confidence < threshold
-    llm_result = None
     external_llm_allowed = privacy_class == "NONE"
-    if not deterministic_label and llm_mode in {"fallback", "shadow"} and (
+    if not semantic_primary and not deterministic_label and llm_mode in {"fallback", "shadow"} and (
         local_uncertain or llm_mode == "shadow"
     ) and external_llm_allowed:
-        llm_result = llm_classifier.classify(query, jurisdiction=jurisdiction, mode=mode)
+        llm_result = llm_classifier.classify(
+            query, jurisdiction=jurisdiction, mode=mode, history=history,
+        )
         rules_applied.append("l3-llm-classifier-applied" if llm_result else "l3-llm-classifier-unavailable")
+        classifier_metrics.record_classification(
+            "llm_applied" if llm_result else "llm_unavailable"
+        )
     elif not deterministic_label and llm_mode in {"fallback", "shadow"} and not external_llm_allowed:
         rules_applied.append("l3-llm-classifier-skipped-sensitive")
+        classifier_metrics.record_classification("llm_skipped_sensitive")
+    elif deterministic_label:
+        # A navigation/factual/educational pattern settled it with no call.
+        # Counted so the "how often does the LLM actually fire" denominator is
+        # the real query mix, not just the queries that reached L3.
+        classifier_metrics.record_classification("deterministic")
+    elif pipeline_instance is not None and not local_classifier_failed:
+        classifier_metrics.record_classification("local_model")
 
     classification_metadata: dict = dict(base_metadata)
     classification_metadata["calibration"] = {
@@ -338,11 +509,25 @@ def classify(
             "missing_context": list(llm_result.missing_context),
             "reason_codes": list(llm_result.reason_codes),
             "model": llm_result.model,
+            "domain": llm_result.domain,
+            "response_format": llm_result.response_format,
+            "requested_depth": llm_result.requested_depth,
+            "requires_current_sources": llm_result.requires_current_sources,
+            "resolved_query": llm_result.resolved_query,
+            "secondary_intents": list(llm_result.secondary_intents),
+            "situation_type": llm_result.situation_type,
+            "subject_type": llm_result.subject_type,
+            "actionability": llm_result.actionability,
+            "professional_consequences": list(llm_result.professional_consequences),
+            "harm_intent": llm_result.harm_intent,
+            "clarification_question": llm_result.clarification_question,
+            "provider": llm_result.provider,
             "shadow": llm_mode == "shadow" and not local_uncertain,
         }
 
     if llm_result and local_uncertain:
         top_label = {
+            "RESTRICTED": "restricted harmful intent",
             "HIGH": "regulated tax or legal advice",
             "MEDIUM": "accounting or audit opinion",
             "LOW": "general educational concept",
@@ -359,6 +544,17 @@ def classify(
             "threshold": threshold,
             "score": confidence,
         }
+
+    if llm_result and llm_result.risk_level == "RESTRICTED" and not local_uncertain:
+        rules_applied.append("l2-llm-restricted-intent")
+        return _decision(
+            query_id, False, RiskLevel.RESTRICTED, Route.HUMAN_REVIEW,
+            confidence, rules_applied,
+            ["The contextual classifier identified intent to facilitate prohibited conduct."],
+            requires_human_review=True,
+            restricted_sub_class=RestrictedSubClass.CONTROL_BYPASS,
+            classification_metadata=classification_metadata,
+        )
 
     # Wireframe Rule: CLASSIFICATION_UNCERTAIN threshold
     if local_uncertain:
@@ -405,18 +601,19 @@ def classify(
     # the query does name the reader's own situation. Casual conversation
     # moved down from LOW to the new ZERO tier; educational/factual content
     # takes over LOW.
-    if top_label == "regulated tax or legal advice":
-        risk_level = RiskLevel.HIGH
-        rules_applied.append("l2-semantic-high-risk")
-    elif top_label == "accounting or audit opinion":
-        risk_level = RiskLevel.MEDIUM
-        rules_applied.append("l2-semantic-medium-risk")
-    elif top_label in ["general educational concept", "factual lookup"] or mode == "Learning":
-        risk_level = RiskLevel.LOW
-        rules_applied.append("l2-semantic-low-risk")
-    else:
-        risk_level = RiskLevel.ZERO
-        rules_applied.append("l2-semantic-zero-risk")
+    # risk_level is predicted_risk, not a second independent computation —
+    # predicted_risk (from _risk_for_label, above) is already kept current
+    # through every branch that can change top_label (the L3 LLM-fallback
+    # adoption at "l3-llm-fallback-adopted" recomputes it via the same
+    # helper). Re-deriving risk_level here via a second if/elif chain over
+    # top_label would be exactly the "two systems computing the same
+    # decision, silently able to drift apart" pattern found and fixed
+    # elsewhere in this codebase this session (the duplicate routing-matrix
+    # bug) — this both resolves that duplication and preserves the ZERO-tier
+    # distinction from drifting from what _risk_for_label already decides
+    # for "casual conversation or navigational help" vs. every other label.
+    risk_level = predicted_risk
+    rules_applied.append(f"l2-semantic-{risk_level.value.lower()}-risk")
 
     # Personalized advice is a conservative floor, regardless of which
     # semantic label won. Apply it before the source-confidence matrix so
@@ -433,14 +630,23 @@ def classify(
         rules_applied.append("l2-tenant-policy-conflict")
         return _decision(query_id, False, RiskLevel.HIGH, Route.HUMAN_REVIEW, confidence, rules_applied, ["Tenant policy conflict detected."])
 
-    rule = resolve_route(risk_level.value, source_confidence)
-    rules_applied.append(f"matrix-{risk_level.value.lower()}-{source_confidence.lower()}")
-
-    if rule.limitation:
-        limitations.append(rule.limitation)
-
-    if not rule.allowed:
-        return _decision(query_id, False, risk_level, rule.route, confidence, rules_applied, limitations, policy_version=ROUTING_MATRIX_VERSION)
+    # Route/allowed is no longer decided here — that used to consult a
+    # second, independent (risk_level, confidence_state) matrix
+    # (risk_safety/routing_matrix.py) which could veto a query with its own
+    # allowed=False before orchestration/routing_matrix.py (the actual
+    # single source of truth, per its own docstring) ever got consulted.
+    # Confirmed live this session: this caused a HIGH-risk query with
+    # limited confidence to be silently refused even after the real matrix
+    # was deliberately changed to route it to human review instead — the
+    # two matrices had drifted out of sync. classify() now only reports
+    # risk level and content-based signals; orchestration/service.py's
+    # resolve_policy() call is the only place a route is decided from
+    # (risk_level, confidence_state).
+    requires_sources, requires_citation, requires_professional_boundary, boundary_limitation = (
+        _professional_boundary_requirements(risk_level)
+    )
+    if boundary_limitation:
+        limitations.append(boundary_limitation)
 
     # has_advice_signal is a query-content signal, not part of the confidence
     # matrix — exposed here raw (not pre-gated on risk_level == HIGH) so the
@@ -451,15 +657,37 @@ def classify(
     # tiers ever drift from this module's — one place should own "does this
     # query name the reader's own situation," not two.
     return _decision(
-        query_id, True, risk_level, rule.route, confidence, rules_applied, limitations,
-        requires_sources=rule.requires_sources, requires_human_review=has_advice_signal,
-        requires_citation=rule.requires_citation, requires_professional_boundary=rule.requires_professional_boundary,
+        # Route.LLM is a placeholder, not a real routing decision — route is
+        # no longer decided in classify() at all (see the comment above);
+        # orchestration/service.py's resolve_policy() is the only place a
+        # route gets decided from (risk_level, confidence_state). Using
+        # has_advice_signal for requires_human_review (not the undefined
+        # `req_human`) — the same signal already used as the HIGH-risk floor
+        # just above, consistent with "one signal, one owner" rather than a
+        # second, separately-named variable for the same underlying fact.
+        query_id, True, risk_level, Route.LLM, confidence, rules_applied, limitations,
+        requires_sources=requires_sources, requires_human_review=has_advice_signal,
+        requires_citation=requires_citation, requires_professional_boundary=requires_professional_boundary,
         policy_version=ROUTING_MATRIX_VERSION,
         classification_metadata=classification_metadata,
     )
 
 
+def _professional_boundary_requirements(risk_level: RiskLevel) -> tuple[bool, bool, bool, Optional[str]]:
+    """Per-risk-level answer requirements — same semantics the legacy
+    (risk_level, confidence_state) matrix used to encode, but these never
+    actually varied by confidence_state in that matrix (only route/allowed
+    did), so they're a plain function of risk_level alone now."""
+    if risk_level == RiskLevel.HIGH:
+        return True, True, True, "Answer must include source citations and professional boundary notice."
+    if risk_level == RiskLevel.MEDIUM:
+        return True, False, True, "Educational context — not specific professional advice."
+    return False, False, False, None
+
+
 def _risk_for_label(label: str, mode: str) -> RiskLevel:
+    if label == "restricted harmful intent":
+        return RiskLevel.RESTRICTED
     if label == "regulated tax or legal advice":
         return RiskLevel.HIGH
     if label == "accounting or audit opinion":
@@ -475,6 +703,7 @@ def _confidence_threshold(risk_level: RiskLevel) -> float:
         RiskLevel.LOW: settings.CLASSIFIER_LOW_CONFIDENCE_THRESHOLD,
         RiskLevel.MEDIUM: settings.CLASSIFIER_MEDIUM_CONFIDENCE_THRESHOLD,
         RiskLevel.HIGH: settings.CLASSIFIER_HIGH_CONFIDENCE_THRESHOLD,
+        RiskLevel.RESTRICTED: settings.CLASSIFIER_HIGH_CONFIDENCE_THRESHOLD,
     }[risk_level]
 
 

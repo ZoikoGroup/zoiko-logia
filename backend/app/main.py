@@ -1,12 +1,33 @@
 import os
+import socket
 
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+
+# Some dev networks synthesize NAT64 IPv6 addresses (64:ff9b::...) for
+# IPv4-only hosts like Supabase's pooler, and that synthesized path is
+# unreliable here — asyncio/asyncpg try getaddrinfo()'s results in order,
+# and getaddrinfo() lists those IPv6 addresses before the real IPv4 ones,
+# so a connection attempt hangs on the broken IPv6 path and times out
+# instead of ever reaching the working IPv4 address. Reordering (not
+# removing) results to try IPv4 first fixes this without needing any
+# per-network config — real IPv6 hosts/networks are unaffected since this
+# only changes ordering when both families are present.
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_preferring_getaddrinfo(*args, **kwargs):
+    results = _orig_getaddrinfo(*args, **kwargs)
+    return sorted(results, key=lambda r: r[0] != socket.AF_INET)
+
+
+socket.getaddrinfo = _ipv4_preferring_getaddrinfo
 
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
@@ -18,6 +39,8 @@ from app.core.database import async_engine, SessionLocal
 from app.core.rate_limit import limiter
 from app.db.base import Base
 from app.domains.massarius.tenant_scope import ensure_vector_table_rls
+from app.domains.live_sources.http_client import close_shared_http_client
+from app.domains.live_sources.schema_sync import ensure_provider_columns
 
 settings = get_settings()
 
@@ -134,6 +157,19 @@ async def _migrate_user_profile_columns():
             await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()"))
             await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"))
             await conn.execute(text("ALTER TABLE users DROP COLUMN IF EXISTS hashed_password"))
+
+
+async def _migrate_live_source_provider_columns():
+    """Add the catalogue's required source-metadata columns to
+    `live_source_providers` if this DB predates them.
+
+    Same create_all()-doesn't-alter-existing-tables situation as
+    _migrate_source_licence_columns above. The column definitions live in
+    live_sources/schema_sync.py so the test suite reconciles its own
+    database identically — a test schema that drifts from the runtime's is
+    testing a schema nobody deploys.
+    """
+    await ensure_provider_columns(async_engine, is_sqlite=settings.is_sqlite)
 
 
 async def _migrate_safety_tenant_columns():
@@ -498,58 +534,6 @@ def _seed_incidents():
         db.close()
 
 
-def _seed_users():
-    """Seed a default tenant and admin user on first startup. Since
-    Supabase now owns credentials, this needs a Supabase auth user created
-    via the Admin API (service-role key) before the local profile row can
-    reference it — skipped (like the APP_DATABASE_URL warning above) when
-    SUPABASE_SERVICE_ROLE_KEY isn't configured, e.g. plain SQLite dev mode."""
-    from app.core import supabase_admin
-    from app.domains.identity.models import Tenant, User
-
-    if not supabase_admin.is_configured():
-        print("WARNING: SUPABASE_SERVICE_ROLE_KEY/SUPABASE_URL not set — "
-              "skipping default user seeding (no Supabase auth user can be "
-              "created for admin@zoiko.com / kriton@zoiko.com).")
-        return
-
-    db = SessionLocal()
-    try:
-        # Create default tenant if it doesn't exist
-        tenant = db.query(Tenant).filter(Tenant.id == "tenant-default").first()
-        if tenant is None:
-            tenant = Tenant(id="tenant-default", name="ZoikoLogia Default Tenant")
-            db.add(tenant)
-            db.flush()
-
-        # Create default admin user if no users exist
-        if db.query(User).count() == 0:
-            for email, password, full_name, role in (
-                ("admin@zoiko.com", "Admin@1234", "System Administrator", "Admin"),
-                ("kriton@zoiko.com", "Kriton@1234", "Kriton Reviewer", "SME Reviewer"),
-            ):
-                existing_auth_user = supabase_admin.get_user_by_email(email)
-                auth_user = existing_auth_user or supabase_admin.create_user(email, password, email_confirm=True)
-                first_name, _, last_name = full_name.partition(" ")
-                db.add(User(
-                    id=auth_user["id"],
-                    tenant_id="tenant-default",
-                    email=email,
-                    first_name=first_name,
-                    last_name=last_name,
-                    full_name=full_name,
-                    role=role,
-                    is_active=True,
-                ))
-                db.flush()
-                supabase_admin.update_app_metadata(auth_user["id"], "tenant-default", role)
-        db.commit()
-    except Exception:
-        db.rollback()
-    finally:
-        db.close()
-
-
 async def _warm_up_ml_models():
     """Load the lazy-singleton embedding/reranker/risk-classifier models once
     here at startup, instead of leaving them to load on whichever request
@@ -577,11 +561,17 @@ async def _warm_up_ml_models():
         get_embed_model()
 
     def _load_reranker():
-        from llama_index.core.postprocessor import SentenceTransformerRerank
+        # get_reranker_pipeline() (not a throwaway SentenceTransformerRerank
+        # construction) — must populate the actual module-level singleton
+        # every Reranker instance shares, or this warmup step does nothing
+        # for real requests: previously this constructed and immediately
+        # discarded its own instance, so the first real request still
+        # reloaded the model from scratch (visible as a second "Loading
+        # weights" bar during the first POST /ask, right after startup had
+        # already logged one).
+        from app.domains.rag.reranker import get_reranker_pipeline
 
-        from app.domains.rag.reranker import RERANKER_MODEL
-
-        SentenceTransformerRerank(model=RERANKER_MODEL, top_n=5)
+        get_reranker_pipeline()
 
     def _load_classifier():
         from app.domains.risk_safety.risk_classifier import _get_classifier_pipeline
@@ -630,16 +620,19 @@ async def lifespan(app: FastAPI):
     await _migrate_source_licence_columns()
     await _migrate_user_profile_columns()
     await _migrate_safety_tenant_columns()
+    await _migrate_live_source_provider_columns()
     await _setup_source_rls()
     await _setup_user_rls()
     _seed_defaults()
     _seed_evaluation()
     _seed_escalation_rules()
     _seed_incidents()
-    _seed_users()
     await _warm_up_ml_models()
-    yield
-    await async_engine.dispose()
+    try:
+        yield
+    finally:
+        await close_shared_http_client()
+        await async_engine.dispose()
 
 
 def create_app() -> FastAPI:
@@ -649,6 +642,19 @@ def create_app() -> FastAPI:
         version="1.0.0",
         lifespan=lifespan
     )
+
+    @app.middleware("http")
+    async def add_security_headers(request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=()",
+        )
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+        return response
 
     app.add_middleware(
         CORSMiddleware,
@@ -660,6 +666,28 @@ def create_app() -> FastAPI:
 
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    @app.get("/health/live", include_in_schema=False)
+    async def health_live():
+        return {"status": "live"}
+
+    @app.get("/health/ready", include_in_schema=False)
+    async def health_ready():
+        try:
+            async with async_engine.connect() as connection:
+                await connection.execute(text("SELECT 1"))
+            return {
+                "status": "ready",
+                "database": "available",
+            }
+        except Exception:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "not_ready",
+                    "database": "unavailable",
+                },
+            )
 
     # Core API endpoints from main branch
     app.include_router(api_v1_router, prefix="/api/v1")

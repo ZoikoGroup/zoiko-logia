@@ -17,6 +17,22 @@
   --warn: #9a6700;
   --bad: #b42318;
   --info: #295ea7;
+
+  /* Chart categorical series palette — validated CVD-safe order (dataviz
+     skill's reference 8-hue set; re-validated against Kriton's own panel
+     surface #ffffff, not the skill's generic default). Fixed order, never
+     cycled/reassigned when a filter changes which series are visible — a
+     series keeps its color across the whole app. Distinct from --ok/--warn/
+     --bad/--info on purpose: those are reserved status colors (risk levels
+     elsewhere in the app) and must never double as arbitrary series 4/5/6. */
+  --chart-1: #2a78d6; /* blue */
+  --chart-2: #eb6834; /* orange */
+  --chart-3: #1baf7a; /* aqua */
+  --chart-4: #eda100; /* yellow */
+  --chart-5: #e87ba4; /* magenta */
+  --chart-6: #008300; /* green */
+  --chart-7: #4a3aa7; /* violet */
+  --chart-8: #e34948; /* red */
 }
 
 /* Dark governance-surface theme — follows OS preference by default,
@@ -38,6 +54,17 @@
     --warn: #d99a2b;
     --bad: #e5564a;
     --info: #5b8fd6;
+
+    /* Dark steps of the same 8 hues — re-validated against Kriton's own
+       dark panel #171b21 (see light block above for why this exists). */
+    --chart-1: #3987e5;
+    --chart-2: #d95926;
+    --chart-3: #199e70;
+    --chart-4: #c98500;
+    --chart-5: #d55181;
+    --chart-6: #008300;
+    --chart-7: #9085e9;
+    --chart-8: #e66767;
   }
 }
 :root[data-theme="dark"] {
@@ -56,6 +83,14 @@
   --warn: #d99a2b;
   --bad: #e5564a;
   --info: #5b8fd6;
+  --chart-1: #3987e5;
+  --chart-2: #d95926;
+  --chart-3: #199e70;
+  --chart-4: #c98500;
+  --chart-5: #d55181;
+  --chart-6: #008300;
+  --chart-7: #9085e9;
+  --chart-8: #e66767;
 }
 
 @theme inline {
@@ -74,8 +109,16 @@
   --color-warn: var(--warn);
   --color-bad: var(--bad);
   --color-info: var(--info);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+  --color-chart-7: var(--chart-7);
+  --color-chart-8: var(--chart-8);
+  --font-sans: Arial, Helvetica, sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
 body {
