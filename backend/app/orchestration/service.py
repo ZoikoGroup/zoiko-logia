@@ -64,6 +64,7 @@ from app.domains.model_gateway import service as model_gateway_service
 from app.orchestration.compose import select_prompt
 from app.orchestration.redaction import redact_for_external_exposure
 from app.orchestration.websearch import web_search, build_web_grounded_prompt
+from app.orchestration.live_data import fetch_live_data
 from app.orchestration.risk_llm import classify_risk, classify_risk_gemini
 
 # Massarius™ retrieval and evidence subsystem — Phase 1 control modules
@@ -193,6 +194,13 @@ async def ask_kriton(
     web_search_task = asyncio.create_task(
         web_search(request.query, jurisdiction=request.jurisdiction, limit=5)
     )
+    # Live exact-figure sources (currency via Frankfurter, economic stats via
+    # DBnomics). Self-gating + fail-soft: returns [] unless the question is
+    # actually about an exchange rate or a statistic. Runs concurrently with the
+    # web search, and its results are merged into web_sources at composition —
+    # so figures flow through the exact same grounding pipeline as SearXNG hits,
+    # with no change to the prompt, citations, or answer format.
+    live_data_task = asyncio.create_task(fetch_live_data(request.query))
 
     # ── Step 4: Retrieve SourceBundle (Massarius™ keyword_mvp layer) (§7) ────
     await audit_retrieval_started(
@@ -482,6 +490,15 @@ async def ask_kriton(
         web_sources = await web_search_task
     except Exception:
         web_sources = []
+    # Merge in the exact-figure sources (currency / statistics), ranked FIRST so
+    # the model grounds numeric answers in the precise value rather than a web
+    # snippet. Fail-soft: no live data (or an error) just leaves web_sources as is.
+    try:
+        live_sources = await live_data_task
+    except Exception:
+        live_sources = []
+    if live_sources:
+        web_sources = live_sources + web_sources
     rag_citations: list[SourceCitation] = [
         SourceCitation(
             ref_id=f"REF-{i + 1}",
