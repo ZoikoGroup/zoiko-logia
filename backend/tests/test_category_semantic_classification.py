@@ -41,8 +41,40 @@ def test_keyword_match_wins_regardless_of_semantic_fallback():
     assert infer_category("Show the month-end financial closing process as a timeline.") == "month-end-close"
     assert infer_category("Show revenue in a chart using this data: Q1 $100, Q2 $120.") == "user-provided-data"
     assert infer_category("Compare cash $120,000, receivables $180,000, and inventory $150,000 in a bar chart.") == "user-provided-data"
+    assert infer_category("Show the monthly accounts-receivable trend: January $180,000, February $165,000.") == "user-provided-data"
     assert infer_category("Explain the process for preparing a trial balance.") == "accounting-fundamentals"
     print("test_keyword_match_wins_regardless_of_semantic_fallback: PASSED")
+
+
+def test_hyphenated_bank_control_and_audit_variance_use_reviewed_categories():
+    assert infer_category("Create an audit checklist for reviewing bank-reconciliation controls.") == "bank-reconciliation"
+    assert infer_category("Create an audit decision flow for whether an account variance requires additional testing.") == "accounting-fundamentals"
+
+
+def test_demo_workflows_and_graphs_use_reviewed_categories():
+    assert infer_category("Create a sequence diagram showing how a supplier invoice moves from document upload through approval and payment.") == "accounting-fundamentals"
+    assert infer_category("Create an evidence relationship graph connecting invoice INV-1045 and supplier ABC Ltd.") == "accounting-fundamentals"
+    assert infer_category("Create a jurisdiction-neutral tax compliance process sequence.") == "accounting-fundamentals"
+    assert infer_category("Create an editable month-end close workflow covering bank reconciliation and receivables.") == "month-end-close"
+    assert infer_category("Create an evidence graph connecting purchase order PO-410, supplier XYZ Ltd and invoice INV-820.") == "accounting-fundamentals"
+    assert infer_category("Build an evidence graph connecting sales invoice SI-225 and customer order SO-180.") == "accounting-fundamentals"
+
+
+def test_natural_professional_questions_use_reviewed_categories_without_azure():
+    expected = {
+        "How should I investigate a balance that looks unusual compared with last month?": "accounting-fundamentals",
+        "The evidence collected during our review does not fully support the conclusion. What happens next?": "accounting-fundamentals",
+        "How do I check whether money received after year-end belongs in the current reporting period?": "accounting-fundamentals",
+        "What should I examine when a supplier appears to have been paid twice?": "accounting-fundamentals",
+        "How can I determine whether an unexpected movement in an account needs more testing?": "accounting-fundamentals",
+        "What steps help confirm that all obligations incurred before year-end were recorded?": "accounting-fundamentals",
+        "How should a reviewer assess whether financial evidence is reliable and sufficient?": "accounting-fundamentals",
+        "What do I need to examine when the cash records and bank information do not agree?": "bank-reconciliation",
+        "How can I check whether income was recorded in the correct reporting period?": "accounting-fundamentals",
+        "What should happen when supporting documents contradict the amount recorded in the ledger?": "accounting-fundamentals",
+    }
+    for query, category in expected.items():
+        assert infer_category(query) == category
 
 
 def test_keyword_match_wins_with_embeddings_disabled():

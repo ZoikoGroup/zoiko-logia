@@ -18,6 +18,8 @@ load_dotenv()
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # Closed at the telemetry boundary (production/staging/development/test).
+    APP_ENV: str = "development"
 
     # ── Database ────────────────────────────────────────────────────────
     DATABASE_URL: str = "sqlite+aiosqlite:///./dev.db"
@@ -27,6 +29,12 @@ class Settings(BaseSettings):
     # Falls back to DATABASE_URL when unset (SQLite, or a Postgres setup
     # that hasn't provisioned the low-privilege role).
     APP_DATABASE_URL: str | None = None
+    # Three SQLAlchemy engines are used (sync safety, privileged async, and
+    # request-time RLS). Bound each pool so their combined capacity stays
+    # below small hosted-Postgres session limits.
+    DB_POOL_SIZE: int = 2
+    DB_MAX_OVERFLOW: int = 1
+    DB_POOL_TIMEOUT_SECONDS: int = 15
 
     # ── CORS ─────────────────────────────────────────────────────────────
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001"]
@@ -48,6 +56,19 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     GOOGLE_API_KEY: str = ""
     AZURE_OPENAI_API_KEY: str = ""
+
+    # Optional semantic query classification. Azure AI Search proposes only
+    # the retrieval category; deterministic safety/risk policy remains local.
+    AZURE_AI_SEARCH_CLASSIFIER_MODE: str = "off"  # off | fallback | shadow
+    AZURE_AI_SEARCH_ENDPOINT: str = ""
+    AZURE_AI_SEARCH_API_KEY: str = ""
+    AZURE_AI_SEARCH_CLASSIFICATION_INDEX: str = ""
+    AZURE_AI_SEARCH_API_VERSION: str = "2025-09-01"
+    AZURE_AI_SEARCH_SEMANTIC_CONFIGURATION: str = ""
+    AZURE_AI_SEARCH_CLASSIFICATION_VECTOR_FIELD: str = ""
+    AZURE_AI_SEARCH_CLASSIFICATION_MIN_SCORE: float = 1.5
+    AZURE_AI_SEARCH_CLASSIFICATION_MIN_MARGIN: float = 0.15
+    AZURE_AI_SEARCH_TIMEOUT_SECONDS: float = 3.0
 
     # ── Infrastructure ──────────────────────────────────────────────────
     VECTOR_INDEX_URL: str = ""
@@ -180,6 +201,24 @@ class Settings(BaseSettings):
     # positives scored 0.513-0.777, true negatives scored 0.318-0.327 — a
     # clean gap. 0.45 sits comfortably in that gap.
     CATEGORY_SEMANTIC_THRESHOLD: float = 0.45
+
+    # ── V8.5 evidence-monitoring operationalization ─────────────────────
+    # Shared secret for the service-role-only scheduled-monitoring endpoint
+    # (app/orchestration/visualization_gaps_router.py's /evidence-monitoring/
+    # scheduled-run) — a machine credential for the external daily
+    # scheduler, deliberately NOT a human Supabase session/JWT. Empty by
+    # default, which fails the endpoint closed (see require_service_role):
+    # a fresh environment that hasn't provisioned this secret cannot
+    # trigger scheduled runs over HTTP at all, rather than accepting an
+    # empty-string token.
+    EVIDENCE_MONITORING_SERVICE_TOKEN: str = ""
+    # Daily schedule the external scheduler (Railway Cron) is configured to
+    # run on — used only to compute/display "next scheduled run" on the
+    # admin status panel; changing this does not itself reschedule
+    # anything; the Railway Cron Schedule setting is the actual trigger and
+    # must be kept in sync by hand (see backend/RUNNING_KRITON.md).
+    EVIDENCE_MONITORING_SCHEDULE_HOUR_UTC: int = 6
+    EVIDENCE_MONITORING_SCHEDULE_MINUTE_UTC: int = 0
 
     @property
     def is_sqlite(self) -> bool:

@@ -22,6 +22,8 @@ from __future__ import annotations
 import uuid
 import os
 import re
+from datetime import date
+from dataclasses import dataclass
 from functools import lru_cache
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,7 +47,11 @@ from app.domains.calculation.service import POLICYENGINE_GOVERNED_SOURCE_ID
 from app.domains.reference_data.bank_reconciliation import BANK_RECONCILIATION_GOVERNED_SOURCE_ID
 from app.domains.reference_data.month_end_close import MONTH_END_CLOSE_GOVERNED_SOURCE_ID
 from app.domains.reference_data.accounting_fundamentals import ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID
-from app.domains.reference_data.user_provided_data import USER_PROVIDED_DATA_GOVERNED_SOURCE_ID
+from app.domains.reference_data.business_tax_review import BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID
+from app.domains.reference_data.user_provided_data import (
+    USER_PROVIDED_DATA_GOVERNED_SOURCE_ID,
+    extract_inline_dataset,
+)
 
 settings = get_settings()
 
@@ -70,6 +76,7 @@ _SINGLE_SOURCE_IS_SUFFICIENT: set[str] = {
     CONGRESS_GOVERNED_SOURCE_ID,
     BANK_RECONCILIATION_GOVERNED_SOURCE_ID, MONTH_END_CLOSE_GOVERNED_SOURCE_ID,
     ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID,
+    BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID,
     USER_PROVIDED_DATA_GOVERNED_SOURCE_ID,
 }
 
@@ -88,27 +95,61 @@ _SINGLE_AUTHORITATIVE_TITLE_MARKERS = (
 
 _CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "user-provided-data": ["using this data", "use this data", "based on this data", "budget versus actual"],
+    "business-tax-review": [
+        "business tax return before filing", "reviewing a us business tax return",
+        "review a us business tax return", "company-specific tax-treatment question",
+        "company-specific tax treatment question", "jurisdiction details does kriton need",
+    ],
     "bank-reconciliation": [
-        "bank reconciliation", "reconcile a bank", "reconcile the bank",
+        "bank reconciliation", "bank-reconciliation", "reconcile a bank", "reconcile the bank",
         "reconcile bank account", "cash reconciliation", "outstanding checks",
-        "deposits in transit",
+        "deposits in transit", "cash records and bank information", "cash records and bank statement",
     ],
     "month-end-close": [
-        "month-end close", "month end close", "financial closing process",
+        "month-end close", "month end close", "month-end financial close", "month end financial close", "financial closing process",
         "financial close process", "period-end close", "period end close",
         "closing checklist", "close calendar",
     ],
     "accounting-fundamentals": [
         "cash accounting", "cash-basis accounting", "cash basis accounting",
         "accrual accounting", "accrual-basis accounting", "accrual basis accounting",
+        "revenue and profit", "revenue versus profit", "difference between revenue and profit",
+        "accounts payable and accounts receivable", "difference between accounts payable and accounts receivable",
+        "balance sheet and income statement", "balance sheet versus income statement", "balance sheet and an income statement",
+        "materiality mean", "define materiality",
+        "cash flow can be positive", "positive cash flow when a company reports a loss",
+        "internal audit and external audit", "internal audit versus external audit",
+        "intellectual property", "intellectual properties", "intelectual properites", "intelectual properties",
+        "retained earnings", "correcting journal entry", "recorded as revenue again",
+        "reliability and sufficiency of audit evidence", "scoring matrix for assessing",
+        "accounts receivable increased", "receivables increased", "revenue increased by",
+        "receivables grew", "working capital", "inventory increased", "inventory grew",
         "trial balance", "unadjusted trial balance", "adjusted trial balance",
-        "accounts-payable process", "accounts payable process", "order-to-cash", "order to cash",
+        "accounts-payable process", "accounts payable process", "invoice-approval process", "invoice approval process", "order-to-cash", "order to cash",
         "audit evidence process", "audit-evidence process", "audit evidence workflow",
+        "audit decision flow", "audit decision path", "account variance requires additional audit testing",
+        "balance that looks unusual", "unexpected movement in an account", "unexpected account movement",
+        "evidence collected during our review", "evidence does not support the conclusion",
+        "financial evidence is reliable and sufficient", "supporting documents contradict",
+        "compare five audit-evidence factors", "internal and external evidence",
+        "supplier appears to have been paid twice", "supplier paid twice", "duplicate supplier payment",
+        "supplier that appears to have been paid twice",
+        "editable workflow for investigating and approving a duplicate supplier payment",
+        "unexplained account variance", "drag-and-drop audit workflow",
+        "supplier invoice moves from document upload", "supplier invoice sequence diagram",
+        "evidence relationship graph", "evidence graph connecting", "sales invoice is supported by", "invoice evidence graph",
+        "jurisdiction-neutral tax process", "jurisdiction-neutral tax compliance",
+        "customer order moves through credit approval", "employee expense claim moves from submission",
+        "audit exception moves from identification", "unmatched supplier invoice",
+        "contradictory audit evidence", "jurisdiction-neutral indirect-tax process",
+        "jurisdiction-neutral indirect tax process",
+        "money received after year-end", "income was recorded in the correct reporting period",
+        "obligations incurred before year-end", "liability completeness",
     ],
     # Must come before "tax" — a query mentioning both ("exchange rate for
     # tax purposes") should route here, not fall into the generic "tax"
     # keyword match first.
-    "exchange-rate": ["exchange rate", "exchange rates", "currency exchange", "fx rate", "foreign exchange"],
+    "exchange-rate": ["exchange rate", "exchange rates", "currency exchange", "fx rate", "foreign exchange", "convert usd", "usd to india", "usd to inr"],
     # Must come before "tax" for the same reason as exchange-rate above — a
     # query mentioning both ("payroll tax rates for California") should
     # route here, not fall into the generic "tax" keyword match first.
@@ -200,6 +241,10 @@ _CATEGORY_EXAMPLES: dict[str, list[str]] = {
         "Compare cash accounting and accrual accounting.",
         "Explain how accrual accounting works in practice.",
         "Show the audit evidence process as a flow chart.",
+    ],
+    "business-tax-review": [
+        "Create a workflow to review a US business income-tax return separately from payroll taxes.",
+        "What facts and jurisdictions are needed for a company-specific tax treatment question?",
     ],
     "exchange-rate": [
         "What's the exchange rate between USD and EUR today?",
@@ -344,17 +389,89 @@ def infer_category(query: str) -> str:
     to 10x per request for identical input, the same redundant-recompute
     anti-pattern already eliminated once in this codebase for
     retrieve_documents() (see build_source_bundle's raw_chunks docstring)."""
+    rule_category = infer_category_rule(query)
+    if rule_category is not None:
+        return rule_category
+    semantic_category = _infer_category_semantic(query)
+    return semantic_category if semantic_category is not None else _DEFAULT_CATEGORY
+
+
+def infer_category_rule(query: str) -> str | None:
+    """Return only explicit, deterministic category matches."""
     lowered = query.lower()
+    # A complete current-turn dataset is itself governed evidence for a
+    # calculation/comparison/visualization. The extractor rejects external
+    # verification, current-rule and ambiguous/incomplete requests, so this
+    # precedence cannot weaken source requirements for those queries.
+    if extract_inline_dataset(query) is not None:
+        return "user-provided-data"
+    if re.search(r"\bratio\b.*\bbenchmark\b|\bbenchmark\b.*\bratio\b", lowered):
+        return "user-provided-data"
+    if re.search(r"\bq[1-4]\b.*[$£€]|accounts?[\s-]+receivable\s+aging.*[$£€]", lowered):
+        return "user-provided-data"
     if (
-        re.search(r"\b(chart|graph|plot|visuali[sz]e|compare|table)\b", lowered)
+        re.search(r"\b(chart|graph|plot|waterfall|visuali[sz]e|compare|comparison|table|trend|breakdown|composition|share)\b", lowered)
         and len(re.findall(r"[$£€]\s*[\d,]+(?:\.\d+)?", query)) >= 2
     ):
         return "user-provided-data"
+    # A complete close workflow naturally names bank reconciliation as one
+    # component. The overall month-end intent must win over that sub-process.
+    if re.search(r"month[\s-]*end|period[\s-]*end close|financial close", lowered) and re.search(r"workflow|process|timeline|checklist", lowered):
+        return "month-end-close"
+    if re.search(r"sequence\s+diagram", lowered) and re.search(r"tax(?:able|\s+return|\s+compliance)", lowered) and re.search(r"jurisdiction[\s-]*neutral", lowered):
+        return "accounting-fundamentals"
     for category, keywords in _CATEGORY_KEYWORDS.items():
         if any(_keyword_matches(lowered, keyword) for keyword in keywords):
             return category
-    semantic_category = _infer_category_semantic(query)
-    return semantic_category if semantic_category is not None else _DEFAULT_CATEGORY
+    return None
+
+
+@dataclass(frozen=True)
+class CategoryDecision:
+    category: str
+    method: str
+    score: float | None = None
+    runner_up_score: float | None = None
+    classification_id: str = ""
+    shadow_category: str = ""
+
+
+async def classify_category(query: str) -> CategoryDecision:
+    """Classify once for orchestration, preserving deterministic precedence."""
+    rule_category = infer_category_rule(query)
+    if rule_category is not None:
+        return CategoryDecision(rule_category, "deterministic_rule")
+
+    mode = settings.AZURE_AI_SEARCH_CLASSIFIER_MODE.strip().lower()
+    azure_candidate = None
+    if mode in {"fallback", "shadow"}:
+        from app.orchestration.azure_query_classifier import AzureQueryClassifier
+
+        azure_candidate = await AzureQueryClassifier().classify(
+            query, allowed_categories=set(_CATEGORY_KEYWORDS) | {_DEFAULT_CATEGORY},
+        )
+        if mode == "fallback" and azure_candidate is not None:
+            return CategoryDecision(
+                azure_candidate.category,
+                "azure_ai_search",
+                azure_candidate.score,
+                azure_candidate.runner_up_score,
+                azure_candidate.classification_id,
+            )
+
+    local_category = _infer_category_semantic(query)
+    if local_category is not None:
+        return CategoryDecision(local_category, "local_embedding")
+    if mode == "shadow" and azure_candidate is not None:
+        return CategoryDecision(
+            _DEFAULT_CATEGORY,
+            "default_with_azure_shadow",
+            azure_candidate.score,
+            azure_candidate.runner_up_score,
+            azure_candidate.classification_id,
+            azure_candidate.category,
+        )
+    return CategoryDecision(_DEFAULT_CATEGORY, "default")
 
 
 def _keyword_matches(lowered_query: str, keyword: str) -> bool:
@@ -518,8 +635,20 @@ async def build_source_bundle(
         except Exception as e:
             exclusion_reasons.append(f"Vector store search failed: {str(e)}")
 
+    today = date.today()
+    dated_versions = [c["latest_version"] for c in eligible if c.get("latest_version")]
+    expired = [v for v in dated_versions if v.effective_to and v.effective_to < today]
+    all_explicitly_current = bool(dated_versions) and all(
+        (v.effective_from is None or v.effective_from <= today)
+        and (v.effective_to is None or v.effective_to >= today)
+        and (v.effective_from is not None or v.effective_to is not None)
+        for v in dated_versions
+    )
+
     # Determine confidence_state per §7.2
-    if has_restricted and len(eligible) == 0:
+    if expired:
+        confidence_state = CONF_STALE
+    elif has_restricted and len(eligible) == 0:
         confidence_state = CONF_RESTRICTED
     elif len(eligible) == 0:
         confidence_state = CONF_INSUFFICIENT
@@ -577,7 +706,7 @@ async def build_source_bundle(
         exclusion_reasons=exclusion_reasons,
         jurisdiction=resolved_jurisdiction,
         authority_level=authority_level,
-        freshness_state="unknown",   # TODO: implement freshness check in full RAG phase
+        freshness_state="stale" if expired else "current" if all_explicitly_current else "unknown",
         licence_state="permitted",   # MVP assumption; enforce per-source in production
         confidence_state=confidence_state,
     )

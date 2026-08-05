@@ -233,6 +233,69 @@ def test_no_grounding_context_skips_numeric_fidelity_check():
     print("test_no_grounding_context_skips_numeric_fidelity_check: PASSED")
 
 
+def test_derived_total_of_inline_supplied_figures_passes_numeric_fidelity():
+    """Real gap (2026-08-03): a query that supplies a complete itemized
+    dataset inline routinely gets an answer with a computed "Displayed
+    total" — simple arithmetic on numbers the user already supplied, not
+    an invented claim. It used to fail whenever grounding_context happened
+    to be non-empty (any source, however unrelated, being retrieved),
+    while the identical answer shape passed when zero sources were
+    retrieved and checkpoint 8 was skipped outright — an inconsistency
+    depending on retrieval luck, not on whether the total was trustworthy."""
+    query = "Rent 3000, Payroll 8000, Marketing 1500, Utilities 500."
+    result = validate_answer(
+        "**Displayed total:** $13,000. [REF-1]",
+        _BUNDLE,
+        grounding_context="Unrelated generic accounting guidance text.",
+        query_text=query,
+    )
+    assert result.passed, result.failures
+    print("test_derived_total_of_inline_supplied_figures_passes_numeric_fidelity: PASSED")
+
+
+def test_derived_percentage_share_of_inline_supplied_figures_passes_numeric_fidelity():
+    query = "Rent 3000, Payroll 8000, Marketing 1500, Utilities 500."
+    # Payroll's share of the 13000 total: 8000 / 13000 * 100 = 61.5%.
+    result = validate_answer(
+        "Payroll is the largest item, representing 61.5% of the displayed total. [REF-1]",
+        _BUNDLE,
+        grounding_context="Unrelated generic accounting guidance text.",
+        query_text=query,
+    )
+    assert result.passed, result.failures
+    print("test_derived_percentage_share_of_inline_supplied_figures_passes_numeric_fidelity: PASSED")
+
+
+def test_incorrect_derived_total_still_fails_numeric_fidelity():
+    """The widened check only accepts the ACTUAL sum/share — it must not
+    become a loophole that lets any dollar figure through just because the
+    query happened to contain some numbers."""
+    query = "Rent 3000, Payroll 8000, Marketing 1500, Utilities 500."
+    result = validate_answer(
+        "**Displayed total:** $999,999. [REF-1]",
+        _BUNDLE,
+        grounding_context="Unrelated generic accounting guidance text.",
+        query_text=query,
+    )
+    assert not result.passed
+    assert any("Numeric fidelity" in f for f in result.failures)
+    print("test_incorrect_derived_total_still_fails_numeric_fidelity: PASSED")
+
+
+def test_derived_total_requires_at_least_one_query_number():
+    """No numbers in the query at all must not make an arbitrary total
+    "supported" by accident (e.g. an empty-sum edge case)."""
+    result = validate_answer(
+        "**Displayed total:** $13,000. [REF-1]",
+        _BUNDLE,
+        grounding_context="Unrelated generic accounting guidance text.",
+        query_text="Show a breakdown of monthly expenses by category.",
+    )
+    assert not result.passed
+    assert any("Numeric fidelity" in f for f in result.failures)
+    print("test_derived_total_requires_at_least_one_query_number: PASSED")
+
+
 def test_unsupported_illustrative_figures_can_be_generalized_before_validation():
     from app.domains.massarius.answer_validator import generalize_unsupported_numeric_claims
 
@@ -598,6 +661,20 @@ def test_concept_question_missing_depth_fails_tutor_structure_check():
     assert any("Tutor-depth structure" in f for f in result.failures)
     assert result.degraded_route == "HUMAN_REVIEW"
     print("test_concept_question_missing_depth_fails_tutor_structure_check: PASSED")
+
+
+def test_reviewed_deterministic_answer_can_skip_llm_tutor_depth_heuristic():
+    answer = (
+        "Cash accounting records receipts and payments when cash moves, while "
+        "accrual accounting records economic activity in the applicable period. [REF-1]"
+    )
+    result = validate_answer(
+        answer,
+        _BUNDLE,
+        query_text="Explain the difference between cash basis and accrual basis accounting.",
+        enforce_tutor_depth=False,
+    )
+    assert result.passed, result.failures
 
 
 def test_concept_question_with_full_depth_passes_tutor_structure_check():

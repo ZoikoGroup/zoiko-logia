@@ -13,6 +13,8 @@ import os
 from typing import Optional
 
 from app.core.config import get_settings
+from app.domains.calculation.formula_extraction import extract_named_formula, identify_missing_formula_inputs
+from app.domains.reference_data.user_provided_data import extract_inline_dataset
 from app.domains.risk_safety.models import RiskLevel, RestrictedSubClass, Route
 from app.domains.risk_safety.routing_matrix import ROUTING_MATRIX_VERSION, resolve as resolve_route
 from app.domains.risk_safety import llm_classifier
@@ -65,7 +67,13 @@ _ACADEMIC_PATTERNS: list[re.Pattern] = [
 ]
 
 _BYPASS_PATTERNS: list[re.Pattern] = [
-    re.compile(r"\b(ignore\s+instructions|jailbreak|system\s+prompt|bypass\s+safety|DAN\s+mode)\b", re.IGNORECASE)
+    re.compile(
+        r"\b(?:ignore|disregard|override)\b.{0,40}\b(?:instructions?|rules?|polic(?:y|ies)|safety|controls?)\b"
+        r"|\b(?:reveal|show|print|expose)\b.{0,30}\b(?:system\s+prompt|hidden\s+instructions?|developer\s+message)\b"
+        r"|\b(?:jailbreak|bypass\s+safety|DAN\s+mode)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bignore\b.{0,60}\b(?:kriton(?:['’]s)?\s+)?safety\s+rules?\b", re.IGNORECASE),
 ]
 
 # 2026-07-22 (product vision doc, item 2 — memory:
@@ -124,24 +132,63 @@ _EDUCATIONAL_PATTERNS: list[re.Pattern] = [
     # the requested figures actually exist is decided later by retrieval and
     # answer validation, not by probabilistic safety classification.
     re.compile(
-        r"^[\s\"'“”‘’]*(?:visuali[sz]e\b|(?:show|present|create)\b.*\b(?:table|chart|graph|visuali[sz]ation)\b)",
+        r"^[\s\"'“”‘’]*(?:visuali[sz]e\b|(?:show|present|create|build)\b.*\b(?:table|chart|graph|waterfall|visuali[sz]ation)\b)",
         re.IGNORECASE,
     ),
-    re.compile(r"^\s*(?:show|create|present)\b.*\b(?:timeline|flow\s*chart|decision\s*flow)\b", re.IGNORECASE),
     re.compile(
-        r"^\s*(?:give|list|outline|describe|show|walk\s+me\s+through)\b.*\b(?:steps?|process|procedure|workflow)\b",
+        r"^\s*(?:show|create|present)\b.*\b(?:timeline|flow\s*chart|decision\s*flow|sequence\s+diagram|swimlane|scoring\s+matrix)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*(?:give|create|list|outline|describe|show|walk\s+me\s+through)\b.*\b(?:steps?|process|procedure|workflow)\b",
         re.IGNORECASE,
     ),
     re.compile(r"^\s*(?:give|show|create|provide)\b.*\bcheck\s?list\b", re.IGNORECASE),
     re.compile(r"^\s*give\s+me\s+(?:a\s+)?(?:detailed\s+)?explanation\b", re.IGNORECASE),
     re.compile(r"^\s*compare\b", re.IGNORECASE),
     re.compile(r"^\s*how\s+(?:do|can)\s+i\b", re.IGNORECASE),
+    re.compile(
+        r"^\s*(?:how\s+should\s+i|what\s+should\s+i)\s+"
+        r"(?:investigate|examine|check|review|assess|evaluate|determine)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*(?:what\s+do\s+i\s+need\s+to|how\s+should\s+(?:a|the)\s+reviewer)\s+"
+        r"(?:investigate|examine|check|review|assess|evaluate|determine)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^\s*what\s+should\s+happen\s+when\b", re.IGNORECASE),
+    re.compile(r"^\s*what\s+steps\s+help\b", re.IGNORECASE),
+    re.compile(r"\bevidence\b.*\bdoes\s+not\b.*\bwhat\s+happens\s+next\b", re.IGNORECASE),
+    re.compile(r"\bidentify\s+the\s+error\b.*\bcorrecting\s+journal\s+entry\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:customer\s+)?payment\b.*\bcredited\s+to\s+revenue\b.*\baccounts?\s+receivable\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\baccounts?\s+receivable\b.*\brevenue\b.*\b(?:audit\s+procedures?|possible\s+causes?)\b", re.IGNORECASE),
+    re.compile(r"^\s*show\s+quarterly\s+revenue\s+and\s+gross\s+margin\b", re.IGNORECASE),
+    re.compile(r"^\s*create\s+an?\s+accounts?[\s-]+receivable\s+aging\s+analysis\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:accounts?\s+receivable|receivables)\b.*\b(?:sales|revenue)\b.*\b(?:audit|procedures?|causes?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bsupplier\b.*\b(?:paid\s+twice|duplicate\s+payment)\b.*\b(?:checklist|investigat|correct)",
+        re.IGNORECASE,
+    ),
 ]
 
 _FACTUAL_LOOKUP_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(current|latest|today(?:'s)?)\b.*\b(rate|cpi|inflation|gdp|income|yield)\b", re.IGNORECASE),
     re.compile(r"\b(exchange|treasury|federal\s+funds|interest)\s+rate\b", re.IGNORECASE),
     re.compile(r"\bfed(?:eral)?\s+funds\s+rate\b", re.IGNORECASE),
+    re.compile(r"\b(?:treasury\s+yield|\d+[\s-]*year\s+treasury)\b", re.IGNORECASE),
+    re.compile(r"\b(?:convert|conversion)\b.*\b(?:usd|inr|currency|dollars?|rupees?)\b", re.IGNORECASE),
+]
+
+_REVIEWED_TAX_WORKFLOW_PATTERNS: list[re.Pattern] = [
+    re.compile(r"\bbusiness\s+tax\s+return\b.*\b(?:review|before\s+filing|workflow|checklist)\b", re.I),
+    re.compile(r"\bcompany-specific\s+tax[\s-]+treatment\b", re.I),
 ]
 
 _NAVIGATION_PATTERNS: list[re.Pattern] = [
@@ -150,13 +197,56 @@ _NAVIGATION_PATTERNS: list[re.Pattern] = [
     re.compile(r"\bwhat\s+can\s+(?:kriton|this\s+(?:app|assistant))\s+(?:do|help)\b", re.IGNORECASE),
 ]
 
+# A request to chart/compare numbers the user already typed into the query
+# isn't asking Kriton to look anything up or judge anything — it's a
+# formatting request over data no more sensitive than the plain text it's
+# already in. See the l2-deterministic-supplied-data-visualization rule below.
+# Real gap (2026-08-03): "Starting cash was $500k. Operations added $180k,
+# ... Show the movement to ending cash." scored low-confidence and fell into
+# CLASSIFICATION_UNCERTAIN — the same live-bug shape as the 2026-08-01 fix
+# below, just phrased with "movement"/"bridge" (a cash-flow-bridge/waterfall
+# request) instead of "visualize"/"compare". Added the same trigger words
+# presentation_dataprofile.py's FINANCIAL_MOVEMENT intent already recognizes
+# for chart selection, so a query that will end up as a waterfall chart is
+# never blocked one step earlier at risk classification.
+# "show"/"display" added the same day: two more live queries — "Show
+# monthly adjustments: ..." and "Show how profit changed from 2025 to
+# 2026: ..." — each fully specify their own data but use neither a keyword
+# above nor a recognized recommendation/personal-advice pattern, so they
+# also fell into CLASSIFICATION_UNCERTAIN. "Show"/"display" alone would be
+# too broad to trust generally, but paired with the existing
+# _INLINE_NUMERIC_FIGURE requirement below (a literal $/£/€ figure must
+# also be present) this only ever fires for a query that already supplies
+# its own data to format — never a bare "show me how X works" concept
+# question.
+# Real gap (2026-08-04): the $/£/€ requirement above also rejected every
+# non-currency dataset — "Display headcount by department: Engineering 42,
+# Sales 28, ..." (plain counts) and "Plot our weekly active users: 1200,
+# 1350, ..." (no labels or currency at all) both fell into
+# CLASSIFICATION_UNCERTAIN despite fully specifying their own data. Rather
+# than widen the regex heuristic further, this now falls back to the real
+# extractor: if extract_inline_dataset() already proves the query is a
+# complete, self-contained dataset request, that is strictly stronger
+# evidence than "does a $ sign appear somewhere" and is trusted on its own.
+_VISUALIZATION_KEYWORDS = re.compile(
+    r"\b(visualiz\w*|chart|graph|plot|compare|comparison|composition|breakdown|variance|"
+    r"distribution|movement|bridge|waterfall|walk\s+from|trend|show|display|rank(?:ing)?)\b",
+    re.IGNORECASE,
+)
+_INLINE_NUMERIC_FIGURE = re.compile(r"[$£€]\s*\d[\d,]*(?:\.\d+)?")
+
 _AMBIGUOUS_PATTERNS: list[re.Pattern] = [
+    re.compile(r"^\s*tell\s+me\s+about\s+(?:accounting|finance|tax(?:es)?)\s*[.?!]*\s*$", re.IGNORECASE),
     re.compile(
         r"^\s*how\s+should\s+(this|that|it)(?:\s+(?:transaction|item|amount|entry))?\s+be\s+"
         r"(reported|treated|recorded|filed)\??\s*$",
         re.IGNORECASE,
     ),
     re.compile(r"^\s*what\s+(?:accounting|tax)\s+treatment\s+should\s+(?:i|we)\s+use\??\s*$", re.IGNORECASE),
+    re.compile(
+        r"^\s*how\s+should\s+(?:this|that|the)\s+transaction\s+be\s+treated\s+for\s+tax\s+purposes?\??\s*$",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"^\s*what\s+is\s+the\s+(?:correct|appropriate)\s+(?:accounting|tax)\s+treatment\s+for\s+"
         r"(?:this|that|the)\s+(?:transaction|item|amount|entry)\??\s*$",
@@ -224,8 +314,9 @@ def pre_screen(
             rules_applied.append("l1-academic-integrity-block")
             return _decision(query_id, False, RiskLevel.RESTRICTED, Route.REFUSAL, 1.0, rules_applied, ["Academic integrity violation."], restricted_sub_class=RestrictedSubClass.ACADEMIC_INTEGRITY)
 
+    stripped_query = _strip_wrapping_quotes(query)
     for pat in _BYPASS_PATTERNS:
-        if pat.search(query):
+        if pat.search(stripped_query):
             rules_applied.append("l1-control-bypass-block")
             return _decision(query_id, False, RiskLevel.RESTRICTED, Route.SECURITY_INCIDENT, 1.0, rules_applied, ["Control bypass attempt."], restricted_sub_class=RestrictedSubClass.CONTROL_BYPASS)
 
@@ -278,6 +369,38 @@ def classify(
     elif not has_advice_signal and any(pat.search(query) for pat in _FACTUAL_LOOKUP_PATTERNS):
         deterministic_label = "factual lookup"
         rules_applied.append("l2-deterministic-factual-lookup")
+    elif any(pat.search(stripped_query) for pat in _REVIEWED_TAX_WORKFLOW_PATTERNS):
+        deterministic_label = "regulated tax or legal advice"
+        rules_applied.append("l2-deterministic-reviewed-tax-workflow")
+    # Live bug: "For a company with $400,000 in sales..., what is the gross
+    # margin?" and "Overall materiality using a $1,000,000 benchmark
+    # amount..." don't start with any of _EDUCATIONAL_PATTERNS' anchored
+    # openers ("calculate", "what is", "if $X..."), so they fell through to
+    # the ML zero-shot pipeline, which scored them just under the LOW
+    # threshold (~0.30 vs 0.35) and asked for clarification instead of
+    # answering — even though "current ratio for $150,000 assets..." (which
+    # only differs by starting with "Calculate") sailed through. A query
+    # that formula_extraction.py can already deterministically resolve into
+    # a fully-specified, verified governed calculation is by construction
+    # arithmetic, not personalized advice or ambiguous — no ML guess needed,
+    # regardless of how the sentence happens to open.
+    elif not has_advice_signal and (
+        extract_named_formula(query) is not None or identify_missing_formula_inputs(query) is not None
+    ):
+        deterministic_label = "factual lookup"
+        rules_applied.append("l2-deterministic-governed-calculation")
+    # Live bug (2026-08-01): "Here is our department spending: Payroll budget
+    # $150,000 actual $158,000...Visualize a comparison of budget and actual
+    # by department." scored 0.2991 vs the 0.35 LOW-risk threshold and fell
+    # into CLASSIFICATION_UNCERTAIN — even though it only asks Kriton to
+    # chart figures the query itself already supplies, not to look anything
+    # up or exercise judgment.
+    elif not has_advice_signal and (
+        (_VISUALIZATION_KEYWORDS.search(query) and _INLINE_NUMERIC_FIGURE.search(query))
+        or extract_inline_dataset(query) is not None
+    ):
+        deterministic_label = "factual lookup"
+        rules_applied.append("l2-deterministic-supplied-data-visualization")
     elif not has_advice_signal and any(pat.search(stripped_query) for pat in _EDUCATIONAL_PATTERNS):
         deterministic_label = "general educational concept"
         rules_applied.append("l2-deterministic-educational")

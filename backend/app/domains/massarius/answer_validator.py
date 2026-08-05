@@ -141,12 +141,51 @@ def _claim_matches_provenance(normalized: str, provenance: ProvenanceStore) -> b
     return bool(provenance.find_by_value(claimed_value))
 
 
+# Real gap (2026-08-03): a query that supplies a complete itemized dataset
+# inline ("Rent 3000, Payroll 8000, Marketing 1500...") routinely gets a
+# composed answer with a "Displayed total: $X" and/or "representing Y% of
+# the total" line — the composition prompt asks for exactly this shape (see
+# orchestration/service.py's "Executive summary"/"Key insight" guidance).
+# Both figures are simple arithmetic on numbers the user already supplied,
+# not an invented claim, but neither the literal total nor the literal
+# percentage string appears anywhere in query_text itself, so they used to
+# fail checkpoint 8 whenever grounding_context happened to be non-empty
+# (queries that retrieved zero sources skipped checkpoint 8 entirely,
+# which is why the SAME kind of question sometimes passed and sometimes
+# didn't — not a random failure, just inconsistent gating). This widens
+# "supported" the same conservative way query_text and provenance already
+# do: only a straightforward sum of every number literally in the query,
+# and each item's percentage share of that sum — never an invented figure.
+def _derived_total_and_shares(query_numbers: set[str]) -> tuple[Optional[Decimal], set[str]]:
+    decimals: list[Decimal] = []
+    for token in query_numbers:
+        try:
+            decimals.append(Decimal(token))
+        except InvalidOperation:
+            continue
+    if not decimals:
+        return None, set()
+    total = sum(decimals)
+    if total <= 0:
+        return total, set()
+    shares: set[str] = set()
+    for value in decimals:
+        share = value / total * 100
+        # Covers both the 1-decimal ("28.1%") and whole-number ("28%")
+        # renderings the composition prompt's summary lines actually use.
+        shares.add(f"{share:.1f}")
+        shares.add(f"{share:.0f}")
+    return total, shares
+
+
 def _claim_is_supported(
     claim_text: str,
     *,
     context_numbers: set[str],
     query_numbers: set[str],
     provenance: Optional[ProvenanceStore],
+    derived_total: Optional[Decimal] = None,
+    derived_shares: Optional[set[str]] = None,
 ) -> bool:
     normalized = _normalize_digits(claim_text)
     if not normalized or normalized in context_numbers or normalized in query_numbers:
@@ -158,6 +197,14 @@ def _claim_is_supported(
             as_fraction = None
         if as_fraction in context_numbers:
             return True
+        if derived_shares and normalized in derived_shares:
+            return True
+    elif derived_total is not None:
+        try:
+            if Decimal(normalized) == derived_total:
+                return True
+        except InvalidOperation:
+            pass
     return bool(provenance and _claim_matches_provenance(normalized, provenance))
 
 
@@ -179,6 +226,7 @@ def generalize_unsupported_numeric_claims(
         return answer_text
     context_numbers = _extract_normalized_numbers(grounding_context)
     query_numbers = _extract_normalized_numbers(query_text) if query_text else set()
+    derived_total, derived_shares = _derived_total_and_shares(query_numbers)
 
     def is_supported(match: re.Match) -> bool:
         return _claim_is_supported(
@@ -186,6 +234,8 @@ def generalize_unsupported_numeric_claims(
             context_numbers=context_numbers,
             query_numbers=query_numbers,
             provenance=provenance,
+            derived_total=derived_total,
+            derived_shares=derived_shares,
         )
 
     # A worked example with invented values is no longer useful once those
@@ -369,6 +419,7 @@ def validate_answer_or_raise(
     grounding_context: str = "",
     query_text: str = "",
     provenance: Optional["ProvenanceStore"] = None,
+    enforce_tutor_depth: bool = True,
 ) -> None:
     """
     Run all twelve Checkpoint C checks. Raises ValidationFailed listing every
@@ -486,6 +537,7 @@ def validate_answer_or_raise(
     if grounding_context:
         context_numbers = _extract_normalized_numbers(grounding_context)
         query_numbers = _extract_normalized_numbers(query_text) if query_text else set()
+        derived_total, derived_shares = _derived_total_and_shares(query_numbers)
         for match in list(_CLAIMED_FIGURE_PATTERN.finditer(answer_text)) + list(_CLAIMED_DATE_PATTERN.finditer(answer_text)):
             claim_text = match.group()
             if _claim_is_supported(
@@ -493,6 +545,8 @@ def validate_answer_or_raise(
                 context_numbers=context_numbers,
                 query_numbers=query_numbers,
                 provenance=provenance,
+                derived_total=derived_total,
+                derived_shares=derived_shares,
             ):
                 continue
             failures.append(
@@ -536,7 +590,8 @@ def validate_answer_or_raise(
     # queries matching the concept-explanation shape and long enough to be
     # a genuine (if underdeveloped) attempt at one.
     if (
-        query_text
+        enforce_tutor_depth
+        and query_text
         and _CONCEPT_QUESTION_PATTERN.search(query_text)
         and not _FACTUAL_LOOKUP_OVERRIDE_PATTERN.search(query_text)
         and not _ARITHMETIC_QUESTION_PATTERN.search(query_text)
@@ -585,6 +640,7 @@ def validate_answer(
     grounding_context: str = "",
     query_text: str = "",
     provenance: Optional[ProvenanceStore] = None,
+    enforce_tutor_depth: bool = True,
 ) -> ValidationResult:
     """Call-site-friendly wrapper: same checks as validate_answer_or_raise(),
     but returns a ValidationResult instead of raising — matches the
@@ -594,6 +650,7 @@ def validate_answer(
             answer_text, source_bundle,
             disclaimer_required=disclaimer_required, grounding_context=grounding_context,
             query_text=query_text, provenance=provenance,
+            enforce_tutor_depth=enforce_tutor_depth,
         )
     except ValidationFailed as exc:
         return ValidationResult(passed=False, failures=exc.failures, degraded_route=exc.degraded_route)

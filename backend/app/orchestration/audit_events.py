@@ -90,6 +90,19 @@ async def audit_plan_created(db, *, query_id, correlation_id, tenant_id, audit_c
     await _emit(db, "plan_created", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"retrieval_plan_id": retrieval_plan_id, "strategy": strategy, "methods": methods})
 
+
+async def audit_query_classified(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                 category: str, method: str, score: float | None,
+                                 runner_up_score: float | None, classification_id: str,
+                                 shadow_category: str = ""):
+    await _emit(
+        db, "query_classified", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+        {"category": category, "method": method, "score": score,
+         "runner_up_score": runner_up_score, "classification_id": classification_id,
+         "shadow_category": shadow_category},
+        replay_relevance="REQUIRED",
+    )
+
 async def audit_rerank_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                  input_count: int, output_count: int):
     await _emit(db, "rerank_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,

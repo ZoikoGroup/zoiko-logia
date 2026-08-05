@@ -134,6 +134,8 @@ _CURRENCY_KEYWORDS: dict[str, str] = {
     "canadian dollar": "Canada-Dollar",
     "australian dollar": "Australia-Dollar",
     "indian rupee": "India-Rupee",
+    "india": "India-Rupee",
+    "inr": "India-Rupee",
     "korean won": "Korea-Won",
     "brazilian real": "Brazil-Real",
     "hong kong dollar": "Hong Kong-Dollar",

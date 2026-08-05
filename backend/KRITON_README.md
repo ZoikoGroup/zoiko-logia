@@ -38,9 +38,9 @@ Make sure you have populated the `.env` file with your `GROQ_API_KEY` and `LLAMA
 ```bash
 # Start the FastAPI development server
 cd backend
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8010
 ```
-*The API will be available at `http://localhost:8000`. Swagger documentation is at `http://localhost:8000/docs`.*
+*The API will be available at `http://localhost:8010`. Swagger documentation is at `http://localhost:8010/docs`.*
 
 ### Frontend (Next.js / React)
 ```bash

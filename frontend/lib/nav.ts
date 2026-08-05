@@ -6,7 +6,7 @@ import {
   ShieldAlert, Scale, CheckSquare, Cpu, UserCheck,
   AlertTriangle, History, Siren, ScrollText, LifeBuoy,
   Bell, Building2, Plug, Activity,
-  Lock, Users, Building, GitBranch, Settings, CreditCard,
+  Lock, Users, Building, GitBranch, Settings, CreditCard, LineChart, FlaskConical,
 } from "lucide-react";
 import { RoleCode } from "./roles";
 import { ADVISOR } from "./advisor";
@@ -63,6 +63,7 @@ export const NAV_SECTIONS: NavL1Section[] = [
       { label: "Saved Answers", slug: "saved-answers", allowedRoles: ALL_EXCEPT_LEARNER, icon: Bookmark },
       { label: "Drafts & Reports", slug: "drafts-reports", allowedRoles: ALL_EXCEPT_LEARNER, icon: FileText },
       { label: "Learning & Practice", slug: "learning-practice", allowedRoles: ALL, icon: GraduationCap },
+      { label: "Visualization Personalization", slug: "visualization-personalization", allowedRoles: ALL, icon: Settings },
     ],
   },
   {
@@ -155,6 +156,9 @@ export const NAV_SECTIONS: NavL1Section[] = [
     label: "Administration",
     allowedRoles: ADMINISTRATION,
     items: [
+      { label: "Visualization Analytics", slug: "visualization-analytics", allowedRoles: ADMINISTRATION, icon: LineChart },
+      { label: "Visualization Gaps", slug: "visualization-gaps", allowedRoles: ADMINISTRATION, icon: AlertTriangle },
+      { label: "Ranking Experiments", slug: "ranking-experiments", allowedRoles: ADMINISTRATION, icon: FlaskConical },
       { label: "Roles & Permissions", slug: "roles-permissions", allowedRoles: ADMINISTRATION, icon: Lock },
       { label: "Users & Teams", slug: "users-teams", allowedRoles: ADMINISTRATION, icon: Users },
       { label: "Entities/Clients", slug: "entities-clients", allowedRoles: ADMINISTRATION, icon: Building },

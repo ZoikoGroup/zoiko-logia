@@ -44,6 +44,20 @@ def test_depreciation_accepts_life_of_years_word_order():
     assert result.inputs["useful_life_years"]["value"] == "10"
 
 
+def test_depreciation_accepts_over_n_years_without_the_word_life():
+    # Live bug: "over 10 years" has neither "life" nor "useful life" next to
+    # the year count, so it fell through to "missing useful_life_years" even
+    # though a human reader would consider it fully specified.
+    result = extract_named_formula(
+        "Calculate straight-line depreciation for a $50,000 asset with "
+        "$5,000 salvage value over 10 years."
+    )
+    assert result is not None
+    assert result.inputs["useful_life_years"]["value"] == "10"
+    calculated = execute_formula("accounting.straight_line_depreciation.v1", result.inputs)
+    assert calculated.output_value == "4500.00"
+
+
 def test_generic_depreciation_asks_for_specific_calculation_inputs():
     missing = identify_missing_formula_inputs("Calculate my depreciation.")
     assert missing is not None
@@ -100,12 +114,99 @@ def test_verified_formula_response_exposes_provenance_and_assumptions():
     assert result.formula_id in answer
 
 
+def test_current_ratio_accepts_bare_assets_and_liabilities_without_repeating_current():
+    # Live bug: dropping the redundant "current" the second/third time
+    # ("current ratio for $150,000 assets and $80,000 liabilities") is
+    # normal English ellipsis, but the extractor required the literal
+    # two-word phrase "current assets"/"current liabilities" and returned
+    # nothing, asking the user to re-supply numbers already given.
+    result = extract_named_formula("Calculate the current ratio for $150,000 assets and $80,000 liabilities.")
+    assert result is not None
+    assert result.calculation_type == "current_ratio"
+    assert result.inputs["current_assets"]["value"] == "150000"
+    assert result.inputs["current_liabilities"]["value"] == "80000"
+
+
+def test_quick_ratio_label_followed_by_comma_does_not_swallow_a_bogus_number():
+    # Live bug, one level deeper: _labeled_number's forward regex allowed a
+    # bare comma to satisfy "a number" (no digit required), so "assets," in
+    # a comma-separated list "matched" on the comma itself, failed to parse,
+    # and never fell through to the correct reverse pattern ("$150,000
+    # assets"). Affects every formula routed through _labeled_number.
+    result = extract_named_formula(
+        "Calculate the quick ratio for $150,000 assets, $40,000 inventory, and $80,000 liabilities."
+    )
+    assert result is not None
+    assert result.calculation_type == "quick_ratio"
+    assert result.inputs["current_assets"]["value"] == "150000"
+    assert result.inputs["inventory"]["value"] == "40000"
+    assert result.inputs["current_liabilities"]["value"] == "80000"
+
+
+def test_debt_to_equity_accepts_bare_liabilities_and_equity_without_repeating_total():
+    result = extract_named_formula("Calculate debt to equity for $400,000 liabilities and $200,000 equity.")
+    assert result is not None
+    assert result.calculation_type == "debt_to_equity"
+    assert result.inputs["total_liabilities"]["value"] == "400000"
+    assert result.inputs["total_equity"]["value"] == "200000"
+
+
+def test_compound_interest_accepts_times_per_year_instead_of_the_exact_label_phrase():
+    # Live bug: the only recognized phrasing for the periods-per-year input
+    # was the literal "compounding periods per year" — "compounded 12 times
+    # per year", the far more natural way to say it, matched nothing.
+    result = extract_named_formula(
+        "Calculate compound interest on $10,000 principal, 6% annual rate, "
+        "5 years, compounded 12 times per year."
+    )
+    assert result is not None
+    assert result.calculation_type == "compound_interest"
+    assert result.inputs["compounding_periods_per_year"]["value"] == "12"
+
+
+def test_labeled_number_accepts_a_connector_word_before_the_label():
+    # Live bug: "$400,000 in sales" — the reverse (number-first) pattern
+    # required the label immediately after the number with no connector at
+    # all, even though the forward (label-first) pattern already tolerated
+    # "is/are/of/=/:/at" between label and number.
+    result = extract_named_formula(
+        "For a company with $400,000 in sales and $250,000 in cost of goods sold, what is the gross margin?"
+    )
+    assert result is not None
+    assert result.calculation_type == "gross_margin"
+    assert result.inputs["revenue"]["value"] == "400000"
+    assert result.inputs["cost_of_goods_sold"]["value"] == "250000"
+
+
+def test_labeled_number_accepts_spelled_out_percent():
+    # Live bug: only a literal "%" sign satisfied a percent-typed input —
+    # "5 percent" (spelled out) matched nothing.
+    result = extract_named_formula(
+        "Overall materiality using a $1,000,000 benchmark amount and a 5 percent selected percentage."
+    )
+    assert result is not None
+    assert result.calculation_type == "materiality"
+    assert result.inputs["user_selected_percentage"]["value"] == "5"
+
+
 def test_extracts_debt_to_equity_instead_of_using_document_retrieval():
     result = extract_named_formula(
         "Calculate the debt-to-equity ratio when total liabilities are $400,000 and total equity is $200,000."
     )
     assert result is not None
     assert result.calculation_type == "debt_to_equity"
+
+
+def test_extracts_equity_from_assets_and_liabilities():
+    result = extract_named_formula(
+        "A company has assets of $850,000 and liabilities of $525,000. Calculate its equity and explain the result."
+    )
+    assert result is not None
+    assert result.calculation_type == "owners_equity"
+    assert result.inputs == {
+        "total_assets": {"value": "850000", "unit": "USD"},
+        "total_liabilities": {"value": "525000", "unit": "USD"},
+    }
 
 
 def test_extracts_taxable_income_with_explicit_user_supplied_rate():
@@ -120,6 +221,49 @@ def test_simple_interest_accepts_number_before_years_label():
     result = extract_named_formula("Calculate simple interest on principal $10,000 at annual rate 5% for 3 years.")
     assert result is not None
     assert result.inputs["time_years"]["value"] == "3"
+
+
+def test_simple_interest_treats_the_figure_after_interest_on_as_principal():
+    # Live bug: "Simple interest on $10,000..." never says the word
+    # "principal" at all — the figure is positional, tied to "interest on".
+    result = extract_named_formula("Simple interest on $10,000 at a 5% annual rate for 3 years.")
+    assert result is not None
+    assert result.calculation_type == "simple_interest"
+    assert result.inputs["principal"]["value"] == "10000"
+
+
+def test_compound_interest_treats_the_figure_after_interest_on_as_principal():
+    result = extract_named_formula(
+        "Compound interest on $10,000 at a 6% annual rate for 5 years, compounded 12 times per year."
+    )
+    assert result is not None
+    assert result.calculation_type == "compound_interest"
+    assert result.inputs["principal"]["value"] == "10000"
+
+
+def test_loan_payment_trigger_matches_payment_and_loan_in_reverse_order():
+    # Live bug: the trigger required the literal contiguous phrase "loan
+    # payment" — "What is the monthly payment for a loan..." says the same
+    # thing in the opposite word order and matched nothing.
+    result = extract_named_formula(
+        "What is the monthly payment for a loan with principal $250,000, "
+        "annual rate 5 percent, and 360 payments?"
+    )
+    assert result is not None
+    assert result.calculation_type == "loan_payment"
+    assert result.inputs["principal"]["value"] == "250000"
+    assert result.inputs["number_of_payments"]["value"] == "360"
+
+
+def test_working_capital_components_are_aggregated_without_guessing():
+    result = extract_named_formula(
+        "Create a working-capital waterfall using cash $220,000, receivables $310,000, "
+        "inventory $190,000, payables $260,000 and other current liabilities $110,000."
+    )
+    assert result is not None
+    assert result.calculation_type == "working_capital"
+    assert result.inputs["current_assets"]["value"] == "720000"
+    assert result.inputs["current_liabilities"]["value"] == "370000"
 
 
 def test_default_calculation_response_is_concise_but_auditable():

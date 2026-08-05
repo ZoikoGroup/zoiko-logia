@@ -183,6 +183,15 @@ def _current_ratio(i: dict) -> ComputeOutcome:
     )
 
 
+def _working_capital(i: dict) -> ComputeOutcome:
+    assets, liabilities = _req(i, "current_assets"), _req(i, "current_liabilities")
+    value = assets - liabilities
+    return ComputeOutcome(
+        value=value,
+        steps=[f"Working capital = Current assets - Current liabilities = {assets} - {liabilities} = {value}"],
+    )
+
+
 def _quick_ratio(i: dict) -> ComputeOutcome:
     assets = _req(i, "current_assets")
     inventory = _req(i, "inventory")
@@ -212,6 +221,19 @@ def _debt_to_equity(i: dict) -> ComputeOutcome:
     )
 
 
+def _owners_equity(i: dict) -> ComputeOutcome:
+    assets = _req(i, "total_assets")
+    liabilities = _req(i, "total_liabilities")
+    value = assets - liabilities
+    return ComputeOutcome(
+        value=value,
+        steps=[
+            f"Equity = Total assets - Total liabilities = {assets} - {liabilities} = {value}"
+        ],
+        assumptions=["The supplied assets and liabilities are measured for the same entity and reporting date."],
+    )
+
+
 def _effective_tax_rate(i: dict) -> ComputeOutcome:
     tax, pretax_income = _req(i, "total_tax_expense"), _req(i, "pretax_income")
     if pretax_income == 0:
@@ -227,6 +249,28 @@ def _net_profit(i: dict) -> ComputeOutcome:
     revenue, expenses = _req(i, "revenue"), _req(i, "total_expenses")
     value = revenue - expenses
     return ComputeOutcome(value=value, steps=[f"Net profit = Revenue - Total expenses = {revenue} - {expenses} = {value}"])
+
+
+def _profit_margin(i: dict) -> ComputeOutcome:
+    profit, revenue = _req(i, "profit"), _req(i, "revenue")
+    if revenue == 0:
+        raise InvalidInputError("Revenue cannot be zero when computing profit margin.")
+    value = profit / revenue * Decimal(100)
+    return ComputeOutcome(value=value, steps=[f"Profit margin = Profit / Revenue = {profit} / {revenue} = {value}%"])
+
+
+def _percentage_change(i: dict) -> ComputeOutcome:
+    start, end = _req(i, "starting_value"), _req(i, "ending_value")
+    if start == 0:
+        raise InvalidInputError("Starting value cannot be zero for standard percentage change.")
+    value = (end - start) / abs(start) * Decimal(100)
+    return ComputeOutcome(value=value, steps=[f"Percentage change = (Ending value - Starting value) / |Starting value| = ({end} - {start}) / |{start}| = {value}%"])
+
+
+def _budget_variance(i: dict) -> ComputeOutcome:
+    budget, actual = _req(i, "budget"), _req(i, "actual")
+    value = actual - budget
+    return ComputeOutcome(value=value, steps=[f"Budget variance = Actual - Budget = {actual} - {budget} = {value}"])
 
 
 def _inventory_turnover(i: dict) -> ComputeOutcome:
@@ -497,6 +541,16 @@ _register(FormulaDefinition(
 ))
 
 _register(FormulaDefinition(
+    id="accounting.working_capital.v1", name="Working capital", version="1.0.0",
+    inputs=("current_assets", "current_liabilities"),
+    input_units={"current_assets": "USD", "current_liabilities": "USD"},
+    output_unit="USD", jurisdiction=None,
+    methodology_reference="Working capital = Current assets - Current liabilities.",
+    rounding_policy="two_decimal_places",
+    default_assumptions=(), compute=_working_capital,
+))
+
+_register(FormulaDefinition(
     id="finance.quick_ratio.v1", name="Quick ratio (acid-test)", version="1.0.0",
     inputs=("current_assets", "inventory", "current_liabilities"),
     input_units={"current_assets": "USD", "inventory": "USD", "current_liabilities": "USD"},
@@ -514,6 +568,16 @@ _register(FormulaDefinition(
     methodology_reference="Total liabilities / Total equity (standard leverage ratio).",
     rounding_policy="two_decimal_places",
     default_assumptions=(), compute=_debt_to_equity,
+))
+
+_register(FormulaDefinition(
+    id="accounting.owners_equity.v1", name="Equity from the accounting equation", version="1.0.0",
+    inputs=("total_assets", "total_liabilities"),
+    input_units={"total_assets": "USD", "total_liabilities": "USD"},
+    output_unit="USD", jurisdiction=None,
+    methodology_reference="Accounting equation: Equity = Total assets - Total liabilities.",
+    rounding_policy="two_decimal_places",
+    default_assumptions=(), compute=_owners_equity,
 ))
 
 _register(FormulaDefinition(
@@ -613,6 +677,24 @@ _register(FormulaDefinition(
     inputs=("revenue", "total_expenses"), input_units={"revenue": "USD", "total_expenses": "USD"},
     output_unit="USD", jurisdiction=None, methodology_reference="Revenue - Total expenses (standard profit calculation).",
     rounding_policy="two_decimal_places", default_assumptions=(), compute=_net_profit,
+))
+_register(FormulaDefinition(
+    id="accounting.profit_margin.v1", name="Profit margin", version="1.0.0",
+    inputs=("profit", "revenue"), input_units={"profit": "USD", "revenue": "USD"},
+    output_unit="percent", jurisdiction=None, methodology_reference="Profit / Revenue (standard profitability ratio).",
+    rounding_policy="percentage_two_decimal_places", default_assumptions=(), compute=_profit_margin,
+))
+_register(FormulaDefinition(
+    id="finance.percentage_change.v1", name="Percentage change", version="1.0.0",
+    inputs=("starting_value", "ending_value"), input_units={"starting_value": "USD", "ending_value": "USD"},
+    output_unit="percent", jurisdiction=None, methodology_reference="(Ending value - Starting value) / absolute Starting value.",
+    rounding_policy="percentage_two_decimal_places", default_assumptions=(), compute=_percentage_change,
+))
+_register(FormulaDefinition(
+    id="accounting.budget_variance.v1", name="Budget variance", version="1.0.0",
+    inputs=("budget", "actual"), input_units={"budget": "USD", "actual": "USD"},
+    output_unit="USD", jurisdiction=None, methodology_reference="Actual - Budget; positive is over budget.",
+    rounding_policy="two_decimal_places", default_assumptions=(), compute=_budget_variance,
 ))
 _register(FormulaDefinition(
     id="accounting.inventory_turnover.v1", name="Inventory turnover", version="1.0.0",

@@ -6,6 +6,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CalculationWidget } from "@/components/CalculationWidget";
 import { AnswerVisualizations } from "@/components/AnswerVisualizations";
+import { DynamicAnswerBlocks } from "@/components/DynamicAnswerBlocks";
 import {
   AlertTriangle,
   ArrowUp,
@@ -544,6 +545,14 @@ export default function AskKritonPage() {
           jurisdiction,
           mode: "Workflow",
           clarification_cycle: 0,
+          // Dynamic Visualization Selection v4 — the same locally-generated
+          // thread id already used for the recents sidebar (saveConversation
+          // above has already assigned one by this point), sent to the
+          // backend for the first time so it can scope the chart-repetition
+          // penalty and telemetry to this conversation. Never used for
+          // authorization — tenant/user scoping still comes from the
+          // authenticated token, same as every other field here.
+          conversation_id: activeConversationId.current ?? undefined,
         },
         idempotencyKey,
       );
@@ -890,16 +899,29 @@ export default function AskKritonPage() {
                               {turn.result.answer ? (
                                 <>
                                   <div className="kriton-answer-reveal">
-                                    <KritonMarkdown text={answerDisplayText(turn.result.answer.text)} />
+                                    <DynamicAnswerBlocks
+                                      answer={turn.result.answer}
+                                      queryId={turn.result.query_id}
+                                      conversationId={activeConversationIdValue ?? undefined}
+                                      onFollowUp={(question) => setQuery(`${question} Context: ${turn.query}`)}
+                                      renderMarkdown={(text) => <KritonMarkdown text={answerDisplayText(text)} />}
+                                    />
                                   </div>
-                                    {turn.result.answer.presentation && (
+                                    {!turn.result.answer.blocks?.length && turn.result.answer.presentation && (
                                       <AnswerVisualizations
                                         presentation={turn.result.answer.presentation}
                                         onFollowUp={(question) => setQuery(`${question} Context: ${turn.query}`)}
+                                        queryId={turn.result.query_id}
+                                        sourceReferences={turn.result.answer.citations.map((c) => c.ref_id)}
+                                        conversationId={activeConversationIdValue ?? undefined}
                                       />
                                     )}
-                                    {turn.result.answer.calculation_widget && (
-                                      <CalculationWidget data={turn.result.answer.calculation_widget} />
+                                    {!turn.result.answer.blocks?.length && turn.result.answer.calculation_widget && (
+                                      <CalculationWidget
+                                        data={turn.result.answer.calculation_widget}
+                                        queryId={turn.result.query_id}
+                                        sourceReferences={turn.result.answer.citations.map((c) => c.ref_id)}
+                                      />
                                     )}
                                     {turn.result.answer.citations.length > 0 && (
                                       <div className="mt-5 border-t border-line/70 pt-3">
@@ -980,6 +1002,10 @@ export default function AskKritonPage() {
                                 <span className="capitalize">{readableState(turn.result.confidence_state)} confidence</span>
                                 <span aria-hidden="true">·</span>
                                 <span>{turn.result.source_bundle?.jurisdiction || "Any jurisdiction"}</span>
+                                <span aria-hidden="true">·</span>
+                                <span className="capitalize">
+                                  {turn.result.source_bundle?.freshness_state || "unknown"} sources
+                                </span>
                                 <span aria-hidden="true">·</span>
                                 <span className={`capitalize ${outcomePresentation.tone}`}>{riskLevel.toLowerCase()} risk</span>
                               </div>

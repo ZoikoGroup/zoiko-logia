@@ -11,6 +11,16 @@ from app.core.supabase_auth import verify_token
 settings = get_settings()
 
 
+def _pool_options(url: str) -> dict:
+    if url.startswith("sqlite"):
+        return {}
+    return {
+        "pool_size": settings.DB_POOL_SIZE,
+        "max_overflow": settings.DB_MAX_OVERFLOW,
+        "pool_timeout": settings.DB_POOL_TIMEOUT_SECONDS,
+    }
+
+
 def _normalize_scheme(url: str) -> str:
     """postgres:// is a legacy alias for postgresql:// — normalize it first
     so the two driver-specific helpers below only need to handle one scheme."""
@@ -50,7 +60,10 @@ def to_sync_url(url: str) -> str:
 sync_db_url = to_sync_url(settings.DATABASE_URL)
 connect_args = {"check_same_thread": False} if sync_db_url.startswith("sqlite") else {}
 
-engine = create_engine(sync_db_url, connect_args=connect_args, pool_pre_ping=True)
+engine = create_engine(
+    sync_db_url, connect_args=connect_args, pool_pre_ping=True,
+    **_pool_options(sync_db_url),
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_sync_db() -> Generator[Session, None, None]:
@@ -66,7 +79,11 @@ def get_sync_db() -> Generator[Session, None, None]:
 # main.py's lifespan uses for schema creation/migrations, and what the
 # one-shot seed scripts (scripts/seed_dev_user.py, ingest_reference_sources.py)
 # import directly — those need to write rows unconstrained by RLS.
-async_engine = create_async_engine(to_async_url(settings.DATABASE_URL), echo=False, pool_pre_ping=True)
+async_database_url = to_async_url(settings.DATABASE_URL)
+async_engine = create_async_engine(
+    async_database_url, echo=False, pool_pre_ping=True,
+    **_pool_options(async_database_url),
+)
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 
 # Request-time engine — deliberately separate from async_engine. Postgres
@@ -84,8 +101,10 @@ AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 # handing out a pooled connection and replaces it silently if it's dead —
 # adds negligible overhead on a healthy connection, and is exactly what
 # would have caught this.
+request_database_url = to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL)
 request_engine = create_async_engine(
-    to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL), echo=False, pool_pre_ping=True
+    request_database_url, echo=False, pool_pre_ping=True,
+    **_pool_options(request_database_url),
 )
 RequestSessionLocal = async_sessionmaker(request_engine, expire_on_commit=False)
 
@@ -141,4 +160,3 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
                 text("SELECT set_config('app.user_id', :user_id, false)"), {"user_id": user_id}
             )
         yield session
-
