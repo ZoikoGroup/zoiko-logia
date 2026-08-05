@@ -1,0 +1,17 @@
+# Minimal SearXNG settings for Kriton's web-search grounding.
+# Inherits all upstream defaults, then overrides only what we need:
+#   - a secret key (required)
+#   - the JSON output format (disabled by default) so the backend can call
+#     /search?format=json
+use_default_settings: true
+
+server:
+  # CHANGE THIS to any long random string before real use.
+  secret_key: "change-me-to-a-long-random-string"
+  limiter: false
+  image_proxy: false
+
+search:
+  formats:
+    - html
+    - json
