@@ -37,6 +37,26 @@ class SavedAnswer(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class SavedVisualization(Base):
+    __tablename__ = "saved_visualizations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    query_id: Mapped[str] = mapped_column(String, nullable=False)
+    visualization_type: Mapped[str] = mapped_column(String, nullable=False)  # chart, graph, diagram, presentation_chart
+    schema_version: Mapped[str] = mapped_column(String, nullable=False, default="1.0")
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # The validated CalculationWidget/PresentationGraph/PresentationGuide dict
+    # as already rendered — never LLM reasoning_summary or other backend
+    # diagnostic fields, which these schemas don't define in the first place.
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    source_references: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
 class Draft(Base):
     __tablename__ = "drafts"
 

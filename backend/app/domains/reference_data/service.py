@@ -184,17 +184,29 @@ def to_professional_search_chunks(bundle: ReferenceSourceBundle, *, source_id: s
 # fabricated row for them).
 _CURRENCY_KEYWORDS: dict[str, str] = {
     "euro": "Euro Zone-Euro",
+    "eur": "Euro Zone-Euro",
     "yen": "Japan-Yen",
+    "jpy": "Japan-Yen",
     "yuan": "China-Renminbi",
     "renminbi": "China-Renminbi",
+    "cny": "China-Renminbi",
     "canadian dollar": "Canada-Dollar",
+    "cad": "Canada-Dollar",
     "australian dollar": "Australia-Dollar",
+    "aud": "Australia-Dollar",
     "indian rupee": "India-Rupee",
+    "india": "India-Rupee",
+    "inr": "India-Rupee",
     "korean won": "Korea-Won",
+    "krw": "Korea-Won",
     "brazilian real": "Brazil-Real",
+    "brl": "Brazil-Real",
     "hong kong dollar": "Hong Kong-Dollar",
+    "hkd": "Hong Kong-Dollar",
     "danish krone": "Denmark-Krone",
+    "dkk": "Denmark-Krone",
     "icelandic krona": "Iceland-Krona",
+    "isk": "Iceland-Krona",
 }
 
 # Keeps our injected chunk from consuming rag/context_fit.py's whole
@@ -302,7 +314,7 @@ def match_currency_keyword(query: str) -> str | None:
     to sanction."""
     lowered = query.lower()
     for keyword, description in _CURRENCY_KEYWORDS.items():
-        if keyword in lowered:
+        if re.search(rf"\b{re.escape(keyword)}\b", lowered):
             return description
     return None
 
@@ -1227,6 +1239,18 @@ async def _log_fred_call(
     )
 
 
+def _format_fred_rate(raw: str) -> str:
+    """FRED's real API genuinely returns values like "3.6300000000" (ten
+    decimal places) — confirmed live (2026-08-06): the raw string was
+    passed straight into the composed answer unformatted, producing
+    "3.6300000000%" in the response the user actually saw. Rates are
+    conventionally published/quoted to 2 decimal places."""
+    try:
+        return f"{float(raw):.2f}"
+    except ValueError:
+        return raw
+
+
 def to_fred_rag_chunk(bundle: ReferenceSourceBundle, *, source_id: str) -> dict:
     """Formats FRED interest-rate data into a RAG-shaped chunk. Unlike the
     CPI/GDP formatters, no derived year-over-year calculation — the latest
@@ -1243,13 +1267,15 @@ def to_fred_rag_chunk(bundle: ReferenceSourceBundle, *, source_id: str) -> dict:
         if not rows:
             continue
         latest = rows[0]  # fetched with sort_order=desc, so index 0 is latest
-        lines.append(f"- {title} ({series_id}): {latest['value']}% (as of {latest['date']})")
+        latest_value = _format_fred_rate(latest["value"])
+        lines.append(f"- {title} ({series_id}): {latest_value}% (as of {latest['date']})")
         if len(rows) > 1:
             earliest = rows[-1]
+            earliest_value = _format_fred_rate(earliest["value"])
             change = float(latest["value"]) - float(earliest["value"])
             lines.append(
-                f"  One-year window: {earliest['value']}% on {earliest['date']} to "
-                f"{latest['value']}% on {latest['date']} ({change:+.2f} percentage points)"
+                f"  One-year window: {earliest_value}% on {earliest['date']} to "
+                f"{latest_value}% on {latest['date']} ({change:+.2f} percentage points)"
             )
 
     return {

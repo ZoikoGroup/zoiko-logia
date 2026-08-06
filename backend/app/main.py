@@ -1,39 +1,17 @@
-import logging
 import os
-import socket
 
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
-# Some dev networks synthesize NAT64 IPv6 addresses (64:ff9b::...) for
-# IPv4-only hosts like Supabase's pooler, and that synthesized path is
-# unreliable here — asyncio/asyncpg try getaddrinfo()'s results in order,
-# and getaddrinfo() lists those IPv6 addresses before the real IPv4 ones,
-# so a connection attempt hangs on the broken IPv6 path and times out
-# instead of ever reaching the working IPv4 address. Reordering (not
-# removing) results to try IPv4 first fixes this without needing any
-# per-network config — real IPv6 hosts/networks are unaffected since this
-# only changes ordering when both families are present.
-_orig_getaddrinfo = socket.getaddrinfo
-
-
-def _ipv4_preferring_getaddrinfo(*args, **kwargs):
-    results = _orig_getaddrinfo(*args, **kwargs)
-    return sorted(results, key=lambda r: r[0] != socket.AF_INET)
-
-
-socket.getaddrinfo = _ipv4_preferring_getaddrinfo
-
 from contextlib import asynccontextmanager
+from datetime import date
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import OperationalError
 
 from app.api.v1.router import api_v1_router
 from app.core.config import get_settings
@@ -41,10 +19,6 @@ from app.core.database import async_engine, SessionLocal
 from app.core.rate_limit import limiter
 from app.db.base import Base
 from app.domains.massarius.tenant_scope import ensure_vector_table_rls
-from app.domains.live_sources.http_client import close_shared_http_client
-from app.domains.live_sources.schema_sync import ensure_provider_columns
-
-logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
@@ -163,19 +137,6 @@ async def _migrate_user_profile_columns():
             await conn.execute(text("ALTER TABLE users DROP COLUMN IF EXISTS hashed_password"))
 
 
-async def _migrate_live_source_provider_columns():
-    """Add the catalogue's required source-metadata columns to
-    `live_source_providers` if this DB predates them.
-
-    Same create_all()-doesn't-alter-existing-tables situation as
-    _migrate_source_licence_columns above. The column definitions live in
-    live_sources/schema_sync.py so the test suite reconciles its own
-    database identically — a test schema that drifts from the runtime's is
-    testing a schema nobody deploys.
-    """
-    await ensure_provider_columns(async_engine, is_sqlite=settings.is_sqlite)
-
-
 async def _migrate_safety_tenant_columns():
     """Backfill tenant ownership for safety queues, overrides and events so
     authenticated safety APIs cannot expose records across tenants."""
@@ -197,6 +158,134 @@ async def _migrate_safety_tenant_columns():
                 await conn.execute(text(
                     f"CREATE INDEX IF NOT EXISTS ix_{table}_tenant_id ON {table} (tenant_id)"
                 ))
+
+
+async def _migrate_saved_visualization_columns():
+    """Add updated_at to saved_visualizations if this DB predates it — same
+    create_all()-doesn't-alter-existing-tables situation as the migrations
+    above. Backfilled from created_at rather than "now" so an existing row's
+    updated_at doesn't lie about when it last actually changed."""
+    async with async_engine.begin() as conn:
+        if settings.is_sqlite:
+            columns = await conn.execute(text("PRAGMA table_info(saved_visualizations)"))
+            if "updated_at" not in {row[1] for row in columns}:
+                await conn.execute(text("ALTER TABLE saved_visualizations ADD COLUMN updated_at DATETIME"))
+        else:
+            await conn.execute(text("ALTER TABLE saved_visualizations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ"))
+        await conn.execute(text(
+            "UPDATE saved_visualizations SET updated_at = created_at WHERE updated_at IS NULL"
+        ))
+        if not settings.is_sqlite:
+            await conn.execute(text("ALTER TABLE saved_visualizations ALTER COLUMN updated_at SET NOT NULL"))
+
+
+async def _migrate_visualization_preference_telemetry():
+    """Backfill privacy-safe v5-v8.2 telemetry fields on legacy tables.
+
+    Some development databases predate the Alembic v8 chain and were
+    created by create_all(), which never alters an existing table. Keep the
+    startup compatibility path complete so recording a chart cannot fail an
+    otherwise valid Ask Kriton response merely because a nullable telemetry
+    column is absent.
+    """
+    async with async_engine.begin() as conn:
+        if settings.is_sqlite:
+            columns = await conn.execute(text("PRAGMA table_info(visualization_telemetry_events)"))
+            column_names = {row[1] for row in columns}
+            for column in ("chart_family", "ranking_version", "experiment_id", "experiment_group", "environment"):
+                if column not in column_names:
+                    await conn.execute(text(f"ALTER TABLE visualization_telemetry_events ADD COLUMN {column} VARCHAR"))
+            if "preference_affected_selection" not in column_names:
+                await conn.execute(text("ALTER TABLE visualization_telemetry_events ADD COLUMN preference_affected_selection BOOLEAN"))
+        else:
+            for column in ("chart_family", "ranking_version", "experiment_id", "experiment_group", "environment"):
+                await conn.execute(text(
+                    f"ALTER TABLE visualization_telemetry_events ADD COLUMN IF NOT EXISTS {column} VARCHAR"
+                ))
+            await conn.execute(text("ALTER TABLE visualization_telemetry_events ADD COLUMN IF NOT EXISTS preference_affected_selection BOOLEAN"))
+
+
+async def _migrate_visualization_personalization_telemetry():
+    """Add the privacy-safe V10 personalization metadata columns to the
+    existing telemetry table — same create_all()-doesn't-alter-existing-
+    tables situation as the migrations above."""
+    async with async_engine.begin() as conn:
+        if settings.is_sqlite:
+            columns = await conn.execute(text("PRAGMA table_info(visualization_telemetry_events)"))
+            column_names = {row[1] for row in columns}
+            for column in ("personalization_enabled", "personalization_affected_selection"):
+                if column not in column_names:
+                    await conn.execute(text(f"ALTER TABLE visualization_telemetry_events ADD COLUMN {column} BOOLEAN"))
+            for column in ("personalization_model_version", "personalization_confidence_band"):
+                if column not in column_names:
+                    await conn.execute(text(f"ALTER TABLE visualization_telemetry_events ADD COLUMN {column} VARCHAR"))
+        else:
+            await conn.execute(text("ALTER TABLE visualization_telemetry_events ADD COLUMN IF NOT EXISTS personalization_enabled BOOLEAN"))
+            await conn.execute(text("ALTER TABLE visualization_telemetry_events ADD COLUMN IF NOT EXISTS personalization_affected_selection BOOLEAN"))
+            await conn.execute(text("ALTER TABLE visualization_telemetry_events ADD COLUMN IF NOT EXISTS personalization_model_version VARCHAR"))
+            await conn.execute(text("ALTER TABLE visualization_telemetry_events ADD COLUMN IF NOT EXISTS personalization_confidence_band VARCHAR"))
+
+
+async def _migrate_visualization_gap_report_columns():
+    """Backfill the V8.3 formal artifact column when create_all previously
+    created the V8.2 report table (create_all never alters existing tables)."""
+    async with async_engine.begin() as conn:
+        if settings.is_sqlite:
+            columns = await conn.execute(text("PRAGMA table_info(visualization_gap_reports)"))
+            if "artifact" not in {row[1] for row in columns}:
+                await conn.execute(text("ALTER TABLE visualization_gap_reports ADD COLUMN artifact JSON NOT NULL DEFAULT '{}'"))
+        else:
+            await conn.execute(text("ALTER TABLE visualization_gap_reports ADD COLUMN IF NOT EXISTS artifact JSON NOT NULL DEFAULT '{}'"))
+            await conn.execute(text("ALTER TABLE visualization_gap_reports ALTER COLUMN artifact DROP DEFAULT"))
+
+
+async def _migrate_evidence_monitoring_run_columns():
+    """Backfill the V8.5 run-lifecycle columns (and the run_at->started_at
+    rename) when create_all previously created the V8.4 aggregation-run
+    table — same create_all()-doesn't-alter-existing-tables situation as
+    the migrations above."""
+    table = "visualization_evidence_aggregation_runs"
+    async with async_engine.begin() as conn:
+        if settings.is_sqlite:
+            columns = await conn.execute(text(f"PRAGMA table_info({table})"))
+            column_names = {row[1] for row in columns}
+            if "run_at" in column_names and "started_at" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} RENAME COLUMN run_at TO started_at"))
+            columns = await conn.execute(text(f"PRAGMA table_info({table})"))
+            column_names = {row[1] for row in columns}
+            if "completed_at" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN completed_at DATETIME"))
+            if "status" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN status VARCHAR NOT NULL DEFAULT 'succeeded'"))
+            if "monitoring_period" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN monitoring_period VARCHAR NOT NULL DEFAULT ''"))
+            if "trigger_source" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN trigger_source VARCHAR NOT NULL DEFAULT 'manual'"))
+            if "draft_created" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN draft_created BOOLEAN NOT NULL DEFAULT 0"))
+            if "alert_created" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN alert_created BOOLEAN NOT NULL DEFAULT 0"))
+            if "failure_category" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN failure_category VARCHAR"))
+        else:
+            existing = await conn.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = :table"
+            ), {"table": table})
+            column_names = {row[0] for row in existing}
+            if "run_at" in column_names and "started_at" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} RENAME COLUMN run_at TO started_at"))
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ"))
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS status VARCHAR NOT NULL DEFAULT 'succeeded'"))
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS monitoring_period VARCHAR NOT NULL DEFAULT ''"))
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS trigger_source VARCHAR NOT NULL DEFAULT 'manual'"))
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS draft_created BOOLEAN NOT NULL DEFAULT FALSE"))
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS alert_created BOOLEAN NOT NULL DEFAULT FALSE"))
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS failure_category VARCHAR"))
+            await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN status DROP DEFAULT"))
+            await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN monitoring_period DROP DEFAULT"))
+            await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN trigger_source DROP DEFAULT"))
+            await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN draft_created DROP DEFAULT"))
+            await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN alert_created DROP DEFAULT"))
 
 
 async def _setup_user_rls():
@@ -538,6 +627,123 @@ def _seed_incidents():
         db.close()
 
 
+def _seed_users():
+    """Seed a default tenant and admin user on first startup. Since
+    Supabase now owns credentials, this needs a Supabase auth user created
+    via the Admin API (service-role key) before the local profile row can
+    reference it — skipped (like the APP_DATABASE_URL warning above) when
+    SUPABASE_SERVICE_ROLE_KEY isn't configured, e.g. plain SQLite dev mode."""
+    from app.core import supabase_admin
+    from app.domains.identity.models import Tenant, User
+
+    if not supabase_admin.is_configured():
+        print("WARNING: SUPABASE_SERVICE_ROLE_KEY/SUPABASE_URL not set — "
+              "skipping default user seeding (no Supabase auth user can be "
+              "created for admin@zoiko.com / kriton@zoiko.com).")
+        return
+
+    db = SessionLocal()
+    try:
+        # Create default tenant if it doesn't exist
+        tenant = db.query(Tenant).filter(Tenant.id == "tenant-default").first()
+        if tenant is None:
+            tenant = Tenant(id="tenant-default", name="ZoikoLogia Default Tenant")
+            db.add(tenant)
+            db.flush()
+
+        # Reconcile each backend-managed identity independently. Local profile
+        # rows can survive a Supabase reset, so a global users-count check leaves
+        # the documented accounts permanently unable to sign in.
+        for email, password, full_name, role in (
+            ("admin@zoiko.com", "Admin@1234", "System Administrator", "Admin"),
+            ("kriton@zoiko.com", "Kriton@1234", "Kriton Reviewer", "SME Reviewer"),
+        ):
+            local_user = db.query(User).filter(User.email == email).first()
+            existing_auth_user = supabase_admin.get_user_by_email(email)
+            auth_user = existing_auth_user or supabase_admin.create_user(
+                email,
+                password,
+                email_confirm=True,
+                user_id=local_user.id if local_user else None,
+            )
+            if local_user is None:
+                first_name, _, last_name = full_name.partition(" ")
+                local_user = User(
+                    id=auth_user["id"],
+                    tenant_id="tenant-default",
+                    email=email,
+                    first_name=first_name,
+                    last_name=last_name,
+                    full_name=full_name,
+                    role=role,
+                    is_active=True,
+                )
+                db.add(local_user)
+                db.flush()
+            if auth_user["id"] != local_user.id:
+                raise RuntimeError(f"Supabase/local identity mismatch for {email}")
+            supabase_admin.update_app_metadata(auth_user["id"], local_user.tenant_id, local_user.role)
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _seed_business_tax_review_source():
+    """Register the dated reviewed IRS composite used by deterministic tax workflows."""
+    from app.domains.identity.models import User
+    from app.domains.source_library.models import Source, SourceVersion
+    from app.domains.reference_data.business_tax_review import (
+        BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID,
+        BUSINESS_TAX_REVIEW_VERSION,
+    )
+
+    db = SessionLocal()
+    try:
+        reviewer = db.query(User).filter(User.is_active.is_(True)).first()
+        if reviewer is None:
+            return
+        source = db.query(Source).filter(Source.id == BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID).first()
+        if source is None:
+            source = Source(
+                id=BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID,
+                category="business-tax-review",
+                title="IRS Business Filing & Employment Tax Review — Reviewed 2026",
+                source_class="Reviewed synthesis of current IRS primary guidance",
+                jurisdiction_scope="US",
+                authority_level="secondary",
+                licence_state="permitted",
+            )
+            db.add(source)
+            db.flush()
+        version = db.query(SourceVersion).filter(
+            SourceVersion.source_id == source.id,
+            SourceVersion.version_label == BUSINESS_TAX_REVIEW_VERSION,
+        ).first()
+        if version is None:
+            db.add(SourceVersion(
+                source_id=source.id,
+                version_label=BUSINESS_TAX_REVIEW_VERSION,
+                status="ACTIVE",
+                effective_from=date(2026, 7, 29),
+                effective_to=date(2026, 12, 31),
+                note=(
+                    "Reviewed against IRS Filing, Business Tax Account, Recordkeeping, business e-file, "
+                    "employment-tax filing/reporting pages, and Publication 15 (2026). Re-review before expiry."
+                ),
+                submitted_by=reviewer.id,
+                approved_by=reviewer.id,
+                file_path="https://www.irs.gov/filing",
+            ))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 async def _warm_up_ml_models():
     """Load the lazy-singleton embedding/reranker/risk-classifier models once
     here at startup, instead of leaving them to load on whichever request
@@ -565,17 +771,11 @@ async def _warm_up_ml_models():
         get_embed_model()
 
     def _load_reranker():
-        # get_reranker_pipeline() (not a throwaway SentenceTransformerRerank
-        # construction) — must populate the actual module-level singleton
-        # every Reranker instance shares, or this warmup step does nothing
-        # for real requests: previously this constructed and immediately
-        # discarded its own instance, so the first real request still
-        # reloaded the model from scratch (visible as a second "Loading
-        # weights" bar during the first POST /ask, right after startup had
-        # already logged one).
-        from app.domains.rag.reranker import get_reranker_pipeline
+        from llama_index.core.postprocessor import SentenceTransformerRerank
 
-        get_reranker_pipeline()
+        from app.domains.rag.reranker import RERANKER_MODEL
+
+        SentenceTransformerRerank(model=RERANKER_MODEL, top_n=5)
 
     def _load_classifier():
         from app.domains.risk_safety.risk_classifier import _get_classifier_pipeline
@@ -624,19 +824,22 @@ async def lifespan(app: FastAPI):
     await _migrate_source_licence_columns()
     await _migrate_user_profile_columns()
     await _migrate_safety_tenant_columns()
-    await _migrate_live_source_provider_columns()
+    await _migrate_saved_visualization_columns()
+    await _migrate_visualization_preference_telemetry()
+    await _migrate_visualization_gap_report_columns()
+    await _migrate_evidence_monitoring_run_columns()
+    await _migrate_visualization_personalization_telemetry()
     await _setup_source_rls()
     await _setup_user_rls()
     _seed_defaults()
     _seed_evaluation()
     _seed_escalation_rules()
     _seed_incidents()
+    _seed_users()
+    _seed_business_tax_review_source()
     await _warm_up_ml_models()
-    try:
-        yield
-    finally:
-        await close_shared_http_client()
-        await async_engine.dispose()
+    yield
+    await async_engine.dispose()
 
 
 def create_app() -> FastAPI:
@@ -646,19 +849,6 @@ def create_app() -> FastAPI:
         version="1.0.0",
         lifespan=lifespan
     )
-
-    @app.middleware("http")
-    async def add_security_headers(request, call_next):
-        response = await call_next(request)
-        response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("X-Frame-Options", "DENY")
-        response.headers.setdefault("Referrer-Policy", "no-referrer")
-        response.headers.setdefault(
-            "Permissions-Policy",
-            "camera=(), microphone=(), geolocation=()",
-        )
-        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
-        return response
 
     app.add_middleware(
         CORSMiddleware,
@@ -671,46 +861,20 @@ def create_app() -> FastAPI:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-    @app.exception_handler(OperationalError)
-    async def _database_unavailable_handler(request: Request, exc: OperationalError):
-        """A pooler that has stopped handing out sessions reaches the route as
-        an OperationalError wrapping a connect timeout. Left unhandled it is a
-        bare 500 with no body, which the frontend cannot distinguish from the
-        API being down at all — it renders "Could not reach the orchestration
-        service" and points debugging at the wrong layer. 503 with a real
-        detail says what actually broke, and keeps the answer path's own
-        errors (which are not OperationalError) reporting as before."""
-        logger.error("database unavailable on %s %s: %s", request.method, request.url.path, exc)
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={
-                "detail": "The database is temporarily unreachable. "
-                          "This is a connection problem, not a problem with your question — "
-                          "please retry in a moment."
-            },
-        )
+    @app.get("/health", tags=["Operations"])
+    async def health() -> dict:
+        """Cheap process-liveness probe with no external dependencies."""
+        return {"status": "ok", "service": "zoikologia-backend"}
 
-    @app.get("/health/live", include_in_schema=False)
-    async def health_live():
-        return {"status": "live"}
-
-    @app.get("/health/ready", include_in_schema=False)
-    async def health_ready():
+    @app.get("/ready", tags=["Operations"])
+    async def ready() -> dict:
+        """Traffic-readiness probe that verifies database connectivity."""
         try:
-            async with async_engine.connect() as connection:
-                await connection.execute(text("SELECT 1"))
-            return {
-                "status": "ready",
-                "database": "available",
-            }
-        except Exception:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "status": "not_ready",
-                    "database": "unavailable",
-                },
-            )
+            async with async_engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Database is not ready") from exc
+        return {"status": "ready", "database": "ok"}
 
     # Core API endpoints from main branch
     app.include_router(api_v1_router, prefix="/api/v1")

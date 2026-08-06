@@ -1,55 +1,40 @@
 # Stack per ZoikoLogia_Project_Execution_Roadmap.docx "Recommended tech stack" table.
 
-fastapi==0.139.0
-uvicorn[standard]==0.51.0
+fastapi
+uvicorn[standard]
 
-sqlalchemy==2.0.51
-alembic==1.18.5
-aiosqlite==0.22.1
-greenlet==3.5.3
-asyncpg==0.31.0
-psycopg2-binary==2.9.12
+sqlalchemy
+alembic
+aiosqlite
+greenlet
+asyncpg
+psycopg2-binary
 
-python-multipart==0.0.32
-email-validator==2.3.0
-python-dotenv==1.2.2
-pyyaml==6.0.3
+python-multipart
+email-validator
 
 # Supabase Auth — JWKS token verification + Admin API calls
-pyjwt[crypto]==2.13.0
-httpx==0.28.1
+pyjwt[crypto]
+httpx
 
-pydantic==2.13.4
-pydantic-settings==2.14.2
+pydantic
+pydantic-settings
 
 # ML Classification
-transformers==5.13.1
-torch==2.13.0
+transformers
+torch
 # Deferred DeBERTa fine-tuning script dependencies (training remains gated by
 # reviewed sample counts in scripts/train_deberta_risk_classifier.py).
-accelerate==1.14.0
-sentencepiece==0.2.1
+accelerate
+sentencepiece
 
-# RAG & Document Processing
-llama-index==0.14.23
-llama-parse==0.6.94
-llama-index-embeddings-huggingface==0.7.0
-llama-index-vector-stores-postgres==0.8.1
-sentence-transformers==5.6.0
-docling==2.113.0
-openai==2.45.0
-groq==1.5.0
-pypdf==6.14.2
-python-docx==1.2.0
-python-pptx==1.0.2
-openpyxl==3.1.5
+# LLM providers
+openai
+groq
+google-genai
 
 # Rate limiting
-slowapi==0.1.10
-# [redis] extra, not bare celery: CELERY_BROKER_URL defaults to a redis://
-# URL, and without the redis driver the worker/beat processes fail at
-# connect time rather than at import, which reads as a broker outage.
-celery[redis]==5.6.3
+slowapi
 
 # Deterministic household tax calculation (EITC/CTC/standard deduction/
 # federal income tax/CA & NY state income tax) — replaces LLM-guessed
@@ -57,8 +42,8 @@ celery[redis]==5.6.3
 # a large parameter tree (~15s one-time import cost, isolated behind a
 # lazy import in app/domains/calculation/policyengine_engine.py). Gated at
 # runtime behind ENABLE_TAX_CALCULATION_ENGINE (see .env.example).
-policyengine-us==1.775.8
+policyengine-us
 
 # Test runner
-pytest==8.4.2
-pytest-asyncio==1.4.0
+pytest
+pytest-asyncio

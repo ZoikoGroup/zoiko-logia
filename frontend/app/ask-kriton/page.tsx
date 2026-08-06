@@ -1,80 +1,41 @@
 "use client";
 
-import { createContext, useContext, useEffect, useRef, useState, type ComponentPropsWithoutRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import mermaid from "mermaid";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  LabelList,
-  Legend,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { CalculationWidget } from "@/components/CalculationWidget";
 import { AnswerVisualizations } from "@/components/AnswerVisualizations";
+import { DynamicAnswerBlocks } from "@/components/DynamicAnswerBlocks";
 import {
   AlertTriangle,
   ArrowUp,
-  Bookmark,
   BookOpen,
   BriefcaseBusiness,
-  Check,
   CheckCircle2,
-  ChevronDown,
-  Copy,
-  Download,
   ExternalLink,
   FileText,
   FolderKanban,
-  Globe,
   History,
   LayoutDashboard,
   Lightbulb,
-  Link2,
   Loader2,
   MessageSquare,
   Mic,
   MoreVertical,
   Pencil,
   PenLine,
+  Pin,
   Plus,
   Search,
   ShieldAlert,
   ShieldCheck,
   ShieldOff,
   Sparkles,
-  RotateCcw,
   Trash2,
   X,
 } from "lucide-react";
-import {
-  askKriton,
-  getAuthToken,
-  ApiError,
-  uploadDocument,
-  listConversations,
-  getConversation,
-  renameConversation,
-  deleteConversation,
-  openSourceUrl,
-  createSavedAnswer,
-  type AskKritonResponse,
-  type ConversationSummary,
-  type ConversationDetail,
-  type ChatMessage,
-} from "@/lib/api";
-import { useAuth } from "@/hooks/useAuth";
-import { useTypewriter } from "@/hooks/useTypewriter";
-import { seriesColor } from "@/lib/chartColors";
-import { tableRowsToTsv, writeTextToClipboard } from "@/lib/presentation";
+import { askKriton, getAuthToken, ApiError, uploadDocument, type AskKritonResponse } from "@/lib/api";
 
 // Web Speech API — not part of TypeScript's default DOM lib.
 interface SpeechRecognitionResultLike {
@@ -129,7 +90,7 @@ const RISK_STYLES: Record<
   RiskLevel,
   { bg: string; border: string; text: string; icon: typeof ShieldCheck; label: string }
 > = {
-  ZERO: { bg: "bg-soft", border: "border-line", text: "text-muted", icon: ShieldCheck, label: "No risk - casual" },
+  ZERO: { bg: "bg-ok/10", border: "border-ok/30", text: "text-ok", icon: ShieldCheck, label: "Zero risk - routine" },
   LOW: { bg: "bg-ok/10", border: "border-ok/30", text: "text-ok", icon: ShieldCheck, label: "Low risk - verified" },
   MEDIUM: { bg: "bg-info/10", border: "border-info/30", text: "text-info", icon: ShieldCheck, label: "Medium risk - educational" },
   HIGH: { bg: "bg-warn/10", border: "border-warn/30", text: "text-warn", icon: ShieldAlert, label: "High risk - boundary applied" },
@@ -163,643 +124,11 @@ function cleanDisplayText(value: string) {
   return value.replace(/\*\*(.*?)\*\*/g, "$1").replace(/\*\*/g, "").trim();
 }
 
-// Calling mermaid.initialize() at module scope (as this originally did)
-// runs it during Next.js's server-side render pass too, before a real
-// window/document exists — confirmed live this session: that leaves
-// Mermaid's internal DOMPurify instance broken ("DOMPurify.addHook is not
-// a function"), and every diagram then fails to render in the browser
-// even though the Mermaid syntax itself was valid. Guarding this to run
-// exactly once, only from inside a mounted client component (so a real
-// DOM is guaranteed to exist), is the fix.
-let mermaidInitialized = false;
-function ensureMermaidInitialized() {
-  if (mermaidInitialized) return;
-  mermaid.initialize({ startOnLoad: false, theme: "neutral", securityLevel: "strict" });
-  mermaidInitialized = true;
-}
-
-// The typewriter effect feeds react-markdown a GROWING, partial string every
-// tick. Headings/bold/lists degrade gracefully mid-reveal (literal '#'/'**'
-// characters for one tick, then resolve) — but a fenced ```mermaid/
-// ```kriton-chart block doesn't have that tolerance: a code fence whose
-// language tag has been revealed but whose content hasn't yet (children
-// still undefined) makes `String(children)` produce the literal 9-character
-// string "undefined", which then gets handed to mermaid.render() or
-// JSON.parse() and fails loudly and confusingly ("No diagram type detected
-// ... for text: undefined"). Confirmed live this session. The fix: don't
-// attempt to render these blocks at all until the reveal is finished —
-// this context carries that signal down from TypedAnswerText, which
-// already knows when revealed === the final text.
-const RevealCompleteContext = createContext(true);
-
-// Deterministic safety net for a known, recurring model mistake: a labeled
-// edge written as '-->|Label|>' (a stray, invalid '>' right after the
-// label's closing pipe) instead of the correct '-->|Label|'. The composition
-// prompt already tells the model not to do this (see format_intent.py's
-// _MERMAID_SYNTAX_RULE) — that instruction measurably reduces how often it
-// happens but doesn't eliminate it (confirmed live: the identical mistake
-// recurred on a later, unrelated query after the prompt fix shipped), since
-// prompt instructions are a probabilistic nudge, not a hard guarantee. This
-// closes the gap deterministically: there is no valid Mermaid construct
-// where a label's closing '|' is legitimately followed by '>', so this
-// rewrite can never break a well-formed diagram, only repair this one
-// specific, already-documented malformed shape.
-function sanitizeMermaidCode(code: string): string {
-  return code.replace(/\|([^|\n]+)\|>/g, "|$1|");
-}
-
-// Renders a ```mermaid fenced block as an actual diagram. mermaid.render()
-// is async and returns an SVG string — can't do this as a plain
-// synchronous component the way the other Markdown overrides are, hence
-// the effect + ref instead of returning JSX directly.
-function MermaidDiagram({ code }: { code: string }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [error, setError] = useState<string | null>(null);
-  const isRevealComplete = useContext(RevealCompleteContext);
-  // One id per rendered instance — mermaid.render() writes to a DOM node
-  // it creates internally keyed by this id; reusing one across multiple
-  // diagrams on the same page would collide.
-  const idRef = useRef(`mermaid-${Math.random().toString(36).slice(2, 10)}`);
-
-  useEffect(() => {
-    // Don't even attempt a render against a still-revealing (necessarily
-    // partial/invalid) or empty code string — wait for the real thing.
-    if (!isRevealComplete || !code.trim()) return;
-    let cancelled = false;
-    setError(null); // clear any stale failure from an earlier, unrelated attempt
-    ensureMermaidInitialized();
-    mermaid
-      .render(idRef.current, sanitizeMermaidCode(code))
-      .then(({ svg }) => {
-        if (!cancelled && containerRef.current) containerRef.current.innerHTML = svg;
-      })
-      .catch((err) => {
-        // Logged, not swallowed silently — a genuine Mermaid syntax error
-        // from the model and an environment/init failure (like the
-        // DOMPurify issue above) look identical to the user otherwise,
-        // and only the console message tells them apart during debugging.
-        console.error("Mermaid render failed:", err);
-        // Malformed diagram syntax from the model — degrade to showing
-        // nothing rendered rather than a broken half-drawn diagram; the
-        // raw fenced block staying out of view is preferable to a JS
-        // exception taking down the rest of the answer.
-        if (!cancelled) setError("Diagram could not be rendered.");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [code, isRevealComplete]);
-
-  if (!isRevealComplete) return null;
-  if (error) return <p className="text-xs italic text-muted">{error}</p>;
-  return <div ref={containerRef} className="my-3 flex justify-center overflow-x-auto" />;
-}
-
-type KritonChartSpec = {
-  type: "line" | "bar";
-  labels: string[];
-  series: { name: string; values: number[] }[];
-};
-
-function formatChartAxisValue(value: number) {
-  return new Intl.NumberFormat(undefined, {
-    notation: "compact",
-    maximumFractionDigits: 1,
-  }).format(value);
-}
-
-function chartSpecAsMarkdown(spec: KritonChartSpec) {
-  const header = ["Label", ...spec.series.map((series) => series.name)];
-  const divider = header.map((_, index) => index === 0 ? "---" : "---:");
-  const rows = spec.labels.map((label, index) => [
-    label,
-    ...spec.series.map((series) => (series.values[index] ?? "").toLocaleString()),
-  ]);
-  return [header, divider, ...rows]
-    .map((row) => `| ${row.join(" | ")} |`)
-    .join("\n");
-}
-
-
-// Custom tooltip: values lead (Strong, primary ink), series name follows
-// (secondary/muted) — the legend's hierarchy inverted, since here the
-// reader already has the series and wants the number. A short line-key
-// swatch carries identity instead of a filled box (tooltip-density ink).
-function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: { name?: string; value?: number; color?: string }[]; label?: string }) {
-  if (!active || !payload || payload.length === 0) return null;
-  return (
-    <div className="rounded-lg border border-line bg-panel px-3 py-2 text-xs shadow-lg">
-      <p className="mb-1 font-medium text-muted">{label}</p>
-      <div className="space-y-1">
-        {payload.map((entry, i) => (
-          <div key={i} className="flex items-center gap-2">
-            <span className="inline-block h-0.5 w-3 shrink-0" style={{ backgroundColor: entry.color }} aria-hidden="true" />
-            <span className="text-muted">{entry.name}:</span>
-            <span className="font-semibold text-ink">{entry.value?.toLocaleString()}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// Legend text stays in a text token, never the series color (marks carry
-// color; labels never do) — Recharts' default legend colors the text
-// itself, so this overrides it with a small swatch + muted text instead.
-function ChartLegend({ payload }: { payload?: { value?: string; color?: string }[] }) {
-  if (!payload || payload.length < 2) return null; // single series needs no legend box
-  return (
-    <div className="mt-2 flex flex-wrap justify-center gap-x-4 gap-y-1">
-      {payload.map((entry, i) => (
-        <div key={i} className="flex items-center gap-1.5 text-[11px]">
-          <span className="inline-block h-0.5 w-3 shrink-0" style={{ backgroundColor: entry.color }} aria-hidden="true" />
-          <span className="text-muted">{entry.value}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// Renders a ```kriton-chart fenced block (JSON, see the format_intent
-// instruction built server-side in orchestration/format_intent.py) as an
-// actual chart instead of raw JSON text.
-function KritonChart({ code }: { code: string }) {
-  // Same reveal-race issue as MermaidDiagram above — a still-typing JSON
-  // block is by definition invalid JSON on every tick but the last one;
-  // don't show a "could not be parsed" flicker for what's just incomplete.
-  const isRevealComplete = useContext(RevealCompleteContext);
-  const [showTable, setShowTable] = useState(false);
-  const [copied, setCopied] = useState(false);
-  if (!isRevealComplete) return null;
-
-  let spec: KritonChartSpec | null = null;
-  try {
-    spec = JSON.parse(code);
-  } catch {
-    return <p className="text-xs italic text-muted">Chart data could not be parsed.</p>;
-  }
-  if (!spec || !Array.isArray(spec.labels) || !Array.isArray(spec.series)) {
-    return <p className="text-xs italic text-muted">Chart data was incomplete.</p>;
-  }
-
-  const data = spec.labels.map((label, i) => {
-    const row: Record<string, string | number> = { label };
-    for (const s of spec!.series) row[s.name] = s.values[i];
-    return row;
-  });
-  const isBar = spec.type === "bar";
-  const ChartComponent = isBar ? BarChart : LineChart;
-  // "Label selectively — never a number on every point": direct bar labels
-  // only when there's one series and few enough categories to stay legible;
-  // otherwise every value is still fully reachable via the tooltip (and the
-  // table-view toggle below) without cluttering the chart itself.
-  const canDirectLabelBars = isBar && spec.series.length === 1 && spec.labels.length <= 8;
-
-  // Direct value labels are drawn OUTSIDE the plot area — bar labels sit
-  // above the bar, line labels to the right of the final point — and
-  // Recharts clips anything past the chart margin. The default top:8 left no
-  // room at all for an 11px label plus LabelList's own 5px offset, so the
-  // tallest bar (which by definition reaches the top of the domain) had its
-  // value sliced in half. Same class of bug on the line branch: the endpoint
-  // label is drawn at x+6 and a long formatted number ran straight off the
-  // right edge. Both margins are now derived from what actually gets drawn.
-  const lastRow = data[data.length - 1];
-  const longestEndLabelChars = lastRow
-    ? Math.max(
-        ...spec.series.map(
-          (s) => ((lastRow[s.name] as number) ?? 0).toLocaleString().length
-        ),
-        0
-      )
-    : 0;
-  const chartMargin = {
-    // 11px glyph height + LabelList's 5px offset, rounded up for descenders.
-    top: canDirectLabelBars ? 24 : 8,
-    // ~6px per digit at 11px, plus the 6px x-offset the endpoint label adds.
-    right: isBar ? 12 : Math.max(12, longestEndLabelChars * 6 + 10),
-    left: 12,
-    bottom: 0,
-  };
-
-  return (
-    <div className="my-3 w-full">
-      <div className="mb-2 flex items-center justify-end gap-3">
-        <button
-          type="button"
-          onClick={async () => {
-            await writeTextToClipboard(chartSpecAsMarkdown(spec!));
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 1800);
-          }}
-          className="inline-flex items-center gap-1 text-[11px] font-medium text-muted transition hover:text-brand"
-          aria-label="Copy chart data as a table"
-        >
-          {copied ? <Check size={12} /> : <Copy size={12} />}
-          {copied ? "Copied" : "Copy data"}
-        </button>
-        <button
-          type="button"
-          onClick={() => setShowTable((v) => !v)}
-          className="text-[11px] font-medium text-muted underline decoration-line hover:text-brand"
-        >
-          {showTable ? "View as chart" : "View as table"}
-        </button>
-      </div>
-
-      {showTable ? (
-        <div className="overflow-x-auto rounded-lg border border-line">
-          <table className="w-full border-collapse text-[13px]">
-            <thead className="border-b border-line/70 bg-soft">
-              <tr>
-                <th className="px-3 py-1.5 text-left font-semibold text-ink">Label</th>
-                {spec.series.map((s) => (
-                  <th key={s.name} className="px-3 py-1.5 text-right font-semibold text-ink">{s.name}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {data.map((row, i) => (
-                <tr key={i}>
-                  <td className="border-t border-line/40 px-3 py-1.5 text-ink">{row.label}</td>
-                  {spec!.series.map((s) => (
-                    <td key={s.name} className="border-t border-line/40 px-3 py-1.5 text-right tabular-nums text-ink">
-                      {(row[s.name] as number)?.toLocaleString()}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="h-64 w-full overflow-visible">
-          <ResponsiveContainer width="100%" height="100%">
-            <ChartComponent data={data} margin={chartMargin}>
-              <CartesianGrid stroke="var(--line)" vertical={false} />
-              <XAxis
-                dataKey="label"
-                tick={{ fontSize: 11, fill: "var(--muted)" }}
-                axisLine={{ stroke: "var(--line)" }}
-                tickLine={{ stroke: "var(--line)" }}
-              />
-              <YAxis
-                tick={{ fontSize: 11, fill: "var(--muted)" }}
-                axisLine={{ stroke: "var(--line)" }}
-                tickLine={{ stroke: "var(--line)" }}
-                tickFormatter={(value: number) => formatChartAxisValue(value)}
-                width={52}
-              />
-              <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--soft)" }} />
-              {spec.series.length > 1 && <Legend content={<ChartLegend />} />}
-              {spec.series.map((s, i) => {
-                const color = seriesColor(i, spec!.series.length);
-                if (isBar) {
-                  return (
-                    <Bar key={s.name} dataKey={s.name} fill={color} radius={[4, 4, 0, 0]} maxBarSize={24}>
-                      {canDirectLabelBars && (
-                        <LabelList dataKey={s.name} position="top" style={{ fill: "var(--ink)", fontSize: 11 }} />
-                      )}
-                    </Bar>
-                  );
-                }
-                return (
-                  <Line
-                    key={s.name}
-                    dataKey={s.name}
-                    stroke={color}
-                    strokeWidth={2}
-                    dot={{ r: 4, strokeWidth: 2, stroke: "var(--panel)", fill: color }}
-                    activeDot={{ r: 5, strokeWidth: 2, stroke: "var(--panel)" }}
-                    label={(
-                      // Recharts' own label-prop type (Props<RenderableText,...>)
-                      // is broader than any hand-written shape matches (it keeps
-                      // including more of its own internal union on each pass) —
-                      // accepted as `any` at this one boundary and validated at
-                      // runtime below instead, rather than chasing the type.
-                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                      props: any
-                    ) => {
-                      // Endpoint-only label — the "value at the end" spec for
-                      // lines, never one per point (that reads as chaos).
-                      if (props.index !== data.length - 1) return <></>;
-                      const x = Number(props.x ?? 0) + 6;
-                      const y = Number(props.y ?? 0);
-                      return (
-                        <text x={x} y={y} dy={4} fontSize={11} fill="var(--ink)" fontWeight={600}>
-                          {typeof props.value === "number" ? props.value.toLocaleString() : String(props.value ?? "")}
-                        </text>
-                      );
-                    }}
-                  />
-                );
-              })}
-            </ChartComponent>
-          </ResponsiveContainer>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Maps the model's Markdown output (see the formatting instruction in
-// orchestration/service.py's grounded_input) to the page's existing type
-// scale/colors instead of react-markdown's unstyled defaults.
-function CopyableAnswerTable(props: ComponentPropsWithoutRef<"table">) {
-  const tableRef = useRef<HTMLTableElement>(null);
-  const [copied, setCopied] = useState(false);
-  const [copyError, setCopyError] = useState(false);
-
-  async function copyTable() {
-    const table = tableRef.current;
-    if (!table) return;
-    const rows = Array.from(table.rows, (row) =>
-      Array.from(row.cells, (cell) => cell.textContent ?? ""),
-    );
-    try {
-      await writeTextToClipboard(tableRowsToTsv(rows));
-      setCopied(true);
-      setCopyError(false);
-      window.setTimeout(() => setCopied(false), 1800);
-    } catch {
-      setCopyError(true);
-    }
-  }
-
-  return (
-    <div className="my-4 overflow-hidden rounded-xl border border-line">
-      <div className="flex items-center justify-between border-b border-line/70 bg-panel px-3 py-1.5">
-        <span className="text-[11px] font-semibold text-muted">Table</span>
-        <button
-          type="button"
-          onClick={copyTable}
-          className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] font-semibold text-muted transition hover:bg-soft hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
-          aria-label="Copy table data"
-        >
-          {copied ? <Check size={12} /> : <Copy size={12} />}
-          {copied ? "Copied" : "Copy table"}
-        </button>
-      </div>
-      <div className="overflow-x-auto">
-        <table ref={tableRef} className="w-full border-collapse text-[13px]" {...props} />
-      </div>
-      {copyError && (
-        <p className="border-t border-line/70 px-3 py-1.5 text-[11px] text-bad" role="status">
-          Table copy failed. Use the response Copy action instead.
-        </p>
-      )}
-    </div>
-  );
-}
-
-const answerMarkdownComponents: Components = {
-  h1: ({ ...props }) => <h1 className="mb-3 mt-1 text-xl font-bold leading-8 text-ink" {...props} />,
-  h2: ({ ...props }) => <h2 className="mb-2 mt-5 text-base font-bold leading-7 text-ink first:mt-0" {...props} />,
-  h3: ({ ...props }) => <h3 className="mb-2 mt-5 text-base font-bold leading-7 text-ink first:mt-0" {...props} />,
-  p: ({ ...props }) => <p className="mb-3 text-[15px] leading-7 text-ink last:mb-0" {...props} />,
-  ul: ({ ...props }) => <ul className="mb-3 ml-5 list-disc space-y-1.5 text-[15px] leading-7 text-ink" {...props} />,
-  ol: ({ ...props }) => <ol className="mb-3 ml-5 list-decimal space-y-1.5 text-[15px] leading-7 text-ink" {...props} />,
-  li: ({ ...props }) => <li className="pl-1" {...props} />,
-  strong: ({ ...props }) => <strong className="font-semibold text-ink" {...props} />,
-  em: ({ ...props }) => <em className="italic" {...props} />,
-  a: ({ ...props }) => <a className="text-brand underline hover:no-underline" target="_blank" rel="noopener noreferrer" {...props} />,
-  blockquote: ({ ...props }) => <blockquote className="mb-3 border-l-2 border-line pl-3 italic text-muted" {...props} />,
-  hr: () => <hr className="my-4 border-line" />,
-  table: ({ node, ...props }) => {
-    void node;
-    return <CopyableAnswerTable {...props} />;
-  },
-  thead: ({ ...props }) => <thead className="border-b border-line/70 bg-soft" {...props} />,
-  th: ({ ...props }) => <th className="whitespace-nowrap px-3 py-2 text-left font-semibold text-ink" {...props} />,
-  td: ({ ...props }) => <td className="border-t border-line/40 px-3 py-2 text-ink" {...props} />,
-  // react-markdown always wraps a fenced code block in <pre><code>...
-  // — special-cased languages (mermaid/kriton-chart) render as a diagram/
-  // chart instead, so `pre` has to skip its own box styling for those
-  // rather than wrapping a rendered SVG/chart in a code-block frame.
-  pre: ({ children, ...props }) => {
-    const child = children as { props?: { className?: string } };
-    const className = child?.props?.className ?? "";
-    if (className.includes("language-mermaid") || className.includes("language-kriton-chart")) {
-      return <>{children}</>;
-    }
-    return (
-      <pre className="my-3 overflow-x-auto rounded-lg bg-soft p-3 text-[13px] leading-6 text-ink" {...props}>
-        {children}
-      </pre>
-    );
-  },
-  code: ({ className, children, ...props }) => {
-    const raw = String(children).replace(/\n$/, "");
-    if (className?.includes("language-mermaid")) return <MermaidDiagram code={raw} />;
-    if (className?.includes("language-kriton-chart")) return <KritonChart code={raw} />;
-    return (
-      <code className={`${className ?? ""} rounded bg-soft px-1 py-0.5 font-mono text-[13px]`} {...props}>
-        {children}
-      </code>
-    );
-  },
-};
-
-// Display-only — [REF-N] markers stay in turn.result.answer.text for
-// Checkpoint C's grounding validation (massarius/answer_validator.py scans
-// for exactly this pattern against source_bundle) and are never stripped
-// there; this only affects what's rendered on screen. Sources are already
-// shown separately via the citations list below the answer, so the inline
-// marker is pure noise for the reader once it's on screen.
-function stripCitationMarkers(value: string) {
-  return value.replace(/\s?\[REF-\d+\]/g, "");
-}
-
-function copyableAnswerText(value: string) {
-  return stripCitationMarkers(value)
-    .replace(/```kriton-chart\s*\n([\s\S]*?)```/g, (_match, chartJson: string) => {
-      try {
-        const spec = JSON.parse(chartJson.trim()) as KritonChartSpec;
-        return chartSpecAsMarkdown(spec);
-      } catch {
-        return "[Chart data unavailable]";
-      }
-    })
-    .trim();
-}
-
-function answerWithSources(result: AskKritonResponse) {
-  const answer = result.answer;
-  if (!answer) return "";
-  const body = copyableAnswerText(answer.text);
-  if (!answer.citations.length) return body;
-  const sources = answer.citations.map((citation) => {
-    const url = citation.url || citation.source_url;
-    return `- ${citation.ref_id}: ${citation.title}${url ? ` — ${url}` : ""}`;
-  });
-  return `${body}\n\n## Sources\n\n${sources.join("\n")}`;
-}
-
-/** Whole-thread export: every turn, both roles, each answer with its route,
- * risk level and citations. Deliberately built from the server's stored
- * transcript rather than the in-memory `turns`, so exporting a conversation
- * you have not reopened in this session yields the same file as one you
- * have. Uses copyableAnswerText() for the same reason the single-answer
- * export does — [REF-N] markers are display noise and chart blocks need to
- * degrade to markdown tables in a static file. */
-function conversationToMarkdown(detail: ConversationDetail) {
-  const header = [
-    `# ${detail.title}`,
-    "",
-    `- **Exported:** ${new Date().toISOString().slice(0, 10)}`,
-    `- **Started:** ${detail.created_at.slice(0, 10)}`,
-    `- **Last updated:** ${detail.updated_at.slice(0, 10)}`,
-    ...(detail.jurisdiction ? [`- **Jurisdiction:** ${detail.jurisdiction}`] : []),
-    `- **Mode:** ${detail.mode}`,
-    `- **Messages:** ${detail.messages.length}`,
-  ].join("\n");
-
-  let turnNumber = 0;
-  const sections = detail.messages.map((msg) => {
-    if (msg.role === "user") {
-      turnNumber += 1;
-      return `## ${turnNumber}. Question\n\n${msg.content.trim()}`;
-    }
-
-    const meta = [
-      msg.route ? `**Route:** ${msg.route}` : null,
-      msg.risk_level ? `**Risk:** ${msg.risk_level}` : null,
-    ].filter(Boolean).join(" · ");
-
-    const sources = (msg.citations ?? []).map((citation) => {
-      const url = citation.url || citation.source_url;
-      return `- ${citation.ref_id}: ${citation.title}${url ? ` — ${url}` : ""}`;
-    });
-
-    return [
-      "### Kriton",
-      "",
-      copyableAnswerText(msg.content),
-      ...(meta ? ["", meta] : []),
-      ...(sources.length ? ["", "#### Sources", "", ...sources] : []),
-    ].join("\n").trimEnd();
-  });
-
-  return `${header}\n\n---\n\n${sections.join("\n\n")}\n`;
-}
-
-function downloadMarkdown(value: string, query: string, fallbackStem = "kriton-answer") {
-  const stem = query
-    .normalize("NFKD")
-    .replace(/[^a-zA-Z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .toLowerCase()
-    .slice(0, 64) || fallbackStem;
-  const url = URL.createObjectURL(new Blob([value], { type: "text/markdown;charset=utf-8" }));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = `${stem}.md`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
-}
-
-function ResponseActions({
-  result,
-  query,
-  onReuse,
-}: {
-  result: AskKritonResponse;
-  query: string;
-  onReuse: () => void;
-}) {
-  const [copied, setCopied] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [status, setStatus] = useState("");
-  const exportText = answerWithSources(result);
-  const actionClass = "inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-muted transition hover:bg-soft hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40";
-
-  return (
-    <div className="flex flex-wrap items-center gap-1" aria-label="Response actions">
-      <button
-        type="button"
-        onClick={async () => {
-          try {
-            await writeTextToClipboard(exportText);
-            setCopied(true);
-            setStatus("Response copied");
-            window.setTimeout(() => setCopied(false), 1800);
-          } catch {
-            setStatus("Copy failed. Use the Markdown download instead.");
-          }
-        }}
-        className={actionClass}
-        aria-label="Copy Kriton response with sources"
-      >
-        {copied ? <Check size={14} /> : <Copy size={14} />}
-        <span>{copied ? "Copied" : "Copy"}</span>
-      </button>
-      <button type="button" onClick={() => downloadMarkdown(exportText, query)} className={actionClass} aria-label="Download response as Markdown">
-        <Download size={14} />Markdown
-      </button>
-      <button
-        type="button"
-        onClick={async () => {
-          const token = getAuthToken();
-          if (!token || !result.answer) {
-            setStatus("Sign in to save this answer.");
-            return;
-          }
-          if (saving || saved) return;
-          setSaving(true);
-          try {
-            await createSavedAnswer(token, {
-              query_id: result.query_id,
-              query_text: query,
-              answer_text: result.answer.text,
-              risk_level: result.safety.risk_level,
-              tags: ["Ask Kriton"],
-            });
-            setSaved(true);
-            setStatus("Answer saved");
-          } catch {
-            setStatus("Could not save this answer.");
-          } finally {
-            setSaving(false);
-          }
-        }}
-        className={actionClass}
-        aria-label="Save answer"
-        disabled={saved || saving}
-      >
-        {saved ? <Check size={14} /> : <Bookmark size={14} />}{saved ? "Saved" : saving ? "Saving…" : "Save"}
-      </button>
-      <button type="button" onClick={onReuse} className={actionClass} aria-label="Reuse this prompt">
-        <RotateCcw size={14} />Reuse prompt
-      </button>
-      <span className="sr-only" role="status" aria-live="polite">{status}</span>
-    </div>
-  );
-}
-
-// Extracted to its own component (rather than calling useTypewriter directly
-// inside the turns.map() callback below) because Hooks can't be called from
-// inside a loop/callback — this is the one turn's answer text, revealed
-// progressively. The backend already returned the complete, Checkpoint-C-
-// validated text in one response; this is purely a client-side reveal
-// animation, not real streaming of partial/unvalidated model output.
-// react-markdown tolerates the mid-reveal, not-yet-closed '**'/'#' tokens
-// useTypewriter hands it word by word — they render as literal characters
-// for one tick, then resolve once the closing token arrives. A [REF-N]
-// token straddling a reveal tick just shows its raw characters for one
-// tick and vanishes once the closing ']' arrives — same graceful
-// degradation already accepted for '**'/'#' tokens.
-function TypedAnswerText({ text }: { text: string }) {
-  const revealed = useTypewriter(text);
-  const isRevealComplete = revealed.length >= text.length;
-  return (
-    <RevealCompleteContext.Provider value={isRevealComplete}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={answerMarkdownComponents}>
-        {stripCitationMarkers(revealed)}
-      </ReactMarkdown>
-    </RevealCompleteContext.Provider>
-  );
+function answerDisplayText(value: string) {
+  // Citation markers remain in the API response for validation, audit replay,
+  // and source assembly. The chat surface presents the provenance as source
+  // cards below instead of leaking internal identifiers such as "REF-1".
+  return value.replace(/\s*\[REF-\d+\]/gi, "").replace(/[ \t]+\n/g, "\n").trim();
 }
 
 function sourcePreview(sourceId: string, url: string | null) {
@@ -828,6 +157,52 @@ function conversationTitle(query: string) {
     .replace(/^(?:can you|could you|please|show|give me|explain|compare|visuali[sz]e)\s+/i, "")
     .replace(/\s+/g, " ");
   return compact.length > 44 ? `${compact.slice(0, 41).trimEnd()}…` : compact || "New conversation";
+}
+
+// Response-format vision doc (2026-07-22, item 1 "Text"): Kriton's
+// composition prompt now asks for real markdown structure (headings,
+// bullets, tables) for explanation/comparison answers — this renders it
+// with the app's own visual language instead of raw ** and | characters.
+// cleanDisplayText's ** stripping predates this and stays for the other,
+// non-markdown-rendered text surfaces (action.message, etc.) below.
+const markdownComponents: Components = {
+  h1: ({ children }) => <h2 className="mb-2 mt-5 text-lg font-bold text-ink first:mt-0">{children}</h2>,
+  h2: ({ children }) => <h3 className="mb-2 mt-5 text-base font-bold text-ink first:mt-0">{children}</h3>,
+  h3: ({ children }) => <h4 className="mb-1.5 mt-4 text-sm font-bold text-ink first:mt-0">{children}</h4>,
+  h4: ({ children }) => <h5 className="mb-1.5 mt-4 text-sm font-semibold text-ink first:mt-0">{children}</h5>,
+  p: ({ children }) => <p className="mb-3 text-[15px] leading-7 text-ink last:mb-0">{children}</p>,
+  ul: ({ children }) => <ul className="mb-3 ml-5 list-disc space-y-1 text-[15px] leading-7 text-ink last:mb-0">{children}</ul>,
+  ol: ({ children }) => <ol className="mb-3 ml-5 list-decimal space-y-1 text-[15px] leading-7 text-ink last:mb-0">{children}</ol>,
+  li: ({ children }) => <li className="pl-1">{children}</li>,
+  strong: ({ children }) => <strong className="font-semibold text-ink">{children}</strong>,
+  em: ({ children }) => <em className="italic">{children}</em>,
+  a: ({ children, href }) => (
+    <a href={href} target="_blank" rel="noreferrer" className="text-brand underline decoration-dotted underline-offset-2 hover:text-brand-2">
+      {children}
+    </a>
+  ),
+  code: ({ children }) => <code className="rounded bg-soft px-1 py-0.5 font-mono text-[13px] text-ink">{children}</code>,
+  blockquote: ({ children }) => <blockquote className="mb-3 border-l-2 border-line pl-3 italic text-muted">{children}</blockquote>,
+  hr: () => <hr className="my-4 border-line" />,
+  table: ({ children }) => (
+    <div className="mb-3 overflow-x-auto rounded-lg border border-line">
+      <table className="w-full text-left text-sm">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => <thead className="bg-soft">{children}</thead>,
+  tr: ({ children }) => <tr className="border-t border-line first:border-t-0">{children}</tr>,
+  th: ({ children }) => <th className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted">{children}</th>,
+  td: ({ children }) => <td className="px-3 py-2 align-top text-sm text-ink">{children}</td>,
+};
+
+function KritonMarkdown({ text }: { text: string }) {
+  return (
+    <div className="min-w-0">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 function extractReviewCase(value: string) {
@@ -929,8 +304,6 @@ export default function AskKritonPage() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadStatus, setUploadStatus] = useState<"idle" | "uploading" | "ingested" | "error">("idle");
   const [uploadMsg, setUploadMsg] = useState("");
-  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [recents, setRecents] = useState<RecentEntry[]>([]);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -938,21 +311,16 @@ export default function AskKritonPage() {
   const [isListening, setIsListening] = useState(false);
   const [mobileHistoryOpen, setMobileHistoryOpen] = useState(false);
   const [activeConversationIdValue, setActiveConversationIdValue] = useState<string | null>(null);
-  const [historyError, setHistoryError] = useState("");
-  const { session, loading: authLoading } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const recentConversationIdRef = useRef<string | null>(null);
+  const activeConversationId = useRef<string | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [turns]);
 
-  /** Restore the localStorage mirror of past sessions. Independent of the
-   * server fetch below: it must still run when that fetch fails, because a
-   * turn that errored before it reached the backend exists nowhere else. */
-  function restoreLocalRecents() {
+  useEffect(() => {
     try {
       const stored = window.localStorage.getItem(RECENTS_STORAGE_KEY);
       if (!stored) return;
@@ -981,92 +349,9 @@ export default function AskKritonPage() {
       // appearing beside the new conversation-session history.
       window.localStorage.removeItem(LEGACY_RECENTS_STORAGE_KEY);
     } catch {
-      // A corrupt cache is not worth failing the page over — the server
-      // list below is the authoritative history either way.
+      // localStorage unavailable (private browsing, etc.) — recents just won't persist.
     }
-  }
-
-  async function refreshConversations() {
-    const token = getAuthToken();
-    // Callers must gate on an authenticated session; reaching here without a
-    // token would silently render an empty sidebar, which reads as data loss.
-    if (!token) return;
-    try {
-      setConversations(await listConversations(token));
-      setHistoryError("");
-    } catch {
-      // Surfaced rather than swallowed: an empty "Chats" list is
-      // indistinguishable from genuinely having no history, so a failed
-      // fetch must say so and offer a retry instead of looking like loss.
-      setHistoryError("Could not load your saved chats.");
-    }
-  }
-
-  useEffect(() => {
-    restoreLocalRecents();
   }, []);
-
-  // Keyed on the access token rather than mount alone. AuthGuard already
-  // withholds this page until a session exists, so the token is present at
-  // first mount; the dependency matters for what comes after — a refreshed
-  // token (onAuthStateChange) or a switched account re-fetches the list
-  // instead of leaving another user's conversations on screen.
-  useEffect(() => {
-    if (authLoading || !session?.access_token) return;
-    refreshConversations();
-  }, [authLoading, session?.access_token]);
-
-  /** Rebuild a synthetic AskKritonResponse from a stored ChatMessage — the
-   * DB only keeps role/content/route/risk_level (see chat_history.models),
-   * not the full live-response shape (citations, source_bundle detail),
-   * so a reopened conversation renders text + risk badge faithfully but
-   * without re-fetching citations. */
-  function responseFromMessage(msg: ChatMessage, conversationId: string): AskKritonResponse {
-    const route = (msg.route ?? "LLM") as AskKritonResponse["route"];
-    const outcome: AskKritonResponse["outcome"] =
-      route === "REFUSAL" ? "refused"
-      : route === "CLARIFICATION" ? "clarification_required"
-      : route === "HUMAN_REVIEW" || route === "SECURITY_INCIDENT" ? "escalated"
-      : route === "REJECTED" ? "rejected"
-      : "answered";
-    const answered = outcome === "answered";
-    return {
-      query_id: msg.id,
-      correlation_id: "",
-      outcome,
-      route,
-      safety: { risk_level: (msg.risk_level ?? "LOW") as AskKritonResponse["safety"]["risk_level"], policy_state: "allowed", disclaimer_required: false },
-      confidence_state: "sufficient",
-      source_bundle: null,
-      answer: answered ? { text: msg.content, citations: msg.citations ?? [], limitations: [] } : null,
-      next_action: answered ? null : { type: "history", message: msg.content },
-      audit_reference: { audit_chain_id: "" },
-      conversation_id: conversationId,
-    };
-  }
-
-  async function openConversation(id: string) {
-    const token = getAuthToken();
-    if (!token) return;
-    setOpenMenuId(null);
-    try {
-      const detail = await getConversation(token, id);
-      const paired: ConversationTurn[] = [];
-      for (const msg of detail.messages) {
-        if (msg.role === "user") {
-          paired.push({ id: msg.id, query: msg.content, submittedQuery: msg.content, loading: false, error: "", result: null });
-        } else if (paired.length > 0) {
-          paired[paired.length - 1].result = responseFromMessage(msg, id);
-        }
-      }
-      setTurns(paired);
-      setActiveConversationId(id);
-      setQuery("");
-      setFormError("");
-    } catch (err) {
-      setFormError(err instanceof ApiError ? err.message : "Could not load that conversation.");
-    }
-  }
 
   function persistRecents(next: RecentEntry[]) {
     try {
@@ -1077,8 +362,8 @@ export default function AskKritonPage() {
   }
 
   function saveConversation(q: string, conversationTurns: ConversationTurn[]) {
-    const id = recentConversationIdRef.current ?? `chat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    recentConversationIdRef.current = id;
+    const id = activeConversationId.current ?? `chat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    activeConversationId.current = id;
     setActiveConversationIdValue(id);
     window.localStorage.setItem(ACTIVE_CONVERSATION_KEY, id);
     setRecents((prev) => {
@@ -1099,54 +384,54 @@ export default function AskKritonPage() {
     });
   }
 
-  async function renameConversationEntry(id: string) {
-    const token = getAuthToken();
+  function togglePin(id: string) {
+    setRecents((prev) => {
+      const toggled = prev.map((r) => (r.id === id ? { ...r, pinned: !r.pinned } : r));
+      const next = [...toggled.filter((r) => r.pinned), ...toggled.filter((r) => !r.pinned)];
+      persistRecents(next);
+      return next;
+    });
+    setOpenMenuId(null);
+  }
+
+  function deleteRecent(id: string) {
+    setRecents((prev) => {
+      const next = prev.filter((r) => r.id !== id);
+      persistRecents(next);
+      return next;
+    });
+    if (activeConversationId.current === id) {
+      activeConversationId.current = null;
+      setActiveConversationIdValue(null);
+      window.localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
+      setTurns([]);
+    }
+    setOpenMenuId(null);
+  }
+
+  function startRename(entry: RecentEntry) {
+    setEditingId(entry.id);
+    setEditText(entry.text);
+    setOpenMenuId(null);
+  }
+
+  function commitRename(id: string) {
     const trimmed = editText.trim();
+    setRecents((prev) => {
+      const next = prev.map((r) => (r.id === id ? { ...r, text: trimmed || r.text } : r));
+      persistRecents(next);
+      return next;
+    });
     setEditingId(null);
-    if (!token || !trimmed) return;
-    try {
-      const updated = await renameConversation(token, id, trimmed);
-      setConversations((prev) => prev.map((c) => (c.id === id ? updated : c)));
-    } catch {
-      // best-effort — sidebar just keeps the old title on failure
-    }
-  }
-
-  async function downloadConversationEntry(id: string) {
-    setOpenMenuId(null);
-    const token = getAuthToken();
-    if (!token) return;
-    try {
-      // Fetch rather than reuse `turns`: the menu is reachable for every
-      // conversation in the sidebar, not just the one currently open.
-      const detail = await getConversation(token, id);
-      downloadMarkdown(conversationToMarkdown(detail), detail.title, "kriton-chat");
-    } catch (err) {
-      setFormError(err instanceof ApiError ? err.message : "Could not download that conversation.");
-    }
-  }
-
-  async function deleteConversationEntry(id: string) {
-    setOpenMenuId(null);
-    const token = getAuthToken();
-    if (!token) return;
-    try {
-      await deleteConversation(token, id);
-      setConversations((prev) => prev.filter((c) => c.id !== id));
-      if (activeConversationId === id) startNewChat();
-    } catch {
-      // best-effort — entry just stays in the sidebar on failure
-    }
   }
 
   function startNewChat() {
-    recentConversationIdRef.current = null;
+    activeConversationId.current = null;
     setActiveConversationIdValue(null);
     window.localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
     setTurns([]);
     setQuery("");
     setFormError("");
-    setActiveConversationId(null);
   }
 
   function openEvidenceView(citation: NonNullable<AskKritonResponse["answer"]>["citations"][number], turn: ConversationTurn) {
@@ -1253,19 +538,21 @@ export default function AskKritonPage() {
 
     try {
       const idempotencyKey = `idem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      // Prior turns' queries only, never the composed answers — capped to
-      // the last few since the backend only ever needs the most recent one
-      // to resolve an elliptical follow-up, not the full conversation.
-      const history = turns.map((t) => t.query).slice(-3);
       const response = await askKriton(
         token,
         {
           query: submittedQuery,
           jurisdiction,
           mode: "Workflow",
-          history,
-          conversation_id: activeConversationId,
           clarification_cycle: 0,
+          // Dynamic Visualization Selection v4 — the same locally-generated
+          // thread id already used for the recents sidebar (saveConversation
+          // above has already assigned one by this point), sent to the
+          // backend for the first time so it can scope the chart-repetition
+          // penalty and telemetry to this conversation. Never used for
+          // authorization — tenant/user scoping still comes from the
+          // authenticated token, same as every other field here.
+          conversation_id: activeConversationId.current ?? undefined,
         },
         idempotencyKey,
       );
@@ -1274,16 +561,6 @@ export default function AskKritonPage() {
       );
       setTurns(completedConversation);
       saveConversation(trimmed, completedConversation);
-      if (response.conversation_id) {
-        const isNewConversation = response.conversation_id !== activeConversationId;
-        setActiveConversationId(response.conversation_id);
-        if (isNewConversation) refreshConversations();
-        else setConversations((prev) => {
-          const bumped = prev.find((c) => c.id === response.conversation_id);
-          if (!bumped) return prev;
-          return [{ ...bumped, updated_at: new Date().toISOString() }, ...prev.filter((c) => c.id !== response.conversation_id)];
-        });
-      }
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Could not reach the orchestration service.";
       const failedConversation = pendingConversation.map((t) =>
@@ -1296,29 +573,6 @@ export default function AskKritonPage() {
 
   const hasConversation = turns.length > 0;
   const isLoading = turns.some((t) => t.loading);
-  // The mobile drawer used to render `recents` — the localStorage mirror,
-  // capped at MAX_RECENTS — while the desktop sidebar rendered the complete,
-  // uncapped server list. Same page, two different histories, and the narrow
-  // breakpoint silently hid everything past the 12th conversation. Both now
-  // read the server list; recents stays as the offline/unauthenticated
-  // fallback, since a turn that never reached the backend lives only there.
-  const drawerChats: { id: string; label: string; local: boolean }[] =
-    conversations.length > 0
-      ? conversations.map((c) => ({ id: c.id, label: c.title, local: false }))
-      : recents.map((r) => ({ id: r.id, label: r.text, local: true }));
-  // Enter submits; Shift+Enter keeps the newline the textarea is there for.
-  // isComposing guards IME input, where Enter commits the candidate word and
-  // must never be read as "send". Blocked while a document is still being
-  // ingested, otherwise Enter can outrun the upload and the answer is
-  // composed without the file the user just attached.
-  const canSubmitComposer = !isLoading && query.trim().length > 0 && uploadStatus !== "uploading";
-
-  function handleComposerKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
-    e.preventDefault();
-    if (!canSubmitComposer) return;
-    void handleSubmit(e);
-  }
 
   return (
     <main className="relative h-screen w-full min-w-0 overflow-hidden bg-soft text-ink">
@@ -1345,25 +599,20 @@ export default function AskKritonPage() {
             <SidebarItem icon={BookOpen} label="Sources" href="/source-licensing" />
           </nav>
 
-          {conversations.length > 0 ? (
-            <div className="mt-6 flex min-h-0 flex-1 flex-col px-5">
-              <p className="mb-2 text-xs font-bold text-muted">Chats</p>
+          <div className="mt-6 flex min-h-0 flex-1 flex-col px-5">
+              <p className="mb-2 px-2 text-xs font-bold text-muted">Recents</p>
+              {recents.length > 0 ? (
               <div className="min-h-0 space-y-0.5 overflow-y-auto pr-1">
-                {conversations.map((entry) => (
-                  <div
-                    key={entry.id}
-                    className={`group relative flex items-center rounded-lg hover:bg-soft ${
-                      activeConversationId === entry.id ? "bg-soft" : ""
-                    }`}
-                  >
+                    {recents.map((entry) => (
+                  <div key={entry.id} className={`group relative flex items-center rounded-lg transition ${activeConversationIdValue === entry.id ? "bg-line/60" : "hover:bg-line/35"}`}>
                     {editingId === entry.id ? (
                       <input
                         autoFocus
                         value={editText}
                         onChange={(e) => setEditText(e.target.value)}
-                        onBlur={() => renameConversationEntry(entry.id)}
+                        onBlur={() => commitRename(entry.id)}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter") renameConversationEntry(entry.id);
+                          if (e.key === "Enter") commitRename(entry.id);
                           if (e.key === "Escape") setEditingId(null);
                         }}
                         className="h-9 w-full rounded-lg border border-brand/40 bg-panel px-2 text-sm text-ink outline-none"
@@ -1372,10 +621,18 @@ export default function AskKritonPage() {
                       <>
                         <button
                           type="button"
-                          onClick={() => openConversation(entry.id)}
-                          className="flex h-9 min-w-0 flex-1 items-center gap-1.5 truncate rounded-lg px-2 text-left text-sm font-medium text-muted hover:text-ink"
+                          onClick={() => {
+                            activeConversationId.current = entry.id;
+                            setActiveConversationIdValue(entry.id);
+                            window.localStorage.setItem(ACTIVE_CONVERSATION_KEY, entry.id);
+                            setTurns(entry.turns);
+                            setQuery(entry.turns.length ? "" : entry.text);
+                            setFormError("");
+                          }}
+                          className={`flex h-10 min-w-0 flex-1 items-center gap-1.5 truncate rounded-lg px-2.5 text-left text-sm font-semibold ${activeConversationIdValue === entry.id ? "text-ink" : "text-muted hover:text-ink"}`}
                         >
-                          <span className="truncate">{entry.title}</span>
+                          {entry.pinned && <Pin size={11} className="shrink-0 text-brand" />}
+                          <span className="truncate">{entry.text}</span>
                         </button>
                         <button
                           type="button"
@@ -1392,25 +649,21 @@ export default function AskKritonPage() {
                       <div className="absolute right-0 top-9 z-20 w-40 overflow-hidden rounded-xl border border-line bg-panel py-1 shadow-lg">
                         <button
                           type="button"
-                          onClick={() => {
-                            setEditingId(entry.id);
-                            setEditText(entry.title);
-                            setOpenMenuId(null);
-                          }}
+                          onClick={() => togglePin(entry.id)}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-soft"
+                        >
+                          <Pin size={13} /> {entry.pinned ? "Unpin" : "Pin"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => startRename(entry)}
                           className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-soft"
                         >
                           <Pencil size={13} /> Rename
                         </button>
                         <button
                           type="button"
-                          onClick={() => downloadConversationEntry(entry.id)}
-                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-soft"
-                        >
-                          <Download size={13} /> Download
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => deleteConversationEntry(entry.id)}
+                          onClick={() => deleteRecent(entry.id)}
                           className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-bad hover:bg-bad/10"
                         >
                           <Trash2 size={13} /> Delete
@@ -1420,21 +673,10 @@ export default function AskKritonPage() {
                   </div>
                     ))}
               </div>
+              ) : (
+                <p className="rounded-lg px-2 py-3 text-xs leading-5 text-muted">Your conversation sessions will appear here after you send a question.</p>
+              )}
             </div>
-          ) : historyError ? (
-            <div className="mt-6 px-5">
-              <p className="text-xs leading-5 text-muted">{historyError}</p>
-              <button
-                type="button"
-                onClick={() => refreshConversations()}
-                className="mt-2 rounded-lg border border-line px-2.5 py-1.5 text-xs font-semibold text-ink hover:bg-soft"
-              >
-                Retry
-              </button>
-            </div>
-          ) : (
-            <p className="rounded-lg px-2 py-3 text-xs leading-5 text-muted">Your conversation sessions will appear here after you send a question.</p>
-          )}
 
           {openMenuId && <div className="fixed inset-0 z-10" onClick={() => setOpenMenuId(null)} />}
 
@@ -1465,51 +707,30 @@ export default function AskKritonPage() {
                 <button type="button" onClick={() => { startNewChat(); setMobileHistoryOpen(false); }} className="mt-4 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold hover:bg-soft">
                   <Plus size={15} /> New chat
                 </button>
-                {drawerChats.length ? (
+                {recents.length ? (
                   <div className="mt-5 space-y-0.5">
-                        {drawerChats.map((entry) => (
+                        {recents.map((entry) => (
                           <button key={entry.id} type="button" onClick={() => {
-                            if (entry.local) {
-                              const cached = recents.find((r) => r.id === entry.id);
-                              if (!cached) return;
-                              recentConversationIdRef.current = entry.id;
-                              setActiveConversationIdValue(entry.id);
-                              window.localStorage.setItem(ACTIVE_CONVERSATION_KEY, entry.id);
-                              setTurns(cached.turns);
-                              setQuery("");
-                            } else {
-                              openConversation(entry.id);
-                            }
+                            activeConversationId.current = entry.id;
+                            setActiveConversationIdValue(entry.id);
+                            window.localStorage.setItem(ACTIVE_CONVERSATION_KEY, entry.id);
+                            setTurns(entry.turns);
+                            setQuery("");
                             setMobileHistoryOpen(false);
-                          }} className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2.5 text-left text-sm font-semibold ${(entry.local ? activeConversationIdValue : activeConversationId) === entry.id ? "bg-soft text-ink" : "text-muted hover:bg-soft hover:text-ink"}`}>
-                            <MessageSquare size={13} className="shrink-0" /><span className="truncate">{entry.label}</span>
+                          }} className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2.5 text-left text-sm font-semibold ${activeConversationIdValue === entry.id ? "bg-soft text-ink" : "text-muted hover:bg-soft hover:text-ink"}`}>
+                            <MessageSquare size={13} className="shrink-0" /><span className="truncate">{entry.text}</span>
                           </button>
                         ))}
                   </div>
                 ) : (
-                  <p className="mt-5 rounded-lg bg-soft p-3 text-xs leading-5 text-muted">{historyError || "Your conversation sessions will appear here after you send a question."}</p>
+                  <p className="mt-5 rounded-lg bg-soft p-3 text-xs leading-5 text-muted">Your conversation sessions will appear here after you send a question.</p>
                 )}
               </aside>
             </div>
           )}
 
           <div className="relative z-10 flex-1 overflow-y-auto px-4">
-            {/*
-              justify-center is correct ONLY for the empty state, where the
-              hero block should sit in the middle of the viewport. Applying it
-              once a conversation exists is a real bug: in a scrollable flex
-              container, `justify-content: center` distributes overflow to
-              BOTH ends, and the overflow above the centre point is outside
-              the scrollable area entirely — scrollTop 0 already shows the
-              middle of the content and there is no way to scroll up to the
-              start. That is why a long answer appeared to begin partway down
-              the page with a large blank region above it.
-            */}
-            <div
-              className={`mx-auto flex min-h-full w-full max-w-5xl flex-col items-center pb-16 pt-6 md:pb-24 md:pt-8 ${
-                hasConversation ? "justify-start" : "justify-center"
-              }`}
-            >
+            <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col items-center justify-center pb-16 pt-6 md:pb-24 md:pt-8">
               {!hasConversation ? (
                 <div className="flex w-full max-w-3xl flex-col items-center text-center">
                   <div className="w-full">
@@ -1530,7 +751,6 @@ export default function AskKritonPage() {
                       <textarea
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
-                        onKeyDown={handleComposerKeyDown}
                         placeholder="Ask Kriton..."
                         rows={2}
                         className="min-h-20 w-full resize-none rounded-xl !border-transparent !bg-transparent px-1 py-1 text-base font-medium leading-7 text-ink !shadow-none outline-none placeholder:text-muted"
@@ -1589,7 +809,7 @@ export default function AskKritonPage() {
                           </button>
                           <button
                             type="submit"
-                            disabled={!canSubmitComposer}
+                            disabled={isLoading || !query.trim()}
                             className="flex h-9 w-9 items-center justify-center rounded-full bg-brand text-white transition hover:bg-brand-2 disabled:opacity-40"
                             aria-label="Ask Kriton"
                           >
@@ -1621,7 +841,6 @@ export default function AskKritonPage() {
                   </div>
                 </div>
               ) : (
-                <>
                 <div className="mx-auto w-full max-w-3xl space-y-8 md:translate-x-8 lg:translate-x-12">
                   {turns.map((turn) => {
                     const safety = turn.result?.safety ?? null;
@@ -1679,124 +898,56 @@ export default function AskKritonPage() {
                               <section className="mt-3 min-w-0">
                               {turn.result.answer ? (
                                 <>
-                                  <div className="kriton-answer-reveal min-w-0 text-[15px] leading-7 text-ink">
-                                    <TypedAnswerText text={turn.result.answer.text} />
+                                  <div className="kriton-answer-reveal">
+                                    <DynamicAnswerBlocks
+                                      answer={turn.result.answer}
+                                      queryId={turn.result.query_id}
+                                      conversationId={activeConversationIdValue ?? undefined}
+                                      onFollowUp={(question) => setQuery(`${question} Context: ${turn.query}`)}
+                                      renderMarkdown={(text) => <KritonMarkdown text={answerDisplayText(text)} />}
+                                    />
                                   </div>
-                                    {turn.result.answer.presentation && (
+                                    {!turn.result.answer.blocks?.length && turn.result.answer.presentation && (
                                       <AnswerVisualizations
                                         presentation={turn.result.answer.presentation}
                                         onFollowUp={(question) => setQuery(`${question} Context: ${turn.query}`)}
+                                        queryId={turn.result.query_id}
+                                        sourceReferences={turn.result.answer.citations.map((c) => c.ref_id)}
+                                        conversationId={activeConversationIdValue ?? undefined}
                                       />
                                     )}
-                                    {turn.result.answer.calculation_widget && (
-                                      <CalculationWidget data={turn.result.answer.calculation_widget} />
+                                    {!turn.result.answer.blocks?.length && turn.result.answer.calculation_widget && (
+                                      <CalculationWidget
+                                        data={turn.result.answer.calculation_widget}
+                                        queryId={turn.result.query_id}
+                                        sourceReferences={turn.result.answer.citations.map((c) => c.ref_id)}
+                                      />
                                     )}
                                     {turn.result.answer.citations.length > 0 && (
-                                      <details className="group mt-5 border-t border-line/70 pt-3">
-                                        <summary className="inline-flex cursor-pointer list-none items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-semibold text-muted transition hover:bg-soft hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40">
-                                          <BookOpen size={14} />
-                                          View sources
-                                          <span className="rounded-full bg-soft px-1.5 py-0.5 text-[10px] tabular-nums">{turn.result.answer.citations.length}</span>
-                                          <ChevronDown size={13} className="transition-transform group-open:rotate-180" aria-hidden="true" />
-                                        </summary>
+                                      <div className="mt-5 border-t border-line/70 pt-3">
+                                        <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">Sources</p>
                                         <ul className="mt-2 space-y-1.5">
                                           {turn.result.answer.citations.map((c) => {
-                                            // source_url is the legacy, live-data-only field; url is the
-                                            // general one (external link for a live source, or a
-                                            // `/sources/{id}/file` internal link for a document) — prefer
-                                            // url, fall back to source_url only if url is unset.
-                                            const resolvedUrl = c.url || c.source_url || null;
-                                            const preview = sourcePreview(c.source_id, resolvedUrl);
-                                            const isExternalUrl = Boolean(resolvedUrl && /^https?:\/\//i.test(resolvedUrl));
+                                            const preview = sourcePreview(c.source_id, c.url);
                                             return (
-                                              <li key={c.ref_id} className="rounded-xl border border-line/70 bg-panel px-3 py-2.5">
-                                                <div className="flex max-w-full items-center gap-2">
-                                                  <span className="shrink-0 rounded-md bg-soft px-1.5 py-0.5 font-mono text-[9px] font-semibold text-muted">{c.ref_id}</span>
-                                                  <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${c.evidence_role === "controlling" ? "bg-brand/10 text-brand" : "bg-soft text-muted"}`}>
-                                                    {c.evidence_role === "controlling" ? "Controlling" : "Supporting"}
-                                                  </span>
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => openEvidenceView(c, turn)}
-                                                    title={preview.detail}
-                                                    className="group inline-flex min-w-0 flex-1 items-center gap-2 text-left text-sm font-medium text-brand hover:text-brand-2"
-                                                  >
-                                                    {c.source_id === "src-kriton-user-provided-data" ? <MessageSquare size={14} className="shrink-0" />
-                                                      : c.source_type === "live_api" ? <Globe size={14} className="shrink-0" />
-                                                      : <FileText size={14} className="shrink-0" />}
-                                                    <span className="truncate">{c.title}</span>
-                                                    <ExternalLink size={11} className="shrink-0 opacity-60" />
-                                                  </button>
-                                                  {resolvedUrl && !isExternalUrl && (
-                                                    <button
-                                                      type="button"
-                                                      onClick={() => {
-                                                        const token = getAuthToken();
-                                                        if (token) openSourceUrl(token, resolvedUrl);
-                                                      }}
-                                                      title={`Open source directly: ${resolvedUrl}`}
-                                                      className="shrink-0 rounded-md p-1 text-muted hover:bg-soft hover:text-brand"
-                                                      aria-label={`Open ${c.title} directly`}
-                                                    >
-                                                      <Link2 size={13} />
-                                                    </button>
-                                                  )}
-                                                </div>
-                                                <div className="mt-1.5 flex flex-wrap items-center gap-2 pl-8 text-[10px] text-muted">
-                                                  <span>{preview.label}</span>
-                                                  <span aria-hidden="true">·</span>
-                                                  <span>{c.source_type === "live_api" ? "Live governed source" : "Governed document"}</span>
-                                                </div>
-                                                <div className="mt-2 pl-8 text-[11px] leading-5">
-                                                  <span className="mr-1.5 font-semibold text-muted">Source URL:</span>
-                                                  {resolvedUrl ? (
-                                                    isExternalUrl ? (
-                                                      <a
-                                                        href={resolvedUrl}
-                                                        target="_blank"
-                                                        rel="noopener noreferrer"
-                                                        className="break-all text-brand underline decoration-brand/30 underline-offset-2 hover:text-brand-2"
-                                                      >
-                                                        {resolvedUrl}
-                                                      </a>
-                                                    ) : (
-                                                      <button
-                                                        type="button"
-                                                        onClick={() => {
-                                                          const token = getAuthToken();
-                                                          if (token) openSourceUrl(token, resolvedUrl);
-                                                        }}
-                                                        className="break-all text-left text-brand underline decoration-brand/30 underline-offset-2 hover:text-brand-2"
-                                                      >
-                                                        {resolvedUrl}
-                                                      </button>
-                                                    )
-                                                  ) : (
-                                                    <span className="text-muted">No direct URL available</span>
-                                                  )}
-                                                </div>
-                                                {c.evidence_preview && (
-                                                  <details className="mt-2 pl-8 text-xs leading-5 text-muted">
-                                                    <summary className="cursor-pointer font-medium hover:text-brand">Evidence used</summary>
-                                                    <p className="mt-1.5 border-l-2 border-line pl-3">{c.evidence_preview}</p>
-                                                  </details>
-                                                )}
+                                              <li key={c.ref_id}>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => openEvidenceView(c, turn)}
+                                                  title={preview.detail}
+                                                  className="group inline-flex max-w-full items-center gap-2 text-left text-sm font-medium text-brand hover:text-brand-2 hover:underline hover:underline-offset-2"
+                                                >
+                                                  {c.source_id === "src-kriton-user-provided-data" ? <MessageSquare size={14} className="shrink-0" /> : <FileText size={14} className="shrink-0" />}
+                                                  <span className="truncate">{c.title}</span>
+                                                  <span className="shrink-0 text-[10px] font-normal text-muted">· {preview.label}</span>
+                                                  <ExternalLink size={11} className="shrink-0 opacity-60" />
+                                                </button>
                                               </li>
                                             );
                                           })}
                                         </ul>
-                                      </details>
+                                      </div>
                                     )}
-                                    <div className="mt-3 flex items-center border-t border-line/50 pt-2">
-                                      <ResponseActions
-                                        result={turn.result}
-                                        query={turn.query}
-                                        onReuse={() => {
-                                          setQuery(turn.query);
-                                          window.requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea[placeholder="Ask a follow-up..."]')?.focus());
-                                        }}
-                                      />
-                                    </div>
                                   </>
                               ) : action ? (
                                 <div>
@@ -1852,6 +1003,10 @@ export default function AskKritonPage() {
                                 <span aria-hidden="true">·</span>
                                 <span>{turn.result.source_bundle?.jurisdiction || "Any jurisdiction"}</span>
                                 <span aria-hidden="true">·</span>
+                                <span className="capitalize">
+                                  {turn.result.source_bundle?.freshness_state || "unknown"} sources
+                                </span>
+                                <span aria-hidden="true">·</span>
                                 <span className={`capitalize ${outcomePresentation.tone}`}>{riskLevel.toLowerCase()} risk</span>
                               </div>
                               </section>
@@ -1862,30 +1017,12 @@ export default function AskKritonPage() {
                   })}
 
                   <div ref={bottomRef} />
-                </div>
 
-                {/*
-                  A sibling of the turns column, not its last child. `sticky`
-                  resolves against the nearest scrolling ancestor but only has
-                  range while its CONTAINING BLOCK is in view — as the final
-                  child of the turns div that range was effectively zero, so
-                  the composer behaved like a static element and painted over
-                  whatever answer content happened to be beneath it.
-
-                  mt-auto pushes it to the bottom of the full-height wrapper,
-                  so it sits at the bottom on a short conversation; sticky
-                  then keeps it pinned while a long one scrolls. The translate
-                  offsets match the turns column so the two stay aligned.
-                */}
-                <form
-                  onSubmit={handleSubmit}
-                  className="sticky bottom-5 z-20 mt-auto w-full max-w-2xl pt-6 md:translate-x-8 lg:translate-x-12"
-                >
+                  <form onSubmit={handleSubmit} className="sticky bottom-5 mx-auto max-w-2xl">
                     <div className="rounded-[1.5rem] border border-line bg-panel p-3 shadow-[0_18px_48px_rgba(18,34,32,0.08)]">
                       <textarea
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
-                        onKeyDown={handleComposerKeyDown}
                         placeholder="Ask a follow-up..."
                         rows={2}
                         className="min-h-14 w-full resize-none rounded-xl !border-transparent !bg-transparent px-1 py-1 text-sm font-medium leading-6 text-ink !shadow-none outline-none placeholder:text-muted"
@@ -1944,7 +1081,7 @@ export default function AskKritonPage() {
                           </button>
                           <button
                             type="submit"
-                            disabled={!canSubmitComposer}
+                            disabled={isLoading || !query.trim()}
                             className="flex h-9 w-9 items-center justify-center rounded-full bg-brand text-white transition hover:bg-brand-2 disabled:opacity-40"
                             aria-label="Ask follow-up"
                           >
@@ -1960,7 +1097,7 @@ export default function AskKritonPage() {
                       </p>
                     )}
                   </form>
-                </>
+                </div>
               )}
             </div>
           </div>

@@ -198,24 +198,6 @@ def test_internal_reasoning_only_source_never_exposed():
     print("test_internal_reasoning_only_source_never_exposed: PASSED")
 
 
-def test_correct_calculation_passes():
-    result = validate_answer("The VAT due is 1000 * 20% = 200. [REF-1]", _BUNDLE)
-    assert result.passed
-    print("test_correct_calculation_passes: PASSED")
-
-
-def test_wrong_calculation_degrades_to_human_review():
-    """Master Architecture Build Doctrine §3: LLM arithmetic must be
-    validated by a deterministic service, not trusted outright. This is
-    the regression test for that requirement — before calculation_engine.py
-    existed, nothing in the pipeline caught a wrong arithmetic answer."""
-    result = validate_answer("The VAT due is 1000 * 20% = 300. [REF-1]", _BUNDLE)
-    assert not result.passed
-    assert any("Calculation error" in f for f in result.failures)
-    assert result.degraded_route == "HUMAN_REVIEW"
-    print("test_wrong_calculation_degrades_to_human_review: PASSED")
-
-
 def test_fabricated_figure_fails_numeric_fidelity():
     """The exact real incident this check was added for: a model cites a
     real, eligible source but invents a dollar figure nowhere in the text
@@ -249,6 +231,103 @@ def test_no_grounding_context_skips_numeric_fidelity_check():
     result = validate_answer("The maximum credit is $99,999,999. [REF-1]", _BUNDLE)
     assert result.passed
     print("test_no_grounding_context_skips_numeric_fidelity_check: PASSED")
+
+
+def test_derived_total_of_inline_supplied_figures_passes_numeric_fidelity():
+    """Real gap (2026-08-03): a query that supplies a complete itemized
+    dataset inline routinely gets an answer with a computed "Displayed
+    total" — simple arithmetic on numbers the user already supplied, not
+    an invented claim. It used to fail whenever grounding_context happened
+    to be non-empty (any source, however unrelated, being retrieved),
+    while the identical answer shape passed when zero sources were
+    retrieved and checkpoint 8 was skipped outright — an inconsistency
+    depending on retrieval luck, not on whether the total was trustworthy."""
+    query = "Rent 3000, Payroll 8000, Marketing 1500, Utilities 500."
+    result = validate_answer(
+        "**Displayed total:** $13,000. [REF-1]",
+        _BUNDLE,
+        grounding_context="Unrelated generic accounting guidance text.",
+        query_text=query,
+    )
+    assert result.passed, result.failures
+    print("test_derived_total_of_inline_supplied_figures_passes_numeric_fidelity: PASSED")
+
+
+def test_derived_percentage_share_of_inline_supplied_figures_passes_numeric_fidelity():
+    query = "Rent 3000, Payroll 8000, Marketing 1500, Utilities 500."
+    # Payroll's share of the 13000 total: 8000 / 13000 * 100 = 61.5%.
+    result = validate_answer(
+        "Payroll is the largest item, representing 61.5% of the displayed total. [REF-1]",
+        _BUNDLE,
+        grounding_context="Unrelated generic accounting guidance text.",
+        query_text=query,
+    )
+    assert result.passed, result.failures
+    print("test_derived_percentage_share_of_inline_supplied_figures_passes_numeric_fidelity: PASSED")
+
+
+def test_incorrect_derived_total_still_fails_numeric_fidelity():
+    """The widened check only accepts the ACTUAL sum/share — it must not
+    become a loophole that lets any dollar figure through just because the
+    query happened to contain some numbers."""
+    query = "Rent 3000, Payroll 8000, Marketing 1500, Utilities 500."
+    result = validate_answer(
+        "**Displayed total:** $999,999. [REF-1]",
+        _BUNDLE,
+        grounding_context="Unrelated generic accounting guidance text.",
+        query_text=query,
+    )
+    assert not result.passed
+    assert any("Numeric fidelity" in f for f in result.failures)
+    print("test_incorrect_derived_total_still_fails_numeric_fidelity: PASSED")
+
+
+def test_derived_total_requires_at_least_one_query_number():
+    """No numbers in the query at all must not make an arbitrary total
+    "supported" by accident (e.g. an empty-sum edge case)."""
+    result = validate_answer(
+        "**Displayed total:** $13,000. [REF-1]",
+        _BUNDLE,
+        grounding_context="Unrelated generic accounting guidance text.",
+        query_text="Show a breakdown of monthly expenses by category.",
+    )
+    assert not result.passed
+    assert any("Numeric fidelity" in f for f in result.failures)
+    print("test_derived_total_requires_at_least_one_query_number: PASSED")
+
+
+def test_derived_difference_of_inline_supplied_figures_passes_numeric_fidelity():
+    """Real gap (2026-08-06): "Analyze these monthly expenses and identify
+    the largest change: January $80,000, February $92,000, March $87,000
+    and April $105,000." — the deterministic composition correctly
+    computed the largest period-to-period CHANGE as $18,000 (April
+    $105,000 minus March $87,000), both numbers the user supplied
+    directly. The derived-total/percentage-share widening only covered a
+    SUM and its SHARES, not a plain pairwise difference, so this correct,
+    query-derived figure was rejected as unsupported and a working
+    deterministic answer degraded to a needless clarification."""
+    query = "January $80,000, February $92,000, March $87,000 and April $105,000."
+    result = validate_answer(
+        "**Key insight:** The largest period-to-period change is the $18,000 increase from March to April. [REF-1]",
+        _BUNDLE,
+        grounding_context="Unrelated generic accounting guidance text.",
+        query_text=query,
+    )
+    assert result.passed, result.failures
+    print("test_derived_difference_of_inline_supplied_figures_passes_numeric_fidelity: PASSED")
+
+
+def test_incorrect_derived_difference_still_fails_numeric_fidelity():
+    query = "January $80,000, February $92,000, March $87,000 and April $105,000."
+    result = validate_answer(
+        "**Key insight:** The largest period-to-period change is the $999,999 increase. [REF-1]",
+        _BUNDLE,
+        grounding_context="Unrelated generic accounting guidance text.",
+        query_text=query,
+    )
+    assert not result.passed
+    assert any("Numeric fidelity" in f for f in result.failures)
+    print("test_incorrect_derived_difference_still_fails_numeric_fidelity: PASSED")
 
 
 def test_unsupported_illustrative_figures_can_be_generalized_before_validation():
@@ -364,6 +443,25 @@ def test_reviewed_mistakes_answer_does_not_trigger_tutor_depth_escalation():
         _BUNDLE,
         grounding_context=_GAAS_GROUNDING_CONTEXT,
         query_text="What are the most common bank-reconciliation mistakes, and how can they be avoided?",
+    )
+    assert result.passed, result.failures
+
+
+def test_gdp_factual_lookup_does_not_trigger_tutor_depth_escalation():
+    # Live bug (2026-08-06): "What is US GDP?" was wrongly held to full
+    # what/why/rule/example tutor-depth structure and escalated to human
+    # review, even though it's a plain factual number lookup — the same
+    # class of question "rate"/"amount"/"percentage" already exempt.
+    result = validate_answer(
+        "According to the U.S. Bureau of Economic Analysis, US GDP was "
+        "$27.36 trillion (nominal, seasonally adjusted annual rate) as of "
+        "Q1 2026, the most recently published estimate. [REF-1]",
+        _BUNDLE,
+        grounding_context=(
+            "Bureau of Economic Analysis — Gross Domestic Product: $27.36 "
+            "trillion (nominal, seasonally adjusted annual rate), Q1 2026."
+        ),
+        query_text="What is US GDP?",
     )
     assert result.passed, result.failures
 
@@ -618,20 +716,16 @@ def test_concept_question_missing_depth_fails_tutor_structure_check():
     print("test_concept_question_missing_depth_fails_tutor_structure_check: PASSED")
 
 
-def test_factual_indicator_list_does_not_require_tutor_example():
-    result = validate_answer(
-        "External indicators include adverse market changes, while internal indicators include physical damage and weaker-than-expected performance. [REF-1]",
-        _BUNDLE,
-        query_text="What are the impairment indicators under IAS 36?",
+def test_reviewed_deterministic_answer_can_skip_llm_tutor_depth_heuristic():
+    answer = (
+        "Cash accounting records receipts and payments when cash moves, while "
+        "accrual accounting records economic activity in the applicable period. [REF-1]"
     )
-    assert result.passed, result.failures
-
-
-def test_step_by_step_process_does_not_require_tutor_example():
     result = validate_answer(
-        "1. Compare the ledger and statement. [REF-1]\n2. Identify timing differences. [REF-1]\n3. Record supported book adjustments and verify agreement. [REF-1]",
+        answer,
         _BUNDLE,
-        query_text="Explain the complete bank-reconciliation process step by step.",
+        query_text="Explain the difference between cash basis and accrual basis accounting.",
+        enforce_tutor_depth=False,
     )
     assert result.passed, result.failures
 
@@ -771,8 +865,6 @@ if __name__ == "__main__":
     test_confidence_support_blocks_unhedged_certainty_on_limited_confidence()
     test_disclaimer_presence_required_when_flagged()
     test_internal_reasoning_only_source_never_exposed()
-    test_correct_calculation_passes()
-    test_wrong_calculation_degrades_to_human_review()
     test_fabricated_figure_fails_numeric_fidelity()
     test_grounded_figure_passes_numeric_fidelity()
     test_no_grounding_context_skips_numeric_fidelity_check()

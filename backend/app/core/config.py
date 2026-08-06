@@ -1,6 +1,4 @@
 from functools import lru_cache
-from pathlib import Path
-
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -15,12 +13,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # silently leave them unset, disabling RAG retrieval, the ML classifier, and
 # real LLM providers with no error. load_dotenv() populates os.environ from
 # .env without overriding anything already set there.
-_BACKEND_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
-load_dotenv(_BACKEND_ENV_FILE)
+load_dotenv()
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=_BACKEND_ENV_FILE, extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # Closed at the telemetry boundary (production/staging/development/test).
+    APP_ENV: str = "development"
 
     # ── Database ────────────────────────────────────────────────────────
     DATABASE_URL: str = "sqlite+aiosqlite:///./dev.db"
@@ -30,22 +29,12 @@ class Settings(BaseSettings):
     # Falls back to DATABASE_URL when unset (SQLite, or a Postgres setup
     # that hasn't provisioned the low-privilege role).
     APP_DATABASE_URL: str | None = None
-
-    # Two engines are built from these (async_engine + request_engine), so the
-    # process-wide ceiling is 2 * (POOL_SIZE + MAX_OVERFLOW). SQLAlchemy's
-    # own defaults (5 + 10) put that at 30 from a single worker, which
-    # over-subscribes Supabase's Session Pooler — Supavisor caps client
-    # connections per project well below what an unbounded local pool will
-    # happily try to open.
-    DB_POOL_SIZE: int = 3
-    DB_MAX_OVERFLOW: int = 2
-    # asyncpg's own default is 60s. When the pooler stops completing
-    # handshakes (at capacity, or a Supabase-side incident) it accepts the
-    # TCP connection and then goes silent, so every connect burns the full
-    # timeout — a request needing several connections stalls for minutes and
-    # dies as an opaque 500 or a dropped socket. Failing in seconds turns
-    # that into a legible error instead.
-    DB_CONNECT_TIMEOUT_SECONDS: int = 10
+    # Three SQLAlchemy engines are used (sync safety, privileged async, and
+    # request-time RLS). Bound each pool so their combined capacity stays
+    # below small hosted-Postgres session limits.
+    DB_POOL_SIZE: int = 2
+    DB_MAX_OVERFLOW: int = 1
+    DB_POOL_TIMEOUT_SECONDS: int = 15
 
     # ── CORS ─────────────────────────────────────────────────────────────
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001"]
@@ -68,104 +57,25 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: str = ""
     AZURE_OPENAI_API_KEY: str = ""
 
+    # Optional semantic query classification. Azure AI Search proposes only
+    # the retrieval category; deterministic safety/risk policy remains local.
+    AZURE_AI_SEARCH_CLASSIFIER_MODE: str = "off"  # off | fallback | shadow
+    AZURE_AI_SEARCH_ENDPOINT: str = ""
+    AZURE_AI_SEARCH_API_KEY: str = ""
+    AZURE_AI_SEARCH_CLASSIFICATION_INDEX: str = ""
+    AZURE_AI_SEARCH_API_VERSION: str = "2025-09-01"
+    AZURE_AI_SEARCH_SEMANTIC_CONFIGURATION: str = ""
+    AZURE_AI_SEARCH_CLASSIFICATION_VECTOR_FIELD: str = ""
+    AZURE_AI_SEARCH_CLASSIFICATION_MIN_SCORE: float = 1.5
+    AZURE_AI_SEARCH_CLASSIFICATION_MIN_MARGIN: float = 0.15
+    AZURE_AI_SEARCH_TIMEOUT_SECONDS: float = 3.0
+
     # ── Infrastructure ──────────────────────────────────────────────────
     VECTOR_INDEX_URL: str = ""
-    LOCAL_VECTOR_STORE_DIR: str = "./vector_store"
     OBJECT_STORAGE_URL: str = ""
     CELERY_BROKER_URL: str = ""
 
-    # ── Live External Data Sources (app/domains/live_sources/) ──────────
-    # World Bank Open Data — keyless public API, no key/secret needed.
-    WORLD_BANK_API_BASE_URL: str = "https://api.worldbank.org/v2"
-    # ONS (Office for National Statistics) — keyless. UK CPIH index.
-    ONS_API_BASE_URL: str = "https://api.beta.ons.gov.uk/v1"
-    # Bank of England IADB — keyless. UK Bank Rate.
-    BANK_OF_ENGLAND_API_BASE_URL: str = "https://www.bankofengland.co.uk/boeapps/database"
-    # Frankfurter — keyless. FX rates. Points at the new host directly;
-    # the historical api.frankfurter.app now 301-redirects here (confirmed
-    # live) — see connectors/frankfurter.py.
-    FRANKFURTER_API_BASE_URL: str = "https://api.frankfurter.dev/v1"
-    # FRED (St. Louis Fed) — needs a free API key. Register at
-    # https://fredaccount.stlouisfed.org/apikeys (see connectors/fred.py).
-    # Also used by app/domains/reference_data's own FRED adapter below —
-    # same field, one declaration, shared by both.
-    FRED_API_BASE_URL: str = "https://api.stlouisfed.org/fred"
-    FRED_API_KEY: str = ""
-    # SEC EDGAR — keyless, but requires a real contact identifier in the
-    # User-Agent header or requests are blocked (confirmed live). Set this
-    # to "YourApp your-real-email@example.com", not a placeholder.
-    SEC_EDGAR_API_BASE_URL: str = "https://data.sec.gov"
-    SEC_EDGAR_USER_AGENT: str = ""
-    # Companies House — needs a free API key. Register at
-    # https://developer.company-information.service.gov.uk/
-    COMPANIES_HOUSE_API_BASE_URL: str = "https://api.company-information.service.gov.uk"
-    COMPANIES_HOUSE_API_KEY: str = ""
-    # OECD — keyless. Corporate income tax rate (see connectors/oecd.py).
-    OECD_API_BASE_URL: str = "https://sdmx.oecd.org/public/rest"
-    # GLEIF — keyless. LEI-registry company lookup fallback for every
-    # jurisdiction outside US/UK (see connectors/gleif.py).
-    GLEIF_API_BASE_URL: str = "https://api.gleif.org/api/v1"
-    # ECB Data Portal SDMX API — keyless official euro-area statistics.
-    ECB_API_BASE_URL: str = "https://data-api.ecb.europa.eu/service"
-    # IMF DataMapper API — keyless official macroeconomic indicators.
-    IMF_API_BASE_URL: str = "https://www.imf.org/external/datamapper/api/v2"
-    # European Commission VIES REST facade — keyless VAT-number validation.
-    VIES_API_BASE_URL: str = "https://ec.europa.eu/taxation_customs/vies/rest-api"
-    # Phase 2 — official legislation and procurement search.
-    CELLAR_SPARQL_URL: str = "https://publications.europa.eu/webapi/rdf/sparql"
-    # Cellar is a public SPARQL endpoint over a very large graph; a title
-    # scan there is an order of magnitude slower than a REST search API and
-    # legitimately exceeds the shared 20s live-source budget. Given its own
-    # timeout rather than raising the global one for every fast connector.
-    CELLAR_SPARQL_TIMEOUT_SECONDS: float = 60.0
-    LEGISLATION_GOV_UK_BASE_URL: str = "https://www.legislation.gov.uk"
-    # legislation.gov.uk answers Atom feed requests with HTTP 202 while it
-    # builds the feed asynchronously. The delays are the poll ladder, in
-    # seconds; the total must stay under the caller's own request budget.
-    LEGISLATION_GOV_UK_RETRY_DELAYS: str = "0.5,1.0,2.0,4.0"
-    TED_API_BASE_URL: str = "https://api.ted.europa.eu/v3"
-    SAM_GOV_OPPORTUNITIES_URL: str = "https://api.sam.gov/opportunities/v2/search"
-    SAM_GOV_API_KEY: str = ""
-    # Phase 3 — official sanctions snapshots. EU distribution URLs can
-    # change independently of the catalogue; keep that URL configurable.
-    OFAC_SDN_XML_URL: str = "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.XML"
-    UN_SANCTIONS_XML_URL: str = "https://scsanctions.un.org/resources/xml/en/name/consolidated.xml"
-    UK_SANCTIONS_CSV_URL: str = "https://sanctionslist.fcdo.gov.uk/docs/UK-Sanctions-List.csv"
-    EU_SANCTIONS_CSV_URL: str = "https://webgate.ec.europa.eu/fsd/fsf/public/files/csvFullSanctionsList/content"
-    # Comma-separated alternate distributions, tried in order after the
-    # primary URL fails. The OFAC and EU primaries returned HTTP 403 to this
-    # deployment's egress, and both authorities publish the same list at
-    # more than one official address; a failover list keeps that an operator
-    # configuration change rather than a code change. An empty value means
-    # "primary only". A 403 caused by network egress rather than by the URL
-    # is NOT fixable here — see the catalogue's runtime notes.
-    OFAC_SDN_XML_FALLBACK_URLS: str = "https://www.treasury.gov/ofac/downloads/sdn.xml"
-    UN_SANCTIONS_XML_FALLBACK_URLS: str = ""
-    UK_SANCTIONS_CSV_FALLBACK_URLS: str = ""
-    EU_SANCTIONS_CSV_FALLBACK_URLS: str = ""
-    # Sent on every official-feed download. Several government hosts reject
-    # or throttle unidentified clients; SEC already requires a contact
-    # address (SEC_EDGAR_USER_AGENT) and the same courtesy applies here.
-    # Operators should append a real contact address.
-    SANCTIONS_FEED_USER_AGENT: str = "Kriton/1.0 (authoritative-source-monitor)"
-    # Similarity floor for a fuzzy screening candidate. Deliberately high:
-    # a false candidate costs a reviewer's time, but a flood of them makes
-    # the review itself useless, which is the failure mode that matters for
-    # a control someone is supposed to act on.
-    SANCTIONS_FUZZY_MATCH_THRESHOLD: float = 0.88
-    SANCTIONS_SNAPSHOT_TTL_SECONDS: int = 3600
-    SANCTIONS_MAX_DOWNLOAD_BYTES: int = 75_000_000
-    SANCTIONS_SNAPSHOT_DIR: str = "./data/live_sources"
-    SANCTIONS_ALLOW_INLINE_REFRESH: bool = False
-    LIVE_SOURCE_HTTP_TIMEOUT_SECONDS: float = 20.0
-    LIVE_SOURCE_MAX_ATTEMPTS: int = 2
-    LIVE_SOURCE_RETRY_BACKOFF_SECONDS: float = 0.25
-    # Macro indicators (GDP/inflation) update quarterly/annually at most —
-    # 6h TTL avoids re-fetching World Bank on every request without risking
-    # meaningfully stale figures relative to this data's own update cadence.
-    LIVE_SOURCE_CACHE_TTL_SECONDS: int = 21600
-
-    # ── External reference data (app/domains/reference_data/) ───────────
+    # ── External reference data ─────────────────────────────────────────
     # Public, no-auth API — no key needed, but the base URL lives here
     # rather than hardcoded in the adapter so it can be repointed (a new
     # API version, a mirror, a test double) without a code change.
@@ -194,6 +104,13 @@ class Settings(BaseSettings):
     BEA_API_BASE_URL: str = "https://apps.bea.gov/api/data"
     BEA_API_KEY: str = ""
 
+    # Federal Reserve Economic Data (FRED, St. Louis Fed) — free with
+    # registration, keyed via a query param like Census/BEA. Used for
+    # interest-rate series (Fed funds rate, Treasury yields, prime rate,
+    # mortgage rates).
+    FRED_API_BASE_URL: str = "https://api.stlouisfed.org/fred"
+    FRED_API_KEY: str = ""
+
     # US Government Publishing Office GovInfo API — free with registration,
     # keyed via a query param. Used for on-demand lookup of specific 26 CFR
     # (Internal Revenue) regulation sections — the actual regulatory text,
@@ -213,11 +130,8 @@ class Settings(BaseSettings):
     # rather than a static annual edition.
     ECFR_API_BASE_URL: str = "https://www.ecfr.gov/api/versioner/v1"
 
-    # SEC EDGAR public data via app/domains/reference_data's own adapter —
-    # distinct field names from SEC_EDGAR_API_BASE_URL/SEC_EDGAR_USER_AGENT
-    # above (that pair belongs to live_sources/connectors/sec_edgar.py);
-    # kept as two separate declarations rather than unified, since renaming
-    # either would break whichever module already depends on its own name.
+    # SEC EDGAR public data. SEC requires a descriptive User-Agent identifying
+    # the application and a monitored contact address.
     SEC_DATA_API_BASE_URL: str = "https://data.sec.gov"
     SEC_USER_AGENT: str = ""
 
@@ -244,17 +158,6 @@ class Settings(BaseSettings):
     # The project uses SERP_API_KEY in .env (rather than SerpAPI's common
     # SERPAPI_API_KEY spelling); keep that exact name so the saved key loads.
     SERP_API_KEY: str = ""
-    # Which discovery provider is tried first, comma-separated. The order was
-    # hardcoded as tavily-then-serpapi, which made SerpAPI unreachable in
-    # practice: both keys are configured and Tavily answers, so the fallback
-    # never fired. Configurable so switching primary is an operator decision.
-    #
-    # Note on cost: SerpAPI FETCHES each result page to extract its text
-    # (adapters/professional_search_adapter.py), where Tavily returns content
-    # inline via include_raw_content. Putting SerpAPI first therefore adds up
-    # to _MAX_RESULTS extra HTTP round trips per query. That is the trade for
-    # Google's index reach over Tavily's.
-    PROFESSIONAL_SEARCH_PROVIDER_ORDER: str = "serpapi,tavily"
     PROFESSIONAL_SEARCH_ALLOWED_DOMAINS: list[str] = [
         "irs.gov",
         "sec.gov",
@@ -298,6 +201,24 @@ class Settings(BaseSettings):
     # positives scored 0.513-0.777, true negatives scored 0.318-0.327 — a
     # clean gap. 0.45 sits comfortably in that gap.
     CATEGORY_SEMANTIC_THRESHOLD: float = 0.45
+
+    # ── V8.5 evidence-monitoring operationalization ─────────────────────
+    # Shared secret for the service-role-only scheduled-monitoring endpoint
+    # (app/orchestration/visualization_gaps_router.py's /evidence-monitoring/
+    # scheduled-run) — a machine credential for the external daily
+    # scheduler, deliberately NOT a human Supabase session/JWT. Empty by
+    # default, which fails the endpoint closed (see require_service_role):
+    # a fresh environment that hasn't provisioned this secret cannot
+    # trigger scheduled runs over HTTP at all, rather than accepting an
+    # empty-string token.
+    EVIDENCE_MONITORING_SERVICE_TOKEN: str = ""
+    # Daily schedule the external scheduler (Railway Cron) is configured to
+    # run on — used only to compute/display "next scheduled run" on the
+    # admin status panel; changing this does not itself reschedule
+    # anything; the Railway Cron Schedule setting is the actual trigger and
+    # must be kept in sync by hand (see backend/RUNNING_KRITON.md).
+    EVIDENCE_MONITORING_SCHEDULE_HOUR_UTC: int = 6
+    EVIDENCE_MONITORING_SCHEDULE_MINUTE_UTC: int = 0
 
     @property
     def is_sqlite(self) -> bool:

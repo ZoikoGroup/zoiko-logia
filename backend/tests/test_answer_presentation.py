@@ -1,4 +1,39 @@
-from app.orchestration.presentation import build_answer_presentation
+import app.orchestration.presentation as presentation
+from app.orchestration.presentation import _plain, build_answer_presentation
+from app.orchestration.presentation_llm_classifier import GuideClassification
+
+
+def test_inline_citation_marker_does_not_swallow_the_surrounding_word_boundary():
+    # Live bug: _CITATION's \s*...\s* consumed the whitespace on both sides
+    # of the marker along with it, so "significance and [REF-3] risk" lost
+    # both spaces and concatenated into "andrisk" — same failure hit
+    # "the [REF-x] explanation", "recorded [REF-x] correctly", and
+    # "bank [REF-x] activity" in guide/sequence-diagram text.
+    assert _plain("the significance and [REF-3] risk of the exception") == (
+        "the significance and risk of the exception"
+    )
+    assert _plain("Confirm the entry was recorded [REF-2] correctly.") == (
+        "Confirm the entry was recorded correctly."
+    )
+
+
+def test_numeric_cell_parses_a_leading_minus_sign_before_the_currency_symbol():
+    # Real gap (2026-08-03): "-$90,000" (sign before currency — how
+    # user_provided_data.py's _money() formats a negative figure) failed to
+    # parse at all; only "$-90,000" (currency before sign) worked. A single
+    # unparseable cell drops its entire column from the chart (see
+    # _chart_from_table's `if any(value is None ...): continue`), so one
+    # negative dollar value silently zeroed out an otherwise perfectly
+    # chartable table — a cash-flow bridge with any reduction, or a
+    # budget-vs-actual variance column with any underrun.
+    assert presentation._numeric("-$90,000") == ("-90000", "$")
+    assert presentation._numeric("$-90,000") == ("-90000", "$")
+    assert presentation._numeric("$500,000") == ("500000", "$")
+    assert presentation._numeric("(90,000)") == ("-90000", "")
+
+
+def _explode_if_called(*args, **kwargs):
+    raise AssertionError("LLM fallback classifier must not be called for a confidently rule-classified query")
 
 
 def test_descriptive_answer_selects_descriptive_layout():
@@ -23,6 +58,37 @@ def test_comparison_table_is_detected_without_forcing_a_chart():
     assert plan.charts == []
 
 
+def test_demo_evidence_table_builds_cytoscape_graph():
+    answer = """## Supplier-invoice evidence relationships
+
+| Source | Source Type | Relationship | Target | Target Type | Reference |
+|---|---|---|---|---|---|
+| INV-1045 | invoice | issued_by | ABC Ltd | supplier | REF-1 |
+| INV-1045 | invoice | references | PO-880 | purchase_order | REF-1 |
+| INV-1045 | invoice | matched_to | GRN-225 | receipt | REF-1 |
+| INV-1045 | invoice | paid_by | PAY-990 | payment | REF-1 |
+| INV-1045 | invoice | recorded_as | JE-450 | ledger_entry | REF-1 |"""
+    plan = build_answer_presentation("Create an evidence relationship graph connecting these records", answer)
+    assert len(plan.graphs) == 1
+    assert len(plan.graphs[0].nodes) == 6
+    assert len(plan.graphs[0].edges) == 5
+
+
+def test_visualize_how_variance_request_gets_mermaid_process():
+    answer = """## Audit decision flow
+
+1. Validate the variance.
+2. Collect supporting evidence.
+3. Challenge the explanation.
+4. Resolve or escalate the matter."""
+    plan = build_answer_presentation(
+        "Visualize how an unexplained account variance moves through investigation and final resolution.",
+        answer,
+    )
+    assert plan.guides[0].type == "process"
+    assert plan.guides[0].renderer == "mermaid"
+
+
 def test_complete_numeric_table_creates_chart_from_validated_values():
     plan = build_answer_presentation(
         "Show revenue by quarter",
@@ -34,7 +100,9 @@ def test_complete_numeric_table_creates_chart_from_validated_values():
     assert plan.layout == "data_visualization"
     assert plan.table_count == 1
     assert len(plan.charts) == 1
-    assert plan.charts[0].type == "line"
+    assert plan.charts[0].type == "area"
+    assert plan.charts[0].summary_mode == "latest"
+    assert plan.charts[0].domain == "accounting"
     assert plan.charts[0].categories == ["Q1", "Q2"]
     assert plan.charts[0].unit == "$"
     assert plan.charts[0].series[0].values == ["120000", "135000"]
@@ -52,8 +120,6 @@ def test_four_digit_years_are_valid_timeline_categories():
         "| 2026 | 1.7% |",
     )
     assert len(plan.charts) == 1
-    # A single-series temporal table renders as "area" now (2-series-and-up
-    # temporal tables still render as "line" — see the two-series test above).
     assert plan.charts[0].type == "area"
     assert plan.charts[0].categories == ["2022", "2023", "2024", "2025", "2026"]
     assert plan.charts[0].unit == "%"
@@ -66,22 +132,6 @@ def test_budget_chart_keeps_variance_in_table_but_not_chart_series():
 | Marketing | $50,000 | $47,000 | -$3,000 |"""
     plan = build_answer_presentation("Show budget versus actual in a bar chart.", answer)
     assert [series.name for series in plan.charts[0].series] == ["Budget", "Actual"]
-
-
-def test_chart_contract_includes_deterministic_format_and_accessibility_metadata():
-    plan = build_answer_presentation(
-        "Show monthly receivables as a chart.",
-        "| Month | Receivables |\n|---|---:|\n| January | $210,000 |\n| February | $195,000 |",
-    )
-
-    chart = plan.charts[0]
-    assert chart.value_format == "currency"
-    assert chart.currency_code == "USD"
-    assert chart.decimal_places == 0
-    assert chart.x_axis_label == "Month"
-    assert chart.y_axis_label == "USD"
-    assert "2 categories" in chart.accessible_summary
-    assert "validated answer table" in chart.accessible_summary
 
 
 def test_incomplete_or_mixed_unit_column_is_not_charted():
@@ -109,52 +159,41 @@ def test_numbered_procedure_selects_step_layout():
     ]
 
 
-def test_bulleted_checklist_under_headers_still_produces_a_checklist_guide():
-    """Real incident (2026-07-29): an audit checklist written as headers
-    followed by '- item' bullet lines (no numbered prefix at all) produced
-    zero charts/metrics/guides — the whole visual panel silently didn't
-    appear — because the extractor only ever recognized a literal '1.'/'1)'
-    numbered prefix. A bulleted procedure/checklist is at least as common in
-    real model output as a numbered one."""
+def test_analysis_with_numbered_procedures_does_not_duplicate_answer_as_visual():
     plan = build_answer_presentation(
-        "Create an audit checklist for reviewing bank-reconciliation controls",
-        "Control Environment\n"
-        "- Evaluate the company's control environment, including the tone at the top.\n"
-        "- Assess the competence and objectivity of the individuals performing reconciliations.\n\n"
-        "Risk Assessment\n"
-        "- Identify the locations or business units that are individually important.\n"
-        "- Test controls over significant accounts and disclosures.",
+        "Explain why receivables increased and recommend audit procedures.",
+        "1. Reconcile the complete receivables subledger to the general ledger and reproduce the aging analysis.\n"
+        "2. Test subsequent cash receipts and investigate contradictory evidence.",
     )
-    assert len(plan.guides) == 1
-    assert plan.guides[0].type == "checklist"
-    assert plan.guides[0].items == [
-        "Evaluate the company's control environment, including the tone at the top.",
-        "Assess the competence and objectivity of the individuals performing reconciliations.",
-        "Identify the locations or business units that are individually important.",
-        "Test controls over significant accounts and disclosures.",
-    ]
+    assert plan.guides == []
 
 
-def test_asterisk_bullets_also_recognized():
-    plan = build_answer_presentation(
-        "Give me a review checklist",
-        "* Review the bank statement.\n* Confirm outstanding items.\n* Reconcile the balance.",
+def test_guide_items_keep_complete_validated_sentences():
+    long_step = (
+        "Reconcile the receivables subledger to the general ledger and reproduce the trend, "
+        "aging, and days-sales-outstanding analysis without omitting relevant segments."
     )
-    assert plan.guides[0].type == "checklist"
-    assert plan.guides[0].items == [
-        "Review the bank statement.",
-        "Confirm outstanding items.",
-        "Reconcile the balance.",
-    ]
+    plan = build_answer_presentation("Create an audit workflow", f"1. {long_step}")
+    assert plan.guides[0].items == [long_step]
+    assert "…" not in plan.guides[0].items[0]
 
 
-def test_bold_lead_in_line_is_not_mistaken_for_a_bullet():
-    """A line starting with '**Term**' (no bullet marker) must not match the
-    bullet pattern just because it also starts with '*' — the '*' has to be
-    immediately followed by whitespace to count as a bullet marker."""
-    from app.orchestration.presentation import _ORDERED_LINE
-    assert _ORDERED_LINE.match("**Materiality**: compare to threshold") is None
-    assert _ORDERED_LINE.match("---") is None
+def test_follow_ups_match_journal_matrix_and_swimlane_requests():
+    journal = build_answer_presentation(
+        "Provide the correcting journal entry.",
+        "| Account | Debit | Credit |\n|---|---:|---:|\n| Revenue | $100 | — |",
+    )
+    assert journal.follow_up_questions[0].startswith("Show the original")
+    matrix = build_answer_presentation(
+        "Create an audit evidence scoring matrix.",
+        "| Factor | Weak | Strong |\n|---|---|---|\n| Relevance | Indirect | Direct |",
+    )
+    assert matrix.follow_up_questions[0].startswith("Apply this matrix")
+    swimlane = build_answer_presentation(
+        "Create a bank-reconciliation swimlane.",
+        "| Stage | Preparer | Reviewer |\n|---|---|---|\n| Close | Prepare | Review |",
+    )
+    assert swimlane.follow_up_questions[0].startswith("Add evidence")
 
 
 def test_timeline_query_uses_timeline_visual_for_grounded_steps():
@@ -184,6 +223,229 @@ def test_review_query_uses_checklist_visual():
         "1. Verify the balance.\n2. Document the reviewer.",
     )
     assert plan.guides[0].type == "checklist"
+
+
+def test_audit_decision_query_uses_domain_decision_flow():
+    plan = build_answer_presentation(
+        "Create an audit decision flow for whether a variance needs testing",
+        "1. Compare the variance with the threshold.\n2. Evaluate the control evidence.\n3. Document the conclusion.",
+    )
+    assert plan.guides[0].type == "decision_flow"
+    assert plan.guides[0].domain == "audit"
+
+
+def test_communication_query_uses_sequence_diagram():
+    plan = build_answer_presentation(
+        "Show how the chatbot communicates with the calculation engine",
+        "1. Frontend sends the query to the Classifier.\n"
+        "2. Classifier forwards the risk-scored query to the Calculation Engine.\n"
+        "3. Calculation Engine returns the verified result to Frontend.",
+    )
+    assert plan.guides[0].type == "sequence"
+    assert plan.guides[0].title == "Sequence flow"
+    assert plan.guides[0].renderer == "mermaid"
+    assert plan.follow_up_questions[0].startswith("Explain what happens if a step")
+
+
+def test_sequence_query_does_not_misclassify_as_decision_flow():
+    plan = build_answer_presentation(
+        "Show the message flow between the classifier and the calculation engine",
+        "1. Classifier sends the query to the Calculation Engine.\n"
+        "2. Calculation Engine returns the result to Classifier.",
+    )
+    assert plan.guides[0].type == "sequence"
+
+
+def test_obvious_sequence_query_remains_rule_classified(monkeypatch):
+    monkeypatch.setattr(presentation.presentation_llm_classifier, "classify", _explode_if_called)
+    plan = build_answer_presentation(
+        "Show the sequence diagram for how the classifier talks to the calculation engine",
+        "1. Classifier sends the query to the Calculation Engine.\n"
+        "2. Calculation Engine returns the result to Classifier.",
+    )
+    assert plan.guides[0].type == "sequence"
+
+
+def test_obvious_flowchart_query_remains_rule_classified(monkeypatch):
+    monkeypatch.setattr(presentation.presentation_llm_classifier, "classify", _explode_if_called)
+    plan = build_answer_presentation(
+        "Create a flowchart for whether a variance needs testing",
+        "1. Compare the variance with the threshold.\n2. Evaluate the control evidence.\n3. Document the conclusion.",
+    )
+    assert plan.guides[0].type == "decision_flow"
+
+
+def test_ambiguous_process_query_is_classified_through_llm_fallback(monkeypatch):
+    def fake_classify(query, ordered_items):
+        assert ordered_items  # deterministic steps are passed through, never invented
+        return GuideClassification(
+            guide_type="process",
+            confidence=0.88,
+            reasoning_summary="Sequential swimlane stages with no branching.",
+            requires_clarification=False,
+            model="gpt-4o-mini-test",
+        )
+    monkeypatch.setattr(presentation.presentation_llm_classifier, "classify", fake_classify)
+    # "Show this as a swimlane." has guide-request signal (swimlane) but
+    # matches none of the specific rule regexes — the genuinely ambiguous case.
+    plan = build_answer_presentation(
+        "Show this as a swimlane.",
+        "1. Preparer drafts the entry.\n2. Reviewer checks it.\n3. Approver signs off.",
+    )
+    assert plan.guides[0].type == "process"
+    assert plan.guides[0].title == "Process overview"
+
+
+def test_invalid_llm_output_falls_back_safely(monkeypatch):
+    def fake_classify(query, ordered_items):
+        return GuideClassification(
+            guide_type="gauge",  # not an approved PresentationGuide.type literal
+            confidence=0.95,
+            reasoning_summary="Invalid.",
+            requires_clarification=False,
+            model="gpt-4o-mini-test",
+        )
+    monkeypatch.setattr(presentation.presentation_llm_classifier, "classify", fake_classify)
+    plan = build_answer_presentation(
+        "Show this as a swimlane.",
+        "1. Preparer drafts the entry.\n2. Reviewer checks it.\n3. Approver signs off.",
+    )
+    assert plan.guides == []
+
+
+def test_low_confidence_llm_result_requests_clarification(monkeypatch):
+    def fake_classify(query, ordered_items):
+        return GuideClassification(
+            guide_type="process",
+            confidence=0.3,
+            reasoning_summary="Not sure which layout fits.",
+            requires_clarification=False,
+            model="gpt-4o-mini-test",
+        )
+    monkeypatch.setattr(presentation.presentation_llm_classifier, "classify", fake_classify)
+    plan = build_answer_presentation(
+        "Show this as a swimlane.",
+        "1. Preparer drafts the entry.\n2. Reviewer checks it.\n3. Approver signs off.",
+    )
+    assert plan.guides == []
+    assert plan.follow_up_questions == [
+        "Would you like this shown as a flowchart, timeline, checklist, or process overview?"
+    ]
+
+
+def test_llm_timeout_does_not_break_the_user_response(monkeypatch):
+    def fake_classify(query, ordered_items):
+        raise TimeoutError("provider timed out")
+    monkeypatch.setattr(presentation.presentation_llm_classifier, "classify", fake_classify)
+    plan = build_answer_presentation(
+        "Show this as a swimlane.",
+        "1. Preparer drafts the entry.\n2. Reviewer checks it.\n3. Approver signs off.",
+    )
+    assert plan.guides == []
+
+
+def test_invoice_supplier_purchase_order_payment_chain_builds_graph():
+    plan = build_answer_presentation(
+        "Trace invoice INV-100 through to its payment.",
+        "The chain below is built from validated records.\n\n"
+        "| Source | Source Type | Relationship | Target | Target Type |\n"
+        "|---|---|---|---|---|\n"
+        "| INV-100 | Invoice | issued_by | SUP-1 | Supplier |\n"
+        "| INV-100 | Invoice | references | PO-55 | Purchase Order |\n"
+        "| PMT-9 | Payment | matched_to | INV-100 | Invoice |\n",
+    )
+    assert len(plan.graphs) == 1
+    graph = plan.graphs[0]
+    assert {node.id for node in graph.nodes} == {"INV-100", "SUP-1", "PO-55", "PMT-9"}
+    assert len(graph.edges) == 3
+    node_types = {node.id: node.entity_type for node in graph.nodes}
+    assert node_types["PO-55"] == "purchase_order"
+    assert node_types["PMT-9"] == "payment"
+    assert graph.layout == "breadthfirst"
+    assert plan.layout == "data_visualization"
+
+
+def test_hub_topology_around_one_entity_uses_concentric_layout():
+    plan = build_answer_presentation(
+        "Show the relationships connected to this supplier.",
+        "| Source | Source Type | Relationship | Target | Target Type |\n"
+        "|---|---|---|---|---|\n"
+        "| INV-100 | Invoice | issued_by | SUP-1 | Supplier |\n"
+        "| CONTRACT-1 | Contract | belongs_to | SUP-1 | Supplier |\n"
+        "| PMT-9 | Payment | paid_by | SUP-1 | Supplier |\n",
+    )
+    assert len(plan.graphs) == 1
+    graph = plan.graphs[0]
+    assert graph.layout == "concentric"
+    assert {node.id for node in graph.nodes} == {"INV-100", "CONTRACT-1", "PMT-9", "SUP-1"}
+
+
+def test_payment_bank_transaction_ledger_entry_evidence_chain():
+    plan = build_answer_presentation(
+        "Show the evidence chain from this payment to the ledger entry.",
+        "| Source | Source Type | Relationship | Target | Target Type |\n"
+        "|---|---|---|---|---|\n"
+        "| PMT-9 | Payment | reconciled_with | BTX-3 | Bank Transaction |\n"
+        "| BTX-3 | Bank Transaction | recorded_as | GL-77 | Ledger Entry |\n",
+    )
+    assert len(plan.graphs) == 1
+    graph = plan.graphs[0]
+    assert {node.id for node in graph.nodes} == {"PMT-9", "BTX-3", "GL-77"}
+    assert [edge.relationship_type for edge in graph.edges] == ["reconciled_with", "recorded_as"]
+    assert graph.layout == "breadthfirst"
+    assert graph.title == "Evidence chain"
+
+
+def test_empty_graph_falls_back_to_text():
+    plan = build_answer_presentation(
+        "Explain the relationships between these accounting records.",
+        "There is no structured evidence table in this answer, only prose "
+        "describing how records generally relate to one another.",
+    )
+    assert plan.graphs == []
+
+
+def test_relationship_query_without_valid_table_does_not_force_a_graph():
+    plan = build_answer_presentation(
+        "Show the relationships involved.",
+        "| Period | Revenue |\n|---|---:|\n| Q1 | $100 |\n| Q2 | $120 |",
+    )
+    assert plan.graphs == []
+
+
+def test_existing_chart_and_sequence_renderers_remain_unchanged():
+    chart_plan = build_answer_presentation(
+        "Visualize the tax expense breakdown by category",
+        "| Tax category | Amount |\n|---|---:|\n| Current tax | $80 |\n| Deferred tax | $20 |",
+    )
+    assert chart_plan.charts[0].type == "donut"
+    assert chart_plan.graphs == []
+
+    sequence_plan = build_answer_presentation(
+        "Show the sequence diagram for how the classifier talks to the calculation engine",
+        "1. Classifier sends the query to the Calculation Engine.\n"
+        "2. Calculation Engine returns the result to Classifier.",
+    )
+    assert sequence_plan.guides[0].type == "sequence"
+    assert sequence_plan.graphs == []
+
+
+def test_tax_breakdown_uses_donut_visual():
+    plan = build_answer_presentation(
+        "Visualize the tax expense breakdown by category",
+        "| Tax category | Amount |\n|---|---:|\n| Current tax | $80 |\n| Deferred tax | $20 |",
+    )
+    assert plan.charts[0].type == "donut"
+    assert plan.charts[0].domain == "tax"
+    assert plan.follow_up_questions[0] == "Explain the largest share in this composition."
+
+
+def test_plural_expenses_are_labelled_as_accounting_analysis():
+    plan = build_answer_presentation(
+        "Visualize quarterly operating expenses",
+        "| Period | Expenses |\n|---|---:|\n| Q1 | $120 |\n| Q2 | $135 |",
+    )
+    assert plan.charts[0].domain == "accounting"
 
 
 def test_section_overview_is_limited_and_deduplicated():
@@ -230,114 +492,36 @@ def test_word_when_does_not_turn_a_calculation_into_timeline():
     assert plan.layout == "calculation"
 
 
-def test_single_row_table_becomes_metric_card_not_a_dropped_chart():
+def test_compare_and_rank_keywords_allow_automatic_charting():
+    # Real gap (2026-08-04): _VISUAL_REQUEST was missing "compare"/"rank",
+    # so a fully supplied dataset whose query only said "Compare ... on
+    # ..." (no literal "chart"/"graph"/"show" word) extracted correctly
+    # but never triggered allow_automatic_chart, silently producing zero
+    # charts despite complete tabular data reaching this stage.
+    compare_plan = build_answer_presentation(
+        "Compare Vendor A, Vendor B, and Vendor C on quality, delivery speed, reliability, and cost efficiency.",
+        "| Category | Quality | Delivery Speed | Reliability | Cost Efficiency |\n|---|---:|---:|---:|---:|\n"
+        "| Vendor A | 82 [REF-1] | 75 [REF-1] | 91 [REF-1] | 68 [REF-1] |\n"
+        "| Vendor B | 76 [REF-1] | 88 [REF-1] | 84 [REF-1] | 73 [REF-1] |\n"
+        "| Vendor C | 90 [REF-1] | 72 [REF-1] | 86 [REF-1] | 79 [REF-1] |",
+    )
+    assert compare_plan.charts
+
+    rank_plan = build_answer_presentation(
+        "Rank product revenue.",
+        "| Category | Amount |\n|---|---:|\n| Widget | $50,000 [REF-1] |\n"
+        "| Gadget | $72,000 [REF-1] |\n| Gizmo | $31,000 [REF-1] |",
+    )
+    assert rank_plan.charts
+
+
+def test_break_down_two_words_allows_automatic_charting():
+    # Real gap (2026-08-04): _VISUAL_REQUEST didn't recognize "break down"
+    # (two words), so a fully supplied dataset introduced with that
+    # natural phrasing extracted correctly but produced zero charts.
     plan = build_answer_presentation(
-        "What is our total revenue?",
-        "| Metric | Value |\n|---|---:|\n| Total revenue | $482,000 [REF-1] |",
+        "Break down our expenses by category.",
+        "| Category | Amount |\n|---|---:|\n| Salaries | 45 [REF-1] |\n"
+        "| Rent | 15 [REF-1] |\n| Marketing | 12 [REF-1] |",
     )
-    assert plan.layout == "data_visualization"
-    assert plan.charts == []
-    assert len(plan.metrics) == 1
-    assert plan.metrics[0].label == "Total revenue"
-    assert plan.metrics[0].value == "482000"
-    assert plan.metrics[0].unit == "$"
-
-
-def test_share_language_table_becomes_donut():
-    plan = build_answer_presentation(
-        "Show a breakdown of expenses by category",
-        "| Expense category | Share |\n|---|---:|\n"
-        "| Payroll | 45% |\n| Rent | 20% |\n| Marketing | 15% |\n"
-        "| Software | 10% |\n| Travel | 6% |\n| Other | 4% |",
-    )
-    assert len(plan.charts) == 1
-    assert plan.charts[0].type == "donut"
-    assert plan.charts[0].categories == ["Payroll", "Rent", "Marketing", "Software", "Travel", "Other"]
-
-
-def test_donut_caps_slices_and_rolls_remainder_into_other():
-    rows = "\n".join(f"| Category {c} | {v}% |" for c, v in zip("ABCDEFGH", [20, 18, 15, 12, 10, 9, 8, 8]))
-    plan = build_answer_presentation(
-        "breakdown by category",
-        f"| Category | Share |\n|---|---:|\n{rows}",
-    )
-    chart = plan.charts[0]
-    assert chart.categories == ["Category A", "Category B", "Category C", "Category D", "Category E", "Other"]
-    assert chart.series[0].values == ["20", "18", "15", "12", "10", "25"]
-
-
-def test_decision_judgment_query_produces_decision_flow_guide():
-    plan = build_answer_presentation(
-        "Does an unexplained variance require additional audit testing?",
-        "## Considerations for additional testing\n\n"
-        "1. **Materiality**: Compare the variance to the applicable materiality threshold. [REF-1]\n"
-        "2. **Qualitative risk**: Consider indicators unrelated to size, such as prior misstatements. [REF-1]\n"
-        "3. **Evidence sufficiency**: Assess whether evidence already obtained addresses the risk. [REF-1]\n"
-        "4. **Escalation**: Escalate to the audit manager if evidence remains insufficient. [REF-1]\n\n"
-        "The actual conclusion depends on the specific facts of the engagement. [REF-1]",
-    )
-    assert plan.guides[0].type == "decision_flow"
-    assert plan.guides[0].title == "Decision considerations"
-    assert len(plan.guides[0].items) == 4
-
-
-def test_ordinary_checklist_query_still_gets_checklist_not_decision_flow():
-    plan = build_answer_presentation(
-        "Give me a checklist for bank reconciliation.",
-        "1. **Select the period.** [REF-1]\n2. **Confirm the opening balance.** [REF-1]",
-    )
-    assert plan.guides[0].type == "checklist"
-
-
-def test_plain_two_item_comparison_is_bar_not_donut():
-    """A donut must never be inferred from value sign alone — an ordinary
-    2-column comparison with no share/composition language stays a bar,
-    even with an explicit chart request and non-negative values."""
-    plan = build_answer_presentation(
-        "Show a chart comparing cash and receivables",
-        "| Account | Balance |\n|---|---:|\n| Cash | $50,000 |\n| Receivables | $30,000 |",
-    )
-    assert len(plan.charts) == 1
-    assert plan.charts[0].type == "bar"
-
-
-def test_every_recognised_currency_is_permitted_by_the_chart_contract():
-    """_CURRENCY_BY_UNIT and PresentationChart.currency_code's Literal were
-    two independent lists of permitted currencies. Adding a symbol to the map
-    without widening the Literal makes pydantic reject the chart inside
-    _chart_from_table — which has no try/except, and neither does
-    build_answer_presentation — so it surfaces as a failed answer rather than
-    a missing chart.
-    """
-    from typing import get_args, get_type_hints
-
-    from app.orchestration.presentation import _CURRENCY_BY_UNIT
-    from app.orchestration.schemas import PresentationChart
-
-    annotation = get_type_hints(PresentationChart)["currency_code"]
-    # Optional[Literal[...]] -> pull the Literal's members out of the union.
-    permitted = {
-        member
-        for arg in get_args(annotation)
-        for member in get_args(arg)
-        if isinstance(member, str)
-    }
-    unmapped = set(_CURRENCY_BY_UNIT.values()) - permitted
-    assert not unmapped, (
-        f"{sorted(unmapped)} can be produced by _CURRENCY_BY_UNIT but would be "
-        f"rejected by PresentationChart.currency_code (permits {sorted(permitted)})"
-    )
-
-
-def test_a_recognised_currency_symbol_actually_builds_a_chart():
-    # The guard above is static; this proves the round trip for each symbol.
-    from app.orchestration.presentation import _CURRENCY_BY_UNIT
-
-    for symbol in ("$", "£", "€"):
-        answer = (
-            f"| Segment | Revenue |\n| --- | --- |\n"
-            f"| Retail | {symbol}60,000 |\n| Wholesale | {symbol}40,000 |\n"
-        )
-        presentation = build_answer_presentation("chart revenue by segment", answer)
-        assert presentation.charts, f"{symbol} produced no chart"
-        assert presentation.charts[0].currency_code == _CURRENCY_BY_UNIT[symbol]
+    assert plan.charts

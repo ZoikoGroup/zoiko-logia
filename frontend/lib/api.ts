@@ -85,15 +85,32 @@ export type UserCreateRequest = {
 };
 
 async function authedFetch(path: string, token: string, init?: RequestInit): Promise<Response> {
-  const res = await fetch(`${API_URL}${path}`, {
+  const send = (accessToken: string) => fetch(`${API_URL}${path}`, {
     ...init,
     headers: {
       ...(init?.headers ?? {}),
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${accessToken}`,
     },
   });
+  let res = await send(token);
   if (res.status === 401 && typeof window !== "undefined") {
-    supabase.auth.signOut();
+    // Access tokens expire during long Kriton demos. Supabase maintains a
+    // refresh token in browser storage, so refresh and retry the original
+    // request once before treating the session as expired. Previously the
+    // first 401 immediately signed the user out even when refresh was valid.
+    const { data, error } = await supabase.auth.refreshSession();
+    const refreshedToken = data.session?.access_token;
+    if (!error && refreshedToken) {
+      res = await send(refreshedToken);
+      if (res.status !== 401) {
+        if (!res.ok) {
+          const body = await res.json().catch(() => null);
+          throw new ApiError(res.status, body?.detail ?? `Request to ${path} failed`);
+        }
+        return res;
+      }
+    }
+    await supabase.auth.signOut();
     if (window.location.pathname !== "/login") {
       window.location.href = "/login";
     }
@@ -525,15 +542,15 @@ export type AskKritonRequest = {
   query: string;
   jurisdiction?: string;
   mode?: string;
-  /** Prior user queries this conversation, most recent last — never the composed answers. */
-  history?: string[];
-  /** Which persisted conversation to append this turn to — omit/null to start a new one. */
-  conversation_id?: string | null;
   /** Playground overrides — not trusted from body in production */
   source_confidence?: string;
   pre_bundle_state?: string;
   privacy_class?: string;
   clarification_cycle?: number;
+  /** Dynamic Visualization Selection v4 — the current chat thread's locally-
+   * generated id (already used for the recents sidebar); scopes the chart-
+   * repetition penalty and telemetry to this conversation server-side. */
+  conversation_id?: string;
 };
 
 export type SourceSummary = {
@@ -572,14 +589,6 @@ export type SourceCitation = {
   ref_id: string;
   source_id: string;
   title: string;
-  /** Whether this source governs a claim or only provides added context. */
-  evidence_role?: "controlling" | "supporting";
-  /** "live_api" for a dynamically-fetched source (live_sources/ or
-   * reference_data/ connectors — Treasury, Census, FRED, professional
-   * search, etc.), "document" for an ingested/uploaded document. */
-  source_type?: "document" | "live_api";
-  /** Only set for live-data citations — a real, clickable external URL (e.g. the ONS dataset page). Document citations have no public URL today. */
-  source_url?: string | null;
   /** Absolute external URL for a live-fetched source, a relative
    * `/sources/{id}/file` link for an uploaded/ingested document (requires
    * auth — see openSourceUrl), or null if this source has no viewable
@@ -618,6 +627,7 @@ export type CalculationWidget = {
   output_label: string;
   output_value: string;
   output_unit: string;
+  chart_type: "line" | "bar" | "donut" | "gauge" | "waterfall" | "stacked_bar" | "bullet" | "treemap" | "sankey" | "kpi";
   chart_label: string;
   chart_x_label: string;
   chart_y_label: string;
@@ -628,67 +638,310 @@ export type CalculationWidget = {
 export type PresentationSeries = {
   name: string;
   values: string[];
+  unit: string;
 };
 
-/** A single headline number from a table that reduces to one row (e.g.
- * "Total revenue: $482,000") — no delta/trend in v1, a single row has no
- * second point to diff against. */
-export type PresentationMetric = {
-  metric_id: string;
-  label: string;
-  value: string;
-  unit: string;
+export type PresentationChartType =
+  | "bar"
+  | "line"
+  | "area"
+  | "donut"
+  | "dual_axis"
+  | "grouped_bar"
+  | "stacked_bar"
+  | "percentage_stacked_bar"
+  | "diverging_bar"
+  | "histogram"
+  | "box_plot"
+  | "radar"
+  | "funnel"
+  | "slope"
+  | "scatter"
+  | "bubble"
+  | "heatmap"
+  | "correlation_matrix"
+  | "dumbbell"
+  | "lollipop"
+  | "bullet"
+  | "waterfall"
+  // v5 — temporal/composition brought into the candidate system.
+  | "composition_bar";
+
+export type SelectionSource =
+  | "deterministic_default"
+  | "explicit_user_request"
+  | "alternative_switch"
+  | "safe_fallback"
+  | "legacy_payload"
+  | "personalized";
+
+export type VisualizationGrammar = {
+  version: "1.0";
+  renderer: "echarts";
+  composition: "layer" | "facet";
+  layers: Array<{
+    mark: "bar" | "line" | "area" | "point";
+    series_index: number;
+    axis: "primary" | "secondary";
+    stack?: string | null;
+  }>;
+  facet_columns?: number | null;
+  fallback_chart_type?: PresentationChartType | null;
 };
 
 export type PresentationChart = {
   chart_id: string;
-  type: "bar" | "line" | "area" | "donut";
+  type: PresentationChartType;
   title: string;
   categories: string[];
   series: PresentationSeries[];
   unit: string;
-  value_format?: "number" | "currency" | "percent";
-  currency_code?: "USD" | "GBP" | "EUR" | null;
-  decimal_places?: number;
-  x_axis_label?: string;
-  y_axis_label?: string;
-  accessible_summary?: string;
+  domain: "general" | "accounting" | "audit" | "tax";
+  summary_mode: "latest" | "total" | "average";
+  // Dynamic Visualization Selection v3 — all optional so a v1/v2 payload
+  // (live or previously saved, missing these fields entirely) still
+  // type-checks and renders unchanged.
+  alternatives?: PresentationChartType[];
+  original_chart_type?: PresentationChartType | null;
+  fallback_note?: string | null;
+  schema_version?: string;
+  // v4 — diagnostic/telemetry metadata only, never used for rendering.
+  analytical_intent?: string | null;
+  selection_source?: SelectionSource | null;
+  preference_affected_selection?: boolean;
+  // v10 — diagnostic/telemetry metadata only, same posture as
+  // preference_affected_selection above. personalization_affected_selection
+  // is true only when a consent-based signal actually won a near-tie break
+  // on THIS chart — never merely because personalization is enabled.
+  personalization_enabled?: boolean;
+  personalization_affected_selection?: boolean;
+  personalization_model_version?: string | null;
+  personalization_confidence_band?: "low" | "medium" | "high" | null;
+  preferred_output?: "auto" | "chart" | "table";
+  visual_density?: "compact" | "standard" | "detailed";
+  contrast_preference?: "system" | "standard" | "high";
+  reduced_motion?: boolean;
+  table_alternative_default_open?: boolean;
+  label_orientation?: "auto" | "horizontal" | "vertical";
+  grammar?: VisualizationGrammar | null;
 };
+
+export type VisualizationPreferences = {
+  preferred_output: "auto" | "chart" | "table";
+  comparison_preference: "auto" | "grouped_bar" | "dumbbell" | "lollipop" | "diverging_bar";
+  trend_preference: "auto" | "line" | "area";
+  composition_preference: "auto" | "donut" | "composition_bar" | "stacked_bar" | "percentage_stacked_bar";
+  value_display: "auto" | "absolute" | "percentage";
+  label_orientation: "auto" | "horizontal" | "vertical";
+  visual_density: "compact" | "standard" | "detailed";
+  contrast_preference: "system" | "standard" | "high";
+  reduced_motion: boolean;
+  table_alternative_default_open: boolean;
+  schema_version: "1.0";
+};
+
+export async function getVisualizationPreferences(token: string): Promise<VisualizationPreferences> {
+  const res = await authedFetch("/orchestration/visualization-preferences", token);
+  if (!res.ok) throw new ApiError(res.status, "Could not load visualization preferences");
+  return res.json();
+}
+
+export async function putVisualizationPreferences(token: string, value: VisualizationPreferences): Promise<VisualizationPreferences> {
+  const res = await authedFetch("/orchestration/visualization-preferences", token, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value),
+  });
+  if (!res.ok) throw new ApiError(res.status, "Could not save visualization preferences");
+  return res.json();
+}
+
+export async function resetVisualizationPreferences(token: string): Promise<VisualizationPreferences> {
+  const res = await authedFetch("/orchestration/visualization-preferences", token, { method: "DELETE" });
+  if (!res.ok) throw new ApiError(res.status, "Could not reset visualization preferences");
+  return res.json();
+}
+
+// V10 — consent-based visualization personalization. Disabled by default;
+// never inferred from usage. See backend/app/orchestration/
+// visualization_personalization_consent.py for the authoritative shape.
+export type PersonalizationConsent = {
+  personalization_enabled: boolean;
+  personalization_scope: "visualization_only";
+  personalization_history_window: "30_days" | "90_days" | "180_days";
+  allow_view_switch_learning: boolean;
+  allow_export_learning: boolean;
+  allow_save_learning: boolean;
+  consent_updated_at?: string | null;
+  schema_version: "1.0";
+};
+
+export const defaultPersonalizationConsent: PersonalizationConsent = {
+  personalization_enabled: false,
+  personalization_scope: "visualization_only",
+  personalization_history_window: "90_days",
+  allow_view_switch_learning: true,
+  allow_export_learning: true,
+  allow_save_learning: true,
+  schema_version: "1.0",
+};
+
+export async function getPersonalizationConsent(token: string): Promise<PersonalizationConsent> {
+  const res = await authedFetch("/orchestration/visualization-personalization/consent", token);
+  if (!res.ok) throw new ApiError(res.status, "Could not load personalization settings");
+  return res.json();
+}
+
+export async function putPersonalizationConsent(token: string, value: PersonalizationConsent): Promise<PersonalizationConsent> {
+  const res = await authedFetch("/orchestration/visualization-personalization/consent", token, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value),
+  });
+  if (!res.ok) throw new ApiError(res.status, "Could not save personalization settings");
+  return res.json();
+}
+
+// Chart-type labels and counts only — never raw event history (requirement:
+// "Do not expose detailed event history").
+export type PersonalizationSummary = {
+  eligible: boolean;
+  interaction_count: number;
+  conversation_count: number;
+  top_family_preferences: Record<string, string>;
+  top_intent_preferences: Record<string, string>;
+};
+
+export async function getPersonalizationSummary(token: string): Promise<PersonalizationSummary> {
+  const res = await authedFetch("/orchestration/visualization-personalization/summary", token);
+  if (!res.ok) throw new ApiError(res.status, "Could not load personalization summary");
+  return res.json();
+}
+
+export async function resetPersonalizationProfile(token: string): Promise<void> {
+  const res = await authedFetch("/orchestration/visualization-personalization/reset", token, { method: "POST" });
+  if (!res.ok) throw new ApiError(res.status, "Could not reset personalization learning");
+}
+
+export async function deletePersonalizationProfile(token: string): Promise<void> {
+  const res = await authedFetch("/orchestration/visualization-personalization", token, { method: "DELETE" });
+  if (!res.ok) throw new ApiError(res.status, "Could not delete personalization profile");
+}
+
+export type VisualizationGapRow = {
+  analytical_intent: string | null; requested_capability: string; requested_visualization_family: string;
+  validated_data_shape: string; current_fallback: string; sample_size: number; distinct_conversations: number;
+  distinct_actors: number; fallback_retention_rate: number | null; fallback_switch_rate: number | null;
+  render_failure_rate: number; evidence_status: "insufficient_evidence" | "directional_signal" | "eligible_for_review";
+  recommended_issue_classification: string;
+  recommended_action: string;
+};
+export type VisualizationGapSummary = { total_visualization_requests: number; total_fallback_events: number; gap_rate: number; rows: VisualizationGapRow[]; environment: string };
+export type VisualizationGapFilters = { dateFrom?: string; dateTo?: string; environment?: string; analyticalIntent?: string; requestedChartType?: string; requestedVisualizationFamily?: string; dataShapeClass?: string; evidenceStatus?: string };
+export async function getVisualizationGapSummary(token: string, filters: VisualizationGapFilters = {}): Promise<VisualizationGapSummary> {
+  const query = new URLSearchParams();
+  if (filters.dateFrom) query.set("date_from", filters.dateFrom); if (filters.dateTo) query.set("date_to", filters.dateTo);
+  if (filters.environment) query.set("environment", filters.environment); if (filters.analyticalIntent) query.set("analytical_intent", filters.analyticalIntent);
+  if (filters.requestedChartType) query.set("requested_chart_type", filters.requestedChartType);
+  if (filters.requestedVisualizationFamily) query.set("requested_visualization_family", filters.requestedVisualizationFamily);
+  if (filters.dataShapeClass) query.set("data_shape_class", filters.dataShapeClass); if (filters.evidenceStatus) query.set("evidence_status", filters.evidenceStatus);
+  const res = await authedFetch(`/orchestration/analytics/visualization-gaps/summary?${query}`, token);
+  if (!res.ok) throw new ApiError(res.status, "Could not load visualization gap report"); return res.json();
+}
+export type VisualizationGapReport = { id:string; period_start:string; period_end:string; evidence_version:string; approved_findings:string[]; artifact:Record<string,unknown>; status:"draft"|"under_review"|"approved"|"rejected"; created_by:string; approved_by:string|null; approved_at:string|null };
+export async function createVisualizationGapReport(token:string, periodStart:string, periodEnd:string, approvedFindings:string[]):Promise<VisualizationGapReport>{
+  const res=await authedFetch("/orchestration/analytics/visualization-gaps/reports",token,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({period_start:periodStart,period_end:periodEnd,approved_findings:approvedFindings.slice(0,3)})});
+  if(!res.ok)throw new ApiError(res.status,"Could not create gap report");return res.json();
+}
+export async function transitionVisualizationGapReport(token:string,id:string,status:"under_review"|"approved"|"rejected"):Promise<VisualizationGapReport>{
+  const res=await authedFetch(`/orchestration/analytics/visualization-gaps/reports/${id}/${status}`,token,{method:"POST"});if(!res.ok)throw new ApiError(res.status,"Could not update gap report");return res.json();
+}
+
+// V8.4/V8.5 — production evidence monitoring. Counts and status only; the
+// backing endpoints never return raw event records, identifiers, queries,
+// values, or labels — see backend/app/orchestration/evidence_monitoring.py.
+export type MonitoringRunStatus = "running"|"succeeded"|"failed";
+export type MonitoringTriggerSource = "scheduled"|"manual";
+export type MonitoringRunSummary = {
+  tenant_id: string; started_at: string; completed_at: string | null; status: MonitoringRunStatus;
+  trigger_source: MonitoringTriggerSource; monitoring_period: string; evidence_version: string;
+  valid_event_count: number; draft_created: boolean; alert_created: boolean;
+  report_id: string | null; failure_category: string | null;
+};
+export type EvidenceMonitoringStatus = {
+  tenant_id: string; valid_event_count: number; distinct_conversation_count: number; distinct_actor_count: number;
+  overall_evidence_status: "insufficient_evidence"|"directional_signal"|"eligible_for_review";
+  monitoring_status: "collecting_evidence"|"directional_signal"|"ready_for_review"|"awaiting_approval"|"approved_findings_available";
+  next_eligible_finding: VisualizationGapRow | null; events_to_next_threshold: number | null;
+  diversity_gate_blocking_next: boolean; last_aggregation_at: string | null; last_report: VisualizationGapReport | null;
+  last_scheduled_run: MonitoringRunSummary | null; last_manual_run: MonitoringRunSummary | null;
+  current_run: MonitoringRunSummary | null; next_scheduled_run_at: string | null;
+};
+export async function getEvidenceMonitoringStatus(token:string):Promise<EvidenceMonitoringStatus>{
+  const res=await authedFetch("/orchestration/analytics/visualization-gaps/evidence-monitoring/status",token);
+  if(!res.ok)throw new ApiError(res.status,"Could not load evidence monitoring status");return res.json();
+}
+export type EvidenceMonitoringRunResult = {
+  tenant_id: string; started_at: string; completed_at: string | null; status: MonitoringRunStatus;
+  trigger_source: MonitoringTriggerSource; monitoring_period: string; evidence_version: string;
+  valid_event_count: number; distinct_conversation_count: number; distinct_actor_count: number;
+  eligible_finding_count: number; draft_created: boolean; alert_created: boolean; deduplicated: boolean;
+  report_id: string | null; failure_category: string | null;
+};
+export async function runEvidenceMonitoring(token:string):Promise<EvidenceMonitoringRunResult>{
+  const res=await authedFetch("/orchestration/analytics/visualization-gaps/evidence-monitoring/run",token,{method:"POST"});
+  if(res.status===409)throw new ApiError(409,"A monitoring run is already active for this tenant — wait for it to finish.");
+  if(!res.ok)throw new ApiError(res.status,"Could not run evidence monitoring");return res.json();
+}
 
 export type PresentationGuide = {
   guide_id: string;
-  type: "process" | "timeline" | "checklist" | "decision_flow";
+  type: "process" | "timeline" | "checklist" | "decision_flow" | "sequence";
   title: string;
   items: string[];
+  domain: "general" | "accounting" | "audit" | "tax";
+  renderer: "html" | "mermaid" | "react_flow";
+  editable: boolean;
+  flow_nodes?: Array<{ id: string; position: { x: number; y: number }; label: string }>;
+  flow_edges?: Array<{ id: string; source: string; target: string }>;
 };
 
-/**
- * One visual, described by what it IS rather than how to draw it — so the
- * renderer for a `kind` can be swapped or lazily loaded without this contract
- * moving. Carries no values: those live in the dataset it names, which is what
- * makes it impossible for a visual to introduce a number the answer did not
- * already support.
- *
- * Emitted by the backend today and deliberately not yet rendered — `charts`,
- * `metrics` and `guides` remain the rendered contract. Reading `blocks` is the
- * migration, and keeping both means it happens on this side's own schedule
- * rather than as a coordinated break. Mirrors `VisualBlock` in
- * backend/app/orchestration/schemas.py.
- */
-export type VisualBlock = {
-  block_id: string;
-  kind: "metric" | "bar" | "line" | "area" | "donut" | "table" | "text";
+export type GraphEntityType =
+  | "invoice" | "supplier" | "purchase_order" | "receipt" | "payment"
+  | "bank_transaction" | "ledger_entry" | "contract" | "approval" | "user"
+  | "source_document" | "audit_evidence";
+
+export type GraphRelationshipType =
+  | "issued_by" | "belongs_to" | "references" | "approved_by" | "paid_by"
+  | "matched_to" | "recorded_as" | "supported_by" | "derived_from" | "reconciled_with";
+
+export type GraphNode = {
+  id: string;
+  label: string;
+  entity_type: GraphEntityType;
+  status: string;
+  source_reference: string;
+  metadata: Record<string, string>;
+};
+
+export type GraphEdge = {
+  id: string;
+  source: string;
+  target: string;
+  relationship_type: GraphRelationshipType;
+  label: string;
+  direction: "directed" | "bidirectional";
+};
+
+/** Cytoscape.js-rendered relationship/evidence graph — see
+ * backend/app/orchestration/presentation_graph.py. Nodes and edges are
+ * strictly validated server-side (closed entity/relationship enums, no
+ * duplicate/missing/oversized data); this is plain data, never markup or
+ * code, so rendering it can never execute anything. */
+export type PresentationGraph = {
+  graph_id: string;
   title: string;
-  dataset_id: string;
-  /** Hash of the dataset's data — a cache key, and an audit reproducibility check. */
-  dataset_hash: string;
-  citations: string[];
-  /** Always present. A renderer failure must degrade to the truth, not an empty box. */
-  text_fallback: string;
-  /** Why no chart was produced ("mixed_units", "too_many_rows", …). */
-  reasons: string[];
-  /** Set when rows were dropped to fit a rendering bound. */
-  truncated_from?: number | null;
+  summary: string;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  layout: "breadthfirst" | "cose" | "concentric";
+  confidence: number;
 };
 
 export type AnswerPresentation = {
@@ -696,11 +949,25 @@ export type AnswerPresentation = {
   table_count: number;
   has_steps: boolean;
   charts: PresentationChart[];
-  metrics: PresentationMetric[];
   guides: PresentationGuide[];
+  graphs: PresentationGraph[];
   sections: string[];
   follow_up_questions: string[];
-  blocks?: VisualBlock[];
+};
+
+export type ResponseBlockType =
+  | "markdown"
+  | "visualization"
+  | "calculation"
+  | "limitations"
+  | "citations"
+  | "suggested_actions";
+
+export type ResponseBlock = {
+  id: string;
+  type: ResponseBlockType;
+  content?: string | null;
+  resource_ids: string[];
 };
 
 export type ComposedAnswer = {
@@ -709,6 +976,8 @@ export type ComposedAnswer = {
   limitations: string[];
   calculation_widget?: CalculationWidget | null;
   presentation?: AnswerPresentation | null;
+  response_mode?: "concise" | "educational" | "analytical" | "calculation" | "workflow" | "compound";
+  blocks?: ResponseBlock[];
   /** @deprecated use text — retained for backward compatibility */
   output_text?: string;
 };
@@ -761,10 +1030,6 @@ export type AskKritonResponse = {
   next_action: NextAction | null;
   /** Opaque — never expose audit_chain_id internals to UI rendering logic */
   audit_reference: AuditReference;
-  /** Set by the backend after ask_kriton() returns — the persisted
-   * conversation this turn was recorded into (see app/domains/chat_history).
-   * Pass it back on the next AskKritonRequest to continue the same thread. */
-  conversation_id: string | null;
 };
 
 export async function askKriton(
@@ -786,6 +1051,47 @@ export async function askKriton(
   return res.json();
 }
 
+export type VisualizationTelemetryEventName =
+  | "alternative_view_selected"
+  | "visualization_exported_png"
+  | "visualization_exported_csv"
+  | "visualization_saved"
+  | "visualization_render_failed"
+  // v10 — "View as table" opened; a permitted personalization signal, see
+  // backend/app/orchestration/visualization_personalization.py.
+  | "table_view_opened";
+
+export type VisualizationTelemetryRequest = {
+  event_name: VisualizationTelemetryEventName;
+  conversation_id?: string | null;
+  query_id?: string | null;
+  analytical_intent?: string | null;
+  original_chart_type?: string | null;
+  active_chart_type?: string | null;
+  alternative_count?: number | null;
+  selection_source?: SelectionSource | null;
+  renderer?: string | null;
+  schema_version?: string | null;
+  chart_family?: string | null;
+};
+
+/** Dynamic Visualization Selection v4 — records one client-originated
+ * telemetry event. visualization_selected/alternative_views_shown/
+ * visualization_fallback_used are backend-only (emitted automatically at
+ * answer-generation time) and deliberately not constructible through this
+ * type — see VisualizationTelemetryRequest server-side. Callers should
+ * treat this as fire-and-forget (see lib/telemetry.ts); it intentionally
+ * has no special error type of its own to catch, since the requirement is
+ * "never block the workflow," not "handle telemetry errors specially." */
+export async function recordVisualizationEvent(token: string, payload: VisualizationTelemetryRequest): Promise<void> {
+  await authedFetch("/orchestration/visualization-events", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(10_000),
+  });
+}
+
 /** Called on every slider change in a rendered CalculationWidget — re-runs
  * the formula server-side (never client-side) so the displayed number is
  * always the one verified engine's output, never a JS reimplementation of
@@ -803,52 +1109,6 @@ export async function recomputeCalculation(
     body: JSON.stringify({ formula_id: formulaId, inputs }),
   });
   return res.json();
-}
-
-export type ConversationSummary = {
-  id: string;
-  title: string;
-  jurisdiction: string;
-  mode: string;
-  created_at: string;
-  updated_at: string;
-};
-
-export type ChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  route: string | null;
-  risk_level: string | null;
-  citations: SourceCitation[] | null;
-  created_at: string;
-};
-
-export type ConversationDetail = ConversationSummary & {
-  messages: ChatMessage[];
-};
-
-export async function listConversations(token: string): Promise<ConversationSummary[]> {
-  const res = await authedFetch("/conversations", token);
-  return res.json();
-}
-
-export async function getConversation(token: string, id: string): Promise<ConversationDetail> {
-  const res = await authedFetch(`/conversations/${id}`, token);
-  return res.json();
-}
-
-export async function renameConversation(token: string, id: string, title: string): Promise<ConversationSummary> {
-  const res = await authedFetch(`/conversations/${id}`, token, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title }),
-  });
-  return res.json();
-}
-
-export async function deleteConversation(token: string, id: string): Promise<void> {
-  await authedFetch(`/conversations/${id}`, token, { method: "DELETE" });
 }
 
 export type SavedAnswer = {
@@ -885,6 +1145,47 @@ export async function createSavedAnswer(token: string, payload: SavedAnswerCreat
 
 export async function deleteSavedAnswer(token: string, id: string): Promise<void> {
   await authedFetch(`/kriton-workspace/saved-answers/${id}`, token, { method: "DELETE" });
+}
+
+export type VisualizationType = "chart" | "graph" | "diagram" | "presentation_chart";
+
+export type SavedVisualization = {
+  id: string;
+  query_id: string;
+  visualization_type: VisualizationType;
+  schema_version: string;
+  title: string;
+  summary: string;
+  payload: CalculationWidget | PresentationGraph | PresentationGuide | PresentationChart;
+  source_references: string[];
+  created_at: string;
+};
+
+export type SavedVisualizationCreateRequest = {
+  query_id: string;
+  visualization_type: VisualizationType;
+  schema_version?: string;
+  title: string;
+  summary?: string;
+  payload: CalculationWidget | PresentationGraph | PresentationGuide | PresentationChart;
+  source_references?: string[];
+};
+
+/** Idempotency-Key makes a repeated click (double submit, retried request)
+ * return the original save instead of creating a duplicate row — same
+ * mechanism askKriton uses. Callers should generate one key per save
+ * attempt and reuse it only when retrying that exact attempt. */
+export async function createSavedVisualization(
+  token: string,
+  payload: SavedVisualizationCreateRequest,
+  idempotencyKey: string,
+): Promise<SavedVisualization> {
+  const res = await authedFetch("/kriton-workspace/saved-visualizations", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
 }
 
 export type Draft = {
@@ -941,65 +1242,6 @@ export type UploadResponse = {
   file_path: string;
 };
 
-// ── Authoritative live sources ──────────────────────────────────────────
-
-export type ProviderHealth = {
-  provider_key: string;
-  display_name: string;
-  status: string;
-  integration_type: string;
-  jurisdiction: string;
-  authority_rank: number;
-  last_successful_sync: string | null;
-  last_content_hash: string | null;
-  freshness_sla_seconds: number | null;
-  age_seconds: number | null;
-  freshness: "fresh" | "stale" | "unknown" | "unmonitored";
-};
-
-export async function getProviderHealth(token: string): Promise<ProviderHealth[]> {
-  const res = await authedFetch("/live-sources/health", token);
-  return res.json();
-}
-
-export type EvidenceRecord = {
-  provider_key: string;
-  record_id: string;
-  record_type: string;
-  title: string;
-  summary: string;
-  jurisdiction: string;
-  published_at: string | null;
-  effective_at: string | null;
-  source_url: string;
-};
-
-export type EvidenceSearchResponse = {
-  provider_key: string;
-  query: string;
-  records: EvidenceRecord[];
-  fetched_at: string;
-};
-
-export async function listEvidenceProviders(token: string): Promise<string[]> {
-  const res = await authedFetch("/live-sources/evidence/providers", token);
-  return res.json();
-}
-
-export async function searchEvidence(
-  token: string,
-  providerKey: string,
-  query: string,
-  pageSize = 10,
-): Promise<EvidenceSearchResponse> {
-  const res = await authedFetch("/live-sources/evidence/search", token, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ provider_key: providerKey, query, page_size: pageSize }),
-  });
-  return res.json();
-}
-
 export async function uploadDocument(token: string, file: File): Promise<UploadResponse> {
   const form = new FormData();
   form.append("file", file);
@@ -1009,4 +1251,337 @@ export async function uploadDocument(token: string, file: File): Promise<UploadR
     body: form,
   });
   return res.json();
+}
+
+// ── Dynamic Visualization Selection v6 — recommendation-quality reporting
+// and ranking-configuration governance. Admin-only on the backend
+// (require_admin); every rate travels with its own sample_size and
+// evidence_status so the dashboard can never render a percentage without
+// showing how much data backs it.
+
+export type EvidenceStatus = "insufficient_evidence" | "directional_signal" | "eligible_for_review";
+
+export type RateMetric = {
+  rate: number;
+  numerator: number;
+  sample_size: number;
+  evidence_status: EvidenceStatus;
+};
+
+export type AnalyticsFilters = {
+  dateFrom?: string;
+  dateTo?: string;
+  analyticalIntent?: string;
+  chartFamily?: string;
+  originalChartType?: string;
+  activeChartType?: string;
+  renderer?: string;
+  selectionSource?: string;
+  rankingVersion?: string;
+  groupBy?: string[];
+};
+
+function analyticsQueryString(filters: AnalyticsFilters): string {
+  const query = new URLSearchParams();
+  if (filters.dateFrom) query.set("date_from", filters.dateFrom);
+  if (filters.dateTo) query.set("date_to", filters.dateTo);
+  if (filters.analyticalIntent) query.set("analytical_intent", filters.analyticalIntent);
+  if (filters.chartFamily) query.set("chart_family", filters.chartFamily);
+  if (filters.originalChartType) query.set("original_chart_type", filters.originalChartType);
+  if (filters.activeChartType) query.set("active_chart_type", filters.activeChartType);
+  if (filters.renderer) query.set("renderer", filters.renderer);
+  if (filters.selectionSource) query.set("selection_source", filters.selectionSource);
+  if (filters.rankingVersion) query.set("ranking_version", filters.rankingVersion);
+  for (const dimension of filters.groupBy ?? []) query.append("group_by", dimension);
+  const qs = query.toString();
+  return qs ? `?${qs}` : "";
+}
+
+export type RecommendationQualityRow = {
+  group_key: Record<string, string>;
+  total_selections: number;
+  recommendation_retention_rate: RateMetric;
+  alternative_views_shown_rate: RateMetric;
+  alternative_switch_rate: RateMetric;
+  png_export_rate: RateMetric;
+  csv_export_rate: RateMetric;
+  visualization_save_rate: RateMetric;
+  render_failure_rate: RateMetric;
+  fallback_rate: RateMetric;
+};
+
+export type RecommendationQualitySummaryResponse = {
+  rows: RecommendationQualityRow[];
+  date_from: string | null;
+  date_to: string | null;
+  group_by: string[];
+};
+
+export async function getRecommendationQualitySummary(
+  token: string, filters: AnalyticsFilters = {},
+): Promise<RecommendationQualitySummaryResponse> {
+  const res = await authedFetch(`/orchestration/analytics/recommendation-quality${analyticsQueryString(filters)}`, token);
+  return res.json();
+}
+
+export type ReplacementMatrixCell = {
+  original_chart_type: string;
+  active_chart_type: string;
+  count: number;
+  rate: number;
+  sample_size: number;
+  evidence_status: EvidenceStatus;
+};
+
+export type ReplacementMatrixResponse = {
+  cells: ReplacementMatrixCell[];
+  date_from: string | null;
+  date_to: string | null;
+};
+
+export async function getReplacementMatrix(token: string, filters: AnalyticsFilters = {}): Promise<ReplacementMatrixResponse> {
+  const res = await authedFetch(`/orchestration/analytics/replacement-matrix${analyticsQueryString(filters)}`, token);
+  return res.json();
+}
+
+export type ChartTypePerformanceRow = {
+  group_key: Record<string, string>;
+  chart_type: string;
+  total_selections: number;
+  switch_rate: RateMetric;
+  fallback_rate: RateMetric;
+  render_failure_rate: RateMetric;
+  unusually_high_switch_rate: boolean;
+  unusually_high_fallback_rate: boolean;
+  unusually_high_render_failure_rate: boolean;
+};
+
+export type ChartTypePerformanceResponse = {
+  rows: ChartTypePerformanceRow[];
+  date_from: string | null;
+  date_to: string | null;
+  group_by: string[];
+};
+
+export async function getChartTypePerformance(
+  token: string, filters: AnalyticsFilters = {},
+): Promise<ChartTypePerformanceResponse> {
+  const res = await authedFetch(`/orchestration/analytics/chart-type-performance${analyticsQueryString(filters)}`, token);
+  return res.json();
+}
+
+export type WeightAdjustmentProposal = {
+  affected_analytical_intent: string | null;
+  affected_chart_family: string | null;
+  current_chart_preference: string;
+  observed_replacement: string;
+  sample_size: number;
+  retention_or_switch_rate: number;
+  proposed_weight_adjustment: Record<string, number>;
+  review_required: true;
+};
+
+export async function getWeightProposals(
+  token: string, filters: { dateFrom?: string; dateTo?: string; groupDimension?: "analytical_intent" | "chart_family" } = {},
+): Promise<WeightAdjustmentProposal[]> {
+  const query = new URLSearchParams();
+  if (filters.dateFrom) query.set("date_from", filters.dateFrom);
+  if (filters.dateTo) query.set("date_to", filters.dateTo);
+  if (filters.groupDimension) query.set("group_dimension", filters.groupDimension);
+  const qs = query.toString();
+  const res = await authedFetch(`/orchestration/analytics/weight-proposals${qs ? `?${qs}` : ""}`, token);
+  return res.json();
+}
+
+export type RankingConfigurationStatus = "draft" | "approved";
+
+export type RankingConfiguration = {
+  id: string;
+  ranking_version: string;
+  effective_from: string;
+  weights: Record<string, number>;
+  status: RankingConfigurationStatus;
+  created_by: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  created_at: string;
+};
+
+export async function listRankingConfigurations(token: string, status?: RankingConfigurationStatus): Promise<RankingConfiguration[]> {
+  const qs = status ? `?status=${status}` : "";
+  const res = await authedFetch(`/orchestration/analytics/ranking-configurations${qs}`, token);
+  return res.json();
+}
+
+export type RankingConfigurationCreateRequest = {
+  ranking_version: string;
+  effective_from: string;
+  weights: Record<string, number>;
+};
+
+export async function createRankingConfigurationDraft(
+  token: string, payload: RankingConfigurationCreateRequest,
+): Promise<RankingConfiguration> {
+  const res = await authedFetch("/orchestration/analytics/ranking-configurations", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`Failed to create ranking configuration draft (${res.status})`);
+  return res.json();
+}
+
+export async function approveRankingConfiguration(token: string, id: string): Promise<RankingConfiguration> {
+  const res = await authedFetch(`/orchestration/analytics/ranking-configurations/${id}/approve`, token, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`Failed to approve ranking configuration (${res.status})`);
+  return res.json();
+}
+
+// ── Dynamic Visualization Selection v7 — controlled ranking experiments
+// (A/B). Admin-only on the backend (require_admin). Never exposes raw
+// user-level telemetry — results are aggregate control/variant metrics
+// only, same RateMetric shape v6 uses, extended with a confidence
+// interval on each rate.
+
+export type ExperimentStatus =
+  | "draft" | "approved" | "scheduled" | "active" | "paused" | "completed" | "rolled_back" | "cancelled";
+
+export type RankingExperiment = {
+  id: string;
+  name: string;
+  description: string;
+  status: ExperimentStatus;
+  control_ranking_version: string;
+  variant_ranking_version: string;
+  control_allocation_percent: number;
+  variant_allocation_percent: number;
+  targeting_rules: Record<string, string[]>;
+  primary_metrics: string[];
+  secondary_metrics: string[];
+  guardrail_metrics: string[];
+  minimum_sample_size: number | null;
+  start_at: string | null;
+  end_at: string | null;
+  created_by: string;
+  approved_by: string | null;
+  status_reason: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type RankingExperimentCreateRequest = {
+  name: string;
+  description?: string;
+  control_ranking_version: string;
+  variant_ranking_version: string;
+  control_allocation_percent: number;
+  variant_allocation_percent: number;
+  targeting_rules?: Record<string, string[]>;
+  primary_metrics: string[];
+  secondary_metrics?: string[];
+  guardrail_metrics: string[];
+  minimum_sample_size?: number | null;
+  start_at?: string | null;
+  end_at?: string | null;
+};
+
+export type RateMetricWithConfidenceInterval = RateMetric & {
+  confidence_interval_low: number;
+  confidence_interval_high: number;
+};
+
+export type ExperimentGroupMetrics = {
+  group: "control" | "variant";
+  ranking_version: string;
+  selections: number;
+  recommendation_retention_rate: RateMetricWithConfidenceInterval;
+  alternative_views_shown_rate: RateMetricWithConfidenceInterval;
+  alternative_switch_rate: RateMetricWithConfidenceInterval;
+  png_export_rate: RateMetricWithConfidenceInterval;
+  csv_export_rate: RateMetricWithConfidenceInterval;
+  visualization_save_rate: RateMetricWithConfidenceInterval;
+  render_failure_rate: RateMetricWithConfidenceInterval;
+  fallback_rate: RateMetricWithConfidenceInterval;
+};
+
+export type ExperimentResultStatus =
+  | "insufficient_evidence" | "experiment_running" | "directional_result" | "eligible_for_decision" | "guardrail_failed";
+
+export type ExperimentResultsResponse = {
+  experiment_id: string;
+  status: ExperimentStatus;
+  result_status: ExperimentResultStatus;
+  minimum_sample_size: number | null;
+  control: ExperimentGroupMetrics;
+  variant: ExperimentGroupMetrics;
+  guardrail_findings: string[];
+};
+
+async function _experimentAction(token: string, path: string, body?: Record<string, unknown>): Promise<RankingExperiment> {
+  const res = await authedFetch(`/orchestration/experiments${path}`, token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.detail || `Request failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function listExperiments(token: string, status?: ExperimentStatus): Promise<RankingExperiment[]> {
+  const qs = status ? `?status=${status}` : "";
+  const res = await authedFetch(`/orchestration/experiments${qs}`, token);
+  return res.json();
+}
+
+export async function getActiveExperiments(token: string): Promise<RankingExperiment[]> {
+  const res = await authedFetch("/orchestration/experiments/active", token);
+  return res.json();
+}
+
+export async function getExperiment(token: string, id: string): Promise<RankingExperiment> {
+  const res = await authedFetch(`/orchestration/experiments/${id}`, token);
+  return res.json();
+}
+
+export async function getExperimentResults(token: string, id: string): Promise<ExperimentResultsResponse> {
+  const res = await authedFetch(`/orchestration/experiments/${id}/results`, token);
+  return res.json();
+}
+
+export async function createExperimentDraft(token: string, payload: RankingExperimentCreateRequest): Promise<RankingExperiment> {
+  const res = await authedFetch("/orchestration/experiments", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.detail || `Failed to create experiment draft (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function approveExperiment(token: string, id: string): Promise<RankingExperiment> {
+  return _experimentAction(token, `/${id}/approve`);
+}
+
+export async function activateExperiment(token: string, id: string): Promise<RankingExperiment> {
+  return _experimentAction(token, `/${id}/activate`);
+}
+
+export async function pauseExperiment(token: string, id: string, reason: string): Promise<RankingExperiment> {
+  return _experimentAction(token, `/${id}/pause`, { reason });
+}
+
+export async function completeExperiment(token: string, id: string, reason?: string): Promise<RankingExperiment> {
+  return _experimentAction(token, `/${id}/complete`, { reason: reason ?? null });
+}
+
+export async function rollbackExperiment(token: string, id: string, reason: string): Promise<RankingExperiment> {
+  return _experimentAction(token, `/${id}/rollback`, { reason });
 }

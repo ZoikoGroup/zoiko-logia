@@ -17,6 +17,7 @@ _ELIGIBLE_STATUSES = ("ACTIVE", "APPROVED")
 _BACKEND_ROOT = Path(__file__).resolve().parents[3]
 _UPLOAD_ROOT = _BACKEND_ROOT / "data" / "uploads"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_EMPTY_READ_ATTEMPTS = 3
 
 # The two roots SourceVersion.file_path is ever written under — save_uploaded_file
 # writes into _UPLOAD_ROOT (data/uploads/<tenant>/...), the ingest_*.py scripts
@@ -143,8 +144,19 @@ async def list_sources(
         query = query.where(Source.category == category)
     if tenant_id is not None:
         query = query.where((Source.is_tenant_private.is_(False)) | (Source.tenant_id == tenant_id))
-    result = await db.execute(query)
-    sources = result.scalars().all()
+    # A remote transaction-pooler incident can occasionally return an empty
+    # scalar result for a catalogue read without raising an exception. That
+    # previously made an ACTIVE purpose-built source disappear for one request
+    # and forced a spurious clarification (observed with FRED). Retry only the
+    # anomalous empty result, with a strict bound; every non-empty result and a
+    # genuinely empty catalogue preserve their normal semantics. Licensing is
+    # still evaluated from the returned governed rows—nothing is synthesized.
+    sources = []
+    for _attempt in range(_EMPTY_READ_ATTEMPTS):
+        result = await db.execute(query)
+        sources = result.scalars().all()
+        if sources:
+            break
 
     if not sources:
         return []
@@ -153,7 +165,7 @@ async def list_sources(
     # The previous implementation called _latest_version once for every
     # source (47 sequential database queries in the current catalog), adding
     # roughly 6-10 seconds to every Kriton request against a remote database.
-    version_result = await db.execute(
+    version_query = (
         select(SourceVersion)
         .where(SourceVersion.source_id.in_([source.id for source in sources]))
         .order_by(
@@ -162,8 +174,14 @@ async def list_sources(
             SourceVersion.id.desc(),
         )
     )
+    versions = []
+    for _attempt in range(_EMPTY_READ_ATTEMPTS):
+        version_result = await db.execute(version_query)
+        versions = version_result.scalars().all()
+        if versions:
+            break
     latest_by_source: dict[str, SourceVersion] = {}
-    for version in version_result.scalars():
+    for version in versions:
         latest_by_source.setdefault(version.source_id, version)
 
     return [

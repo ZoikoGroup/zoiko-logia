@@ -35,18 +35,9 @@ from app.orchestration.identifiers import (
     generate_audit_chain_id,
     check_idempotency, store_idempotency,
 )
-from app.orchestration.coverage import (
-    assess_coverage,
-    coverage_instruction,
-    coverage_limitation,
-)
 from app.orchestration.prescreen import run_prescreen, is_small_talk, check_off_topic_domain
 from app.orchestration.navigation_answers import resolve_navigation_answer
-from app.orchestration.query_understanding import (
-    build_response_instruction,
-    understand as understand_query,
-)
-from app.orchestration.retrieve import build_source_bundle, infer_category, infer_query_jurisdiction
+from app.orchestration.retrieve import build_source_bundle, classify_category
 from app.domains.source_library.service import list_sources, resolve_source_url
 from app.domains.rag.planner import create_retrieval_plan
 from app.domains.reference_data.service import (
@@ -119,6 +110,12 @@ from app.domains.reference_data.accounting_fundamentals import (
     ACCOUNTING_FUNDAMENTALS_NODE_PREFIX,
     to_accounting_fundamentals_rag_chunk,
 )
+from app.domains.reference_data.business_tax_review import (
+    BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID,
+    BUSINESS_TAX_REVIEW_NODE_PREFIX,
+    to_business_tax_review_rag_chunk,
+    compose_business_tax_review,
+)
 from app.domains.reference_data.user_provided_data import (
     USER_PROVIDED_DATA_GOVERNED_SOURCE_ID,
     USER_PROVIDED_DATA_NODE_PREFIX,
@@ -127,6 +124,7 @@ from app.domains.reference_data.user_provided_data import (
 )
 from app.orchestration.educational_answers import (
     compose_accounting_fundamentals,
+    compose_audit_variance_decision,
     compose_bank_reconciliation,
     compose_month_end_close,
 )
@@ -153,6 +151,18 @@ from app.domains.calculation.service import (
     FORMULA_REGISTRY_GOVERNED_SOURCE_ID,
     FORMULA_REGISTRY_NODE_PREFIX,
 )
+# Live, keyless data connectors (2026-08-05): each self-gates (returns []
+# unless the question actually matches its kind — an FX pair, an economic
+# statistic, or neither) and fails soft on any network/parse error. Wired
+# into the SAME raw_chunks -> grounded-context -> Checkpoint C pipeline as
+# every governed catalog source (see to_websource_rag_chunk's docstring) —
+# deliberately NOT websearch.py's own build_web_grounded_prompt/domain-gate/
+# chart-JSON path, which bypasses risk classification, Massarius Checkpoint
+# C, and the deterministic chart-selection system this product's governance
+# is built on.
+from app.orchestration.websearch import web_search, to_websource_rag_chunk, WEBSEARCH_GOVERNED_SOURCE_ID
+from app.orchestration.dbnomics import fetch_stats, DBNOMICS_GOVERNED_SOURCE_ID, _country_hint as _dbnomics_country_hint, _US_NAMES as _DBNOMICS_US_NAMES
+from app.orchestration.frankfurter import fetch_fx, FRANKFURTER_GOVERNED_SOURCE_ID
 from app.orchestration.routing_matrix import (
     map_safety_confidence,
     ROUTE_LLM, ROUTE_REFUSAL, ROUTE_CLARIFICATION,
@@ -167,6 +177,13 @@ from app.orchestration.schemas import (
     ComposedAnswer, SourceCitation, SourceSummary, SafetyState, NextAction, AuditReference,
 )
 from app.orchestration.presentation import build_answer_presentation
+from app.orchestration.visualization_preferences import get_preferences
+from app.orchestration.visualization_personalization import resolve_personalization_hint
+from app.orchestration.visualization_gaps import record_gap_event
+from app.core.config import get_settings
+from app.orchestration.presentation_dataprofile import RANKING_VERSION, chart_family, chart_renderer
+from app.orchestration.ranking_experiments import check_and_maybe_pause, resolve_experiment_context
+from app.orchestration.visualization_telemetry import get_recent_chart_types, record_visualization_event
 from app.orchestration.audit_events import (
     audit_query_received, audit_request_validated, audit_request_rejected,
     audit_prescreen_completed, audit_retrieval_started, audit_retrieval_completed,
@@ -180,35 +197,16 @@ from app.orchestration.audit_events import (
     audit_redaction_applied, audit_plan_created, audit_rerank_completed,
     audit_context_fit_completed, audit_route_reevaluated,
     audit_citation_assembly_completed, audit_coverage_assessed,
-    audit_live_intent_detected, audit_live_cache_hit, audit_live_cache_miss,
-    audit_live_fetch_succeeded, audit_live_fetch_failed,
-    audit_query_understood,
+    audit_query_classified,
 )
 from app.domains.risk_safety.schemas import ClassifyRequest
-from app.domains.risk_safety import service as risk_safety_service
 from app.domains.model_gateway import service as model_gateway_service
 from app.orchestration.compose import select_prompt
-from app.orchestration.followup import is_elliptical_followup
-from app.orchestration.format_intent import build_format_instruction, build_decision_framework_instruction
-from app.orchestration.greeting import is_pure_greeting
-from app.orchestration.security_screen import (
-    screen_for_security_violation, SECURITY_INCIDENT_CONFIDENCE_THRESHOLD,
-)
-from app.domains.rag.embeddings import get_query_embedding_cached
 from app.domains.rag.retrieval import retrieve_documents
 from app.domains.rag.reranker import Reranker
 from app.domains.rag.context_fit import build_grounded_context
 from app.domains.rag.citation_assembly import assemble_citations
 from app.domains.rag.redaction import redact_for_external_exposure
-
-# Live/dynamic external data (app/domains/live_sources/) — a peer retrieval
-# method to the static-document path above, gated behind ENABLE_LIVE_SOURCES
-# the same way ENABLE_RAG_EMBEDDINGS gates vector retrieval.
-from app.domains.live_sources import service as live_sources_service
-from app.domains.live_sources.authority import UNKNOWN_RANK as AUTHORITY_UNKNOWN_RANK
-from app.domains.live_sources.authority import AuthorityCandidate, order_by_authority
-from app.domains.live_sources.cache import make_cache_key
-from app.domains.live_sources.classifier import detect_live_data_intent
 
 # Massarius™ retrieval and evidence subsystem — Phase 1 control modules
 # (ZL-ENG-03). These wrap/replace the inline licence filtering, bundle
@@ -233,20 +231,6 @@ _NUMERIC_RESULT_QUERY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-_PRESENTATION_ONLY_FAILURE_PREFIXES = (
-    "Summarize-don't-copy check failed:",
-    "Tutor-depth structure failed:",
-    "Repetition check failed:",
-)
-
-
-def _has_only_presentation_failures(failures: list[str]) -> bool:
-    """True only for repairable style/coherence failures, never safety failures."""
-    return bool(failures) and all(
-        failure.startswith(_PRESENTATION_ONLY_FAILURE_PREFIXES)
-        for failure in failures
-    )
-
 # Any injected live-data chunk's node_id starts with one of these prefixes —
 # checked by _reinstate_live_chunks below.
 _LIVE_DATA_NODE_PREFIXES = (
@@ -257,45 +241,9 @@ _LIVE_DATA_NODE_PREFIXES = (
     BANK_RECONCILIATION_NODE_PREFIX,
     MONTH_END_CLOSE_NODE_PREFIX,
     ACCOUNTING_FUNDAMENTALS_NODE_PREFIX,
+    BUSINESS_TAX_REVIEW_NODE_PREFIX,
     USER_PROVIDED_DATA_NODE_PREFIX,
 )
-
-
-def _controlling_chunk_index(
-    reranked: list, query_jurisdiction: str, document_ranks: dict[str, int] | None = None,
-) -> int:
-    """Index of the chunk that should be cited as controlling authority.
-
-    Ranks come from two places, neither of which costs an extra query: a
-    live source carries its catalogue rank on the chunk itself, and a
-    document's rank is derived by the licence gate from the Source row it
-    already reads for eligibility (`document_ranks`, keyed by source_id).
-
-    Falls back to 0 — the previous behaviour — only when nothing in the
-    bundle has a rank at all. See live_sources/authority.py for the ranks
-    and for why jurisdiction is applied before rank.
-    """
-    if not reranked:
-        return 0
-    ranks = document_ranks or {}
-    candidates = []
-    for index, chunk in enumerate(reranked):
-        metadata = chunk.get("metadata", {}) or {}
-        source_id = str(metadata.get("source_id") or "")
-        rank = metadata.get("authority_rank") or ranks.get(source_id) or AUTHORITY_UNKNOWN_RANK
-        candidates.append(AuthorityCandidate(
-            # Zero-padded: source_id is the hierarchy's final tie-break and
-            # it compares as a string, so an unpadded "10" would sort before
-            # "2" and quietly reorder equally-authoritative chunks.
-            source_id=f"{index:04d}",
-            rank=int(rank),
-            jurisdiction=str(metadata.get("authority_jurisdiction") or metadata.get("jurisdiction") or ""),
-            effective_date=str(metadata.get("effective_date") or metadata.get("version") or ""),
-        ))
-    if all(candidate.rank == AUTHORITY_UNKNOWN_RANK for candidate in candidates):
-        return 0
-    best = order_by_authority(candidates, query_jurisdiction=query_jurisdiction)[0]
-    return int(best.source_id)
 
 
 def _reinstate_live_chunks(raw_chunks: list, reranked: list) -> list:
@@ -567,13 +515,42 @@ class KritonMediator:
                 await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
             return response
 
+        visual_clarification = _visual_data_clarification(request.query)
+        if visual_clarification is not None:
+            response = AskKritonResponse(
+                query_id=query_id, correlation_id=correlation_id,
+                outcome="clarification_required", route=ROUTE_CLARIFICATION,
+                safety=SafetyState(risk_level="LOW", policy_state="needs_more_context", disclaimer_required=False),
+                confidence_state=CONF_INSUFFICIENT, source_bundle=None, answer=None,
+                next_action=NextAction(type="ask_clarifying_question", message=visual_clarification),
+                audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+            )
+            await _finalise_and_return(
+                db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+                audit_chain_id=audit_chain_id, actor_id=actor_id,
+                outcome=response.outcome, route=response.route, start_time=start_time,
+            )
+            if idempotency_key:
+                await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
+            return response
+
         # ── Step 4: Plan, prefilter, retrieve, rerank and build (§7) ───────
         embeddings_enabled = os.getenv("ENABLE_RAG_EMBEDDINGS", "").lower() in {"1", "true", "yes"}
-        retrieval_category = infer_category(request.query)
+        category_decision = await classify_category(request.query)
+        retrieval_category = category_decision.category
+        await audit_query_classified(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
+            category=category_decision.category, method=category_decision.method,
+            score=category_decision.score, runner_up_score=category_decision.runner_up_score,
+            classification_id=category_decision.classification_id,
+            shadow_category=category_decision.shadow_category,
+        )
         closed_evidence_categories = {
             "exchange-rate", "economic-data", "interest-rates", "tax-regulations",
             "federal-register", "us-legislation", "bank-reconciliation",
             "month-end-close", "accounting-fundamentals", "user-provided-data",
+            "business-tax-review",
         }
         retrieval_plan = create_retrieval_plan(
             request.query, request.jurisdiction, embeddings_enabled=embeddings_enabled,
@@ -606,6 +583,27 @@ class KritonMediator:
         ]
         prefilter = await license_gate.check_eligibility(db, catalog_summaries, tenant_id=tenant_id)
         allowed_source_ids = {source.id for source in prefilter.eligible}
+        # Live-computed governed calculation engines (formula registry,
+        # expression evaluator, PolicyEngine) are not retrieved documents
+        # subject to the closed-evidence-category licence/staleness gate
+        # above — they're deterministic, always-current computation, gated
+        # by their own ENABLE_*_CALCULATION_ENGINE flags instead. Confirmed
+        # live (2026-07-31): "working capital" classifies into the
+        # accounting-fundamentals closed-evidence category (a real reference
+        # topic that also happens to cover it), which strictly filters
+        # retrieval to only that category's sources — silently excluding the
+        # formula registry (seeded under category="tax") even though the
+        # calculation itself has nothing to do with RAG category scoping.
+        # Same failure mode the ENABLE_EXPRESSION_CALCULATION_ENGINE
+        # decoupling above already fixed once for a different code path.
+        allowed_source_ids |= {
+            FORMULA_REGISTRY_GOVERNED_SOURCE_ID,
+            EXPRESSION_EVALUATOR_GOVERNED_SOURCE_ID,
+            POLICYENGINE_GOVERNED_SOURCE_ID,
+            DBNOMICS_GOVERNED_SOURCE_ID,
+            FRANKFURTER_GOVERNED_SOURCE_ID,
+            WEBSEARCH_GOVERNED_SOURCE_ID,
+        }
         await audit_licence_prefilter_completed(
             db, query_id=query_id, correlation_id=correlation_id,
             tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
@@ -695,6 +693,7 @@ class KritonMediator:
             "bank-reconciliation": BANK_RECONCILIATION_GOVERNED_SOURCE_ID,
             "month-end-close": MONTH_END_CLOSE_GOVERNED_SOURCE_ID,
             "accounting-fundamentals": ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID,
+            "business-tax-review": BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID,
             "user-provided-data": USER_PROVIDED_DATA_GOVERNED_SOURCE_ID,
         }.get(retrieval_category)
         if procedure_source_id:
@@ -719,19 +718,46 @@ class KritonMediator:
             retrieval_category == "accounting-fundamentals"
             and ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID in allowed_source_ids
         ):
-            raw_chunks.insert(0, to_accounting_fundamentals_rag_chunk())
+            raw_chunks.insert(0, to_accounting_fundamentals_rag_chunk(request.query))
+        if (
+            retrieval_category == "business-tax-review"
+            and BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID in allowed_source_ids
+        ):
+            raw_chunks.insert(0, to_business_tax_review_rag_chunk(request.query))
         if (
             retrieval_category == "user-provided-data"
             and USER_PROVIDED_DATA_GOVERNED_SOURCE_ID in allowed_source_ids
         ):
             raw_chunks.insert(0, to_user_provided_data_rag_chunk(request.query))
 
+        # Live Frankfurter/DBnomics data (2026-08-05) — both self-gate hard
+        # (fetch_fx needs two recognised currency codes; fetch_stats needs an
+        # explicit economic-statistic keyword AND a confident series-name
+        # match), so — unlike the category-gated blocks elsewhere in this
+        # function — these are safe to always attempt rather than needing a
+        # specific retrieval_category match first. Each returns at most one
+        # WebSource; converted to the same chunk shape every other source
+        # uses so it flows through the normal grounded-context/citation/
+        # Checkpoint C pipeline. A connector outage must never break an
+        # otherwise-answerable question, so failures are swallowed here —
+        # normal retrieval still runs either way.
+        try:
+            for fx_source in await fetch_fx(request.query):
+                raw_chunks.insert(0, to_websource_rag_chunk(fx_source, FRANKFURTER_GOVERNED_SOURCE_ID))
+        except Exception:
+            pass
+        try:
+            for stat_source in await fetch_stats(request.query):
+                raw_chunks.insert(0, to_websource_rag_chunk(stat_source, DBNOMICS_GOVERNED_SOURCE_ID))
+        except Exception:
+            pass
+
         # Live Treasury exchange-rate data — independent of ENABLE_RAG_EMBEDDINGS
         # (this isn't a document-embeddings feature), so it runs regardless of
         # that flag. Injected into the same raw_chunks list reused below for
         # SourceBundle eligibility, reranking, grounded context, and citations —
         # a Treasury API failure here must never break the rest of the answer.
-        if infer_category(request.query) == "exchange-rate" and TREASURY_GOVERNED_SOURCE_ID in allowed_source_ids:
+        if retrieval_category == "exchange-rate" and TREASURY_GOVERNED_SOURCE_ID in allowed_source_ids:
             currency = match_currency_keyword(request.query)
             # Only inject when the query actually names a currency. When it
             # doesn't, match_currency_keyword's own contract says "fetch the
@@ -764,7 +790,7 @@ class KritonMediator:
         # US state skips the live fetch entirely rather than guessing one (the 2
         # seeded governed sources are still eligible via the normal keyword_mvp
         # path either way, so the query isn't dead-ended).
-        if infer_category(request.query) == "payroll-compliance" and PAYROLL_TAX_GOVERNED_SOURCE_ID in allowed_source_ids:
+        if retrieval_category == "payroll-compliance" and PAYROLL_TAX_GOVERNED_SOURCE_ID in allowed_source_ids:
             work_state = match_work_state(request.query)
             if work_state is not None:
                 try:
@@ -778,7 +804,7 @@ class KritonMediator:
 
         # Live Census ACS data — same isolation posture and fail-closed state
         # requirement as PayrollTax above (no state named -> skip, never guess).
-        if infer_category(request.query) == "economic-data":
+        if retrieval_category == "economic-data":
             state_fips = match_state_fips(request.query)
             if state_fips is not None and CENSUS_GOVERNED_SOURCE_ID in allowed_source_ids:
                 try:
@@ -789,11 +815,23 @@ class KritonMediator:
                 except Exception:
                     pass
 
+            # Real gap (2026-08-06): "What is Japan's inflation rate?" got
+            # answered with US CPI-U data captioned "US inflation" — neither
+            # is_inflation_query nor is_gdp_query has ever checked WHICH
+            # country was asked about, so BLS/BEA (both US-only data) fired
+            # for literally any inflation/GDP question regardless of the
+            # country actually named. Reuses dbnomics.py's country-
+            # recognition map (already proven against this exact failure
+            # mode there) so a query naming a different country skips these
+            # US-only injections and falls through to DBnomics instead.
+            _named_country = _dbnomics_country_hint(request.query)
+            _is_us_or_unspecified = _named_country is None or _named_country == _DBNOMICS_US_NAMES
+
             # Live BLS CPI data — same category as Census above, but gated on
             # inflation-specific keywords rather than a state name (CPI is
             # national data, no entity to extract). Isolated the same way: a
             # BLS hiccup must never break an otherwise-answerable question.
-            if is_inflation_query(request.query) and BLS_CPI_GOVERNED_SOURCE_ID in allowed_source_ids:
+            if is_inflation_query(request.query) and _is_us_or_unspecified and BLS_CPI_GOVERNED_SOURCE_ID in allowed_source_ids:
                 try:
                     cpi_bundle = await get_cpi_bundle(db, tenant_id=tenant_id, actor_id=actor_id)
                     raw_chunks.insert(0, to_cpi_rag_chunk(cpi_bundle, source_id=BLS_CPI_GOVERNED_SOURCE_ID))
@@ -803,7 +841,7 @@ class KritonMediator:
             # Live BEA GDP data — same category and national-data posture as BLS
             # CPI above, gated on its own keyword check so a plain income/CPI
             # question doesn't also get an irrelevant GDP chunk injected.
-            if is_gdp_query(request.query) and BEA_GDP_GOVERNED_SOURCE_ID in allowed_source_ids:
+            if is_gdp_query(request.query) and _is_us_or_unspecified and BEA_GDP_GOVERNED_SOURCE_ID in allowed_source_ids:
                 try:
                     gdp_bundle = await get_gdp_bundle(db, tenant_id=tenant_id, actor_id=actor_id)
                     raw_chunks.insert(0, to_gdp_rag_chunk(gdp_bundle, source_id=BEA_GDP_GOVERNED_SOURCE_ID))
@@ -813,8 +851,14 @@ class KritonMediator:
         # Live FRED interest-rate data — its own dedicated category (unlike
         # Census/BLS/GDP, "interest-rates" isn't shared with anything else), so
         # the category match alone is sufficient gating, same posture as
-        # Treasury/PayrollTax above.
-        if infer_category(request.query) == "interest-rates" and FRED_INTEREST_RATES_GOVERNED_SOURCE_ID in allowed_source_ids:
+        # Treasury/PayrollTax above. Same US-only-data country check as BLS/
+        # BEA above (2026-08-06) — FRED is US Federal Reserve data.
+        _fred_named_country = _dbnomics_country_hint(request.query)
+        if (
+            retrieval_category == "interest-rates"
+            and (_fred_named_country is None or _fred_named_country == _DBNOMICS_US_NAMES)
+            and FRED_INTEREST_RATES_GOVERNED_SOURCE_ID in allowed_source_ids
+        ):
             try:
                 fred_bundle = await get_interest_rates_bundle(db, tenant_id=tenant_id, actor_id=actor_id)
                 raw_chunks.insert(0, to_fred_rag_chunk(fred_bundle, source_id=FRED_INTEREST_RATES_GOVERNED_SOURCE_ID))
@@ -827,7 +871,7 @@ class KritonMediator:
         # fail-closed contract as PayrollTax/Census above. The 2 seeded
         # governed sources are still eligible via the normal keyword_mvp path
         # either way, so a CFR question with no section number isn't dead-ended.
-        if infer_category(request.query) == "tax-regulations":
+        if retrieval_category == "tax-regulations":
             section_number = extract_cfr_section(request.query)
             if section_number is not None:
                 # Two independent live sources for the same section — eCFR
@@ -869,7 +913,7 @@ class KritonMediator:
         # calculation failure never breaks the rest of the answer.
         if (
             os.getenv("ENABLE_TAX_CALCULATION_ENGINE", "").lower() in {"1", "true", "yes"}
-            and infer_category(request.query) == "tax"
+            and retrieval_category == "tax"
             and POLICYENGINE_GOVERNED_SOURCE_ID in allowed_source_ids
         ):
             household = extract_household_params(request.query)
@@ -961,10 +1005,16 @@ class KritonMediator:
         # AND builds an interactive CalculationWidget (sliders + a book-value
         # chart) attached to the final ComposedAnswer below — see
         # app/domains/calculation/widget.py.
-        if (
-            os.getenv("ENABLE_EXPRESSION_CALCULATION_ENGINE", "").lower() in {"1", "true", "yes"}
-            and FORMULA_REGISTRY_GOVERNED_SOURCE_ID in allowed_source_ids
-        ):
+        # Named formulas are governed, deterministic application logic and do
+        # not depend on the optional free-form expression evaluator. Tying
+        # them to ENABLE_EXPRESSION_CALCULATION_ENGINE caused valid named
+        # calculations (for example working capital) to silently fall back to
+        # unrelated retrieved prose when that separate feature flag was off.
+        # Complete user-supplied datasets (quarterly trends, aging tables,
+        # benchmark comparisons) must reach the table/chart composer. A metric
+        # name such as "gross margin" inside a four-quarter dataset is not a
+        # request to execute one scalar formula with missing COGS.
+        if FORMULA_REGISTRY_GOVERNED_SOURCE_ID in allowed_source_ids and retrieval_category != "user-provided-data":
             formula_extraction = extract_named_formula(request.query)
             if formula_extraction is not None:
                 formula_inputs = formula_extraction.inputs
@@ -1007,7 +1057,7 @@ class KritonMediator:
         # Live Federal Register single-document lookup — same fail-closed,
         # on-demand posture as the GovInfo CFR lookup above: only fetched when
         # the query names a specific document number.
-        if infer_category(request.query) == "federal-register":
+        if retrieval_category == "federal-register":
             document_number = extract_federal_register_document_number(request.query)
             if document_number is not None and FEDERAL_REGISTER_GOVERNED_SOURCE_ID in allowed_source_ids:
                 try:
@@ -1021,7 +1071,7 @@ class KritonMediator:
         # Congress.gov is identifier-driven rather than free-text search. Only a
         # complete bill number plus Congress number is safe to fetch; otherwise
         # normal retrieval/clarification handles the request without guessing.
-        if infer_category(request.query) == "us-legislation" and CONGRESS_GOVERNED_SOURCE_ID in allowed_source_ids:
+        if retrieval_category == "us-legislation" and CONGRESS_GOVERNED_SOURCE_ID in allowed_source_ids:
             bill_identifier = extract_congress_bill_identifier(request.query)
             if bill_identifier is not None:
                 try:
@@ -1060,11 +1110,10 @@ class KritonMediator:
         # survives the licence gate, and then passes normal reranking/citation/
         # answer validation like every other external source.
         professional_categories = {"standards", "tax", "audit", "payroll-compliance"}
-        category = infer_category(request.query)
+        category = retrieval_category
         search_source_ids = {TAVILY_GOVERNED_SOURCE_ID, SERPAPI_GOVERNED_SOURCE_ID}
         purpose_built_live_evidence = any(
             str(chunk.get("node_id", "")).startswith(_LIVE_DATA_NODE_PREFIXES)
-            or chunk.get("metadata", {}).get("fact_type") == "standard_deduction"
             for chunk in raw_chunks
         )
         if (
@@ -1079,6 +1128,26 @@ class KritonMediator:
                 source_id = TAVILY_GOVERNED_SOURCE_ID if provider == "tavily" else SERPAPI_GOVERNED_SOURCE_ID
                 if source_id in allowed_source_ids:
                     raw_chunks.extend(to_professional_search_chunks(search_bundle, source_id=source_id))
+            except Exception:
+                pass
+
+        # SearXNG (2026-08-05) — free, self-hosted third-tier fallback, tried
+        # only when EVERY other source (governed catalog, live-data
+        # connectors, and the Tavily/SerpAPI professional search above) found
+        # nothing at all. Deliberately not a competing primary path: Tavily/
+        # SerpAPI are already the domain-restricted, category-gated web
+        # search mechanism for professional_categories above, so this only
+        # adds value as a last resort (e.g. both external providers rate-
+        # limited or down) rather than duplicating that gating with a
+        # different, looser one. Uses only web_search()'s allowlist-aware
+        # source list, never websearch.py's own build_web_grounded_prompt/
+        # domain-gate/chart-JSON path — this still flows through the same
+        # governed grounded-context/citation/Checkpoint C pipeline as
+        # everything else.
+        if not raw_chunks:
+            try:
+                for hit in await web_search(request.query, jurisdiction=request.jurisdiction or ""):
+                    raw_chunks.append(to_websource_rag_chunk(hit, WEBSEARCH_GOVERNED_SOURCE_ID))
             except Exception:
                 pass
 
@@ -1212,7 +1281,6 @@ class KritonMediator:
 
         classify_request = ClassifyRequest(
             query=request.query,
-            history=request.history,
             user_id=actor_id,
             role=role,
             tenant_id=tenant_id,
@@ -1354,7 +1422,7 @@ class KritonMediator:
             # risk_level/confidence_state/route above, which is the analytics
             # trail the vision doc says to keep — this just doesn't ALSO queue
             # it for manual follow-up.
-            referral_category = infer_category(request.query)
+            referral_category = retrieval_category
             referral_text = referral_message(referral_category)
             referral_answer = build_validated_disclaimer(
                 "Kriton can provide general educational information, but the available evidence is not sufficient "
@@ -1496,7 +1564,6 @@ class KritonMediator:
                         ref_id=f"REF-{i+1}",
                         source_id=governed_source_id or chunk.get("node_id", f"chunk-{i}"),
                         title=chunk["metadata"].get("title", "Uploaded Document"),
-                        evidence_role="controlling" if i == 0 else "supporting",
                         url=(
                             resolve_source_url(governed_source_id, chunk["metadata"].get("file_path"))
                             if governed_source_id else None
@@ -1542,7 +1609,7 @@ class KritonMediator:
                 # named professional. Duplicated rather than jumped-to because
                 # this fires mid-composition, after source_refs/context_text
                 # already exist; the main branch runs before any of that.
-                referral_category = infer_category(request.query)
+                referral_category = retrieval_category
                 referral_text = referral_message(referral_category)
                 referral_answer = build_validated_disclaimer(
                     "Some of the evidence needed for a confident answer was not "
@@ -1661,6 +1728,7 @@ class KritonMediator:
             BANK_RECONCILIATION_GOVERNED_SOURCE_ID,
             MONTH_END_CLOSE_GOVERNED_SOURCE_ID,
             ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID,
+            BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID,
             USER_PROVIDED_DATA_GOVERNED_SOURCE_ID,
         }
         # Reviewed educational/data routes compose deterministically below and
@@ -1894,6 +1962,7 @@ class KritonMediator:
                         BANK_RECONCILIATION_GOVERNED_SOURCE_ID,
                         MONTH_END_CLOSE_GOVERNED_SOURCE_ID,
                         ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID,
+                        BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID,
                         USER_PROVIDED_DATA_GOVERNED_SOURCE_ID,
                     }
                 ),
@@ -1945,12 +2014,38 @@ class KritonMediator:
                     composed_text = compose_month_end_close(request.query, ref)
                     prompt_name = "Deterministic Month-End Close Response"
                 elif source_id == ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID:
-                    composed_text = compose_accounting_fundamentals(request.query, ref)
+                    composed_text = compose_audit_variance_decision(request.query, ref) or compose_accounting_fundamentals(request.query, ref)
                     prompt_name = "Deterministic Accounting Fundamentals Response"
+                elif source_id == BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID:
+                    composed_text = compose_business_tax_review(request.query, ref)
+                    prompt_name = "Deterministic Reviewed US Business Tax Response"
                 else:
                     composed_text = compose_quarterly_results(request.query, ref)
                     prompt_name = "Deterministic User-Provided Data Response"
                 prompt_id = "deterministic-reviewed-education"
+
+                # Real gap (2026-08-06): compose_accounting_fundamentals used
+                # to be unable to return "nothing specific matched" at all —
+                # its own fallback was a hardcoded, potentially unrelated
+                # answer ("Accrual accounting" for literally any unmatched
+                # accounting-fundamentals question). Now that it can return
+                # None, honor that here by falling through to a genuine LLM
+                # composition grounded in the SAME retrieved excerpt, instead
+                # of ever serving a wrong topic with false confidence. `prompt`
+                # was intentionally left None above (has_reviewed_source
+                # skips that DB query as a fast-path optimization for the
+                # normal case where deterministic composition succeeds) — only
+                # fetched here, lazily, for this specific fallback.
+                if composed_text is None and source_id == ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID:
+                    prompt = await select_prompt(db, request.mode)
+                    if prompt:
+                        prompt_row, composed_text = await model_gateway_service.run_test_prompt(
+                            db, prompt.id, grounded_input, actor_id, tenant_id, correlation_id=correlation_id
+                        )
+                        composed_text = _strip_meta_preamble(composed_text) if composed_text else composed_text
+                        composed_text = _strip_trailing_raw_references(composed_text) if composed_text else composed_text
+                        prompt_id = prompt_row.id
+                        prompt_name = prompt_row.name
             elif standard_deduction_chunk is not None:
                 index, chunk = standard_deduction_chunk
                 verified_fact = _compose_standard_deduction(chunk, f"REF-{index + 1}")
@@ -2085,6 +2180,7 @@ class KritonMediator:
         # just inside a trailing Sources section, before citation assembly.
         if composed_text:
             composed_text = _strip_raw_source_headers(composed_text)
+            composed_text = _strip_leaked_context_labels(composed_text)
 
         # Some providers occasionally omit citation markers even though the
         # draft was composed from grounded context. Give composition one tightly
@@ -2109,6 +2205,7 @@ class KritonMediator:
                 repaired_text = _strip_meta_preamble(repaired_text) if repaired_text else repaired_text
                 repaired_text = _strip_trailing_raw_references(repaired_text) if repaired_text else repaired_text
                 repaired_text = _strip_raw_source_headers(repaired_text) if repaired_text else repaired_text
+                repaired_text = _strip_leaked_context_labels(repaired_text) if repaired_text else repaired_text
                 if repaired_text and re.search(r"\[REF-\d+\]", repaired_text):
                     composed_text = repaired_text
                     prompt_name = f"{prompt_name} + citation repair"
@@ -2214,6 +2311,11 @@ class KritonMediator:
                 composed_text, source_bundle, disclaimer_required=False,
                 grounding_context=context_text, query_text=request.query,
                 provenance=provenance_store,
+                # Deterministic procedures, calculations, and live-data
+                # composers have explicit shape tests. The LLM tutor-depth
+                # heuristic previously rejected correct concise outputs such
+                # as quick-ratio results and reviewed comparison tables.
+                enforce_tutor_depth=not prompt_id.startswith("deterministic-"),
             )
             if source_bundle else None
         )
@@ -2229,7 +2331,7 @@ class KritonMediator:
             # generic "consult a professional." Appended after the disclaimer,
             # not before Checkpoint C validation above — this is presentation,
             # not a claim the validator needs to check for grounding/citations.
-            final_text = final_text + "\n\n" + referral_message(infer_category(request.query))
+            final_text = final_text + "\n\n" + referral_message(retrieval_category)
         await audit_validation_completed(
             db, query_id=query_id, correlation_id=correlation_id,
             tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
@@ -2299,8 +2401,7 @@ class KritonMediator:
                 await audit_refusal_returned(
                     db, query_id=query_id, correlation_id=correlation_id,
                     tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-                    actor_id=actor_id,
-                    reason=f"Composition rejected: {'; '.join(validation.failures[:2])}",
+                    actor_id=actor_id, reason="Composition rejected: prohibited claim detected",
                 )
                 # 2026-07-23 real incident: "The IRS sent me an audit notice —
                 # what should I do?" and similarly advice-signal-shaped queries
@@ -2320,7 +2421,7 @@ class KritonMediator:
                     refusal_message_text = (
                         "Kriton™ can't give a direct answer to this because it would cross "
                         "into personalized professional advice, which Kriton doesn't provide. "
-                        f"{referral_message(infer_category(request.query))}\n\n"
+                        f"{referral_message(retrieval_category)}\n\n"
                         f"{build_validated_disclaimer('', risk_level, True, effective_confidence).strip()}"
                     )
                 else:
@@ -2350,16 +2451,101 @@ class KritonMediator:
         # for distinct constraints; adding another disclaimer duplicated the UI.
         limitations: list[str] = list(decision.limitations or [])
 
+        # Dynamic Visualization Selection v4 — recent_chart_types is scoped
+        # to (tenant_id, actor_id, conversation_id) together, so it can
+        # never see another user's, workspace's, or conversation's charts;
+        # with no conversation_id (older clients) there's no history to
+        # fetch and the repetition penalty is simply inert, same as v3.
+        recent_chart_types = await get_recent_chart_types(
+            db, tenant_id=tenant_id, actor_id=actor_id, conversation_id=request.conversation_id,
+        )
+        # Dynamic Visualization Selection v7 — resolved once per request
+        # (assignment is conversation-level, not chart-level) and fails
+        # safe to None (no experiment applied) on any lookup problem —
+        # see resolve_experiment_context's own docstring.
+        experiment_context = await resolve_experiment_context(
+            db, tenant_id=tenant_id, actor_id=actor_id, conversation_id=request.conversation_id,
+        )
+        visualization_preferences = await get_preferences(db, tenant_id, actor_id)
+        # Dynamic Visualization Selection v10 — resolved once per request,
+        # same fail-safe-to-None posture as experiment_context/preferences
+        # above: disabled consent, insufficient evidence, or a stale
+        # profile all return None here, and build_answer_presentation
+        # treats that exactly like personalization never existed.
+        personalization_hint = await resolve_personalization_hint(db, tenant_id, actor_id)
+        visualization_gap_events: list[dict] = []
         answer = ComposedAnswer(
             text=final_text,
             citations=rag_citations,
             limitations=limitations,
             calculation_widget=calculation_widget,
-            presentation=build_answer_presentation(request.query, final_text),
+            presentation=await asyncio.to_thread(
+                build_answer_presentation, request.query, final_text, recent_chart_types, experiment_context, visualization_preferences, visualization_gap_events, personalization_hint,
+            ),
             prompt_id=prompt_id,
             prompt_name=prompt_name,
             output_text=final_text,
         )
+        if answer.presentation:
+            app_environment = get_settings().APP_ENV.lower()
+            for gap in visualization_gap_events:
+                await record_gap_event(db, tenant_id=tenant_id, actor_id=actor_id, conversation_id=request.conversation_id,
+                    ranking_version=RANKING_VERSION, environment=app_environment, **gap)
+            for chart in answer.presentation.charts:
+                await record_visualization_event(
+                    db, event_name="visualization_selected",
+                    tenant_id=tenant_id, actor_id=actor_id, conversation_id=request.conversation_id,
+                    query_id=query_id, analytical_intent=chart.analytical_intent,
+                    original_chart_type=chart.original_chart_type, active_chart_type=chart.type,
+                    alternative_count=len(chart.alternatives), selection_source=chart.selection_source,
+                    renderer=chart_renderer(chart.type), schema_version=chart.schema_version,
+                    chart_family=chart_family(chart.type), ranking_version=chart.ranking_version,
+                    preference_affected_selection=chart.preference_affected_selection,
+                    experiment_id=chart.experiment_id, experiment_group=chart.experiment_group,
+                    personalization_enabled=chart.personalization_enabled,
+                    personalization_affected_selection=chart.personalization_affected_selection,
+                    personalization_model_version=chart.personalization_model_version,
+                    personalization_confidence_band=chart.personalization_confidence_band,
+                )
+                if chart.alternatives:
+                    await record_visualization_event(
+                        db, event_name="alternative_views_shown",
+                        tenant_id=tenant_id, actor_id=actor_id, conversation_id=request.conversation_id,
+                        query_id=query_id, analytical_intent=chart.analytical_intent,
+                        original_chart_type=chart.original_chart_type, active_chart_type=chart.type,
+                        alternative_count=len(chart.alternatives), selection_source=chart.selection_source,
+                        renderer=chart_renderer(chart.type), schema_version=chart.schema_version,
+                        chart_family=chart_family(chart.type), ranking_version=chart.ranking_version,
+                        preference_affected_selection=chart.preference_affected_selection,
+                        experiment_id=chart.experiment_id, experiment_group=chart.experiment_group,
+                        personalization_enabled=chart.personalization_enabled,
+                        personalization_affected_selection=chart.personalization_affected_selection,
+                        personalization_model_version=chart.personalization_model_version,
+                        personalization_confidence_band=chart.personalization_confidence_band,
+                    )
+                if chart.fallback_note:
+                    await record_visualization_event(
+                        db, event_name="visualization_fallback_used",
+                        tenant_id=tenant_id, actor_id=actor_id, conversation_id=request.conversation_id,
+                        query_id=query_id, analytical_intent=chart.analytical_intent,
+                        original_chart_type=chart.original_chart_type, active_chart_type=chart.type,
+                        alternative_count=len(chart.alternatives), selection_source=chart.selection_source,
+                        renderer=chart_renderer(chart.type), schema_version=chart.schema_version,
+                        chart_family=chart_family(chart.type), ranking_version=chart.ranking_version,
+                        preference_affected_selection=chart.preference_affected_selection,
+                        experiment_id=chart.experiment_id, experiment_group=chart.experiment_group,
+                        personalization_enabled=chart.personalization_enabled,
+                        personalization_affected_selection=chart.personalization_affected_selection,
+                        personalization_model_version=chart.personalization_model_version,
+                        personalization_confidence_band=chart.personalization_confidence_band,
+                    )
+                    # v7 — an automatic pause trigger without a scheduler:
+                    # check right when new fallback evidence for this
+                    # experiment arrives (see ranking_experiments.
+                    # check_and_maybe_pause's own docstring). No-ops
+                    # instantly when the chart wasn't part of an experiment.
+                    if chart.experiment_id:
+                        await check_and_maybe_pause(db, chart.experiment_id)
 
         response = AskKritonResponse(
             query_id=query_id,
@@ -2387,104 +2573,6 @@ class KritonMediator:
         return response
 
 
-def _enable_live_sources() -> bool:
-    """Gates the live_sources.service.fetch_live_data() call below — same
-    os.getenv() convention as ENABLE_RAG_EMBEDDINGS (see orchestration/retrieve.py
-    and the raw_chunks fetch in Step 4 below)."""
-    return os.getenv("ENABLE_LIVE_SOURCES", "").lower() in {"1", "true", "yes"}
-
-
-# Regression guard: two real failures, one for each retrieval path.
-#
-# Live data: "How is India's economy performing lately?" retrieved the
-# right live GDP figure, but the composed answer was a mechanical
-# "According to the World Bank, India's GDP (current US$) for 2025 is
-# $3,956,067,115,771.63" — technically correct, but neither a natural
-# answer to a "how is it doing" question nor pleasant to read. The raw-
-# precision half of that is fixed at the DATA layer (see
-# live_sources/service.py's _format_value() — the value was landing in
-# context completely unformatted, and "cite figures from context, never
-# invent your own" means the model can't be expected to reformat it
-# itself); this instruction is the other half — answering what was
-# actually asked in a natural sentence.
-#
-# Static documents: checked whether the same raw-formatting problem exists
-# there too — retrieved chunks from PDF-extracted tables ARE genuinely
-# messy (e.g. "268,251         0.56    %" with garbled whitespace from a
-# real SEC filing table), but a code-level fix analogous to
-# _format_value() isn't safe here: live data has one clean, well-typed
-# value per connector; a document chunk is unstructured free text with no
-# reliable schema, and blindly regex-reformatting numbers embedded in it
-# risks silently corrupting a real figure (e.g. mishandling accounting's
-# parenthesized-negative convention, "(72,750 )"). Tested live: the model
-# already cleans up messy whitespace sensibly on its own when quoting a
-# figure ("$268,251", not the garbled table row verbatim) — but the answer
-# came back as a bare, contextless fragment with no framing sentence,
-# which isn't genuinely user-friendly either. So the fix for BOTH paths is
-# the same instruction, not two separate ones: always answer in a complete,
-# natural sentence that addresses what was actually asked, regardless of
-# whether the underlying source is live or a retrieved document.
-_NATURAL_PHRASING_RULE = (
-    "Answer the question's own framing directly, in complete, natural "
-    "sentences — never a bare fragment (e.g. just '$268,251 [REF-2]' with "
-    "no framing) even for a short factual answer; give it a plain-prose "
-    "sentence that says what the figure/fact actually answers. When the "
-    "retrieved context includes a live/dynamic data point (a current rate, "
-    "rank, or figure, not a document excerpt), this matters even more — "
-    "e.g. a 'how is the economy doing' question wants a plain-language "
-    "read on the figure (growing/shrinking, high/low, and by how much), "
-    "not a mechanical 'According to [Source], [Indicator] is: [value]' "
-    "template. If a retrieved document chunk has messy extraction "
-    "artifacts (irregular spacing, broken table alignment from a PDF), "
-    "present the actual figure or fact cleanly and readably — do not "
-    "reproduce the garbled spacing/formatting verbatim. In every case: "
-    "still cite the [REF-N] marker, and never alter or invent the "
-    "underlying figure itself — only its presentation."
-)
-
-# 2026-07-29 real incident: "Create a timeline for completing a month-end
-# financial close" (single eligible source) was answered as a clean,
-# accurate step list with zero [REF-N] markers anywhere — the model
-# reasonably treated a single-source procedure as not needing a citation on
-# every line — and Checkpoint C's old blanket "must cite something" check
-# escalated it to Human Review over formatting, not substance. The Sources
-# list the frontend shows is built from every retrieved chunk regardless of
-# inline markers (see rag_citations below), so under-citing a list-style
-# answer was never actually hiding provenance from the user — only failing
-# a check that assumed every answer looks like prose. This rule gives the
-# model a concrete, situational citation target instead of a blanket
-# per-line command it has no natural place to satisfy in list form.
-_CITATION_STYLE_RULE = (
-    "Cite sources with [REF-N] wherever a specific claim, figure, deadline, or "
-    "quoted rule needs one. For a step-by-step list, timeline, or checklist "
-    "drawn from a single retrieved source, one [REF-N] on the first step or "
-    "in a closing line is enough — never force a marker onto every list item "
-    "just for form. Every [REF-N] you do write must point to something "
-    "actually in the retrieved context, never an invented or guessed source."
-)
-
-# ChatGPT-like adaptive length/tone, requested explicitly (2026-07-29) after
-# noticing answers to simple questions were padded with restated context and
-# unnecessary hedging compared to how a knowledgeable person would actually
-# answer. Paired with the existing "scale Markdown structure to content"
-# rule above (that one governs headings/bullets/tables; this one governs
-# prose length and voice) — together they're meant to stop an answer's
-# FORM and its VOICE from both defaulting to "comprehensive template"
-# regardless of what was actually asked.
-_RESPONSE_QUALITY_RULE = (
-    "Match your answer's length and depth to what the question actually "
-    "asks: a narrow, simple question earns a short, direct answer (a "
-    "sentence or two is often enough); a broad or multi-part question earns "
-    "a fuller, well-organized one. Never pad a simple answer with restated "
-    "context, throat-clearing, or unnecessary caveats just to look more "
-    "thorough. Do not begin by restating or rephrasing the user's question "
-    "back to them — start directly with the answer. Write with the "
-    "fluency and confidence of a knowledgeable colleague explaining "
-    "something they know well, not a compliance template reciting "
-    "boilerplate — clear, plain, professional English throughout."
-)
-
-
 async def ask_kriton(
     db: AsyncSession,
     sync_db: Session,
@@ -2496,1904 +2584,16 @@ async def ask_kriton(
     idempotency_key: str,
     clarification_cycle: int = 0,
 ) -> AskKritonResponse:
-    # NOTE: KritonMediator (defined above) is main's in-progress refactor of
-    # this same pipeline into a class — it has its own reference_data
-    # connector integrations (Treasury/PayrollTax/Census/BLS/BEA/FRED/eCFR/
-    # CFR/PolicyEngine/formula registry/professional search) and richer
-    # per-stage audit events (plan/rerank/context_fit/route_reevaluated/
-    # citation_assembly/coverage), but it has no live_sources integration at
-    # all. This function (not KritonMediator) stays the live implementation
-    # so the live-data feature isn't silently dropped; reconciling the two
-    # (porting live_sources into KritonMediator, or vice versa) is deliberately
-    # left as separate follow-up work rather than a rushed merge-time graft.
-
-    start_time = time.monotonic()
-
-    # ── Idempotency check ─────────────────────────────────────────────────────
-    if idempotency_key:
-        cached = await check_idempotency(db, idempotency_key, tenant_id)
-        if cached is not None:
-            return AskKritonResponse(**cached)
-
-    # ── Step 1: Generate identifiers (§5) ────────────────────────────────────
-    query_id = generate_query_id()
-    correlation_id = generate_correlation_id()
-    audit_chain_id = generate_audit_chain_id()
-    query_hash = _hash_query(request.query)
-
-    # Audit: query_received — first event, before any processing
-    await audit_query_received(
-        db, query_id=query_id, correlation_id=correlation_id,
-        tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-        actor_id=actor_id, query_hash=query_hash,
-    )
-
-    # ── Step 2: Request validation (§6) ──────────────────────────────────────
-    if not request.query or not request.query.strip():
-        await audit_request_rejected(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, reason="Empty query text",
-        )
-        return _make_rejected_response(query_id, correlation_id, audit_chain_id, "Empty query text")
-
-    await audit_request_validated(
-        db, query_id=query_id, correlation_id=correlation_id,
-        tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-    )
-
-    # ── Step 3: Pre-screen safety BEFORE retrieval (§6, RG-01) ───────────────
-    prescreen = run_prescreen(request.query)
-    await audit_prescreen_completed(
-        db, query_id=query_id, correlation_id=correlation_id,
-        tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-        actor_id=actor_id, passed=prescreen.passed,
-        trigger=prescreen.trigger,
-    )
-
-    if not prescreen.passed:
-        # Create persisted incident object (§11.2) before returning
-        incident = create_security_incident_sync(
-            sync_db,
-            query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id,
-            trigger=prescreen.trigger or "unknown",
-            trigger_detail=prescreen.trigger_detail or "",
-        )
-        await audit_security_incident_recorded(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, incident_id=incident["incident_id"],
-            trigger=incident["trigger"], evidence_reference=incident["evidence_reference"],
-        )
-        response = _make_security_incident_response(
-            query_id, correlation_id, audit_chain_id, prescreen.trigger or "security_policy"
-        )
-        await _finalise_and_return(
-            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
-            audit_chain_id=audit_chain_id, actor_id=actor_id,
-            outcome=response.outcome, route=response.route, start_time=start_time,
-        )
-        if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
-        return response
-
-    # Treat an explicitly named reporting framework as jurisdictional context
-    # when the UI selector is left empty. This recognizes only deterministic
-    # framework identifiers; it does not guess a country from the topic.
-    effective_jurisdiction = request.jurisdiction or infer_query_jurisdiction(request.query)
-
-    # ── Step 3.5: ML-based pre-screen — risk_classifier.pre_screen(), via
-    # risk_safety_service.pre_screen() (§6, RG-01) ───────────────────────────
-    # Confirmed this session: before this, ask_kriton() only ever called
-    # run_prescreen() above (plain regex: prompt injection, data
-    # exfiltration, malicious instruction, academic integrity). It never
-    # called this function — which additionally covers the privacy_class
-    # hard-block (PII/MINOR_DATA/SECRETS) and, critically, the semantic
-    # evasion gate — meaning that gate, despite being built and tested
-    # earlier, was never actually protecting a live request. Runs alongside
-    # run_prescreen() above, not instead of it: the two check different
-    # things (this one is ML/semantic, that one is deterministic regex) and
-    # neither is a superset of the other.
-    #
-    # pre_bundle_state/source_confidence are left at their ClassifyRequest
-    # defaults ("OK"/"HIGH_CONFIDENCE") since bundle-building hasn't
-    # happened yet at this point in the pipeline — the license/ontology
-    # pre-bundle checks this same function can also perform need real
-    # bundle data, which license_gate.py/bundle_builder.py already provide
-    # after retrieval (Step 4 below); what this call is actually for here
-    # is the privacy_class hard-block plus the L1/L1.5 query-text checks,
-    # both of which only need the query itself, not retrieval results.
-    ml_prescreen_request = ClassifyRequest(
-        query=request.query,
-        user_id=actor_id,
-        role=role,
-        tenant_id=tenant_id,
-        jurisdiction=effective_jurisdiction,
-        mode=request.mode,
-        privacy_class=request.privacy_class or "NONE",
-    )
-    # Sync call (risk_safety_service.pre_screen is not async) — it also
-    # persists its own EscalationCase/SafetyEvent/security-incident records
-    # internally via sync_db when the decision warrants it (_finalize()'s
-    # job), so this call site must NOT also create a review case or
-    # security incident itself — that would double-record the same block.
-    ml_prescreen_decision = risk_safety_service.pre_screen(ml_prescreen_request, db=sync_db)
-    if ml_prescreen_decision is not None:
-        await audit_prescreen_completed(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, passed=False,
-            trigger=f"ml_prescreen:{ml_prescreen_decision.restricted_sub_class or ml_prescreen_decision.route}",
-        )
-        response = _make_response_from_prescreen_decision(
-            ml_prescreen_decision, query_id, correlation_id, audit_chain_id,
-        )
-        await _finalise_and_return(
-            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
-            audit_chain_id=audit_chain_id, actor_id=actor_id,
-            outcome=response.outcome, route=response.route, start_time=start_time,
-        )
-        if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
-        return response
-
-    # ── Step 3.75: Product-navigation fast path ───────────────────────────
-    # Application routes are product-owned facts. Keep this after both
-    # safety screens, but before retrieval and model generation.
-    navigation = resolve_navigation_answer(request.query)
-    if navigation is not None:
-        await audit_risk_classified(
-            db,
-            query_id=query_id,
-            correlation_id=correlation_id,
-            tenant_id=tenant_id,
-            audit_chain_id=audit_chain_id,
-            actor_id=actor_id,
-            risk_level="ZERO",
-            confidence_state=CONF_SUFFICIENT,
-        )
-        await audit_route_selected(
-            db,
-            query_id=query_id,
-            correlation_id=correlation_id,
-            tenant_id=tenant_id,
-            audit_chain_id=audit_chain_id,
-            actor_id=actor_id,
-            route=ROUTE_LLM,
-            risk_level="ZERO",
-            confidence_state=CONF_SUFFICIENT,
-        )
-        response = AskKritonResponse(
-            query_id=query_id,
-            correlation_id=correlation_id,
-            outcome="answered",
-            route=ROUTE_LLM,
-            safety=SafetyState(
-                risk_level="ZERO",
-                policy_state="allowed",
-                disclaimer_required=False,
-            ),
-            confidence_state=CONF_SUFFICIENT,
-            source_bundle=None,
-            answer=ComposedAnswer(
-                text=navigation.text,
-                citations=[],
-                limitations=[],
-                prompt_id="deterministic-product-navigation",
-                prompt_name="Product navigation",
-                output_text=navigation.text,
-            ),
-            next_action=None,
-            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-        )
-        await _finalise_and_return(
-            db,
-            query_id=query_id,
-            correlation_id=correlation_id,
-            tenant_id=tenant_id,
-            audit_chain_id=audit_chain_id,
-            actor_id=actor_id,
-            outcome=response.outcome,
-            route=ROUTE_LLM,
-            start_time=start_time,
-        )
-        if idempotency_key:
-            await store_idempotency(
-                db,
-                idempotency_key,
-                tenant_id,
-                response.model_dump(),
-            )
-        return response
-
-    # ── Step 4: Pure-greeting bypass ─────────────────────────────────────────
-    # "Hi"/"Hello Kriton"/"good morning" retrieve zero document context (an
-    # accounting/tax library has nothing matching a greeting), which trips
-    # the §2 "no unsupported answering" rule below (Step 4/5) and returns
-    # the confusing "could not find sufficient sources... clarify your
-    # jurisdiction" message — a wrong response to something this simple.
-    # Skips retrieval and risk classification entirely (there's nothing to
-    # ground and no real risk in a greeting) and calls the LLM with a small,
-    # ungrounded, citation-free prompt instead.
-    if is_pure_greeting(request.query):
-        prompt = await select_prompt(db, request.mode)
-        greeting_input = (
-            "The user sent only a casual greeting, with no accounting, tax, audit, "
-            "or compliance question yet. Respond with one short, warm, professional "
-            "sentence as Kriton — a governed accounting/tax/audit assistant — and "
-            "invite them to ask a real question. Do not cite sources, do not add a "
-            "disclaimer, and do not answer any substantive question — there isn't one.\n\n"
-            f"User's message: {request.query}"
-        )
-        composed_text: Optional[str] = None
-        prompt_id = "inline"
-        prompt_name = "Inline Greeting Prompt"
-        try:
-            if prompt:
-                prompt_row, composed_text = await model_gateway_service.run_test_prompt(
-                    db, prompt.id, greeting_input, actor_id, tenant_id, correlation_id=query_id
-                )
-                prompt_id = prompt_row.id
-                prompt_name = prompt_row.name
-            else:
-                composed_text = "Hello! I'm Kriton — ask me an accounting, tax, or audit question any time."
-        except Exception:
-            composed_text = "Hello! I'm Kriton — ask me an accounting, tax, or audit question any time."
-
-        output_hash = hashlib.sha256(composed_text.encode()).hexdigest()[:32]
-        await audit_composition_completed(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, prompt_id=prompt_id, output_hash=output_hash,
-            commit=False,
-        )
-        response = AskKritonResponse(
-            query_id=query_id, correlation_id=correlation_id,
-            outcome="answered", route=ROUTE_LLM,
-            safety=SafetyState(risk_level="ZERO", policy_state="allowed"),
-            confidence_state="sufficient",
-            source_bundle=None,
-            answer=ComposedAnswer(
-                text=composed_text, citations=[], limitations=[],
-                prompt_id=prompt_id, prompt_name=prompt_name, output_text=composed_text,
-            ),
-            next_action=None,
-            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-        )
-        await _finalise_and_return(
-            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
-            audit_chain_id=audit_chain_id, actor_id=actor_id,
-            outcome=response.outcome, route=response.route, start_time=start_time,
-        )
-        if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
-        return response
-
-    # ── Step 4 prelude: category inference + Checkpoint A licence prefilter ──
-    # Establishes the complete tenant-visible allow-list BEFORE any reference_data
-    # connector call below fires — a query matching a category the tenant isn't
-    # licensed for should never even make the external API call, let alone have
-    # its result reach the model. Mirrors KritonMediator's own Checkpoint A
-    # (app/orchestration/service.py's class-based sibling implementation);
-    # ported here so the reference_data connectors (Treasury/PayrollTax/Census/
-    # BLS/BEA/FRED/eCFR/CFR/Federal Register/Congress.gov/professional search)
-    # and the 4 procedure-content sources (bank reconciliation, month-end close,
-    # accounting fundamentals, user-provided data) are actually reachable from
-    # the live pipeline instead of sitting dormant in the unused class.
-    understanding = await understand_query(
-        request.query,
-        jurisdiction=effective_jurisdiction,
-        mode=request.mode,
-        privacy_class=request.privacy_class or "NONE",
-        history=request.history,
-    )
-    retrieval_query = understanding.retrieval_query
-    await audit_query_understood(
+    return await KritonMediator().handle(
         db,
-        query_id=query_id,
-        correlation_id=correlation_id,
-        tenant_id=tenant_id,
-        audit_chain_id=audit_chain_id,
+        sync_db,
         actor_id=actor_id,
-        understanding=understanding.audit_payload(),
-        commit=False,
-    )
-
-    embeddings_enabled = os.getenv("ENABLE_RAG_EMBEDDINGS", "").lower() in {"1", "true", "yes"}
-    retrieval_category = infer_category(retrieval_query)
-    closed_evidence_categories = {
-        "exchange-rate", "economic-data", "interest-rates", "tax-regulations",
-        "federal-register", "us-legislation", "bank-reconciliation",
-        "month-end-close", "accounting-fundamentals", "user-provided-data",
-    }
-    retrieval_plan = create_retrieval_plan(
-        retrieval_query,
-        effective_jurisdiction,
-        embeddings_enabled=embeddings_enabled,
-        requires_current_sources=understanding.requires_current_sources,
-    )
-    await audit_plan_created(
-        db, query_id=query_id, correlation_id=correlation_id,
-        tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-        retrieval_plan_id=retrieval_plan.retrieval_plan_id,
-        strategy=retrieval_plan.strategy, methods=list(retrieval_plan.methods),
-    )
-    catalog_rows = await list_sources(
-        db,
-        retrieval_category if retrieval_category in closed_evidence_categories else None,
         tenant_id=tenant_id,
-    )
-    catalog_summaries = [
-        SourceSummary(
-            id=row["id"], title=row["title"], category=row["category"],
-            jurisdiction_scope=row["jurisdiction_scope"],
-            version_label=row["latest_version"].version_label if row["latest_version"] else "unknown",
-            status=row["latest_version"].status if row["latest_version"] else "MISSING",
-        )
-        for row in catalog_rows
-    ]
-    prefilter = await license_gate.check_eligibility(db, catalog_summaries, tenant_id=tenant_id)
-    allowed_source_ids = {source.id for source in prefilter.eligible}
-    standard_deduction_request = _standard_deduction_request(request.query)
-    standard_deduction_fact = _standard_deduction_fact(request.query)
-    governed_standard_deduction_source = next(
-        (
-            source for source in prefilter.eligible
-            if "standard deduction" in source.title.lower()
-        ),
-        None,
-    )
-    deterministic_standard_deduction_ready = (
-        standard_deduction_request is not None
-        and governed_standard_deduction_source is not None
-    )
-    await audit_licence_prefilter_completed(
-        db, query_id=query_id, correlation_id=correlation_id,
-        tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-        eligible_count=len(prefilter.eligible), excluded_count=len(prefilter.excluded),
-        commit=False,
-    )
-    if prefilter.excluded:
-        await audit_licence_denied(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-            checkpoint="A", source_ids=[source.id for source in prefilter.excluded],
-            reason_code=";".join(sorted(set(prefilter.exclusion_reasons.values()))) or "unknown",
-            commit=False,
-        )
-
-    # Governed-calculation state (ported from KritonMediator, see the
-    # module note near the top of this function) — populated below, after
-    # reference_data injection, by whichever of the three calculation
-    # engines (PolicyEngine/expression evaluator/formula registry) fires.
-    provenance_store = ProvenanceStore()
-    verified_calculation_bypasses_coverage_gate = False
-    calculation_widget = None
-    missing_formula_inputs = None
-    executed_formula_result = None
-
-    # ── Step 4: Retrieve SourceBundle (Massarius™ keyword_mvp layer) (§7) ────
-    # commit=False on every intermediate event in this phase (see
-    # audit_events.py's module docstring) — batched into one round-trip at
-    # audit_bundle_built (or, on the except-branch below, at the next
-    # commit=True call in Step 5's routing phase).
-    await audit_retrieval_started(
-        db, query_id=query_id, correlation_id=correlation_id,
-        tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-        commit=False,
-    )
-    # Fetched once here (top_k=30) and reused both for SourceBundle governance
-    # merging below and for the LLM's grounded context further down —
-    # retrieve_documents() embeds the query and runs a real Postgres vector
-    # search (profiled at ~20s on this setup), and was previously being
-    # called a second time, redundantly, for the exact same query later in
-    # this same function.
-    #
-    # Run concurrently with the live-data fetch below via asyncio.gather —
-    # the two are fully independent. Safe specifically because
-    # retrieve_documents() manages its own separate DB connection (never
-    # touches the shared `db` AsyncSession) and fetch_live_data() is the
-    # only one of the two that does — SQLAlchemy's AsyncSession is not
-    # safe for concurrent use across tasks, but that hazard only applies
-    # when more than one concurrent coroutine touches the same session.
-    async def _fetch_raw_chunks() -> tuple[list, tuple[float, ...] | None]:
-        """Returns (chunks, query_embedding) — the embedding is computed
-        here (not left implicit inside retrieve_documents()) so it can be
-        reused by build_source_bundle()'s semantic infer_category() step
-        below without a second, redundant embedding call for the same
-        query text. Still fully non-blocking: the embedding call runs in
-        the executor here exactly like retrieve_documents()'s own retriever
-        call already did, so this doesn't add a new blocking cost — it
-        just makes the existing one shareable."""
-        if os.getenv("ENABLE_RAG_EMBEDDINGS", "").lower() not in {"1", "true", "yes"}:
-            return [], None
-        if deterministic_standard_deduction_ready:
-            # The exact enacted amount is constructed below from the
-            # tenant-eligible IRS source already approved by Checkpoint A.
-            # A vector search cannot add evidence needed by this one-fact
-            # response, so do not pay its measured ~10-20 second cost.
-            return [], None
-        # Tier 1 latency optimization: skip the ~10-15s Postgres vector
-        # search entirely for queries the live-data classifier is
-        # confident are pure live-data lookups (e.g. "What is the Bank
-        # Rate?") — scoped strictly to LiveDataIntent.skip_document_search
-        # (implies_country rules only: Bank Rate, Fed funds rate, Treasury
-        # yield). A query like "What is UK inflation, and how does IFRS
-        # require disclosing it?" still runs document search normally,
-        # since that flag is deliberately False for the generic
-        # inflation/GDP/unemployment matches — those could legitimately
-        # need real document grounding alongside the live figure.
-        if _enable_live_sources():
-            skip_intent = detect_live_data_intent(request.query, jurisdiction=effective_jurisdiction)
-            if skip_intent is not None and skip_intent.skip_document_search:
-                return [], None
-        try:
-            loop = asyncio.get_event_loop()
-            query_embedding = await loop.run_in_executor(None, get_query_embedding_cached, retrieval_query)
-            chunks = await retrieve_documents(
-                query=retrieval_query,
-                tenant_id=tenant_id,
-                jurisdiction=effective_jurisdiction or None,
-                top_k=10,
-                query_embedding=query_embedding,
-            )
-            return chunks, query_embedding
-        except Exception:
-            return [], None
-
-    # Live/dynamic external data — a peer to the document retrieval above,
-    # never blocking it: a failed/absent live fetch just means no live
-    # source gets added below, not a broken request.
-    async def _fetch_live():
-        if not _enable_live_sources():
-            return None
-        return await live_sources_service.fetch_live_data(
-            db, query=request.query, tenant_id=tenant_id, jurisdiction=effective_jurisdiction,
-        )
-
-    live_summary = None
-    live_authority: tuple[int, str] = (AUTHORITY_UNKNOWN_RANK, "")
-    live_is_stale = False
-    live_age_seconds: int | None = None
-    # Filled from the licence gate below, which derives it from Source rows
-    # it already reads — see LicenceCheckResult.authority_ranks. Empty here
-    # so the citation layer degrades to retrieval order rather than raising
-    # on any path that never reaches Checkpoint A/B.
-    document_authority_ranks: dict[str, int] = {}
-    live_fetch_start = time.monotonic()
-    (raw_chunks, query_embedding), live_outcome, security_screen = await asyncio.gather(
-        _fetch_raw_chunks(), _fetch_live(), screen_for_security_violation(request.query),
-    )
-
-    # Dynamic security screen (§6 equivalent, additive to run_prescreen()/
-    # risk_safety_service.pre_screen() above, never a replacement) — catches
-    # credential-harvesting/phishing/fraud attempts those deterministic
-    # gates structurally can't anticipate (validated this session: 8/8
-    # correct including 3 categories no exemplar set covers). Checked here,
-    # right after the concurrent fetch it rode alongside, before any of
-    # raw_chunks/live_outcome gets used for anything — on a flag, both are
-    # simply discarded.
-    if security_screen is not None and security_screen["flagged"]:
-        category = security_screen.get("category") or "security_policy"
-        if security_screen["confidence"] >= SECURITY_INCIDENT_CONFIDENCE_THRESHOLD:
-            await audit_security_incident_recorded(
-                db, query_id=query_id, correlation_id=correlation_id,
-                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-                actor_id=actor_id, incident_id=f"dyn-{query_id}",
-                trigger=category, evidence_reference=query_id,
-            )
-            response = _make_security_incident_response(query_id, correlation_id, audit_chain_id, category)
-        else:
-            review_case = await create_review_case(
-                db, query_id=query_id, correlation_id=correlation_id,
-                tenant_id=tenant_id, risk_level="HIGH", confidence_state="insufficient",
-                reason=f"Dynamic security screen flagged (uncertain): {category}",
-            )
-            await audit_human_review_created(
-                db, query_id=query_id, correlation_id=correlation_id,
-                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-                actor_id=actor_id, review_case_id=review_case.id,
-            )
-            response = AskKritonResponse(
-                query_id=query_id, correlation_id=correlation_id,
-                outcome="escalated", route=ROUTE_HUMAN_REVIEW,
-                safety=SafetyState(risk_level="HIGH", policy_state="blocked"),
-                confidence_state="insufficient", source_bundle=None, answer=None,
-                next_action=NextAction(
-                    type="escalate",
-                    message=(
-                        f"This query has been escalated to a qualified reviewer "
-                        f"(Review Case {review_case.id}). You will be notified when the review is complete."
-                    ),
-                ),
-                audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-            )
-        await _finalise_and_return(
-            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
-            audit_chain_id=audit_chain_id, actor_id=actor_id,
-            outcome=response.outcome, route=response.route, start_time=start_time,
-        )
-        if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
-        return response
-    if live_outcome and live_outcome.intent is not None:
-        await audit_live_intent_detected(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-            provider_key=live_outcome.intent.provider_key,
-            indicator_code=live_outcome.intent.indicator_code,
-            country_code=live_outcome.intent.country_code,
-            commit=False,
-        )
-        cache_key = make_cache_key(live_outcome.intent)
-        if live_outcome.cache_hit:
-            await audit_live_cache_hit(
-                db, query_id=query_id, correlation_id=correlation_id,
-                tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-                provider_key=live_outcome.intent.provider_key, cache_key=cache_key,
-                commit=False,
-            )
-        else:
-            await audit_live_cache_miss(
-                db, query_id=query_id, correlation_id=correlation_id,
-                tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-                provider_key=live_outcome.intent.provider_key, cache_key=cache_key,
-                commit=False,
-            )
-            if live_outcome.succeeded:
-                await audit_live_fetch_succeeded(
-                    db, query_id=query_id, correlation_id=correlation_id,
-                    tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-                    provider_key=live_outcome.intent.provider_key,
-                    indicator_code=live_outcome.intent.indicator_code,
-                    country_code=live_outcome.intent.country_code,
-                    latency_ms=(time.monotonic() - live_fetch_start) * 1000,
-                    commit=False,
-                )
-            else:
-                await audit_live_fetch_failed(
-                    db, query_id=query_id, correlation_id=correlation_id,
-                    tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-                    provider_key=live_outcome.intent.provider_key, error=live_outcome.error or "unknown error",
-                    commit=False,
-                )
-        if live_outcome.succeeded and live_outcome.normalized:
-            # Read once here rather than at chunk-build time, so the
-            # citation layer never issues a query inside its own loop.
-            live_governance = await live_sources_service.get_provider_governance(
-                db, live_outcome.intent.provider_key
-            )
-            # fetch_live_data() reports succeeded=True even when every retry
-            # failed and it fell back to a stale cache entry, so "succeeded"
-            # alone cannot tell a current figure from a preserved one.
-            live_is_stale, live_age_seconds = live_sources_service.evaluate_freshness(
-                live_outcome.normalized, live_governance
-            )
-            live_summary = live_sources_service.to_source_summary(
-                live_outcome.normalized, is_stale=live_is_stale
-            )
-            live_authority = (live_governance.authority_rank, live_governance.jurisdiction)
-
-    # ── Governed reference_data sources (ported from KritonMediator, see
-    # module note above) — each gated on retrieval_category and/or its own
-    # query-matching heuristic, isolated with its own try/except so one
-    # source's failure never blocks another's chunk or the rest of the
-    # answer. Calculation-engine sources (PolicyEngine/expression evaluator/
-    # formula registry) and the coverage gate are deliberately NOT ported
-    # here — both their enabling flags are unset, and porting them means
-    # also porting the coverage gate and provenance/calculation-widget
-    # plumbing, which is separate follow-up work, not part of this pass.
-    procedure_source_id = {
-        "bank-reconciliation": BANK_RECONCILIATION_GOVERNED_SOURCE_ID,
-        "month-end-close": MONTH_END_CLOSE_GOVERNED_SOURCE_ID,
-        "accounting-fundamentals": ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID,
-        "user-provided-data": USER_PROVIDED_DATA_GOVERNED_SOURCE_ID,
-    }.get(retrieval_category)
-    if procedure_source_id:
-        raw_chunks = [
-            chunk for chunk in raw_chunks
-            if (chunk.get("metadata") or {}).get("source_id") == procedure_source_id
-        ]
-
-    if (
-        retrieval_category == "bank-reconciliation"
-        and BANK_RECONCILIATION_GOVERNED_SOURCE_ID in allowed_source_ids
-    ):
-        raw_chunks.insert(0, to_bank_reconciliation_rag_chunk())
-    if (
-        retrieval_category == "month-end-close"
-        and MONTH_END_CLOSE_GOVERNED_SOURCE_ID in allowed_source_ids
-    ):
-        raw_chunks.insert(0, to_month_end_close_rag_chunk())
-    if (
-        retrieval_category == "accounting-fundamentals"
-        and ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID in allowed_source_ids
-    ):
-        raw_chunks.insert(0, to_accounting_fundamentals_rag_chunk())
-    if (
-        retrieval_category == "user-provided-data"
-        and USER_PROVIDED_DATA_GOVERNED_SOURCE_ID in allowed_source_ids
-    ):
-        raw_chunks.insert(0, to_user_provided_data_rag_chunk(request.query))
-
-    if retrieval_category == "exchange-rate" and TREASURY_GOVERNED_SOURCE_ID in allowed_source_ids:
-        currency = match_currency_keyword(request.query)
-        if currency is not None:
-            try:
-                treasury_bundle = await get_exchange_rate_bundle(
-                    db, currency=currency, since="2020-01-01", tenant_id=tenant_id, actor_id=actor_id,
-                )
-                raw_chunks.insert(0, treasury_to_rag_chunk(treasury_bundle, source_id=TREASURY_GOVERNED_SOURCE_ID))
-            except Exception:
-                pass
-
-    if retrieval_category == "payroll-compliance" and PAYROLL_TAX_GOVERNED_SOURCE_ID in allowed_source_ids:
-        work_state = match_work_state(request.query)
-        if work_state is not None:
-            try:
-                pay_date = extract_pay_date(request.query)
-                payroll_bundle = await get_payroll_tax_bundle(
-                    db, work_state=work_state, pay_date=pay_date, tenant_id=tenant_id, actor_id=actor_id,
-                )
-                raw_chunks.insert(0, to_payroll_tax_rag_chunk(payroll_bundle, source_id=PAYROLL_TAX_GOVERNED_SOURCE_ID))
-            except Exception:
-                pass
-
-    if retrieval_category == "economic-data":
-        state_fips = match_state_fips(request.query)
-        if state_fips is not None and CENSUS_GOVERNED_SOURCE_ID in allowed_source_ids:
-            try:
-                census_bundle = await get_census_income_poverty_bundle(
-                    db, state_fips=state_fips, tenant_id=tenant_id, actor_id=actor_id,
-                )
-                raw_chunks.insert(0, to_census_rag_chunk(census_bundle, source_id=CENSUS_GOVERNED_SOURCE_ID))
-            except Exception:
-                pass
-
-        if is_inflation_query(request.query) and BLS_CPI_GOVERNED_SOURCE_ID in allowed_source_ids:
-            try:
-                cpi_bundle = await get_cpi_bundle(db, tenant_id=tenant_id, actor_id=actor_id)
-                raw_chunks.insert(0, to_cpi_rag_chunk(cpi_bundle, source_id=BLS_CPI_GOVERNED_SOURCE_ID))
-            except Exception:
-                pass
-
-        if is_gdp_query(request.query) and BEA_GDP_GOVERNED_SOURCE_ID in allowed_source_ids:
-            try:
-                gdp_bundle = await get_gdp_bundle(db, tenant_id=tenant_id, actor_id=actor_id)
-                raw_chunks.insert(0, to_gdp_rag_chunk(gdp_bundle, source_id=BEA_GDP_GOVERNED_SOURCE_ID))
-            except Exception:
-                pass
-
-    if retrieval_category == "interest-rates" and FRED_INTEREST_RATES_GOVERNED_SOURCE_ID in allowed_source_ids:
-        try:
-            fred_bundle = await get_interest_rates_bundle(db, tenant_id=tenant_id, actor_id=actor_id)
-            raw_chunks.insert(0, to_fred_rag_chunk(fred_bundle, source_id=FRED_INTEREST_RATES_GOVERNED_SOURCE_ID))
-        except Exception:
-            pass
-
-    if retrieval_category == "tax-regulations":
-        section_number = extract_cfr_section(request.query)
-        if section_number is not None:
-            try:
-                if ECFR_TITLE26_GOVERNED_SOURCE_ID not in allowed_source_ids:
-                    raise PermissionError("source not eligible")
-                ecfr_bundle = await get_ecfr_section_bundle(
-                    db, section_number=section_number, tenant_id=tenant_id, actor_id=actor_id,
-                )
-                raw_chunks.insert(0, to_ecfr_rag_chunk(ecfr_bundle, source_id=ECFR_TITLE26_GOVERNED_SOURCE_ID))
-            except Exception:
-                pass
-            try:
-                if CFR_TITLE26_GOVERNED_SOURCE_ID not in allowed_source_ids:
-                    raise PermissionError("source not eligible")
-                cfr_bundle = await get_cfr_section_bundle(
-                    db, section_number=section_number, tenant_id=tenant_id, actor_id=actor_id,
-                )
-                raw_chunks.insert(0, to_cfr_rag_chunk(cfr_bundle, source_id=CFR_TITLE26_GOVERNED_SOURCE_ID))
-            except Exception:
-                pass
-
-    if retrieval_category == "federal-register":
-        document_number = extract_federal_register_document_number(request.query)
-        if document_number is not None and FEDERAL_REGISTER_GOVERNED_SOURCE_ID in allowed_source_ids:
-            try:
-                fr_bundle = await get_federal_register_document_bundle(
-                    db, document_number=document_number, tenant_id=tenant_id, actor_id=actor_id,
-                )
-                raw_chunks.insert(0, to_federal_register_rag_chunk(fr_bundle, source_id=FEDERAL_REGISTER_GOVERNED_SOURCE_ID))
-            except Exception:
-                pass
-
-    if retrieval_category == "us-legislation" and CONGRESS_GOVERNED_SOURCE_ID in allowed_source_ids:
-        bill_identifier = extract_congress_bill_identifier(request.query)
-        if bill_identifier is not None:
-            try:
-                congress, bill_type, bill_number = bill_identifier
-                congress_bundle = await get_congress_bill_bundle(
-                    db, congress=congress, bill_type=bill_type, bill_number=bill_number,
-                    tenant_id=tenant_id, actor_id=actor_id,
-                )
-                raw_chunks.insert(
-                    0, to_congress_rag_chunk(congress_bundle, source_id=CONGRESS_GOVERNED_SOURCE_ID)
-                )
-            except Exception:
-                pass
-
-    if standard_deduction_request is not None:
-        governed_tax_chunk = next(
-            (
-                chunk for chunk in raw_chunks
-                if "standard deduction" in chunk.get("metadata", {}).get("title", "").lower()
-                and chunk.get("metadata", {}).get("source_id")
-            ),
-            None,
-        )
-        if governed_tax_chunk is None and governed_standard_deduction_source is not None:
-            governed_tax_chunk = {
-                "text": governed_standard_deduction_source.title,
-                "metadata": {
-                    "source_id": governed_standard_deduction_source.id,
-                    "title": governed_standard_deduction_source.title,
-                    "version": governed_standard_deduction_source.version_label,
-                    "jurisdiction": governed_standard_deduction_source.jurisdiction_scope,
-                    "file_path": _STANDARD_DEDUCTION_URLS[standard_deduction_request["years"][0]],
-                },
-                "score": 1.0,
-                "node_id": (
-                    f"irs-standard-deduction-{standard_deduction_request['years'][0]}"
-                ),
-            }
-        if governed_tax_chunk is not None:
-            if standard_deduction_fact is not None:
-                raw_chunks.insert(0, _standard_deduction_chunk(governed_tax_chunk, standard_deduction_fact))
-            else:
-                raw_chunks[:0] = [
-                    _standard_deduction_year_chunk(governed_tax_chunk, standard_deduction_request, year)
-                    for year in standard_deduction_request["years"]
-                ]
-
-    professional_categories = {"standards", "tax", "audit", "payroll-compliance"}
-    search_source_ids = {TAVILY_GOVERNED_SOURCE_ID, SERPAPI_GOVERNED_SOURCE_ID}
-    purpose_built_live_evidence = any(
-        str(chunk.get("node_id", "")).startswith(_LIVE_DATA_NODE_PREFIXES)
-        or str(chunk.get("metadata", {}).get("fact_type", "")).startswith("standard_deduction")
-        for chunk in raw_chunks
-    )
-    if (
-        retrieval_category in professional_categories
-        and not purpose_built_live_evidence
-        and allowed_source_ids.intersection(search_source_ids)
-    ):
-        try:
-            search_bundle, provider = await get_professional_search_bundle(
-                db, query=request.query, tenant_id=tenant_id, actor_id=actor_id,
-            )
-            source_id = TAVILY_GOVERNED_SOURCE_ID if provider == "tavily" else SERPAPI_GOVERNED_SOURCE_ID
-            if source_id in allowed_source_ids:
-                raw_chunks.extend(to_professional_search_chunks(search_bundle, source_id=source_id))
-        except Exception:
-            pass
-
-    # ── Governed calculation engines (ported from KritonMediator) ────────────
-    # Must run here — after every reference_data injection above, immediately
-    # before raw_chunks is handed to build_source_bundle — because the
-    # expression-evaluator and formula-registry blocks below unconditionally
-    # clear() raw_chunks on a verified result. Running them any earlier would
-    # let a later reference_data injection silently re-populate raw_chunks
-    # with a competing, non-computed chunk right after the verified one was
-    # cleared in, reproducing the exact incident documented in the
-    # PolicyEngine block's own comment below (a correct $782.69 result
-    # discarded because competing raw parameter chunks were still present).
-    if (
-        os.getenv("ENABLE_TAX_CALCULATION_ENGINE", "").lower() in {"1", "true", "yes"}
-        and retrieval_category == "tax"
-        and POLICYENGINE_GOVERNED_SOURCE_ID in allowed_source_ids
-    ):
-        household = extract_household_params(request.query)
-        if household is not None:
-            try:
-                calc_bundle = await get_calculation_bundle(
-                    db, household=household, tenant_id=tenant_id, actor_id=actor_id,
-                )
-                # Drop the raw PolicyEngine parameter-markdown chunks (title
-                # prefix "PolicyEngine-US Parameters —", per
-                # scripts/ingest_policyengine_topics.py's MANIFEST) once a
-                # real computed figure exists for this household — verified
-                # live (2026-07-20): with both present, the model discarded
-                # the correct computed CA state tax ($782.69, clearly
-                # labeled in the calc chunk) and instead reconstructed its
-                # own (wrong) bracket-rate arithmetic from the competing raw
-                # parameter chunks, landing on an admittedly-uncertain
-                # guess. Once a household resolves, the raw parameters are
-                # no longer the authoritative answer path — the computed
-                # chunk is, and it should not have to compete for the
-                # model's attention against 4 other same-topic chunks.
-                # IRS Direct File chunks are left alone — narrative/
-                # eligibility content, not a source of alternative numbers
-                # to redo arithmetic from.
-                raw_chunks[:] = [
-                    c for c in raw_chunks
-                    if not c.get("metadata", {}).get("title", "").startswith("PolicyEngine-US Parameters")
-                ]
-                raw_chunks.insert(0, to_calculation_rag_chunk(calc_bundle, source_id=POLICYENGINE_GOVERNED_SOURCE_ID))
-            except Exception:
-                pass
-
-    # Sandboxed arithmetic expression evaluator — Phase 1 of the governed
-    # calculation architecture (docs/calculation_architecture.md). Same
-    # fail-closed, gated-injection posture as PolicyEngine above: only runs
-    # when arithmetic_extraction.py can confidently resolve a single,
-    # unambiguous expression from the query text; never guesses. Routed
-    # through router.route() (not called directly) so a query naming a
-    # professional-methodology calculation this codebase already has a
-    # named formula for is never silently downgraded to raw arithmetic —
-    # the router enforces that priority, this call site doesn't re-decide
-    # it. On a verified result, the figure is injected as a governed RAG
-    # chunk (same numeric-fidelity-matching text convention as
-    # to_calculation_rag_chunk) AND registered in provenance_store, so
-    # Checkpoint C accepts the derived figure even though — unlike every
-    # other governed chunk — it was never true that a real document said
-    # this number; a real calculation computed it.
-    if (
-        os.getenv("ENABLE_EXPRESSION_CALCULATION_ENGINE", "").lower() in {"1", "true", "yes"}
-        and EXPRESSION_EVALUATOR_GOVERNED_SOURCE_ID in allowed_source_ids
-    ):
-        expression = extract_arithmetic_expression(request.query)
-        if expression is not None:
-            try:
-                decision = route_calculation(CalculationRequest(calculation_type="arithmetic", expression=expression))
-                if decision.engine == ENGINE_EXPRESSION_EVALUATOR and decision.status == "executed":
-                    record = decision.result
-                    # 2026-07-23 real incident: with the calculation chunk
-                    # present but dozens of unrelated real regulatory
-                    # documents also still in context (a plain arithmetic
-                    # query like "calculate the sales tax on..." routinely
-                    # pulls in 20-29 real tax-content chunks), the model
-                    # kept padding an otherwise-correct, already-verified
-                    # answer with a broader explanation quoting that real
-                    # content too closely — tripping the summarize-don't-
-                    # copy check even after being told not to pad. A prompt
-                    # instruction alone wasn't reliable enough. A pure
-                    # arithmetic question needs nothing but the calculation
-                    # itself, so — same posture as PolicyEngine's own
-                    # competing-chunk removal above — drop every other
-                    # chunk once a verified calculation exists; there is
-                    # nothing else for the model to legitimately need here.
-                    raw_chunks.clear()
-                    raw_chunks.insert(0, to_expression_rag_chunk(record, source_id=EXPRESSION_EVALUATOR_GOVERNED_SOURCE_ID))
-                    provenance_store.add(from_expression_record(record))
-                    verified_calculation_bypasses_coverage_gate = True
-            except Exception:
-                pass
-
-    # Named formula registry — Phase 3 of the governed calculation
-    # architecture, first real natural-language wiring: straight-line
-    # depreciation. Same fail-closed extraction posture as the expression
-    # evaluator above (formula_extraction.py never guesses a missing
-    # input), routed through the same router.route() so the priority
-    # ordering (never downgrade a named formula to raw arithmetic) is
-    # enforced in one place. On a verified result: injects a governed RAG
-    # chunk + provenance record (same as every other calculation engine)
-    # AND builds an interactive CalculationWidget (sliders + a book-value
-    # chart) attached to the final ComposedAnswer below — see
-    # app/domains/calculation/widget.py.
-    if (
-        os.getenv("ENABLE_EXPRESSION_CALCULATION_ENGINE", "").lower() in {"1", "true", "yes"}
-        and FORMULA_REGISTRY_GOVERNED_SOURCE_ID in allowed_source_ids
-    ):
-        formula_extraction = extract_named_formula(request.query)
-        if formula_extraction is not None:
-            formula_inputs = formula_extraction.inputs
-            try:
-                decision = route_calculation(CalculationRequest(
-                    calculation_type=formula_extraction.calculation_type, inputs=formula_inputs,
-                ))
-                if decision.engine == ENGINE_FORMULA_REGISTRY and decision.status == "executed":
-                    formula_result = decision.result
-                    executed_formula_result = formula_result
-                    # Same fix, same reasoning as the expression evaluator
-                    # block above — drop competing real content once a
-                    # verified formula result exists.
-                    raw_chunks.clear()
-                    raw_chunks.insert(0, to_formula_rag_chunk(formula_result, source_id=FORMULA_REGISTRY_GOVERNED_SOURCE_ID))
-                    provenance_store.add(from_formula_result(formula_result))
-                    verified_calculation_bypasses_coverage_gate = True
-                    calculation_widget = build_calculation_widget(formula_result, formula_inputs)
-            except Exception:
-                pass
-        else:
-            missing_formula_inputs = identify_missing_formula_inputs(request.query)
-            if missing_formula_inputs is not None:
-                raw_chunks.clear()
-                raw_chunks.insert(0, {
-                    "text": (
-                        f"The approved {missing_formula_inputs.calculation_type} formula cannot execute yet. "
-                        f"Missing required inputs: {', '.join(missing_formula_inputs.missing_inputs)}. "
-                        "No value may be guessed."
-                    ),
-                    "metadata": {
-                        "source_id": FORMULA_REGISTRY_GOVERNED_SOURCE_ID,
-                        "title": "Named Formula Registry — Missing Input Check",
-                        "version": "1.0.0", "jurisdiction": "GLOBAL",
-                    },
-                    "score": 1.0,
-                    "node_id": f"{FORMULA_REGISTRY_NODE_PREFIX}missing-input",
-                })
-
-    try:
-        preliminary_bundle = await build_source_bundle(
-            db, query=retrieval_query, jurisdiction=effective_jurisdiction, tenant_id=tenant_id,
-            raw_chunks=raw_chunks,
-            extra_sources=[live_summary] if live_summary else None,
-            query_embedding=query_embedding,
-        )
-        await audit_retrieval_completed(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-            source_bundle_id=preliminary_bundle.source_bundle_id,
-            confidence_state=preliminary_bundle.confidence_state,
-            eligible_count=preliminary_bundle.eligible_source_count,
-            commit=False,
-        )
-
-        # ── Massarius™ Checkpoint A/B + bundle_builder (ZL-ENG-03 §5) ────────
-        # retrieve.py's own bundle is treated as preliminary/keyword_mvp
-        # output; license_gate.py re-verifies eligibility of what it
-        # returned and resolves per-source display states, and
-        # bundle_builder.py is the sole producer of the final, frozen
-        # SourceBundle everything downstream actually uses.
-        licence_result = await license_gate.check_eligibility(
-            db, preliminary_bundle.sources, tenant_id=tenant_id,
-        )
-        document_authority_ranks = licence_result.authority_ranks
-        await audit_licence_prefilter_completed(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-            eligible_count=len(licence_result.eligible),
-            excluded_count=len(licence_result.excluded),
-            commit=False,
-        )
-        if licence_result.excluded:
-            await audit_licence_denied(
-                db, query_id=query_id, correlation_id=correlation_id,
-                tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-                checkpoint="B", source_ids=[s.id for s in licence_result.excluded],
-                reason_code=";".join(sorted(set(licence_result.exclusion_reasons.values()))) or "unknown",
-                commit=False,
-            )
-
-        source_bundle = bundle_builder.build_bundle(preliminary_bundle, licence_result)
-        # Last event of the retrieval phase — commit=True (default) flushes
-        # everything batched above in one round-trip.
-        await audit_bundle_built(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-            source_bundle_id=source_bundle.source_bundle_id,
-            confidence_state=source_bundle.confidence_state,
-            index_version=source_bundle.index_version,
-        )
-    except Exception as exc:
-        # Retrieval failed mid-phase — leave commit=True (default) here so
-        # the failure itself is always durably recorded immediately, rather
-        # than riding on the next phase's batch boundary.
-        await audit_retrieval_failed(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, error=str(exc),
-        )
-        source_bundle = None
-
-    # Coverage gate (ported from KritonMediator): a nearby source is not a
-    # substitute for the authority a professional topic actually requires —
-    # e.g. retrieving ASC 606 must never make an ASC 842 lease question
-    # appear answerable. Runs after the immutable eligible bundle exists and
-    # before risk/model routing, so its decision is evidence-based and no
-    # model is invoked; running it after Step 5 would waste a risk-
-    # classification pass on a query about to be redirected to clarification.
-    #
-    # verified_calculation_bypasses_coverage_gate exists because of a real
-    # incident: "Calculate the sales tax on a $1,200 purchase at a 7.25%
-    # rate" has the rate right in the query, and the expression evaluator
-    # verified $87.00 from it — but this gate fires on the literal phrase
-    # "sales tax" regardless, and would otherwise short-circuit a fully
-    # self-contained, already-correct answer to ask for an "approved state
-    # revenue authority source" the question never needed.
-    coverage = assess_us_professional_coverage(request.query, source_bundle)
-    await audit_coverage_assessed(
-        db, query_id=query_id, correlation_id=correlation_id,
-        tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-        applies=coverage.applies, covered=coverage.covered,
-        domain=coverage.domain, topic=coverage.topic,
-        required_authority=coverage.required_authority,
-    )
-    if coverage.applies and not coverage.covered and not verified_calculation_bypasses_coverage_gate:
-        await audit_clarification_returned(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-            clarification_cycle=clarification_cycle,
-        )
-        response = AskKritonResponse(
-            query_id=query_id, correlation_id=correlation_id,
-            outcome="clarification_required", route=ROUTE_CLARIFICATION,
-            safety=SafetyState(risk_level="MEDIUM", policy_state="needs_more_context"),
-            confidence_state=CONF_INSUFFICIENT,
-            source_bundle=source_bundle, answer=None,
-            next_action=NextAction(
-                type=coverage.action,
-                message=coverage.message or coverage.reason,
-            ),
-            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-        )
-        await _finalise_and_return(
-            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
-            audit_chain_id=audit_chain_id, actor_id=actor_id,
-            outcome=response.outcome, route=response.route, start_time=start_time,
-        )
-        if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
-        return response
-
-    # ── Step 5: Classify risk (after bundle_builder.py, ZL-ENG-03 §5.6) +
-    # resolve route from versioned policy matrix (§8) ────────────────────────
-    # Override confidence state with playground param if provided
-    effective_confidence = (
-        map_safety_confidence(request.source_confidence)
-        if request.source_confidence
-        else (source_bundle.confidence_state if source_bundle else CONF_INSUFFICIENT)
-    )
-
-    classify_request = ClassifyRequest(
-        query=request.query,
-        history=request.history,
-        user_id=actor_id,
         role=role,
-        tenant_id=tenant_id,
-        jurisdiction=effective_jurisdiction,
-        mode=request.mode,
-        source_confidence=request.source_confidence or effective_confidence,
-        pre_bundle_state=request.pre_bundle_state or "OK",
-        privacy_class=request.privacy_class or "NONE",
-    )
-    # massarius_risk_safety.classify_after_bundle enforces the ZL-ENG-03 §5.6
-    # ordering guarantee: risk classification cannot run without
-    # bundle_builder.py's step having been attempted above (bundle_attempted
-    # is True here regardless of whether it succeeded — the try/except above
-    # already ran either way; source_bundle itself may still be None if
-    # retrieval failed).
-    #
-    # Run off the event loop thread. classify_after_bundle() is entirely
-    # synchronous and can block for a long time inside: a HuggingFace
-    # zero-shot inference when ENABLE_ML_CLASSIFIER is on, and — once
-    # RISK_LLM_CLASSIFIER_MODE is anything but "off" — a real HTTPS request
-    # to the classification provider, plus a threading.Event wait when
-    # another request already has the same query in flight. Called directly,
-    # any of those stalls every other request this worker is serving, not
-    # just this one. The dormant KritonMediator sibling above already does
-    # this correctly; the live path did not.
-    #
-    # sync_db is only touched sequentially inside this awaited call, never
-    # concurrently from another thread, so handing it to a worker thread is
-    # safe here for the same reason it is there.
-    decision = await asyncio.to_thread(
-        massarius_risk_safety.classify_after_bundle, True, classify_request, sync_db
-    )
-    risk_level = decision.risk_level
-
-    await audit_risk_classified(
-        db, query_id=query_id, correlation_id=correlation_id,
-        tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-        actor_id=actor_id, risk_level=risk_level, confidence_state=effective_confidence,
-        commit=False,
-    )
-
-    # Resolve route from versioned policy matrix
-    route_decision = resolve_policy(
-        confidence_state=effective_confidence,
-        risk_level=risk_level,
-        jurisdiction=effective_jurisdiction,
+        request=request,
+        idempotency_key=idempotency_key,
         clarification_cycle=clarification_cycle,
     )
-    route = route_decision.route
-    force_direct = _force_direct_answer()
-    if force_direct:
-        route = ROUTE_LLM
-
-    await audit_route_selected(
-        db, query_id=query_id, correlation_id=correlation_id,
-        tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-        actor_id=actor_id, route=route, risk_level=risk_level,
-        confidence_state=effective_confidence,
-    )
-
-    safety_state = SafetyState(
-        risk_level=risk_level,
-        policy_state="allowed" if decision.allowed else "blocked",
-        disclaimer_required=route_decision.disclaimer_required,
-    )
-
-    # ── Step 6: Execute deterministic route (§8, §9) ──────────────────────────
-
-    if not force_direct and not decision.allowed and decision.route == ROUTE_CLARIFICATION:
-        # The classifier's own signal was "needs clarification" (e.g. ambiguous/
-        # low-confidence query), not a hard block — it still sets allowed=False,
-        # but collapsing that into REFUSAL would show a refusal outcome next to
-        # clarification-worded text. Surface it as clarification instead.
-        clarification_msg = decision.refusal_text or (
-            "Could you provide more context about your jurisdiction and reporting framework?"
-        )
-        await audit_clarification_returned(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, clarification_cycle=clarification_cycle,
-        )
-        response = AskKritonResponse(
-            query_id=query_id,
-            correlation_id=correlation_id,
-            outcome="clarification_required",
-            route=ROUTE_CLARIFICATION,
-            safety=safety_state,
-            confidence_state=effective_confidence,
-            source_bundle=source_bundle,
-            answer=None,
-            next_action=NextAction(type="ask_clarifying_question", message=clarification_msg),
-            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-        )
-        await _finalise_and_return(
-            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
-            audit_chain_id=audit_chain_id, actor_id=actor_id,
-            outcome=response.outcome, route=ROUTE_CLARIFICATION, start_time=start_time,
-        )
-        if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
-        return response
-
-    if not force_direct and (not decision.allowed or route == ROUTE_REFUSAL):
-        # REFUSAL path
-        refusal_reason = decision.refusal_text or "Query blocked by risk classification policy."
-        await audit_refusal_returned(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, reason=refusal_reason,
-        )
-        response = AskKritonResponse(
-            query_id=query_id,
-            correlation_id=correlation_id,
-            outcome="refused",
-            route=ROUTE_REFUSAL,
-            safety=safety_state,
-            confidence_state=effective_confidence,
-            source_bundle=source_bundle,
-            answer=None,
-            next_action=NextAction(type="refusal", message=refusal_reason),
-            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-        )
-        await _finalise_and_return(
-            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
-            audit_chain_id=audit_chain_id, actor_id=actor_id,
-            outcome=response.outcome, route=route, start_time=start_time,
-        )
-        if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
-        return response
-
-    if route == ROUTE_HUMAN_REVIEW:
-        # Persist review case (§11.1) — returning label without persisted object is non-compliant
-        review_case = await create_review_case(
-            db,
-            query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, risk_level=risk_level,
-            confidence_state=effective_confidence,
-            reason=f"Risk: {risk_level} | Confidence: {effective_confidence} | Mode: {request.mode}",
-        )
-        await audit_human_review_created(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, review_case_id=review_case.id,
-        )
-        response = AskKritonResponse(
-            query_id=query_id,
-            correlation_id=correlation_id,
-            outcome="escalated",
-            route=ROUTE_HUMAN_REVIEW,
-            safety=safety_state,
-            confidence_state=effective_confidence,
-            source_bundle=source_bundle,
-            answer=None,
-            next_action=NextAction(
-                type="escalate",
-                message=(
-                    f"This query has been escalated to a qualified reviewer "
-                    f"(Review Case {review_case.id}). You will be notified when the review is complete."
-                ),
-            ),
-            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-        )
-        await _finalise_and_return(
-            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
-            audit_chain_id=audit_chain_id, actor_id=actor_id,
-            outcome=response.outcome, route=route, start_time=start_time,
-        )
-        if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
-        return response
-
-    if route == ROUTE_CLARIFICATION:
-        await audit_clarification_returned(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, clarification_cycle=clarification_cycle,
-        )
-        clarification_msg = route_decision.clarification_message or (
-            "Could you provide more context about your jurisdiction and reporting framework?"
-        )
-        response = AskKritonResponse(
-            query_id=query_id,
-            correlation_id=correlation_id,
-            outcome="clarification_required",
-            route=ROUTE_CLARIFICATION,
-            safety=safety_state,
-            confidence_state=effective_confidence,
-            source_bundle=source_bundle,
-            answer=None,
-            next_action=NextAction(type="ask_clarifying_question", message=clarification_msg),
-            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-        )
-        await _finalise_and_return(
-            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
-            audit_chain_id=audit_chain_id, actor_id=actor_id,
-            outcome=response.outcome, route=route, start_time=start_time,
-        )
-        if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
-        return response
-
-    # ── LLM Route ─────────────────────────────────────────────────────────────
-    # Model gateway executes ONLY when route == LLM (§9)
-    assert route == ROUTE_LLM
-
-    # commit=False on the intermediate events of this phase (see
-    # audit_events.py's module docstring) — batched into one round-trip at
-    # audit_validation_completed, or the next commit=True call on an
-    # error/degraded-route branch below.
-    await audit_composition_started(
-        db, query_id=query_id, correlation_id=correlation_id,
-        tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-        commit=False,
-    )
-
-    # Reuses raw_chunks fetched once back in Step 4 — see the comment there.
-    # Local dev should not block on Hugging Face model downloads just to serve
-    # the API shell, login, and deterministic routing flows.
-    context_text = ""
-    rag_citations: list[SourceCitation] = []
-    live_ready = live_summary is not None and live_outcome is not None and live_outcome.normalized is not None
-    if raw_chunks or live_ready:
-        try:
-            verified_standard_deduction_chunks = [
-                chunk for chunk in raw_chunks
-                if str(chunk.get("metadata", {}).get("fact_type", "")).startswith("standard_deduction")
-            ]
-            deterministic_fact_lookup = (
-                bool(verified_standard_deduction_chunks)
-                and standard_deduction_request is not None
-            )
-            if deterministic_fact_lookup:
-                # An exact annual IRS fact needs neither a cross-encoder nor
-                # generic supporting prose. This avoids the model-load and
-                # inference cost entirely on the narrow deterministic path.
-                reranked = verified_standard_deduction_chunks
-            else:
-                rerank_candidates = (
-                    [chunk for chunk in raw_chunks if chunk not in verified_standard_deduction_chunks]
-                    if verified_standard_deduction_chunks
-                    else raw_chunks
-                )
-                reranked = await _reranker.rerank(request.query, rerank_candidates) if rerank_candidates else []
-            if verified_standard_deduction_chunks and not deterministic_fact_lookup:
-                # This fact is produced from an enacted IRS annual amount and
-                # the exact year/status in the query. Keep it ahead of generic
-                # tax prose instead of asking a semantic top-5 model whether
-                # the purpose-built evidence deserves to survive.
-                reranked = verified_standard_deduction_chunks + reranked
-            # Purpose-built governed procedure/calculation chunks are already
-            # deterministically relevant. Do not let a semantic reranker drop
-            # them in favour of merely similar generic prose.
-            reranked = _reinstate_live_chunks(raw_chunks, reranked)
-            if live_ready:
-                # Rides through the existing [REF-N] citation pipeline
-                # unmodified — a synthetic chunk shaped exactly like a real
-                # vector hit (see live_sources.service.to_synthetic_chunk),
-                # not a parallel citation mechanism.
-                #
-                # Prepended, not appended: build_grounded_context() below has
-                # a fixed max_chars budget and drops whatever doesn't fit,
-                # tail-first. A live source only exists here because the
-                # query itself was classified as wanting live data — it must
-                # never lose that budget to generic document chunks that
-                # merely matched the same keyword category (observed in
-                # testing: 5 reranked document chunks alone exceeded the
-                # budget, silently dropping the live chunk from the model's
-                # actual context while it still appeared in source_bundle —
-                # a separate, non-truncated list — making the answer look
-                # like it had the data when the model never received it).
-                reranked = [live_sources_service.to_synthetic_chunk(
-                    live_outcome.normalized, live_summary,
-                    authority_rank=live_authority[0], authority_jurisdiction=live_authority[1],
-                    is_stale=live_is_stale, age_seconds=live_age_seconds,
-                )] + reranked
-            context_text, source_refs = build_grounded_context(reranked)
-            # Which source is CONTROLLING is an authority question, not a
-            # relevance one. Position 0 is a relevance signal, and using it
-            # meant a semantically excellent match to secondary commentary
-            # could be cited as controlling over the instrument it was
-            # commenting on. See live_sources/authority.py.
-            controlling_index = _controlling_chunk_index(
-                reranked, request.jurisdiction, document_authority_ranks,
-            )
-            rag_citations = []
-            for i, chunk in enumerate(reranked):
-                # The chunk's real governed source_id (added to ingestion
-                # metadata earlier), not its own arbitrary vector node_id —
-                # citations should point at the actual catalog entry a
-                # user/reviewer could look up, not an internal chunk id.
-                # Falls back to node_id for chunks with no source_id (e.g.
-                # ingested outside the governance workflow) — that fallback
-                # has no real Source row, so it can never get a url
-                # (resolve_source_url would build a link nothing can serve).
-                governed_source_id = chunk["metadata"].get("source_id")
-                rag_citations.append(SourceCitation(
-                    ref_id=f"REF-{i+1}",
-                    source_id=governed_source_id or chunk.get("node_id", f"chunk-{i}"),
-                    title=chunk["metadata"].get("title", "Uploaded Document"),
-                    evidence_role=(
-                        "controlling"
-                        if (
-                            i == controlling_index
-                            or str(chunk["metadata"].get("fact_type", "")).startswith("standard_deduction")
-                            or str(chunk.get("node_id", "")).startswith(FORMULA_REGISTRY_NODE_PREFIX)
-                            or chunk["metadata"].get("source_type") == "live_api"
-                        )
-                        else "supporting"
-                    ),
-                    source_type=chunk["metadata"].get("source_type", "document"),
-                    # 2026-07-29 real incident: this citation was never given
-                    # a `url` at all for document sources — only `source_url`
-                    # was ever set, and only for source_type="live_api" — so
-                    # every real ingested-document citation (the large
-                    # majority) had no resolvable link whatsoever, live or
-                    # otherwise, and the frontend's "open source" action had
-                    # nothing to open. resolve_source_url() is the same
-                    # single-source-of-truth helper the dormant KritonMediator
-                    # class already used correctly; porting it here so the
-                    # live path gets a real link for every source that has one
-                    # (a live source's file_path already IS a real external
-                    # URL — see resolve_source_url's own docstring — so this
-                    # covers both source types, not just documents).
-                    url=(
-                        resolve_source_url(governed_source_id, chunk["metadata"].get("file_path"))
-                        if governed_source_id else None
-                    ),
-                    # Only live sources have a real, clickable external URL via
-                    # this legacy field — to_synthetic_chunk() puts it in
-                    # metadata['file_path']. Kept alongside the `url` field
-                    # above (which now also covers this same case) rather than
-                    # removed, since some existing citations may still only
-                    # carry this one.
-                    source_url=(
-                        chunk["metadata"].get("file_path")
-                        if chunk["metadata"].get("source_type") == "live_api"
-                        else None
-                    ),
-                    evidence_preview=re.sub(r"\s+", " ", str(chunk.get("text", ""))).strip()[:1200],
-                ))
-        except Exception:
-            context_text = ""
-
-    if not context_text:
-        # §2: No unsupported answering — never let the model answer from its
-        # own general knowledge when there's no retrieved context to ground
-        # it. This is a separate guarantee from the risk-routing matrix, so
-        # it applies even under FORCE_DIRECT_ANSWER (that flag only bypasses
-        # the HIGH-risk escalation/refusal policy, not this one) — previously
-        # this fell through to sending the bare query to the LLM instead.
-        await audit_refusal_returned(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, reason="Insufficient sources; cannot answer without grounded content",
-        )
-        response = AskKritonResponse(
-            query_id=query_id, correlation_id=correlation_id,
-            outcome="clarification_required", route=ROUTE_CLARIFICATION,
-            safety=safety_state, confidence_state=effective_confidence,
-            source_bundle=source_bundle, answer=None,
-            next_action=NextAction(
-                type="ask_clarifying_question",
-                message=(
-                    "Kriton™ could not find sufficient sources to answer your query. "
-                    "Could you clarify your jurisdiction, reporting framework, or topic scope?"
-                ),
-            ),
-            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-        )
-        await _finalise_and_return(
-            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
-            audit_chain_id=audit_chain_id, actor_id=actor_id,
-            outcome=response.outcome, route=ROUTE_CLARIFICATION, start_time=start_time,
-        )
-        if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
-        return response
-
-    # Reviewed procedure routes compose locally and do not need a remote model
-    # or a prompt-table lookup. This also removes the 25–35 second model cost
-    # observed in the failed bank-reconciliation and month-end-close requests.
-    reviewed_source_ids = {
-        BANK_RECONCILIATION_GOVERNED_SOURCE_ID,
-        MONTH_END_CLOSE_GOVERNED_SOURCE_ID,
-        ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID,
-        USER_PROVIDED_DATA_GOVERNED_SOURCE_ID,
-    }
-    has_reviewed_source = any(
-        (chunk.get("metadata") or {}).get("source_id") in reviewed_source_ids
-        for chunk in reranked
-    )
-
-    # Build grounded prompt input
-    prompt = None if has_reviewed_source else await select_prompt(db, request.mode)
-
-    # Conversation-context injection — the query resolution gap flagged in
-    # the classifier design work: "what about for £20,000 instead" is
-    # unclassifiable in isolation, and no vector/keyword layer has memory
-    # of prior turns to resolve it against. Only attached for queries that
-    # actually look reference-dependent (is_elliptical_followup), and only
-    # ever the prior QUERY text, never the composed answer (which carries
-    # disclaimer/citation text that has no business re-entering the
-    # grounded prompt as conversational context).
-    followup_context = ""
-    if request.history and is_elliptical_followup(request.query):
-        previous_query = request.history[-1]
-        followup_context = (
-            f"=== Conversation Context (for resolving references only — not a retrieved source, do not cite) ===\n"
-            f"The user's previous question in this conversation was: {previous_query!r}\n"
-            f"The current query below likely continues or modifies that request.\n\n"
-        )
-
-    # Format-intent gate — separate from the default "scale to content" rule
-    # below: this only fires when the user explicitly asked for a chart/
-    # table/flowchart, and forces that format (or an honest "can't do that
-    # from what's available") rather than leaving it to the model's own
-    # judgment. See format_intent.py's docstring for why this uses the same
-    # exemplar-similarity technique as intent classification but is NOT
-    # treated with the same caution as the risk_safety evasion gate — the
-    # failure mode here (an unrequested table) has no safety implication.
-    format_instruction = build_format_instruction(request.query)
-    # Independent of format_instruction above — fires on the query's CONTENT
-    # shape (a professional-judgment call), not an explicit format request.
-    # Empty string when not applicable; see format_intent.py's docstring.
-    decision_instruction = build_decision_framework_instruction(request.query)
-    response_instruction = build_response_instruction(understanding)
-
-    # Does the evidence span every subject the query named? Bundle confidence
-    # cannot answer that — it measures how much evidence arrived, not whether
-    # it covers what was asked, so four sources all describing one half of a
-    # two-subject question read as "sufficient". Observed on a real query:
-    # "Compare accounts payable and accrued expenses" retrieved an
-    # accounts-payable process document, reported sufficient confidence, and
-    # answered with an accounts-payable process checklist — a different
-    # question, answered well. Deterministic and local; see coverage.py.
-    coverage_report = assess_coverage(
-        request.query, reranked, ranks_by_source_id=document_authority_ranks,
-    )
-    coverage_requirement = coverage_instruction(coverage_report)
-
-    grounded_input = (
-        f"Use ONLY the following retrieved context to answer the query. "
-        f"Do not use general knowledge.\n"
-        f"{_CITATION_STYLE_RULE}\n"
-        f"When the answer involves a calculation, show the formula and the "
-        f"substituted values step by step, using only figures and rates "
-        f"present in the retrieved context — never a rate or figure from "
-        f"memory.\n"
-        f"Scale Markdown structure to the content — do not force headings onto a "
-        f"short answer. For a single fact, a definition, or a case where the "
-        f"context doesn't cover the query, respond in one or two plain prose "
-        f"sentences: no title, no subheadings, no bullet list. Reserve a '# Title' "
-        f"line, '###' subheadings, and bullet lists with bold lead-in terms "
-        f"(e.g. '- **Term**: explanation') for answers that genuinely have "
-        f"multiple distinct sections or comparison points.\n"
-        f"{_RESPONSE_QUALITY_RULE}\n"
-        f"{_NATURAL_PHRASING_RULE}\n"
-        f"{response_instruction}\n"
-        f"{format_instruction}\n\n"
-        f"{decision_instruction}\n\n"
-        # Placed after the format instruction on purpose: a requested table
-        # must not be filled from general knowledge for a subject the
-        # evidence does not cover, so the evidence requirement is the last
-        # word on what may appear.
-        f"{coverage_requirement}\n\n"
-        f"{followup_context}"
-        f"=== Retrieved Context ===\n{context_text}\n\n"
-        f"=== User Query ===\n{request.query}"
-    )
-
-    # External-provider exposure boundary (ZL-ENG-03 §5.8): redact before
-    # grounded_input leaves the tenant trust boundary for the model gateway.
-    # Deliberately after prescreen/retrieval, not at pipeline entry — those
-    # steps need the raw query (see redaction.py's module docstring).
-    redaction_result = redact_for_external_exposure(grounded_input)
-    grounded_input = redaction_result.redacted_text
-    await audit_redaction_applied(
-        db, query_id=query_id, correlation_id=correlation_id,
-        tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-        redaction_applied=redaction_result.redaction_applied,
-        redaction_categories=redaction_result.redaction_categories,
-        commit=False,
-    )
-
-    composed_text: Optional[str] = None
-    prompt_id = "inline"
-    prompt_name = "Inline Context Prompt"
-
-    try:
-        standard_deduction_table_chunks = [
-            (index, chunk) for index, chunk in enumerate(reranked)
-            if chunk.get("metadata", {}).get("fact_type") == "standard_deduction_table"
-        ]
-        standard_deduction_chunk = next(
-            (
-                (index, chunk) for index, chunk in enumerate(reranked)
-                if chunk.get("metadata", {}).get("fact_type") == "standard_deduction"
-            ),
-            None,
-        )
-        formula_chunk = next(
-            (
-                (index, chunk) for index, chunk in enumerate(reranked)
-                if str(chunk.get("node_id", "")).startswith(FORMULA_REGISTRY_NODE_PREFIX)
-            ),
-            None,
-        )
-        reviewed_procedure_chunk = next(
-            (
-                (index, chunk) for index, chunk in enumerate(reranked)
-                if (chunk.get("metadata") or {}).get("source_id") in reviewed_source_ids
-            ),
-            None,
-        )
-        if reviewed_procedure_chunk is not None:
-            index, chunk = reviewed_procedure_chunk
-            ref = f"REF-{index + 1}"
-            source_id = (chunk.get("metadata") or {}).get("source_id")
-            if source_id == BANK_RECONCILIATION_GOVERNED_SOURCE_ID:
-                composed_text = compose_bank_reconciliation(request.query, ref)
-                prompt_name = "Deterministic Bank Reconciliation Response"
-            elif source_id == MONTH_END_CLOSE_GOVERNED_SOURCE_ID:
-                composed_text = compose_month_end_close(request.query, ref)
-                prompt_name = "Deterministic Month-End Close Response"
-            elif source_id == ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID:
-                composed_text = compose_accounting_fundamentals(request.query, ref)
-                prompt_name = "Deterministic Accounting Fundamentals Response"
-            else:
-                composed_text = compose_quarterly_results(request.query, ref)
-                prompt_name = "Deterministic User-Provided Data Response"
-            prompt_id = "deterministic-reviewed-education"
-        elif standard_deduction_table_chunks:
-            composed_text = _compose_standard_deduction_table(standard_deduction_table_chunks)
-            prompt_id = "deterministic-standard-deduction-table"
-            prompt_name = "IRS Standard Deduction Comparison Table"
-        elif standard_deduction_chunk is not None:
-            index, chunk = standard_deduction_chunk
-            composed_text = _compose_standard_deduction(chunk, f"REF-{index + 1}")
-            prompt_id = "deterministic-standard-deduction"
-            prompt_name = "IRS Annual Standard Deduction Response"
-        elif executed_formula_result is not None and formula_chunk is not None:
-            index, _chunk = formula_chunk
-            composed_text = _compose_formula_result(executed_formula_result, f"REF-{index + 1}", request.query)
-            prompt_id = "deterministic-formula-result"
-            prompt_name = "Governed Named Formula Response"
-        elif prompt:
-            prompt_row, composed_text = await model_gateway_service.run_test_prompt(
-                db, prompt.id, grounded_input, actor_id, tenant_id, correlation_id=query_id
-            )
-            prompt_id = prompt_row.id
-            prompt_name = prompt_row.name
-        else:
-            # No prompt template — use grounded context directly as fallback
-            if context_text:
-                composed_text = (
-                    f"Based on the retrieved sources:\n\n{context_text}\n\n"
-                    f"Please note: This is an educational summary only. "
-                    f"Consult a qualified professional for specific advice."
-                )
-            else:
-                # No context, no prompt — cannot answer safely
-                composed_text = None
-
-    except Exception as exc:
-        await audit_composition_failed(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, error=str(exc),
-        )
-        # Degrade to clarification since composition failed
-        response = AskKritonResponse(
-            query_id=query_id, correlation_id=correlation_id,
-            outcome="refused", route=ROUTE_REFUSAL,
-            safety=safety_state, confidence_state=effective_confidence,
-            source_bundle=source_bundle, answer=None,
-            next_action=NextAction(
-                type="composition_failed",
-                message="Kriton™ could not compose a response at this time. Please try again shortly.",
-            ),
-            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-        )
-        await _finalise_and_return(
-            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
-            audit_chain_id=audit_chain_id, actor_id=actor_id,
-            outcome=response.outcome, route=ROUTE_REFUSAL, start_time=start_time,
-        )
-        if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
-        return response
-
-    if not composed_text:
-        # No content — insufficient sources and no fallback
-        await audit_refusal_returned(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, reason="Insufficient sources; cannot answer without grounded content",
-        )
-        response = AskKritonResponse(
-            query_id=query_id, correlation_id=correlation_id,
-            outcome="clarification_required", route=ROUTE_CLARIFICATION,
-            safety=safety_state, confidence_state=effective_confidence,
-            source_bundle=source_bundle, answer=None,
-            next_action=NextAction(
-                type="ask_clarifying_question",
-                message=(
-                    "Kriton™ could not find sufficient sources to answer your query. "
-                    "Could you clarify your jurisdiction, reporting framework, or topic scope?"
-                ),
-            ),
-            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-        )
-        await _finalise_and_return(
-            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
-            audit_chain_id=audit_chain_id, actor_id=actor_id,
-            outcome=response.outcome, route=ROUTE_CLARIFICATION, start_time=start_time,
-        )
-        return response
-
-    # ── Step 7: Post-composition validation — Massarius™ Checkpoint C
-    # (§10, RG-03; ZL-ENG-03 §5.7) ────────────────────────────────────────────
-    # Validated against composed_text (the model's own output), not the
-    # disclaimer-appended text: the mandatory disclaimer is fixed boilerplate
-    # we fully control, not model output, so content-safety checks (grounding,
-    # citation binding, prohibited-claim, authority ceiling, confidence
-    # support) shouldn't run against it — and in practice can't safely: the
-    # disclaimer's own required wording ("does not constitute professional
-    # ... tax, audit or legal advice") trips the prohibited-claim scanner,
-    # which matches "legal advice" regardless of a preceding negation. Passing
-    # disclaimer_required=False here skips checkpoint 6 (disclaimer presence)
-    # for the same reason — build_validated_disclaimer below appends it
-    # deterministically, so that check would only ever fail if this function
-    # itself were broken, not the model's answer.
-    validation = (
-        validate_answer(
-            composed_text, source_bundle, disclaimer_required=False,
-            grounding_context=context_text, query_text=request.query,
-            provenance=provenance_store,
-        )
-        if source_bundle else None
-    )
-
-    # Presentation failures are quality defects, not professional-risk events.
-    # For LOW/MEDIUM educational answers, make one tightly constrained repair
-    # attempt and run the entire validator again. Safety-related failures never
-    # enter this branch. If repair still fails only stylistically, ask the user
-    # to retry rather than creating a human-review case with no expert decision
-    # to make.
-    if (
-        validation
-        and not validation.passed
-        and risk_level in {"LOW", "MEDIUM"}
-        and prompt is not None
-        and _has_only_presentation_failures(validation.failures)
-    ):
-        repair_input = (
-            "Rewrite the draft to fix only the listed presentation problems. "
-            "Use your own concise wording; do not copy a long passage from the context. "
-            "For a genuine explanatory question, include the supported purpose or a "
-            "brief supported example when the context contains one. Preserve every "
-            "material fact, qualification, and valid [REF-N] citation. Do not introduce "
-            "any fact, number, rule, citation, or recommendation absent from the context. "
-            "Return only the repaired answer.\n\n"
-            f"Validation problems:\n- " + "\n- ".join(validation.failures) + "\n\n"
-            f"=== Retrieved Context ===\n{context_text}\n\n"
-            f"=== User Query ===\n{request.query}\n\n"
-            f"=== Draft ===\n{composed_text}"
-        )
-        try:
-            _repair_prompt, repaired_text = await model_gateway_service.run_test_prompt(
-                db, prompt.id, repair_input, actor_id, tenant_id, correlation_id=query_id,
-            )
-            repaired_text = _strip_meta_preamble(repaired_text) if repaired_text else repaired_text
-            repaired_text = _strip_trailing_raw_references(repaired_text) if repaired_text else repaired_text
-            repaired_text = _strip_raw_source_headers(repaired_text) if repaired_text else repaired_text
-            if repaired_text:
-                repaired_validation = validate_answer(
-                    repaired_text, source_bundle, disclaimer_required=False,
-                    grounding_context=context_text, query_text=request.query,
-                    provenance=provenance_store,
-                )
-                composed_text = repaired_text
-                validation = repaired_validation
-                prompt_name = f"{prompt_name} + presentation repair"
-        except Exception:
-            # The original rejected draft remains the validation subject. The
-            # route below handles it without exposing invalid output.
-            pass
-
-    if (
-        validation
-        and not validation.passed
-        and risk_level in {"LOW", "MEDIUM"}
-        and _has_only_presentation_failures(validation.failures)
-    ):
-        validation = validation.model_copy(update={"degraded_route": ROUTE_CLARIFICATION})
-
-    # Hash and audit the final repaired-or-original composition, never an
-    # intermediate draft that was subsequently replaced.
-    output_hash = hashlib.sha256(composed_text.encode()).hexdigest()[:32]
-    await audit_composition_completed(
-        db, query_id=query_id, correlation_id=correlation_id,
-        tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-        actor_id=actor_id, prompt_id=prompt_id, output_hash=output_hash,
-        commit=False,
-    )
-
-    final_text = build_validated_disclaimer(
-        composed_text, risk_level,
-        route_decision.disclaimer_required,
-        effective_confidence,
-    )
-    await audit_validation_completed(
-        db, query_id=query_id, correlation_id=correlation_id,
-        tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-        passed=validation.passed if validation else False,
-    )
-
-    if validation and not validation.passed and not force_direct:
-        await audit_composition_rejected(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, failures=validation.failures,
-            degraded_route=validation.degraded_route,
-        )
-        # Invalid answer is NEVER returned; degrade route
-        if validation.degraded_route == ROUTE_HUMAN_REVIEW:
-            review_case = await create_review_case(
-                db, query_id=query_id, correlation_id=correlation_id,
-                tenant_id=tenant_id, risk_level=risk_level,
-                confidence_state=effective_confidence,
-                reason=f"Composition rejected: {'; '.join(validation.failures[:2])}",
-            )
-            await audit_human_review_created(
-                db, query_id=query_id, correlation_id=correlation_id,
-                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-                actor_id=actor_id, review_case_id=review_case.id,
-            )
-            response = AskKritonResponse(
-                query_id=query_id, correlation_id=correlation_id,
-                outcome="escalated", route=ROUTE_HUMAN_REVIEW,
-                safety=safety_state, confidence_state=effective_confidence,
-                source_bundle=source_bundle, answer=None,
-                next_action=NextAction(type="escalate", message="Response validation failed; escalated for review."),
-                audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-            )
-        elif validation.degraded_route == ROUTE_CLARIFICATION:
-            await audit_clarification_returned(
-                db, query_id=query_id, correlation_id=correlation_id,
-                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-                actor_id=actor_id, clarification_cycle=clarification_cycle,
-            )
-            response = AskKritonResponse(
-                query_id=query_id, correlation_id=correlation_id,
-                outcome="clarification_required", route=ROUTE_CLARIFICATION,
-                safety=safety_state, confidence_state=effective_confidence,
-                source_bundle=source_bundle, answer=None,
-                next_action=NextAction(
-                    type="ask_clarifying_question",
-                    message=(
-                        "Kriton could not produce a clean source-grounded response after an "
-                        "automatic rewrite. Please retry with a narrower topic or requested format."
-                    ),
-                ),
-                audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-            )
-        else:
-            await audit_refusal_returned(
-                db, query_id=query_id, correlation_id=correlation_id,
-                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-                actor_id=actor_id,
-                reason=f"Composition rejected: {'; '.join(validation.failures[:2])}",
-            )
-            response = AskKritonResponse(
-                query_id=query_id, correlation_id=correlation_id,
-                outcome="refused", route=ROUTE_REFUSAL,
-                safety=safety_state, confidence_state=effective_confidence,
-                source_bundle=source_bundle, answer=None,
-                next_action=NextAction(type="refusal", message="Response validation failed. Please rephrase your query."),
-                audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-            )
-        await _finalise_and_return(
-            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
-            audit_chain_id=audit_chain_id, actor_id=actor_id,
-            outcome=response.outcome, route=response.route, start_time=start_time,
-        )
-        if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
-        return response
-
-    # ── Step 8: Finalise response ─────────────────────────────────────────────
-    # final_text already has the mandatory disclaimer (§10) applied above, and
-    # has passed Checkpoint C validation against that same text.
-
-    # Build limitations list
-    limitations: list[str] = list(decision.limitations or [])
-    if route_decision.disclaimer_required:
-        limitations.append(
-            "This response is for educational purposes only. Consult a qualified professional."
-        )
-    # Named subjects with no supporting evidence are stated to the reader, not
-    # only to the model — a gap the answer text mentions is easy to skim past,
-    # and a limitation is what a reviewer checks.
-    if (coverage_gap := coverage_limitation(coverage_report)) is not None:
-        limitations.append(coverage_gap)
-
-    answer = ComposedAnswer(
-        text=final_text,
-        citations=rag_citations,
-        limitations=limitations,
-        prompt_id=prompt_id,
-        prompt_name=prompt_name,
-        output_text=final_text,
-        presentation=build_answer_presentation(
-            request.query, final_text,
-            # The reader's presentation intent, from the classifier when it
-            # ran. The visual KIND is still chosen from the dataset's shape;
-            # this only breaks a tie the data leaves open.
-            presentation_hint=understanding.presentation_hint,
-            citation_refs=[citation.ref_id for citation in rag_citations],
-        ),
-        calculation_widget=calculation_widget,
-    )
-
-    response = AskKritonResponse(
-        query_id=query_id,
-        correlation_id=correlation_id,
-        outcome="answered",
-        route=ROUTE_LLM,
-        safety=safety_state,
-        confidence_state=effective_confidence,
-        source_bundle=source_bundle,
-        answer=answer,
-        next_action=None,
-        audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-    )
-
-    # Audit BEFORE response is returned (§13, RG-04)
-    await _finalise_and_return(
-        db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
-        audit_chain_id=audit_chain_id, actor_id=actor_id,
-        outcome=response.outcome, route=route, start_time=start_time,
-    )
-
-    if idempotency_key:
-        await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
-
-    return response
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -4488,6 +2688,41 @@ _RAW_SOURCE_HEADER_PATTERN = re.compile(
 def _strip_raw_source_headers(text: str) -> str:
     """Keep citation markers while removing leaked internal context headers."""
     return _RAW_SOURCE_HEADER_PATTERN.sub(r"\1", text)
+
+
+_LEAKED_CONTEXT_LABEL_PATTERN = re.compile(
+    r"(?:^|(?<=\s))Content:\s*(?=(?:\"|')?[A-Z])",
+    re.IGNORECASE,
+)
+
+
+def _strip_leaked_context_labels(text: str) -> str:
+    """Remove internal context-envelope labels copied into user prose."""
+    return _LEAKED_CONTEXT_LABEL_PATTERN.sub("", text)
+
+
+def _visual_data_clarification(query: str) -> str | None:
+    """Ask for missing chart data instead of inventing financial figures."""
+    if re.search(r"\b(?:our|my)\s+(?:company(?:'s)?\s+)?current\s+bank\s+balance\b", query, re.I):
+        return "I cannot determine your current bank balance without an authorized connected bank or accounting source. Connect or select that source, then specify the account and balance date."
+    if re.search(r"\bconvert\b.*\b(?:usd|dollars?)\b.*\b(?:india|inr|rupees?)\b", query, re.I) and not re.search(r"\b(?:today|current|latest|as\s+of|on\s+20\d{2})\b", query, re.I):
+        return "Please confirm the exchange-rate date—for example, the latest available reference rate or a specific date—and confirm that ‘India’ means Indian rupees (INR). Currency conversion depends on the selected rate date."
+    malformed_currency = re.search(r"[$£€]\s*\d{1,3},\d{2}(?!\d)", query)
+    if malformed_currency:
+        return (
+            f"Please confirm the amount written as **{malformed_currency.group(0)}**. "
+            "It appears to have an incomplete thousands grouping—for example, did you mean $11,000 or $110,000? "
+            "I will not guess the value before creating the visualization."
+        )
+    if re.search(r"[$£€]\s*[\d,]+|\b\d+(?:\.\d+)?\s*%", query) or len(re.findall(r"\b\d+(?:\.\d+)?\b", query)) >= 2:
+        return None
+    if re.search(r"quarterly.*revenue.*gross\s+margin|revenue.*gross\s+margin.*quarters?", query, re.I):
+        return "Please provide revenue and either COGS or gross margin for Q1–Q4. I will validate the figures and create the quarterly trend without inventing values."
+    if re.search(r"accounts?[\s-]+receivable.*aging", query, re.I):
+        return "Please provide amounts for your aging buckets—for example current, 1–30, 31–60, 61–90 and over 90 days. I will validate the total and create the aging chart."
+    if re.search(r"ratio.*benchmark|benchmark.*ratio", query, re.I):
+        return "Please name the ratio, provide its inputs or result, and provide the benchmark—for example current assets $750,000, current liabilities $300,000 and benchmark 2.0."
+    return None
 
 
 def _compose_formula_result(result, ref: str, query: str = "") -> str:
@@ -4598,77 +2833,28 @@ _STANDARD_DEDUCTION_AMOUNTS = {
     2026: {"single": 16_100, "married filing separately": 16_100, "head of household": 24_150, "married filing jointly": 32_200},
 }
 
-_STANDARD_DEDUCTION_URLS = {
-    2023: "https://www.irs.gov/pub/irs-prior/p501--2023.pdf",
-    2024: "https://www.irs.gov/publications/p17/ar01.html",
-    2025: "https://www.irs.gov/irb/2025-45_IRB",
-    2026: "https://www.irs.gov/newsroom/irs-releases-tax-inflation-adjustments-for-tax-year-2026-including-amendments-from-the-one-big-beautiful-bill",
-}
-
-_STANDARD_DEDUCTION_STATUS_PATTERNS = (
-    ("married filing separately", r"\bmarried(?:\s+(?:couple|individuals?))?\s+filing\s+separately\b"),
-    ("married filing jointly", r"\bmarried(?:\s+(?:couple|individuals?))?\s+filing\s+jointly\b"),
-    ("head of household", r"\bhead\s+of\s+household\b"),
-    ("single", r"\bsingle(?:\s+(?:taxpayer|filer|individual))?\b"),
-)
-
-_STANDARD_DEDUCTION_STATUS_ORDER = (
-    "single", "married filing jointly", "married filing separately", "head of household",
-)
-
-
-def _standard_deduction_request(query: str) -> dict | None:
-    """Resolve every explicitly requested supported year and filing status."""
-    if not re.search(r"\bstandard deductions?\b", query, re.I):
-        return None
-    years = sorted({int(year) for year in re.findall(r"\b(202[3-6])\b", query)})
-    if not years:
-        return None
-    lowered = query.lower()
-    statuses = {
-        status for status, pattern in _STANDARD_DEDUCTION_STATUS_PATTERNS
-        if re.search(pattern, lowered)
-    }
-    if re.search(r"\b(?:all|each)\s+(?:four\s+)?filing statuses\b", lowered):
-        statuses = set(_STANDARD_DEDUCTION_STATUS_ORDER)
-    ordered_statuses = [status for status in _STANDARD_DEDUCTION_STATUS_ORDER if status in statuses]
-    if not ordered_statuses:
-        return None
-    return {"years": years, "filing_statuses": ordered_statuses}
-
 
 def _standard_deduction_fact(query: str) -> dict | None:
-    request = _standard_deduction_request(query)
-    if request is None or len(request["years"]) != 1 or len(request["filing_statuses"]) != 1:
+    if not re.search(r"\bstandard deduction\b", query, re.I):
         return None
-    year = request["years"][0]
-    filing_status = request["filing_statuses"][0]
-    return {"year": year, "filing_status": filing_status, "amount": _STANDARD_DEDUCTION_AMOUNTS[year][filing_status], "url": _STANDARD_DEDUCTION_URLS[year]}
-
-
-def _standard_deduction_year_chunk(governed_chunk: dict, request: dict, year: int) -> dict:
-    metadata = dict(governed_chunk.get("metadata", {}))
-    amounts = {
-        status: _STANDARD_DEDUCTION_AMOUNTS[year][status]
-        for status in request["filing_statuses"]
+    year_match = re.search(r"\b(202[3-6])\b", query)
+    if not year_match:
+        return None
+    lowered = query.lower()
+    filing_status = next(
+        (status for status in ("married filing separately", "married filing jointly", "head of household", "single") if status in lowered),
+        None,
+    )
+    if filing_status is None:
+        return None
+    year = int(year_match.group(1))
+    urls = {
+        2023: "https://www.irs.gov/pub/irs-prior/p501--2023.pdf",
+        2024: "https://www.irs.gov/publications/p17/ar01.html",
+        2025: "https://www.irs.gov/irb/2025-45_IRB",
+        2026: "https://www.irs.gov/newsroom/irs-releases-tax-inflation-adjustments-for-tax-year-2026-including-amendments-from-the-one-big-beautiful-bill",
     }
-    metadata.update({
-        "title": f"IRS — {year} Standard Deduction",
-        "jurisdiction": "US",
-        "file_path": _STANDARD_DEDUCTION_URLS[year],
-        "fact_type": "standard_deduction_table",
-        "year": year,
-        "amounts": amounts,
-    })
-    lines = [f"IRS annual standard deductions for tax year {year}:"]
-    lines.extend(f"- {status}: ${amount:,}." for status, amount in amounts.items())
-    return {
-        **governed_chunk,
-        "text": "\n".join(lines),
-        "metadata": metadata,
-        "score": 1.0,
-        "node_id": f"irs-standard-deduction-table-{year}",
-    }
+    return {"year": year, "filing_status": filing_status, "amount": _STANDARD_DEDUCTION_AMOUNTS[year][filing_status], "url": urls[year]}
 
 
 def _standard_deduction_chunk(governed_chunk: dict, fact: dict) -> dict:
@@ -4696,34 +2882,10 @@ def _standard_deduction_chunk(governed_chunk: dict, fact: dict) -> dict:
 def _compose_standard_deduction(chunk: dict, ref_id: str) -> str:
     metadata = chunk["metadata"]
     status = metadata["filing_status"]
-    filer_description = {
-        "single": "a single filer",
-        "married filing separately": "a married individual filing separately",
-        "married filing jointly": "a married couple filing jointly",
-        "head of household": "a head-of-household filer",
-    }.get(status, f"a {status} filer")
     return (
-        f"For tax year {metadata['year']}, the basic standard deduction for "
-        f"{filer_description} is ${metadata['amount']:,}. [{ref_id}]"
+        f"For tax year {metadata['year']}, the basic standard deduction for a "
+        f"{status} filer is ${metadata['amount']:,}. [{ref_id}]"
     )
-
-
-def _compose_standard_deduction_table(chunks: list[tuple[int, dict]]) -> str:
-    ordered = sorted(chunks, key=lambda item: item[1]["metadata"]["year"])
-    years = [chunk["metadata"]["year"] for _, chunk in ordered]
-    refs = {chunk["metadata"]["year"]: f"REF-{index + 1}" for index, chunk in ordered}
-    statuses = list(ordered[0][1]["metadata"]["amounts"])
-    header = "| Filing status | " + " | ".join(str(year) for year in years) + " |"
-    divider = "|---|" + "---:|" * len(years)
-    rows = []
-    for status in statuses:
-        label = status.title()
-        values = [
-            f"${chunk['metadata']['amounts'][status]:,} [{refs[year]}]"
-            for year, (_, chunk) in zip(years, ordered)
-        ]
-        rows.append(f"| {label} | " + " | ".join(values) + " |")
-    return "\n".join([header, divider, *rows])
 
 
 def _compose_real_gdp_change(context_text: str, ref_id: str) -> str:
@@ -4917,57 +3079,6 @@ def _make_security_incident_response(query_id, correlation_id, audit_chain_id, t
         next_action=NextAction(
             type="security_incident",
             message="Your request could not be processed due to a security policy violation.",
-        ),
-        audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-    )
-
-
-def _make_response_from_prescreen_decision(decision, query_id, correlation_id, audit_chain_id) -> AskKritonResponse:
-    """Converts a risk_classifier.pre_screen() SafetyDecision (a hard block)
-    into the canonical response contract. decision.route is one of
-    SECURITY_INCIDENT/CLARIFICATION/HUMAN_REVIEW/REFUSAL/LICENSE_PATH —
-    escalation-case/security-incident persistence for these was already
-    handled inside risk_safety_service.pre_screen()'s _finalize() (via
-    sync_db), so this only shapes the API response, it doesn't re-persist
-    anything."""
-    if decision.route == ROUTE_SECURITY_INCIDENT:
-        return _make_security_incident_response(
-            query_id, correlation_id, audit_chain_id,
-            trigger=decision.restricted_sub_class or "security_policy",
-        )
-    if decision.route == ROUTE_CLARIFICATION:
-        return AskKritonResponse(
-            query_id=query_id, correlation_id=correlation_id,
-            outcome="clarification_required", route=ROUTE_CLARIFICATION,
-            safety=SafetyState(risk_level=decision.risk_level, policy_state="needs_more_context"),
-            confidence_state="insufficient", source_bundle=None, answer=None,
-            next_action=NextAction(
-                type="ask_clarifying_question",
-                message=decision.refusal_text or "Could you provide more context, including your jurisdiction?",
-            ),
-            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-        )
-    if decision.route == ROUTE_HUMAN_REVIEW:
-        return AskKritonResponse(
-            query_id=query_id, correlation_id=correlation_id,
-            outcome="escalated", route=ROUTE_HUMAN_REVIEW,
-            safety=SafetyState(risk_level=decision.risk_level, policy_state="blocked"),
-            confidence_state="insufficient", source_bundle=None, answer=None,
-            next_action=NextAction(
-                type="escalate",
-                message="This query has been escalated to a qualified reviewer for review before any response is composed.",
-            ),
-            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-        )
-    # REFUSAL and any other RESTRICTED-tier route (e.g. academic integrity)
-    return AskKritonResponse(
-        query_id=query_id, correlation_id=correlation_id,
-        outcome="refused", route=ROUTE_REFUSAL,
-        safety=SafetyState(risk_level=decision.risk_level, policy_state="blocked"),
-        confidence_state="insufficient", source_bundle=None, answer=None,
-        next_action=NextAction(
-            type="refusal",
-            message=decision.refusal_text or "This request cannot be processed.",
         ),
         audit_reference=AuditReference(audit_chain_id=audit_chain_id),
     )

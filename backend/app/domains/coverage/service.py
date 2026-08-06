@@ -13,6 +13,19 @@ from typing import Iterable
 
 from app.orchestration.schemas import SourceBundle
 
+# Real gap (2026-08-06): "What is the standard corporate tax rate in
+# India?" was gated by the "corporate tax" rule below, which requires an
+# IRC/CFR (US Internal Revenue Code) source — this whole registry is
+# explicitly US-scoped (see module docstring) and never checked WHICH
+# country's tax question it was looking at, so a plainly non-US question
+# was blocked pending a US authority it never needed. Reuses the same
+# jurisdiction-name set query_signals.py already recognizes, minus the
+# US names themselves, so a query naming a different country skips these
+# US-only coverage rules entirely rather than demanding a US source for it.
+_NON_US_JURISDICTION_TERMS = re.compile(
+    r"\b(UK|United Kingdom|EU|European Union|Australia|Canada|India)\b", re.I,
+)
+
 
 @dataclass(frozen=True)
 class CoverageRule:
@@ -118,6 +131,8 @@ def assess_us_professional_coverage(query: str, source_bundle: SourceBundle | No
             reason="The question does not specify a tax year.",
             message="Which tax year should Kriton™ use for the standard deduction amount?",
         )
+    if _NON_US_JURISDICTION_TERMS.search(query):
+        return CoverageDecision(applies=False, covered=True)
     for rule in _RULES:
         if not _matches_any(lowered, rule.patterns):
             continue

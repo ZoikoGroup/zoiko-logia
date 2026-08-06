@@ -50,6 +50,7 @@ _USEFUL_LIFE_PATTERN = re.compile(
     r"(?:"
     r"(\d+)[\s-]*year(?:s)?\s+(?:useful\s+)?life"
     r"|(?:useful\s+)?life\s+(?:of\s+)?(\d+)[\s-]*year(?:s)?"
+    r"|(?:over|for)\s+(?:a\s+period\s+of\s+)?(\d+)[\s-]*year(?:s)?\b"
     r")",
     re.IGNORECASE,
 )
@@ -73,6 +74,70 @@ _SALVAGE_VALUE_PATTERN = re.compile(
 _DEPRECIATION_CALCULATION_INTENT_PATTERN = re.compile(
     r"\b(calculate|compute|determine|figure\s+out|work\s+out)\b", re.IGNORECASE
 )
+
+_NUMBER_WORDS = {
+    "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+    "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
+    "eleven": "11", "twelve": "12", "fifteen": "15", "twenty": "20",
+}
+
+
+def _normalize_number_words(query: str) -> str:
+    return re.sub(
+        r"\b(" + "|".join(_NUMBER_WORDS) + r")[\s-]+year\b",
+        lambda match: f"{_NUMBER_WORDS[match.group(1).lower()]}-year",
+        query,
+        flags=re.IGNORECASE,
+    )
+
+
+# Real gap (2026-08-06): "Our revenue grew from twelve thousand to fifteen
+# thousand five hundred this quarter — what's the percentage increase?"
+# matched the percentage_change trigger below but every _labeled_number
+# lookup requires digits — _NUMBER_WORDS above only ever normalizes a
+# number-word immediately before "year" (depreciation's own narrow use
+# case), so a genuine input figure spelled out in prose was invisible to
+# this whole module and the calculation silently never ran. Deliberately a
+# SEPARATE, self-contained normalizer (not a cross-domain import of
+# reference_data/user_provided_data.py's near-identical one) — this
+# module's own docstring establishes it as an independent pattern bank,
+# same as arithmetic_extraction.py/prescreen.py/risk_classifier.py.
+_SPELLED_ONES = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+}
+_SPELLED_TENS = {
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70,
+    "eighty": 80, "ninety": 90,
+}
+_SPELLED_SCALES = {"hundred": 100, "thousand": 1000, "million": 1_000_000, "billion": 1_000_000_000}
+_SPELLED_NUMBER_WORD = r"(?:" + "|".join(
+    sorted(list(_SPELLED_ONES) + list(_SPELLED_TENS) + list(_SPELLED_SCALES), key=len, reverse=True)
+) + r")"
+_SPELLED_NUMBER_PHRASE = re.compile(rf"\b{_SPELLED_NUMBER_WORD}(?:[-\s]{_SPELLED_NUMBER_WORD})+\b", re.IGNORECASE)
+
+
+def _spelled_number_to_value(phrase: str) -> int:
+    total = 0
+    current = 0
+    for token in re.split(r"[\s-]+", phrase.strip().lower()):
+        if not token:
+            continue
+        if token in _SPELLED_ONES:
+            current += _SPELLED_ONES[token]
+        elif token in _SPELLED_TENS:
+            current += _SPELLED_TENS[token]
+        elif token == "hundred":
+            current = (current or 1) * 100
+        elif token in _SPELLED_SCALES:
+            total += (current or 1) * _SPELLED_SCALES[token]
+            current = 0
+    return total + current
+
+
+def _normalize_spelled_out_numbers(query: str) -> str:
+    return _SPELLED_NUMBER_PHRASE.sub(lambda m: str(_spelled_number_to_value(m.group(0))), query)
 
 
 def _has_depreciation_calculation_intent(query: str) -> bool:
@@ -107,6 +172,7 @@ def extract_straight_line_depreciation_inputs(query: str) -> Optional[dict]:
     Salvage value defaults to 0 only for the literal phrase "no salvage
     value"; any other salvage phrasing must state the figure explicitly or
     this returns None rather than assuming zero."""
+    query = _normalize_number_words(query)
     if not _DEPRECIATION_TRIGGER_PATTERN.search(query):
         return None
 
@@ -142,15 +208,31 @@ def extract_straight_line_depreciation_inputs(query: str) -> Optional[dict]:
 
 def _labeled_number(query: str, labels: tuple[str, ...], *, unit: str) -> Optional[dict]:
     label_pattern = "|".join(re.escape(label).replace(r"\ ", r"[\s_-]+") for label in labels)
-    suffix = r"\s*%" if unit == "percent" else ""
+    # Accepts the spelled-out word too — "5 percent"/"5 percentage" reads as
+    # naturally as "5%" but only the literal "%" sign was recognized before.
+    suffix = r"\s*(?:%|percent(?:age)?)" if unit == "percent" else ""
+    # Live bug: "[\d,]+" is satisfied by a bare comma alone (no digit
+    # required) — for "$150,000 assets, $40,000 inventory" the forward
+    # pattern "matched" on "assets," by capturing just that trailing comma
+    # as the "number", which then failed to parse as a Decimal and returned
+    # None — without ever falling through to the correct reverse pattern
+    # ("$150,000 assets"), since a match (however bogus) short-circuits that
+    # fallback. Requiring the capture to start with an actual digit fixes
+    # both the false match here and, by construction, every other formula
+    # routed through this same shared helper.
     match = re.search(
-        rf"\b(?:{label_pattern})\b\s*(?:is|are|of|=|:|at)?\s*\$?\s*([\d,]+(?:\.\d+)?){suffix}",
+        rf"\b(?:{label_pattern})\b\s*(?:is|are|was|were|of|=|:|at)?\s*\$?\s*(\d[\d,]*(?:\.\d+)?){suffix}",
         query,
         re.IGNORECASE,
     )
     if not match:
+        # "$400,000 in sales" / "$250,000 of cost of goods sold" — the
+        # forward pattern already tolerated a connector word between label
+        # and number ("is|are|of|=|:|at"), but this reverse (number-first)
+        # pattern required the label immediately after with no connector at
+        # all, so "in"/"of" between the number and the label fell through.
         match = re.search(
-            rf"\$?\s*([\d,]+(?:\.\d+)?){suffix}\s*(?:{label_pattern})\b",
+            rf"\$?\s*(\d[\d,]*(?:\.\d+)?){suffix}\s*(?:in|of)?\s*(?:{label_pattern})\b",
             query,
             re.IGNORECASE,
         )
@@ -161,13 +243,29 @@ def _labeled_number(query: str, labels: tuple[str, ...], *, unit: str) -> Option
 
 
 _FORMULA_SPECS = (
+    (r"\bworking\s+capital\b", "working_capital", {
+        "current_assets": (("current assets",), "USD"),
+        "current_liabilities": (("current liabilities",), "USD"),
+    }),
     (r"\bnet\s+(?:profit|income)\b", "net_profit", {
         "revenue": (("revenue", "sales"), "USD"),
         "total_expenses": (("total expenses", "expenses"), "USD"),
     }),
     (r"\bgross\s+profit\b", "gross_profit", {
         "revenue": (("revenue", "sales"), "USD"),
-        "cost_of_goods_sold": (("cost of goods sold", "cogs"), "USD"),
+        "cost_of_goods_sold": (("cost of goods sold", "cost of sales", "cogs"), "USD"),
+    }),
+    (r"\bprofit\s+margin\b|\bnet\s+margin\b", "profit_margin", {
+        "profit": (("profit", "net profit"), "USD"),
+        "revenue": (("revenue", "sales"), "USD"),
+    }),
+    (r"\bpercentage\s+(?:increase|change)\b", "percentage_change", {
+        "starting_value": (("from", "starting value", "old value"), "USD"),
+        "ending_value": (("to", "ending value", "new value"), "USD"),
+    }),
+    (r"\b(?:budget\s+)?variance\b", "budget_variance", {
+        "budget": (("budget",), "USD"),
+        "actual": (("actual spending", "actual"), "USD"),
     }),
     (r"\bgross\s+margin\b", "gross_margin", {
         "revenue": (("revenue", "sales"), "USD"),
@@ -183,18 +281,30 @@ _FORMULA_SPECS = (
         "cost_of_goods_sold": (("cost of goods sold", "cogs"), "USD"),
         "operating_expenses": (("operating expenses",), "USD"),
     }),
+    # "assets"/"liabilities" alone (no repeated "current") are listed as
+    # fallback aliases — live bug: "current ratio for $150,000 assets and
+    # $80,000 liabilities" drops the redundant "current" the second and
+    # third time, a normal English ellipsis, but the extractor required the
+    # literal two-word phrase "current assets"/"current liabilities" next to
+    # every number and returned nothing. Safe to alias broadly only here,
+    # scoped to formulas already gated behind their own "current/quick
+    # ratio" trigger match above.
     (r"\bcurrent\s+ratio\b", "current_ratio", {
-        "current_assets": (("current assets",), "USD"),
-        "current_liabilities": (("current liabilities",), "USD"),
+        "current_assets": (("current assets", "assets"), "USD"),
+        "current_liabilities": (("current liabilities", "liabilities"), "USD"),
     }),
     (r"\bquick\s+ratio\b|\bacid[\s-]+test\b", "quick_ratio", {
-        "current_assets": (("current assets",), "USD"),
+        "current_assets": (("current assets", "assets"), "USD"),
         "inventory": (("inventory",), "USD"),
-        "current_liabilities": (("current liabilities",), "USD"),
+        "current_liabilities": (("current liabilities", "liabilities"), "USD"),
     }),
     (r"\bdebt[\s-]+to[\s-]+equity\b", "debt_to_equity", {
-        "total_liabilities": (("total liabilities",), "USD"),
-        "total_equity": (("total equity",), "USD"),
+        "total_liabilities": (("total liabilities", "liabilities"), "USD"),
+        "total_equity": (("total equity", "equity"), "USD"),
+    }),
+    (r"\b(?:calculate|compute|determine|what\s+is)\b.*\bequity\b|\bequity\b.*\bassets?\b.*\bliabilit", "owners_equity", {
+        "total_assets": (("total assets", "assets"), "USD"),
+        "total_liabilities": (("total liabilities", "liabilities"), "USD"),
     }),
     (r"\binventory\s+turnover\b", "inventory_turnover", {
         "cost_of_goods_sold": (("cost of goods sold", "cogs"), "USD"),
@@ -223,22 +333,41 @@ _FORMULA_SPECS = (
         "price_per_unit": (("price per unit",), "USD"),
         "variable_cost_per_unit": (("variable cost per unit",), "USD"),
     }),
+    # "interest on" is listed as a principal alias — "Simple interest on
+    # $10,000 at 5% for 3 years" never says the word "principal" at all; the
+    # figure right after "interest on" is positionally the principal in this
+    # formula's own phrasing, so it's a safe, unambiguous alias rather than a
+    # generic fallback.
     (r"\bsimple\s+interest\b", "simple_interest", {
-        "principal": (("principal",), "USD"),
+        "principal": (("principal", "interest on"), "USD"),
         "annual_rate": (("annual rate", "rate"), "percent"),
         "time_years": (("time years", "years"), "years"),
     }),
     (r"\bcompound\s+interest\b", "compound_interest", {
-        "principal": (("principal",), "USD"),
+        "principal": (("principal", "interest on"), "USD"),
         "annual_rate": (("annual rate", "rate"), "percent"),
         "time_years": (("time years", "years"), "years"),
-        "compounding_periods_per_year": (("compounding periods per year",), "count"),
+        "compounding_periods_per_year": (
+            ("compounding periods per year", "compounding periods", "times per year", "times a year"), "count",
+        ),
     }),
-    (r"\b(?:monthly\s+)?loan\s+payment\b", "loan_payment", {
-        "principal": (("principal",), "USD"),
-        "annual_rate": (("annual rate", "rate"), "percent"),
-        "number_of_payments": (("number of payments", "payments"), "count"),
-    }),
+    # Live bug: the trigger required the literal contiguous phrase "loan
+    # payment" — "What is the monthly payment for a loan..." says the same
+    # thing in the opposite word order and matched nothing. The two
+    # proximity alternatives catch "payment ... loan" and "loan ... payment"
+    # within a few words either way without matching unrelated "loan"/
+    # "payment" mentions elsewhere in a longer answer.
+    (
+        r"\b(?:monthly\s+)?loan\s+payment\b|"
+        r"\bpayment\b(?:\W+\w+){0,4}\W+\bloan\b|"
+        r"\bloan\b(?:\W+\w+){0,4}\W+\bpayment\b",
+        "loan_payment",
+        {
+            "principal": (("principal",), "USD"),
+            "annual_rate": (("annual rate", "rate"), "percent"),
+            "number_of_payments": (("number of payments", "payments"), "count"),
+        },
+    ),
     (r"\b(?:overall\s+)?materiality\b", "materiality", {
         "benchmark_amount": (("benchmark amount", "benchmark"), "USD"),
         "user_selected_percentage": (("user selected percentage", "selected percentage", "percentage"), "percent"),
@@ -261,9 +390,20 @@ _FORMULA_SPECS = (
 
 
 def extract_named_formula(query: str) -> Optional[NamedFormulaExtraction]:
+    query = _normalize_number_words(_normalize_spelled_out_numbers(query))
     depreciation = extract_straight_line_depreciation_inputs(query)
     if depreciation is not None:
         return NamedFormulaExtraction("straight_line_depreciation", depreciation)
+    if re.search(r"\bworking[\s-]+capital\b", query, re.I):
+        asset_parts = [_labeled_number(query, (label,), unit="USD") for label in ("cash", "receivables", "inventory")]
+        liability_parts = [_labeled_number(query, (label,), unit="USD") for label in ("payables", "other current liabilities")]
+        if all(asset_parts) and all(liability_parts):
+            current_assets = sum(Decimal(part["value"]) for part in asset_parts if part)
+            current_liabilities = sum(Decimal(part["value"]) for part in liability_parts if part)
+            return NamedFormulaExtraction("working_capital", {
+                "current_assets": {"value": str(current_assets), "unit": "USD"},
+                "current_liabilities": {"value": str(current_liabilities), "unit": "USD"},
+            })
     for trigger, calculation_type, input_specs in _FORMULA_SPECS:
         if not re.search(trigger, query, re.IGNORECASE):
             continue
@@ -279,6 +419,9 @@ def extract_named_formula(query: str) -> Optional[NamedFormulaExtraction]:
 
 def identify_missing_formula_inputs(query: str) -> Optional[MissingFormulaInputs]:
     """Identify a named calculation with incomplete inputs without guessing."""
+    query = _normalize_number_words(_normalize_spelled_out_numbers(query))
+    if extract_named_formula(query) is not None:
+        return None
     if (
         _DEPRECIATION_TRIGGER_PATTERN.search(query)
         and _has_depreciation_calculation_intent(query)
@@ -297,6 +440,8 @@ def identify_missing_formula_inputs(query: str) -> Optional[MissingFormulaInputs
             "depreciation",
             ("depreciation_method", "asset_cost", "salvage_value", "useful_life_years"),
         )
+    if not re.search(r"\b(?:calculate|compute|determine|work\s+out|figure\s+out)\b", query, re.I):
+        return None
     for trigger, calculation_type, input_specs in _FORMULA_SPECS:
         if not re.search(trigger, query, re.IGNORECASE):
             continue

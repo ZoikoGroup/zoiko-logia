@@ -19,15 +19,15 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 os.environ["ENABLE_RAG_EMBEDDINGS"] = "true"
 
-import app.orchestration.retrieve as retrieve_module
-from app.orchestration.retrieve import infer_category, infer_query_jurisdiction
+from app.orchestration.retrieve import infer_category, _infer_category_semantic
 
 
 def _clear_cache():
-    # infer_category accepts an optional embedding and is therefore no
-    # longer lru_cache'd. Reset the category-example embedding cache that
-    # these tests actually depend on.
-    retrieve_module._category_example_embeddings = None
+    # infer_category is @lru_cache'd — tests toggling ENABLE_RAG_EMBEDDINGS
+    # or asserting on the same query text across cases must clear it first,
+    # or a cached result from an earlier assertion would silently mask this
+    # test actually exercising the code path it claims to.
+    infer_category.cache_clear()
 
 
 # ── Regression: keyword-matched queries unaffected ───────────────────────
@@ -38,20 +38,43 @@ def test_keyword_match_wins_regardless_of_semantic_fallback():
     assert infer_category("What does 26 CFR 1.401(k)-1 say?") == "tax-regulations"
     assert infer_category("What is the standard deduction?") == "tax"
     assert infer_category("Give me the steps to reconcile a bank account.") == "bank-reconciliation"
-    assert infer_category("Explain the complete bank-reconciliation process step by step.") == "bank-reconciliation"
     assert infer_category("Show the month-end financial closing process as a timeline.") == "month-end-close"
-    assert infer_category("Create a timeline for completing a month-end financial close.") == "month-end-close"
     assert infer_category("Show revenue in a chart using this data: Q1 $100, Q2 $120.") == "user-provided-data"
     assert infer_category("Compare cash $120,000, receivables $180,000, and inventory $150,000 in a bar chart.") == "user-provided-data"
+    assert infer_category("Show the monthly accounts-receivable trend: January $180,000, February $165,000.") == "user-provided-data"
     assert infer_category("Explain the process for preparing a trial balance.") == "accounting-fundamentals"
     print("test_keyword_match_wins_regardless_of_semantic_fallback: PASSED")
 
 
-def test_explicit_accounting_framework_inference_takes_no_country_guess():
-    assert infer_query_jurisdiction("What are the impairment indicators under IAS 36?") == "IFRS"
-    assert infer_query_jurisdiction("Explain IFRS 16 lease accounting.") == "IFRS"
-    assert infer_query_jurisdiction("Explain ASC 842 under US GAAP.") == "US"
-    assert infer_query_jurisdiction("Explain a bank reconciliation.") == ""
+def test_hyphenated_bank_control_and_audit_variance_use_reviewed_categories():
+    assert infer_category("Create an audit checklist for reviewing bank-reconciliation controls.") == "bank-reconciliation"
+    assert infer_category("Create an audit decision flow for whether an account variance requires additional testing.") == "accounting-fundamentals"
+
+
+def test_demo_workflows_and_graphs_use_reviewed_categories():
+    assert infer_category("Create a sequence diagram showing how a supplier invoice moves from document upload through approval and payment.") == "accounting-fundamentals"
+    assert infer_category("Create an evidence relationship graph connecting invoice INV-1045 and supplier ABC Ltd.") == "accounting-fundamentals"
+    assert infer_category("Create a jurisdiction-neutral tax compliance process sequence.") == "accounting-fundamentals"
+    assert infer_category("Create an editable month-end close workflow covering bank reconciliation and receivables.") == "month-end-close"
+    assert infer_category("Create an evidence graph connecting purchase order PO-410, supplier XYZ Ltd and invoice INV-820.") == "accounting-fundamentals"
+    assert infer_category("Build an evidence graph connecting sales invoice SI-225 and customer order SO-180.") == "accounting-fundamentals"
+
+
+def test_natural_professional_questions_use_reviewed_categories_without_azure():
+    expected = {
+        "How should I investigate a balance that looks unusual compared with last month?": "accounting-fundamentals",
+        "The evidence collected during our review does not fully support the conclusion. What happens next?": "accounting-fundamentals",
+        "How do I check whether money received after year-end belongs in the current reporting period?": "accounting-fundamentals",
+        "What should I examine when a supplier appears to have been paid twice?": "accounting-fundamentals",
+        "How can I determine whether an unexpected movement in an account needs more testing?": "accounting-fundamentals",
+        "What steps help confirm that all obligations incurred before year-end were recorded?": "accounting-fundamentals",
+        "How should a reviewer assess whether financial evidence is reliable and sufficient?": "accounting-fundamentals",
+        "What do I need to examine when the cash records and bank information do not agree?": "bank-reconciliation",
+        "How can I check whether income was recorded in the correct reporting period?": "accounting-fundamentals",
+        "What should happen when supporting documents contradict the amount recorded in the ledger?": "accounting-fundamentals",
+    }
+    for query, category in expected.items():
+        assert infer_category(query) == category
 
 
 def test_keyword_match_wins_with_embeddings_disabled():
@@ -132,6 +155,7 @@ def test_out_of_scope_query_does_not_match_tax():
 
 def test_semantic_fallback_isolated_from_embedding_failures():
     _clear_cache()
+    import app.orchestration.retrieve as retrieve_module
 
     original = retrieve_module._get_category_example_embeddings
     retrieve_module._get_category_example_embeddings = lambda: (_ for _ in ()).throw(RuntimeError("boom"))

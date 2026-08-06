@@ -48,6 +48,12 @@ Run the full stack for authenticated, tenant-scoped workflows. A frontend-only s
 
 ### Option A: Run Full Stack (Recommended)
 
+Before starting Docker Compose, provide `SUPABASE_URL`,
+`SUPABASE_SERVICE_ROLE_KEY`, `NEXT_PUBLIC_SUPABASE_URL`, and
+`NEXT_PUBLIC_SUPABASE_ANON_KEY` in the shell or a root `.env` file. The
+`NEXT_PUBLIC_*` values are embedded during `next build` and cannot be added
+only after the frontend image has been built.
+
 **1. Start the Backend (Terminal 1)**
 ```bash
 cd backend
@@ -55,9 +61,9 @@ cd backend
 pip install -r requirements.txt
 
 # Run the server (auto-creates the SQLite database on first boot)
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8010
 ```
-*Verify it's running by visiting http://localhost:8000/health*
+*Verify liveness at http://localhost:8010/health and dependency readiness at http://localhost:8010/ready.*
 
 **2. Start the Frontend (Terminal 2)**
 ```bash

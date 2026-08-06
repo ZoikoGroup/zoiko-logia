@@ -22,11 +22,12 @@ from __future__ import annotations
 import uuid
 import os
 import re
-from typing import Optional
+from datetime import date
+from dataclasses import dataclass
+from functools import lru_cache
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.domains.jurisdiction_locale.service import acceptable_jurisdiction_scopes
 from app.domains.source_library.service import list_sources, get_source_by_id
 from app.orchestration.schemas import SourceBundle, SourceSummary
 from app.orchestration.routing_matrix import (
@@ -43,10 +44,15 @@ from app.domains.reference_data.service import (
     TAVILY_GOVERNED_SOURCE_ID, SERPAPI_GOVERNED_SOURCE_ID,
 )
 from app.domains.calculation.service import POLICYENGINE_GOVERNED_SOURCE_ID
+from app.domains.calculation.formula_extraction import extract_named_formula
 from app.domains.reference_data.bank_reconciliation import BANK_RECONCILIATION_GOVERNED_SOURCE_ID
 from app.domains.reference_data.month_end_close import MONTH_END_CLOSE_GOVERNED_SOURCE_ID
 from app.domains.reference_data.accounting_fundamentals import ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID
-from app.domains.reference_data.user_provided_data import USER_PROVIDED_DATA_GOVERNED_SOURCE_ID
+from app.domains.reference_data.business_tax_review import BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID
+from app.domains.reference_data.user_provided_data import (
+    USER_PROVIDED_DATA_GOVERNED_SOURCE_ID,
+    extract_inline_dataset,
+)
 
 settings = get_settings()
 
@@ -71,6 +77,7 @@ _SINGLE_SOURCE_IS_SUFFICIENT: set[str] = {
     CONGRESS_GOVERNED_SOURCE_ID,
     BANK_RECONCILIATION_GOVERNED_SOURCE_ID, MONTH_END_CLOSE_GOVERNED_SOURCE_ID,
     ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID,
+    BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID,
     USER_PROVIDED_DATA_GOVERNED_SOURCE_ID,
 }
 
@@ -87,41 +94,70 @@ _SINGLE_AUTHORITATIVE_TITLE_MARKERS = (
     "federal reserve economic data",
 )
 
-
-def _jurisdiction_ok(source_scope: str, jurisdiction: str) -> bool:
-    """A source is in-scope for the requested jurisdiction when there's no
-    jurisdiction filter at all, the source is globally scoped, or the
-    source's own scope is one of the values acceptable_jurisdiction_scopes()
-    returns for this request (exact match for most jurisdictions; also the
-    bare state code and "US" for a state-qualified one like "US-CA")."""
-    if not jurisdiction:
-        return True
-    return source_scope == "Global" or source_scope in acceptable_jurisdiction_scopes(jurisdiction)
-
 _CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "user-provided-data": ["using this data", "use this data", "based on this data", "budget versus actual"],
+    "business-tax-review": [
+        "business tax return before filing", "reviewing a us business tax return",
+        "review a us business tax return", "company-specific tax-treatment question",
+        "company-specific tax treatment question", "jurisdiction details does kriton need",
+    ],
     "bank-reconciliation": [
         "bank reconciliation", "bank-reconciliation", "reconcile a bank", "reconcile the bank",
         "reconcile bank account", "cash reconciliation", "outstanding checks",
-        "deposits in transit",
+        "deposits in transit", "cash records and bank information", "cash records and bank statement",
     ],
     "month-end-close": [
-        "month-end close", "month end close", "financial closing process",
-        "financial close process", "month-end financial close", "month end financial close",
-        "period-end close", "period end close",
+        "month-end close", "month end close", "month-end financial close", "month end financial close", "financial closing process",
+        "financial close process", "period-end close", "period end close",
         "closing checklist", "close calendar",
     ],
     "accounting-fundamentals": [
         "cash accounting", "cash-basis accounting", "cash basis accounting",
         "accrual accounting", "accrual-basis accounting", "accrual basis accounting",
+        # Real gap (2026-08-05): "What is the accrual basis of accounting?"
+        # has "of" between "basis" and "accounting" — none of the phrases
+        # above match a keyword requiring those words adjacent, so the
+        # query silently fell through to no category match at all, even
+        # though a perfectly relevant governed source exists for exactly
+        # this question.
+        "cash basis of accounting", "accrual basis of accounting",
+        "revenue and profit", "revenue versus profit", "difference between revenue and profit",
+        "accounts payable and accounts receivable", "difference between accounts payable and accounts receivable",
+        "balance sheet and income statement", "balance sheet versus income statement", "balance sheet and an income statement",
+        "materiality mean", "define materiality",
+        "cash flow can be positive", "positive cash flow when a company reports a loss",
+        "internal audit and external audit", "internal audit versus external audit",
+        "intellectual property", "intellectual properties", "intelectual properites", "intelectual properties",
+        "retained earnings", "correcting journal entry", "recorded as revenue again",
+        "reliability and sufficiency of audit evidence", "scoring matrix for assessing",
+        "accounts receivable increased", "receivables increased", "revenue increased by",
+        "receivables grew", "working capital", "inventory increased", "inventory grew",
         "trial balance", "unadjusted trial balance", "adjusted trial balance",
-        "accounts-payable process", "accounts payable process", "order-to-cash", "order to cash",
+        "accounts-payable process", "accounts payable process", "invoice-approval process", "invoice approval process", "order-to-cash", "order to cash",
         "audit evidence process", "audit-evidence process", "audit evidence workflow",
+        "audit decision flow", "audit decision path", "account variance requires additional audit testing",
+        "balance that looks unusual", "unexpected movement in an account", "unexpected account movement",
+        "evidence collected during our review", "evidence does not support the conclusion",
+        "financial evidence is reliable and sufficient", "supporting documents contradict",
+        "compare five audit-evidence factors", "internal and external evidence",
+        "supplier appears to have been paid twice", "supplier paid twice", "duplicate supplier payment",
+        "supplier that appears to have been paid twice",
+        "editable workflow for investigating and approving a duplicate supplier payment",
+        "unexplained account variance", "drag-and-drop audit workflow",
+        "supplier invoice moves from document upload", "supplier invoice sequence diagram",
+        "evidence relationship graph", "evidence graph connecting", "sales invoice is supported by", "invoice evidence graph",
+        "jurisdiction-neutral tax process", "jurisdiction-neutral tax compliance",
+        "customer order moves through credit approval", "employee expense claim moves from submission",
+        "audit exception moves from identification", "unmatched supplier invoice",
+        "contradictory audit evidence", "jurisdiction-neutral indirect-tax process",
+        "jurisdiction-neutral indirect tax process",
+        "money received after year-end", "income was recorded in the correct reporting period",
+        "obligations incurred before year-end", "liability completeness",
     ],
     # Must come before "tax" — a query mentioning both ("exchange rate for
     # tax purposes") should route here, not fall into the generic "tax"
     # keyword match first.
-    "exchange-rate": ["exchange rate", "exchange rates", "currency exchange", "fx rate", "foreign exchange"],
+    "exchange-rate": ["exchange rate", "exchange rates", "currency exchange", "fx rate", "foreign exchange", "convert usd", "usd to india", "usd to inr"],
     # Must come before "tax" for the same reason as exchange-rate above — a
     # query mentioning both ("payroll tax rates for California") should
     # route here, not fall into the generic "tax" keyword match first.
@@ -185,15 +221,6 @@ _CATEGORY_KEYWORDS: dict[str, list[str]] = {
 }
 _DEFAULT_CATEGORY = "standards"
 
-
-def infer_query_jurisdiction(query: str) -> str:
-    """Infer an explicitly named reporting framework without guessing locale."""
-    if re.search(r"\b(?:ifrs|ias\s*\d+)\b", query, re.I):
-        return "IFRS"
-    if re.search(r"\b(?:us\s+gaap|asc\s*\d+)\b", query, re.I):
-        return "US"
-    return ""
-
 # Fallback for when _CATEGORY_KEYWORDS finds nothing — natural example
 # phrases per category (not keywords), matched by embedding similarity.
 # Unlike _CATEGORY_KEYWORDS above, matching here is *best score across all
@@ -222,6 +249,10 @@ _CATEGORY_EXAMPLES: dict[str, list[str]] = {
         "Compare cash accounting and accrual accounting.",
         "Explain how accrual accounting works in practice.",
         "Show the audit evidence process as a flow chart.",
+    ],
+    "business-tax-review": [
+        "Create a workflow to review a US business income-tax return separately from payroll taxes.",
+        "What facts and jurisdictions are needed for a company-specific tax treatment question?",
     ],
     "exchange-rate": [
         "What's the exchange rate between USD and EUR today?",
@@ -321,32 +352,24 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def _infer_category_semantic(query: str, query_embedding: tuple[float, ...] | None = None) -> str | None:
+def _infer_category_semantic(query: str) -> str | None:
     """Embedding-similarity fallback for infer_category() — reuses the
     shared rag/embeddings.py::get_embed_model() singleton already loaded
     whenever ENABLE_RAG_EMBEDDINGS is on, no second model load. Returns
     None (never raises) if that flag is off, the embedding call fails for
     any reason, or nothing clears settings.CATEGORY_SEMANTIC_THRESHOLD —
     callers must fall back to _DEFAULT_CATEGORY on None, today's exact
-    existing behavior when the keyword scan also finds nothing.
-
-    query_embedding: pass an already-computed embedding for this exact
-    query (e.g. the one orchestration/service.py already computed to run
-    the real vector search) to skip embedding it a second time here — see
-    infer_category()'s own docstring for why this matters (called up to
-    ~10 times per request)."""
+    existing behavior when the keyword scan also finds nothing."""
     if os.getenv("ENABLE_RAG_EMBEDDINGS", "").lower() not in {"1", "true", "yes"}:
         return None
     try:
-        if query_embedding is not None:
-            resolved_embedding = list(query_embedding)
-        else:
-            from app.domains.rag.embeddings import get_embed_model
+        from app.domains.rag.embeddings import get_embed_model
 
-            resolved_embedding = get_embed_model().get_text_embedding(query)
+        model = get_embed_model()
+        query_embedding = model.get_text_embedding(query)
         best_category, best_score = None, -1.0
         for category, embeddings in _get_category_example_embeddings().items():
-            score = max(_cosine_similarity(resolved_embedding, e) for e in embeddings)
+            score = max(_cosine_similarity(query_embedding, e) for e in embeddings)
             if score > best_score:
                 best_category, best_score = category, score
         return best_category if best_score >= settings.CATEGORY_SEMANTIC_THRESHOLD else None
@@ -360,44 +383,116 @@ _ELIGIBLE_STATUSES = {"ACTIVE", "APPROVED"}
 _RESTRICTED_STATUSES = {"DRAFT", "DEPRECATED", "BLOCKED", "RESTRICTED"}
 
 
-def infer_category(query: str, query_embedding: tuple[float, ...] | None = None) -> str:
+@lru_cache(maxsize=256)
+def infer_category(query: str) -> str:
     """Keyword match always wins when it hits (unchanged, zero behavior
     change for every query already routed correctly today) — semantic
     classification only runs as a fallback for the silent-default-to-
     "standards" case, the exact failure mode that's already bitten this
     codebase twice live (FICA/Texas phrasing, then EITC/HoH phrasing).
+    Cached: this function is called ~10 times per single ask_kriton()
+    request with the identical query string (once per live-data category
+    gate in orchestration/service.py) — without caching, a query that falls
+    through to the semantic path would pay the embedding-inference cost up
+    to 10x per request for identical input, the same redundant-recompute
+    anti-pattern already eliminated once in this codebase for
+    retrieve_documents() (see build_source_bundle's raw_chunks docstring)."""
+    rule_category = infer_category_rule(query)
+    if rule_category is not None:
+        return rule_category
+    semantic_category = _infer_category_semantic(query)
+    return semantic_category if semantic_category is not None else _DEFAULT_CATEGORY
 
-    query_embedding: pass an already-computed embedding for this exact
-    query (e.g. the one orchestration/service.py already computed to run
-    the real vector search) to skip embedding it a second time in the
-    semantic fallback below. A caller with no embedding on hand (e.g. a
-    standalone/test call) still gets one computed inline via
-    _infer_category_semantic()'s own fallback — fine for those rare/
-    non-request-serving paths, but the normal request path must always
-    pass one through to avoid a redundant, blocking model call for the
-    same text.
 
-    Not cached: query_embedding varies per call (a fresh tuple each time,
-    or None), which would defeat an lru_cache keyed on both arguments —
-    the keyword-match path above (which resolves the large majority of
-    queries) is a plain dict/regex scan cheap enough not to need caching;
-    only a query that falls all the way through to the semantic fallback
-    pays a real embedding-inference cost, and that path already returns
-    early via _get_category_example_embeddings()'s own module-level cache
-    of the *category* embeddings (the expensive, repeated-across-calls
-    part), not the per-query embedding itself.
-    """
+def infer_category_rule(query: str) -> str | None:
+    """Return only explicit, deterministic category matches."""
     lowered = query.lower()
+    # A complete current-turn dataset is itself governed evidence for a
+    # calculation/comparison/visualization. The extractor rejects external
+    # verification, current-rule and ambiguous/incomplete requests, so this
+    # precedence cannot weaken source requirements for those queries.
+    # Real gap (2026-08-05): "Calculate net profit if revenue is $250,000
+    # and expenses are $180,000." is a complete, valid named-formula
+    # calculation — extract_named_formula already resolves it correctly.
+    # But the generic inline-dataset extractor ALSO matched it, misreading
+    # the sentence itself as a category label ("Calculate Net Profit If
+    # Revenue Is" -> $250,000), and this category-routing check ran first,
+    # so retrieval_category became "user-provided-data" and
+    # service.py's calculation block (gated on
+    # retrieval_category != "user-provided-data") never ran at all — a
+    # governed, verified calculation silently downgraded to an
+    # unverified "figures you supplied" table. A query that already
+    # resolves to a complete named formula must keep going through the
+    # calculation engine, not get diverted here.
+    if extract_named_formula(query) is None and extract_inline_dataset(query) is not None:
+        return "user-provided-data"
+    if re.search(r"\bratio\b.*\bbenchmark\b|\bbenchmark\b.*\bratio\b", lowered):
+        return "user-provided-data"
+    if re.search(r"\bq[1-4]\b.*[$£€]|accounts?[\s-]+receivable\s+aging.*[$£€]", lowered):
+        return "user-provided-data"
     if (
-        re.search(r"\b(chart|graph|plot|visuali[sz]e|compare|table)\b", lowered)
+        re.search(r"\b(chart|graph|plot|waterfall|visuali[sz]e|compare|comparison|table|trend|breakdown|composition|share)\b", lowered)
         and len(re.findall(r"[$£€]\s*[\d,]+(?:\.\d+)?", query)) >= 2
     ):
         return "user-provided-data"
+    # A complete close workflow naturally names bank reconciliation as one
+    # component. The overall month-end intent must win over that sub-process.
+    if re.search(r"month[\s-]*end|period[\s-]*end close|financial close", lowered) and re.search(r"workflow|process|timeline|checklist", lowered):
+        return "month-end-close"
+    if re.search(r"sequence\s+diagram", lowered) and re.search(r"tax(?:able|\s+return|\s+compliance)", lowered) and re.search(r"jurisdiction[\s-]*neutral", lowered):
+        return "accounting-fundamentals"
     for category, keywords in _CATEGORY_KEYWORDS.items():
         if any(_keyword_matches(lowered, keyword) for keyword in keywords):
             return category
-    semantic_category = _infer_category_semantic(query, query_embedding=query_embedding)
-    return semantic_category if semantic_category is not None else _DEFAULT_CATEGORY
+    return None
+
+
+@dataclass(frozen=True)
+class CategoryDecision:
+    category: str
+    method: str
+    score: float | None = None
+    runner_up_score: float | None = None
+    classification_id: str = ""
+    shadow_category: str = ""
+
+
+async def classify_category(query: str) -> CategoryDecision:
+    """Classify once for orchestration, preserving deterministic precedence."""
+    rule_category = infer_category_rule(query)
+    if rule_category is not None:
+        return CategoryDecision(rule_category, "deterministic_rule")
+
+    mode = settings.AZURE_AI_SEARCH_CLASSIFIER_MODE.strip().lower()
+    azure_candidate = None
+    if mode in {"fallback", "shadow"}:
+        from app.orchestration.azure_query_classifier import AzureQueryClassifier
+
+        azure_candidate = await AzureQueryClassifier().classify(
+            query, allowed_categories=set(_CATEGORY_KEYWORDS) | {_DEFAULT_CATEGORY},
+        )
+        if mode == "fallback" and azure_candidate is not None:
+            return CategoryDecision(
+                azure_candidate.category,
+                "azure_ai_search",
+                azure_candidate.score,
+                azure_candidate.runner_up_score,
+                azure_candidate.classification_id,
+            )
+
+    local_category = _infer_category_semantic(query)
+    if local_category is not None:
+        return CategoryDecision(local_category, "local_embedding")
+    if mode == "shadow" and azure_candidate is not None:
+        return CategoryDecision(
+            _DEFAULT_CATEGORY,
+            "default_with_azure_shadow",
+            azure_candidate.score,
+            azure_candidate.runner_up_score,
+            azure_candidate.classification_id,
+            azure_candidate.category,
+        )
+    return CategoryDecision(_DEFAULT_CATEGORY, "default")
 
 
 def _keyword_matches(lowered_query: str, keyword: str) -> bool:
@@ -420,8 +515,6 @@ async def build_source_bundle(
     jurisdiction: str,
     tenant_id: str,
     raw_chunks: list | None = None,
-    extra_sources: Optional[list[SourceSummary]] = None,
-    query_embedding: tuple[float, ...] | None = None,
 ) -> SourceBundle:
     """
     Build a SourceBundle via keyword-based category retrieval, merged with
@@ -429,11 +522,6 @@ async def build_source_bundle(
     tenant_id is enforced at the data-access layer via list_sources /
     get_source_by_id.
     Returns confidence_state per §7.2 six-state vocabulary.
-
-    query_embedding: forwarded to infer_category() — pass the same
-    embedding already computed for raw_chunks' vector search (when one
-    exists) so the semantic category step doesn't redundantly re-embed the
-    same query text. See infer_category()'s docstring.
 
     raw_chunks: pass already-fetched vector search results (e.g. the same
     chunks orchestration/service.py separately fetches at a larger top_k for
@@ -444,17 +532,8 @@ async def build_source_bundle(
     top_k=5, once in service.py at top_k=30) for the exact same query, which
     is pure waste. Pass None (the old behavior) to have this function fetch
     its own chunks, e.g. for standalone/test use.
-
-    extra_sources: pre-built SourceSummary entries from a peer retrieval
-    method (currently: app.domains.live_sources — a live external-data fetch
-    already resolved by the caller). These aren't source_library rows, so no
-    status/jurisdiction filtering applies here; they're added straight to
-    eligible and folded into the same confidence_state calculation below.
-    Eligibility/licence checks for them happen downstream in
-    massarius/license_gate.py, same as document sources.
     """
-    category = infer_category(query, query_embedding=query_embedding)
-    effective_jurisdiction = jurisdiction or infer_query_jurisdiction(query)
+    category = infer_category(query)
 
     eligible = []
     excluded = []
@@ -496,11 +575,7 @@ async def build_source_bundle(
     )
     for c in candidates:
         version_status = c["latest_version"].status
-        # _jurisdiction_ok() (not main's simpler inline check) — handles a
-        # state-qualified jurisdiction like "US-CA" correctly (also matches
-        # the bare state code and "US"), which the inline version's plain
-        # `in ("Global", jurisdiction)` equality check does not.
-        jur_ok = _jurisdiction_ok(c["jurisdiction_scope"], effective_jurisdiction)
+        jur_ok = (not jurisdiction) or c["jurisdiction_scope"] in ("Global", jurisdiction)
         is_live_fetch_only = c["id"] in _SINGLE_SOURCE_IS_SUFFICIENT
         has_real_content = chunk_source_ids is None or c["id"] in chunk_source_ids
 
@@ -563,7 +638,7 @@ async def build_source_bundle(
                     continue
 
                 version_status = governed["latest_version"].status if governed["latest_version"] else None
-                jur_ok = _jurisdiction_ok(governed["jurisdiction_scope"], effective_jurisdiction)
+                jur_ok = (not jurisdiction) or governed["jurisdiction_scope"] in ("Global", jurisdiction)
 
                 if version_status in _RESTRICTED_STATUSES:
                     excluded.append(governed)
@@ -581,39 +656,29 @@ async def build_source_bundle(
         except Exception as e:
             exclusion_reasons.append(f"Vector store search failed: {str(e)}")
 
-    # Kept separate from `eligible` (governed source dicts, keyed by c["id"])
-    # rather than merged into it — extra_sources are already-built
-    # SourceSummary objects (e.g. from app.domains.live_sources), not
-    # source_library rows, so they can't go through the c["id"]-style dict
-    # access the final sources= comprehension below uses for `eligible`.
-    eligible_extra: list[SourceSummary] = []
-    for extra in (extra_sources or []):
-        if extra.id in seen_ids:
-            continue
-        eligible_extra.append(extra)
-        seen_ids.add(extra.id)
-
-    total_eligible_count = len(eligible) + len(eligible_extra)
+    today = date.today()
+    dated_versions = [c["latest_version"] for c in eligible if c.get("latest_version")]
+    expired = [v for v in dated_versions if v.effective_to and v.effective_to < today]
+    all_explicitly_current = bool(dated_versions) and all(
+        (v.effective_from is None or v.effective_from <= today)
+        and (v.effective_to is None or v.effective_to >= today)
+        and (v.effective_from is not None or v.effective_to is not None)
+        for v in dated_versions
+    )
 
     # Determine confidence_state per §7.2
-    if has_restricted and total_eligible_count == 0:
+    if expired:
+        confidence_state = CONF_STALE
+    elif has_restricted and len(eligible) == 0:
         confidence_state = CONF_RESTRICTED
-    elif total_eligible_count == 0:
+    elif len(eligible) == 0:
         confidence_state = CONF_INSUFFICIENT
-    elif total_eligible_count == 1 and (
-        # The one eligible source came from eligible_extra (live_sources),
-        # not eligible (governed document/registry sources) — eligible[0]
-        # would raise IndexError here since eligible itself is empty in
-        # that case. Unchanged behavior for that path: still CONF_LIMITED,
-        # same as before main's exemptions below existed (those were only
-        # ever designed around eligible's dict shape, e.g. eligible[0]["id"]).
-        not eligible
-        or (
-            eligible[0]["id"] not in _SINGLE_SOURCE_IS_SUFFICIENT
-            and not any(
-                marker in eligible[0]["title"].lower()
-                for marker in _SINGLE_AUTHORITATIVE_TITLE_MARKERS
-            )
+    elif (
+        len(eligible) == 1
+        and eligible[0]["id"] not in _SINGLE_SOURCE_IS_SUFFICIENT
+        and not any(
+            marker in eligible[0]["title"].lower()
+            for marker in _SINGLE_AUTHORITATIVE_TITLE_MARKERS
         )
     ):
         confidence_state = CONF_LIMITED
@@ -636,10 +701,8 @@ async def build_source_bundle(
     )
     national_us_data = category in {"economic-data", "interest-rate", "exchange-rate"}
     resolved_jurisdiction = (
-        effective_jurisdiction
-        if effective_jurisdiction
-        else "US" if us_authority_present or national_us_data
-        else ""
+        "US" if us_authority_present or national_us_data
+        else jurisdiction
     ) or (
         next(iter(explicit_scopes)) if len(explicit_scopes) == 1
         else ""
@@ -648,7 +711,7 @@ async def build_source_bundle(
     return SourceBundle(
         source_bundle_id=f"sb-{uuid.uuid4().hex[:12]}",
         retrieval_method="keyword_mvp",  # §7: do not label as RAG
-        eligible_source_count=total_eligible_count,
+        eligible_source_count=len(eligible),
         excluded_source_count=len(excluded),
         sources=[
             SourceSummary(
@@ -660,11 +723,11 @@ async def build_source_bundle(
                 status=c["latest_version"].status,
             )
             for c in eligible
-        ] + eligible_extra,
+        ],
         exclusion_reasons=exclusion_reasons,
         jurisdiction=resolved_jurisdiction,
         authority_level=authority_level,
-        freshness_state="unknown",   # TODO: implement freshness check in full RAG phase
+        freshness_state="stale" if expired else "current" if all_explicitly_current else "unknown",
         licence_state="permitted",   # MVP assumption; enforce per-source in production
         confidence_state=confidence_state,
     )

@@ -17,22 +17,19 @@ class AskKritonRequest(BaseModel):
     query: str = Field(min_length=1, max_length=20_000)
     jurisdiction: str = ""
     mode: str = "Workflow"
-    # Which persisted conversation this turn belongs to (see
-    # app/domains/chat_history) — omitted/None starts a new conversation.
-    conversation_id: Optional[str] = None
-    # Prior user queries in this conversation, most recent last — NOT the
-    # composed answers (those carry disclaimer/citation text that has no
-    # business re-entering the grounded prompt as "context"). Populated by
-    # the frontend from its client-side turn history; empty for a fresh
-    # conversation. Used only to resolve elliptical follow-ups ("what about
-    # for £20,000 instead") that are unclassifiable in isolation — see
-    # orchestration/followup.py's is_elliptical_followup().
-    history: List[str] = Field(default_factory=list)
     # Safety simulation overrides (playground only — not trusted in production)
     source_confidence: Optional[str] = None
     pre_bundle_state: Optional[str] = None
     privacy_class: Optional[str] = None
     clarification_cycle: int = Field(default=0, ge=0, le=2)
+    # Dynamic Visualization Selection v4 — a client-generated identifier for
+    # the current chat thread (already exists client-side, see
+    # frontend/app/ask-kriton/page.tsx's activeConversationId; v4 is the
+    # first time it's sent to the backend). Used only to scope the
+    # visualization-repetition penalty and telemetry to the current
+    # conversation — never trusted for authorization, and optional so older
+    # clients keep working unchanged.
+    conversation_id: Optional[str] = Field(default=None, max_length=200)
 
     @field_validator("query")
     @classmethod
@@ -42,13 +39,46 @@ class AskKritonRequest(BaseModel):
         return value
 
 
+# ── Visualization telemetry — v4 (client-originated events only) ────────────
+# visualization_selected / alternative_views_shown / visualization_fallback_used
+# are backend-only, emitted automatically at answer-generation time
+# (orchestration/service.py) — deliberately not in this Literal, so a client
+# can never post a fabricated "visualization_selected" event to manipulate
+# its own recent_chart_types repetition history.
+
+class VisualizationTelemetryRequest(BaseModel):
+    event_name: Literal[
+        "alternative_view_selected", "visualization_exported_png", "visualization_exported_csv",
+        "visualization_saved", "visualization_render_failed",
+        # v10 — "View as table" opened; a permitted personalization signal
+        # (see visualization_personalization.py's PERSONALIZATION SIGNALS
+        # allow-list). Purely a UI-interaction marker, no table content.
+        "table_view_opened",
+    ]
+    conversation_id: Optional[str] = Field(default=None, max_length=200)
+    query_id: Optional[str] = Field(default=None, max_length=200)
+    analytical_intent: Optional[str] = Field(default=None, max_length=100)
+    original_chart_type: Optional[str] = Field(default=None, max_length=100)
+    active_chart_type: Optional[str] = Field(default=None, max_length=100)
+    alternative_count: Optional[int] = Field(default=None, ge=0, le=3)
+    selection_source: Optional[Literal[
+        "deterministic_default", "explicit_user_request", "alternative_switch", "safe_fallback", "legacy_payload", "personalized",
+    ]] = None
+    renderer: Optional[str] = Field(default=None, max_length=50)
+    schema_version: Optional[str] = Field(default=None, max_length=20)
+    chart_family: Optional[str] = Field(default=None, max_length=50)
+    ranking_version: Optional[str] = Field(default=None, max_length=50)
+    experiment_id: Optional[str] = Field(default=None, max_length=100)
+    experiment_group: Optional[Literal["control", "variant"]] = None
+
+
 # ── Retrieval Plan — ZL-ENG-03 §5.1 ──────────────────────────────────────────
 # Produced ahead of retrieval to declare strategy/intent; the live keyword_mvp
 # retrieval layer (orchestration/retrieve.py) doesn't consume this yet — it's
 # the typed shape license_gate.py's Checkpoint A reasons about today, and what
 # a future planner module would populate.
 
-RetrievalMethod = Literal["keyword", "vector", "ontology", "citation_anchor", "tenant_private", "hybrid", "live_api"]
+RetrievalMethod = Literal["keyword", "vector", "ontology", "citation_anchor", "tenant_private", "hybrid"]
 
 
 class RetrievalPlan(BaseModel):
@@ -88,9 +118,6 @@ class SourceSummary(BaseModel):
     jurisdiction_scope: str
     version_label: str
     status: str
-    # Live external-data addition (app/domains/live_sources/) — defaulted so
-    # every existing construction site is unaffected.
-    source_type: Literal["document", "live_api"] = "document"
 
 
 SourceDisplayState = Literal["show", "summarise", "internal_reasoning_only"]
@@ -163,19 +190,6 @@ class SourceCitation(BaseModel):
     ref_id: str
     source_id: str
     title: str
-    # Makes the evidence hierarchy explicit to both the UI and audit clients.
-    # "controlling" means the answer's claim directly depends on this source;
-    # "supporting" means it adds context but is not the governing authority.
-    evidence_role: Literal["controlling", "supporting"] = "supporting"
-    # Live external-data addition, same rationale as SourceSummary.source_type.
-    source_type: Literal["document", "live_api"] = "document"
-    # Only ever set for source_type="live_api" (a real external URL a user
-    # can click through to — e.g. the ONS dataset page, the SEC EDGAR
-    # company page). Document sources have no public URL today — there's no
-    # file-serving endpoint for uploaded/ingested documents at all, so
-    # `file_path` is just an internal server path, not something a browser
-    # could fetch. Left None rather than fabricating a broken-looking link.
-    source_url: Optional[str] = None
     url: str | None = None
     evidence_preview: str = ""
 
@@ -216,6 +230,7 @@ class CalculationWidget(BaseModel):
     output_label: str
     output_value: str
     output_unit: str
+    chart_type: Literal["line", "bar", "donut", "gauge", "waterfall", "stacked_bar", "bullet", "treemap", "sankey", "kpi"] = "line"
     chart_label: str = ""
     chart_x_label: str = ""
     chart_y_label: str = ""
@@ -226,78 +241,171 @@ class CalculationWidget(BaseModel):
 class PresentationSeries(BaseModel):
     name: str
     values: List[str] = Field(default_factory=list)
-
-
-class PresentationMetric(BaseModel):
-    """A single headline number derived from a table that reduces to one row
-    (e.g. "Total revenue: $482,000") — a chart with one data point isn't a
-    chart, it's a stat. No delta/trend in v1: a single row has no second
-    point to diff against, so nothing is computed rather than guessed."""
-    metric_id: str
-    label: str
-    value: str
     unit: str = ""
+
+
+class VisualizationLayer(BaseModel):
+    mark: Literal["bar", "line", "area", "point"]
+    series_index: int = Field(ge=0, le=15)
+    axis: Literal["primary", "secondary"] = "primary"
+    stack: str | None = Field(default=None, max_length=40)
+
+
+class VisualizationGrammar(BaseModel):
+    """Closed declarative grammar; contains references, never code or data."""
+
+    version: Literal["1.0"] = "1.0"
+    renderer: Literal["echarts"] = "echarts"
+    composition: Literal["layer", "facet"]
+    layers: List[VisualizationLayer] = Field(min_length=1, max_length=16)
+    facet_columns: int | None = Field(default=None, ge=1, le=4)
+    fallback_chart_type: PresentationChartType | None = None
+
+
+PresentationChartType = Literal[
+    "bar", "line", "area", "donut", "dual_axis",
+    # Dynamic Visualization Selection v1 — see
+    # app/orchestration/presentation_dataprofile.py.
+    "grouped_bar", "stacked_bar", "percentage_stacked_bar", "diverging_bar", "histogram", "box_plot", "radar",
+    "funnel", "slope",
+    # v2 — correlation and financial_movement intents.
+    "scatter", "bubble", "heatmap", "correlation_matrix", "dumbbell", "lollipop", "bullet", "waterfall",
+    # v5 — temporal/composition brought into the candidate system.
+    "composition_bar",
+]
 
 
 class PresentationChart(BaseModel):
     chart_id: str
-    type: Literal["bar", "line", "area", "donut"] = "bar"
+    type: PresentationChartType = "bar"
     title: str
     categories: List[str] = Field(default_factory=list)
     series: List[PresentationSeries] = Field(default_factory=list)
     unit: str = ""
-    value_format: Literal["number", "currency", "percent"] = "number"
-    currency_code: Literal["USD", "GBP", "EUR"] | None = None
-    decimal_places: int = Field(default=2, ge=0, le=6)
-    x_axis_label: str = ""
-    y_axis_label: str = ""
-    accessible_summary: str = ""
+    domain: Literal["general", "accounting", "audit", "tax"] = "general"
+    summary_mode: Literal["latest", "total", "average"] = "total"
+    # Dynamic Visualization Selection v3 — see
+    # presentation_dataprofile.select_chart_with_alternatives. All optional
+    # and defaulted so a v1/v2 payload (missing these fields entirely, live
+    # or previously saved) still validates and renders unchanged; a chart
+    # outside the ranked-alternatives system (temporal, single-measure
+    # composition) simply carries empty/None values here, same as before.
+    alternatives: List[PresentationChartType] = Field(default_factory=list)
+    original_chart_type: PresentationChartType | None = None
+    fallback_note: str | None = None
+    schema_version: str = "1.0"
+    # Dynamic Visualization Selection v4 — diagnostic/telemetry metadata,
+    # not used for rendering. analytical_intent lets the frontend report it
+    # without re-deriving it; selection_source records why THIS chart_type
+    # was chosen (see presentation_dataprofile.SelectionSource) at the time
+    # the backend built this payload — the frontend updates its own copy to
+    # "alternative_switch" locally when the user picks a different view, and
+    # to "legacy_payload" when rendering a v1/v2 payload missing this field.
+    analytical_intent: str | None = None
+    selection_source: Literal[
+        "deterministic_default", "explicit_user_request", "alternative_switch", "safe_fallback", "legacy_payload", "personalized",
+    ] | None = None
+    # Dynamic Visualization Selection v7 — diagnostic/telemetry metadata
+    # only, same posture as analytical_intent/selection_source above. Set
+    # only when a RankingExperiment matched this chart's own intent/family
+    # and a deterministic conversation-level assignment placed it in that
+    # experiment; ranking_version reflects whichever arm (control/variant)
+    # actually scored this chart's alternatives, defaulting to the global
+    # production RANKING_VERSION when no experiment applies.
+    experiment_id: str | None = None
+    experiment_group: Literal["control", "variant"] | None = None
+    ranking_version: str | None = None
+    preference_affected_selection: bool = False
+    # Dynamic Visualization Selection v10 — diagnostic/telemetry metadata
+    # only, same posture as preference_affected_selection above. All
+    # default to inert/off so a v1-v9 payload (missing these fields
+    # entirely, live or previously saved) still validates and renders
+    # unchanged. personalization_affected_selection is true only when a
+    # consent-based signal actually won a near-tie break on THIS chart —
+    # never when an explicit request or saved preference decided it, and
+    # never merely because the caller has personalization enabled.
+    personalization_enabled: bool = False
+    personalization_affected_selection: bool = False
+    personalization_model_version: str | None = None
+    personalization_confidence_band: Literal["low", "medium", "high"] | None = None
+    preferred_output: Literal["auto", "chart", "table"] = "auto"
+    visual_density: Literal["compact", "standard", "detailed"] = "standard"
+    contrast_preference: Literal["system", "standard", "high"] = "system"
+    reduced_motion: bool = False
+    table_alternative_default_open: bool = False
+    label_orientation: Literal["auto", "horizontal", "vertical"] = "auto"
+    grammar: VisualizationGrammar | None = None
+
+
+class PresentationFlowPosition(BaseModel):
+    x: float
+    y: float
+
+
+class PresentationFlowNode(BaseModel):
+    id: str = Field(max_length=100)
+    position: PresentationFlowPosition
+    label: str = Field(max_length=300)
+
+
+class PresentationFlowEdge(BaseModel):
+    id: str = Field(max_length=100)
+    source: str = Field(max_length=100)
+    target: str = Field(max_length=100)
 
 
 class PresentationGuide(BaseModel):
     guide_id: str
-    type: Literal["process", "timeline", "checklist", "decision_flow"]
+    type: Literal["process", "timeline", "checklist", "decision_flow", "sequence"]
     title: str
     items: List[str] = Field(default_factory=list)
+    domain: Literal["general", "accounting", "audit", "tax"] = "general"
+    renderer: Literal["html", "mermaid", "react_flow"] = "html"
+    editable: bool = False
+    # Populated only after a user edits a React Flow workflow. Keeping this
+    # state in the governed guide schema lets save/reload preserve layout and
+    # connections while ordinary generated guides remain compact.
+    flow_nodes: List[PresentationFlowNode] = Field(default_factory=list)
+    flow_edges: List[PresentationFlowEdge] = Field(default_factory=list)
 
 
-class VisualBlock(BaseModel):
-    """One visual, described by what it IS rather than by how to draw it.
+GraphEntityType = Literal[
+    "invoice", "supplier", "purchase_order", "receipt", "payment",
+    "bank_transaction", "ledger_entry", "contract", "approval", "user",
+    "source_document", "audit_evidence",
+]
+GraphRelationshipType = Literal[
+    "issued_by", "belongs_to", "references", "approved_by", "paid_by",
+    "matched_to", "recorded_as", "supported_by", "derived_from", "reconciled_with",
+]
 
-    Renderer-agnostic on purpose: the client maps `kind` to a component, so a
-    renderer can be swapped or lazily loaded without the contract moving. The
-    block never carries chart values — those live in the dataset it names, so
-    a block cannot introduce a number the answer did not already support.
 
-    Additive alongside `layout`/`charts`/`metrics`, which remain the rendered
-    contract. This is the shape the client migrates to; until then it is
-    populated and unread, so the migration can happen on the frontend's own
-    schedule rather than as a coordinated break.
-    """
-    block_id: str
-    kind: Literal["metric", "bar", "line", "area", "donut", "table", "text"]
-    title: str = ""
-    # Identifies the dataset a renderer must resolve values from.
-    dataset_id: str = ""
-    # Hash of the dataset's DATA. Two purposes: a cache key that hits when the
-    # same figures recur, and a reproducibility check — an audit export can be
-    # compared against what the user was actually shown.
-    dataset_hash: str = ""
-    # Answer-level [REF-N] ids supporting this block. Answer-level, not
-    # row-level: markdown parsing cannot attribute a single table row to a
-    # single citation. Row-level provenance is carried by the Dataset and
-    # becomes populated when composition emits blocks directly.
-    citations: List[str] = Field(default_factory=list)
-    # Always present. A renderer failure must degrade to the truth rather than
-    # to an empty box, so this is never optional in practice.
-    text_fallback: str = ""
-    # Why a chart was not produced ("mixed_units", "too_many_rows",
-    # "rows_without_citation"). A missing visual should be explainable rather
-    # than mysterious.
-    reasons: List[str] = Field(default_factory=list)
-    # Set when rows were dropped to fit a rendering bound, so "20 of 340 rows"
-    # can be stated instead of silently shown.
-    truncated_from: Optional[int] = None
+class GraphNode(BaseModel):
+    id: str
+    label: str
+    entity_type: GraphEntityType
+    status: str = ""
+    source_reference: str = ""
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+
+class GraphEdge(BaseModel):
+    id: str
+    source: str
+    target: str
+    relationship_type: GraphRelationshipType
+    label: str = ""
+    direction: Literal["directed", "bidirectional"] = "directed"
+
+
+class PresentationGraph(BaseModel):
+    graph_id: str
+    title: str
+    summary: str
+    nodes: List[GraphNode] = Field(default_factory=list)
+    edges: List[GraphEdge] = Field(default_factory=list)
+    layout: Literal["breadthfirst", "cose", "concentric"] = "cose"
+    confidence: float = 1.0
 
 
 class AnswerPresentation(BaseModel):
@@ -305,11 +413,35 @@ class AnswerPresentation(BaseModel):
     table_count: int = 0
     has_steps: bool = False
     charts: List[PresentationChart] = Field(default_factory=list)
-    metrics: List[PresentationMetric] = Field(default_factory=list)
     guides: List[PresentationGuide] = Field(default_factory=list)
+    graphs: List[PresentationGraph] = Field(default_factory=list)
     sections: List[str] = Field(default_factory=list)
     follow_up_questions: List[str] = Field(default_factory=list)
-    blocks: List[VisualBlock] = Field(default_factory=list)
+
+
+ResponseBlockType = Literal[
+    "markdown", "visualization", "calculation", "limitations", "citations", "suggested_actions"
+]
+
+
+class ResponseBlock(BaseModel):
+    """Ordered, renderer-neutral response instruction.
+
+    Blocks reference governed payloads already present on ComposedAnswer;
+    they never duplicate or permit model-authored chart/calculation data.
+    Older clients can ignore this field and continue rendering text,
+    presentation, citations and calculation_widget directly.
+    """
+
+    id: str = Field(min_length=1, max_length=100)
+    type: ResponseBlockType
+    content: str | None = Field(default=None, max_length=100_000)
+    resource_ids: List[str] = Field(default_factory=list, max_length=200)
+
+
+ResponseMode = Literal[
+    "concise", "educational", "analytical", "calculation", "workflow", "compound"
+]
 
 
 class ComposedAnswer(BaseModel):
@@ -318,10 +450,52 @@ class ComposedAnswer(BaseModel):
     limitations: List[str] = Field(default_factory=list)
     calculation_widget: Optional[CalculationWidget] = None
     presentation: Optional[AnswerPresentation] = None
+    response_mode: ResponseMode = "concise"
+    blocks: List[ResponseBlock] = Field(default_factory=list, max_length=50)
     # Internal fields — kept for model_gateway wiring; never exposed to frontend
     prompt_id: str = "inline"
     prompt_name: str = "Inline RAG Prompt"
     output_text: str = ""  # alias for text, retained for backward compat
+
+    def model_post_init(self, __context: object) -> None:
+        """Build a deterministic plan when callers use the legacy fields."""
+        if self.blocks:
+            return
+        blocks = [ResponseBlock(id="answer-text", type="markdown", content=self.text)]
+        presentation = self.presentation
+        if presentation is not None:
+            resource_ids = [chart.chart_id for chart in presentation.charts]
+            resource_ids.extend(guide.guide_id for guide in presentation.guides)
+            resource_ids.extend(graph.graph_id for graph in presentation.graphs)
+            if resource_ids or presentation.sections or presentation.follow_up_questions:
+                blocks.append(ResponseBlock(
+                    id="answer-presentation", type="visualization", resource_ids=resource_ids,
+                ))
+        if self.calculation_widget is not None:
+            blocks.append(ResponseBlock(
+                id="answer-calculation", type="calculation",
+                resource_ids=[self.calculation_widget.calculation_id],
+            ))
+        if self.limitations:
+            blocks.append(ResponseBlock(
+                id="answer-limitations", type="limitations", content="\n".join(self.limitations),
+            ))
+        if self.citations:
+            blocks.append(ResponseBlock(
+                id="answer-citations", type="citations",
+                resource_ids=[citation.ref_id for citation in self.citations],
+            ))
+        self.blocks = blocks
+        if self.calculation_widget is not None:
+            self.response_mode = "calculation"
+        elif presentation is not None and (presentation.guides or presentation.graphs):
+            self.response_mode = "workflow"
+        elif presentation is not None and presentation.charts:
+            self.response_mode = "analytical"
+        elif presentation is not None and presentation.layout == "descriptive":
+            self.response_mode = "educational"
+        if len(blocks) > 2 and self.response_mode not in {"calculation", "workflow"}:
+            self.response_mode = "compound"
 
 
 # ── Safety State — §12 ───────────────────────────────────────────────────────
@@ -358,8 +532,3 @@ class AskKritonResponse(BaseModel):
     answer: Optional[ComposedAnswer] = None
     next_action: Optional[NextAction] = None
     audit_reference: AuditReference
-    # Populated by the orchestration router after ask_kriton() returns (see
-    # chat_history.service.resolve_conversation) — never set inside
-    # ask_kriton() itself, so none of its many return branches need to know
-    # about conversation persistence.
-    conversation_id: Optional[str] = None

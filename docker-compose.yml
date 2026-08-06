@@ -15,40 +15,8 @@ services:
       timeout: 5s
       retries: 10
 
-  redis:
-    image: redis:7-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   backend:
     build: ./backend
-    volumes:
-      # Sanctions snapshots are written by the worker and read by the API.
-      # Both must see the same directory, and it must survive a container
-      # restart — otherwise every redeploy silently un-warms the snapshots
-      # and screening queries start failing closed again.
-      - sanctions_snapshots:/app/data/live_sources
-    # API keys and feature flags come from backend/.env, which the Dockerfile
-    # deliberately does not COPY (baking secrets into an image layer persists
-    # them in the build cache and in any registry it is pushed to).
-    #
-    # env_file rather than relying on the app's own load_dotenv(): several
-    # modules read os.getenv() directly for flags with no Settings field —
-    # ENABLE_LIVE_SOURCES, ENABLE_RAG_EMBEDDINGS, RISK_LLM_CLASSIFIER_MODE —
-    # and those see only the real process environment, which is where
-    # env_file injects. See the comment at the top of app/core/config.py:
-    # without this, retrieval and every LLM provider are silently disabled
-    # with no error at all.
-    #
-    # `environment:` below still wins over env_file, so the compose Postgres
-    # keeps overriding whatever DATABASE_URL the file happens to contain.
-    env_file: ./backend/.env
     environment:
       DATABASE_URL: postgresql+asyncpg://zoiko:zoiko@postgres:5432/zoiko
       # Non-superuser role for request-time queries — provisioned automatically
@@ -56,9 +24,11 @@ services:
       # (sources/source_versions tenant isolation) to actually apply: RLS
       # always exempts superusers, and DATABASE_URL's "zoiko" role is one.
       APP_DATABASE_URL: postgresql+asyncpg://zoiko_app:zoiko_app@postgres:5432/zoiko
-      # Deterministic safety gates remain active. Enable the optional local
-      # model only after validating image memory and native libraries.
-      ENABLE_ML_CLASSIFIER: "false"
+      # Without this, risk_classifier.py's _get_classifier_pipeline() never
+      # loads the real zero-shot model — every query gets a fixed 0.5
+      # confidence, which is always below the 0.65 routing threshold, so
+      # every query falls back to "needs clarification" regardless of content.
+      ENABLE_ML_CLASSIFIER: "true"
       # The classifier model is already baked into the image's HF cache.
       # Without these, huggingface_hub still does an online freshness check
       # on every load; when that check hangs (flaky/sandboxed Docker
@@ -67,144 +37,68 @@ services:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
       CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001","http://localhost:3005"]'
-      # SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY deliberately NOT set here.
-      # They were pinned to "" which, because `environment:` overrides
-      # env_file, blanked out whatever the real .env supplied — so sign-in
-      # could never work no matter how the project was configured. They now
-      # come from backend/.env like every other credential.
-      CELERY_BROKER_URL: redis://redis:6379/0
-      SANCTIONS_SNAPSHOT_DIR: /app/data/live_sources
+      # Auth is now Supabase-backed — set these to a real Supabase project
+      # for sign-up/sign-in to work (see backend/.env.example).
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      # SearXNG instance for the (currently unwired) websearch.py provider —
+      # see the searxng service below. Not read by anything in the request
+      # path yet; harmless to set ahead of that wiring landing.
+      SEARXNG_URL: http://searxng:8080
     ports:
       - "8010:8010"
     healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:8010/health/ready', timeout=3)",
-        ]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/ready', timeout=3)"]
       interval: 10s
       timeout: 5s
       retries: 12
+      start_period: 60s
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  # Executes the scheduled jobs. Sanctions snapshots are downloaded here and
-  # never in an Ask Kriton request — a ~49 MB official CSV has no business on
-  # a user's latency path.
-  worker:
-    build: ./backend
-    volumes:
-      - sanctions_snapshots:/app/data/live_sources
-    # Same reasoning as the backend. The worker needs the sanctions feed URLs,
-    # the fallback distributions and SANCTIONS_FEED_USER_AGENT from .env, or it
-    # syncs against defaults with no contact address.
-    env_file: ./backend/.env
-    environment:
-      DATABASE_URL: postgresql+asyncpg://zoiko:zoiko@postgres:5432/zoiko
-      CELERY_BROKER_URL: redis://redis:6379/0
-      SANCTIONS_SNAPSHOT_DIR: /app/data/live_sources
-      ENABLE_ML_CLASSIFIER: "false"
-      HF_HUB_OFFLINE: "1"
-      TRANSFORMERS_OFFLINE: "1"
-    # --concurrency 2: these tasks are network-bound and hold whole feeds in
-    # memory while parsing. More workers multiplies peak RSS without making
-    # the upstream any faster.
-    command: ["celery", "-A", "app.jobs.live_sources_tasks", "worker", "--loglevel=info", "--concurrency=2"]
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  beat:
-    build: ./backend
-    environment:
-      CELERY_BROKER_URL: redis://redis:6379/0
-    # Beat only enqueues; it needs no snapshot volume or database of its own.
-    command: ["celery", "-A", "app.jobs.live_sources_tasks", "beat", "--loglevel=info"]
-    depends_on:
-      redis:
-        condition: service_healthy
-      worker:
+      searxng:
         condition: service_started
+
+  # Local SearXNG instance backing app/orchestration/websearch.py. Settings
+  # (JSON output format enabled) live in ./searxng/settings.yml, mounted
+  # read-only below.
+  searxng:
+    image: searxng/searxng
+    container_name: searxng
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8888/
+    volumes:
+      - ./searxng:/etc/searxng
+    ports:
+      - "8888:8080"
 
   seed:
     build: ./backend
-    volumes:
-      - sanctions_snapshots:/app/data/live_sources
-    # ingest_reference_sources.py embeds the corpus, so it needs the embedding
-    # configuration; seed_live_source_provider.py reads every provider base URL
-    # and api_key_env_var from settings. Without .env it seeds a registry
-    # pointing at defaults and ingests nothing.
-    env_file: ./backend/.env
     environment:
       DATABASE_URL: postgresql+asyncpg://zoiko:zoiko@postgres:5432/zoiko
-      SANCTIONS_SNAPSHOT_DIR: /app/data/live_sources
     depends_on:
       postgres:
         condition: service_healthy
       backend:
         condition: service_healthy
     restart: "no"
-    # The live-source provider registry must be seeded or every live query
-    # is rejected by the licence gate before a connector is ever reached.
-    # The first sanctions sync runs here too, so screening works immediately
-    # rather than at the next beat tick. Its exit code is tolerated on
-    # purpose: some deployment networks are blocked from the OFAC and EU
-    # distributions, and that must not fail the whole dev stack — those two
-    # providers simply stay fail-closed until the network allows them.
     command: >
       sh -c "python scripts/seed_dev_user.py &&
-      python scripts/ingest_reference_sources.py &&
-      python scripts/seed_live_source_provider.py &&
-      (python scripts/sync_sanctions_sources.py || echo 'WARNING: one or more sanctions feeds are unreachable from this network; screening stays fail-closed for those providers')"
+      python scripts/ingest_reference_sources.py"
 
   frontend:
     build:
       context: ./frontend
-      # Build args, not `environment:` — Next inlines NEXT_PUBLIC_* into the
-      # client bundle during `next build`, so a runtime variable arrives far too
-      # late for anything running in the browser. NEXT_PUBLIC_API_URL survived
-      # only by luck: lib/api.ts happens to default to this exact URL. The
-      # Supabase pair has no such luck and fell back to a placeholder project,
-      # which is why sign-in worked under `npm run dev` but not in Docker.
-      #
-      # ${...} interpolates from a .env file in the directory compose runs in —
-      # the repo ROOT. frontend/.env.local is never read by compose, and is
-      # excluded by frontend/.dockerignore besides. If the root .env is missing,
-      # compose warns about the blank value and the image builds with sign-in
-      # broken again — so heed that warning.
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:8010/api/v1
-        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8010/api/v1}
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
     environment:
-      # Still needed at runtime: next.config.ts reads this on the server to build
-      # the CSP connect-src allow-list, without which the browser blocks every
-      # fetch to the API regardless of what the bundle was compiled against.
       NEXT_PUBLIC_API_URL: http://localhost:8010/api/v1
     ports:
       - "3005:3000"
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://localhost:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 12
     depends_on:
-      backend:
-        condition: service_healthy
+      - backend
 
 volumes:
   postgres_data:
-  sanctions_snapshots:

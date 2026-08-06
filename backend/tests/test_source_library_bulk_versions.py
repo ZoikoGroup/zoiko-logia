@@ -1,4 +1,6 @@
 import pytest
+from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db.base import Base
@@ -23,3 +25,26 @@ async def test_list_sources_selects_latest_versions_in_bulk():
         assert len(rows) == 1
         assert rows[0]["latest_version"].version_label == "new"
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_list_sources_retries_a_transient_empty_catalogue_read():
+    source = SimpleNamespace(id="src-fred", category="interest-rates")
+    version = SimpleNamespace(source_id="src-fred")
+
+    empty_result = MagicMock()
+    empty_result.scalars.return_value.all.return_value = []
+    source_result = MagicMock()
+    source_result.scalars.return_value.all.return_value = [source]
+    version_result = MagicMock()
+    version_result.scalars.return_value.all.return_value = [version]
+
+    db = MagicMock()
+    db.execute = AsyncMock(side_effect=[empty_result, source_result, version_result])
+
+    rows = await list_sources(db, "interest-rates", tenant_id="tenant")
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == "src-fred"
+    assert rows[0]["latest_version"] is version
+    assert db.execute.await_count == 3
