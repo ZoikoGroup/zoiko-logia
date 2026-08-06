@@ -45,6 +45,21 @@ _TENANT_POLICY_USING = {
 }
 
 
+@asynccontextmanager
+async def _ddl_conn():
+    """Open a transaction for startup DDL with short lock/statement timeouts so a
+    migration blocked on a table lock — e.g. two overlapping Render deploys both
+    running these startup migrations against the same tables — fails fast in
+    seconds instead of hanging until the platform's port-scan timeout kills the
+    whole boot (which then leaves a locked transaction that blocks the next
+    deploy, looping forever). Postgres-only; SQLite has no such settings."""
+    async with async_engine.begin() as conn:
+        if not settings.is_sqlite:
+            await conn.execute(text("SET lock_timeout = '8s'"))
+            await conn.execute(text("SET statement_timeout = '30s'"))
+        yield conn
+
+
 async def _migrate_tenant_columns():
     """Add tenant_id to sources/source_versions if this DB predates the
     column. create_all() only creates missing tables, it never alters
@@ -57,7 +72,7 @@ async def _migrate_tenant_columns():
     fixed string, so hardcoding one would silently orphan every existing
     source from its own tenant's RLS policy.
     """
-    async with async_engine.begin() as conn:
+    async with _ddl_conn() as conn:
         for table in _TENANT_SCOPED_TABLES:
             if settings.is_sqlite:
                 columns = await conn.execute(text(f"PRAGMA table_info({table})"))
@@ -79,7 +94,7 @@ async def _migrate_source_licence_columns():
     DB predates them — ZL-ENG-03 §5.6 Checkpoint A/B needs real per-source
     eligibility data. Same create_all()-doesn't-alter-existing-tables
     situation as _migrate_tenant_columns above."""
-    async with async_engine.begin() as conn:
+    async with _ddl_conn() as conn:
         if settings.is_sqlite:
             columns = await conn.execute(text("PRAGMA table_info(sources)"))
             column_names = {row[1] for row in columns}
@@ -108,7 +123,7 @@ async def _migrate_user_profile_columns():
     create_all()-doesn't-alter-existing-tables situation as
     _migrate_tenant_columns above, so an already-running database picks up
     the schema change without a manual `alembic upgrade`."""
-    async with async_engine.begin() as conn:
+    async with _ddl_conn() as conn:
         if settings.is_sqlite:
             columns = await conn.execute(text("PRAGMA table_info(users)"))
             column_names = {row[1] for row in columns}
@@ -147,7 +162,7 @@ async def _migrate_orphan_tenant_id_not_null():
     Postgres-only — SQLite dev DBs never had the constraint."""
     if settings.is_sqlite:
         return
-    async with async_engine.begin() as conn:
+    async with _ddl_conn() as conn:
         rows = await conn.execute(text(
             "SELECT table_name FROM information_schema.columns "
             "WHERE table_schema = 'public' AND column_name = 'tenant_id' "
@@ -183,7 +198,7 @@ async def _setup_user_rls():
     """
     if settings.is_sqlite:
         return
-    async with async_engine.begin() as conn:
+    async with _ddl_conn() as conn:
         await conn.execute(text("ALTER TABLE users ENABLE ROW LEVEL SECURITY"))
         await conn.execute(text("ALTER TABLE users FORCE ROW LEVEL SECURITY"))
         await conn.execute(text("""
@@ -272,7 +287,7 @@ async def _setup_source_rls():
     """
     if settings.is_sqlite:
         return
-    async with async_engine.begin() as conn:
+    async with _ddl_conn() as conn:
         await _provision_app_role(conn)
         for table in _TENANT_SCOPED_TABLES:
             policy = f"tenant_isolation_{table}"
@@ -561,12 +576,24 @@ async def lifespan(app: FastAPI):
     """Lifecycle events: create tables, seed, and dispose of engine."""
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    await _migrate_tenant_columns()
-    await _migrate_source_licence_columns()
-    await _migrate_user_profile_columns()
-    await _migrate_orphan_tenant_id_not_null()
-    await _setup_source_rls()
-    await _setup_user_rls()
+    # Each schema migration is idempotent and already applied on the first
+    # successful boot, so if a later boot can't grab the table lock in time
+    # (overlapping deploys), skip that step with a warning rather than let it
+    # hang — the service still binds its port and comes up, and the step retries
+    # cleanly on the next boot once the lock is free.
+    for _label, _step in (
+        ("migrate_tenant_columns", _migrate_tenant_columns),
+        ("migrate_source_licence_columns", _migrate_source_licence_columns),
+        ("migrate_user_profile_columns", _migrate_user_profile_columns),
+        ("migrate_orphan_tenant_id_not_null", _migrate_orphan_tenant_id_not_null),
+        ("setup_source_rls", _setup_source_rls),
+        ("setup_user_rls", _setup_user_rls),
+    ):
+        try:
+            await _step()
+        except Exception as exc:
+            print(f"WARNING: startup step {_label} skipped ({type(exc).__name__}: {exc}). "
+                  "Service will still start; step retries on next boot.")
     _seed_defaults()
     _seed_evaluation()
     _seed_escalation_rules()
