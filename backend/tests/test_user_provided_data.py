@@ -844,3 +844,91 @@ def test_composition_wording_without_a_chart_verb_still_extracts_inline_data():
     dataset = extract_inline_dataset(composition_query)
     assert dataset is not None
     assert ("Equities", Decimal("2400000")) in dataset.rows
+
+
+def test_funnel_keyword_and_yoy_k_abbreviated_figures_extract_correctly():
+    # Live bug (2026-08-06): "Create a funnel: 10,000 website visitors,
+    # 2,500 leads, 800 opportunities, 240 customers." named a real inline
+    # dataset but "funnel" matched no _DATA_OPERATION trigger word, so the
+    # query fell through to normal category classification — which landed
+    # on "standards" and confidently answered with unrelated retrieved
+    # SEC-filing/explosives-regulation content instead of the user's own
+    # supplied funnel numbers.
+    funnel_query = "Create a funnel: 10,000 website visitors, 2,500 leads, 800 opportunities, 240 customers."
+    dataset = extract_inline_dataset(funnel_query)
+    assert dataset is not None
+    assert dataset.rows == (
+        ("Website Visitors", Decimal("10000")),
+        ("Leads", Decimal("2500")),
+        ("Opportunities", Decimal("800")),
+        ("Customers", Decimal("240")),
+    )
+    # Same root failure mode (unrelated-content hallucination) also hit
+    # abbreviated-K-figure YoY comparisons at one point during this
+    # session's fixes; guards against that regressing silently.
+    yoy_query = (
+        "Compare 2025 and 2026 quarterly sales: Q1 2025 $95K vs Q1 2026 $112K, "
+        "Q2 2025 $102K vs Q2 2026 $119K."
+    )
+    yoy_dataset = extract_inline_dataset(yoy_query)
+    assert yoy_dataset is not None
+    assert yoy_dataset.rows == (
+        ("Q1", Decimal("95000"), Decimal("112000")),
+        ("Q2", Decimal("102000"), Decimal("119000")),
+    )
+
+
+def test_histogram_observation_list_with_trailing_unit_word_extracts():
+    # Live bug (2026-08-06): "Show a histogram of invoice processing
+    # times: 2, 3, 3, 4, 4, 4, 5, 7, 8, 12 days." has a trailing unit word
+    # ("days") after the last number, before the closing period —
+    # _GENERIC_COLON_NUMBER_LIST anchored the number list directly to
+    # end-of-string (only punctuation tolerated), so this never matched
+    # and the query fell through to unrelated retrieved content.
+    query = "Show a histogram of invoice processing times: 2, 3, 3, 4, 4, 4, 5, 7, 8, 12 days."
+    dataset = extract_inline_dataset(query)
+    assert dataset is not None
+    assert dataset.measures == ("Value",)
+    assert [row[1] for row in dataset.rows] == [
+        Decimal(n) for n in ("2", "3", "3", "4", "4", "4", "5", "7", "8", "12")
+    ]
+
+
+def test_category_followed_by_a_value_list_sums_them_not_just_the_first():
+    # Live bug (2026-08-06): "Marketing varies $8,000, $9,500, $7,200,
+    # $11,000." named ONE category followed by a whole LIST of values
+    # (unlike every other row, which is one label -> one value) —
+    # _CATEGORY_VALUE only ever captured the FIRST number, silently
+    # discarding the other three quarters' figures (a category reported
+    # as 3/4 smaller than what was actually supplied).
+    query = (
+        "Show me a table comparing our Q1-Q4 expenses by category: Rent $12,000/quarter, "
+        "Payroll $85,000/quarter, Marketing varies $8,000, $9,500, $7,200, $11,000."
+    )
+    dataset = extract_inline_dataset(query)
+    assert dataset is not None
+    rows = dict(dataset.rows)
+    assert rows["Rent"] == Decimal("12000")
+    assert rows["Payroll"] == Decimal("85000")
+    assert rows["Marketing Varies"] == Decimal("35700")
+
+
+def test_scatter_pairs_with_and_separated_values_not_just_parenthesized_tuples():
+    # Live bug (2026-08-06): "Plot advertising spend against revenue: $10K
+    # and $80K; $20K and $125K; $30K and $170K; $40K and $205K." pairs
+    # values with the word "and" instead of a parenthesized tuple —
+    # _PAIRED_TUPLE only ever matched "(X, Y)", so this whole query fell
+    # through to normal retrieval with zero data extracted.
+    query = (
+        "Plot advertising spend against revenue: $10K and $80K; $20K and $125K; "
+        "$30K and $170K; $40K and $205K."
+    )
+    dataset = extract_inline_dataset(query)
+    assert dataset is not None
+    assert dataset.measures == ("Advertising Spend", "Revenue")
+    assert dataset.rows == (
+        ("Point 1", Decimal("1.0E+4"), Decimal("8.0E+4")),
+        ("Point 2", Decimal("2.0E+4"), Decimal("1.25E+5")),
+        ("Point 3", Decimal("3.0E+4"), Decimal("1.70E+5")),
+        ("Point 4", Decimal("4.0E+4"), Decimal("2.05E+5")),
+    )

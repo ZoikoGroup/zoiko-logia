@@ -31,6 +31,14 @@ from app.domains.reference_data.adapters.federal_register_adapter import get_doc
 from app.domains.reference_data.adapters.ecfr_adapter import get_cfr_section as get_ecfr_section
 from app.domains.reference_data.adapters.congress_adapter import get_bill as get_congress_bill
 from app.domains.reference_data.adapters.professional_search_adapter import search_tavily, search_serpapi
+from app.domains.reference_data.adapters.sec_adapter import resolve_cik as resolve_sec_cik, get_company_concept
+from app.domains.reference_data.adapters.regulations_gov_adapter import get_docket as get_regulations_gov_docket
+from app.domains.reference_data.adapters.ons_adapter import get_cpih_series, get_gdp_index_series
+from app.domains.reference_data.adapters.bank_of_england_adapter import (
+    get_series_observations as get_boe_series_observations, BANK_RATE_SERIES_ID,
+)
+from app.domains.reference_data.adapters.vies_adapter import check_vat_number
+from app.domains.reference_data.adapters.sanctions_adapter import screen_name as screen_sanctions_name
 from app.domains.reference_data.models import ReferenceSourceBundle
 
 # The governed Source row Kriton's retrieval layer cites for this data (see
@@ -48,6 +56,13 @@ ECFR_TITLE26_GOVERNED_SOURCE_ID = "src-ecfr-title26"
 CONGRESS_GOVERNED_SOURCE_ID = "src-congress-gov-bill-lookup"
 TAVILY_GOVERNED_SOURCE_ID = "src-tavily-authority-search"
 SERPAPI_GOVERNED_SOURCE_ID = "src-serpapi-authority-search"
+SEC_GOVERNED_SOURCE_ID = "src-sec-edgar-company-facts"
+REGULATIONS_GOV_GOVERNED_SOURCE_ID = "src-regulations-gov-docket-lookup"
+ONS_INFLATION_GOVERNED_SOURCE_ID = "src-ons-cpih-inflation"
+ONS_GDP_GOVERNED_SOURCE_ID = "src-ons-monthly-gdp"
+BANK_OF_ENGLAND_GOVERNED_SOURCE_ID = "src-bank-of-england-bank-rate"
+VIES_GOVERNED_SOURCE_ID = "src-vies-vat-validation"
+SANCTIONS_GOVERNED_SOURCE_ID = "src-un-uk-sanctions-screening"
 
 # Single source of truth for the node_id prefixes orchestration/service.py
 # checks to guarantee an injected live-data chunk survives the cross-encoder
@@ -65,6 +80,13 @@ FEDERAL_REGISTER_NODE_PREFIX = "fedreg-live-"
 ECFR_NODE_PREFIX = "ecfr-live-"
 CONGRESS_NODE_PREFIX = "congress-live-"
 PROFESSIONAL_SEARCH_NODE_PREFIX = "professional-search-live-"
+SEC_NODE_PREFIX = "sec-edgar-live-"
+REGULATIONS_GOV_NODE_PREFIX = "regulations-gov-live-"
+ONS_INFLATION_NODE_PREFIX = "ons-cpih-live-"
+ONS_GDP_NODE_PREFIX = "ons-gdp-live-"
+BANK_OF_ENGLAND_NODE_PREFIX = "boe-rate-live-"
+VIES_NODE_PREFIX = "vies-vat-live-"
+SANCTIONS_NODE_PREFIX = "sanctions-screen-live-"
 
 
 async def get_professional_search_bundle(
@@ -369,13 +391,63 @@ def extract_pay_date(query: str) -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
 
+# Real gap (2026-08-06): "What is the payroll tax rate for a $1,000 weekly
+# paycheck in California?" only ever resolved work_state — gross_wages and
+# pay_period were accepted by the adapter (payroll_tax_adapter.py) but never
+# extracted or passed through here, so the live fetch always returned the
+# full generic bracket table with no wage context. The composed answer then
+# had no grounded income figure to reason from, tripping Checkpoint C's
+# numeric-fidelity check and escalating an ordinary lookup to human review.
+# Only a $-prefixed figure is honored (never an unrelated bare number in the
+# query), and both gross_wages AND pay_period must be present together to be
+# used — a wage figure with no stated cadence can't be annualized without
+# guessing, so it's simply dropped rather than assumed.
+_DOLLAR_AMOUNT_PATTERN = re.compile(r"\$\s*([\d,]+(?:\.\d{1,2})?)")
+_PAY_PERIOD_KEYWORDS: dict[str, tuple[str, int]] = {
+    "biweekly": ("biweekly", 26),
+    "bi-weekly": ("biweekly", 26),
+    "semimonthly": ("semimonthly", 24),
+    "semi-monthly": ("semimonthly", 24),
+    "weekly": ("weekly", 52),
+    "monthly": ("monthly", 12),
+    "annual": ("annual", 1),
+    "annually": ("annual", 1),
+    "yearly": ("annual", 1),
+}
+_PAY_PERIOD_PATTERN = re.compile(
+    r"\b(" + "|".join(sorted(_PAY_PERIOD_KEYWORDS, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def extract_pay_period(query: str) -> tuple[str, int] | None:
+    """Returns (API pay-period value, pay periods per year), or None if the
+    query names no recognized cadence — never guesses one."""
+    match = _PAY_PERIOD_PATTERN.search(query)
+    if match is None:
+        return None
+    return _PAY_PERIOD_KEYWORDS[match.group(1).lower()]
+
+
+def extract_gross_wages(query: str) -> float | None:
+    """Only an explicit $-prefixed dollar figure is honored — never inferred
+    from an unrelated bare number in the query."""
+    match = _DOLLAR_AMOUNT_PATTERN.search(query)
+    if match is None:
+        return None
+    try:
+        return float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
 # Quota conservation, not freshness, drives this number — 1,000 req/month is
 # easy to exhaust on a short cache during any real testing/demo burst, and
 # payroll tax rates are set at fixed calendar boundaries (new year,
 # occasional mid-year state law changes), never intraday-volatile.
 _PAYROLL_TAX_CACHE_TTL_SECONDS = 24 * 60 * 60
 
-_payroll_cache: dict[tuple[str, str], tuple[ReferenceSourceBundle, float]] = {}
+_payroll_cache: dict[tuple[str, str, float | None, str | None], tuple[ReferenceSourceBundle, float]] = {}
 
 
 async def get_payroll_tax_bundle(
@@ -385,8 +457,10 @@ async def get_payroll_tax_bundle(
     pay_date: str,
     tenant_id: str,
     actor_id: str | None,
+    gross_wages: float | None = None,
+    pay_period: str | None = None,
 ) -> ReferenceSourceBundle:
-    cache_key = (work_state, pay_date)
+    cache_key = (work_state, pay_date, gross_wages, pay_period)
     now = time.monotonic()
     cached = _payroll_cache.get(cache_key)
 
@@ -394,16 +468,18 @@ async def get_payroll_tax_bundle(
         bundle = cached[0]
         await _log_payroll_call(
             db, tenant_id=tenant_id, actor_id=actor_id, work_state=work_state, pay_date=pay_date,
-            status="cache_hit", record_count=len(bundle.data),
+            gross_wages=gross_wages, pay_period=pay_period, status="cache_hit", record_count=len(bundle.data),
         )
         return bundle
 
     try:
-        data = await get_payroll_tax_rates(work_state=work_state, pay_date=pay_date)
+        data = await get_payroll_tax_rates(
+            work_state=work_state, pay_date=pay_date, gross_wages=gross_wages, pay_period=pay_period,
+        )
     except Exception as exc:
         await _log_payroll_call(
             db, tenant_id=tenant_id, actor_id=actor_id, work_state=work_state, pay_date=pay_date,
-            status=f"error: {exc}", record_count=0,
+            gross_wages=gross_wages, pay_period=pay_period, status=f"error: {exc}", record_count=0,
         )
         raise
 
@@ -419,7 +495,7 @@ async def get_payroll_tax_bundle(
 
     await _log_payroll_call(
         db, tenant_id=tenant_id, actor_id=actor_id, work_state=work_state, pay_date=pay_date,
-        status="200", record_count=1,
+        gross_wages=gross_wages, pay_period=pay_period, status="200", record_count=1,
     )
     return bundle
 
@@ -433,6 +509,8 @@ async def _log_payroll_call(
     pay_date: str,
     status: str,
     record_count: int,
+    gross_wages: float | None = None,
+    pay_period: str | None = None,
 ) -> None:
     # Never include the API key or request headers here — this payload is
     # stored verbatim in the audit ledger with no redaction layer.
@@ -445,27 +523,50 @@ async def _log_payroll_call(
         subject_id="payroll_tax_api.rates_lookup",
         actor_id=actor_id,
         payload={
-            "params": {"work_state": work_state, "pay_date": pay_date},
+            "params": {
+                "work_state": work_state, "pay_date": pay_date,
+                "gross_wages": gross_wages, "pay_period": pay_period,
+            },
             "status": status,
             "record_count": record_count,
         },
     )
 
 
-def to_payroll_tax_rag_chunk(bundle: ReferenceSourceBundle, *, source_id: str) -> dict:
+def to_payroll_tax_rag_chunk(
+    bundle: ReferenceSourceBundle, *, source_id: str,
+    gross_wages: float | None = None, pay_period: str | None = None, periods_per_year: int | None = None,
+) -> dict:
     """Formats a ReferenceSourceBundle wrapping a PayrollTax API response
     into a dict shaped like a real RAG chunk. The `taxes` array's entries are
     heterogeneous and only partially documented (flat rate+wage_base vs.
     rate_structure+brackets; SUTA/SDI/local entries may have other shapes
     entirely) — this iterates whatever keys are actually present per entry
     rather than hardcoding an assumed shape, so an undocumented shape
-    degrades to an uglier line instead of crashing or silently dropping data."""
+    degrades to an uglier line instead of crashing or silently dropping data.
+
+    gross_wages/pay_period/periods_per_year (2026-08-06): the API itself
+    never echoes back or computes a withheld dollar amount for a given
+    paycheck — it only returns rate/bracket tables — so the annualized-income
+    figure is computed here, deterministically, from the query's own stated
+    wage and cadence, and stated explicitly in the chunk. Without this line,
+    a composed answer that names the applicable bracket for that income level
+    cites a number nowhere in the raw API response, which is exactly what
+    tripped Checkpoint C's numeric-fidelity check before this fix."""
     payload = bundle.data[0] if bundle.data else {}
     pay_date = payload.get("pay_date", "unknown date")
     work_state = payload.get("work_state", "unknown state")
 
     lines: list[str] = []
     header = f"PayrollTax API — payroll tax rates for {work_state}, pay date {pay_date}:"
+    if gross_wages is not None and pay_period is not None and periods_per_year is not None:
+        annualized = gross_wages * periods_per_year
+        header += (
+            f"\nQuery wage context: ${gross_wages:,.2f} per {pay_period} pay period "
+            f"(computed as ${gross_wages:,.2f} × {periods_per_year} pay periods/year "
+            f"= ${annualized:,.2f} annualized) — use this to identify the applicable "
+            "bracket/rate below; the API does not return a computed withheld dollar amount."
+        )
     total_chars = len(header) + 1
 
     for entry in payload.get("taxes", []):
@@ -1674,4 +1775,577 @@ def to_congress_rag_chunk(bundle: ReferenceSourceBundle, *, source_id: str) -> d
         },
         "score": 0.5,
         "node_id": f"{CONGRESS_NODE_PREFIX}{uuid4().hex[:8]}",
+    }
+
+
+# ── SEC EDGAR — explicit company-ticker + financial-concept lookup ─────────
+# $-prefixed (finance-convention "cashtag") or an explicit "ticker"/exchange-
+# prefixed form only — a bare 1-5 letter capitalized word ("V", "F", "T" are
+# all real tickers too) is far too likely to collide with ordinary capitalized
+# words/acronyms in a normal question to ever guess from that alone.
+_SEC_TICKER_PATTERN = re.compile(
+    r"\$([A-Za-z]{1,5})\b|\bticker\s+([A-Za-z]{1,5})\b|\b(?:NASDAQ|NYSE)\s*:\s*([A-Za-z]{1,5})\b",
+    re.IGNORECASE,
+)
+# Curated company-name -> ticker lookup, not free-text guessing: every name
+# here is the SEC's own canonical company name (see the company_tickers.json
+# map sec_adapter.py already resolves against) for a fixed set of well-known
+# issuers. A name not in this list simply doesn't match — same fail-closed
+# contract as the cashtag/"ticker X"/exchange-prefixed forms above. Real gap
+# (2026-08-06): "What was Apple's total revenue...?" named no ticker in any
+# of those forms and silently fell through to the off-domain refusal, even
+# though "Apple" unambiguously means AAPL. Deliberately excludes common
+# English words that also happen to be company names (e.g. "Target",
+# "Visa") — those would collide with this file's own concept keywords
+# ("target revenue", "visa fees") too often to be safe.
+_SEC_COMPANY_NAME_TICKERS: dict[str, str] = {
+    "apple": "AAPL", "microsoft": "MSFT", "amazon": "AMZN",
+    "alphabet": "GOOGL", "google": "GOOGL", "meta": "META", "facebook": "META",
+    "tesla": "TSLA", "nvidia": "NVDA", "netflix": "NFLX",
+    "berkshire hathaway": "BRK.B", "jpmorgan chase": "JPM", "jpmorgan": "JPM",
+    "johnson & johnson": "JNJ", "walmart": "WMT", "mastercard": "MA",
+    "procter & gamble": "PG", "exxonmobil": "XOM", "exxon mobil": "XOM",
+    "chevron": "CVX", "coca-cola": "KO", "coca cola": "KO", "pepsico": "PEP",
+    "intel": "INTC", "cisco": "CSCO", "ibm": "IBM", "oracle": "ORCL",
+    "salesforce": "CRM", "adobe": "ADBE", "pfizer": "PFE", "merck": "MRK",
+    "unitedhealth": "UNH", "home depot": "HD", "mcdonald's": "MCD",
+    "mcdonalds": "MCD", "nike": "NKE", "starbucks": "SBUX", "boeing": "BA",
+    "goldman sachs": "GS", "morgan stanley": "MS", "bank of america": "BAC",
+    "wells fargo": "WFC", "citigroup": "C", "amd": "AMD", "qualcomm": "QCOM",
+    "paypal": "PYPL", "verizon": "VZ", "at&t": "T", "disney": "DIS",
+    "costco": "COST",
+}
+# \b-anchored so a name never matches as a substring of an unrelated word
+# (e.g. bare "nike" must not match inside "unlike") — longest names first so
+# "jpmorgan chase" is preferred over the shorter "jpmorgan" when both appear.
+_SEC_COMPANY_NAME_PATTERN = re.compile(
+    r"\b(" + "|".join(
+        re.escape(name) for name in sorted(_SEC_COMPANY_NAME_TICKERS, key=len, reverse=True)
+    ) + r")\b",
+    re.IGNORECASE,
+)
+_SEC_CONCEPT_KEYWORDS: list[tuple[str, re.Pattern]] = [
+    ("revenue", re.compile(r"\brevenue\b", re.IGNORECASE)),
+    ("net_income", re.compile(r"\bnet\s+income\b", re.IGNORECASE)),
+    ("total_assets", re.compile(r"\btotal\s+assets\b", re.IGNORECASE)),
+    ("total_liabilities", re.compile(r"\btotal\s+liabilities\b", re.IGNORECASE)),
+    ("eps_diluted", re.compile(r"\bdiluted\s+(?:eps|earnings\s+per\s+share)\b", re.IGNORECASE)),
+    ("eps_basic", re.compile(r"\b(?:eps|earnings\s+per\s+share)\b", re.IGNORECASE)),
+]
+
+
+def extract_sec_lookup(query: str) -> tuple[str, str] | None:
+    """Extract (ticker, concept); never guesses either half. A query naming
+    a ticker but no known financial concept (or vice versa) returns None —
+    the live fetch simply doesn't run, same fail-closed contract as
+    match_work_state/extract_congress_bill_identifier."""
+    ticker_match = _SEC_TICKER_PATTERN.search(query)
+    if ticker_match is not None:
+        ticker = next(g for g in ticker_match.groups() if g).upper()
+    else:
+        name_match = _SEC_COMPANY_NAME_PATTERN.search(query)
+        if name_match is None:
+            return None
+        ticker = _SEC_COMPANY_NAME_TICKERS[name_match.group(1).lower()]
+    for concept, pattern in _SEC_CONCEPT_KEYWORDS:
+        if pattern.search(query):
+            return ticker, concept
+    return None
+
+
+_SEC_CACHE_TTL_SECONDS = 6 * 60 * 60
+_sec_concept_cache: dict[tuple[str, str], tuple[ReferenceSourceBundle, float]] = {}
+
+
+async def get_sec_company_facts_bundle(
+    db: AsyncSession, *, ticker: str, concept: str, tenant_id: str, actor_id: str | None,
+) -> ReferenceSourceBundle | None:
+    """Returns None (not an exception) when the ticker doesn't resolve to a
+    real SEC-registered company — a fabricated ticker must never silently
+    produce a chunk citing a company that was never actually looked up."""
+    cache_key = (ticker, concept)
+    now = time.monotonic()
+    cached = _sec_concept_cache.get(cache_key)
+    if cached is not None and cached[1] > now:
+        bundle = cached[0]
+        await _log_sec_call(db, tenant_id=tenant_id, actor_id=actor_id, identifier=cache_key, status="cache_hit", record_count=1)
+        return bundle
+
+    company = await resolve_sec_cik(ticker)
+    if company is None:
+        await _log_sec_call(db, tenant_id=tenant_id, actor_id=actor_id, identifier=cache_key, status="unknown_ticker", record_count=0)
+        return None
+
+    try:
+        data = await get_company_concept(company["cik_str"], concept)
+    except Exception as exc:
+        await _log_sec_call(db, tenant_id=tenant_id, actor_id=actor_id, identifier=cache_key, status=f"error: {exc}", record_count=0)
+        raise
+
+    data["company_title"] = company["title"]
+    data["ticker"] = ticker
+    accession_nodash = str(data.get("accession_number", "")).replace("-", "")
+    filing_url = (
+        f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={company['cik_str']}"
+        if not accession_nodash else
+        f"https://www.sec.gov/Archives/edgar/data/{company['cik_str']}/{accession_nodash}"
+    )
+    bundle = ReferenceSourceBundle(
+        source_name="SEC EDGAR — Company Facts", source_url=filing_url,
+        data=[data], licence_status="public_no_auth",
+    )
+    _sec_concept_cache[cache_key] = (bundle, now + _SEC_CACHE_TTL_SECONDS)
+    await _log_sec_call(db, tenant_id=tenant_id, actor_id=actor_id, identifier=cache_key, status="200", record_count=1)
+    return bundle
+
+
+async def _log_sec_call(
+    db: AsyncSession, *, tenant_id: str, actor_id: str | None,
+    identifier: tuple[str, str], status: str, record_count: int,
+) -> None:
+    ticker, concept = identifier
+    await record_event_async(
+        db, tenant_id=tenant_id, event_name="external_reference_data_call",
+        emitting_service="reference_data", subject_type="external_source",
+        subject_id="sec.edgar.company_facts", actor_id=actor_id,
+        payload={"params": {"ticker": ticker, "concept": concept}, "status": status, "record_count": record_count},
+    )
+
+
+def to_sec_rag_chunk(bundle: ReferenceSourceBundle, *, source_id: str) -> dict:
+    payload = bundle.data[0] if bundle.data else {}
+    lines = [f"SEC EDGAR — {payload.get('company_title', '')} ({payload.get('ticker', '')}):"]
+    if payload.get("label"):
+        lines.append(
+            f"- {payload['label']}: ${payload.get('value', 0):,} "
+            f"(fiscal year {payload.get('fiscal_year', '')}, period {payload.get('period_start', '')} to "
+            f"{payload.get('period_end', '')}, filed {payload.get('filed', '')})"
+        )
+    text = "\n".join(lines)[:_MAX_CONTEXT_CHARS]
+    return {
+        "text": text,
+        "metadata": {
+            "source_id": source_id, "title": "SEC EDGAR — Company Facts",
+            "version": bundle.retrieved_at.isoformat(), "jurisdiction": "US",
+            "file_path": bundle.source_url,
+        },
+        "score": 0.5,
+        "node_id": f"{SEC_NODE_PREFIX}{uuid4().hex[:8]}",
+    }
+
+
+# ── Regulations.gov — explicit docket-ID lookup ─────────────────────────────
+# Docket IDs follow AGENCY-YEAR-NUMBER (e.g. "IRS-2014-0019"); some agencies
+# have multi-segment prefixes ("TREAS-DO-2024-0003"). Requiring the trailing
+# 4-digit-year + 4+-digit-number shape (not just "looks like some hyphenated
+# code") keeps this from matching an unrelated hyphenated identifier a query
+# happens to contain.
+_REGULATIONS_GOV_DOCKET_PATTERN = re.compile(
+    r"\b([A-Z][A-Z-]{1,20}-(?:19|20)\d{2}-\d{4,})\b"
+)
+
+
+def extract_regulations_gov_docket_id(query: str) -> str | None:
+    match = _REGULATIONS_GOV_DOCKET_PATTERN.search(query)
+    return match.group(1) if match else None
+
+
+_REGULATIONS_GOV_CACHE_TTL_SECONDS = 6 * 60 * 60
+_regulations_gov_cache: dict[str, tuple[ReferenceSourceBundle, float]] = {}
+
+
+async def get_regulations_gov_bundle(
+    db: AsyncSession, *, docket_id: str, tenant_id: str, actor_id: str | None,
+) -> ReferenceSourceBundle:
+    now = time.monotonic()
+    cached = _regulations_gov_cache.get(docket_id)
+    if cached is not None and cached[1] > now:
+        bundle = cached[0]
+        await _log_regulations_gov_call(db, tenant_id=tenant_id, actor_id=actor_id, docket_id=docket_id, status="cache_hit", record_count=1)
+        return bundle
+
+    try:
+        data = await get_regulations_gov_docket(docket_id)
+    except Exception as exc:
+        await _log_regulations_gov_call(db, tenant_id=tenant_id, actor_id=actor_id, docket_id=docket_id, status=f"error: {exc}", record_count=0)
+        raise
+
+    docket_url = f"https://www.regulations.gov/docket/{docket_id}"
+    bundle = ReferenceSourceBundle(
+        source_name="Regulations.gov — Docket Lookup", source_url=docket_url,
+        data=[data], licence_status="public_api_key",
+    )
+    _regulations_gov_cache[docket_id] = (bundle, now + _REGULATIONS_GOV_CACHE_TTL_SECONDS)
+    await _log_regulations_gov_call(db, tenant_id=tenant_id, actor_id=actor_id, docket_id=docket_id, status="200", record_count=1)
+    return bundle
+
+
+async def _log_regulations_gov_call(
+    db: AsyncSession, *, tenant_id: str, actor_id: str | None,
+    docket_id: str, status: str, record_count: int,
+) -> None:
+    await record_event_async(
+        db, tenant_id=tenant_id, event_name="external_reference_data_call",
+        emitting_service="reference_data", subject_type="external_source",
+        subject_id="regulations.gov.docket", actor_id=actor_id,
+        payload={"params": {"docket_id": docket_id}, "status": status, "record_count": record_count},
+    )
+
+
+def to_regulations_gov_rag_chunk(bundle: ReferenceSourceBundle, *, source_id: str) -> dict:
+    payload = bundle.data[0] if bundle.data else {}
+    lines = [f"Regulations.gov — Docket {payload.get('docket_id', '')} ({payload.get('agency_id', '')}):"]
+    if payload.get("title"):
+        lines.append(f"- Title: {payload['title']}")
+    if payload.get("docket_type"):
+        lines.append(f"- Type: {payload['docket_type']}")
+    if payload.get("rin"):
+        lines.append(f"- RIN: {payload['rin']}")
+    if payload.get("abstract"):
+        lines.append(f"- Abstract: {payload['abstract']}")
+    if payload.get("modify_date"):
+        lines.append(f"- Last modified: {payload['modify_date']}")
+    text = "\n".join(lines)[:_MAX_CONTEXT_CHARS]
+    return {
+        "text": text,
+        "metadata": {
+            "source_id": source_id, "title": "Regulations.gov — Docket Lookup",
+            "version": bundle.retrieved_at.isoformat(), "jurisdiction": "US",
+            "file_path": bundle.source_url,
+        },
+        "score": 0.5,
+        "node_id": f"{REGULATIONS_GOV_NODE_PREFIX}{uuid4().hex[:8]}",
+    }
+
+
+# ── UK Office for National Statistics — CPIH inflation + monthly GDP ───────
+_UK_NAMES = re.compile(r"\b(?:uk|u\.k\.|united\s+kingdom|britain|british)\b", re.IGNORECASE)
+
+
+def is_uk_query(query: str) -> bool:
+    return bool(_UK_NAMES.search(query))
+
+
+def _year_over_year_change(series: list[tuple[datetime, float]]) -> dict | None:
+    """series is oldest-to-newest (month, value) pairs. Returns the latest
+    value plus a same-month-year-ago comparison — never an arbitrary two-
+    point comparison — or None if the series doesn't span a full year."""
+    if not series:
+        return None
+    latest_month, latest_value = series[-1]
+    prior_year_month = latest_month.replace(year=latest_month.year - 1)
+    prior = next((value for month, value in series if month == prior_year_month), None)
+    if prior is None:
+        return None
+    change_pct = (latest_value - prior) / prior * 100
+    return {
+        "latest_month": latest_month.strftime("%B %Y"), "latest_value": latest_value,
+        "prior_month": prior_year_month.strftime("%B %Y"), "prior_value": prior,
+        "change_pct": change_pct,
+    }
+
+
+_ONS_CACHE_TTL_SECONDS = 24 * 60 * 60
+_ons_cache: dict[str, tuple[ReferenceSourceBundle, float]] = {}
+
+
+async def _get_ons_bundle(
+    db: AsyncSession, *, series: str, fetch, source_name: str, tenant_id: str, actor_id: str | None,
+) -> ReferenceSourceBundle:
+    now = time.monotonic()
+    cached = _ons_cache.get(series)
+    if cached is not None and cached[1] > now:
+        bundle = cached[0]
+        await _log_ons_call(db, tenant_id=tenant_id, actor_id=actor_id, series=series, status="cache_hit", record_count=len(bundle.data))
+        return bundle
+
+    try:
+        observations = await fetch()
+    except Exception as exc:
+        await _log_ons_call(db, tenant_id=tenant_id, actor_id=actor_id, series=series, status=f"error: {exc}", record_count=0)
+        raise
+
+    change = _year_over_year_change(observations)
+    data = [change] if change else []
+    bundle = ReferenceSourceBundle(
+        source_name=source_name, source_url=f"{get_settings().ONS_API_BASE_URL}/datasets",
+        data=data, licence_status="public_no_auth",
+    )
+    _ons_cache[series] = (bundle, now + _ONS_CACHE_TTL_SECONDS)
+    await _log_ons_call(db, tenant_id=tenant_id, actor_id=actor_id, series=series, status="200", record_count=len(data))
+    return bundle
+
+
+async def get_ons_inflation_bundle(db: AsyncSession, *, tenant_id: str, actor_id: str | None) -> ReferenceSourceBundle:
+    return await _get_ons_bundle(
+        db, series="cpih", fetch=get_cpih_series, source_name="ONS — CPIH (UK Inflation)",
+        tenant_id=tenant_id, actor_id=actor_id,
+    )
+
+
+async def get_ons_gdp_bundle(db: AsyncSession, *, tenant_id: str, actor_id: str | None) -> ReferenceSourceBundle:
+    return await _get_ons_bundle(
+        db, series="gdp", fetch=get_gdp_index_series, source_name="ONS — Monthly GDP Index (UK)",
+        tenant_id=tenant_id, actor_id=actor_id,
+    )
+
+
+async def _log_ons_call(
+    db: AsyncSession, *, tenant_id: str, actor_id: str | None, series: str, status: str, record_count: int,
+) -> None:
+    await record_event_async(
+        db, tenant_id=tenant_id, event_name="external_reference_data_call",
+        emitting_service="reference_data", subject_type="external_source",
+        subject_id=f"ons.{series}", actor_id=actor_id,
+        payload={"params": {"series": series}, "status": status, "record_count": record_count},
+    )
+
+
+def to_ons_rag_chunk(bundle: ReferenceSourceBundle, *, source_id: str, title: str, metric_label: str) -> dict:
+    change = bundle.data[0] if bundle.data else None
+    if change is None:
+        text = f"{title}: no observation with a full year of history is currently available."
+    else:
+        direction = "increased" if change["change_pct"] >= 0 else "decreased"
+        text = (
+            f"{title}: {metric_label} {direction} {abs(change['change_pct']):.1f}% over the twelve months "
+            f"to {change['latest_month']}, from {change['prior_value']:g} in {change['prior_month']} "
+            f"to {change['latest_value']:g} in {change['latest_month']}."
+        )
+    return {
+        "text": text,
+        "metadata": {
+            "source_id": source_id, "title": title,
+            "version": bundle.retrieved_at.isoformat(), "jurisdiction": "UK",
+            "file_path": bundle.source_url,
+        },
+        "score": 0.5,
+        "node_id": f"{ONS_INFLATION_NODE_PREFIX if 'Inflation' in title else ONS_GDP_NODE_PREFIX}{uuid4().hex[:8]}",
+    }
+
+
+# ── Bank of England — UK Bank Rate ──────────────────────────────────────────
+_BOE_CACHE_TTL_SECONDS = 6 * 60 * 60
+_boe_cache: tuple[ReferenceSourceBundle, float] | None = None
+
+
+async def get_bank_of_england_bundle(db: AsyncSession, *, tenant_id: str, actor_id: str | None) -> ReferenceSourceBundle:
+    global _boe_cache
+    now = time.monotonic()
+    if _boe_cache is not None and _boe_cache[1] > now:
+        bundle = _boe_cache[0]
+        await _log_boe_call(db, tenant_id=tenant_id, actor_id=actor_id, status="cache_hit", record_count=len(bundle.data))
+        return bundle
+
+    try:
+        rows = await get_boe_series_observations(BANK_RATE_SERIES_ID)
+    except Exception as exc:
+        await _log_boe_call(db, tenant_id=tenant_id, actor_id=actor_id, status=f"error: {exc}", record_count=0)
+        raise
+
+    bundle = ReferenceSourceBundle(
+        source_name="Bank of England — Bank Rate",
+        source_url=f"{get_settings().BANK_OF_ENGLAND_API_BASE_URL}",
+        data=rows, licence_status="public_no_auth",
+    )
+    _boe_cache = (bundle, now + _BOE_CACHE_TTL_SECONDS)
+    await _log_boe_call(db, tenant_id=tenant_id, actor_id=actor_id, status="200", record_count=len(rows))
+    return bundle
+
+
+async def _log_boe_call(db: AsyncSession, *, tenant_id: str, actor_id: str | None, status: str, record_count: int) -> None:
+    await record_event_async(
+        db, tenant_id=tenant_id, event_name="external_reference_data_call",
+        emitting_service="reference_data", subject_type="external_source",
+        subject_id="boe.bank_rate", actor_id=actor_id,
+        payload={"params": {"series_id": BANK_RATE_SERIES_ID}, "status": status, "record_count": record_count},
+    )
+
+
+def to_bank_of_england_rag_chunk(bundle: ReferenceSourceBundle, *, source_id: str) -> dict:
+    rows = bundle.data
+    latest = rows[-1] if rows else None
+    text = (
+        f"Bank of England — Bank Rate: {latest['value']}% (as of {latest['date']})"
+        if latest else "Bank of England — Bank Rate: no current observation available."
+    )
+    return {
+        "text": text,
+        "metadata": {
+            "source_id": source_id, "title": "Bank of England — Bank Rate",
+            "version": bundle.retrieved_at.isoformat(), "jurisdiction": "UK",
+            "file_path": bundle.source_url,
+        },
+        "score": 0.5,
+        "node_id": f"{BANK_OF_ENGLAND_NODE_PREFIX}{uuid4().hex[:8]}",
+    }
+
+
+# ── EU VIES — VAT number validation ─────────────────────────────────────────
+_VIES_VAT_PATTERN = re.compile(
+    r"\b(AT|BE|BG|CY|CZ|DE|DK|EE|EL|ES|FI|FR|HR|HU|IE|IT|LT|LU|LV|MT|NL|PL|PT|RO|SE|SI|SK|XI)"
+    r"[\s-]?([A-Za-z0-9]{2,12})\b"
+)
+
+
+def extract_vat_number(query: str) -> tuple[str, str] | None:
+    """Requires the literal words "VAT number"/"VAT registration" nearby —
+    a bare 2-letter-plus-digits token is too easy to collide with an
+    unrelated identifier (an invoice number, a product code) to check
+    without that context, never guessed from shape alone."""
+    if not re.search(r"\bvat\s+(?:number|registration|reg\.?)\b", query, re.IGNORECASE):
+        return None
+    match = _VIES_VAT_PATTERN.search(query)
+    if match is None:
+        return None
+    return match.group(1).upper(), match.group(2).upper()
+
+
+async def get_vies_bundle(
+    db: AsyncSession, *, country_code: str, vat_number: str, tenant_id: str, actor_id: str | None,
+) -> ReferenceSourceBundle:
+    try:
+        result = await check_vat_number(country_code, vat_number)
+    except Exception as exc:
+        await _log_vies_call(db, tenant_id=tenant_id, actor_id=actor_id, country_code=country_code, vat_number=vat_number, status=f"error: {exc}", record_count=0)
+        raise
+
+    bundle = ReferenceSourceBundle(
+        source_name="EU VIES — VAT Validation",
+        source_url=f"{get_settings().VIES_API_BASE_URL}/check-vat-number",
+        data=[result], licence_status="public_no_auth",
+    )
+    await _log_vies_call(db, tenant_id=tenant_id, actor_id=actor_id, country_code=country_code, vat_number=vat_number, status="200", record_count=1)
+    return bundle
+
+
+async def _log_vies_call(
+    db: AsyncSession, *, tenant_id: str, actor_id: str | None,
+    country_code: str, vat_number: str, status: str, record_count: int,
+) -> None:
+    await record_event_async(
+        db, tenant_id=tenant_id, event_name="external_reference_data_call",
+        emitting_service="reference_data", subject_type="external_source",
+        subject_id="vies.check_vat_number", actor_id=actor_id,
+        payload={"params": {"country_code": country_code, "vat_number": vat_number}, "status": status, "record_count": record_count},
+    )
+
+
+def to_vies_rag_chunk(bundle: ReferenceSourceBundle, *, source_id: str) -> dict:
+    result = bundle.data[0] if bundle.data else {}
+    full_number = f"{result.get('country_code', '')}{result.get('vat_number', '')}"
+    if result.get("valid"):
+        text = (
+            f"EU VIES — VAT number {full_number} is VALID, registered to "
+            f"{result.get('name', 'an unnamed trader')} ({result.get('address', 'address unavailable')}), "
+            f"checked {result.get('request_date', '')}."
+        )
+    else:
+        text = f"EU VIES — VAT number {full_number} is NOT valid (checked {result.get('request_date', '')})."
+    return {
+        "text": text,
+        "metadata": {
+            "source_id": source_id, "title": "EU VIES — VAT Validation",
+            "version": bundle.retrieved_at.isoformat(), "jurisdiction": "EU",
+            "file_path": bundle.source_url,
+        },
+        "score": 0.5,
+        "node_id": f"{VIES_NODE_PREFIX}{uuid4().hex[:8]}",
+    }
+
+
+# ── UN + UK consolidated sanctions screening ────────────────────────────────
+_SANCTIONS_TRIGGER_PATTERN = re.compile(
+    r"\bsanctions?\s+(?:list|screen(?:ing)?|check)\b|\bscreen(?:ing)?\s+.+?\s+for\s+sanctions\b|"
+    r"\bis\s+(.+?)\s+on\s+(?:the\s+|a\s+)?sanctions?\s+list\b|"
+    r"\bcheck\s+(.+?)\s+against\s+(?:the\s+)?sanctions?\s+list\b",
+    re.IGNORECASE,
+)
+# A trailing "?", "." or similar has no business being in a person/entity
+# name — trimmed so "is John Smith on the sanctions list?" extracts "John
+# Smith", not "John Smith?".
+_TRAILING_PUNCTUATION = re.compile(r"[?.!,;:]+$")
+
+
+def extract_sanctions_screening_name(query: str) -> str | None:
+    """Requires an explicit sanctions-screening trigger phrase; the name
+    itself is extracted from that phrase's own capture group, never
+    guessed from an arbitrary capitalized word elsewhere in the query."""
+    match = _SANCTIONS_TRIGGER_PATTERN.search(query)
+    if match is None:
+        return None
+    name = next((g for g in match.groups() if g), None)
+    if name is None:
+        return None
+    name = _TRAILING_PUNCTUATION.sub("", name.strip())
+    return name if name else None
+
+
+async def get_sanctions_bundle(
+    db: AsyncSession, *, screened_name: str, tenant_id: str, actor_id: str | None,
+) -> ReferenceSourceBundle:
+    try:
+        matches = await screen_sanctions_name(screened_name)
+    except Exception as exc:
+        await _log_sanctions_call(db, tenant_id=tenant_id, actor_id=actor_id, screened_name=screened_name, status=f"error: {exc}", record_count=0)
+        raise
+
+    data = [
+        {"list_source": m.list_source, "reference_id": m.reference_id, "name": m.name, "entry_type": m.entry_type}
+        for m in matches
+    ]
+    bundle = ReferenceSourceBundle(
+        source_name="UN + UK Consolidated Sanctions Screening",
+        source_url="https://scsanctions.un.org/ ; https://sanctionslist.fcdo.gov.uk/",
+        data=data, licence_status="public_no_auth",
+    )
+    await _log_sanctions_call(db, tenant_id=tenant_id, actor_id=actor_id, screened_name=screened_name, status="200", record_count=len(data))
+    return bundle
+
+
+async def _log_sanctions_call(
+    db: AsyncSession, *, tenant_id: str, actor_id: str | None, screened_name: str, status: str, record_count: int,
+) -> None:
+    await record_event_async(
+        db, tenant_id=tenant_id, event_name="external_reference_data_call",
+        emitting_service="reference_data", subject_type="external_source",
+        subject_id="sanctions.un_uk_screen", actor_id=actor_id,
+        payload={"params": {"screened_name": screened_name}, "status": status, "record_count": record_count},
+    )
+
+
+# Fixed, deliberately-not-paraphrased compliance caution — shared with
+# Checkpoint C (app/domains/massarius/answer_validator.py imports this exact
+# constant) so its "summarize, don't copy" check can recognize this specific
+# sentence as compliance boilerplate that is CORRECT to reproduce verbatim,
+# rather than flagging a composed answer that (rightly) repeats it as if it
+# had lazily copied ordinary explanatory prose from the source.
+SANCTIONS_DISCLAIMER = (
+    "This is a name-based match against the UN and UK consolidated sanctions lists, not a "
+    "confirmed identity match — verify against date of birth, nationality, and other identifying "
+    "details before relying on this for a compliance decision."
+)
+
+
+def to_sanctions_rag_chunk(bundle: ReferenceSourceBundle, *, source_id: str, screened_name: str) -> dict:
+    if bundle.data:
+        lines = [f"Sanctions screening for \"{screened_name}\" — {len(bundle.data)} potential match(es) found:"]
+        for entry in bundle.data:
+            lines.append(f"- [{entry['list_source']}] {entry['name']} ({entry['entry_type']}, ref {entry['reference_id']})")
+        lines.append(SANCTIONS_DISCLAIMER)
+    else:
+        lines = [
+            f"Sanctions screening for \"{screened_name}\": no match found on the UN Security Council "
+            "Consolidated List or the UK Sanctions List (FCDO).",
+        ]
+    text = "\n".join(lines)
+    return {
+        "text": text,
+        "metadata": {
+            "source_id": source_id, "title": "UN + UK Consolidated Sanctions Screening",
+            "version": bundle.retrieved_at.isoformat(), "jurisdiction": "Global",
+            "file_path": bundle.source_url,
+        },
+        "score": 0.5,
+        "node_id": f"{SANCTIONS_NODE_PREFIX}{uuid4().hex[:8]}",
     }

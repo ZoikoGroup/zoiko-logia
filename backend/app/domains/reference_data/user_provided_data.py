@@ -98,6 +98,17 @@ _BALANCE = re.compile(rf"\b(cash|(?:accounts?\s+)?receivables?|inventory)\s*(?:b
 _CATEGORY_VALUE = re.compile(
     rf"(?:^|[:,;]|\band\b)\s*([A-Za-z][A-Za-z &/-]{{0,40}}?)\s+{_SIGNED_NUMBER}", re.I
 )
+# Real gap (2026-08-06): "Marketing varies $8,000, $9,500, $7,200,
+# $11,000." names ONE category followed by a whole LIST of values (unlike
+# every other row here, which is one label -> one value) — _CATEGORY_VALUE
+# only ever captures the first number, silently discarding the other
+# three quarters' figures rather than reporting a category three-quarters
+# smaller than what was actually supplied. Matched positionally right
+# after a _CATEGORY_VALUE hit; naturally stops at the next real row (a
+# label reintroduces a letter, which this number-only pattern can't
+# consume), so it never swallows a genuinely separate category's figure.
+_TRAILING_NUMBER_LIST = re.compile(rf"(?:\s*,\s*{_NUMBER})+")
+_NUMBER_ONLY = re.compile(_NUMBER)
 # Real gap (2026-08-03): "We had 12,000 visitors, 3,400 signups, and 890
 # customers this month" — a funnel/count convention that puts the NUMBER
 # first — matched none of the above patterns (all require the label before
@@ -162,7 +173,14 @@ _DATA_OPERATION = re.compile(
     # composition against unrelated reference sources instead of the
     # user's own supplied figures. Same composition-phrasing family
     # presentation_dataprofile.py's COMPOSITION intent already recognizes.
-    r"split|composition|share|proportion|mix|allocation)\b",
+    r"split|composition|share|proportion|mix|allocation|"
+    # Live bug (2026-08-06): "Create a funnel: 10,000 website visitors,
+    # 2,500 leads, ..." named a real inline dataset but "funnel" matched
+    # nothing above — the query fell through to normal category
+    # classification, which landed on "standards" and confidently answered
+    # with unrelated retrieved SEC-filing/explosives-regulation content
+    # instead of the user's own supplied funnel numbers.
+    r"funnel)\b",
     re.I,
 )
 _DISTRIBUTION_PREFIX = re.compile(
@@ -181,8 +199,19 @@ _DISTRIBUTION_PREFIX = re.compile(
 # requires the ENTIRE tail to be numbers-only, it never mismatches a
 # labeled shape like "Salaries 45%, Rent 15%, ..." (those still have
 # letters mixed into the tail, so this pattern simply doesn't match).
+# Real gap (2026-08-06): "Show a histogram of invoice processing times: 2,
+# 3, 3, 4, 4, 4, 5, 7, 8, 12 days." has a trailing UNIT WORD ("days") after
+# the last number, before the closing period — the old pattern anchored
+# the number list directly to end-of-string (only an optional punctuation
+# mark tolerated), so this never matched at all and the query fell through
+# to normal retrieval, which confidently answered with unrelated content.
+# One optional short trailing word is safe to tolerate here for the same
+# reason the ENTIRE-tail-must-be-numbers constraint above is safe: a
+# labeled shape ("Salaries 45%, Rent 15%") still has letters BETWEEN the
+# numbers, not just one word after the very last one.
 _GENERIC_COLON_NUMBER_LIST = re.compile(
-    r":\s*((?:[$£€]?\s*-?\d[\d,]*(?:\.\d+)?%?\s*,\s*)+[$£€]?\s*-?\d[\d,]*(?:\.\d+)?%?)\s*[.!?]?\s*$"
+    r":\s*((?:[$£€]?\s*-?\d[\d,]*(?:\.\d+)?%?\s*,\s*)+[$£€]?\s*-?\d[\d,]*(?:\.\d+)?%?)"
+    r"(?:\s+[A-Za-z]+)?\s*[.!?]?\s*$"
 )
 # Real gap (2026-08-03): row separation between entities used to require a
 # literal semicolon ("North: ...; South: ...; West: ..."). Natural rephrasing
@@ -376,14 +405,30 @@ def _inline(table: UserDataTable, *, units: tuple[str, ...] = (), currency: str 
 # when present; a query using the tuple shape without that phrasing still
 # extracts, just with generic "X"/"Y" headers.
 _SCATTER_LABEL_INTRO = re.compile(r"\bbetween\s+([A-Za-z][A-Za-z /&-]{0,40}?)\s+and\s+([A-Za-z][A-Za-z /&-]{0,40}?)\s*:", re.I)
+# Real gap (2026-08-06): "Plot advertising spend against revenue" doesn't
+# use "between X and Y:" — it uses "<x label> against <y label>", the
+# natural phrasing for "plot A against B". Kept as a second, independent
+# pattern (not folded into _SCATTER_LABEL_INTRO's alternation) so it can't
+# accidentally widen what "between...and" matches elsewhere.
+_SCATTER_LABEL_AGAINST = re.compile(r"\bplot\s+([A-Za-z][A-Za-z /&-]{0,40}?)\s+against\s+([A-Za-z][A-Za-z /&-]{0,40}?)\s*:", re.I)
 _PAIRED_TUPLE = re.compile(rf"\(\s*{_NUMBER}\s*,\s*{_NUMBER}\s*\)")
+# Real gap (2026-08-06): "$10K and $80K; $20K and $125K; ..." pairs values
+# with the word "and" instead of a parenthesized tuple — a completely
+# different, equally common convention _PAIRED_TUPLE never covered, so the
+# whole query fell through to normal retrieval with no data extracted at
+# all. Tried only as a fallback when no real tuples are found, so a query
+# that happens to combine both conventions still prefers the more
+# explicit, unambiguous parenthesized form.
+_AND_SEPARATED_PAIR = re.compile(rf"{_NUMBER}\s+and\s+{_NUMBER}", re.I)
 
 
 def _extract_scatter_pairs(query: str) -> UserDataTable | None:
     pairs = _PAIRED_TUPLE.findall(query)
     if len(pairs) < 2:
+        pairs = _AND_SEPARATED_PAIR.findall(query)
+    if len(pairs) < 2:
         return None
-    label_match = _SCATTER_LABEL_INTRO.search(query)
+    label_match = _SCATTER_LABEL_INTRO.search(query) or _SCATTER_LABEL_AGAINST.search(query)
     x_label = _label(label_match.group(1)) if label_match else "X"
     y_label = _label(label_match.group(2)) if label_match else "Y"
     rows = tuple((f"Point {index}", _decimal(x), _decimal(y)) for index, (x, y) in enumerate(pairs, 1))
@@ -905,10 +950,14 @@ def extract_user_data_table(query: str) -> UserDataTable | None:
         return UserDataTable("Balance comparison", ("Account", "Balance"), balance_rows, "These are the balances supplied in the request.")
 
     category_matches = list(_CATEGORY_VALUE.finditer(query))
-    category_rows = tuple(
-        (_label(m.group(1)), _signed_decimal(m.group(2), m.group(3), m.group(4), m.group(5)))
-        for m in category_matches
-    )
+    category_rows = []
+    for m in category_matches:
+        value = _signed_decimal(m.group(2), m.group(3), m.group(4), m.group(5))
+        trailing = _TRAILING_NUMBER_LIST.match(query, m.end())
+        if trailing:
+            value += sum(_decimal(n) for n in _NUMBER_ONLY.findall(trailing.group()))
+        category_rows.append((_label(m.group(1)), value))
+    category_rows = tuple(category_rows)
     # Real gap (2026-08-06): "Alice 34%, Bob 28%, Carla 41%, ..." lost the
     # "%" entirely — _CATEGORY_VALUE's number group never captures a
     # trailing "%", so the resulting header was a bare "Amount" and the

@@ -143,6 +143,26 @@ class Settings(BaseSettings):
     REGULATIONS_GOV_API_BASE_URL: str = "https://api.regulations.gov/v4"
     REGULATIONS_GOV_API_KEY: str = ""
 
+    # UK Office for National Statistics — public, no-auth. Headline UK
+    # inflation (CPIH) and monthly GDP index.
+    ONS_API_BASE_URL: str = "https://api.beta.ons.gov.uk/v1"
+
+    # Bank of England Interactive Statistical Database (IADB) — public,
+    # no-auth CSV export. UK Bank Rate and other policy series.
+    BANK_OF_ENGLAND_API_BASE_URL: str = "https://www.bankofengland.co.uk/boeapps/database"
+
+    # EU VIES — public, no-auth. Validates an EU VAT registration number and
+    # (when valid) returns the registered trader's name/address.
+    VIES_API_BASE_URL: str = "https://ec.europa.eu/taxation_customs/vies/rest-api"
+
+    # UN and UK consolidated sanctions lists — public, no-auth, downloaded
+    # and cached as a snapshot (both are large single-file lists, not a
+    # per-query search API) rather than fetched fresh on every request.
+    UN_SANCTIONS_XML_URL: str = "https://scsanctions.un.org/resources/xml/en/name/consolidated.xml"
+    UK_SANCTIONS_CSV_URL: str = "https://sanctionslist.fcdo.gov.uk/docs/UK-Sanctions-List.csv"
+    SANCTIONS_SNAPSHOT_TTL_SECONDS: int = 3600
+    SANCTIONS_MAX_DOWNLOAD_BYTES: int = 75_000_000
+
     # Optional commercial ZIP-level tax lookup. Keep the URL empty until a
     # provider endpoint and its licence have been confirmed.
     ZIPTAX_API_BASE_URL: str = ""

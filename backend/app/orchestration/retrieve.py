@@ -42,6 +42,12 @@ from app.domains.reference_data.service import (
     ECFR_TITLE26_GOVERNED_SOURCE_ID,
     CONGRESS_GOVERNED_SOURCE_ID,
     TAVILY_GOVERNED_SOURCE_ID, SERPAPI_GOVERNED_SOURCE_ID,
+    SEC_GOVERNED_SOURCE_ID, REGULATIONS_GOV_GOVERNED_SOURCE_ID,
+    extract_sec_lookup, extract_regulations_gov_docket_id,
+    ONS_INFLATION_GOVERNED_SOURCE_ID, ONS_GDP_GOVERNED_SOURCE_ID,
+    BANK_OF_ENGLAND_GOVERNED_SOURCE_ID,
+    VIES_GOVERNED_SOURCE_ID, extract_vat_number,
+    SANCTIONS_GOVERNED_SOURCE_ID, extract_sanctions_screening_name,
 )
 from app.domains.calculation.service import POLICYENGINE_GOVERNED_SOURCE_ID
 from app.domains.calculation.formula_extraction import extract_named_formula
@@ -75,6 +81,10 @@ _SINGLE_SOURCE_IS_SUFFICIENT: set[str] = {
     CFR_TITLE26_GOVERNED_SOURCE_ID, FEDERAL_REGISTER_GOVERNED_SOURCE_ID,
     ECFR_TITLE26_GOVERNED_SOURCE_ID, POLICYENGINE_GOVERNED_SOURCE_ID,
     CONGRESS_GOVERNED_SOURCE_ID,
+    SEC_GOVERNED_SOURCE_ID, REGULATIONS_GOV_GOVERNED_SOURCE_ID,
+    ONS_INFLATION_GOVERNED_SOURCE_ID, ONS_GDP_GOVERNED_SOURCE_ID,
+    BANK_OF_ENGLAND_GOVERNED_SOURCE_ID,
+    VIES_GOVERNED_SOURCE_ID, SANCTIONS_GOVERNED_SOURCE_ID,
     BANK_RECONCILIATION_GOVERNED_SOURCE_ID, MONTH_END_CLOSE_GOVERNED_SOURCE_ID,
     ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID,
     BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID,
@@ -426,6 +436,26 @@ def infer_category_rule(query: str) -> str | None:
     # calculation engine, not get diverted here.
     if extract_named_formula(query) is None and extract_inline_dataset(query) is not None:
         return "user-provided-data"
+    # Real gap (2026-08-06): "$AAPL revenue" and "docket IRS-2014-0019" name
+    # no keyword phrase any static _CATEGORY_KEYWORDS list would recognize —
+    # without a deterministic rule, these fell through to the semantic
+    # classifier, which (having no close category-example embedding for
+    # "SEC ticker" or "regulatory docket ID") landed on method="default",
+    # which is exactly the signal service.py's off-domain refusal fast path
+    # keys on — a genuine, answerable SEC/Regulations.gov query would have
+    # been refused as off-topic before ever reaching the live fetch below.
+    # Extraction SUCCESS is itself the category signal here, same
+    # precedent as user-provided-data above: a query naming a real ticker
+    # (or docket ID) plus a concept Kriton knows how to look up already
+    # tells us everything infer_category needs to know.
+    if extract_sec_lookup(query) is not None:
+        return "sec-filings"
+    if extract_regulations_gov_docket_id(query) is not None:
+        return "federal-register"
+    if extract_vat_number(query) is not None:
+        return "vat-validation"
+    if extract_sanctions_screening_name(query) is not None:
+        return "sanctions-screening"
     if re.search(r"\bratio\b.*\bbenchmark\b|\bbenchmark\b.*\bratio\b", lowered):
         return "user-provided-data"
     if re.search(r"\bq[1-4]\b.*[$£€]|accounts?[\s-]+receivable\s+aging.*[$£€]", lowered):

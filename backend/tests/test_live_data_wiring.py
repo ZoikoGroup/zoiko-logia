@@ -167,6 +167,19 @@ def test_narrower_metric_hints_filters_oecd_policy_microdata_disguised_as_the_he
     assert not _NARROWER_METRIC_HINTS.search("united states — unemployment rate — total")
 
 
+def test_narrower_metric_hints_filters_ropi_regional_datasets_disguised_as_inflation():
+    # Live bug (2026-08-06): "What is Japan's current inflation rate?"
+    # picked OECD's "Economic statistics ROPI-adjusted for inflation -
+    # Regions" as the top dataset purely because its own description
+    # mentions "inflation" as a methodology note, then confidently served
+    # an EMPLOYMENT series (~38 million persons) captioned as Japan's
+    # inflation rate.
+    from app.orchestration.dbnomics import _NARROWER_METRIC_HINTS
+
+    assert _NARROWER_METRIC_HINTS.search("Economic statistics ROPI-adjusted for inflation - Regions")
+    assert not _NARROWER_METRIC_HINTS.search("Japan – Consumer Price Index > All items > Total")
+
+
 def test_dbnomics_current_queries_reject_stale_or_unparseable_observations():
     from datetime import date
     from app.orchestration.dbnomics import _is_fresh_for_current_question

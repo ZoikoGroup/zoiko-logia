@@ -27,6 +27,13 @@ from app.domains.reference_data.service import (
     CONGRESS_GOVERNED_SOURCE_ID,
     TAVILY_GOVERNED_SOURCE_ID,
     SERPAPI_GOVERNED_SOURCE_ID,
+    SEC_GOVERNED_SOURCE_ID,
+    REGULATIONS_GOV_GOVERNED_SOURCE_ID,
+    ONS_INFLATION_GOVERNED_SOURCE_ID,
+    ONS_GDP_GOVERNED_SOURCE_ID,
+    BANK_OF_ENGLAND_GOVERNED_SOURCE_ID,
+    VIES_GOVERNED_SOURCE_ID,
+    SANCTIONS_GOVERNED_SOURCE_ID,
 )
 from app.domains.reference_data.bank_reconciliation import (
     BANK_RECONCILIATION_GOVERNED_SOURCE_ID,
@@ -1011,6 +1018,150 @@ async def seed_congress_sources(db, user: User) -> None:
     print(f"Seeded {created} Congress.gov source(s).")
 
 
+SEC_SOURCES = [
+    (
+        SEC_GOVERNED_SOURCE_ID,
+        "SEC EDGAR — Company Facts",
+        "Securities regulator",
+        "primary",
+        "ACTIVE",
+        "Live-queried from the official SEC EDGAR company-facts XBRL API when a question "
+        "names a real stock ticker (e.g. \"$AAPL\") and a known financial concept "
+        "(revenue, net income, total assets, total liabilities, EPS). Returns the most "
+        "recent annual (10-K) reported value.",
+    ),
+]
+
+
+async def seed_sec_sources(db, user: User) -> None:
+    created = 0
+    for source_id, title, source_class, authority_level, status, note in SEC_SOURCES:
+        existing = await db.execute(select(Source).where(Source.id == source_id))
+        if existing.scalar_one_or_none() is not None:
+            continue
+        source = Source(
+            id=source_id, category="sec-filings", title=title,
+            source_class=source_class, jurisdiction_scope="US",
+            authority_level=authority_level, licence_state="permitted",
+        )
+        db.add(source)
+        await db.flush()
+        db.add(SourceVersion(
+            source_id=source.id, status=status, note=note,
+            submitted_by=user.id, approved_by=user.id,
+        ))
+        created += 1
+    await db.commit()
+    print(f"Seeded {created} SEC EDGAR source(s).")
+
+
+REGULATIONS_GOV_SOURCES = [
+    (
+        REGULATIONS_GOV_GOVERNED_SOURCE_ID,
+        "Regulations.gov — Docket Lookup",
+        "Federal regulatory docket system",
+        "primary",
+        "ACTIVE",
+        "Live-queried from the official Regulations.gov API when a question names a "
+        "complete, correctly-formatted federal rulemaking docket ID (e.g. "
+        "\"IRS-2014-0019\"). Includes the docket's title, type, RIN, and abstract.",
+    ),
+]
+
+
+async def seed_regulations_gov_sources(db, user: User) -> None:
+    created = 0
+    for source_id, title, source_class, authority_level, status, note in REGULATIONS_GOV_SOURCES:
+        existing = await db.execute(select(Source).where(Source.id == source_id))
+        if existing.scalar_one_or_none() is not None:
+            continue
+        source = Source(
+            id=source_id, category="federal-register", title=title,
+            source_class=source_class, jurisdiction_scope="US",
+            authority_level=authority_level, licence_state="permitted",
+        )
+        db.add(source)
+        await db.flush()
+        db.add(SourceVersion(
+            source_id=source.id, status=status, note=note,
+            submitted_by=user.id, approved_by=user.id,
+        ))
+        created += 1
+    await db.commit()
+    print(f"Seeded {created} Regulations.gov source(s).")
+
+
+UK_INTERNATIONAL_SOURCES = [
+    (
+        ONS_INFLATION_GOVERNED_SOURCE_ID, "ONS — CPIH (UK Inflation)", "economic-data",
+        "UK national statistics authority", "primary", "ACTIVE",
+        "Live-queried from the UK Office for National Statistics CPIH dataset when a question "
+        "names the UK and asks about inflation. Returns the 12-month percentage change between "
+        "the latest and same-month-prior-year published index values.",
+    ),
+    (
+        ONS_GDP_GOVERNED_SOURCE_ID, "ONS — Monthly GDP Index (UK)", "economic-data",
+        "UK national statistics authority", "primary", "ACTIVE",
+        "Live-queried from the UK Office for National Statistics monthly GDP index dataset when "
+        "a question names the UK and asks about GDP. Returns the 12-month percentage change "
+        "between the latest and same-month-prior-year published index values.",
+    ),
+    (
+        BANK_OF_ENGLAND_GOVERNED_SOURCE_ID, "Bank of England — Bank Rate", "interest-rates",
+        "UK central bank", "primary", "ACTIVE",
+        "Live-queried from the Bank of England's Interactive Statistical Database (IADB) when a "
+        "question names the UK and asks about interest rates. Returns the current Bank Rate.",
+    ),
+    (
+        VIES_GOVERNED_SOURCE_ID, "EU VIES — VAT Validation", "vat-validation",
+        "EU tax authority system", "primary", "ACTIVE",
+        "Live-queried from the European Commission's VIES system when a question names a "
+        "complete EU VAT registration number (country code + number) alongside the phrase "
+        "\"VAT number\"/\"VAT registration\". Returns validity and (if valid) the registered "
+        "trader's name and address.",
+    ),
+    (
+        SANCTIONS_GOVERNED_SOURCE_ID, "UN + UK Consolidated Sanctions Screening", "sanctions-screening",
+        "UN Security Council + UK FCDO", "primary", "ACTIVE",
+        "Live-screened against the UN Security Council Consolidated List and the UK Sanctions "
+        "List (FCDO) when a question explicitly asks to screen/check a named individual or "
+        "entity against the sanctions list. Name-based matching only — never a confirmed "
+        "identity match on its own.",
+    ),
+]
+
+
+_UK_INTERNATIONAL_JURISDICTIONS = {
+    ONS_INFLATION_GOVERNED_SOURCE_ID: "UK",
+    ONS_GDP_GOVERNED_SOURCE_ID: "UK",
+    BANK_OF_ENGLAND_GOVERNED_SOURCE_ID: "UK",
+    VIES_GOVERNED_SOURCE_ID: "EU",
+    SANCTIONS_GOVERNED_SOURCE_ID: "Global",
+}
+
+
+async def seed_uk_international_sources(db, user: User) -> None:
+    created = 0
+    for source_id, title, category, source_class, authority_level, status, note in UK_INTERNATIONAL_SOURCES:
+        existing = await db.execute(select(Source).where(Source.id == source_id))
+        if existing.scalar_one_or_none() is not None:
+            continue
+        source = Source(
+            id=source_id, category=category, title=title,
+            source_class=source_class, jurisdiction_scope=_UK_INTERNATIONAL_JURISDICTIONS[source_id],
+            authority_level=authority_level, licence_state="permitted",
+        )
+        db.add(source)
+        await db.flush()
+        db.add(SourceVersion(
+            source_id=source.id, status=status, note=note,
+            submitted_by=user.id, approved_by=user.id,
+        ))
+        created += 1
+    await db.commit()
+    print(f"Seeded {created} UK/international source(s).")
+
+
 PROFESSIONAL_SEARCH_SOURCES = [
     (TAVILY_GOVERNED_SOURCE_ID, "Tavily — Approved Professional Authority Search"),
     (SERPAPI_GOVERNED_SOURCE_ID, "SerpAPI — Approved Professional Authority Search"),
@@ -1138,6 +1289,9 @@ async def seed() -> None:
         await seed_tax_regulation_sources(db, user)
         await seed_federal_register_sources(db, user)
         await seed_congress_sources(db, user)
+        await seed_sec_sources(db, user)
+        await seed_regulations_gov_sources(db, user)
+        await seed_uk_international_sources(db, user)
         await seed_professional_search_sources(db, user)
         await seed_policyengine_calculation_sources(db, user)
         await seed_expression_evaluator_calculation_sources(db, user)

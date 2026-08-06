@@ -1,5 +1,5 @@
 from fastapi import Request
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from collections.abc import AsyncGenerator
@@ -125,6 +125,48 @@ def _identity_from_request(request: Request) -> tuple[str, str]:
     return claims.sub, claims.tenant_id
 
 
+# Real gap (2026-08-06): the original approach set app.tenant_id/app.user_id
+# ONCE per request with is_local=false (session-scoped) specifically to
+# survive multiple commits within one request (every audit event write is
+# its own transaction; a transaction-local SET LOCAL would be wiped by the
+# first of those, silently making every RLS-protected query afterwards see
+# zero rows). But APP_DATABASE_URL points at Supabase's transaction-pooling
+# port (PgBouncer) — in transaction-pooling mode, PgBouncer can hand back a
+# DIFFERENT physical Postgres backend connection for each statement within
+# what the app considers "the same session," so a session-scoped
+# set_config() call and the query it's meant to protect can silently land
+# on two different backend connections. When that happens app.tenant_id
+# reads back unset and RLS blocks every row on that table — including
+# fully public ones — which is exactly the intermittent "0 eligible
+# sources" failures observed live (confirmed by instrumenting get_db(): the
+# resolved tenant_id was identical, empty, across both a request that
+# succeeded and three that failed back-to-back).
+#
+# Fixed by using is_local=true (SET LOCAL, transaction-scoped — safe from
+# leaking into a different logical request on a reused pooled connection)
+# AND re-applying it at the start of EVERY transaction within the request,
+# not just once. Session.info survives across commits on the same
+# AsyncSession (unlike a transaction-local Postgres setting), so it's used
+# to stash the identity once here; the after_begin listener below then
+# re-issues SET LOCAL on whatever physical connection PgBouncer actually
+# hands out for each new transaction — solving both the original multi-
+# commit problem AND the pooling mismatch at the same time.
+def _apply_rls_identity(session: Session, transaction, connection) -> None:
+    if "app_tenant_id" not in session.info:
+        return
+    connection.execute(
+        text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+        {"tenant_id": session.info["app_tenant_id"]},
+    )
+    connection.execute(
+        text("SELECT set_config('app.user_id', :user_id, true)"),
+        {"user_id": session.info["app_user_id"]},
+    )
+
+
+event.listens_for(Session, "after_begin")(_apply_rls_identity)
+
+
 async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
     """Async session dependency for core domain endpoints. Also identity-
     scopes the session for Postgres RLS: sets app.tenant_id (RG-02,
@@ -133,30 +175,17 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
     RLS policies enforce isolation even if a query forgets to filter
     itself.
 
-    Uses is_local=false (session-scoped), not is_local=true (SET LOCAL,
-    transaction-scoped) — a single request commonly spans multiple
-    transactions (every audit event write commits), and a transaction-local
-    setting is wiped by the very first of those commits, silently making
-    every RLS-protected query afterwards see zero rows.
-
-    Session scope persists on the underlying pooled connection beyond this
-    request, though, so every code path here — including "no valid token" —
-    must explicitly set both (even to ''), never skip the call. Skipping it
-    when they're falsy would leave whatever a *previous* request left on
-    that same pooled connection in effect for this one."""
+    The actual SET LOCAL calls happen in _apply_rls_identity above, fired
+    by the after_begin ORM event on every new transaction this session
+    opens — see that function's docstring for why. This function's job is
+    only to stash the resolved identity on session.info before any query
+    runs, including "no valid token" (stashed as '', never skipped —
+    session.info is per-AsyncSession-instance, never reused across
+    requests, so there's no leftover-identity risk the way the old
+    pooled-connection approach had)."""
     async with RequestSessionLocal() as session:
         if not settings.is_sqlite:
             user_id, tenant_id = _identity_from_request(request)
-            # set_config(..., false) accepts a bound parameter, unlike SET,
-            # whose grammar takes a literal, not a placeholder — binding
-            # these directly into SET would require unsafe string
-            # formatting. Always called, even with "", so a connection
-            # reused from the pool never carries over a prior request's
-            # identity into a request that has none.
-            await session.execute(
-                text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id}
-            )
-            await session.execute(
-                text("SELECT set_config('app.user_id', :user_id, false)"), {"user_id": user_id}
-            )
+            session.info["app_tenant_id"] = tenant_id
+            session.info["app_user_id"] = user_id
         yield session

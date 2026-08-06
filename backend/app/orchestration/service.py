@@ -49,6 +49,8 @@ from app.domains.reference_data.service import (
     get_payroll_tax_bundle,
     match_work_state,
     extract_pay_date,
+    extract_gross_wages,
+    extract_pay_period,
     to_payroll_tax_rag_chunk,
     PAYROLL_TAX_GOVERNED_SOURCE_ID,
     PAYROLL_TAX_NODE_PREFIX,
@@ -94,6 +96,38 @@ from app.domains.reference_data.service import (
     SERPAPI_GOVERNED_SOURCE_ID,
     get_professional_search_bundle,
     to_professional_search_chunks,
+    get_sec_company_facts_bundle,
+    extract_sec_lookup,
+    to_sec_rag_chunk,
+    SEC_GOVERNED_SOURCE_ID,
+    SEC_NODE_PREFIX,
+    get_regulations_gov_bundle,
+    extract_regulations_gov_docket_id,
+    to_regulations_gov_rag_chunk,
+    REGULATIONS_GOV_GOVERNED_SOURCE_ID,
+    REGULATIONS_GOV_NODE_PREFIX,
+    is_uk_query,
+    get_ons_inflation_bundle,
+    get_ons_gdp_bundle,
+    to_ons_rag_chunk,
+    ONS_INFLATION_GOVERNED_SOURCE_ID,
+    ONS_GDP_GOVERNED_SOURCE_ID,
+    ONS_INFLATION_NODE_PREFIX,
+    ONS_GDP_NODE_PREFIX,
+    get_bank_of_england_bundle,
+    to_bank_of_england_rag_chunk,
+    BANK_OF_ENGLAND_GOVERNED_SOURCE_ID,
+    BANK_OF_ENGLAND_NODE_PREFIX,
+    extract_vat_number,
+    get_vies_bundle,
+    to_vies_rag_chunk,
+    VIES_GOVERNED_SOURCE_ID,
+    VIES_NODE_PREFIX,
+    extract_sanctions_screening_name,
+    get_sanctions_bundle,
+    to_sanctions_rag_chunk,
+    SANCTIONS_GOVERNED_SOURCE_ID,
+    SANCTIONS_NODE_PREFIX,
 )
 from app.domains.reference_data.bank_reconciliation import (
     BANK_RECONCILIATION_GOVERNED_SOURCE_ID,
@@ -225,6 +259,28 @@ from app.domains.coverage import assess_us_professional_coverage
 
 _reranker = Reranker(top_n=5)
 
+# Matches websearch.py's _DOMAIN_GATE wording exactly, for a consistent
+# refusal voice regardless of which code path produced it.
+_OFF_DOMAIN_REFUSAL_TEXT = (
+    "I'm designed to answer questions related to Accounting, Taxation, "
+    "Payroll, Finance, Auditing, Bookkeeping, Commerce, and Accounting "
+    "Education across global countries.\n\nPlease ask a question related to "
+    "these topics."
+)
+
+# Real gap (2026-08-06): "What was the US GDP growth rate last quarter
+# compared to the prior quarter?" has the same quarter-over-quarter figure
+# sitting right in the BEA chunk _compose_real_gdp_change already extracts
+# from — it just never said "real gdp" or "percent"/"change" literally,
+# only "growth rate" + "quarter", so this trigger never engaged and the
+# query fell through to generic (and here, insufficient-confidence)
+# composition instead of the real, already-available BEA figure.
+_REAL_GDP_CHANGE_QUERY_PATTERN = re.compile(
+    r"\breal\s+gdp\b.*\b(?:percent|percentage|change)\b|\b(?:percent|percentage|change)\b.*\breal\s+gdp\b|"
+    r"\bgdp\b.*\bgrowth\s+rate\b.*\bquarter\b|\bgdp\b.*\bquarter\b.*\bgrowth\s+rate\b",
+    re.I,
+)
+
 _NUMERIC_RESULT_QUERY_PATTERN = re.compile(
     r"\b(how\s+much|rate|rates|amount|amounts|percentage|percent|threshold|"
     r"limit|deduction|credit|price|cost|fee|number|value|calculate|compute|chart|graph)\b|[$£€]\s*\d|\d\s*%",
@@ -243,6 +299,13 @@ _LIVE_DATA_NODE_PREFIXES = (
     ACCOUNTING_FUNDAMENTALS_NODE_PREFIX,
     BUSINESS_TAX_REVIEW_NODE_PREFIX,
     USER_PROVIDED_DATA_NODE_PREFIX,
+    SEC_NODE_PREFIX,
+    REGULATIONS_GOV_NODE_PREFIX,
+    ONS_INFLATION_NODE_PREFIX,
+    ONS_GDP_NODE_PREFIX,
+    BANK_OF_ENGLAND_NODE_PREFIX,
+    VIES_NODE_PREFIX,
+    SANCTIONS_NODE_PREFIX,
 )
 
 
@@ -546,11 +609,70 @@ class KritonMediator:
             classification_id=category_decision.classification_id,
             shadow_category=category_decision.shadow_category,
         )
+        # Real gap (2026-08-06): "What's the weather like today?" had no
+        # deterministic off-domain gate at all — it fell through to full
+        # LLM composition, which sometimes produced an incomplete/repetitive
+        # response that Checkpoint C escalated to human review instead of
+        # the clean, expected "I'm designed to answer accounting questions"
+        # refusal. The ONLY existing off-domain handling (further below in
+        # this function) looked for that exact refusal phrase inside the
+        # LLM's own output — a string match against text from an unwired
+        # prompt path (websearch.py's _DOMAIN_GATE) that the real governed
+        # composition prompt never actually produces, so it never fired.
+        # category_decision.method is "default"/"default_with_azure_shadow"
+        # ONLY when BOTH the deterministic keyword rules AND the semantic-
+        # embedding classifier (which itself already has its own confidence
+        # threshold, CATEGORY_SEMANTIC_THRESHOLD) found no match at all —
+        # a query that confidently belongs to no known accounting/tax/
+        # payroll/finance/audit/bookkeeping/commerce topic. Placed after
+        # the security pre-screen above (line ~455), so an injection/
+        # exfiltration attempt disguised as an off-topic question is still
+        # caught there first, not here.
+        if category_decision.method in ("default", "default_with_azure_shadow"):
+            await audit_risk_classified(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+                actor_id=actor_id, risk_level="ZERO", confidence_state=CONF_SUFFICIENT,
+            )
+            await audit_route_selected(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+                actor_id=actor_id, route=ROUTE_LLM, risk_level="ZERO",
+                confidence_state=CONF_SUFFICIENT,
+            )
+            response = AskKritonResponse(
+                query_id=query_id,
+                correlation_id=correlation_id,
+                outcome="answered",
+                route=ROUTE_LLM,
+                safety=SafetyState(risk_level="ZERO", policy_state="allowed", disclaimer_required=False),
+                confidence_state=CONF_SUFFICIENT,
+                source_bundle=None,
+                answer=ComposedAnswer(
+                    text=_OFF_DOMAIN_REFUSAL_TEXT,
+                    citations=[],
+                    limitations=[],
+                    prompt_id="deterministic-off-domain-refusal",
+                    prompt_name="Off-domain refusal",
+                    output_text=_OFF_DOMAIN_REFUSAL_TEXT,
+                ),
+                next_action=None,
+                audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+            )
+            await _finalise_and_return(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+                actor_id=actor_id, outcome=response.outcome, route=ROUTE_LLM,
+                start_time=start_time,
+            )
+            if idempotency_key:
+                await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
+            return response
         closed_evidence_categories = {
             "exchange-rate", "economic-data", "interest-rates", "tax-regulations",
             "federal-register", "us-legislation", "bank-reconciliation",
             "month-end-close", "accounting-fundamentals", "user-provided-data",
-            "business-tax-review",
+            "business-tax-review", "sec-filings", "vat-validation", "sanctions-screening",
         }
         retrieval_plan = create_retrieval_plan(
             request.query, request.jurisdiction, embeddings_enabled=embeddings_enabled,
@@ -795,10 +917,22 @@ class KritonMediator:
             if work_state is not None:
                 try:
                     pay_date = extract_pay_date(request.query)
+                    # A wage figure with no stated cadence can't be annualized
+                    # without guessing, so both or neither are used — see
+                    # extract_gross_wages/extract_pay_period docstrings.
+                    gross_wages = extract_gross_wages(request.query)
+                    period_info = extract_pay_period(request.query)
+                    pay_period, periods_per_year = period_info if period_info else (None, None)
+                    if gross_wages is None or pay_period is None:
+                        gross_wages = pay_period = periods_per_year = None
                     payroll_bundle = await get_payroll_tax_bundle(
                         db, work_state=work_state, pay_date=pay_date, tenant_id=tenant_id, actor_id=actor_id,
+                        gross_wages=gross_wages, pay_period=pay_period,
                     )
-                    raw_chunks.insert(0, to_payroll_tax_rag_chunk(payroll_bundle, source_id=PAYROLL_TAX_GOVERNED_SOURCE_ID))
+                    raw_chunks.insert(0, to_payroll_tax_rag_chunk(
+                        payroll_bundle, source_id=PAYROLL_TAX_GOVERNED_SOURCE_ID,
+                        gross_wages=gross_wages, pay_period=pay_period, periods_per_year=periods_per_year,
+                    ))
                 except Exception:
                     pass
 
@@ -848,6 +982,29 @@ class KritonMediator:
                 except Exception:
                     pass
 
+            # Live ONS CPIH/GDP data (2026-08-06) — UK equivalent of BLS/BEA
+            # above, gated the same way: only when the query actually names
+            # the UK (is_uk_query), so a plain US or unspecified-country
+            # inflation/GDP question is never contaminated with UK figures.
+            if is_inflation_query(request.query) and is_uk_query(request.query) and ONS_INFLATION_GOVERNED_SOURCE_ID in allowed_source_ids:
+                try:
+                    ons_inflation_bundle = await get_ons_inflation_bundle(db, tenant_id=tenant_id, actor_id=actor_id)
+                    raw_chunks.insert(0, to_ons_rag_chunk(
+                        ons_inflation_bundle, source_id=ONS_INFLATION_GOVERNED_SOURCE_ID,
+                        title="ONS — CPIH (UK Inflation)", metric_label="UK CPIH inflation",
+                    ))
+                except Exception:
+                    pass
+            if is_gdp_query(request.query) and is_uk_query(request.query) and ONS_GDP_GOVERNED_SOURCE_ID in allowed_source_ids:
+                try:
+                    ons_gdp_bundle = await get_ons_gdp_bundle(db, tenant_id=tenant_id, actor_id=actor_id)
+                    raw_chunks.insert(0, to_ons_rag_chunk(
+                        ons_gdp_bundle, source_id=ONS_GDP_GOVERNED_SOURCE_ID,
+                        title="ONS — Monthly GDP Index (UK)", metric_label="UK GDP",
+                    ))
+                except Exception:
+                    pass
+
         # Live FRED interest-rate data — its own dedicated category (unlike
         # Census/BLS/GDP, "interest-rates" isn't shared with anything else), so
         # the category match alone is sufficient gating, same posture as
@@ -864,6 +1021,55 @@ class KritonMediator:
                 raw_chunks.insert(0, to_fred_rag_chunk(fred_bundle, source_id=FRED_INTEREST_RATES_GOVERNED_SOURCE_ID))
             except Exception:
                 pass
+
+        # Live Bank of England Bank Rate (2026-08-06) — UK equivalent of
+        # FRED above, same "interest-rates" category, gated on is_uk_query
+        # so a plain US/unspecified interest-rate question never gets a UK
+        # rate injected alongside (or instead of) the correct FRED figure.
+        if (
+            retrieval_category == "interest-rates"
+            and is_uk_query(request.query)
+            and BANK_OF_ENGLAND_GOVERNED_SOURCE_ID in allowed_source_ids
+        ):
+            try:
+                boe_bundle = await get_bank_of_england_bundle(db, tenant_id=tenant_id, actor_id=actor_id)
+                raw_chunks.insert(0, to_bank_of_england_rag_chunk(boe_bundle, source_id=BANK_OF_ENGLAND_GOVERNED_SOURCE_ID))
+            except Exception:
+                pass
+
+        # EU VIES is identifier-driven — only a real EU VAT-number shape
+        # plus explicit "VAT number/registration" phrasing triggers a live
+        # check; never a free-text search that could validate the wrong
+        # number against an unrelated identifier the query happens to contain.
+        if retrieval_category == "vat-validation" and VIES_GOVERNED_SOURCE_ID in allowed_source_ids:
+            vat_lookup = extract_vat_number(request.query)
+            if vat_lookup is not None:
+                try:
+                    country_code, vat_number = vat_lookup
+                    vies_bundle = await get_vies_bundle(
+                        db, country_code=country_code, vat_number=vat_number,
+                        tenant_id=tenant_id, actor_id=actor_id,
+                    )
+                    raw_chunks.insert(0, to_vies_rag_chunk(vies_bundle, source_id=VIES_GOVERNED_SOURCE_ID))
+                except Exception:
+                    pass
+
+        # UN + UK sanctions screening is identifier-driven the same way —
+        # only an explicit sanctions-screening trigger phrase names the
+        # entity to check; never a free-text search that could screen the
+        # wrong name.
+        if retrieval_category == "sanctions-screening" and SANCTIONS_GOVERNED_SOURCE_ID in allowed_source_ids:
+            screened_name = extract_sanctions_screening_name(request.query)
+            if screened_name is not None:
+                try:
+                    sanctions_bundle = await get_sanctions_bundle(
+                        db, screened_name=screened_name, tenant_id=tenant_id, actor_id=actor_id,
+                    )
+                    raw_chunks.insert(0, to_sanctions_rag_chunk(
+                        sanctions_bundle, source_id=SANCTIONS_GOVERNED_SOURCE_ID, screened_name=screened_name,
+                    ))
+                except Exception:
+                    pass
 
         # Live GovInfo 26 CFR section lookup — only when the query names a
         # specific section number; no free-text fallback (there is no honest
@@ -1082,6 +1288,42 @@ class KritonMediator:
                     )
                     raw_chunks.insert(
                         0, to_congress_rag_chunk(congress_bundle, source_id=CONGRESS_GOVERNED_SOURCE_ID)
+                    )
+                except Exception:
+                    pass
+
+        # SEC EDGAR is identifier-driven the same way: only a real ticker
+        # (never guessed — see extract_sec_lookup) plus a known financial
+        # concept keyword triggers a live fetch. get_sec_company_facts_bundle
+        # itself returns None (not an exception) for a ticker that isn't a
+        # real SEC-registered company, so a fabricated ticker never produces
+        # a chunk at all.
+        if retrieval_category == "sec-filings" and SEC_GOVERNED_SOURCE_ID in allowed_source_ids:
+            sec_lookup = extract_sec_lookup(request.query)
+            if sec_lookup is not None:
+                try:
+                    ticker, concept = sec_lookup
+                    sec_bundle = await get_sec_company_facts_bundle(
+                        db, ticker=ticker, concept=concept, tenant_id=tenant_id, actor_id=actor_id,
+                    )
+                    if sec_bundle is not None:
+                        raw_chunks.insert(0, to_sec_rag_chunk(sec_bundle, source_id=SEC_GOVERNED_SOURCE_ID))
+                except Exception:
+                    pass
+
+        # Regulations.gov is identifier-driven the same way — only a
+        # complete, correctly-formatted docket ID triggers a live fetch;
+        # never a free-text regulatory search that could surface an
+        # unrelated docket as if it were the one asked about.
+        if retrieval_category == "federal-register" and REGULATIONS_GOV_GOVERNED_SOURCE_ID in allowed_source_ids:
+            docket_id = extract_regulations_gov_docket_id(request.query)
+            if docket_id is not None:
+                try:
+                    regs_bundle = await get_regulations_gov_bundle(
+                        db, docket_id=docket_id, tenant_id=tenant_id, actor_id=actor_id,
+                    )
+                    raw_chunks.insert(
+                        0, to_regulations_gov_rag_chunk(regs_bundle, source_id=REGULATIONS_GOV_GOVERNED_SOURCE_ID)
                     )
                 except Exception:
                     pass
@@ -2096,7 +2338,7 @@ class KritonMediator:
                 composed_text = _compose_gdp_history(chunk.get("text", ""), f"REF-{index + 1}")
                 prompt_id = "deterministic-gdp-history"
                 prompt_name = "BEA GDP History Response"
-            elif gdp_chunk is not None and re.search(r"\breal\s+gdp\b.*\b(?:percent|percentage|change)\b|\b(?:percent|percentage|change)\b.*\breal\s+gdp\b", request.query, re.I):
+            elif gdp_chunk is not None and _REAL_GDP_CHANGE_QUERY_PATTERN.search(request.query):
                 index, chunk = gdp_chunk
                 verified_fact = _compose_real_gdp_change(chunk.get("text", ""), f"REF-{index + 1}")
                 composed_text = await _explain_verified_fact(

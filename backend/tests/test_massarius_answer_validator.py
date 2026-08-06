@@ -330,6 +330,27 @@ def test_incorrect_derived_difference_still_fails_numeric_fidelity():
     print("test_incorrect_derived_difference_still_fails_numeric_fidelity: PASSED")
 
 
+def test_prose_date_matches_the_same_iso_date_in_grounding_context():
+    """Live bug (2026-08-06): a FRED trend answer wrote "on August 4" (a
+    prose date, no year) while the grounding context had "2026-08-04" —
+    the ISO date's day component normalizes to zero-padded "04", but the
+    prose claim normalizes to bare "4"; a plain string-membership check
+    treats these as two different figures even though they're the same
+    calendar day, so a fully correct, well-grounded answer failed numeric
+    fidelity every time."""
+    result = validate_answer(
+        "The federal funds effective rate decreased from 4.33% on August 1, 2025, "
+        "to 3.63% on August 4, 2026. [REF-1]",
+        _BUNDLE,
+        grounding_context=(
+            "Federal Reserve Economic Data (FRED) — key US interest rates:\n"
+            "- Federal Funds Effective Rate (DFF): 3.63% (as of 2026-08-04)\n"
+            "  One-year window: 4.33% on 2025-08-01 to 3.63% on 2026-08-04 (-0.70 percentage points)"
+        ),
+    )
+    assert result.passed, result.failures
+
+
 def test_unsupported_illustrative_figures_can_be_generalized_before_validation():
     from app.domains.massarius.answer_validator import generalize_unsupported_numeric_claims
 
@@ -462,6 +483,27 @@ def test_gdp_factual_lookup_does_not_trigger_tutor_depth_escalation():
             "trillion (nominal, seasonally adjusted annual rate), Q1 2026."
         ),
         query_text="What is US GDP?",
+    )
+    assert result.passed, result.failures
+
+
+def test_company_revenue_factual_lookup_does_not_trigger_tutor_depth_escalation():
+    # Live bug (2026-08-06): "What is $AAPL revenue according to their most
+    # recent SEC filing?" was wrongly held to full what/why/rule/example
+    # tutor-depth structure and escalated to human review, despite a fully
+    # correct, real, SEC-cited answer — same class of gap as the GDP fix
+    # above, just a different missing financial-statement noun.
+    result = validate_answer(
+        "According to Apple's most recent 10-K filing with the SEC, Apple "
+        "reported revenue of $416,161,000,000 for fiscal year 2025, the "
+        "period ending September 27, 2025. [REF-1]",
+        _BUNDLE,
+        grounding_context=(
+            "SEC EDGAR — Apple Inc. (AAPL): Revenue from Contract with "
+            "Customer, Excluding Assessed Tax: $416,161,000,000 (fiscal "
+            "year 2025, period 2024-09-29 to 2025-09-27, filed 2025-10-31)"
+        ),
+        query_text="What is $AAPL revenue according to their most recent SEC filing?",
     )
     assert result.passed, result.failures
 

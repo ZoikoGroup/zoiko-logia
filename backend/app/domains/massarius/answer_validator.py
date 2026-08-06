@@ -33,6 +33,7 @@ from typing import Optional
 
 from app.domains.calculation.provenance import ProvenanceStore
 from app.domains.massarius.errors import ValidationFailed
+from app.domains.reference_data.service import SANCTIONS_DISCLAIMER
 from app.orchestration.schemas import SourceBundle, ValidationResult
 
 # ── 1. Prohibited professional claim patterns (reused from composition_validator.py) ──
@@ -357,10 +358,37 @@ _MISSING_REQUESTED_FACT_PATTERNS = [
 _MIN_VERBATIM_RUN_WORDS = 35
 _WORD_PATTERN = re.compile(r"\S+")
 
+# Fixed compliance/legal caution text that is CORRECT to reproduce verbatim
+# (paraphrasing a compliance disclaimer risks changing its meaning) — real
+# incident (2026-08-06): a sanctions-screening answer that correctly repeated
+# reference_data/service.py's SANCTIONS_DISCLAIMER word-for-word was flagged
+# as if it had lazily copied ordinary explanatory prose. Stripped from both
+# sides before the n-gram comparison so it can never itself trigger or pad
+# out a match, while genuine copying elsewhere in the same answer still is.
+_KNOWN_SAFE_VERBATIM_TEXT: tuple[str, ...] = (SANCTIONS_DISCLAIMER,)
+
+# Same 2026-08-06 incident, second cause: with the disclaimer paraphrased
+# correctly, the SAME answer still failed because it quoted the sanctions
+# match-list bullets verbatim ("- [UN] 7TH OF TIR (Entity, ref IRe.001)",
+# etc.) — an entity name and reference ID are precise identifiers, not prose;
+# reproducing them exactly is required for compliance accuracy, the opposite
+# of what this check exists to catch. Matches reference_data/service.py's
+# to_sanctions_rag_chunk line format exactly; stripped line-by-line from both
+# sides for the same reason as the disclaimer above.
+_SANCTIONS_MATCH_LINE_PATTERN = re.compile(
+    r"^-\s*\[[A-Za-z]+\]\s+.+?\(\w+,\s*ref\s+[\w.]+\)\s*$", re.MULTILINE,
+)
+
 
 def _has_verbatim_copy(answer_text: str, grounding_context: str) -> bool:
     if not grounding_context:
         return False
+    for safe_text in _KNOWN_SAFE_VERBATIM_TEXT:
+        pattern = re.compile(re.escape(safe_text), re.IGNORECASE)
+        answer_text = pattern.sub("", answer_text)
+        grounding_context = pattern.sub("", grounding_context)
+    answer_text = _SANCTIONS_MATCH_LINE_PATTERN.sub("", answer_text)
+    grounding_context = _SANCTIONS_MATCH_LINE_PATTERN.sub("", grounding_context)
     answer_words = _WORD_PATTERN.findall(answer_text.lower())
     context_words = _WORD_PATTERN.findall(grounding_context.lower())
     if len(answer_words) < _MIN_VERBATIM_RUN_WORDS or len(context_words) < _MIN_VERBATIM_RUN_WORDS:
@@ -412,7 +440,14 @@ _FACTUAL_LOOKUP_OVERRIDE_PATTERN = re.compile(
     r"limit|limits|cap|caps|deduction|deductions|credit|credits|exemption|"
     r"exemptions|price|prices|cost|costs|fee|fees|number|value|values|date|"
     r"dates|deadline|deadlines|mistake|mistakes|checklist|checklists|"
-    r"gdp|gross\s+domestic\s+product)\b",
+    r"gdp|gross\s+domestic\s+product|"
+    # Real gap (2026-08-06): "What is $AAPL revenue according to their most
+    # recent SEC filing?" is a plain factual number lookup (same shape as
+    # the GDP gap above — a real reported company figure, not a concept to
+    # teach) but named none of the words above, so it was wrongly held to
+    # full what/why/rule/example tutor-depth structure and escalated to
+    # human review despite a fully correct, real, SEC-cited answer.
+    r"revenue|net\s+income|total\s+assets|total\s+liabilities|earnings\s+per\s+share|eps)\b",
     re.IGNORECASE,
 )
 # 2026-07-23 real incident: "What is $500 minus $200?" also matched the
