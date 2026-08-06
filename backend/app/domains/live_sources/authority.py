@@ -25,6 +25,7 @@ Ranks (1 strongest):
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 # Applied to a source with no recorded rank. Deliberately weak rather than
@@ -68,17 +69,53 @@ class AuthorityCandidate:
 # Keys are matched case-insensitively as substrings of source_class, since
 # these values are assembled by metadata_service.extract_metadata() and by
 # hand in the seed scripts, and are not a closed enum.
+# Ordered most-specific first, and matched against a NORMALISED class string
+# (lowercased, punctuation collapsed to spaces) so a hyphen cannot decide a
+# source's authority. That is not hypothetical: "standard setter" failed to
+# match "Professional standard-setter", so every FRS, ASC, PCAOB and GAAS
+# document fell through to the authority_level fallback and ranked 5 —
+# identical to a web-search result. The hierarchy was computing correctly
+# over values that all said the same thing.
 _DOCUMENT_CLASS_RANKS: tuple[tuple[str, int], ...] = (
-    ("statutory authority", 1),
+    # 1 — enacted legislation and official regulations.
     ("legislation", 1),
-    ("regulator", 2),
+    ("legislative information", 1),
+    ("regulatory text", 1),
+    ("statutory authority", 1),
+    # 2 — regulators, tax authorities, standard setters, statistical
+    # authorities. Specific markers before the generic "official government"
+    # catch-all below, which would otherwise absorb them.
     ("standard setter", 2),
+    ("tax authority", 2),
+    ("regulator", 2),
+    ("statistical agency", 2),
+    ("official government", 2),
+    # 5 — in-process tools. Listed BEFORE the tier-3 markers below because
+    # order here is by SPECIFICITY, not by rank: "formula registry" has to be
+    # tested before the generic "registry", or an in-process calculator is
+    # mistaken for an official filing system (it was, at rank 3).
+    #
+    # A calculation engine is not authority for a professional claim: it
+    # derives a figure from parameters the law sets. Its output still reaches
+    # an answer as controlling evidence, but through the deliberate
+    # formula-registry and computed-fact overrides in the citation layer,
+    # not by outranking a standard here.
+    ("formula registry", 5),
+    ("arithmetic evaluator", 5),
+    ("microsimulation model", 5),
+    # 3 — official registries and filing systems.
     ("official filing", 3),
     ("registry", 3),
+    # 5 — recognised guidance and reviewed syntheses.
     ("professional guidelines", 5),
     ("syllabus", 5),
+    ("internal educational procedure", 5),
+    ("reviewed synthesis", 5),
+    # 6 — discovery, commercial, and the caller's own supplied data.
+    ("web discovery", 6),
+    ("commercial data provider", 6),
+    ("first party request data", 6),
     ("proprietary document", 6),
-    ("first-party request data", 6),
     # "External Reference" is deliberately absent. It is
     # metadata_service.extract_metadata()'s baseline default, so it carries
     # no information — matching on it would discard an explicit
@@ -92,12 +129,32 @@ _DOCUMENT_CLASS_RANKS: tuple[tuple[str, int], ...] = (
 _DOCUMENT_LEVEL_RANKS = {"primary": 2, "secondary": 5, "internal": 6}
 
 
+def normalise_source_class(source_class: str) -> str:
+    """Lowercase, and collapse every non-alphanumeric run to a single space.
+
+    So "Professional standard-setter", "professional standard setter" and
+    "PROFESSIONAL_STANDARD_SETTER" all match the same marker. Matching raw
+    strings is what let a hyphen silently demote every accounting standard in
+    the corpus to the weakest tier.
+    """
+    return " ".join(re.findall(r"[a-z0-9]+", (source_class or "").lower()))
+
+
 def rank_for_document(authority_level: str, source_class: str = "") -> int:
-    lowered = (source_class or "").lower()
+    normalised = normalise_source_class(source_class)
     for marker, rank in _DOCUMENT_CLASS_RANKS:
-        if marker in lowered:
+        if marker in normalised:
             return rank
     return _DOCUMENT_LEVEL_RANKS.get((authority_level or "").lower(), UNKNOWN_RANK)
+
+
+def matches_a_class_marker(source_class: str) -> bool:
+    """Whether a source_class is recognised, as opposed to inheriting the
+    coarse authority_level fallback. Exposed so a test can assert that no
+    class in the corpus is silently taking the fallback — the failure mode
+    that made this table wrong in the first place."""
+    normalised = normalise_source_class(source_class)
+    return any(marker in normalised for marker, _ in _DOCUMENT_CLASS_RANKS)
 
 
 def _jurisdiction_penalty(candidate: AuthorityCandidate, query_jurisdiction: str) -> int:

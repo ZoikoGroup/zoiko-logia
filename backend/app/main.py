@@ -1,3 +1,4 @@
+import logging
 import os
 import socket
 
@@ -25,13 +26,14 @@ socket.getaddrinfo = _ipv4_preferring_getaddrinfo
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import OperationalError
 
 from app.api.v1.router import api_v1_router
 from app.core.config import get_settings
@@ -41,6 +43,8 @@ from app.db.base import Base
 from app.domains.massarius.tenant_scope import ensure_vector_table_rls
 from app.domains.live_sources.http_client import close_shared_http_client
 from app.domains.live_sources.schema_sync import ensure_provider_columns
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
@@ -666,6 +670,25 @@ def create_app() -> FastAPI:
 
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    @app.exception_handler(OperationalError)
+    async def _database_unavailable_handler(request: Request, exc: OperationalError):
+        """A pooler that has stopped handing out sessions reaches the route as
+        an OperationalError wrapping a connect timeout. Left unhandled it is a
+        bare 500 with no body, which the frontend cannot distinguish from the
+        API being down at all — it renders "Could not reach the orchestration
+        service" and points debugging at the wrong layer. 503 with a real
+        detail says what actually broke, and keeps the answer path's own
+        errors (which are not OperationalError) reporting as before."""
+        logger.error("database unavailable on %s %s: %s", request.method, request.url.path, exc)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "detail": "The database is temporarily unreachable. "
+                          "This is a connection problem, not a problem with your question — "
+                          "please retry in a moment."
+            },
+        )
 
     @app.get("/health/live", include_in_schema=False)
     async def health_live():

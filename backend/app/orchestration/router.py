@@ -9,6 +9,8 @@ Controls:
   - Idempotency: duplicate Idempotency-Key returns original result without re-execution.
   - Rate limiting: enforced before retrieval or model work.
 """
+import logging
+
 from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
@@ -21,6 +23,8 @@ from app.domains.identity.models import User
 from app.domains.identity.rbac import get_current_user
 from app.orchestration.schemas import AskKritonRequest, AskKritonResponse
 from app.orchestration.service import ask_kriton
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/orchestration", tags=["Ask Kriton™ Orchestration"])
 
@@ -83,16 +87,29 @@ async def post_ask(
         idempotency_key=idempotency_key,
     )
 
-    await chat_history_service.record_turn(
-        db,
-        conversation=conversation,
-        tenant_id=current_user.tenant_id,
-        user_id=current_user.id,
-        query=payload.query,
-        answer_text=_transcript_text(response),
-        route=response.route,
-        risk_level=response.safety.risk_level,
-        citations=[c.model_dump() for c in response.answer.citations] if response.answer else None,
-    )
+    # Persistence failure must not destroy an answer that already cost a full
+    # retrieval + model run: raising here would surface as a 500 and lose the
+    # composed response entirely, which is strictly worse than losing the
+    # transcript row. Logged at exception level so a systematically failing
+    # write is still visible rather than silently dropping history.
+    try:
+        await chat_history_service.record_turn(
+            db,
+            conversation=conversation,
+            tenant_id=current_user.tenant_id,
+            user_id=current_user.id,
+            query=payload.query,
+            answer_text=_transcript_text(response),
+            route=response.route,
+            risk_level=response.safety.risk_level,
+            citations=[c.model_dump() for c in response.answer.citations] if response.answer else None,
+        )
+    except Exception:
+        logger.exception(
+            "chat history persistence failed for conversation %s; returning the answer anyway",
+            conversation.id,
+        )
+        await db.rollback()
+
     response.conversation_id = conversation.id
     return response

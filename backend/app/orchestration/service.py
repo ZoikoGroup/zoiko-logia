@@ -35,6 +35,11 @@ from app.orchestration.identifiers import (
     generate_audit_chain_id,
     check_idempotency, store_idempotency,
 )
+from app.orchestration.coverage import (
+    assess_coverage,
+    coverage_instruction,
+    coverage_limitation,
+)
 from app.orchestration.prescreen import run_prescreen, is_small_talk, check_off_topic_domain
 from app.orchestration.navigation_answers import resolve_navigation_answer
 from app.orchestration.query_understanding import (
@@ -3969,6 +3974,19 @@ async def ask_kriton(
     decision_instruction = build_decision_framework_instruction(request.query)
     response_instruction = build_response_instruction(understanding)
 
+    # Does the evidence span every subject the query named? Bundle confidence
+    # cannot answer that — it measures how much evidence arrived, not whether
+    # it covers what was asked, so four sources all describing one half of a
+    # two-subject question read as "sufficient". Observed on a real query:
+    # "Compare accounts payable and accrued expenses" retrieved an
+    # accounts-payable process document, reported sufficient confidence, and
+    # answered with an accounts-payable process checklist — a different
+    # question, answered well. Deterministic and local; see coverage.py.
+    coverage_report = assess_coverage(
+        request.query, reranked, ranks_by_source_id=document_authority_ranks,
+    )
+    coverage_requirement = coverage_instruction(coverage_report)
+
     grounded_input = (
         f"Use ONLY the following retrieved context to answer the query. "
         f"Do not use general knowledge.\n"
@@ -3989,6 +4007,11 @@ async def ask_kriton(
         f"{response_instruction}\n"
         f"{format_instruction}\n\n"
         f"{decision_instruction}\n\n"
+        # Placed after the format instruction on purpose: a requested table
+        # must not be filled from general knowledge for a subject the
+        # evidence does not cover, so the evidence requirement is the last
+        # word on what may appear.
+        f"{coverage_requirement}\n\n"
         f"{followup_context}"
         f"=== Retrieved Context ===\n{context_text}\n\n"
         f"=== User Query ===\n{request.query}"
@@ -4323,6 +4346,11 @@ async def ask_kriton(
         limitations.append(
             "This response is for educational purposes only. Consult a qualified professional."
         )
+    # Named subjects with no supporting evidence are stated to the reader, not
+    # only to the model — a gap the answer text mentions is easy to skim past,
+    # and a limitation is what a reviewer checks.
+    if (coverage_gap := coverage_limitation(coverage_report)) is not None:
+        limitations.append(coverage_gap)
 
     answer = ComposedAnswer(
         text=final_text,

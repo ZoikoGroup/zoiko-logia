@@ -26,7 +26,29 @@ class GroqAdapter:
         self.api_key = os.environ.get("GROQ_API_KEY")
         self.client = AsyncGroq(api_key=self.api_key) if self.api_key else None
 
-    async def complete(self, prompt: str, model: str = "llama-3.1-8b-instant") -> str:
+    # routing_fallback.py's complete_with_fallback() calls complete(prompt)
+    # with no model argument, so the ModelDefinition row selected by
+    # _select_model_and_adapter() only ever picks the PROVIDER — this default
+    # is what actually decides the model. Changing the registry row's
+    # `version` therefore has no effect on behaviour; it must be changed here.
+    #
+    # Was llama-3.1-8b-instant. An 8B model handed one retrieved passage and
+    # asked to explain it reproduces that passage close to verbatim, which is
+    # exactly what composition validation's "Summarize-don't-copy" check
+    # rejects — and the automatic repair pass in orchestration/service.py
+    # retries through this same adapter, so it failed identically and the
+    # answer degraded to a clarification. The repetition-loop problem
+    # documented in the temperature comment below is the same weakness.
+    # 70b-versatile paraphrases rather than copies.
+    #
+    # Overridable so a model can be swapped without a code change, matching
+    # how RISK_LLM_CLASSIFIER_MODEL is handled for the classifier.
+    async def complete(
+        self,
+        prompt: str,
+        model: str = "",
+    ) -> str:
+        model = model or os.environ.get("GROQ_ANSWER_MODEL", "").strip() or "llama-3.3-70b-versatile"
         if not self.client:
             return "[Error: GROQ_API_KEY not found in environment. Please add it to backend/.env]"
 
@@ -49,8 +71,19 @@ class GroqAdapter:
                 # loop is caught much sooner. This is a fixed post-hoc logit
                 # adjustment, not stochastic sampling, so determinism
                 # (same input -> same output) is unaffected.
+                # Kept at 0.7 despite the model change — it is a fixed logit
+                # adjustment, costs nothing when the model is not looping, and
+                # the 8B model remains reachable through GROQ_ANSWER_MODEL.
                 frequency_penalty=0.7,
-                max_tokens=900,
+                # Was 900, chosen to cut the 8B model's repetition loops short.
+                # That cap is too tight for the "Tutor-depth structure" check,
+                # which wants a structured explanation (purpose, supported
+                # example, qualifications) before the mandatory disclaimers are
+                # appended — a truncated answer fails it on length alone. The
+                # repetition risk this guarded against was specific to
+                # llama-3.1-8b-instant; drop this back to 900 if a 70b answer
+                # ever loops.
+                max_tokens=1400,
             )
             return response.choices[0].message.content or ""
         except Exception as e:

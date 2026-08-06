@@ -68,8 +68,10 @@ import {
   createSavedAnswer,
   type AskKritonResponse,
   type ConversationSummary,
+  type ConversationDetail,
   type ChatMessage,
 } from "@/lib/api";
+import { useAuth } from "@/hooks/useAuth";
 import { useTypewriter } from "@/hooks/useTypewriter";
 import { seriesColor } from "@/lib/chartColors";
 import { tableRowsToTsv, writeTextToClipboard } from "@/lib/presentation";
@@ -353,6 +355,32 @@ function KritonChart({ code }: { code: string }) {
   // table-view toggle below) without cluttering the chart itself.
   const canDirectLabelBars = isBar && spec.series.length === 1 && spec.labels.length <= 8;
 
+  // Direct value labels are drawn OUTSIDE the plot area — bar labels sit
+  // above the bar, line labels to the right of the final point — and
+  // Recharts clips anything past the chart margin. The default top:8 left no
+  // room at all for an 11px label plus LabelList's own 5px offset, so the
+  // tallest bar (which by definition reaches the top of the domain) had its
+  // value sliced in half. Same class of bug on the line branch: the endpoint
+  // label is drawn at x+6 and a long formatted number ran straight off the
+  // right edge. Both margins are now derived from what actually gets drawn.
+  const lastRow = data[data.length - 1];
+  const longestEndLabelChars = lastRow
+    ? Math.max(
+        ...spec.series.map(
+          (s) => ((lastRow[s.name] as number) ?? 0).toLocaleString().length
+        ),
+        0
+      )
+    : 0;
+  const chartMargin = {
+    // 11px glyph height + LabelList's 5px offset, rounded up for descenders.
+    top: canDirectLabelBars ? 24 : 8,
+    // ~6px per digit at 11px, plus the 6px x-offset the endpoint label adds.
+    right: isBar ? 12 : Math.max(12, longestEndLabelChars * 6 + 10),
+    left: 12,
+    bottom: 0,
+  };
+
   return (
     <div className="my-3 w-full">
       <div className="mb-2 flex items-center justify-end gap-3">
@@ -406,7 +434,7 @@ function KritonChart({ code }: { code: string }) {
       ) : (
         <div className="h-64 w-full overflow-visible">
           <ResponsiveContainer width="100%" height="100%">
-            <ChartComponent data={data} margin={{ top: 8, right: 12, left: 12, bottom: 0 }}>
+            <ChartComponent data={data} margin={chartMargin}>
               <CartesianGrid stroke="var(--line)" vertical={false} />
               <XAxis
                 dataKey="label"
@@ -606,13 +634,61 @@ function answerWithSources(result: AskKritonResponse) {
   return `${body}\n\n## Sources\n\n${sources.join("\n")}`;
 }
 
-function downloadMarkdown(value: string, query: string) {
+/** Whole-thread export: every turn, both roles, each answer with its route,
+ * risk level and citations. Deliberately built from the server's stored
+ * transcript rather than the in-memory `turns`, so exporting a conversation
+ * you have not reopened in this session yields the same file as one you
+ * have. Uses copyableAnswerText() for the same reason the single-answer
+ * export does — [REF-N] markers are display noise and chart blocks need to
+ * degrade to markdown tables in a static file. */
+function conversationToMarkdown(detail: ConversationDetail) {
+  const header = [
+    `# ${detail.title}`,
+    "",
+    `- **Exported:** ${new Date().toISOString().slice(0, 10)}`,
+    `- **Started:** ${detail.created_at.slice(0, 10)}`,
+    `- **Last updated:** ${detail.updated_at.slice(0, 10)}`,
+    ...(detail.jurisdiction ? [`- **Jurisdiction:** ${detail.jurisdiction}`] : []),
+    `- **Mode:** ${detail.mode}`,
+    `- **Messages:** ${detail.messages.length}`,
+  ].join("\n");
+
+  let turnNumber = 0;
+  const sections = detail.messages.map((msg) => {
+    if (msg.role === "user") {
+      turnNumber += 1;
+      return `## ${turnNumber}. Question\n\n${msg.content.trim()}`;
+    }
+
+    const meta = [
+      msg.route ? `**Route:** ${msg.route}` : null,
+      msg.risk_level ? `**Risk:** ${msg.risk_level}` : null,
+    ].filter(Boolean).join(" · ");
+
+    const sources = (msg.citations ?? []).map((citation) => {
+      const url = citation.url || citation.source_url;
+      return `- ${citation.ref_id}: ${citation.title}${url ? ` — ${url}` : ""}`;
+    });
+
+    return [
+      "### Kriton",
+      "",
+      copyableAnswerText(msg.content),
+      ...(meta ? ["", meta] : []),
+      ...(sources.length ? ["", "#### Sources", "", ...sources] : []),
+    ].join("\n").trimEnd();
+  });
+
+  return `${header}\n\n---\n\n${sections.join("\n\n")}\n`;
+}
+
+function downloadMarkdown(value: string, query: string, fallbackStem = "kriton-answer") {
   const stem = query
     .normalize("NFKD")
     .replace(/[^a-zA-Z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .toLowerCase()
-    .slice(0, 64) || "kriton-answer";
+    .slice(0, 64) || fallbackStem;
   const url = URL.createObjectURL(new Blob([value], { type: "text/markdown;charset=utf-8" }));
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -862,6 +938,8 @@ export default function AskKritonPage() {
   const [isListening, setIsListening] = useState(false);
   const [mobileHistoryOpen, setMobileHistoryOpen] = useState(false);
   const [activeConversationIdValue, setActiveConversationIdValue] = useState<string | null>(null);
+  const [historyError, setHistoryError] = useState("");
+  const { session, loading: authLoading } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
@@ -871,11 +949,11 @@ export default function AskKritonPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [turns]);
 
-  async function refreshConversations() {
-    const token = getAuthToken();
-    if (!token) return;
+  /** Restore the localStorage mirror of past sessions. Independent of the
+   * server fetch below: it must still run when that fetch fails, because a
+   * turn that errored before it reached the backend exists nowhere else. */
+  function restoreLocalRecents() {
     try {
-      setConversations(await listConversations(token));
       const stored = window.localStorage.getItem(RECENTS_STORAGE_KEY);
       if (!stored) return;
       const parsed = JSON.parse(stored);
@@ -903,14 +981,40 @@ export default function AskKritonPage() {
       // appearing beside the new conversation-session history.
       window.localStorage.removeItem(LEGACY_RECENTS_STORAGE_KEY);
     } catch {
-      // Sidebar list is best-effort — a failed refresh just leaves the
-      // previous list showing, never blocks the chat itself.
+      // A corrupt cache is not worth failing the page over — the server
+      // list below is the authoritative history either way.
+    }
+  }
+
+  async function refreshConversations() {
+    const token = getAuthToken();
+    // Callers must gate on an authenticated session; reaching here without a
+    // token would silently render an empty sidebar, which reads as data loss.
+    if (!token) return;
+    try {
+      setConversations(await listConversations(token));
+      setHistoryError("");
+    } catch {
+      // Surfaced rather than swallowed: an empty "Chats" list is
+      // indistinguishable from genuinely having no history, so a failed
+      // fetch must say so and offer a retry instead of looking like loss.
+      setHistoryError("Could not load your saved chats.");
     }
   }
 
   useEffect(() => {
-    refreshConversations();
+    restoreLocalRecents();
   }, []);
+
+  // Keyed on the access token rather than mount alone. AuthGuard already
+  // withholds this page until a session exists, so the token is present at
+  // first mount; the dependency matters for what comes after — a refreshed
+  // token (onAuthStateChange) or a switched account re-fetches the list
+  // instead of leaving another user's conversations on screen.
+  useEffect(() => {
+    if (authLoading || !session?.access_token) return;
+    refreshConversations();
+  }, [authLoading, session?.access_token]);
 
   /** Rebuild a synthetic AskKritonResponse from a stored ChatMessage — the
    * DB only keeps role/content/route/risk_level (see chat_history.models),
@@ -1005,6 +1109,20 @@ export default function AskKritonPage() {
       setConversations((prev) => prev.map((c) => (c.id === id ? updated : c)));
     } catch {
       // best-effort — sidebar just keeps the old title on failure
+    }
+  }
+
+  async function downloadConversationEntry(id: string) {
+    setOpenMenuId(null);
+    const token = getAuthToken();
+    if (!token) return;
+    try {
+      // Fetch rather than reuse `turns`: the menu is reachable for every
+      // conversation in the sidebar, not just the one currently open.
+      const detail = await getConversation(token, id);
+      downloadMarkdown(conversationToMarkdown(detail), detail.title, "kriton-chat");
+    } catch (err) {
+      setFormError(err instanceof ApiError ? err.message : "Could not download that conversation.");
     }
   }
 
@@ -1178,6 +1296,16 @@ export default function AskKritonPage() {
 
   const hasConversation = turns.length > 0;
   const isLoading = turns.some((t) => t.loading);
+  // The mobile drawer used to render `recents` — the localStorage mirror,
+  // capped at MAX_RECENTS — while the desktop sidebar rendered the complete,
+  // uncapped server list. Same page, two different histories, and the narrow
+  // breakpoint silently hid everything past the 12th conversation. Both now
+  // read the server list; recents stays as the offline/unauthenticated
+  // fallback, since a turn that never reached the backend lives only there.
+  const drawerChats: { id: string; label: string; local: boolean }[] =
+    conversations.length > 0
+      ? conversations.map((c) => ({ id: c.id, label: c.title, local: false }))
+      : recents.map((r) => ({ id: r.id, label: r.text, local: true }));
   // Enter submits; Shift+Enter keeps the newline the textarea is there for.
   // isComposing guards IME input, where Enter commits the candidate word and
   // must never be read as "send". Blocked while a document is still being
@@ -1275,6 +1403,13 @@ export default function AskKritonPage() {
                         </button>
                         <button
                           type="button"
+                          onClick={() => downloadConversationEntry(entry.id)}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-soft"
+                        >
+                          <Download size={13} /> Download
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => deleteConversationEntry(entry.id)}
                           className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-bad hover:bg-bad/10"
                         >
@@ -1285,6 +1420,17 @@ export default function AskKritonPage() {
                   </div>
                     ))}
               </div>
+            </div>
+          ) : historyError ? (
+            <div className="mt-6 px-5">
+              <p className="text-xs leading-5 text-muted">{historyError}</p>
+              <button
+                type="button"
+                onClick={() => refreshConversations()}
+                className="mt-2 rounded-lg border border-line px-2.5 py-1.5 text-xs font-semibold text-ink hover:bg-soft"
+              >
+                Retry
+              </button>
             </div>
           ) : (
             <p className="rounded-lg px-2 py-3 text-xs leading-5 text-muted">Your conversation sessions will appear here after you send a question.</p>
@@ -1319,23 +1465,29 @@ export default function AskKritonPage() {
                 <button type="button" onClick={() => { startNewChat(); setMobileHistoryOpen(false); }} className="mt-4 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold hover:bg-soft">
                   <Plus size={15} /> New chat
                 </button>
-                {recents.length ? (
+                {drawerChats.length ? (
                   <div className="mt-5 space-y-0.5">
-                        {recents.map((entry) => (
+                        {drawerChats.map((entry) => (
                           <button key={entry.id} type="button" onClick={() => {
-                            recentConversationIdRef.current = entry.id;
-                            setActiveConversationIdValue(entry.id);
-                            window.localStorage.setItem(ACTIVE_CONVERSATION_KEY, entry.id);
-                            setTurns(entry.turns);
-                            setQuery("");
+                            if (entry.local) {
+                              const cached = recents.find((r) => r.id === entry.id);
+                              if (!cached) return;
+                              recentConversationIdRef.current = entry.id;
+                              setActiveConversationIdValue(entry.id);
+                              window.localStorage.setItem(ACTIVE_CONVERSATION_KEY, entry.id);
+                              setTurns(cached.turns);
+                              setQuery("");
+                            } else {
+                              openConversation(entry.id);
+                            }
                             setMobileHistoryOpen(false);
-                          }} className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2.5 text-left text-sm font-semibold ${activeConversationIdValue === entry.id ? "bg-soft text-ink" : "text-muted hover:bg-soft hover:text-ink"}`}>
-                            <MessageSquare size={13} className="shrink-0" /><span className="truncate">{entry.text}</span>
+                          }} className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2.5 text-left text-sm font-semibold ${(entry.local ? activeConversationIdValue : activeConversationId) === entry.id ? "bg-soft text-ink" : "text-muted hover:bg-soft hover:text-ink"}`}>
+                            <MessageSquare size={13} className="shrink-0" /><span className="truncate">{entry.label}</span>
                           </button>
                         ))}
                   </div>
                 ) : (
-                  <p className="mt-5 rounded-lg bg-soft p-3 text-xs leading-5 text-muted">Your conversation sessions will appear here after you send a question.</p>
+                  <p className="mt-5 rounded-lg bg-soft p-3 text-xs leading-5 text-muted">{historyError || "Your conversation sessions will appear here after you send a question."}</p>
                 )}
               </aside>
             </div>

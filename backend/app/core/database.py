@@ -1,5 +1,6 @@
-from fastapi import Request
+from fastapi import HTTPException, Request
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from collections.abc import AsyncGenerator
@@ -48,9 +49,24 @@ def to_sync_url(url: str) -> str:
 
 # Sync DB support for Safety Domain
 sync_db_url = to_sync_url(settings.DATABASE_URL)
-connect_args = {"check_same_thread": False} if sync_db_url.startswith("sqlite") else {}
+_sync_is_sqlite = sync_db_url.startswith("sqlite")
+connect_args = (
+    {"check_same_thread": False}
+    if _sync_is_sqlite
+    # psycopg2's spelling of the same fail-fast timeout the async engines get
+    # below; without it this engine also waits out the OS-level TCP timeout
+    # against a pooler that has stopped completing handshakes.
+    else {"connect_timeout": settings.DB_CONNECT_TIMEOUT_SECONDS}
+)
+_sync_pool_kwargs = (
+    {}
+    if _sync_is_sqlite
+    else {"pool_size": settings.DB_POOL_SIZE, "max_overflow": settings.DB_MAX_OVERFLOW}
+)
 
-engine = create_engine(sync_db_url, connect_args=connect_args, pool_pre_ping=True)
+engine = create_engine(
+    sync_db_url, connect_args=connect_args, pool_pre_ping=True, **_sync_pool_kwargs
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_sync_db() -> Generator[Session, None, None]:
@@ -79,12 +95,36 @@ def get_sync_db() -> Generator[Session, None, None]:
 # (Confirmed necessary the hard way in production: a stale pooled connection
 # surfaced as asyncpg.exceptions.ConnectionDoesNotExistError crashing a live
 # request instead of transparently reconnecting.)
+def _pg_engine_kwargs() -> dict:
+    """Pool bounds and a connect timeout, applied to both async engines.
+
+    Skipped entirely for SQLite, whose pool implementation doesn't take
+    pool_size/max_overflow and whose driver doesn't take these connect_args.
+
+    Both settings exist because of the same failure: Supavisor accepts the
+    TCP connection and then never completes the Postgres handshake once it
+    is at capacity. Unbounded pools let one worker keep asking for more
+    connections it will never get, and asyncpg's 60s default meant each
+    attempt hung for a full minute — together that turned a saturated pooler
+    into multi-minute request stalls ending in a bare 500."""
+    if settings.is_sqlite:
+        return {}
+    return {
+        "pool_size": settings.DB_POOL_SIZE,
+        "max_overflow": settings.DB_MAX_OVERFLOW,
+        "connect_args": {
+            "statement_cache_size": 0,
+            "timeout": settings.DB_CONNECT_TIMEOUT_SECONDS,
+        },
+    }
+
+
 async_engine = create_async_engine(
     to_async_url(settings.DATABASE_URL),
     echo=False,
     pool_pre_ping=True,
     pool_recycle=300,
-    connect_args={"statement_cache_size": 0} if not settings.is_sqlite else {},
+    **_pg_engine_kwargs(),
 )
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 
@@ -99,7 +139,7 @@ request_engine = create_async_engine(
     echo=False,
     pool_pre_ping=True,
     pool_recycle=300,
-    connect_args={"statement_cache_size": 0} if not settings.is_sqlite else {},
+    **_pg_engine_kwargs(),
 )
 RequestSessionLocal = async_sessionmaker(request_engine, expire_on_commit=False)
 
@@ -142,17 +182,36 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
     async with RequestSessionLocal() as session:
         if not settings.is_sqlite:
             user_id, tenant_id = _identity_from_request(request)
-            # set_config(..., false) accepts a bound parameter, unlike SET,
-            # whose grammar takes a literal, not a placeholder — binding
-            # these directly into SET would require unsafe string
-            # formatting. Always called, even with "", so a connection
-            # reused from the pool never carries over a prior request's
-            # identity into a request that has none.
-            await session.execute(
-                text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id}
-            )
-            await session.execute(
-                text("SELECT set_config('app.user_id', :user_id, false)"), {"user_id": user_id}
-            )
+            # These two set_config calls are the first statements on the
+            # session, so they are where a connection is actually opened and
+            # where a saturated pooler surfaces. asyncpg raises a bare
+            # asyncio.TimeoutError for a connect timeout — not a DBAPI error,
+            # so SQLAlchemy does not wrap it in OperationalError and it would
+            # otherwise reach the client as an opaque 500. Translating it here
+            # (rather than via a global TimeoutError handler, which would also
+            # swallow unrelated asyncio.wait_for timeouts elsewhere in the
+            # request path) keeps the mapping precise.
+            try:
+                await _apply_identity_scope(session, tenant_id=tenant_id, user_id=user_id)
+            except (TimeoutError, OperationalError) as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="The database is temporarily unreachable. This is a connection "
+                           "problem, not a problem with your request — please retry in a moment.",
+                ) from exc
         yield session
+
+
+async def _apply_identity_scope(session: AsyncSession, *, tenant_id: str, user_id: str) -> None:
+    """set_config(..., false) accepts a bound parameter, unlike SET, whose
+    grammar takes a literal, not a placeholder — binding these directly into
+    SET would require unsafe string formatting. Always called, even with "",
+    so a connection reused from the pool never carries over a prior request's
+    identity into a request that has none."""
+    await session.execute(
+        text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id}
+    )
+    await session.execute(
+        text("SELECT set_config('app.user_id', :user_id, false)"), {"user_id": user_id}
+    )
 

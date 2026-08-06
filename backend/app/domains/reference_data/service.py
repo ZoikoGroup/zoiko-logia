@@ -90,37 +90,70 @@ CONGRESS_NODE_PREFIX = "congress-live-"
 PROFESSIONAL_SEARCH_NODE_PREFIX = "professional-search-live-"
 
 
+# provider key -> (search callable, audit subject_id, display name). Every
+# provider is a straight primary here; which one runs first is
+# PROFESSIONAL_SEARCH_PROVIDER_ORDER's decision, not this module's.
+_SEARCH_PROVIDERS: dict[str, tuple[Callable[[str], Awaitable[list[dict]]], str, str]] = {
+    "serpapi": (search_serpapi, "serpapi.authority_search", "SerpAPI"),
+    "tavily": (search_tavily, "tavily.authority_search", "Tavily"),
+}
+_DEFAULT_PROVIDER_ORDER = ("serpapi", "tavily")
+
+
+def professional_search_order() -> tuple[str, ...]:
+    """Providers to try, in order, from configuration.
+
+    Unknown names are dropped rather than raising: a typo in an environment
+    variable must not take down discovery for every query. An order that
+    resolves to nothing falls back to the default, so discovery cannot be
+    disabled by accident — removing a provider is done by clearing its key.
+    """
+    configured = tuple(
+        name for name in (
+            item.strip().lower()
+            for item in get_settings().PROFESSIONAL_SEARCH_PROVIDER_ORDER.split(",")
+        )
+        if name in _SEARCH_PROVIDERS
+    )
+    return tuple(dict.fromkeys(configured)) or _DEFAULT_PROVIDER_ORDER
+
+
 async def get_professional_search_bundle(
     db: AsyncSession, *, query: str, tenant_id: str, actor_id: str | None,
 ) -> tuple[ReferenceSourceBundle, str]:
-    """Use Tavily first and SerpAPI only when Tavily yields no usable page."""
-    provider = "tavily"
-    try:
-        results = await _retry_external(lambda: search_tavily(query))
-        status = "200"
-    except Exception as exc:
-        results, status = [], f"error: {exc}"
-    await record_event_async(
-        db, tenant_id=tenant_id, event_name="external_reference_data_call",
-        emitting_service="reference_data", subject_type="external_source",
-        subject_id="tavily.authority_search", actor_id=actor_id,
-        payload={"params": {"allowed_domain_search": True}, "status": status, "record_count": len(results)},
-    )
-    if not results:
-        provider = "serpapi"
+    """Query discovery providers in configured order; first usable result wins.
+
+    Previously hardcoded as Tavily-then-SerpAPI, which meant SerpAPI was
+    unreachable whenever Tavily was healthy — and with both keys configured,
+    it always was. Each attempt still records its own audit event under its
+    own subject_id, so the ledger shows exactly which providers were called
+    and what each returned.
+    """
+    order = professional_search_order()
+    results: list[dict] = []
+    provider = order[0]
+
+    for candidate in order:
+        search, subject_id, _ = _SEARCH_PROVIDERS[candidate]
+        provider = candidate
         try:
-            results = await _retry_external(lambda: search_serpapi(query))
+            results = await _retry_external(lambda fn=search: fn(query))
             status = "200"
         except Exception as exc:
             results, status = [], f"error: {exc}"
         await record_event_async(
             db, tenant_id=tenant_id, event_name="external_reference_data_call",
             emitting_service="reference_data", subject_type="external_source",
-            subject_id="serpapi.authority_search", actor_id=actor_id,
-            payload={"params": {"allowed_domain_search": True}, "status": status, "record_count": len(results)},
+            subject_id=subject_id, actor_id=actor_id,
+            payload={"params": {"allowed_domain_search": True}, "status": status,
+                     "record_count": len(results)},
         )
+        if results:
+            break
+
     return ReferenceSourceBundle(
-        source_name=f"{provider.title()} — Approved Authority Search",
+        # From the registry, not provider.title() — that produced "Serpapi".
+        source_name=f"{_SEARCH_PROVIDERS[provider][2]} — Approved Authority Search",
         source_url=results[0]["url"] if results else "",
         data=results, licence_status="public_web",
     ), provider

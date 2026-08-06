@@ -31,6 +31,22 @@ class Settings(BaseSettings):
     # that hasn't provisioned the low-privilege role).
     APP_DATABASE_URL: str | None = None
 
+    # Two engines are built from these (async_engine + request_engine), so the
+    # process-wide ceiling is 2 * (POOL_SIZE + MAX_OVERFLOW). SQLAlchemy's
+    # own defaults (5 + 10) put that at 30 from a single worker, which
+    # over-subscribes Supabase's Session Pooler — Supavisor caps client
+    # connections per project well below what an unbounded local pool will
+    # happily try to open.
+    DB_POOL_SIZE: int = 3
+    DB_MAX_OVERFLOW: int = 2
+    # asyncpg's own default is 60s. When the pooler stops completing
+    # handshakes (at capacity, or a Supabase-side incident) it accepts the
+    # TCP connection and then goes silent, so every connect burns the full
+    # timeout — a request needing several connections stalls for minutes and
+    # dies as an opaque 500 or a dropped socket. Failing in seconds turns
+    # that into a legible error instead.
+    DB_CONNECT_TIMEOUT_SECONDS: int = 10
+
     # ── CORS ─────────────────────────────────────────────────────────────
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001"]
 
@@ -228,6 +244,17 @@ class Settings(BaseSettings):
     # The project uses SERP_API_KEY in .env (rather than SerpAPI's common
     # SERPAPI_API_KEY spelling); keep that exact name so the saved key loads.
     SERP_API_KEY: str = ""
+    # Which discovery provider is tried first, comma-separated. The order was
+    # hardcoded as tavily-then-serpapi, which made SerpAPI unreachable in
+    # practice: both keys are configured and Tavily answers, so the fallback
+    # never fired. Configurable so switching primary is an operator decision.
+    #
+    # Note on cost: SerpAPI FETCHES each result page to extract its text
+    # (adapters/professional_search_adapter.py), where Tavily returns content
+    # inline via include_raw_content. Putting SerpAPI first therefore adds up
+    # to _MAX_RESULTS extra HTTP round trips per query. That is the trade for
+    # Google's index reach over Tavily's.
+    PROFESSIONAL_SEARCH_PROVIDER_ORDER: str = "serpapi,tavily"
     PROFESSIONAL_SEARCH_ALLOWED_DOMAINS: list[str] = [
         "irs.gov",
         "sec.gov",

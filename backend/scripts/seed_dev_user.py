@@ -117,7 +117,12 @@ SOURCES = [
 # not engineering completeness; _select_model_and_adapter's "provider
 # adapter not implemented" skip is the correct place to encode that fact.
 MODELS = [
-    ("Groq Llama 3.1 8B Instant", "Primary reasoning model", "Production", "llama-3.1-8b-instant", "Active", "groq"),
+    # version must match GroqAdapter.complete()'s default model, which is what
+    # actually runs — routing_fallback.py calls complete(prompt) with no model
+    # argument, so this row selects the provider and nothing else. Keeping the
+    # two in step is what stops the registry from reporting a model that never
+    # serves a request.
+    ("Groq Llama 3.3 70B Versatile", "Primary reasoning model", "Production", "llama-3.3-70b-versatile", "Active", "groq"),
     ("GPT-4 Turbo", "Secondary / fallback model", "Production", "v2026.06", "Active", "openai"),
     ("Claude 3.5", "Secondary / fallback model", "Production", "v2026.05", "Active", "anthropic"),
     ("Internal Embedding Model", "Vector search embeddings", "Staging", "v0.9", "Testing", "self_hosted"),
@@ -1044,16 +1049,41 @@ async def _backfill_groq_model_row(db) -> None:
         return
     db.add(
         ModelDefinition(
-            name="Groq Llama 3.1 8B Instant",
+            name="Groq Llama 3.3 70B Versatile",
             role="Primary reasoning model",
             environment="Production",
-            version="llama-3.1-8b-instant",
+            version="llama-3.3-70b-versatile",
             status="Active",
             provider="groq",
         )
     )
     await db.commit()
     print("Backfilled missing Groq ModelDefinition row.")
+
+
+async def _backfill_groq_model_version(db) -> None:
+    """Environments seeded before the answering model moved off
+    llama-3.1-8b-instant still advertise it in the registry, which the admin
+    Model Registry page displays. Cosmetic only — GroqAdapter.complete()'s own
+    default decides the model, and this row's `version` is never passed to it
+    (routing_fallback.py calls complete(prompt) with no model argument) — but a
+    governance registry that names a model which never serves a request is
+    exactly the registry-vs-reality disagreement the MODELS comment warns
+    about. Idempotent by version, so it is safe on every seed run."""
+    result = await db.execute(
+        select(ModelDefinition).where(
+            ModelDefinition.provider == "groq",
+            ModelDefinition.version == "llama-3.1-8b-instant",
+        )
+    )
+    rows = list(result.scalars().all())
+    if not rows:
+        return
+    for row in rows:
+        row.name = "Groq Llama 3.3 70B Versatile"
+        row.version = "llama-3.3-70b-versatile"
+    await db.commit()
+    print(f"Relabeled {len(rows)} Groq ModelDefinition row(s) to llama-3.3-70b-versatile.")
 
 
 async def _backfill_gpt4_turbo_role_relabel(db) -> None:
@@ -1078,6 +1108,7 @@ async def _backfill_gpt4_turbo_role_relabel(db) -> None:
 
 async def seed_model_gateway_data(db, user: User) -> None:
     await _backfill_groq_model_row(db)
+    await _backfill_groq_model_version(db)
     await _backfill_gpt4_turbo_role_relabel(db)
 
     existing = await db.execute(select(ModelDefinition))
