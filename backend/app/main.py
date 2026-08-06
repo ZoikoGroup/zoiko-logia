@@ -4,8 +4,9 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
 from contextlib import asynccontextmanager
+from datetime import date
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -157,6 +158,134 @@ async def _migrate_safety_tenant_columns():
                 await conn.execute(text(
                     f"CREATE INDEX IF NOT EXISTS ix_{table}_tenant_id ON {table} (tenant_id)"
                 ))
+
+
+async def _migrate_saved_visualization_columns():
+    """Add updated_at to saved_visualizations if this DB predates it — same
+    create_all()-doesn't-alter-existing-tables situation as the migrations
+    above. Backfilled from created_at rather than "now" so an existing row's
+    updated_at doesn't lie about when it last actually changed."""
+    async with async_engine.begin() as conn:
+        if settings.is_sqlite:
+            columns = await conn.execute(text("PRAGMA table_info(saved_visualizations)"))
+            if "updated_at" not in {row[1] for row in columns}:
+                await conn.execute(text("ALTER TABLE saved_visualizations ADD COLUMN updated_at DATETIME"))
+        else:
+            await conn.execute(text("ALTER TABLE saved_visualizations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ"))
+        await conn.execute(text(
+            "UPDATE saved_visualizations SET updated_at = created_at WHERE updated_at IS NULL"
+        ))
+        if not settings.is_sqlite:
+            await conn.execute(text("ALTER TABLE saved_visualizations ALTER COLUMN updated_at SET NOT NULL"))
+
+
+async def _migrate_visualization_preference_telemetry():
+    """Backfill privacy-safe v5-v8.2 telemetry fields on legacy tables.
+
+    Some development databases predate the Alembic v8 chain and were
+    created by create_all(), which never alters an existing table. Keep the
+    startup compatibility path complete so recording a chart cannot fail an
+    otherwise valid Ask Kriton response merely because a nullable telemetry
+    column is absent.
+    """
+    async with async_engine.begin() as conn:
+        if settings.is_sqlite:
+            columns = await conn.execute(text("PRAGMA table_info(visualization_telemetry_events)"))
+            column_names = {row[1] for row in columns}
+            for column in ("chart_family", "ranking_version", "experiment_id", "experiment_group", "environment"):
+                if column not in column_names:
+                    await conn.execute(text(f"ALTER TABLE visualization_telemetry_events ADD COLUMN {column} VARCHAR"))
+            if "preference_affected_selection" not in column_names:
+                await conn.execute(text("ALTER TABLE visualization_telemetry_events ADD COLUMN preference_affected_selection BOOLEAN"))
+        else:
+            for column in ("chart_family", "ranking_version", "experiment_id", "experiment_group", "environment"):
+                await conn.execute(text(
+                    f"ALTER TABLE visualization_telemetry_events ADD COLUMN IF NOT EXISTS {column} VARCHAR"
+                ))
+            await conn.execute(text("ALTER TABLE visualization_telemetry_events ADD COLUMN IF NOT EXISTS preference_affected_selection BOOLEAN"))
+
+
+async def _migrate_visualization_personalization_telemetry():
+    """Add the privacy-safe V10 personalization metadata columns to the
+    existing telemetry table — same create_all()-doesn't-alter-existing-
+    tables situation as the migrations above."""
+    async with async_engine.begin() as conn:
+        if settings.is_sqlite:
+            columns = await conn.execute(text("PRAGMA table_info(visualization_telemetry_events)"))
+            column_names = {row[1] for row in columns}
+            for column in ("personalization_enabled", "personalization_affected_selection"):
+                if column not in column_names:
+                    await conn.execute(text(f"ALTER TABLE visualization_telemetry_events ADD COLUMN {column} BOOLEAN"))
+            for column in ("personalization_model_version", "personalization_confidence_band"):
+                if column not in column_names:
+                    await conn.execute(text(f"ALTER TABLE visualization_telemetry_events ADD COLUMN {column} VARCHAR"))
+        else:
+            await conn.execute(text("ALTER TABLE visualization_telemetry_events ADD COLUMN IF NOT EXISTS personalization_enabled BOOLEAN"))
+            await conn.execute(text("ALTER TABLE visualization_telemetry_events ADD COLUMN IF NOT EXISTS personalization_affected_selection BOOLEAN"))
+            await conn.execute(text("ALTER TABLE visualization_telemetry_events ADD COLUMN IF NOT EXISTS personalization_model_version VARCHAR"))
+            await conn.execute(text("ALTER TABLE visualization_telemetry_events ADD COLUMN IF NOT EXISTS personalization_confidence_band VARCHAR"))
+
+
+async def _migrate_visualization_gap_report_columns():
+    """Backfill the V8.3 formal artifact column when create_all previously
+    created the V8.2 report table (create_all never alters existing tables)."""
+    async with async_engine.begin() as conn:
+        if settings.is_sqlite:
+            columns = await conn.execute(text("PRAGMA table_info(visualization_gap_reports)"))
+            if "artifact" not in {row[1] for row in columns}:
+                await conn.execute(text("ALTER TABLE visualization_gap_reports ADD COLUMN artifact JSON NOT NULL DEFAULT '{}'"))
+        else:
+            await conn.execute(text("ALTER TABLE visualization_gap_reports ADD COLUMN IF NOT EXISTS artifact JSON NOT NULL DEFAULT '{}'"))
+            await conn.execute(text("ALTER TABLE visualization_gap_reports ALTER COLUMN artifact DROP DEFAULT"))
+
+
+async def _migrate_evidence_monitoring_run_columns():
+    """Backfill the V8.5 run-lifecycle columns (and the run_at->started_at
+    rename) when create_all previously created the V8.4 aggregation-run
+    table — same create_all()-doesn't-alter-existing-tables situation as
+    the migrations above."""
+    table = "visualization_evidence_aggregation_runs"
+    async with async_engine.begin() as conn:
+        if settings.is_sqlite:
+            columns = await conn.execute(text(f"PRAGMA table_info({table})"))
+            column_names = {row[1] for row in columns}
+            if "run_at" in column_names and "started_at" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} RENAME COLUMN run_at TO started_at"))
+            columns = await conn.execute(text(f"PRAGMA table_info({table})"))
+            column_names = {row[1] for row in columns}
+            if "completed_at" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN completed_at DATETIME"))
+            if "status" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN status VARCHAR NOT NULL DEFAULT 'succeeded'"))
+            if "monitoring_period" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN monitoring_period VARCHAR NOT NULL DEFAULT ''"))
+            if "trigger_source" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN trigger_source VARCHAR NOT NULL DEFAULT 'manual'"))
+            if "draft_created" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN draft_created BOOLEAN NOT NULL DEFAULT 0"))
+            if "alert_created" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN alert_created BOOLEAN NOT NULL DEFAULT 0"))
+            if "failure_category" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN failure_category VARCHAR"))
+        else:
+            existing = await conn.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = :table"
+            ), {"table": table})
+            column_names = {row[0] for row in existing}
+            if "run_at" in column_names and "started_at" not in column_names:
+                await conn.execute(text(f"ALTER TABLE {table} RENAME COLUMN run_at TO started_at"))
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ"))
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS status VARCHAR NOT NULL DEFAULT 'succeeded'"))
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS monitoring_period VARCHAR NOT NULL DEFAULT ''"))
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS trigger_source VARCHAR NOT NULL DEFAULT 'manual'"))
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS draft_created BOOLEAN NOT NULL DEFAULT FALSE"))
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS alert_created BOOLEAN NOT NULL DEFAULT FALSE"))
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS failure_category VARCHAR"))
+            await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN status DROP DEFAULT"))
+            await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN monitoring_period DROP DEFAULT"))
+            await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN trigger_source DROP DEFAULT"))
+            await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN draft_created DROP DEFAULT"))
+            await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN alert_created DROP DEFAULT"))
 
 
 async def _setup_user_rls():
@@ -522,16 +651,24 @@ def _seed_users():
             db.add(tenant)
             db.flush()
 
-        # Create default admin user if no users exist
-        if db.query(User).count() == 0:
-            for email, password, full_name, role in (
-                ("admin@zoiko.com", "Admin@1234", "System Administrator", "Admin"),
-                ("kriton@zoiko.com", "Kriton@1234", "Kriton Reviewer", "SME Reviewer"),
-            ):
-                existing_auth_user = supabase_admin.get_user_by_email(email)
-                auth_user = existing_auth_user or supabase_admin.create_user(email, password, email_confirm=True)
+        # Reconcile each backend-managed identity independently. Local profile
+        # rows can survive a Supabase reset, so a global users-count check leaves
+        # the documented accounts permanently unable to sign in.
+        for email, password, full_name, role in (
+            ("admin@zoiko.com", "Admin@1234", "System Administrator", "Admin"),
+            ("kriton@zoiko.com", "Kriton@1234", "Kriton Reviewer", "SME Reviewer"),
+        ):
+            local_user = db.query(User).filter(User.email == email).first()
+            existing_auth_user = supabase_admin.get_user_by_email(email)
+            auth_user = existing_auth_user or supabase_admin.create_user(
+                email,
+                password,
+                email_confirm=True,
+                user_id=local_user.id if local_user else None,
+            )
+            if local_user is None:
                 first_name, _, last_name = full_name.partition(" ")
-                db.add(User(
+                local_user = User(
                     id=auth_user["id"],
                     tenant_id="tenant-default",
                     email=email,
@@ -540,12 +677,69 @@ def _seed_users():
                     full_name=full_name,
                     role=role,
                     is_active=True,
-                ))
+                )
+                db.add(local_user)
                 db.flush()
-                supabase_admin.update_app_metadata(auth_user["id"], "tenant-default", role)
+            if auth_user["id"] != local_user.id:
+                raise RuntimeError(f"Supabase/local identity mismatch for {email}")
+            supabase_admin.update_app_metadata(auth_user["id"], local_user.tenant_id, local_user.role)
         db.commit()
     except Exception:
         db.rollback()
+    finally:
+        db.close()
+
+
+def _seed_business_tax_review_source():
+    """Register the dated reviewed IRS composite used by deterministic tax workflows."""
+    from app.domains.identity.models import User
+    from app.domains.source_library.models import Source, SourceVersion
+    from app.domains.reference_data.business_tax_review import (
+        BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID,
+        BUSINESS_TAX_REVIEW_VERSION,
+    )
+
+    db = SessionLocal()
+    try:
+        reviewer = db.query(User).filter(User.is_active.is_(True)).first()
+        if reviewer is None:
+            return
+        source = db.query(Source).filter(Source.id == BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID).first()
+        if source is None:
+            source = Source(
+                id=BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID,
+                category="business-tax-review",
+                title="IRS Business Filing & Employment Tax Review — Reviewed 2026",
+                source_class="Reviewed synthesis of current IRS primary guidance",
+                jurisdiction_scope="US",
+                authority_level="secondary",
+                licence_state="permitted",
+            )
+            db.add(source)
+            db.flush()
+        version = db.query(SourceVersion).filter(
+            SourceVersion.source_id == source.id,
+            SourceVersion.version_label == BUSINESS_TAX_REVIEW_VERSION,
+        ).first()
+        if version is None:
+            db.add(SourceVersion(
+                source_id=source.id,
+                version_label=BUSINESS_TAX_REVIEW_VERSION,
+                status="ACTIVE",
+                effective_from=date(2026, 7, 29),
+                effective_to=date(2026, 12, 31),
+                note=(
+                    "Reviewed against IRS Filing, Business Tax Account, Recordkeeping, business e-file, "
+                    "employment-tax filing/reporting pages, and Publication 15 (2026). Re-review before expiry."
+                ),
+                submitted_by=reviewer.id,
+                approved_by=reviewer.id,
+                file_path="https://www.irs.gov/filing",
+            ))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -630,6 +824,11 @@ async def lifespan(app: FastAPI):
     await _migrate_source_licence_columns()
     await _migrate_user_profile_columns()
     await _migrate_safety_tenant_columns()
+    await _migrate_saved_visualization_columns()
+    await _migrate_visualization_preference_telemetry()
+    await _migrate_visualization_gap_report_columns()
+    await _migrate_evidence_monitoring_run_columns()
+    await _migrate_visualization_personalization_telemetry()
     await _setup_source_rls()
     await _setup_user_rls()
     _seed_defaults()
@@ -637,6 +836,7 @@ async def lifespan(app: FastAPI):
     _seed_escalation_rules()
     _seed_incidents()
     _seed_users()
+    _seed_business_tax_review_source()
     await _warm_up_ml_models()
     yield
     await async_engine.dispose()
@@ -660,6 +860,21 @@ def create_app() -> FastAPI:
 
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    @app.get("/health", tags=["Operations"])
+    async def health() -> dict:
+        """Cheap process-liveness probe with no external dependencies."""
+        return {"status": "ok", "service": "zoikologia-backend"}
+
+    @app.get("/ready", tags=["Operations"])
+    async def ready() -> dict:
+        """Traffic-readiness probe that verifies database connectivity."""
+        try:
+            async with async_engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Database is not ready") from exc
+        return {"status": "ready", "database": "ok"}
 
     # Core API endpoints from main branch
     app.include_router(api_v1_router, prefix="/api/v1")

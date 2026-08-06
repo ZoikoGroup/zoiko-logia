@@ -1,6 +1,7 @@
 import { PageShell } from "@/components/governance/PageShell";
 import { EditableModule } from "@/components/shell/EditableModule";
 import { CheckCircle2, Clock3, Settings, ToggleLeft } from "lucide-react";
+import { VisualizationPreferencesPanel } from "@/components/VisualizationPreferencesPanel";
 
 export default function TenantSettingsPage() {
   return (
@@ -9,6 +10,7 @@ export default function TenantSettingsPage() {
       subtitle="Tenant-level configuration, branding, and defaults."
       showMetrics={false}
     >
+      <VisualizationPreferencesPanel />
       <EditableModule
         phase={5}
         description="Tenant configuration editor covering branding, defaults, and feature flags."

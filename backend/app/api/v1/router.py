@@ -10,6 +10,10 @@ from app.domains.support_incident.router import router as support_router
 from app.domains.evaluation.router import router as evaluation_router
 from app.orchestration.router import router as orchestration_router
 from app.orchestration.upload_router import router as upload_router
+from app.orchestration.visualization_analytics_router import router as visualization_analytics_router
+from app.orchestration.ranking_experiments_router import router as ranking_experiments_router
+from app.orchestration.visualization_gaps_router import router as visualization_gaps_router
+from app.orchestration.visualization_personalization_router import router as visualization_personalization_router
 from app.domains.calculation.api_router import router as calculation_router
 
 api_v1_router = APIRouter()
@@ -25,3 +29,7 @@ api_v1_router.include_router(orchestration_router)
 api_v1_router.include_router(kriton_workspace_router)
 api_v1_router.include_router(upload_router)
 api_v1_router.include_router(calculation_router)
+api_v1_router.include_router(visualization_analytics_router)
+api_v1_router.include_router(ranking_experiments_router)
+api_v1_router.include_router(visualization_gaps_router)
+api_v1_router.include_router(visualization_personalization_router)

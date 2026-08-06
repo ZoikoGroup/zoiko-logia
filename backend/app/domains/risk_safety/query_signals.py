@@ -24,12 +24,25 @@ _TOPICS: dict[str, re.Pattern[str]] = {
 }
 
 _PERSONAL_ENTITIES = re.compile(
-    r"\b(my|our)\s+(company|client|firm|business|tax(?:es)?|return|audit|filing|situation|case)\b",
+    r"\b(my|our)\s+(company|client|firm|business|tax(?:es)?|return|audit|filing|situation|case)\b"
+    # Real gap (2026-08-03): "Personal tax-minimization advice" and similar
+    # third-person-phrased topic labels ("personalized financial planning
+    # advice") never matched the (my|our) form above — no first-person
+    # possessive pronoun appears at all — so they fell through to the ML/
+    # LLM semantic path with no deterministic advice floor, unlike an
+    # otherwise-equivalent query that happens to say "my situation"
+    # instead of "personal". "Personal"/"personalized" is semantically the
+    # same signal as "my"/"our" here; the bounded window (<=40 chars,
+    # never crossing a sentence boundary) keeps this from firing on an
+    # unrelated "personal" elsewhere in a long query.
+    r"|\bpersonal(?:ized)?\b[^.?!]{0,40}\b(?:advice|planning|guidance|recommendation|strategy|minimization)\b"
+    r"|\bpersonal(?:ized)?\s+(company|client|firm|business|tax(?:es)?|return|audit|filing|situation|case)\b",
     re.I,
 )
 _RECOMMENDATION = re.compile(r"\b(advise|recommend|what should|should)\b", re.I)
 _PERSONAL_RECOMMENDATION = re.compile(
-    r"\b(should\s+(?:i|we|my|our)|what\s+(?:should|do)\s+(?:i|we)|advise\s+(?:me|us|my|our))\b",
+    r"\b(?:should\s+(?:i|we)\s+(?:file|report|recognize|pay|submit|declare)|"
+    r"what\s+should\s+(?:i|we)\s+do|advise\s+(?:me|us|my|our))\b",
     re.I,
 )
 _CALCULATION = re.compile(r"^\s*(calculate|compute)\b|\bwhat\s+is\s+the\s+(?:net|total|amount|percentage)\b", re.I)

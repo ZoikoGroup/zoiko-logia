@@ -39,13 +39,38 @@ services:
       CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001","http://localhost:3005"]'
       # Auth is now Supabase-backed — set these to a real Supabase project
       # for sign-up/sign-in to work (see backend/.env.example).
-      SUPABASE_URL: ""
-      SUPABASE_SERVICE_ROLE_KEY: ""
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      # SearXNG instance for the (currently unwired) websearch.py provider —
+      # see the searxng service below. Not read by anything in the request
+      # path yet; harmless to set ahead of that wiring landing.
+      SEARXNG_URL: http://searxng:8080
     ports:
       - "8010:8010"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
     depends_on:
       postgres:
         condition: service_healthy
+      searxng:
+        condition: service_started
+
+  # Local SearXNG instance backing app/orchestration/websearch.py. Settings
+  # (JSON output format enabled) live in ./searxng/settings.yml, mounted
+  # read-only below.
+  searxng:
+    image: searxng/searxng
+    container_name: searxng
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8888/
+    volumes:
+      - ./searxng:/etc/searxng
+    ports:
+      - "8888:8080"
 
   seed:
     build: ./backend
@@ -55,15 +80,19 @@ services:
       postgres:
         condition: service_healthy
       backend:
-        condition: service_started
+        condition: service_healthy
     restart: "no"
     command: >
-      sh -c "sleep 5 &&
-      python scripts/seed_dev_user.py &&
+      sh -c "python scripts/seed_dev_user.py &&
       python scripts/ingest_reference_sources.py"
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8010/api/v1}
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8010/api/v1
     ports:

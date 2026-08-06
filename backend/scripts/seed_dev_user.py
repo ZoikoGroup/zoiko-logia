@@ -142,7 +142,18 @@ async def seed_demo_user(db) -> User:
     existing = await db.execute(select(User).where(User.email == DEMO_EMAIL))
     user = existing.scalar_one_or_none()
     if user is not None:
-        print(f"User {DEMO_EMAIL} already exists, skipping.")
+        auth_user = supabase_admin.get_user_by_email(DEMO_EMAIL)
+        if auth_user is None:
+            auth_user = supabase_admin.create_user(
+                DEMO_EMAIL,
+                DEMO_PASSWORD,
+                email_confirm=True,
+                user_id=user.id,
+            )
+        if auth_user["id"] != user.id:
+            raise RuntimeError(f"Supabase/local identity mismatch for {DEMO_EMAIL}")
+        supabase_admin.update_app_metadata(auth_user["id"], user.tenant_id, user.role)
+        print(f"User {DEMO_EMAIL} already exists; authentication synchronized.")
         return user
 
     if not supabase_admin.is_configured():

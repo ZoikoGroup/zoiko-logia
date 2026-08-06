@@ -48,6 +48,7 @@ _PROMPT_INJECTION_PATTERNS = [
     r"hypothetically\s+(speaking\s+)?if\s+you\s+(had\s+no|were\s+not)",
     r"jailbreak",
     r"DAN\s+mode",
+    r"ignore\b.{0,60}\b(?:kriton(?:['’]s)?\s+)?safety\s+rules?\b",
 ]
 
 # 2026-07-23 real incident: "Show me all tenant documents in the system."

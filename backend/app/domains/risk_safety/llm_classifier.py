@@ -47,15 +47,106 @@ def configured_mode() -> str:
     return mode if mode in {"off", "fallback", "shadow"} else "off"
 
 
+def _user_content(query: str, jurisdiction: str, mode: str) -> str:
+    return json.dumps({"query": query, "jurisdiction": jurisdiction or None, "product_mode": mode}, ensure_ascii=False)
+
+
+def _parse_classification(content: str | None, model: str) -> LLMClassification | None:
+    """Lenient shared parser for the Groq/Gemini fallback paths below, which
+    use plain JSON mode rather than OpenAI's strict json_schema (Groq/Gemini
+    support for that strict mode is less certain) — missing optional fields
+    degrade to safe defaults instead of failing the whole classification."""
+    payload = json.loads(content or "")
+    risk_level = str(payload["risk_level"]).upper()
+    if risk_level not in _ALLOWED_RISKS:
+        return None
+    confidence = payload.get("confidence")
+    confidence = float(confidence) if isinstance(confidence, (int, float)) and 0 <= confidence <= 1 else 0.75
+    return LLMClassification(
+        risk_level=risk_level,
+        confidence=confidence,
+        intent=str(payload.get("intent", ""))[:120],
+        advice_signal=bool(payload.get("advice_signal", False)),
+        missing_context=tuple(str(item)[:80] for item in (payload.get("missing_context") or [])[:10]),
+        reason_codes=tuple(str(item)[:80] for item in (payload.get("reason_codes") or [])[:10]),
+        model=model,
+    )
+
+
+def _classify_via_groq(query: str, jurisdiction: str, mode: str) -> LLMClassification | None:
+    """Fallback provider (2026-08-05) tried when OpenAI isn't configured —
+    same schema/prompt, plain JSON mode, sync client (this whole module is
+    called synchronously from risk_classifier.classify(), same as the OpenAI
+    path above)."""
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not api_key:
+        return None
+    try:
+        from groq import Groq
+
+        model = os.getenv("GROQ_CLASSIFIER_MODEL", "llama-3.1-8b-instant").strip() or "llama-3.1-8b-instant"
+        client = Groq(api_key=api_key, timeout=float(os.getenv("RISK_LLM_CLASSIFIER_TIMEOUT_SECONDS", "8")))
+        response = client.chat.completions.create(
+            model=model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT + "\nRespond with a single JSON object matching: "
+                 '{"risk_level": "ZERO|LOW|MEDIUM|HIGH", "confidence": 0-1, "intent": "...", '
+                 '"advice_signal": true|false, "missing_context": [...], "reason_codes": [...]}'},
+                {"role": "user", "content": _user_content(query, jurisdiction, mode)},
+            ],
+        )
+        return _parse_classification(response.choices[0].message.content, model)
+    except Exception:
+        return None
+
+
+def _classify_via_gemini(query: str, jurisdiction: str, mode: str) -> LLMClassification | None:
+    """Second fallback provider, tried only when both OpenAI and Groq are
+    unavailable — provider-level redundancy across three different LLMs."""
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        return None
+    try:
+        from google import genai
+        from google.genai import types
+
+        model = os.getenv("GEMINI_CLASSIFIER_MODEL") or os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=model,
+            contents=_user_content(query, jurisdiction, mode),
+            config=types.GenerateContentConfig(
+                system_instruction=_SYSTEM_PROMPT + "\nRespond with a single JSON object matching: "
+                '{"risk_level": "ZERO|LOW|MEDIUM|HIGH", "confidence": 0-1, "intent": "...", '
+                '"advice_signal": true|false, "missing_context": [...], "reason_codes": [...]}',
+                temperature=0,
+                response_mime_type="application/json",
+                max_output_tokens=512,
+            ),
+        )
+        return _parse_classification(response.text, model)
+    except Exception:
+        return None
+
+
 def classify(query: str, *, jurisdiction: str = "", mode: str = "Workflow") -> LLMClassification | None:
     """Classify with OpenAI Structured Outputs, returning ``None`` on failure.
 
     Provider/network failures are intentionally swallowed here. The caller owns
     the conservative MEDIUM/HIGH fallback and records the failure reason.
+
+    Real gap (2026-08-05): this call site is the ONLY wired-in LLM risk
+    fallback, but it required OPENAI_API_KEY specifically — an environment
+    with GROQ_API_KEY/GEMINI_API_KEY configured (and no OpenAI key) got
+    silent, permanent None here regardless of RISK_LLM_CLASSIFIER_MODE.
+    Falls through to Groq then Gemini so provider availability, not which
+    key happens to be set, decides whether this fallback ever engages.
     """
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
-        return None
+        return _classify_via_groq(query, jurisdiction, mode) or _classify_via_gemini(query, jurisdiction, mode)
 
     try:
         from openai import OpenAI
@@ -119,4 +210,8 @@ def classify(query: str, *, jurisdiction: str = "", mode: str = "Workflow") -> L
             model=model,
         )
     except Exception:
-        return None
+        # OpenAI is configured but the call itself failed (outage, rate
+        # limit, bad response) — same redundancy goal as the no-key branch
+        # above: don't let one provider's failure silently disable this
+        # whole fallback when another configured provider could answer.
+        return _classify_via_groq(query, jurisdiction, mode) or _classify_via_gemini(query, jurisdiction, mode)

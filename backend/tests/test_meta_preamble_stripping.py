@@ -12,11 +12,19 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.orchestration.service import (
+    _strip_leaked_context_labels,
     _strip_meta_preamble,
     _strip_raw_source_headers,
     _strip_trailing_raw_references,
     _validation_failure_summary,
 )
+
+
+def test_strips_standalone_context_labels_from_model_prose():
+    leaked = 'Perform substantive procedures. Content: "The auditor should confirm receivables." [REF-1]'
+    result = _strip_leaked_context_labels(leaked)
+    assert "Content:" not in result
+    assert "The auditor should confirm receivables" in result
 
 
 def test_strips_real_incident_preamble():

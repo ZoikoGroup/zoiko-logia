@@ -1,7 +1,10 @@
-from fastapi import Depends, HTTPException, status
+import hmac
+
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.supabase_auth import verify_token
 from app.domains.identity.models import User
@@ -58,3 +61,18 @@ async def require_safety_reviewer(current_user: User = Depends(get_current_user)
             detail="Safety reviewer role required",
         )
     return current_user
+
+
+async def require_service_role(x_service_token: str | None = Header(default=None, alias="X-Service-Token")) -> None:
+    """V8.5 — machine-credential auth for service-role-only endpoints (the
+    scheduled-evidence-monitoring trigger). Deliberately NOT a human
+    Supabase session/JWT: a cron-triggered call has no logged-in user.
+    Fails closed — an unconfigured (empty) EVIDENCE_MONITORING_SERVICE_TOKEN
+    rejects every caller rather than accepting an empty token, and the
+    comparison is constant-time to avoid a timing side channel on the
+    secret itself."""
+    settings = get_settings()
+    if not settings.EVIDENCE_MONITORING_SERVICE_TOKEN or not x_service_token or not hmac.compare_digest(
+        x_service_token, settings.EVIDENCE_MONITORING_SERVICE_TOKEN
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing service token")

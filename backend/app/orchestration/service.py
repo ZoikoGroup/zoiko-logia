@@ -37,7 +37,7 @@ from app.orchestration.identifiers import (
 )
 from app.orchestration.prescreen import run_prescreen, is_small_talk, check_off_topic_domain
 from app.orchestration.navigation_answers import resolve_navigation_answer
-from app.orchestration.retrieve import build_source_bundle, infer_category
+from app.orchestration.retrieve import build_source_bundle, classify_category
 from app.domains.source_library.service import list_sources, resolve_source_url
 from app.domains.rag.planner import create_retrieval_plan
 from app.domains.reference_data.service import (
@@ -110,6 +110,12 @@ from app.domains.reference_data.accounting_fundamentals import (
     ACCOUNTING_FUNDAMENTALS_NODE_PREFIX,
     to_accounting_fundamentals_rag_chunk,
 )
+from app.domains.reference_data.business_tax_review import (
+    BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID,
+    BUSINESS_TAX_REVIEW_NODE_PREFIX,
+    to_business_tax_review_rag_chunk,
+    compose_business_tax_review,
+)
 from app.domains.reference_data.user_provided_data import (
     USER_PROVIDED_DATA_GOVERNED_SOURCE_ID,
     USER_PROVIDED_DATA_NODE_PREFIX,
@@ -118,6 +124,7 @@ from app.domains.reference_data.user_provided_data import (
 )
 from app.orchestration.educational_answers import (
     compose_accounting_fundamentals,
+    compose_audit_variance_decision,
     compose_bank_reconciliation,
     compose_month_end_close,
 )
@@ -144,6 +151,18 @@ from app.domains.calculation.service import (
     FORMULA_REGISTRY_GOVERNED_SOURCE_ID,
     FORMULA_REGISTRY_NODE_PREFIX,
 )
+# Live, keyless data connectors (2026-08-05): each self-gates (returns []
+# unless the question actually matches its kind — an FX pair, an economic
+# statistic, or neither) and fails soft on any network/parse error. Wired
+# into the SAME raw_chunks -> grounded-context -> Checkpoint C pipeline as
+# every governed catalog source (see to_websource_rag_chunk's docstring) —
+# deliberately NOT websearch.py's own build_web_grounded_prompt/domain-gate/
+# chart-JSON path, which bypasses risk classification, Massarius Checkpoint
+# C, and the deterministic chart-selection system this product's governance
+# is built on.
+from app.orchestration.websearch import web_search, to_websource_rag_chunk, WEBSEARCH_GOVERNED_SOURCE_ID
+from app.orchestration.dbnomics import fetch_stats, DBNOMICS_GOVERNED_SOURCE_ID, _country_hint as _dbnomics_country_hint, _US_NAMES as _DBNOMICS_US_NAMES
+from app.orchestration.frankfurter import fetch_fx, FRANKFURTER_GOVERNED_SOURCE_ID
 from app.orchestration.routing_matrix import (
     map_safety_confidence,
     ROUTE_LLM, ROUTE_REFUSAL, ROUTE_CLARIFICATION,
@@ -158,6 +177,13 @@ from app.orchestration.schemas import (
     ComposedAnswer, SourceCitation, SourceSummary, SafetyState, NextAction, AuditReference,
 )
 from app.orchestration.presentation import build_answer_presentation
+from app.orchestration.visualization_preferences import get_preferences
+from app.orchestration.visualization_personalization import resolve_personalization_hint
+from app.orchestration.visualization_gaps import record_gap_event
+from app.core.config import get_settings
+from app.orchestration.presentation_dataprofile import RANKING_VERSION, chart_family, chart_renderer
+from app.orchestration.ranking_experiments import check_and_maybe_pause, resolve_experiment_context
+from app.orchestration.visualization_telemetry import get_recent_chart_types, record_visualization_event
 from app.orchestration.audit_events import (
     audit_query_received, audit_request_validated, audit_request_rejected,
     audit_prescreen_completed, audit_retrieval_started, audit_retrieval_completed,
@@ -171,6 +197,7 @@ from app.orchestration.audit_events import (
     audit_redaction_applied, audit_plan_created, audit_rerank_completed,
     audit_context_fit_completed, audit_route_reevaluated,
     audit_citation_assembly_completed, audit_coverage_assessed,
+    audit_query_classified,
 )
 from app.domains.risk_safety.schemas import ClassifyRequest
 from app.domains.model_gateway import service as model_gateway_service
@@ -214,6 +241,7 @@ _LIVE_DATA_NODE_PREFIXES = (
     BANK_RECONCILIATION_NODE_PREFIX,
     MONTH_END_CLOSE_NODE_PREFIX,
     ACCOUNTING_FUNDAMENTALS_NODE_PREFIX,
+    BUSINESS_TAX_REVIEW_NODE_PREFIX,
     USER_PROVIDED_DATA_NODE_PREFIX,
 )
 
@@ -487,13 +515,42 @@ class KritonMediator:
                 await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
             return response
 
+        visual_clarification = _visual_data_clarification(request.query)
+        if visual_clarification is not None:
+            response = AskKritonResponse(
+                query_id=query_id, correlation_id=correlation_id,
+                outcome="clarification_required", route=ROUTE_CLARIFICATION,
+                safety=SafetyState(risk_level="LOW", policy_state="needs_more_context", disclaimer_required=False),
+                confidence_state=CONF_INSUFFICIENT, source_bundle=None, answer=None,
+                next_action=NextAction(type="ask_clarifying_question", message=visual_clarification),
+                audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+            )
+            await _finalise_and_return(
+                db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+                audit_chain_id=audit_chain_id, actor_id=actor_id,
+                outcome=response.outcome, route=response.route, start_time=start_time,
+            )
+            if idempotency_key:
+                await store_idempotency(db, idempotency_key, tenant_id, response.model_dump())
+            return response
+
         # ── Step 4: Plan, prefilter, retrieve, rerank and build (§7) ───────
         embeddings_enabled = os.getenv("ENABLE_RAG_EMBEDDINGS", "").lower() in {"1", "true", "yes"}
-        retrieval_category = infer_category(request.query)
+        category_decision = await classify_category(request.query)
+        retrieval_category = category_decision.category
+        await audit_query_classified(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
+            category=category_decision.category, method=category_decision.method,
+            score=category_decision.score, runner_up_score=category_decision.runner_up_score,
+            classification_id=category_decision.classification_id,
+            shadow_category=category_decision.shadow_category,
+        )
         closed_evidence_categories = {
             "exchange-rate", "economic-data", "interest-rates", "tax-regulations",
             "federal-register", "us-legislation", "bank-reconciliation",
             "month-end-close", "accounting-fundamentals", "user-provided-data",
+            "business-tax-review",
         }
         retrieval_plan = create_retrieval_plan(
             request.query, request.jurisdiction, embeddings_enabled=embeddings_enabled,
@@ -526,6 +583,27 @@ class KritonMediator:
         ]
         prefilter = await license_gate.check_eligibility(db, catalog_summaries, tenant_id=tenant_id)
         allowed_source_ids = {source.id for source in prefilter.eligible}
+        # Live-computed governed calculation engines (formula registry,
+        # expression evaluator, PolicyEngine) are not retrieved documents
+        # subject to the closed-evidence-category licence/staleness gate
+        # above — they're deterministic, always-current computation, gated
+        # by their own ENABLE_*_CALCULATION_ENGINE flags instead. Confirmed
+        # live (2026-07-31): "working capital" classifies into the
+        # accounting-fundamentals closed-evidence category (a real reference
+        # topic that also happens to cover it), which strictly filters
+        # retrieval to only that category's sources — silently excluding the
+        # formula registry (seeded under category="tax") even though the
+        # calculation itself has nothing to do with RAG category scoping.
+        # Same failure mode the ENABLE_EXPRESSION_CALCULATION_ENGINE
+        # decoupling above already fixed once for a different code path.
+        allowed_source_ids |= {
+            FORMULA_REGISTRY_GOVERNED_SOURCE_ID,
+            EXPRESSION_EVALUATOR_GOVERNED_SOURCE_ID,
+            POLICYENGINE_GOVERNED_SOURCE_ID,
+            DBNOMICS_GOVERNED_SOURCE_ID,
+            FRANKFURTER_GOVERNED_SOURCE_ID,
+            WEBSEARCH_GOVERNED_SOURCE_ID,
+        }
         await audit_licence_prefilter_completed(
             db, query_id=query_id, correlation_id=correlation_id,
             tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
@@ -615,6 +693,7 @@ class KritonMediator:
             "bank-reconciliation": BANK_RECONCILIATION_GOVERNED_SOURCE_ID,
             "month-end-close": MONTH_END_CLOSE_GOVERNED_SOURCE_ID,
             "accounting-fundamentals": ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID,
+            "business-tax-review": BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID,
             "user-provided-data": USER_PROVIDED_DATA_GOVERNED_SOURCE_ID,
         }.get(retrieval_category)
         if procedure_source_id:
@@ -639,19 +718,46 @@ class KritonMediator:
             retrieval_category == "accounting-fundamentals"
             and ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID in allowed_source_ids
         ):
-            raw_chunks.insert(0, to_accounting_fundamentals_rag_chunk())
+            raw_chunks.insert(0, to_accounting_fundamentals_rag_chunk(request.query))
+        if (
+            retrieval_category == "business-tax-review"
+            and BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID in allowed_source_ids
+        ):
+            raw_chunks.insert(0, to_business_tax_review_rag_chunk(request.query))
         if (
             retrieval_category == "user-provided-data"
             and USER_PROVIDED_DATA_GOVERNED_SOURCE_ID in allowed_source_ids
         ):
             raw_chunks.insert(0, to_user_provided_data_rag_chunk(request.query))
 
+        # Live Frankfurter/DBnomics data (2026-08-05) — both self-gate hard
+        # (fetch_fx needs two recognised currency codes; fetch_stats needs an
+        # explicit economic-statistic keyword AND a confident series-name
+        # match), so — unlike the category-gated blocks elsewhere in this
+        # function — these are safe to always attempt rather than needing a
+        # specific retrieval_category match first. Each returns at most one
+        # WebSource; converted to the same chunk shape every other source
+        # uses so it flows through the normal grounded-context/citation/
+        # Checkpoint C pipeline. A connector outage must never break an
+        # otherwise-answerable question, so failures are swallowed here —
+        # normal retrieval still runs either way.
+        try:
+            for fx_source in await fetch_fx(request.query):
+                raw_chunks.insert(0, to_websource_rag_chunk(fx_source, FRANKFURTER_GOVERNED_SOURCE_ID))
+        except Exception:
+            pass
+        try:
+            for stat_source in await fetch_stats(request.query):
+                raw_chunks.insert(0, to_websource_rag_chunk(stat_source, DBNOMICS_GOVERNED_SOURCE_ID))
+        except Exception:
+            pass
+
         # Live Treasury exchange-rate data — independent of ENABLE_RAG_EMBEDDINGS
         # (this isn't a document-embeddings feature), so it runs regardless of
         # that flag. Injected into the same raw_chunks list reused below for
         # SourceBundle eligibility, reranking, grounded context, and citations —
         # a Treasury API failure here must never break the rest of the answer.
-        if infer_category(request.query) == "exchange-rate" and TREASURY_GOVERNED_SOURCE_ID in allowed_source_ids:
+        if retrieval_category == "exchange-rate" and TREASURY_GOVERNED_SOURCE_ID in allowed_source_ids:
             currency = match_currency_keyword(request.query)
             # Only inject when the query actually names a currency. When it
             # doesn't, match_currency_keyword's own contract says "fetch the
@@ -684,7 +790,7 @@ class KritonMediator:
         # US state skips the live fetch entirely rather than guessing one (the 2
         # seeded governed sources are still eligible via the normal keyword_mvp
         # path either way, so the query isn't dead-ended).
-        if infer_category(request.query) == "payroll-compliance" and PAYROLL_TAX_GOVERNED_SOURCE_ID in allowed_source_ids:
+        if retrieval_category == "payroll-compliance" and PAYROLL_TAX_GOVERNED_SOURCE_ID in allowed_source_ids:
             work_state = match_work_state(request.query)
             if work_state is not None:
                 try:
@@ -698,7 +804,7 @@ class KritonMediator:
 
         # Live Census ACS data — same isolation posture and fail-closed state
         # requirement as PayrollTax above (no state named -> skip, never guess).
-        if infer_category(request.query) == "economic-data":
+        if retrieval_category == "economic-data":
             state_fips = match_state_fips(request.query)
             if state_fips is not None and CENSUS_GOVERNED_SOURCE_ID in allowed_source_ids:
                 try:
@@ -709,11 +815,23 @@ class KritonMediator:
                 except Exception:
                     pass
 
+            # Real gap (2026-08-06): "What is Japan's inflation rate?" got
+            # answered with US CPI-U data captioned "US inflation" — neither
+            # is_inflation_query nor is_gdp_query has ever checked WHICH
+            # country was asked about, so BLS/BEA (both US-only data) fired
+            # for literally any inflation/GDP question regardless of the
+            # country actually named. Reuses dbnomics.py's country-
+            # recognition map (already proven against this exact failure
+            # mode there) so a query naming a different country skips these
+            # US-only injections and falls through to DBnomics instead.
+            _named_country = _dbnomics_country_hint(request.query)
+            _is_us_or_unspecified = _named_country is None or _named_country == _DBNOMICS_US_NAMES
+
             # Live BLS CPI data — same category as Census above, but gated on
             # inflation-specific keywords rather than a state name (CPI is
             # national data, no entity to extract). Isolated the same way: a
             # BLS hiccup must never break an otherwise-answerable question.
-            if is_inflation_query(request.query) and BLS_CPI_GOVERNED_SOURCE_ID in allowed_source_ids:
+            if is_inflation_query(request.query) and _is_us_or_unspecified and BLS_CPI_GOVERNED_SOURCE_ID in allowed_source_ids:
                 try:
                     cpi_bundle = await get_cpi_bundle(db, tenant_id=tenant_id, actor_id=actor_id)
                     raw_chunks.insert(0, to_cpi_rag_chunk(cpi_bundle, source_id=BLS_CPI_GOVERNED_SOURCE_ID))
@@ -723,7 +841,7 @@ class KritonMediator:
             # Live BEA GDP data — same category and national-data posture as BLS
             # CPI above, gated on its own keyword check so a plain income/CPI
             # question doesn't also get an irrelevant GDP chunk injected.
-            if is_gdp_query(request.query) and BEA_GDP_GOVERNED_SOURCE_ID in allowed_source_ids:
+            if is_gdp_query(request.query) and _is_us_or_unspecified and BEA_GDP_GOVERNED_SOURCE_ID in allowed_source_ids:
                 try:
                     gdp_bundle = await get_gdp_bundle(db, tenant_id=tenant_id, actor_id=actor_id)
                     raw_chunks.insert(0, to_gdp_rag_chunk(gdp_bundle, source_id=BEA_GDP_GOVERNED_SOURCE_ID))
@@ -733,8 +851,14 @@ class KritonMediator:
         # Live FRED interest-rate data — its own dedicated category (unlike
         # Census/BLS/GDP, "interest-rates" isn't shared with anything else), so
         # the category match alone is sufficient gating, same posture as
-        # Treasury/PayrollTax above.
-        if infer_category(request.query) == "interest-rates" and FRED_INTEREST_RATES_GOVERNED_SOURCE_ID in allowed_source_ids:
+        # Treasury/PayrollTax above. Same US-only-data country check as BLS/
+        # BEA above (2026-08-06) — FRED is US Federal Reserve data.
+        _fred_named_country = _dbnomics_country_hint(request.query)
+        if (
+            retrieval_category == "interest-rates"
+            and (_fred_named_country is None or _fred_named_country == _DBNOMICS_US_NAMES)
+            and FRED_INTEREST_RATES_GOVERNED_SOURCE_ID in allowed_source_ids
+        ):
             try:
                 fred_bundle = await get_interest_rates_bundle(db, tenant_id=tenant_id, actor_id=actor_id)
                 raw_chunks.insert(0, to_fred_rag_chunk(fred_bundle, source_id=FRED_INTEREST_RATES_GOVERNED_SOURCE_ID))
@@ -747,7 +871,7 @@ class KritonMediator:
         # fail-closed contract as PayrollTax/Census above. The 2 seeded
         # governed sources are still eligible via the normal keyword_mvp path
         # either way, so a CFR question with no section number isn't dead-ended.
-        if infer_category(request.query) == "tax-regulations":
+        if retrieval_category == "tax-regulations":
             section_number = extract_cfr_section(request.query)
             if section_number is not None:
                 # Two independent live sources for the same section — eCFR
@@ -789,7 +913,7 @@ class KritonMediator:
         # calculation failure never breaks the rest of the answer.
         if (
             os.getenv("ENABLE_TAX_CALCULATION_ENGINE", "").lower() in {"1", "true", "yes"}
-            and infer_category(request.query) == "tax"
+            and retrieval_category == "tax"
             and POLICYENGINE_GOVERNED_SOURCE_ID in allowed_source_ids
         ):
             household = extract_household_params(request.query)
@@ -881,10 +1005,16 @@ class KritonMediator:
         # AND builds an interactive CalculationWidget (sliders + a book-value
         # chart) attached to the final ComposedAnswer below — see
         # app/domains/calculation/widget.py.
-        if (
-            os.getenv("ENABLE_EXPRESSION_CALCULATION_ENGINE", "").lower() in {"1", "true", "yes"}
-            and FORMULA_REGISTRY_GOVERNED_SOURCE_ID in allowed_source_ids
-        ):
+        # Named formulas are governed, deterministic application logic and do
+        # not depend on the optional free-form expression evaluator. Tying
+        # them to ENABLE_EXPRESSION_CALCULATION_ENGINE caused valid named
+        # calculations (for example working capital) to silently fall back to
+        # unrelated retrieved prose when that separate feature flag was off.
+        # Complete user-supplied datasets (quarterly trends, aging tables,
+        # benchmark comparisons) must reach the table/chart composer. A metric
+        # name such as "gross margin" inside a four-quarter dataset is not a
+        # request to execute one scalar formula with missing COGS.
+        if FORMULA_REGISTRY_GOVERNED_SOURCE_ID in allowed_source_ids and retrieval_category != "user-provided-data":
             formula_extraction = extract_named_formula(request.query)
             if formula_extraction is not None:
                 formula_inputs = formula_extraction.inputs
@@ -927,7 +1057,7 @@ class KritonMediator:
         # Live Federal Register single-document lookup — same fail-closed,
         # on-demand posture as the GovInfo CFR lookup above: only fetched when
         # the query names a specific document number.
-        if infer_category(request.query) == "federal-register":
+        if retrieval_category == "federal-register":
             document_number = extract_federal_register_document_number(request.query)
             if document_number is not None and FEDERAL_REGISTER_GOVERNED_SOURCE_ID in allowed_source_ids:
                 try:
@@ -941,7 +1071,7 @@ class KritonMediator:
         # Congress.gov is identifier-driven rather than free-text search. Only a
         # complete bill number plus Congress number is safe to fetch; otherwise
         # normal retrieval/clarification handles the request without guessing.
-        if infer_category(request.query) == "us-legislation" and CONGRESS_GOVERNED_SOURCE_ID in allowed_source_ids:
+        if retrieval_category == "us-legislation" and CONGRESS_GOVERNED_SOURCE_ID in allowed_source_ids:
             bill_identifier = extract_congress_bill_identifier(request.query)
             if bill_identifier is not None:
                 try:
@@ -980,7 +1110,7 @@ class KritonMediator:
         # survives the licence gate, and then passes normal reranking/citation/
         # answer validation like every other external source.
         professional_categories = {"standards", "tax", "audit", "payroll-compliance"}
-        category = infer_category(request.query)
+        category = retrieval_category
         search_source_ids = {TAVILY_GOVERNED_SOURCE_ID, SERPAPI_GOVERNED_SOURCE_ID}
         purpose_built_live_evidence = any(
             str(chunk.get("node_id", "")).startswith(_LIVE_DATA_NODE_PREFIXES)
@@ -998,6 +1128,26 @@ class KritonMediator:
                 source_id = TAVILY_GOVERNED_SOURCE_ID if provider == "tavily" else SERPAPI_GOVERNED_SOURCE_ID
                 if source_id in allowed_source_ids:
                     raw_chunks.extend(to_professional_search_chunks(search_bundle, source_id=source_id))
+            except Exception:
+                pass
+
+        # SearXNG (2026-08-05) — free, self-hosted third-tier fallback, tried
+        # only when EVERY other source (governed catalog, live-data
+        # connectors, and the Tavily/SerpAPI professional search above) found
+        # nothing at all. Deliberately not a competing primary path: Tavily/
+        # SerpAPI are already the domain-restricted, category-gated web
+        # search mechanism for professional_categories above, so this only
+        # adds value as a last resort (e.g. both external providers rate-
+        # limited or down) rather than duplicating that gating with a
+        # different, looser one. Uses only web_search()'s allowlist-aware
+        # source list, never websearch.py's own build_web_grounded_prompt/
+        # domain-gate/chart-JSON path — this still flows through the same
+        # governed grounded-context/citation/Checkpoint C pipeline as
+        # everything else.
+        if not raw_chunks:
+            try:
+                for hit in await web_search(request.query, jurisdiction=request.jurisdiction or ""):
+                    raw_chunks.append(to_websource_rag_chunk(hit, WEBSEARCH_GOVERNED_SOURCE_ID))
             except Exception:
                 pass
 
@@ -1272,7 +1422,7 @@ class KritonMediator:
             # risk_level/confidence_state/route above, which is the analytics
             # trail the vision doc says to keep — this just doesn't ALSO queue
             # it for manual follow-up.
-            referral_category = infer_category(request.query)
+            referral_category = retrieval_category
             referral_text = referral_message(referral_category)
             referral_answer = build_validated_disclaimer(
                 "Kriton can provide general educational information, but the available evidence is not sufficient "
@@ -1459,7 +1609,7 @@ class KritonMediator:
                 # named professional. Duplicated rather than jumped-to because
                 # this fires mid-composition, after source_refs/context_text
                 # already exist; the main branch runs before any of that.
-                referral_category = infer_category(request.query)
+                referral_category = retrieval_category
                 referral_text = referral_message(referral_category)
                 referral_answer = build_validated_disclaimer(
                     "Some of the evidence needed for a confident answer was not "
@@ -1578,6 +1728,7 @@ class KritonMediator:
             BANK_RECONCILIATION_GOVERNED_SOURCE_ID,
             MONTH_END_CLOSE_GOVERNED_SOURCE_ID,
             ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID,
+            BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID,
             USER_PROVIDED_DATA_GOVERNED_SOURCE_ID,
         }
         # Reviewed educational/data routes compose deterministically below and
@@ -1811,6 +1962,7 @@ class KritonMediator:
                         BANK_RECONCILIATION_GOVERNED_SOURCE_ID,
                         MONTH_END_CLOSE_GOVERNED_SOURCE_ID,
                         ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID,
+                        BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID,
                         USER_PROVIDED_DATA_GOVERNED_SOURCE_ID,
                     }
                 ),
@@ -1862,12 +2014,38 @@ class KritonMediator:
                     composed_text = compose_month_end_close(request.query, ref)
                     prompt_name = "Deterministic Month-End Close Response"
                 elif source_id == ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID:
-                    composed_text = compose_accounting_fundamentals(request.query, ref)
+                    composed_text = compose_audit_variance_decision(request.query, ref) or compose_accounting_fundamentals(request.query, ref)
                     prompt_name = "Deterministic Accounting Fundamentals Response"
+                elif source_id == BUSINESS_TAX_REVIEW_GOVERNED_SOURCE_ID:
+                    composed_text = compose_business_tax_review(request.query, ref)
+                    prompt_name = "Deterministic Reviewed US Business Tax Response"
                 else:
                     composed_text = compose_quarterly_results(request.query, ref)
                     prompt_name = "Deterministic User-Provided Data Response"
                 prompt_id = "deterministic-reviewed-education"
+
+                # Real gap (2026-08-06): compose_accounting_fundamentals used
+                # to be unable to return "nothing specific matched" at all —
+                # its own fallback was a hardcoded, potentially unrelated
+                # answer ("Accrual accounting" for literally any unmatched
+                # accounting-fundamentals question). Now that it can return
+                # None, honor that here by falling through to a genuine LLM
+                # composition grounded in the SAME retrieved excerpt, instead
+                # of ever serving a wrong topic with false confidence. `prompt`
+                # was intentionally left None above (has_reviewed_source
+                # skips that DB query as a fast-path optimization for the
+                # normal case where deterministic composition succeeds) — only
+                # fetched here, lazily, for this specific fallback.
+                if composed_text is None and source_id == ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID:
+                    prompt = await select_prompt(db, request.mode)
+                    if prompt:
+                        prompt_row, composed_text = await model_gateway_service.run_test_prompt(
+                            db, prompt.id, grounded_input, actor_id, tenant_id, correlation_id=correlation_id
+                        )
+                        composed_text = _strip_meta_preamble(composed_text) if composed_text else composed_text
+                        composed_text = _strip_trailing_raw_references(composed_text) if composed_text else composed_text
+                        prompt_id = prompt_row.id
+                        prompt_name = prompt_row.name
             elif standard_deduction_chunk is not None:
                 index, chunk = standard_deduction_chunk
                 verified_fact = _compose_standard_deduction(chunk, f"REF-{index + 1}")
@@ -2002,6 +2180,7 @@ class KritonMediator:
         # just inside a trailing Sources section, before citation assembly.
         if composed_text:
             composed_text = _strip_raw_source_headers(composed_text)
+            composed_text = _strip_leaked_context_labels(composed_text)
 
         # Some providers occasionally omit citation markers even though the
         # draft was composed from grounded context. Give composition one tightly
@@ -2026,6 +2205,7 @@ class KritonMediator:
                 repaired_text = _strip_meta_preamble(repaired_text) if repaired_text else repaired_text
                 repaired_text = _strip_trailing_raw_references(repaired_text) if repaired_text else repaired_text
                 repaired_text = _strip_raw_source_headers(repaired_text) if repaired_text else repaired_text
+                repaired_text = _strip_leaked_context_labels(repaired_text) if repaired_text else repaired_text
                 if repaired_text and re.search(r"\[REF-\d+\]", repaired_text):
                     composed_text = repaired_text
                     prompt_name = f"{prompt_name} + citation repair"
@@ -2131,6 +2311,11 @@ class KritonMediator:
                 composed_text, source_bundle, disclaimer_required=False,
                 grounding_context=context_text, query_text=request.query,
                 provenance=provenance_store,
+                # Deterministic procedures, calculations, and live-data
+                # composers have explicit shape tests. The LLM tutor-depth
+                # heuristic previously rejected correct concise outputs such
+                # as quick-ratio results and reviewed comparison tables.
+                enforce_tutor_depth=not prompt_id.startswith("deterministic-"),
             )
             if source_bundle else None
         )
@@ -2146,7 +2331,7 @@ class KritonMediator:
             # generic "consult a professional." Appended after the disclaimer,
             # not before Checkpoint C validation above — this is presentation,
             # not a claim the validator needs to check for grounding/citations.
-            final_text = final_text + "\n\n" + referral_message(infer_category(request.query))
+            final_text = final_text + "\n\n" + referral_message(retrieval_category)
         await audit_validation_completed(
             db, query_id=query_id, correlation_id=correlation_id,
             tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
@@ -2236,7 +2421,7 @@ class KritonMediator:
                     refusal_message_text = (
                         "Kriton™ can't give a direct answer to this because it would cross "
                         "into personalized professional advice, which Kriton doesn't provide. "
-                        f"{referral_message(infer_category(request.query))}\n\n"
+                        f"{referral_message(retrieval_category)}\n\n"
                         f"{build_validated_disclaimer('', risk_level, True, effective_confidence).strip()}"
                     )
                 else:
@@ -2266,16 +2451,101 @@ class KritonMediator:
         # for distinct constraints; adding another disclaimer duplicated the UI.
         limitations: list[str] = list(decision.limitations or [])
 
+        # Dynamic Visualization Selection v4 — recent_chart_types is scoped
+        # to (tenant_id, actor_id, conversation_id) together, so it can
+        # never see another user's, workspace's, or conversation's charts;
+        # with no conversation_id (older clients) there's no history to
+        # fetch and the repetition penalty is simply inert, same as v3.
+        recent_chart_types = await get_recent_chart_types(
+            db, tenant_id=tenant_id, actor_id=actor_id, conversation_id=request.conversation_id,
+        )
+        # Dynamic Visualization Selection v7 — resolved once per request
+        # (assignment is conversation-level, not chart-level) and fails
+        # safe to None (no experiment applied) on any lookup problem —
+        # see resolve_experiment_context's own docstring.
+        experiment_context = await resolve_experiment_context(
+            db, tenant_id=tenant_id, actor_id=actor_id, conversation_id=request.conversation_id,
+        )
+        visualization_preferences = await get_preferences(db, tenant_id, actor_id)
+        # Dynamic Visualization Selection v10 — resolved once per request,
+        # same fail-safe-to-None posture as experiment_context/preferences
+        # above: disabled consent, insufficient evidence, or a stale
+        # profile all return None here, and build_answer_presentation
+        # treats that exactly like personalization never existed.
+        personalization_hint = await resolve_personalization_hint(db, tenant_id, actor_id)
+        visualization_gap_events: list[dict] = []
         answer = ComposedAnswer(
             text=final_text,
             citations=rag_citations,
             limitations=limitations,
             calculation_widget=calculation_widget,
-            presentation=build_answer_presentation(request.query, final_text),
+            presentation=await asyncio.to_thread(
+                build_answer_presentation, request.query, final_text, recent_chart_types, experiment_context, visualization_preferences, visualization_gap_events, personalization_hint,
+            ),
             prompt_id=prompt_id,
             prompt_name=prompt_name,
             output_text=final_text,
         )
+        if answer.presentation:
+            app_environment = get_settings().APP_ENV.lower()
+            for gap in visualization_gap_events:
+                await record_gap_event(db, tenant_id=tenant_id, actor_id=actor_id, conversation_id=request.conversation_id,
+                    ranking_version=RANKING_VERSION, environment=app_environment, **gap)
+            for chart in answer.presentation.charts:
+                await record_visualization_event(
+                    db, event_name="visualization_selected",
+                    tenant_id=tenant_id, actor_id=actor_id, conversation_id=request.conversation_id,
+                    query_id=query_id, analytical_intent=chart.analytical_intent,
+                    original_chart_type=chart.original_chart_type, active_chart_type=chart.type,
+                    alternative_count=len(chart.alternatives), selection_source=chart.selection_source,
+                    renderer=chart_renderer(chart.type), schema_version=chart.schema_version,
+                    chart_family=chart_family(chart.type), ranking_version=chart.ranking_version,
+                    preference_affected_selection=chart.preference_affected_selection,
+                    experiment_id=chart.experiment_id, experiment_group=chart.experiment_group,
+                    personalization_enabled=chart.personalization_enabled,
+                    personalization_affected_selection=chart.personalization_affected_selection,
+                    personalization_model_version=chart.personalization_model_version,
+                    personalization_confidence_band=chart.personalization_confidence_band,
+                )
+                if chart.alternatives:
+                    await record_visualization_event(
+                        db, event_name="alternative_views_shown",
+                        tenant_id=tenant_id, actor_id=actor_id, conversation_id=request.conversation_id,
+                        query_id=query_id, analytical_intent=chart.analytical_intent,
+                        original_chart_type=chart.original_chart_type, active_chart_type=chart.type,
+                        alternative_count=len(chart.alternatives), selection_source=chart.selection_source,
+                        renderer=chart_renderer(chart.type), schema_version=chart.schema_version,
+                        chart_family=chart_family(chart.type), ranking_version=chart.ranking_version,
+                        preference_affected_selection=chart.preference_affected_selection,
+                        experiment_id=chart.experiment_id, experiment_group=chart.experiment_group,
+                        personalization_enabled=chart.personalization_enabled,
+                        personalization_affected_selection=chart.personalization_affected_selection,
+                        personalization_model_version=chart.personalization_model_version,
+                        personalization_confidence_band=chart.personalization_confidence_band,
+                    )
+                if chart.fallback_note:
+                    await record_visualization_event(
+                        db, event_name="visualization_fallback_used",
+                        tenant_id=tenant_id, actor_id=actor_id, conversation_id=request.conversation_id,
+                        query_id=query_id, analytical_intent=chart.analytical_intent,
+                        original_chart_type=chart.original_chart_type, active_chart_type=chart.type,
+                        alternative_count=len(chart.alternatives), selection_source=chart.selection_source,
+                        renderer=chart_renderer(chart.type), schema_version=chart.schema_version,
+                        chart_family=chart_family(chart.type), ranking_version=chart.ranking_version,
+                        preference_affected_selection=chart.preference_affected_selection,
+                        experiment_id=chart.experiment_id, experiment_group=chart.experiment_group,
+                        personalization_enabled=chart.personalization_enabled,
+                        personalization_affected_selection=chart.personalization_affected_selection,
+                        personalization_model_version=chart.personalization_model_version,
+                        personalization_confidence_band=chart.personalization_confidence_band,
+                    )
+                    # v7 — an automatic pause trigger without a scheduler:
+                    # check right when new fallback evidence for this
+                    # experiment arrives (see ranking_experiments.
+                    # check_and_maybe_pause's own docstring). No-ops
+                    # instantly when the chart wasn't part of an experiment.
+                    if chart.experiment_id:
+                        await check_and_maybe_pause(db, chart.experiment_id)
 
         response = AskKritonResponse(
             query_id=query_id,
@@ -2418,6 +2688,41 @@ _RAW_SOURCE_HEADER_PATTERN = re.compile(
 def _strip_raw_source_headers(text: str) -> str:
     """Keep citation markers while removing leaked internal context headers."""
     return _RAW_SOURCE_HEADER_PATTERN.sub(r"\1", text)
+
+
+_LEAKED_CONTEXT_LABEL_PATTERN = re.compile(
+    r"(?:^|(?<=\s))Content:\s*(?=(?:\"|')?[A-Z])",
+    re.IGNORECASE,
+)
+
+
+def _strip_leaked_context_labels(text: str) -> str:
+    """Remove internal context-envelope labels copied into user prose."""
+    return _LEAKED_CONTEXT_LABEL_PATTERN.sub("", text)
+
+
+def _visual_data_clarification(query: str) -> str | None:
+    """Ask for missing chart data instead of inventing financial figures."""
+    if re.search(r"\b(?:our|my)\s+(?:company(?:'s)?\s+)?current\s+bank\s+balance\b", query, re.I):
+        return "I cannot determine your current bank balance without an authorized connected bank or accounting source. Connect or select that source, then specify the account and balance date."
+    if re.search(r"\bconvert\b.*\b(?:usd|dollars?)\b.*\b(?:india|inr|rupees?)\b", query, re.I) and not re.search(r"\b(?:today|current|latest|as\s+of|on\s+20\d{2})\b", query, re.I):
+        return "Please confirm the exchange-rate date—for example, the latest available reference rate or a specific date—and confirm that ‘India’ means Indian rupees (INR). Currency conversion depends on the selected rate date."
+    malformed_currency = re.search(r"[$£€]\s*\d{1,3},\d{2}(?!\d)", query)
+    if malformed_currency:
+        return (
+            f"Please confirm the amount written as **{malformed_currency.group(0)}**. "
+            "It appears to have an incomplete thousands grouping—for example, did you mean $11,000 or $110,000? "
+            "I will not guess the value before creating the visualization."
+        )
+    if re.search(r"[$£€]\s*[\d,]+|\b\d+(?:\.\d+)?\s*%", query) or len(re.findall(r"\b\d+(?:\.\d+)?\b", query)) >= 2:
+        return None
+    if re.search(r"quarterly.*revenue.*gross\s+margin|revenue.*gross\s+margin.*quarters?", query, re.I):
+        return "Please provide revenue and either COGS or gross margin for Q1–Q4. I will validate the figures and create the quarterly trend without inventing values."
+    if re.search(r"accounts?[\s-]+receivable.*aging", query, re.I):
+        return "Please provide amounts for your aging buckets—for example current, 1–30, 31–60, 61–90 and over 90 days. I will validate the total and create the aging chart."
+    if re.search(r"ratio.*benchmark|benchmark.*ratio", query, re.I):
+        return "Please name the ratio, provide its inputs or result, and provide the benchmark—for example current assets $750,000, current liabilities $300,000 and benchmark 2.0."
+    return None
 
 
 def _compose_formula_result(result, ref: str, query: str = "") -> str:

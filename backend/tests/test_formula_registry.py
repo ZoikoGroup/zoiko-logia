@@ -9,12 +9,18 @@ from decimal import Decimal
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.domains.calculation.formula_registry import execute_formula, list_formulas, get_formula
+from app.domains.calculation.widget import build_widget
 
 
 def test_all_governed_formulas_registered():
     ids = {f.id for f in list_formulas()}
-    assert len(ids) == 23
-    assert {"accounting.net_profit.v1", "tax.taxable_income_scenario.v1", "audit.materiality.v1"} <= ids
+    assert len(ids) == 28
+    assert "accounting.working_capital.v1" in ids
+    assert {
+        "accounting.net_profit.v1", "accounting.profit_margin.v1",
+        "accounting.budget_variance.v1", "finance.percentage_change.v1",
+        "tax.taxable_income_scenario.v1", "audit.materiality.v1",
+    } <= ids
 
 
 def test_gross_profit():
@@ -35,6 +41,24 @@ def test_gross_margin_correct_result_and_percent_normalization():
     assert r.status == "verified"
     assert Decimal(r.output_value) == Decimal("28.00")
     assert r.output_unit == "percent"
+
+
+def test_percentage_change_steps_text_is_rounded_not_a_raw_repeating_decimal():
+    # Live bug (2026-08-06): the "Result" line was already correctly
+    # rounded ("29.17%"), but the "steps" breakdown interpolated the raw,
+    # unrounded Decimal division straight into the text — a genuine
+    # repeating decimal like 15500/12000 produced "29.16666666666666666...
+    # 6666666666666666666666667%" in the user-visible calculation
+    # breakdown.
+    r = execute_formula("finance.percentage_change.v1", {
+        "starting_value": {"value": "12000", "unit": "USD"},
+        "ending_value": {"value": "15500", "unit": "USD"},
+    })
+    assert r.status == "verified"
+    assert Decimal(r.output_value) == Decimal("29.17")
+    steps_text = " ".join(r.steps)
+    assert "29.17%" in steps_text
+    assert "666666" not in steps_text
 
 
 def test_operating_profit_and_margin():
@@ -72,6 +96,25 @@ def test_debt_to_equity():
         "total_equity": {"value": "200000", "unit": "USD"},
     })
     assert Decimal(r.output_value) == Decimal("2.00")
+
+
+def test_owners_equity_from_accounting_equation():
+    r = execute_formula("accounting.owners_equity.v1", {
+        "total_assets": {"value": "850000", "unit": "USD"},
+        "total_liabilities": {"value": "525000", "unit": "USD"},
+    })
+    assert r.status == "verified"
+    assert Decimal(r.output_value) == Decimal("325000.00")
+    assert "850000 - 525000 = 325000" in r.steps[0]
+
+
+def test_working_capital():
+    r = execute_formula("accounting.working_capital.v1", {
+        "current_assets": {"value": "420000", "unit": "USD"},
+        "current_liabilities": {"value": "280000", "unit": "USD"},
+    })
+    assert r.status == "verified"
+    assert Decimal(r.output_value) == Decimal("140000.00")
 
 
 def test_effective_tax_rate():
@@ -186,6 +229,37 @@ def test_loan_payment_zero_interest():
     })
     assert r.status == "verified"
     assert Decimal(r.output_value) == Decimal("1000.00")
+
+
+def test_loan_payment_simple_and_compound_interest_all_build_a_kpi_widget():
+    # Live gap: these three verified formulas had no widget builder
+    # registered at all, so a correct answer rendered as plain text with no
+    # chart — unlike every other governed formula.
+    cases = [
+        ("finance.loan_payment.v1", {
+            "principal": {"value": "250000", "unit": "USD"},
+            "annual_rate": {"value": "5", "unit": "percent"},
+            "number_of_payments": {"value": "360", "unit": "count"},
+        }),
+        ("finance.simple_interest.v1", {
+            "principal": {"value": "10000", "unit": "USD"},
+            "annual_rate": {"value": "5", "unit": "percent"},
+            "time_years": {"value": "3", "unit": "years"},
+        }),
+        ("finance.compound_interest.v1", {
+            "principal": {"value": "10000", "unit": "USD"},
+            "annual_rate": {"value": "6", "unit": "percent"},
+            "time_years": {"value": "5", "unit": "years"},
+            "compounding_periods_per_year": {"value": "12", "unit": "count"},
+        }),
+    ]
+    for formula_id, raw_inputs in cases:
+        result = execute_formula(formula_id, raw_inputs)
+        assert result.status == "verified", formula_id
+        widget = build_widget(result, raw_inputs)
+        assert widget is not None, formula_id
+        assert widget.chart_type == "kpi", formula_id
+        assert widget.output_value == result.output_value, formula_id
 
 
 def test_audit_sample_size():
