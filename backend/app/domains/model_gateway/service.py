@@ -13,6 +13,7 @@ from app.domains.model_gateway.providers.base import ProviderAdapter
 from app.domains.model_gateway.providers.mock_adapter import MockProviderAdapter
 from app.domains.model_gateway.providers.groq_adapter import GroqAdapter
 from app.domains.model_gateway.providers.openai_adapter import OpenAIAdapter
+from app.domains.model_gateway.providers.google_adapter import GeminiAdapter
 
 # §ZL-T0-08 envisions Application -> Query Orchestrator -> Model Gateway ->
 # Provider Adapter -> Approved Model Deployment, selecting per
@@ -23,12 +24,19 @@ from app.domains.model_gateway.providers.openai_adapter import OpenAIAdapter
 _ANSWERING_ROLES = ("Primary reasoning model", "Secondary / fallback model")
 
 # Only providers with a real, importable adapter class go here — anthropic/
-# azure/google/self_hosted are one-line stubs with no class defined at all,
+# azure/self_hosted are still one-line stubs with no class defined at all,
 # so their absence from this dict *is* the "not implemented" signal; no
 # separate enum needs to be kept in sync with providers/*.py's real state.
+# "google" (2026-08-05): GeminiAdapter reuses groq_adapter._SYSTEM_PROMPT
+# verbatim (see google_adapter.py's import), so registering it here changes
+# only WHICH model answers when selected, never the governed prompt itself —
+# _adapter_is_configured below still gates it on a real GEMINI_API_KEY, and
+# _select_model_and_adapter only ever picks it if an Active model_definitions
+# row actually names provider="google".
 _IMPLEMENTED_ADAPTER_FACTORIES = {
     "groq": GroqAdapter,
     "openai": OpenAIAdapter,
+    "google": GeminiAdapter,
     "mock": MockProviderAdapter,
 }
 

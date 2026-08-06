@@ -46,6 +46,36 @@ class WebSource:
     snippet: str
 
 
+# Live-computed source, no persistent catalog row — same posture as
+# FORMULA_REGISTRY_GOVERNED_SOURCE_ID / EXPRESSION_EVALUATOR_GOVERNED_SOURCE_ID
+# (app/domains/calculation/service.py): added directly to allowed_source_ids
+# in service.py rather than going through the licence-gate catalog, since a
+# live web search has no persistent Source row to license.
+WEBSEARCH_GOVERNED_SOURCE_ID = "src-kriton-websearch-live"
+
+
+def to_websource_rag_chunk(source: WebSource, source_id: str) -> dict:
+    """Adapt a WebSource (title/url/snippet) into the same chunk shape every
+    other retrieval path produces (app/domains/rag/context_fit.py's
+    build_grounded_context expects chunk["text"] and chunk["metadata"]) — so
+    a live web/DBnomics/Frankfurter result flows through the exact same
+    grounded-context building, [REF-N] citation, and Checkpoint C numeric-
+    fidelity validation as every governed catalog source, instead of a
+    separate, unvalidated answer path."""
+    return {
+        "text": source.snippet or source.title,
+        "metadata": {
+            "source_id": source_id,
+            "title": source.title,
+            "version": "live",
+            "jurisdiction": "GLOBAL",
+            "file_path": source.url,
+        },
+        "score": 1.0,
+        "node_id": f"{source_id}-{abs(hash(source.url))}",
+    }
+
+
 def _searxng_url() -> str:
     return os.getenv("SEARXNG_URL", "http://localhost:8888").rstrip("/")
 

@@ -19,6 +19,11 @@ import httpx
 
 from app.orchestration.websearch import WebSource
 
+# Live-computed source, no persistent catalog row — see WEBSEARCH_GOVERNED_
+# SOURCE_ID's docstring in websearch.py for why this bypasses the licence
+# gate instead of needing a seeded Source row.
+FRANKFURTER_GOVERNED_SOURCE_ID = "src-kriton-frankfurter-live"
+
 # Common ISO-4217 currency codes we recognise in a question. Advisory only —
 # Frankfurter itself validates; anything it rejects just yields no rate.
 _CURRENCY_CODES = {

@@ -357,3 +357,32 @@ def test_different_questions_over_identical_data_select_different_visualizations
     assert comparison.charts[0].type == "grouped_bar"
     assert variance.charts[0].type == "bullet"
     assert comparison.charts[0].type != variance.charts[0].type
+
+
+def test_distribution_of_x_by_category_is_composition_not_statistical_distribution():
+    # Live bug (2026-08-06): "What's the distribution of our customer base
+    # by region..." is ordinary business English for a share-of-total
+    # breakdown (composition — donut-chart shape), not a request for a
+    # statistical distribution (histogram/box-plot). The bare word
+    # "distribution" alone matched AnalyticalIntent.DISTRIBUTION first and
+    # produced a meaningless box_plot over 4 named categories.
+    assert (
+        detect_analytical_intent("What's the distribution of our customer base by region: ...")
+        == AnalyticalIntent.COMPOSITION
+    )
+    # A genuine statistical-distribution request (no "by <category>"
+    # clause) must still classify as DISTRIBUTION, unchanged.
+    assert detect_analytical_intent("Show the distribution of test scores") == AnalyticalIntent.DISTRIBUTION
+    assert detect_analytical_intent("Show a histogram of response times by team") == AnalyticalIntent.DISTRIBUTION
+
+
+def test_distribution_by_category_end_to_end_selects_donut_not_box_plot():
+    table = (
+        "| Category | Amount |\n|---|---:|\n"
+        "| North America | 4500 |\n| Europe | 2800 |\n| APAC | 1900 |\n| LATAM | 700 |"
+    )
+    plan = build_answer_presentation(
+        "What's the distribution of our customer base by region: North America 4,500, Europe 2,800, APAC 1,900, LATAM 700?",
+        table,
+    )
+    assert plan.charts and plan.charts[0].type == "donut"

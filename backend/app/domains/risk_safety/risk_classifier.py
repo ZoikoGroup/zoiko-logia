@@ -89,6 +89,19 @@ _ADVICE_SIGNALS: list[re.Pattern] = [
         re.IGNORECASE,
     ),
     re.compile(r"\bshould\s+(I|we)\s+(file|report|recognize|do)\b", re.IGNORECASE),
+    # Real gap (2026-08-05): "Personal tax-minimization advice" and
+    # "personalized financial planning guidance" carry no first-person
+    # possessive ("my"/"our"), so the pattern above never fired — even
+    # though a live test already documented "personal"/"personalized" as
+    # the exact same signal. Requiring an advice-shaped noun (advice/
+    # guidance/planning/recommendation/strategy) within two filler words
+    # keeps this from firing on ordinary educational phrasing that merely
+    # contains "personal" ("What is personal income tax?", "personal
+    # exemption amount") — those have no advice-noun nearby at all.
+    re.compile(
+        r"\bpersonal(?:i[sz]ed)?\s+(?:[\w-]+\s+){0,2}(?:advice|guidance|plan(?:ning)?|recommendation|strategy)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 # Clear, non-personal requests should not be made ambiguous merely because an

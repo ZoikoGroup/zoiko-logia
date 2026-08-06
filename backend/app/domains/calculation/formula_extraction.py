@@ -75,6 +75,55 @@ def _normalize_number_words(query: str) -> str:
     )
 
 
+# Real gap (2026-08-06): "Our revenue grew from twelve thousand to fifteen
+# thousand five hundred this quarter — what's the percentage increase?"
+# matched the percentage_change trigger below but every _labeled_number
+# lookup requires digits — _NUMBER_WORDS above only ever normalizes a
+# number-word immediately before "year" (depreciation's own narrow use
+# case), so a genuine input figure spelled out in prose was invisible to
+# this whole module and the calculation silently never ran. Deliberately a
+# SEPARATE, self-contained normalizer (not a cross-domain import of
+# reference_data/user_provided_data.py's near-identical one) — this
+# module's own docstring establishes it as an independent pattern bank,
+# same as arithmetic_extraction.py/prescreen.py/risk_classifier.py.
+_SPELLED_ONES = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+}
+_SPELLED_TENS = {
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70,
+    "eighty": 80, "ninety": 90,
+}
+_SPELLED_SCALES = {"hundred": 100, "thousand": 1000, "million": 1_000_000, "billion": 1_000_000_000}
+_SPELLED_NUMBER_WORD = r"(?:" + "|".join(
+    sorted(list(_SPELLED_ONES) + list(_SPELLED_TENS) + list(_SPELLED_SCALES), key=len, reverse=True)
+) + r")"
+_SPELLED_NUMBER_PHRASE = re.compile(rf"\b{_SPELLED_NUMBER_WORD}(?:[-\s]{_SPELLED_NUMBER_WORD})+\b", re.IGNORECASE)
+
+
+def _spelled_number_to_value(phrase: str) -> int:
+    total = 0
+    current = 0
+    for token in re.split(r"[\s-]+", phrase.strip().lower()):
+        if not token:
+            continue
+        if token in _SPELLED_ONES:
+            current += _SPELLED_ONES[token]
+        elif token in _SPELLED_TENS:
+            current += _SPELLED_TENS[token]
+        elif token == "hundred":
+            current = (current or 1) * 100
+        elif token in _SPELLED_SCALES:
+            total += (current or 1) * _SPELLED_SCALES[token]
+            current = 0
+    return total + current
+
+
+def _normalize_spelled_out_numbers(query: str) -> str:
+    return _SPELLED_NUMBER_PHRASE.sub(lambda m: str(_spelled_number_to_value(m.group(0))), query)
+
+
 def _has_depreciation_calculation_intent(query: str) -> bool:
     if _DEPRECIATION_CALCULATION_INTENT_PATTERN.search(query):
         return True
@@ -325,7 +374,7 @@ _FORMULA_SPECS = (
 
 
 def extract_named_formula(query: str) -> Optional[NamedFormulaExtraction]:
-    query = _normalize_number_words(query)
+    query = _normalize_number_words(_normalize_spelled_out_numbers(query))
     depreciation = extract_straight_line_depreciation_inputs(query)
     if depreciation is not None:
         return NamedFormulaExtraction("straight_line_depreciation", depreciation)
@@ -354,7 +403,7 @@ def extract_named_formula(query: str) -> Optional[NamedFormulaExtraction]:
 
 def identify_missing_formula_inputs(query: str) -> Optional[MissingFormulaInputs]:
     """Identify a named calculation with incomplete inputs without guessing."""
-    query = _normalize_number_words(query)
+    query = _normalize_number_words(_normalize_spelled_out_numbers(query))
     if extract_named_formula(query) is not None:
         return None
     if (

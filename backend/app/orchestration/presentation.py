@@ -111,7 +111,20 @@ _MISSING_INPUT_ANSWER = re.compile(r"(?m)^## Information needed\s*$")
 # this only ever matters when the composed answer ALSO contains a real
 # parseable numeric table (see _chart_from_table's own strict shape
 # checks) — a "show" query with no such table still produces zero charts.
-_VISUAL_REQUEST = re.compile(r"\b(chart|graph|visuali[sz]e|plot|movement|bridge|waterfall|show|display|compar(?:e|ison)|rank(?:ing)?|break\s*down|distribution)\b", re.IGNORECASE)
+# "split|composition|share|proportion|mix|allocation" added 2026-08-06:
+# same composition-phrasing gap as user_provided_data.py's _DATA_OPERATION
+# (see that regex's own comment) — "What's the composition of our
+# investment portfolio..." named an inline dataset and extracted fine, but
+# this separate gate (decides whether ANY chart gets attached to the
+# answer at all) still didn't recognize the wording, so the answer
+# rendered as a table with zero charts even though the data shape matches
+# every other successful category-breakdown example.
+_VISUAL_REQUEST = re.compile(
+    r"\b(chart|graph|visuali[sz]e|plot|movement|bridge|waterfall|show|display|"
+    r"compar(?:e|ison)|rank(?:ing)?|break\s*down|distribution|"
+    r"split|composition|share|proportion|mix|allocation)\b",
+    re.IGNORECASE,
+)
 _BROAD_EXPLANATION_QUERY = re.compile(
     r"\b(complete picture|full picture|comprehensive|detailed|in depth|overview)\b",
     re.IGNORECASE,
@@ -476,7 +489,17 @@ def _chart_from_table(
     is_temporal = bool(re.search(r"\b(period|quarter|month|year|date)\b", headers[0], re.I)) or all(
         _MONTH_NAME.match(category) for category in categories
     )
-    composition_requested = bool(re.search(r"\b(composition|breakdown|share|allocation|mix|proportion)\b", query, re.I))
+    # "distribution" added 2026-08-06: this must stay in sync with
+    # presentation_dataprofile.py's COMPOSITION intent pattern, which
+    # already treats "distribution" as composition phrasing (e.g.
+    # "distribution of our customer base by region") whenever it isn't
+    # paired with an unambiguously statistical word. Safe to add here
+    # without repeating that same disambiguation: this flag only matters
+    # inside the `not dynamic_chart_type` fallback below, and a genuine
+    # statistical-distribution query already gets a real dynamic_chart_type
+    # (box_plot/histogram) from the intent-based path above, so this flag's
+    # value never even gets consulted for that case.
+    composition_requested = bool(re.search(r"\b(composition|breakdown|share|allocation|mix|proportion|distribution)\b", query, re.I))
 
     # Dynamic Visualization Selection v1/v2/v3 — a deterministic analytical-
     # intent match takes priority over the older heuristic below when it

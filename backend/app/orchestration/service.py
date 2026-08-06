@@ -151,6 +151,18 @@ from app.domains.calculation.service import (
     FORMULA_REGISTRY_GOVERNED_SOURCE_ID,
     FORMULA_REGISTRY_NODE_PREFIX,
 )
+# Live, keyless data connectors (2026-08-05): each self-gates (returns []
+# unless the question actually matches its kind — an FX pair, an economic
+# statistic, or neither) and fails soft on any network/parse error. Wired
+# into the SAME raw_chunks -> grounded-context -> Checkpoint C pipeline as
+# every governed catalog source (see to_websource_rag_chunk's docstring) —
+# deliberately NOT websearch.py's own build_web_grounded_prompt/domain-gate/
+# chart-JSON path, which bypasses risk classification, Massarius Checkpoint
+# C, and the deterministic chart-selection system this product's governance
+# is built on.
+from app.orchestration.websearch import web_search, to_websource_rag_chunk, WEBSEARCH_GOVERNED_SOURCE_ID
+from app.orchestration.dbnomics import fetch_stats, DBNOMICS_GOVERNED_SOURCE_ID, _country_hint as _dbnomics_country_hint, _US_NAMES as _DBNOMICS_US_NAMES
+from app.orchestration.frankfurter import fetch_fx, FRANKFURTER_GOVERNED_SOURCE_ID
 from app.orchestration.routing_matrix import (
     map_safety_confidence,
     ROUTE_LLM, ROUTE_REFUSAL, ROUTE_CLARIFICATION,
@@ -588,6 +600,9 @@ class KritonMediator:
             FORMULA_REGISTRY_GOVERNED_SOURCE_ID,
             EXPRESSION_EVALUATOR_GOVERNED_SOURCE_ID,
             POLICYENGINE_GOVERNED_SOURCE_ID,
+            DBNOMICS_GOVERNED_SOURCE_ID,
+            FRANKFURTER_GOVERNED_SOURCE_ID,
+            WEBSEARCH_GOVERNED_SOURCE_ID,
         }
         await audit_licence_prefilter_completed(
             db, query_id=query_id, correlation_id=correlation_id,
@@ -715,6 +730,28 @@ class KritonMediator:
         ):
             raw_chunks.insert(0, to_user_provided_data_rag_chunk(request.query))
 
+        # Live Frankfurter/DBnomics data (2026-08-05) — both self-gate hard
+        # (fetch_fx needs two recognised currency codes; fetch_stats needs an
+        # explicit economic-statistic keyword AND a confident series-name
+        # match), so — unlike the category-gated blocks elsewhere in this
+        # function — these are safe to always attempt rather than needing a
+        # specific retrieval_category match first. Each returns at most one
+        # WebSource; converted to the same chunk shape every other source
+        # uses so it flows through the normal grounded-context/citation/
+        # Checkpoint C pipeline. A connector outage must never break an
+        # otherwise-answerable question, so failures are swallowed here —
+        # normal retrieval still runs either way.
+        try:
+            for fx_source in await fetch_fx(request.query):
+                raw_chunks.insert(0, to_websource_rag_chunk(fx_source, FRANKFURTER_GOVERNED_SOURCE_ID))
+        except Exception:
+            pass
+        try:
+            for stat_source in await fetch_stats(request.query):
+                raw_chunks.insert(0, to_websource_rag_chunk(stat_source, DBNOMICS_GOVERNED_SOURCE_ID))
+        except Exception:
+            pass
+
         # Live Treasury exchange-rate data — independent of ENABLE_RAG_EMBEDDINGS
         # (this isn't a document-embeddings feature), so it runs regardless of
         # that flag. Injected into the same raw_chunks list reused below for
@@ -778,11 +815,23 @@ class KritonMediator:
                 except Exception:
                     pass
 
+            # Real gap (2026-08-06): "What is Japan's inflation rate?" got
+            # answered with US CPI-U data captioned "US inflation" — neither
+            # is_inflation_query nor is_gdp_query has ever checked WHICH
+            # country was asked about, so BLS/BEA (both US-only data) fired
+            # for literally any inflation/GDP question regardless of the
+            # country actually named. Reuses dbnomics.py's country-
+            # recognition map (already proven against this exact failure
+            # mode there) so a query naming a different country skips these
+            # US-only injections and falls through to DBnomics instead.
+            _named_country = _dbnomics_country_hint(request.query)
+            _is_us_or_unspecified = _named_country is None or _named_country == _DBNOMICS_US_NAMES
+
             # Live BLS CPI data — same category as Census above, but gated on
             # inflation-specific keywords rather than a state name (CPI is
             # national data, no entity to extract). Isolated the same way: a
             # BLS hiccup must never break an otherwise-answerable question.
-            if is_inflation_query(request.query) and BLS_CPI_GOVERNED_SOURCE_ID in allowed_source_ids:
+            if is_inflation_query(request.query) and _is_us_or_unspecified and BLS_CPI_GOVERNED_SOURCE_ID in allowed_source_ids:
                 try:
                     cpi_bundle = await get_cpi_bundle(db, tenant_id=tenant_id, actor_id=actor_id)
                     raw_chunks.insert(0, to_cpi_rag_chunk(cpi_bundle, source_id=BLS_CPI_GOVERNED_SOURCE_ID))
@@ -792,7 +841,7 @@ class KritonMediator:
             # Live BEA GDP data — same category and national-data posture as BLS
             # CPI above, gated on its own keyword check so a plain income/CPI
             # question doesn't also get an irrelevant GDP chunk injected.
-            if is_gdp_query(request.query) and BEA_GDP_GOVERNED_SOURCE_ID in allowed_source_ids:
+            if is_gdp_query(request.query) and _is_us_or_unspecified and BEA_GDP_GOVERNED_SOURCE_ID in allowed_source_ids:
                 try:
                     gdp_bundle = await get_gdp_bundle(db, tenant_id=tenant_id, actor_id=actor_id)
                     raw_chunks.insert(0, to_gdp_rag_chunk(gdp_bundle, source_id=BEA_GDP_GOVERNED_SOURCE_ID))
@@ -802,8 +851,14 @@ class KritonMediator:
         # Live FRED interest-rate data — its own dedicated category (unlike
         # Census/BLS/GDP, "interest-rates" isn't shared with anything else), so
         # the category match alone is sufficient gating, same posture as
-        # Treasury/PayrollTax above.
-        if retrieval_category == "interest-rates" and FRED_INTEREST_RATES_GOVERNED_SOURCE_ID in allowed_source_ids:
+        # Treasury/PayrollTax above. Same US-only-data country check as BLS/
+        # BEA above (2026-08-06) — FRED is US Federal Reserve data.
+        _fred_named_country = _dbnomics_country_hint(request.query)
+        if (
+            retrieval_category == "interest-rates"
+            and (_fred_named_country is None or _fred_named_country == _DBNOMICS_US_NAMES)
+            and FRED_INTEREST_RATES_GOVERNED_SOURCE_ID in allowed_source_ids
+        ):
             try:
                 fred_bundle = await get_interest_rates_bundle(db, tenant_id=tenant_id, actor_id=actor_id)
                 raw_chunks.insert(0, to_fred_rag_chunk(fred_bundle, source_id=FRED_INTEREST_RATES_GOVERNED_SOURCE_ID))
@@ -1073,6 +1128,26 @@ class KritonMediator:
                 source_id = TAVILY_GOVERNED_SOURCE_ID if provider == "tavily" else SERPAPI_GOVERNED_SOURCE_ID
                 if source_id in allowed_source_ids:
                     raw_chunks.extend(to_professional_search_chunks(search_bundle, source_id=source_id))
+            except Exception:
+                pass
+
+        # SearXNG (2026-08-05) — free, self-hosted third-tier fallback, tried
+        # only when EVERY other source (governed catalog, live-data
+        # connectors, and the Tavily/SerpAPI professional search above) found
+        # nothing at all. Deliberately not a competing primary path: Tavily/
+        # SerpAPI are already the domain-restricted, category-gated web
+        # search mechanism for professional_categories above, so this only
+        # adds value as a last resort (e.g. both external providers rate-
+        # limited or down) rather than duplicating that gating with a
+        # different, looser one. Uses only web_search()'s allowlist-aware
+        # source list, never websearch.py's own build_web_grounded_prompt/
+        # domain-gate/chart-JSON path — this still flows through the same
+        # governed grounded-context/citation/Checkpoint C pipeline as
+        # everything else.
+        if not raw_chunks:
+            try:
+                for hit in await web_search(request.query, jurisdiction=request.jurisdiction or ""):
+                    raw_chunks.append(to_websource_rag_chunk(hit, WEBSEARCH_GOVERNED_SOURCE_ID))
             except Exception:
                 pass
 
@@ -1948,6 +2023,29 @@ class KritonMediator:
                     composed_text = compose_quarterly_results(request.query, ref)
                     prompt_name = "Deterministic User-Provided Data Response"
                 prompt_id = "deterministic-reviewed-education"
+
+                # Real gap (2026-08-06): compose_accounting_fundamentals used
+                # to be unable to return "nothing specific matched" at all —
+                # its own fallback was a hardcoded, potentially unrelated
+                # answer ("Accrual accounting" for literally any unmatched
+                # accounting-fundamentals question). Now that it can return
+                # None, honor that here by falling through to a genuine LLM
+                # composition grounded in the SAME retrieved excerpt, instead
+                # of ever serving a wrong topic with false confidence. `prompt`
+                # was intentionally left None above (has_reviewed_source
+                # skips that DB query as a fast-path optimization for the
+                # normal case where deterministic composition succeeds) — only
+                # fetched here, lazily, for this specific fallback.
+                if composed_text is None and source_id == ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID:
+                    prompt = await select_prompt(db, request.mode)
+                    if prompt:
+                        prompt_row, composed_text = await model_gateway_service.run_test_prompt(
+                            db, prompt.id, grounded_input, actor_id, tenant_id, correlation_id=correlation_id
+                        )
+                        composed_text = _strip_meta_preamble(composed_text) if composed_text else composed_text
+                        composed_text = _strip_trailing_raw_references(composed_text) if composed_text else composed_text
+                        prompt_id = prompt_row.id
+                        prompt_name = prompt_row.name
             elif standard_deduction_chunk is not None:
                 index, chunk = standard_deduction_chunk
                 verified_fact = _compose_standard_deduction(chunk, f"REF-{index + 1}")

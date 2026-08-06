@@ -296,6 +296,40 @@ def test_derived_total_requires_at_least_one_query_number():
     print("test_derived_total_requires_at_least_one_query_number: PASSED")
 
 
+def test_derived_difference_of_inline_supplied_figures_passes_numeric_fidelity():
+    """Real gap (2026-08-06): "Analyze these monthly expenses and identify
+    the largest change: January $80,000, February $92,000, March $87,000
+    and April $105,000." — the deterministic composition correctly
+    computed the largest period-to-period CHANGE as $18,000 (April
+    $105,000 minus March $87,000), both numbers the user supplied
+    directly. The derived-total/percentage-share widening only covered a
+    SUM and its SHARES, not a plain pairwise difference, so this correct,
+    query-derived figure was rejected as unsupported and a working
+    deterministic answer degraded to a needless clarification."""
+    query = "January $80,000, February $92,000, March $87,000 and April $105,000."
+    result = validate_answer(
+        "**Key insight:** The largest period-to-period change is the $18,000 increase from March to April. [REF-1]",
+        _BUNDLE,
+        grounding_context="Unrelated generic accounting guidance text.",
+        query_text=query,
+    )
+    assert result.passed, result.failures
+    print("test_derived_difference_of_inline_supplied_figures_passes_numeric_fidelity: PASSED")
+
+
+def test_incorrect_derived_difference_still_fails_numeric_fidelity():
+    query = "January $80,000, February $92,000, March $87,000 and April $105,000."
+    result = validate_answer(
+        "**Key insight:** The largest period-to-period change is the $999,999 increase. [REF-1]",
+        _BUNDLE,
+        grounding_context="Unrelated generic accounting guidance text.",
+        query_text=query,
+    )
+    assert not result.passed
+    assert any("Numeric fidelity" in f for f in result.failures)
+    print("test_incorrect_derived_difference_still_fails_numeric_fidelity: PASSED")
+
+
 def test_unsupported_illustrative_figures_can_be_generalized_before_validation():
     from app.domains.massarius.answer_validator import generalize_unsupported_numeric_claims
 
@@ -409,6 +443,25 @@ def test_reviewed_mistakes_answer_does_not_trigger_tutor_depth_escalation():
         _BUNDLE,
         grounding_context=_GAAS_GROUNDING_CONTEXT,
         query_text="What are the most common bank-reconciliation mistakes, and how can they be avoided?",
+    )
+    assert result.passed, result.failures
+
+
+def test_gdp_factual_lookup_does_not_trigger_tutor_depth_escalation():
+    # Live bug (2026-08-06): "What is US GDP?" was wrongly held to full
+    # what/why/rule/example tutor-depth structure and escalated to human
+    # review, even though it's a plain factual number lookup — the same
+    # class of question "rate"/"amount"/"percentage" already exempt.
+    result = validate_answer(
+        "According to the U.S. Bureau of Economic Analysis, US GDP was "
+        "$27.36 trillion (nominal, seasonally adjusted annual rate) as of "
+        "Q1 2026, the most recently published estimate. [REF-1]",
+        _BUNDLE,
+        grounding_context=(
+            "Bureau of Economic Analysis — Gross Domestic Product: $27.36 "
+            "trillion (nominal, seasonally adjusted annual rate), Q1 2026."
+        ),
+        query_text="What is US GDP?",
     )
     assert result.passed, result.failures
 

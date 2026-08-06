@@ -248,7 +248,16 @@ def test_third_person_personal_advice_phrasing_escalates_to_high():
     ):
         decision = classify(query, source_confidence="HIGH_CONFIDENCE")
         assert decision["risk_level"] == "HIGH", query
-        assert "l2-advice-signal-high-floor" in decision["rules_applied"] or "l2-semantic-high-risk" in decision["rules_applied"], query
+        # Three legitimate paths all reach the same correct HIGH/escalated
+        # outcome: a confident semantic HIGH hit, the post-matrix advice
+        # floor, or (when the ML classifier itself is unavailable/uncertain)
+        # the uncertain-but-advice-shaped forced-human-review path — all
+        # equally valid, since has_advice_signal is what actually matters.
+        assert (
+            "l2-advice-signal-high-floor" in decision["rules_applied"]
+            or "l2-semantic-high-risk" in decision["rules_applied"]
+            or "l2-classification-uncertain-advice-signal" in decision["rules_applied"]
+        ), query
 
 
 def test_unrelated_use_of_personal_does_not_trigger_the_advice_floor():
@@ -279,17 +288,25 @@ def test_general_review_wording_is_educational_not_personalized_advice():
         assert decision["requires_human_review"] is False, query
 
 
-def test_low_confidence_with_advice_signal_escalates_not_clarifies():
+def test_low_confidence_with_advice_signal_escalates_not_clarifies(monkeypatch):
     """Real gap (2026-07-22): CLASSIFICATION_UNCERTAIN used to return
     MEDIUM/CLARIFICATION unconditionally, even for a query naming the
     reader's own situation — "my client" here. It must now escalate to
     HUMAN_REVIEW (via risk_level=HIGH + allowed=True, letting
     orchestration/routing_matrix.py's HIGH+advice_signal override handle
     it) instead of asking a generic clarifying question that was never
-    going to address the real issue."""
+    going to address the real issue.
+
+    RISK_LLM_CLASSIFIER_MODE forced off (2026-08-05): this test isolates the
+    pure ML-uncertain deterministic-fallback path specifically — with the
+    LLM fallback enabled (now the real .env default), a real Groq/Gemini
+    call would classify this query directly and never reach the code path
+    under test at all. That's the correct real-world behavior, just not
+    what this test exists to check."""
     from unittest.mock import patch
     import app.domains.risk_safety.risk_classifier as rc
 
+    monkeypatch.setenv("RISK_LLM_CLASSIFIER_MODE", "off")
     fake_pipeline = lambda query, labels: {
         "labels": ["casual conversation or navigational help"], "scores": [0.2],
     }
@@ -306,13 +323,17 @@ def test_low_confidence_with_advice_signal_escalates_not_clarifies():
         assert "l2-classification-uncertain-advice-signal" in decision["rules_applied"]
 
 
-def test_low_confidence_without_advice_signal_still_just_clarifies():
+def test_low_confidence_without_advice_signal_still_just_clarifies(monkeypatch):
     """Same low-confidence trigger, no advice signal — behavior must stay
     exactly as before this fix: a generic clarifying question, not an
-    escalation nothing in the query actually warranted."""
+    escalation nothing in the query actually warranted.
+
+    RISK_LLM_CLASSIFIER_MODE forced off (2026-08-05) — same isolation
+    reason as the sibling test above."""
     from unittest.mock import patch
     import app.domains.risk_safety.risk_classifier as rc
 
+    monkeypatch.setenv("RISK_LLM_CLASSIFIER_MODE", "off")
     fake_pipeline = lambda query, labels: {
         "labels": ["casual conversation or navigational help"], "scores": [0.2],
     }

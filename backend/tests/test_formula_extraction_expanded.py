@@ -5,6 +5,23 @@ from app.domains.calculation.household_extraction import HouseholdParams
 from app.domains.calculation.policyengine_engine import CalculationResult
 
 
+def test_extracts_percentage_change_with_spelled_out_numbers():
+    # Live bug (2026-08-06): "Our revenue grew from twelve thousand to
+    # fifteen thousand five hundred this quarter — what's the percentage
+    # increase?" matched the percentage_change trigger, but every input
+    # lookup requires digits — this module had no word-number
+    # normalization at all (only a narrow "<word>-year" one for
+    # depreciation), so the calculation silently never ran.
+    result = extract_named_formula(
+        "Our revenue grew from twelve thousand to fifteen thousand five hundred this quarter "
+        "— what's the percentage increase?"
+    )
+    assert result is not None
+    assert result.calculation_type == "percentage_change"
+    assert result.inputs["starting_value"]["value"] == "12000"
+    assert result.inputs["ending_value"]["value"] == "15500"
+
+
 def test_extracts_accounting_net_profit():
     result = extract_named_formula("Calculate net profit when revenue is $250,000 and total expenses are $180,000.")
     assert result is not None

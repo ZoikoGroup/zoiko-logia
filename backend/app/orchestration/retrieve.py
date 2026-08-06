@@ -44,6 +44,7 @@ from app.domains.reference_data.service import (
     TAVILY_GOVERNED_SOURCE_ID, SERPAPI_GOVERNED_SOURCE_ID,
 )
 from app.domains.calculation.service import POLICYENGINE_GOVERNED_SOURCE_ID
+from app.domains.calculation.formula_extraction import extract_named_formula
 from app.domains.reference_data.bank_reconciliation import BANK_RECONCILIATION_GOVERNED_SOURCE_ID
 from app.domains.reference_data.month_end_close import MONTH_END_CLOSE_GOVERNED_SOURCE_ID
 from app.domains.reference_data.accounting_fundamentals import ACCOUNTING_FUNDAMENTALS_GOVERNED_SOURCE_ID
@@ -113,6 +114,13 @@ _CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "accounting-fundamentals": [
         "cash accounting", "cash-basis accounting", "cash basis accounting",
         "accrual accounting", "accrual-basis accounting", "accrual basis accounting",
+        # Real gap (2026-08-05): "What is the accrual basis of accounting?"
+        # has "of" between "basis" and "accounting" — none of the phrases
+        # above match a keyword requiring those words adjacent, so the
+        # query silently fell through to no category match at all, even
+        # though a perfectly relevant governed source exists for exactly
+        # this question.
+        "cash basis of accounting", "accrual basis of accounting",
         "revenue and profit", "revenue versus profit", "difference between revenue and profit",
         "accounts payable and accounts receivable", "difference between accounts payable and accounts receivable",
         "balance sheet and income statement", "balance sheet versus income statement", "balance sheet and an income statement",
@@ -403,7 +411,20 @@ def infer_category_rule(query: str) -> str | None:
     # calculation/comparison/visualization. The extractor rejects external
     # verification, current-rule and ambiguous/incomplete requests, so this
     # precedence cannot weaken source requirements for those queries.
-    if extract_inline_dataset(query) is not None:
+    # Real gap (2026-08-05): "Calculate net profit if revenue is $250,000
+    # and expenses are $180,000." is a complete, valid named-formula
+    # calculation — extract_named_formula already resolves it correctly.
+    # But the generic inline-dataset extractor ALSO matched it, misreading
+    # the sentence itself as a category label ("Calculate Net Profit If
+    # Revenue Is" -> $250,000), and this category-routing check ran first,
+    # so retrieval_category became "user-provided-data" and
+    # service.py's calculation block (gated on
+    # retrieval_category != "user-provided-data") never ran at all — a
+    # governed, verified calculation silently downgraded to an
+    # unverified "figures you supplied" table. A query that already
+    # resolves to a complete named formula must keep going through the
+    # calculation engine, not get diverted here.
+    if extract_named_formula(query) is None and extract_inline_dataset(query) is not None:
         return "user-provided-data"
     if re.search(r"\bratio\b.*\bbenchmark\b|\bbenchmark\b.*\bratio\b", lowered):
         return "user-provided-data"

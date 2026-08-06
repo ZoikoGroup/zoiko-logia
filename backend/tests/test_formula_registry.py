@@ -43,6 +43,24 @@ def test_gross_margin_correct_result_and_percent_normalization():
     assert r.output_unit == "percent"
 
 
+def test_percentage_change_steps_text_is_rounded_not_a_raw_repeating_decimal():
+    # Live bug (2026-08-06): the "Result" line was already correctly
+    # rounded ("29.17%"), but the "steps" breakdown interpolated the raw,
+    # unrounded Decimal division straight into the text — a genuine
+    # repeating decimal like 15500/12000 produced "29.16666666666666666...
+    # 6666666666666666666666667%" in the user-visible calculation
+    # breakdown.
+    r = execute_formula("finance.percentage_change.v1", {
+        "starting_value": {"value": "12000", "unit": "USD"},
+        "ending_value": {"value": "15500", "unit": "USD"},
+    })
+    assert r.status == "verified"
+    assert Decimal(r.output_value) == Decimal("29.17")
+    steps_text = " ".join(r.steps)
+    assert "29.17%" in steps_text
+    assert "666666" not in steps_text
+
+
 def test_operating_profit_and_margin():
     inputs = {
         "revenue": {"value": "500000", "unit": "USD"},

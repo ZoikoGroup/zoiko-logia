@@ -390,7 +390,7 @@ def test_abbreviated_billions_and_millions_are_scaled_not_truncated():
     assert dataset.rows == (
         ("Alpha Corp", Decimal("4.2E+9")),
         ("Beta Inc", Decimal("2.8E+9")),
-        ("Gamma Llc", Decimal("6.1E+9")),
+        ("Gamma LLC", Decimal("6.1E+9")),
         ("Delta Co", Decimal("1.9E+9")),
     )
     answer = compose_user_provided_results(query, "REF-1")
@@ -648,3 +648,199 @@ def test_value_first_terminator_before_a_new_sentence_still_closes_the_last_item
         ("Signups", Decimal("3400")),
         ("Customers", Decimal("890")),
     )
+
+
+def test_a_complete_named_formula_calculation_never_routes_as_user_provided_data():
+    # Real gap (2026-08-05): "Calculate net profit if revenue is $250,000
+    # and expenses are $180,000." is a complete, valid named-formula
+    # calculation (extract_named_formula resolves it correctly) — but the
+    # generic inline-dataset extractor ALSO matched it, misreading the
+    # whole leading clause as a category label ("Calculate Net Profit If
+    # Revenue Is" -> $250,000). infer_category_rule checked the generic
+    # extractor first, so retrieval_category became "user-provided-data"
+    # and service.py's calculation block (explicitly gated on
+    # retrieval_category != "user-provided-data") never ran — a governed,
+    # verified calculation silently downgraded to an unverified "figures
+    # you supplied" table with a nonsense category label.
+    query = "Calculate net profit if revenue is $250,000 and expenses are $180,000."
+    assert infer_category_rule(query) is None
+
+
+def test_accrual_basis_of_accounting_resolves_via_deterministic_category_rule():
+    # Real gap (2026-08-05): "What is the accrual basis of accounting?"
+    # has "of" between "basis" and "accounting" — the keyword list only had
+    # "accrual basis accounting" (no "of"), an exact contiguous phrase that
+    # doesn't match. infer_category_rule silently returned None, so
+    # service.py's accounting-fundamentals content-injection block (gated
+    # on retrieval_category == "accounting-fundamentals") never fired —
+    # context_text stayed empty and the query fell to "insufficient
+    # sources" despite a perfectly relevant governed source existing.
+    assert infer_category_rule("What is the accrual basis of accounting?") == "accounting-fundamentals"
+    assert infer_category_rule("What is the cash basis of accounting?") == "accounting-fundamentals"
+
+
+def test_accrual_or_cash_basis_alone_returns_a_focused_chunk_not_the_whole_document():
+    # Real gap (2026-08-05): _focused_text()'s cash/accrual branch required
+    # BOTH "cash" and "accrual" present, so asking about only one side
+    # ("What is the accrual basis of accounting?") fell to the else
+    # branch's full ~15,000-char document — well over
+    # build_grounded_context's 8,000-char budget, which drops an
+    # over-budget chunk entirely rather than truncating it. The query then
+    # answered as "insufficient sources" despite the exact right source
+    # existing for it.
+    from app.domains.reference_data.accounting_fundamentals import to_accounting_fundamentals_rag_chunk
+    for query in (
+        "What is the accrual basis of accounting?",
+        "What is the cash basis of accounting?",
+    ):
+        chunk = to_accounting_fundamentals_rag_chunk(query)
+        assert len(chunk["text"]) < 2000, query
+        assert "accrual" in chunk["text"].lower()
+
+
+def test_plus_minus_compact_list_phrasing_produces_a_correctly_signed_waterfall():
+    # Real gap (2026-08-06): "starting balance $200,000, plus deposits
+    # $80,000, minus withdrawals $45,000, minus fees $5,000" — a compact
+    # list convention using a leading sign-word instead of narrative verbs
+    # ("X added $Y") — matched neither _STARTING_BALANCE (required a
+    # linking verb: "was"/"is"/"of"/"at") nor _POSITIVE_MOVEMENT/
+    # _NEGATIVE_MOVEMENT (neither recognized sign-word-first phrasing at
+    # all). Fell through to the generic category fallback, which captured
+    # "Minus Withdrawals" as a literal POSITIVE-valued label — silently
+    # flipping the sign of real money.
+    query = "Show a waterfall chart: starting balance $200,000, plus deposits $80,000, minus withdrawals $45,000, minus fees $5,000."
+    dataset = extract_inline_dataset(query)
+    assert dataset is not None
+    assert dataset.rows == (
+        ("Starting Balance", Decimal("200000")),
+        ("Deposits", Decimal("80000")),
+        ("Withdrawals", Decimal("-45000")),
+        ("Fees", Decimal("-5000")),
+        ("Ending Balance", Decimal("230000")),
+    )
+    answer = compose_user_provided_results(query, "REF-1")
+    presentation = build_answer_presentation(query, answer or "")
+    assert presentation.charts and presentation.charts[0].type == "waterfall"
+
+
+def test_starting_balance_without_a_linking_verb_still_matches():
+    # Guards the _STARTING_BALANCE broadening above against a regression on
+    # the original, still-common "was/is/of/at" narrative phrasing.
+    from app.domains.reference_data.user_provided_data import _STARTING_BALANCE
+    assert _STARTING_BALANCE.search("Starting cash was $500,000.") is not None
+    assert _STARTING_BALANCE.search("starting balance $200,000,") is not None
+
+
+def test_accounting_cycle_query_gets_a_focused_trial_balance_excerpt():
+    # Real gap (2026-08-06): "Explain the accounting cycle from transaction
+    # to financial statements" matched no _focused_text branch, so — even
+    # after the over-budget-chunk truncation fix — the answer came from
+    # whatever happens to be FIRST in the ~15,000-char document (cash/
+    # accrual basis) rather than anything about the accounting cycle,
+    # since truncation has no topic awareness of its own.
+    from app.domains.reference_data.accounting_fundamentals import to_accounting_fundamentals_rag_chunk
+    chunk = to_accounting_fundamentals_rag_chunk("Explain the accounting cycle from transaction to financial statements.")
+    assert len(chunk["text"]) < 2000
+    assert "trial" in chunk["text"].lower() or "ledger" in chunk["text"].lower()
+
+
+def test_bridge_with_no_starting_anchor_word_still_gets_correct_signs():
+    # Live bug (2026-08-06): "Chart the profit bridge from budget to
+    # actual: budgeted profit $200,000, plus higher sales $35,000, minus
+    # higher costs $18,000, minus one-time write-off $12,000" has a real
+    # base value but no "starting" anchor word at all — _STARTING_BALANCE
+    # never matched, so the whole query fell through to the generic
+    # unordered category extractor, which captured "Minus Higher Costs
+    # $18,000" as a literal POSITIVE category instead of a negative
+    # movement, silently flipping the sign of real money.
+    query = (
+        "Chart the profit bridge from budget to actual: budgeted profit $200,000, "
+        "plus higher sales $35,000, minus higher costs $18,000, minus one-time write-off $12,000."
+    )
+    dataset = extract_inline_dataset(query)
+    assert dataset is not None
+    assert dataset.rows == (
+        ("Starting Budgeted Profit", Decimal("200000")),
+        ("Higher Sales", Decimal("35000")),
+        ("Higher Costs", Decimal("-18000")),
+        ("One-Time Write-Off", Decimal("-12000")),
+        ("Ending Budgeted Profit", Decimal("205000")),
+    )
+
+
+def test_year_over_year_quarter_pairs_do_not_mistake_the_year_for_the_value():
+    # Live bug (2026-08-06): "Q1 2025 $95,000 vs Q1 2026 $112,000, Q2 2025
+    # $102,000 vs Q2 2026 $118,500" pairs the same quarter across two
+    # years, with a bare year sitting between the period token and its
+    # real dollar figure. The plain single-period extractor matched the
+    # YEAR itself as the row's value ("Q1" -> 2025), silently discarding
+    # every real dollar figure in the query.
+    query = (
+        "Compare this year to last year quarterly sales: Q1 2025 $95,000 vs Q1 2026 $112,000, "
+        "Q2 2025 $102,000 vs Q2 2026 $118,500."
+    )
+    dataset = extract_inline_dataset(query)
+    assert dataset is not None
+    assert dataset.measures == ("2025", "2026")
+    assert dataset.rows == (
+        ("Q1", Decimal("95000"), Decimal("112000")),
+        ("Q2", Decimal("102000"), Decimal("118500")),
+    )
+    assert dataset.units == ("USD", "USD")
+
+
+def test_cash_header_gets_currency_formatting_not_bare_numbers():
+    # Live bug (2026-08-06): "Chart our cash balance over the last 4
+    # quarters" produced a table headed just "Cash" — not in the units-
+    # inference keyword whitelist, so real dollar figures rendered as bare
+    # unformatted numbers ("180000") instead of "$180,000".
+    query = "Chart our cash balance over the last 4 quarters: Q1 $180,000, Q2 $165,000, Q3 $210,000, Q4 $195,000."
+    dataset = extract_inline_dataset(query)
+    assert dataset is not None
+    assert dataset.measures == ("Cash",)
+    assert dataset.units == ("USD",)
+
+
+def test_acronym_category_labels_are_preserved_not_title_cased():
+    # Live bug (2026-08-06): plain str.title() mangled "APAC" -> "Apac" and
+    # "LATAM" -> "Latam", silently destroying real region/entity codes
+    # supplied by the user.
+    query = "What's the distribution of our customer base by region: North America 4,500, Europe 2,800, APAC 1,900, LATAM 700?"
+    dataset = extract_inline_dataset(query)
+    assert dataset is not None
+    labels = [row[0] for row in dataset.rows]
+    assert "APAC" in labels
+    assert "LATAM" in labels
+    assert "North America" in labels
+
+
+def test_percent_suffixed_category_values_keep_their_percent_unit():
+    # Live bug (2026-08-06): "Alice 34%, Bob 28%, Carla 41%, ..." lost the
+    # "%" entirely — the category-value extractor's number group never
+    # captures a trailing "%", so the header stayed a bare "Amount" and the
+    # figures were presented as unitless counts (with a meaningless summed
+    # "total" across percentages).
+    query = "Which sales reps had the highest close rate — rank them: Alice 34%, Bob 28%, Carla 41%, Dan 22%, Eve 37%?"
+    dataset = extract_inline_dataset(query)
+    assert dataset is not None
+    assert dataset.measures == ("Amount (%)",)
+    assert dataset.units == ("percent",)
+    assert ("Alice", Decimal("34")) in dataset.rows
+
+
+def test_composition_wording_without_a_chart_verb_still_extracts_inline_data():
+    # Live bug (2026-08-06): "What's the split of revenue by sales
+    # channel..." and "What's the composition of our investment
+    # portfolio..." both named an inline dataset but used none of
+    # _DATA_OPERATION's existing trigger words ("chart"/"compare"/
+    # "breakdown"/...), so extraction never even ran and the query fell
+    # through to normal retrieval against unrelated reference sources.
+    split_query = "What's the split of revenue by sales channel: Direct $450,000, Partner $220,000, Online $180,000, Retail $95,000?"
+    assert extract_inline_dataset(split_query) is not None
+    composition_query = (
+        "What's the composition of our investment portfolio: Equities $2,400,000, "
+        "Bonds $1,100,000, Real Estate $650,000, Cash $250,000?"
+    )
+    dataset = extract_inline_dataset(composition_query)
+    assert dataset is not None
+    assert ("Equities", Decimal("2400000")) in dataset.rows

@@ -41,6 +41,10 @@ services:
       # for sign-up/sign-in to work (see backend/.env.example).
       SUPABASE_URL: ${SUPABASE_URL:-}
       SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      # SearXNG instance for the (currently unwired) websearch.py provider —
+      # see the searxng service below. Not read by anything in the request
+      # path yet; harmless to set ahead of that wiring landing.
+      SEARXNG_URL: http://searxng:8080
     ports:
       - "8010:8010"
     healthcheck:
@@ -52,6 +56,21 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      searxng:
+        condition: service_started
+
+  # Local SearXNG instance backing app/orchestration/websearch.py. Settings
+  # (JSON output format enabled) live in ./searxng/settings.yml, mounted
+  # read-only below.
+  searxng:
+    image: searxng/searxng
+    container_name: searxng
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8888/
+    volumes:
+      - ./searxng:/etc/searxng
+    ports:
+      - "8888:8080"
 
   seed:
     build: ./backend

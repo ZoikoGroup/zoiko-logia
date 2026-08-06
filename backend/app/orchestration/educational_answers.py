@@ -214,7 +214,11 @@ def compose_audit_variance_decision(query: str, ref: str) -> str | None:
 The nature, timing, and extent of additional testing depend on the relevant assertion, assessed risk, materiality, available evidence, and professional judgment. {citation}"""
 
 
-def compose_accounting_fundamentals(query: str, ref: str) -> str:
+def compose_accounting_fundamentals(query: str, ref: str) -> str | None:
+    """Returns None when the query doesn't match any of the specifically
+    reviewed topics below — the caller (orchestration/service.py) must
+    treat None as "fall through to a genuine LLM composition," never as
+    "answer with whatever branch happens to be last.\""""
     citation = f"[{ref}]"
     if re.search(r"(?:intellectual\s+propert|intelectual\s+properit)", query, re.I):
         return f"""## Intellectual property
@@ -538,6 +542,44 @@ The purpose of a trial balance is to organize general-ledger balances and test w
 6. **Post supported adjustments:** Record approved accruals, deferrals, depreciation, corrections, and other period-end adjustments. {citation}
 7. **Prepare the adjusted trial balance:** Re-extract balances, confirm equal totals, and use the reviewed version for financial-statement preparation. {citation}
 8. **Retain review evidence:** Document sign-off, adjustments, unresolved items, and the final version used for reporting. {citation}"""
+    # Real gap (2026-08-06): "What is accrued revenue?" and "Explain the
+    # accounting cycle from transaction to financial statements" both
+    # matched none of the ~30 branches above and fell through to the
+    # unconditional "Accrual accounting" default at the end of this
+    # function — a fixed, specific answer that has nothing to do with
+    # either question, served confidently regardless of what was actually
+    # asked. This whole function's fallback behavior (a wrong, unrelated
+    # hardcoded answer rather than gracefully degrading) is a broader
+    # architectural risk beyond these two queries — any other unmatched
+    # accounting-fundamentals topic hits the same default — but these two
+    # are the concretely reported, common cases, handled the same
+    # hand-curated way every other topic in this function already is.
+    if re.search(r"accrued\s+revenue", query, re.I) and not re.search(r"\bliabilit", query, re.I):
+        return f"""## Accrued revenue
+
+Accrued revenue is revenue that has been earned — the applicable recognition requirements have been met — but not yet billed or collected in cash. It is recorded as revenue and a receivable in the period it is earned, not the period cash is received. {citation}
+
+### Why it matters
+
+Recognizing revenue only when cash is received (a cash basis) would understate performance in the period the work was actually done and overstate it in the period payment happens to arrive. Accrued revenue keeps the income statement aligned with the economic activity of the period. {citation}
+
+### Example without fixed amounts
+
+A service is delivered in one period but invoiced or collected in a later period. The revenue and a corresponding receivable are recognized in the period the service was delivered; when cash is later collected, the receivable is reduced and cash increases — no additional revenue is recorded at that point. {citation}"""
+    if re.search(r"accounting\s+cycle", query, re.I):
+        return f"""## The accounting cycle
+
+The accounting cycle is the recurring sequence an entity follows to turn transactions into reported financial statements each period. {citation}
+
+1. **Identify and record transactions:** Source documents (invoices, receipts, contracts) are analyzed and recorded as journal entries. {citation}
+2. **Post to the general ledger:** Journal entries are posted to the relevant ledger accounts. {citation}
+3. **Prepare an unadjusted trial balance:** Ledger balances are listed to confirm total debits equal total credits before adjustments. {citation}
+4. **Post adjusting entries:** Accruals, deferrals, depreciation, and other period-end adjustments are recorded so revenue and expenses are recognized in the correct period. {citation}
+5. **Prepare an adjusted trial balance:** Balances are re-extracted after adjustments and re-checked for equal debits and credits. {citation}
+6. **Prepare financial statements:** The income statement, balance sheet, and other statements are drawn from the adjusted trial balance. {citation}
+7. **Close temporary accounts:** Revenue and expense accounts are closed to retained earnings (or equivalent), and the cycle begins again for the next period. {citation}
+
+Equal debit and credit totals at any stage confirm arithmetic balance, not that every entry is correct — omitted accounts, one-sided entries, or misclassifications can still exist even when the trial balance ties out. {citation}"""
     if re.search(r"compare|difference|table", query, re.I):
         decision_flow = f"""
 
@@ -557,7 +599,8 @@ The purpose of a trial balance is to organize general-ledger balances and test w
 | Financial picture | Timing may distort comparisons between periods {citation} | Usually provides a more complete view of performance and position {citation} |
 
 The method an entity may or must use depends on the applicable financial-reporting, tax, and legal requirements. {citation}{decision_flow}"""
-    return f"""## Accrual accounting
+    if re.search(r"\baccrual\b|\bcash[\s-]basis\b", query, re.I):
+        return f"""## Accrual accounting
 
 Accrual accounting recognizes revenue when it is earned and expenses when they are incurred, subject to the applicable reporting framework, instead of waiting for cash to move. {citation}
 
@@ -568,3 +611,16 @@ It connects economic activity to the period in which it belongs and usually prov
 ### How it works in practice
 
 For a credit sale, revenue and a receivable are generally recognized when the applicable recognition requirements are met. Collecting the cash later reduces the receivable and increases cash; it does not create the revenue again. Accrual accounting therefore requires period-end adjustments, estimates, and stronger accounting processes than a simple cash basis. {citation}"""
+    # Real gap (2026-08-06): this used to be an UNCONDITIONAL fallback —
+    # any accounting-fundamentals query matching none of the ~30 branches
+    # above got this same "Accrual accounting" answer regardless of what
+    # was actually asked (confirmed live: "What is accrued revenue?" and
+    # "Explain the accounting cycle..." both got it before their own
+    # branches were added above). Narrowed to only fire when the query
+    # actually mentions accrual/cash-basis accounting, and returns None
+    # otherwise so the caller (orchestration/service.py) falls through to
+    # a genuine LLM composition grounded in the retrieved excerpt instead
+    # of ever serving a hardcoded, potentially unrelated answer — the same
+    # protection every other unmatched category already has via the
+    # normal RAG+LLM path.
+    return None

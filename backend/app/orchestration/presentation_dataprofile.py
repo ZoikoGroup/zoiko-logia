@@ -157,7 +157,7 @@ _INTENT_PATTERNS: tuple[tuple[AnalyticalIntent, re.Pattern], ...] = (
     )),
     (AnalyticalIntent.DISTRIBUTION, re.compile(r"\b(distribution|histogram|spread|frequency)\b", re.IGNORECASE)),
     (AnalyticalIntent.COMPOSITION, re.compile(
-        r"\b(composition|breakdown|share|allocation|mix|proportion)\b", re.IGNORECASE,
+        r"\b(composition|breakdown|share|allocation|mix|proportion|distribution)\b", re.IGNORECASE,
     )),
     (AnalyticalIntent.CORRELATION, re.compile(
         r"\bcorrelat\w*\b|\brelationship\s+between\b|\bheat\s?map\b|\bmatrix\b|"
@@ -180,6 +180,12 @@ _INTENT_PATTERNS: tuple[tuple[AnalyticalIntent, re.Pattern], ...] = (
         re.IGNORECASE,
     )),
 )
+
+# Used by detect_analytical_intent to disambiguate "distribution of X by
+# Y" (composition/share-of-total phrasing) from a genuine statistical-
+# distribution request — see that function's own comment.
+_STRICTLY_STATISTICAL_DISTRIBUTION = re.compile(r"\b(histogram|spread|frequency)\b", re.IGNORECASE)
+_BY_CATEGORY_CLAUSE = re.compile(r"\bby\s+[a-z]", re.IGNORECASE)
 
 _TEMPORAL_HEADER = re.compile(r"\b(?:period|quarter|month|year|date|week|day|20\d{2})\b", re.IGNORECASE)
 _TARGET_HEADER = re.compile(r"\b(target|budget|benchmark|plan|forecast|goal)\b", re.IGNORECASE)
@@ -482,8 +488,25 @@ def compute_correlation_matrix(
 
 def detect_analytical_intent(query: str) -> AnalyticalIntent:
     for intent, pattern in _INTENT_PATTERNS:
-        if pattern.search(query):
-            return intent
+        if not pattern.search(query):
+            continue
+        if (
+            intent == AnalyticalIntent.DISTRIBUTION
+            and not _STRICTLY_STATISTICAL_DISTRIBUTION.search(query)
+            and _BY_CATEGORY_CLAUSE.search(query)
+        ):
+            # Real gap (2026-08-06): "What's the distribution of our
+            # customer base by region: North America 4,500, ..." is
+            # ordinary business English for a share-of-total breakdown
+            # (composition — the donut-chart shape), not a request for a
+            # statistical distribution (histogram/box-plot territory). Only
+            # the bare word "distribution" is ambiguous this way —
+            # "histogram"/"spread"/"frequency" are unambiguously
+            # statistical and always win DISTRIBUTION regardless of a
+            # following "by" clause. Skipping here lets the COMPOSITION
+            # entry below (which also matches "distribution") win instead.
+            continue
+        return intent
     return AnalyticalIntent.TEXT_ONLY
 
 

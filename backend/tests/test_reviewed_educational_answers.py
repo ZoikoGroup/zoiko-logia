@@ -312,3 +312,45 @@ def test_trial_balance_process_is_reviewed_and_cited():
     answer = compose_accounting_fundamentals("Explain the process for preparing a trial balance.", "REF-1")
     assert "## Trial-balance preparation process" in answer
     assert "8. **Retain review evidence:**" in answer
+
+
+def test_accrued_revenue_gets_its_own_focused_answer_not_the_generic_fallback():
+    # Real gap (2026-08-06): "What is accrued revenue?" matched none of
+    # compose_accounting_fundamentals' ~30 branches and fell through to
+    # the unconditional "## Accrual accounting" default at the end of the
+    # function — a fixed answer unrelated to what was actually asked.
+    answer = compose_accounting_fundamentals("What is accrued revenue?", "REF-1")
+    assert "## Accrued revenue" in answer
+    assert "## Accrual accounting" not in answer
+
+
+def test_accounting_cycle_gets_its_own_focused_answer_not_the_generic_fallback():
+    answer = compose_accounting_fundamentals(
+        "Explain the accounting cycle from transaction to financial statements.", "REF-1",
+    )
+    assert "## The accounting cycle" in answer
+    assert "## Accrual accounting" not in answer
+    assert "trial balance" in answer.lower()
+
+
+def test_a_genuinely_unmatched_topic_returns_none_not_a_wrong_hardcoded_answer():
+    # Real gap (2026-08-06): this function's fallback used to be an
+    # UNCONDITIONAL hardcoded "Accrual accounting" answer — ANY accounting-
+    # fundamentals query matching none of its ~30 branches got served that
+    # same wrong-topic answer with false confidence (confirmed live for
+    # "accrued revenue" and "the accounting cycle" before their own
+    # branches were added). "Chart of accounts" matches nothing here
+    # either; the caller (orchestration/service.py) must now see None and
+    # fall through to a genuine LLM composition instead of ever receiving
+    # a wrong topic disguised as a real answer.
+    result = compose_accounting_fundamentals("What is a chart of accounts?", "REF-1")
+    assert result is None
+
+
+def test_cash_or_accrual_queries_still_get_their_real_answer_not_none():
+    # Guards the narrowing above against a regression: only the bare,
+    # unconditional fallback was removed — genuine cash/accrual questions
+    # must still get their dedicated, correct answer.
+    result = compose_accounting_fundamentals("What is the accrual basis of accounting?", "REF-1")
+    assert result is not None
+    assert "## Accrual accounting" in result

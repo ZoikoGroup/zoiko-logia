@@ -178,6 +178,33 @@ def _derived_total_and_shares(query_numbers: set[str]) -> tuple[Optional[Decimal
     return total, shares
 
 
+# Real gap (2026-08-06): "Analyze these monthly expenses and identify the
+# largest change: January $80,000, February $92,000, March $87,000 and
+# April $105,000." — the deterministic composition (see user_provided_
+# data.py's "Key insight" line) correctly computed the largest period-to-
+# period CHANGE as $18,000 (April $105,000 minus March $87,000), both of
+# which the user supplied directly. But _derived_total_and_shares above
+# only recognizes a SUM of every number and each one's percentage SHARE of
+# that sum — a pairwise DIFFERENCE between two supplied numbers isn't
+# either of those, so a perfectly correct, query-derived figure was
+# rejected as "unsupported" and the whole answer degraded to a needless
+# clarification. Same conservative posture as the total/shares check: only
+# the absolute difference between two numbers literally in the query,
+# never an invented figure.
+def _derived_differences(query_numbers: set[str]) -> set[str]:
+    decimals: list[Decimal] = []
+    for token in query_numbers:
+        try:
+            decimals.append(Decimal(token))
+        except InvalidOperation:
+            continue
+    diffs: set[str] = set()
+    for i, a in enumerate(decimals):
+        for b in decimals[i + 1:]:
+            diffs.add(str(abs(a - b)))
+    return diffs
+
+
 def _claim_is_supported(
     claim_text: str,
     *,
@@ -186,9 +213,26 @@ def _claim_is_supported(
     provenance: Optional[ProvenanceStore],
     derived_total: Optional[Decimal] = None,
     derived_shares: Optional[set[str]] = None,
+    derived_differences: Optional[set[str]] = None,
 ) -> bool:
     normalized = _normalize_digits(claim_text)
     if not normalized or normalized in context_numbers or normalized in query_numbers:
+        return True
+    # Real gap (2026-08-06): a date claim like "on August 4" normalizes to
+    # bare "4", but an ISO-format date in the grounding context ("2026-08-
+    # 04") normalizes its own day component to zero-padded "04" — the same
+    # calendar day, but a different STRING, so the plain membership check
+    # above missed it and a genuinely-grounded FRED date composition failed
+    # numeric fidelity every time. Falls back to integer-value equality
+    # only when the claim is a plain (non-decimal) integer, which a date's
+    # day/month component always is — a genuine currency/measurement
+    # mismatch is never rescued by this, since _normalize_digits keeps the
+    # decimal point for those ("4" vs "4.50" still correctly fails).
+    if normalized.isdigit():
+        claim_int = int(normalized)
+        if any(token.isdigit() and int(token) == claim_int for token in context_numbers | query_numbers):
+            return True
+    if derived_differences and normalized in derived_differences:
         return True
     if claim_text.strip().endswith("%"):
         try:
@@ -227,6 +271,7 @@ def generalize_unsupported_numeric_claims(
     context_numbers = _extract_normalized_numbers(grounding_context)
     query_numbers = _extract_normalized_numbers(query_text) if query_text else set()
     derived_total, derived_shares = _derived_total_and_shares(query_numbers)
+    derived_differences = _derived_differences(query_numbers)
 
     def is_supported(match: re.Match) -> bool:
         return _claim_is_supported(
@@ -236,6 +281,7 @@ def generalize_unsupported_numeric_claims(
             provenance=provenance,
             derived_total=derived_total,
             derived_shares=derived_shares,
+            derived_differences=derived_differences,
         )
 
     # A worked example with invented values is no longer useful once those
@@ -355,11 +401,18 @@ _CONCEPT_QUESTION_PATTERN = re.compile(
 # overrides the leading-trigger match when the query names the kind of
 # concrete attribute being looked up, regardless of phrasing — the leading
 # verb alone isn't a reliable enough signal of intent.
+# Real gap (2026-08-06): "What is US GDP?" got wrongly held to full
+# tutor-depth structure (what/why/rule/example) — a plain factual number
+# lookup, not a concept to teach — because "GDP" names no word in this
+# override list the way "What is the [X] RATE" already does for inflation/
+# interest-rate questions. Same fix shape as the 2026-07-23 incident noted
+# below, just a different missing noun.
 _FACTUAL_LOOKUP_OVERRIDE_PATTERN = re.compile(
     r"\b(rate|rates|amount|amounts|percentage|percent|threshold|thresholds|"
     r"limit|limits|cap|caps|deduction|deductions|credit|credits|exemption|"
     r"exemptions|price|prices|cost|costs|fee|fees|number|value|values|date|"
-    r"dates|deadline|deadlines|mistake|mistakes|checklist|checklists)\b",
+    r"dates|deadline|deadlines|mistake|mistakes|checklist|checklists|"
+    r"gdp|gross\s+domestic\s+product)\b",
     re.IGNORECASE,
 )
 # 2026-07-23 real incident: "What is $500 minus $200?" also matched the
@@ -538,6 +591,7 @@ def validate_answer_or_raise(
         context_numbers = _extract_normalized_numbers(grounding_context)
         query_numbers = _extract_normalized_numbers(query_text) if query_text else set()
         derived_total, derived_shares = _derived_total_and_shares(query_numbers)
+        derived_differences = _derived_differences(query_numbers)
         for match in list(_CLAIMED_FIGURE_PATTERN.finditer(answer_text)) + list(_CLAIMED_DATE_PATTERN.finditer(answer_text)):
             claim_text = match.group()
             if _claim_is_supported(
@@ -547,6 +601,7 @@ def validate_answer_or_raise(
                 provenance=provenance,
                 derived_total=derived_total,
                 derived_shares=derived_shares,
+                derived_differences=derived_differences,
             ):
                 continue
             failures.append(

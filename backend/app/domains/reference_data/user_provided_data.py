@@ -37,6 +37,19 @@ _SIGNED_NUMBER = rf"(\()?\s*[+]?(-)?\s*{_NUMBER}\s*(\))?"
 _PERIOD = r"(Q[1-4]|January|February|March|April|May|June|July|August|September|October|November|December)"
 _PERIOD_RESULTS = re.compile(rf"\b{_PERIOD}\b[^.;]*?revenue\s*{_NUMBER}[^.;]*?expenses?\s*{_NUMBER}", re.I)
 _PERIOD_VALUE = re.compile(rf"\b{_PERIOD}\b\s*{_SIGNED_NUMBER}", re.I)
+# Real gap (2026-08-06): "Q1 2025 $95,000 vs Q1 2026 $112,000, Q2 2025
+# $102,000 vs Q2 2026 $118,500" pairs the SAME quarter across two years,
+# with a bare 4-digit year sitting between the period token and its real
+# dollar figure. _PERIOD_VALUE (below) has no concept of that year
+# annotation, so it matched the year ITSELF as the row's value ("Q1" ->
+# 2025) and silently discarded every real dollar figure in the query —
+# confidently wrong, not just imprecise. Checked before extract_user_data_
+# table's own _PERIOD_VALUE path for exactly that reason: this is a
+# strictly narrower, more specific shape and must win whenever it matches.
+_YOY_PERIOD_PAIR = re.compile(
+    rf"\b{_PERIOD}\s+((?:19|20)\d{{2}})\s+{_NUMBER}\s+(?:versus|vs\.?)\s+{_PERIOD}\s+((?:19|20)\d{{2}})\s+{_NUMBER}",
+    re.I,
+)
 # Live bug: this required the revenue figure to sit immediately after the
 # period marker with only whitespace between them, so natural phrasing like
 # "Q1 revenue $500,000 and gross margin 40%" (the word "revenue" in between)
@@ -140,7 +153,16 @@ _EXTERNAL_EVIDENCE_REQUEST = re.compile(
 _DATA_OPERATION = re.compile(
     r"\b(?:calculat(?:e|ion)|summari[sz]e|compar(?:e|ison)|visuali[sz]e|chart|graph|plot|"
     r"break\s*down|distribution|histogram|box\s*plot|radar|table|analy[sz]e|show|display|"
-    r"rank(?:ing)?|aging|ageing|review|explain|identify)\b",
+    r"rank(?:ing)?|aging|ageing|review|explain|identify|"
+    # Real gap (2026-08-06): "What's the split of revenue by sales
+    # channel..." and "What's the composition of our investment
+    # portfolio..." both named an inline dataset but used none of the
+    # words above, so this gate silently rejected them before extraction
+    # ever ran — the query fell through to normal retrieval/LLM
+    # composition against unrelated reference sources instead of the
+    # user's own supplied figures. Same composition-phrasing family
+    # presentation_dataprofile.py's COMPOSITION intent already recognizes.
+    r"split|composition|share|proportion|mix|allocation)\b",
     re.I,
 )
 _DISTRIBUTION_PREFIX = re.compile(
@@ -229,8 +251,20 @@ _ENTITY_NUMBER_LIST = re.compile(
 # the signed_steps shape presentation_dataprofile.py's _reconciles_as_bridge
 # validates before a waterfall chart is ever offered.
 _BRIDGE_NUMBER = rf"{_NUMBER}\s*([kKmM])?\b"
+# Real gap (2026-08-06): "starting balance $200,000, plus deposits $80,000,
+# minus withdrawals $45,000, minus fees $5,000" — a compact list convention
+# using a leading sign-word ("plus"/"minus") instead of the narrative-verb
+# phrasing ("X added $Y", "Y reduced it by $Z") this whole bridge extractor
+# was originally built for. Two separate gaps: (1) _STARTING_BALANCE
+# required a linking verb ("was"/"is"/"of"/"at") between the label and the
+# number — "starting balance $200,000" has none — and (2) neither
+# _POSITIVE_MOVEMENT nor _NEGATIVE_MOVEMENT recognized SIGN-WORD-FIRST
+# phrasing at all, so the whole query fell through to the generic
+# unordered "Category comparison" fallback, capturing "Minus Withdrawals"
+# as a literal POSITIVE-valued category label instead of a negative
+# movement — silently flipping the sign of real money.
 _STARTING_BALANCE = re.compile(
-    rf"\bstarting\s+([A-Za-z][A-Za-z /&-]{{0,30}}?)\s+(?:was|is|of|at)\s*{_BRIDGE_NUMBER}", re.I,
+    rf"\bstarting\s+([A-Za-z][A-Za-z /&-]{{0,30}}?)\s+(?:(?:was|is|of|at)\s*)?{_BRIDGE_NUMBER}", re.I,
 )
 _POSITIVE_MOVEMENT = re.compile(
     rf"\b([A-Za-z][A-Za-z /&-]{{0,30}}?)\s+(?:added|increased|grew|contributed|generated)(?:\s+it)?\s*{_BRIDGE_NUMBER}", re.I,
@@ -238,6 +272,28 @@ _POSITIVE_MOVEMENT = re.compile(
 _NEGATIVE_MOVEMENT = re.compile(
     rf"\b([A-Za-z][A-Za-z /&-]{{0,30}}?)\s+(?:reduced|decreased|lowered)\s+it\s+by\s*{_BRIDGE_NUMBER}", re.I,
 )
+# Kept as SEPARATE patterns (not folded into the two above via alternation)
+# so each still has its own fixed, predictable group numbering — the
+# narrative and sign-word-first conventions put the label in a different
+# position relative to the number, and _extract_cash_bridge below tries
+# both independently rather than needing to detect which alternative fired.
+_PLUS_MOVEMENT = re.compile(rf"\bplus\s+([A-Za-z][A-Za-z /&-]{{0,30}}?)\s*{_BRIDGE_NUMBER}", re.I)
+_MINUS_MOVEMENT = re.compile(rf"\bminus\s+([A-Za-z][A-Za-z /&-]{{0,30}}?)\s*{_BRIDGE_NUMBER}", re.I)
+
+# Real gap (2026-08-06): "Chart the profit bridge from budget to actual:
+# budgeted profit $200,000, plus higher sales $35,000, minus higher costs
+# $18,000, minus one-time write-off $12,000" has a real base value but no
+# "starting" anchor word at all — _STARTING_BALANCE never matched, so the
+# whole query fell through to the generic unordered category extractor,
+# which captured "Minus Higher Costs $18,000" as a literal POSITIVE
+# category rather than a negative movement — the same silent sign-flip
+# _PLUS_MOVEMENT/_MINUS_MOVEMENT were built to prevent, just missing the
+# base value instead of a movement. Used only as a fallback when
+# _STARTING_BALANCE fails AND at least one plus/minus movement exists
+# (checked by the caller), so it can't hijack an ordinary unsigned
+# "<label> <value>, <label> <value>" list that was never meant to be a
+# bridge.
+_FALLBACK_BASE_VALUE = re.compile(rf"([A-Za-z][A-Za-z /&-]{{0,30}}?)\s+{_BRIDGE_NUMBER}\s*,?\s*$", re.I)
 
 _logger = logging.getLogger(__name__)
 
@@ -455,6 +511,33 @@ def _extract_semicolon_multi_measure_rows(query: str) -> UserDataTable | None:
     )
 
 
+def _extract_yoy_period_comparison(query: str) -> UserDataTable | None:
+    """"Q1 2025 $95,000 vs Q1 2026 $112,000, Q2 2025 $102,000 vs Q2 2026
+    $118,500" — see _YOY_PERIOD_PAIR's own comment for the bug this
+    prevents. Requires every pair to share the exact same two years (in
+    either order) so a genuinely mixed/malformed query falls through to a
+    generic extractor instead of being force-fit into a two-year table."""
+    pairs = _YOY_PERIOD_PAIR.findall(query)
+    if len(pairs) < 2:
+        return None
+    years = sorted({pairs[0][1], pairs[0][4]})
+    if len(years) != 2:
+        return None
+    year_a, year_b = years
+    rows = []
+    for period1, year1, value1, period2, year2, value2 in pairs:
+        by_year = {year1: _decimal(value1), year2: _decimal(value2)}
+        if year_a not in by_year or year_b not in by_year:
+            return None
+        period = period1.upper() if period1.upper().startswith("Q") else period1.title()
+        rows.append((period, by_year[year_a], by_year[year_b]))
+    period_kind = "quarterly" if rows[0][0].startswith("Q") else "monthly"
+    return UserDataTable(
+        f"{year_a} versus {year_b} {period_kind} sales", ("Period", year_a, year_b), tuple(rows),
+        f"Each period's {year_a} and {year_b} figures are exactly as supplied in the request.",
+    )
+
+
 def _extract_period_multi_measure_rows(query: str) -> UserDataTable | None:
     """"Q1 labor $40,000 materials $25,000 overhead $10,000, Q2 ..." — each
     period introduces several measures chained by spaces, not commas, so
@@ -548,18 +631,43 @@ def _extract_cash_bridge(query: str) -> UserDataTable | None:
     presentation_dataprofile.py's _reconciles_as_bridge requirement for a
     waterfall chart by construction, not by luck."""
     start_match = _STARTING_BALANCE.search(query)
-    if start_match is None:
-        return None
-    start_label = _label(start_match.group(1))
-    start_value = _bridge_decimal(start_match.group(2), start_match.group(3))
+    if start_match is not None:
+        start_pos = start_match.start()
+        start_label = _label(start_match.group(1))
+        start_value = _bridge_decimal(start_match.group(2), start_match.group(3))
+    else:
+        earliest_movement = min(
+            (
+                m.start()
+                for pattern in (_PLUS_MOVEMENT, _MINUS_MOVEMENT, _POSITIVE_MOVEMENT, _NEGATIVE_MOVEMENT)
+                for m in pattern.finditer(query)
+            ),
+            default=None,
+        )
+        if earliest_movement is None:
+            return None
+        base_match = _FALLBACK_BASE_VALUE.search(query[:earliest_movement].rsplit(":", 1)[-1])
+        if base_match is None:
+            return None
+        start_pos = -1  # sentinel: always before every real movement's start()
+        start_label = _label(base_match.group(1))
+        start_value = _bridge_decimal(base_match.group(2), base_match.group(3))
 
     movements: list[tuple[int, str, Decimal]] = []
     for match in _POSITIVE_MOVEMENT.finditer(query):
-        if match.start() <= start_match.start():
+        if match.start() <= start_pos:
+            continue
+        movements.append((match.start(), _label(match.group(1)), _bridge_decimal(match.group(2), match.group(3))))
+    for match in _PLUS_MOVEMENT.finditer(query):
+        if match.start() <= start_pos:
             continue
         movements.append((match.start(), _label(match.group(1)), _bridge_decimal(match.group(2), match.group(3))))
     for match in _NEGATIVE_MOVEMENT.finditer(query):
-        if match.start() <= start_match.start():
+        if match.start() <= start_pos:
+            continue
+        movements.append((match.start(), _label(match.group(1)), -_bridge_decimal(match.group(2), match.group(3))))
+    for match in _MINUS_MOVEMENT.finditer(query):
+        if match.start() <= start_pos:
             continue
         movements.append((match.start(), _label(match.group(1)), -_bridge_decimal(match.group(2), match.group(3))))
     if len(movements) < 2:
@@ -635,6 +743,12 @@ def extract_inline_dataset(query: str) -> InlineDataset | None:
         _extract_scatter_pairs(query) or _extract_distribution(query) or _extract_multi_measure_rows(query)
         or _extract_semicolon_multi_measure_rows(query)
         or _extract_cash_bridge(query) or _extract_positional_multi_measure(query)
+        # Tried BEFORE extract_user_data_table: that function's own
+        # _PERIOD_VALUE path has no concept of a year sitting between a
+        # period token and its value ("Q1 2025 $95,000"), so it silently
+        # matches the bare year itself as the row's value. This narrower,
+        # more specific shape must get first refusal whenever it matches.
+        or _extract_yoy_period_comparison(query)
         # Tried only after extract_user_data_table's more specific shapes
         # (revenue/expenses/profit, budget/actual, ...) have already had a
         # chance — its generic "<word> <number>" pairing would otherwise
@@ -662,9 +776,14 @@ def extract_inline_dataset(query: str) -> InlineDataset | None:
         # the words above, so their $-supplied figures rendered bare too.
         else (currency or "") if re.search(
             r"revenue|expense|amount|balance|budget|actual|profit|value|variance|"
-            r"labor|materials|overhead|cost|price|salary|salaries|rent|payroll|spend|fee",
+            r"labor|materials|overhead|cost|price|salary|salaries|rent|payroll|spend|fee|cash",
             header, re.I,
         )
+        # A bare 4-digit year header ("2025"/"2026") can never match any of
+        # the finance keywords above by construction — real gap (2026-08-06)
+        # surfaced by _extract_yoy_period_comparison's own headers, which
+        # are literally the two years being compared, not a metric name.
+        else (currency or "") if re.fullmatch(r"(?:19|20)\d{2}", header)
         else ""
         for header in table.headers[1:]
     )
@@ -701,8 +820,13 @@ def _signed_decimal(open_paren: str, minus: str, digits: str, close_paren: str) 
 
 
 def _label(raw: str) -> str:
+    # Real gap (2026-08-06): "APAC 1,900, LATAM 700" — plain str.title()
+    # mangled every all-caps acronym into "Apac"/"Latam", silently
+    # destroying real region/entity codes. A word typed ALL UPPERCASE in
+    # the query is kept exactly as typed instead of being retitled; mixed-
+    # or lower-case words go through .title() unchanged from before.
     value = re.sub(r"^and\s+", "", raw.strip(), flags=re.I)
-    return " ".join(value.split()).title()
+    return " ".join(word if word.isupper() and len(word) >= 2 else word.title() for word in value.split())
 
 
 def extract_user_data_table(query: str) -> UserDataTable | None:
@@ -780,19 +904,36 @@ def extract_user_data_table(query: str) -> UserDataTable | None:
     if len(balance_rows) >= 2:
         return UserDataTable("Balance comparison", ("Account", "Balance"), balance_rows, "These are the balances supplied in the request.")
 
+    category_matches = list(_CATEGORY_VALUE.finditer(query))
     category_rows = tuple(
-        (_label(name), _signed_decimal(open_p, minus, value, close_p))
-        for name, open_p, minus, value, close_p in _CATEGORY_VALUE.findall(query)
+        (_label(m.group(1)), _signed_decimal(m.group(2), m.group(3), m.group(4), m.group(5)))
+        for m in category_matches
     )
-    value_first_rows = tuple((_label(name), _decimal(value)) for value, name in _VALUE_FIRST_CATEGORY.findall(query))
+    # Real gap (2026-08-06): "Alice 34%, Bob 28%, Carla 41%, ..." lost the
+    # "%" entirely — _CATEGORY_VALUE's number group never captures a
+    # trailing "%", so the resulting header was a bare "Amount" and the
+    # figures were silently presented as unitless counts (and summed into
+    # a meaningless "total") instead of percentages. Checked positionally
+    # right after each match rather than folded into _CATEGORY_VALUE's own
+    # capture groups, so every other caller of that pattern is unaffected.
+    category_is_percent = bool(category_matches) and all(
+        query[m.end():m.end() + 1] == "%" for m in category_matches
+    )
+    value_first_matches = list(_VALUE_FIRST_CATEGORY.finditer(query))
+    value_first_rows = tuple((_label(m.group(2)), _decimal(m.group(1))) for m in value_first_matches)
+    value_first_is_percent = bool(value_first_matches) and all(
+        query[m.end(1):m.end(1) + 1] == "%" for m in value_first_matches
+    )
     # Prefer whichever shape captured more of the query's figures — a loose
     # "Label Number" match can pick up filler words ("We had", "and") as
     # spurious single-figure categories when the sentence is actually in the
     # number-first funnel/count convention, undercounting the real dataset.
     if len(value_first_rows) > len(category_rows) and len(value_first_rows) >= 2:
-        return UserDataTable("Category comparison", ("Category", "Amount"), value_first_rows, "These are the amounts supplied in the request.")
+        header = "Amount (%)" if value_first_is_percent else "Amount"
+        return UserDataTable("Category comparison", ("Category", header), value_first_rows, "These are the amounts supplied in the request.")
     if len(category_rows) >= 2:
-        return UserDataTable("Category comparison", ("Category", "Amount"), category_rows, "These are the amounts supplied in the request.")
+        header = "Amount (%)" if category_is_percent else "Amount"
+        return UserDataTable("Category comparison", ("Category", header), category_rows, "These are the amounts supplied in the request.")
     return None
 
 

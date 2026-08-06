@@ -302,8 +302,25 @@ def _focused_text(query: str) -> str:
         markers = ("Inventory growing substantially",)
     elif any(term in q for term in ("account variance", "unexpected account movement", "unexpected movement in an account", "balance that looks unusual")):
         markers = ("For an unexplained account variance",)
-    elif "cash" in q and "accrual" in q:
+    # Real gap (2026-08-05): "What is the accrual basis of accounting?" (no
+    # "cash") and "What is the cash basis of accounting?" (no "accrual")
+    # each name only one side of the comparison — the old "cash AND
+    # accrual" requirement missed both, silently falling to the else
+    # branch's full _TEXT (15,000+ chars, well over build_grounded_context's
+    # 8,000-char budget), which gets dropped ENTIRELY rather than
+    # truncated, leaving context_text empty and the query answered as
+    # "insufficient sources" despite this exact source existing for it.
+    elif "cash" in q or "accrual" in q:
         markers = ("Cash-basis accounting", "Accrual-basis accounting", "Example without fixed amounts")
+    # Real gap (2026-08-06): "Explain the accounting cycle from transaction
+    # to financial statements" matched no branch either, falling to the
+    # same full-_TEXT path — after the over-budget-chunk fix above stopped
+    # dropping it outright, the answer came from whatever happens to be
+    # FIRST in the ~15,000-char document (cash/accrual basis) rather than
+    # anything about the accounting cycle itself, since truncation has no
+    # topic awareness.
+    elif "accounting cycle" in q or "trial balance" in q:
+        markers = ("Trial-balance preparation starts",)
     else:
         return _TEXT
     selected = [paragraph for paragraph in paragraphs if paragraph.startswith(markers)]

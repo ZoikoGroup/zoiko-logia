@@ -29,6 +29,21 @@ def test_fred_rate_composition_preserves_exact_value_and_date():
     assert answer == "The latest 10-year treasury constant maturity rate is 4.58% as of 2026-07-14. [REF-2]"
 
 
+def test_fred_chunk_formats_fred_api_raw_ten_decimal_values():
+    bundle = ReferenceSourceBundle(
+        source_name="FRED",
+        source_url="https://fred.stlouisfed.org/series/DFF",
+        data=[
+            {"series_id": "DFF", "title": "Federal Funds Effective Rate", "date": "2026-07-17", "value": "3.6300000000"},
+            {"series_id": "DFF", "title": "Federal Funds Effective Rate", "date": "2025-07-17", "value": "4.3300000000"},
+        ],
+    )
+    chunk = to_fred_rag_chunk(bundle, source_id="src-fred")
+    assert "3.6300000000" not in chunk["text"]
+    assert "3.63% (as of 2026-07-17)" in chunk["text"]
+    assert "4.33% on 2025-07-17" in chunk["text"]
+
+
 def test_fed_funds_one_year_trend_composition():
     context = """Federal Reserve Economic Data (FRED) — key US interest rates:
 - Federal Funds Effective Rate (DFF): 3.63% (as of 2026-07-17)

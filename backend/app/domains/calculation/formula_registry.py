@@ -110,6 +110,21 @@ def _req(inputs: dict, name: str) -> Decimal:
     return inputs[name]
 
 
+def _pct(value: Decimal) -> Decimal:
+    """Display-only rounding for a percentage figure interpolated into a
+    "steps" breakdown string. Real gap (2026-08-06): a Decimal percentage
+    division (e.g. 29.166666...) was written straight into the steps text
+    unrounded, producing a 40+ digit repeating-decimal figure ("29.1666666
+    66666666666666666666666666666666666667%") in the user-visible
+    calculation breakdown — the separately-rounded "Result" line already
+    showed the correct "29.17%", so this was purely a display bug in the
+    breakdown, not a precision loss anywhere real. Only formats the steps
+    string; the raw, full-precision value returned in ComputeOutcome is
+    unchanged, since rounding_policy is applied to that independently
+    downstream."""
+    return value.quantize(Decimal("0.01"))
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Formula implementations — each is pure: dict[str, Decimal] -> ComputeOutcome
 # ─────────────────────────────────────────────────────────────────────────
@@ -133,7 +148,7 @@ def _gross_margin(i: dict) -> ComputeOutcome:
         value=value,
         steps=[
             f"Gross profit = Revenue - COGS = {revenue} - {cogs} = {gross_profit}",
-            f"Gross margin = Gross profit / Revenue = {gross_profit} / {revenue} = {value}%",
+            f"Gross margin = Gross profit / Revenue = {gross_profit} / {revenue} = {_pct(value)}%",
         ],
     )
 
@@ -166,7 +181,7 @@ def _operating_margin(i: dict) -> ComputeOutcome:
         value=value,
         steps=[
             f"Operating profit = Revenue - COGS - Operating expenses = {revenue} - {cogs} - {opex} = {operating_profit}",
-            f"Operating margin = Operating profit / Revenue = {operating_profit} / {revenue} = {value}%",
+            f"Operating margin = Operating profit / Revenue = {operating_profit} / {revenue} = {_pct(value)}%",
         ],
         assumptions=["Operating profit excludes interest and taxes (EBIT-style measure)."],
     )
@@ -241,7 +256,7 @@ def _effective_tax_rate(i: dict) -> ComputeOutcome:
     value = (tax / pretax_income) * Decimal(100)
     return ComputeOutcome(
         value=value,
-        steps=[f"Effective tax rate = Total tax expense / Pretax income = {tax} / {pretax_income} = {value}%"],
+        steps=[f"Effective tax rate = Total tax expense / Pretax income = {tax} / {pretax_income} = {_pct(value)}%"],
     )
 
 
@@ -256,7 +271,7 @@ def _profit_margin(i: dict) -> ComputeOutcome:
     if revenue == 0:
         raise InvalidInputError("Revenue cannot be zero when computing profit margin.")
     value = profit / revenue * Decimal(100)
-    return ComputeOutcome(value=value, steps=[f"Profit margin = Profit / Revenue = {profit} / {revenue} = {value}%"])
+    return ComputeOutcome(value=value, steps=[f"Profit margin = Profit / Revenue = {profit} / {revenue} = {_pct(value)}%"])
 
 
 def _percentage_change(i: dict) -> ComputeOutcome:
@@ -264,7 +279,7 @@ def _percentage_change(i: dict) -> ComputeOutcome:
     if start == 0:
         raise InvalidInputError("Starting value cannot be zero for standard percentage change.")
     value = (end - start) / abs(start) * Decimal(100)
-    return ComputeOutcome(value=value, steps=[f"Percentage change = (Ending value - Starting value) / |Starting value| = ({end} - {start}) / |{start}| = {value}%"])
+    return ComputeOutcome(value=value, steps=[f"Percentage change = (Ending value - Starting value) / |Starting value| = ({end} - {start}) / |{start}| = {_pct(value)}%"])
 
 
 def _budget_variance(i: dict) -> ComputeOutcome:
