@@ -118,6 +118,19 @@ class SourceSummary(BaseModel):
     jurisdiction_scope: str
     version_label: str
     status: str
+    # "document" (a source_library.Source row) | "live_api" (a live_sources
+    # provider response). license_gate.check_eligibility() routes on this:
+    # document sources are licence-checked against source_library.Source,
+    # live ones against the LiveSourceProvider registry — same eligibility
+    # vocabulary, different table.
+    #
+    # Defaults to "document" so every existing producer keeps its previous
+    # behaviour; live_sources.service.to_source_summary() is the only place
+    # that sets "live_api". Without the field declared here Pydantic
+    # silently dropped that keyword argument, so the attribute never
+    # existed and Checkpoint A raised AttributeError on the first query
+    # that retrieved anything at all.
+    source_type: str = "document"
 
 
 SourceDisplayState = Literal["show", "summarise", "internal_reasoning_only"]

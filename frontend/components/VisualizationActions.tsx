@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { AlertTriangle, Check, Download, FileSpreadsheet, Loader2, Save } from "lucide-react";
+import { AlertTriangle, Check, Download, FileSpreadsheet, ImageDown, Loader2, Save } from "lucide-react";
 
 type ActionStatus = "idle" | "working" | "success" | "error";
 
@@ -62,6 +62,9 @@ function ActionButton({
 
 export type VisualizationActionsProps = {
   onDownloadPng?: () => boolean | Promise<boolean>;
+  /** Puts the rendered figure on the clipboard as an image, for pasting
+   * straight into a report or deck. Same rasterization as the PNG download. */
+  onCopyImage?: () => boolean | Promise<boolean>;
   onExportCsv?: () => void | Promise<void>;
   onSave?: () => Promise<boolean>;
 };
@@ -70,19 +73,21 @@ export type VisualizationActionsProps = {
  * AnswerVisualizations.tsx passes exactly one of these prop combinations
  * per visualization kind (ECharts: all three, Cytoscape: all three, Mermaid:
  * PNG + save only); a text-only answer never renders this component. */
-export function VisualizationActions({ onDownloadPng, onExportCsv, onSave }: VisualizationActionsProps) {
+export function VisualizationActions({ onDownloadPng, onCopyImage, onExportCsv, onSave }: VisualizationActionsProps) {
   const png = useVisualizationAction(async () => (onDownloadPng ? await onDownloadPng() : false));
+  const copyImage = useVisualizationAction(async () => (onCopyImage ? await onCopyImage() : false));
   const csv = useVisualizationAction(async () => {
     await onExportCsv?.();
     return true;
   });
   const save = useVisualizationAction(async () => (onSave ? await onSave() : false));
 
-  if (!onDownloadPng && !onExportCsv && !onSave) return null;
+  if (!onDownloadPng && !onCopyImage && !onExportCsv && !onSave) return null;
 
   return (
     <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Visualization actions">
       {onDownloadPng && <ActionButton label="Download PNG" icon={Download} status={png.status} onClick={png.trigger} />}
+      {onCopyImage && <ActionButton label="Copy image" icon={ImageDown} status={copyImage.status} onClick={copyImage.trigger} />}
       {onExportCsv && <ActionButton label="Export CSV" icon={FileSpreadsheet} status={csv.status} onClick={csv.trigger} />}
       {onSave && <ActionButton label="Save" icon={Save} status={save.status} onClick={save.trigger} />}
     </div>

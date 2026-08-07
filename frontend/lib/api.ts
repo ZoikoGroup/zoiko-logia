@@ -698,6 +698,14 @@ export type PresentationChart = {
   unit: string;
   domain: "general" | "accounting" | "audit" | "tax";
   summary_mode: "latest" | "total" | "average";
+  // Value rendering, consumed by lib/presentation.ts's formatPresentationValue
+  // and the CSV/markdown exporters built on it. All optional: a payload
+  // without them formats as a plain number, which is the pre-existing
+  // behaviour for every chart that does not declare a money/percent unit.
+  value_format?: "number" | "currency" | "percent";
+  currency_code?: "USD" | "GBP" | "EUR" | null;
+  decimal_places?: number;
+  x_axis_label?: string;
   // Dynamic Visualization Selection v3 — all optional so a v1/v2 payload
   // (live or previously saved, missing these fields entirely) still
   // type-checks and renders unchanged.
@@ -1108,6 +1116,28 @@ export async function recomputeCalculation(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ formula_id: formulaId, inputs }),
   });
+  return res.json();
+}
+
+/** Freshness of every registered official source — backed by
+ * GET /api/v1/live-sources/health (see backend live_sources/router.py's
+ * provider_health), rendered by app/status-health. */
+export type ProviderHealth = {
+  provider_key: string;
+  display_name: string;
+  status: string;
+  integration_type: string;
+  jurisdiction: string;
+  authority_rank: number;
+  last_successful_sync: string | null;
+  last_content_hash: string | null;
+  freshness_sla_seconds: number | null;
+  age_seconds: number | null;
+  freshness: "fresh" | "stale" | "unknown" | "unmonitored";
+};
+
+export async function getProviderHealth(token: string): Promise<ProviderHealth[]> {
+  const res = await authedFetch("/live-sources/health", token);
   return res.json();
 }
 

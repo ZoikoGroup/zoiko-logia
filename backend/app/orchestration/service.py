@@ -213,6 +213,20 @@ from app.domains.rag.redaction import redact_for_external_exposure
 # construction, and answer validation that used to happen ad hoc in this
 # file; retrieve.py itself is unchanged — its output is now treated as
 # preliminary retrieval-layer output that these modules gate and finalise.
+from app.domains.live_sources.authority import (
+    UNKNOWN_RANK as AUTHORITY_UNKNOWN_RANK,
+    AuthorityCandidate,
+    order_by_authority,
+)
+from app.domains.live_sources.classifier import detect_live_data_intent
+from app.domains.live_sources.service import (
+    LIVE_SOURCE_NODE_PREFIX,
+    evaluate_freshness as evaluate_live_source_freshness,
+    fetch_live_data,
+    get_provider_governance,
+    to_source_summary as to_live_source_summary,
+    to_synthetic_chunk as to_live_source_chunk,
+)
 from app.domains.massarius import bundle_builder, license_gate
 from app.domains.massarius import risk_safety as massarius_risk_safety
 from app.domains.massarius.answer_validator import (
@@ -243,6 +257,12 @@ _LIVE_DATA_NODE_PREFIXES = (
     ACCOUNTING_FUNDAMENTALS_NODE_PREFIX,
     BUSINESS_TAX_REVIEW_NODE_PREFIX,
     USER_PROVIDED_DATA_NODE_PREFIX,
+    # World Bank / IMF / OECD / ONS / ECB / ... — the live_sources domain.
+    # Like every prefix above, its chunk is deterministically relevant (a
+    # country+indicator match, not a prose-similarity guess), so it must
+    # survive reranking rather than compete with documents that merely
+    # discuss the topic.
+    LIVE_SOURCE_NODE_PREFIX,
 )
 
 
@@ -746,6 +766,53 @@ class KritonMediator:
                 raw_chunks.insert(0, to_websource_rag_chunk(fx_source, FRANKFURTER_GOVERNED_SOURCE_ID))
         except Exception:
             pass
+        # Live authoritative data for countries the curated US-only bundles
+        # below (BEA GDP, BLS CPI, FRED rates, Census, Treasury) cannot serve.
+        #
+        # Real gap: "what is India's latest GDP?" reached no working source at
+        # all. BEA is correctly skipped for a non-US country, and DBnomics —
+        # the only other non-US economic source wired in — searches free text
+        # and returns nothing usable for it (confirmed live: its top three
+        # datasets for "india gdp" were CEPII trade indicators, OECD education
+        # expenditure, and IMF government finance, none of them GDP, so every
+        # candidate was correctly rejected and the answer degraded to a
+        # clarification). The live_sources domain already had a working World
+        # Bank connector returning exactly this figure — it was simply never
+        # called from here.
+        #
+        # Runs BEFORE DBnomics deliberately: this is a curated
+        # country+indicator lookup, so when it matches it is strictly more
+        # reliable than a free-text dataset search, and being first means the
+        # authoritative figure leads the context.
+        #
+        # Restricted to non-US countries so the curated US bundles below stay
+        # authoritative for US questions and nothing gets two competing
+        # figures for the same indicator. Pre-checked with the cheap Tier 0/1
+        # classifier rather than by calling fetch_live_data() and discarding
+        # the result, so a US question costs no network round trip.
+        _live_intent = detect_live_data_intent(request.query, jurisdiction=request.jurisdiction or "")
+        if _live_intent is not None and _live_intent.country_code != "US":
+            try:
+                outcome = await fetch_live_data(
+                    db, query=request.query, tenant_id=tenant_id,
+                    jurisdiction=request.jurisdiction or "",
+                )
+                if outcome.succeeded and outcome.normalized is not None:
+                    governance = await get_provider_governance(db, outcome.normalized.provider_key)
+                    is_stale, age_seconds = evaluate_live_source_freshness(outcome.normalized, governance)
+                    raw_chunks.insert(0, to_live_source_chunk(
+                        outcome.normalized,
+                        to_live_source_summary(outcome.normalized, is_stale=is_stale),
+                        authority_rank=governance.authority_rank,
+                        authority_jurisdiction=governance.jurisdiction,
+                        is_stale=is_stale,
+                        age_seconds=age_seconds,
+                    ))
+            except Exception:
+                # Same posture as every other injection here: a connector
+                # outage must never break an otherwise-answerable question.
+                pass
+
         try:
             for stat_source in await fetch_stats(request.query):
                 raw_chunks.insert(0, to_websource_rag_chunk(stat_source, DBNOMICS_GOVERNED_SOURCE_ID))
@@ -2834,27 +2901,94 @@ _STANDARD_DEDUCTION_AMOUNTS = {
 }
 
 
-def _standard_deduction_fact(query: str) -> dict | None:
-    if not re.search(r"\bstandard deduction\b", query, re.I):
+_STANDARD_DEDUCTION_URLS = {
+    2023: "https://www.irs.gov/pub/irs-prior/p501--2023.pdf",
+    2024: "https://www.irs.gov/publications/p17/ar01.html",
+    2025: "https://www.irs.gov/irb/2025-45_IRB",
+    2026: "https://www.irs.gov/newsroom/irs-releases-tax-inflation-adjustments-for-tax-year-2026-including-amendments-from-the-one-big-beautiful-bill",
+}
+
+# Ordered longest-match-first: a plain `"single" in query` substring test
+# also fires on "married filing separately" containing no "single", but
+# "married filing jointly" would be missed by a naive scan that matched
+# "married" alone. Patterns are word-anchored for the same reason.
+_STANDARD_DEDUCTION_STATUS_PATTERNS = (
+    ("married filing separately", r"\bmarried(?:\s+(?:couple|individuals?))?\s+filing\s+separately\b"),
+    ("married filing jointly", r"\bmarried(?:\s+(?:couple|individuals?))?\s+filing\s+jointly\b"),
+    ("head of household", r"\bhead\s+of\s+household\b"),
+    ("single", r"\bsingle(?:\s+(?:taxpayer|filer|individual))?\b"),
+)
+
+# Presentation order for table rows, independent of the match order above.
+_STANDARD_DEDUCTION_STATUS_ORDER = (
+    "single", "married filing jointly", "married filing separately", "head of household",
+)
+
+
+def _standard_deduction_request(query: str) -> dict | None:
+    """Resolve every explicitly requested supported year and filing status."""
+    if not re.search(r"\bstandard deductions?\b", query, re.I):
         return None
-    year_match = re.search(r"\b(202[3-6])\b", query)
-    if not year_match:
+    years = sorted({int(year) for year in re.findall(r"\b(202[3-6])\b", query)})
+    if not years:
         return None
     lowered = query.lower()
-    filing_status = next(
-        (status for status in ("married filing separately", "married filing jointly", "head of household", "single") if status in lowered),
-        None,
-    )
-    if filing_status is None:
-        return None
-    year = int(year_match.group(1))
-    urls = {
-        2023: "https://www.irs.gov/pub/irs-prior/p501--2023.pdf",
-        2024: "https://www.irs.gov/publications/p17/ar01.html",
-        2025: "https://www.irs.gov/irb/2025-45_IRB",
-        2026: "https://www.irs.gov/newsroom/irs-releases-tax-inflation-adjustments-for-tax-year-2026-including-amendments-from-the-one-big-beautiful-bill",
+    statuses = {
+        status for status, pattern in _STANDARD_DEDUCTION_STATUS_PATTERNS
+        if re.search(pattern, lowered)
     }
-    return {"year": year, "filing_status": filing_status, "amount": _STANDARD_DEDUCTION_AMOUNTS[year][filing_status], "url": urls[year]}
+    if re.search(r"\b(?:all|each)\s+(?:four\s+)?filing statuses\b", lowered):
+        statuses = set(_STANDARD_DEDUCTION_STATUS_ORDER)
+    ordered_statuses = [status for status in _STANDARD_DEDUCTION_STATUS_ORDER if status in statuses]
+    if not ordered_statuses:
+        return None
+    return {"years": years, "filing_statuses": ordered_statuses}
+
+
+def _standard_deduction_fact(query: str) -> dict | None:
+    """The single-year, single-status case — the only shape
+    _standard_deduction_chunk / _compose_standard_deduction can render.
+    Anything broader is a table, handled by _standard_deduction_year_chunk
+    and _compose_standard_deduction_table instead."""
+    request = _standard_deduction_request(query)
+    if request is None or len(request["years"]) != 1 or len(request["filing_statuses"]) != 1:
+        return None
+    year = request["years"][0]
+    filing_status = request["filing_statuses"][0]
+    return {
+        "year": year,
+        "filing_status": filing_status,
+        "amount": _STANDARD_DEDUCTION_AMOUNTS[year][filing_status],
+        "url": _STANDARD_DEDUCTION_URLS[year],
+    }
+
+
+def _standard_deduction_year_chunk(governed_chunk: dict, request: dict, year: int) -> dict:
+    """One governed evidence chunk per requested tax year, carrying every
+    requested filing status for that year — the multi-year counterpart to
+    _standard_deduction_chunk below."""
+    metadata = dict(governed_chunk.get("metadata", {}))
+    amounts = {
+        status: _STANDARD_DEDUCTION_AMOUNTS[year][status]
+        for status in request["filing_statuses"]
+    }
+    metadata.update({
+        "title": f"IRS — {year} Standard Deduction",
+        "jurisdiction": "US",
+        "file_path": _STANDARD_DEDUCTION_URLS[year],
+        "fact_type": "standard_deduction_table",
+        "year": year,
+        "amounts": amounts,
+    })
+    lines = [f"IRS annual standard deductions for tax year {year}:"]
+    lines.extend(f"- {status}: ${amount:,}." for status, amount in amounts.items())
+    return {
+        **governed_chunk,
+        "text": "\n".join(lines),
+        "metadata": metadata,
+        "score": 1.0,
+        "node_id": f"irs-standard-deduction-table-{year}",
+    }
 
 
 def _standard_deduction_chunk(governed_chunk: dict, fact: dict) -> dict:
@@ -2882,10 +3016,82 @@ def _standard_deduction_chunk(governed_chunk: dict, fact: dict) -> dict:
 def _compose_standard_deduction(chunk: dict, ref_id: str) -> str:
     metadata = chunk["metadata"]
     status = metadata["filing_status"]
+    # The IRS status codes read badly inline ("a married filing jointly
+    # filer"); this is the same fact phrased the way a professional would
+    # write it, with the raw code as a safe fallback.
+    filer_description = {
+        "single": "a single filer",
+        "married filing separately": "a married individual filing separately",
+        "married filing jointly": "a married couple filing jointly",
+        "head of household": "a head-of-household filer",
+    }.get(status, f"a {status} filer")
     return (
-        f"For tax year {metadata['year']}, the basic standard deduction for a "
-        f"{status} filer is ${metadata['amount']:,}. [{ref_id}]"
+        f"For tax year {metadata['year']}, the basic standard deduction for "
+        f"{filer_description} is ${metadata['amount']:,}. [{ref_id}]"
     )
+
+
+def _controlling_chunk_index(
+    reranked: list, query_jurisdiction: str, document_ranks: dict[str, int] | None = None,
+) -> int:
+    """Index of the chunk that should be cited as controlling authority.
+
+    Ranks come from two places, neither of which costs an extra query: a
+    live source carries its catalogue rank on the chunk itself, and a
+    document's rank is derived by the licence gate from the Source row it
+    already reads for eligibility (`document_ranks`, keyed by source_id).
+
+    Falls back to 0 — retrieval order — only when nothing in the bundle has
+    a rank at all. See live_sources/authority.py for the ranks and for why
+    jurisdiction is applied before rank.
+    """
+    if not reranked:
+        return 0
+    ranks = document_ranks or {}
+    candidates = []
+    for index, chunk in enumerate(reranked):
+        metadata = chunk.get("metadata", {}) or {}
+        source_id = str(metadata.get("source_id") or "")
+        rank = metadata.get("authority_rank") or ranks.get(source_id) or AUTHORITY_UNKNOWN_RANK
+        candidates.append(AuthorityCandidate(
+            # Zero-padded: source_id is the hierarchy's final tie-break and
+            # it compares as a string, so an unpadded "10" would sort before
+            # "2" and quietly reorder equally-authoritative chunks.
+            source_id=f"{index:04d}",
+            rank=int(rank),
+            jurisdiction=str(metadata.get("authority_jurisdiction") or metadata.get("jurisdiction") or ""),
+            effective_date=str(metadata.get("effective_date") or metadata.get("version") or ""),
+        ))
+    if all(candidate.rank == AUTHORITY_UNKNOWN_RANK for candidate in candidates):
+        return 0
+    best = order_by_authority(candidates, query_jurisdiction=query_jurisdiction)[0]
+    return int(best.source_id)
+
+
+def _compose_standard_deduction_table(chunks: list[tuple[int, dict]]) -> str:
+    """Multi-year form of _compose_standard_deduction above: one column per
+    tax year, one row per filing status, each cell carrying the [REF-N] of
+    the year it came from so every figure stays individually attributable.
+
+    Takes (index, chunk) pairs rather than bare chunks because the ref
+    number is the chunk's position in the bundle, which the caller knows
+    and the chunk itself does not.
+    """
+    ordered = sorted(chunks, key=lambda item: item[1]["metadata"]["year"])
+    years = [chunk["metadata"]["year"] for _, chunk in ordered]
+    refs = {chunk["metadata"]["year"]: f"REF-{index + 1}" for index, chunk in ordered}
+    statuses = list(ordered[0][1]["metadata"]["amounts"])
+    header = "| Filing status | " + " | ".join(str(year) for year in years) + " |"
+    divider = "|---|" + "---:|" * len(years)
+    rows = []
+    for status in statuses:
+        label = status.title()
+        values = [
+            f"${chunk['metadata']['amounts'][status]:,} [{refs[year]}]"
+            for year, (_, chunk) in zip(years, ordered)
+        ]
+        rows.append(f"| {label} | " + " | ".join(values) + " |")
+    return "\n".join([header, divider, *rows])
 
 
 def _compose_real_gdp_change(context_text: str, ref_id: str) -> str:

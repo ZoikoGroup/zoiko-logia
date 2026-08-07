@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import uuid
 import os
-from typing import Optional
+from typing import Optional, Sequence
 
 from app.core.config import get_settings
 from app.domains.calculation.formula_extraction import extract_named_formula, identify_missing_formula_inputs
@@ -352,9 +352,24 @@ def classify(
     tenant_policy_conflict: bool = False,
     tool_required: bool = False,
     query_id: Optional[str] = None,
+    history: Optional[Sequence[str]] = None,
 ) -> dict:
     """L2 ML semantic scoring + source-confidence routing. Assumes pre_screen()
-    has already been called for this query and returned None (passed)."""
+    has already been called for this query and returned None (passed).
+
+    `history` (prior user queries, most recent last) is ACCEPTED BUT NOT YET
+    USED. service.evaluate() has always forwarded ClassifyRequest.history
+    here, but this signature never declared it, so every L2 classification
+    raised TypeError and the whole answer path returned 500 — the parameter
+    exists so the schema -> service -> classifier contract actually lines up.
+
+    Deliberately inert for now: letting prior turns influence the risk level
+    of the current query changes governed classification behaviour (a
+    follow-up could be scored using context the user did not repeat), which
+    needs its own review rather than arriving as a side effect of a crash
+    fix. Whoever wires it up should start from
+    test_classify_ignores_history_until_contextual_intent_is_implemented,
+    which pins the current no-op so the change cannot be silent."""
     query_id = query_id or _new_query_id()
     rules_applied: list[str] = []
     limitations: list[str] = []

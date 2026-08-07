@@ -10,9 +10,13 @@ import { DynamicAnswerBlocks } from "@/components/DynamicAnswerBlocks";
 import {
   AlertTriangle,
   ArrowUp,
+  Bookmark,
   BookOpen,
   BriefcaseBusiness,
   CheckCircle2,
+  ChevronDown,
+  Copy,
+  Download,
   ExternalLink,
   FileText,
   FolderKanban,
@@ -27,6 +31,7 @@ import {
   PenLine,
   Pin,
   Plus,
+  RotateCcw,
   Search,
   ShieldAlert,
   ShieldCheck,
@@ -35,7 +40,15 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { askKriton, getAuthToken, ApiError, uploadDocument, type AskKritonResponse } from "@/lib/api";
+import {
+  askKriton,
+  createSavedAnswer,
+  getAuthToken,
+  ApiError,
+  uploadDocument,
+  type AskKritonResponse,
+} from "@/lib/api";
+import { safeDownloadName, tableRowsToTsv, writeTextToClipboard } from "@/lib/presentation";
 
 // Web Speech API — not part of TypeScript's default DOM lib.
 interface SpeechRecognitionResultLike {
@@ -145,6 +158,138 @@ function sourcePreview(sourceId: string, url: string | null) {
   return { label: "Kriton knowledge source", detail: "Reviewed source content used to support and validate this answer." };
 }
 
+/** The answer as a self-contained markdown document — used by both Copy and
+ * Download so the clipboard and the .md file can never disagree. Citation
+ * markers are stripped from the prose (they are internal ref ids, meaningless
+ * outside the app) and the same references are restated as a Sources list, so
+ * an exported answer stays attributable. */
+function answerAsMarkdown(query: string, result: AskKritonResponse) {
+  const answer = result.answer;
+  if (!answer) return "";
+  const parts = [`# ${query.trim()}`, "", answerDisplayText(answer.text)];
+
+  if (answer.limitations?.length) {
+    parts.push("", "## Limitations", "", ...answer.limitations.map((l) => `- ${l}`));
+  }
+  if (answer.citations.length) {
+    parts.push("", "## Sources", "");
+    parts.push(...answer.citations.map((c) => {
+      const url = c.url ? ` — ${c.url}` : "";
+      return `- ${c.ref_id}: ${c.title}${url}`;
+    }));
+  }
+  parts.push("", "---", `Risk: ${result.safety.risk_level} · Route: ${result.route} · Confidence: ${readableState(result.confidence_state)}`);
+  return parts.join("\n");
+}
+
+function downloadTextFile(contents: string, filename: string, mime = "text/markdown;charset=utf-8") {
+  const url = URL.createObjectURL(new Blob([contents], { type: mime }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** Copy / Download / Save / Reuse for one composed answer.
+ *
+ * Each button owns a short-lived status so the result is visible without a
+ * toast system: an action that silently succeeds reads as an action that did
+ * nothing. Save is the only one that can fail for a reason the user needs to
+ * act on (auth, server), so it surfaces its error text. */
+function ResponseActions({
+  query, result, onReuse,
+}: {
+  query: string;
+  result: AskKritonResponse;
+  onReuse: () => void;
+}) {
+  const [status, setStatus] = useState<Record<string, "idle" | "busy" | "done" | "error">>({});
+  const [saveError, setSaveError] = useState("");
+
+  function flash(key: string, value: "done" | "error") {
+    setStatus((prev) => ({ ...prev, [key]: value }));
+    window.setTimeout(() => setStatus((prev) => ({ ...prev, [key]: "idle" })), 1800);
+  }
+
+  async function copyAnswer() {
+    try {
+      await writeTextToClipboard(answerAsMarkdown(query, result));
+      flash("copy", "done");
+    } catch {
+      flash("copy", "error");
+    }
+  }
+
+  function downloadAnswer() {
+    downloadTextFile(answerAsMarkdown(query, result), safeDownloadName(query, "md"));
+    flash("download", "done");
+  }
+
+  async function saveAnswer() {
+    const token = getAuthToken();
+    if (!token) {
+      setSaveError("Sign in to save answers.");
+      flash("save", "error");
+      return;
+    }
+    setStatus((prev) => ({ ...prev, save: "busy" }));
+    setSaveError("");
+    try {
+      await createSavedAnswer(token, {
+        query_id: result.query_id,
+        query_text: query,
+        answer_text: result.answer?.text ?? "",
+        risk_level: result.safety.risk_level,
+      });
+      flash("save", "done");
+    } catch (err) {
+      setSaveError(err instanceof ApiError ? err.message : "Could not save this answer.");
+      flash("save", "error");
+    }
+  }
+
+  const actions: { key: string; label: string; doneLabel: string; icon: typeof Copy; onClick: () => void }[] = [
+    { key: "copy", label: "Copy", doneLabel: "Copied", icon: Copy, onClick: copyAnswer },
+    { key: "download", label: "Download .md", doneLabel: "Downloaded", icon: Download, onClick: downloadAnswer },
+    { key: "save", label: "Save", doneLabel: "Saved", icon: Bookmark, onClick: saveAnswer },
+    { key: "reuse", label: "Reuse prompt", doneLabel: "Reuse prompt", icon: RotateCcw, onClick: onReuse },
+  ];
+
+  return (
+    <div className="mt-4 border-t border-line/70 pt-3">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {actions.map(({ key, label, doneLabel, icon: Icon, onClick }) => {
+          const state = status[key] ?? "idle";
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={onClick}
+              disabled={state === "busy"}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition disabled:opacity-50 ${
+                state === "error"
+                  ? "border-bad/40 text-bad"
+                  : state === "done"
+                    ? "border-ok/40 text-ok"
+                    : "border-line text-muted hover:border-brand/40 hover:text-brand"
+              }`}
+            >
+              {state === "busy" ? <Loader2 size={12} className="animate-spin" />
+                : state === "done" ? <CheckCircle2 size={12} />
+                : <Icon size={12} />}
+              {state === "done" ? doneLabel : label}
+            </button>
+          );
+        })}
+      </div>
+      {saveError && <p className="mt-1.5 text-[11px] font-medium text-bad">{saveError}</p>}
+    </div>
+  );
+}
+
 function conversationTitle(query: string) {
   const value = query.replace(/[“”"']/g, "").trim();
   if (/quarterly.*profit|profit.*quarter/i.test(value)) return "Quarterly profit visualization";
@@ -184,16 +329,62 @@ const markdownComponents: Components = {
   code: ({ children }) => <code className="rounded bg-soft px-1 py-0.5 font-mono text-[13px] text-ink">{children}</code>,
   blockquote: ({ children }) => <blockquote className="mb-3 border-l-2 border-line pl-3 italic text-muted">{children}</blockquote>,
   hr: () => <hr className="my-4 border-line" />,
-  table: ({ children }) => (
-    <div className="mb-3 overflow-x-auto rounded-lg border border-line">
-      <table className="w-full text-left text-sm">{children}</table>
-    </div>
-  ),
+  table: ({ children }) => <MarkdownTable>{children}</MarkdownTable>,
   thead: ({ children }) => <thead className="bg-soft">{children}</thead>,
   tr: ({ children }) => <tr className="border-t border-line first:border-t-0">{children}</tr>,
   th: ({ children }) => <th className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted">{children}</th>,
   td: ({ children }) => <td className="px-3 py-2 align-top text-sm text-ink">{children}</td>,
 };
+
+/** A table inside the answer prose — the tax-bracket / rate tables Kriton
+ * writes into its narrative, which are the tables a user most often wants in
+ * a spreadsheet. Distinct from a chart's "View as table" (see
+ * AnswerChartFigure's CopyTableButton), which copies structured chart data;
+ * here the rendered DOM *is* the source, so the copy is read back off the
+ * table element and every column stays exactly as displayed.
+ *
+ * TSV rather than CSV for the same reason as the chart tables: Excel and
+ * Google Sheets paste tab-separated text straight into columns, whereas a
+ * comma-separated paste lands in a single cell. */
+function MarkdownTable({ children }: { children?: React.ReactNode }) {
+  const tableRef = useRef<HTMLTableElement>(null);
+  const [copied, setCopied] = useState(false);
+
+  async function copyTable() {
+    const table = tableRef.current;
+    if (!table) return;
+    const rows = Array.from(table.rows).map((row) =>
+      Array.from(row.cells).map((cell) => cell.textContent ?? ""),
+    );
+    if (!rows.length) return;
+    try {
+      await writeTextToClipboard(tableRowsToTsv(rows));
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      // Clipboard denial is the browser's call, not an app error — the table
+      // is still on screen and still part of the answer's own export.
+    }
+  }
+
+  return (
+    <div className="mb-3 rounded-lg border border-line">
+      <div className="flex justify-end border-b border-line px-2 py-1.5">
+        <button
+          type="button"
+          onClick={copyTable}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2 py-1 text-[11px] font-semibold text-muted transition hover:border-brand/40 hover:text-brand"
+        >
+          {copied ? <CheckCircle2 size={11} /> : <Copy size={11} />}
+          {copied ? "Copied" : "Copy table"}
+        </button>
+      </div>
+      <div className="overflow-x-auto">
+        <table ref={tableRef} className="w-full text-left text-sm">{children}</table>
+      </div>
+    </div>
+  );
+}
 
 function KritonMarkdown({ text }: { text: string }) {
   return (
@@ -394,6 +585,37 @@ export default function AskKritonPage() {
     setOpenMenuId(null);
   }
 
+  /** Whole-thread export: every turn, both roles, each answer with its
+   * sources — the conversation-level counterpart to ResponseActions'
+   * per-answer download. Built from the stored turns rather than the
+   * on-screen ones so a thread can be exported from the sidebar without
+   * opening it first. Turns that errored or never completed are recorded as
+   * such rather than silently dropped, so the export matches the thread. */
+  function downloadChat(entry: RecentEntry) {
+    setOpenMenuId(null);
+    const parts = [
+      `# ${entry.text}`,
+      "",
+      `- **Exported:** ${new Date().toISOString().slice(0, 10)}`,
+      `- **Turns:** ${entry.turns.length}`,
+      "",
+      "---",
+    ];
+    entry.turns.forEach((turn, index) => {
+      parts.push("", `## ${index + 1}. Question`, "", turn.query.trim(), "", "### Kriton", "");
+      if (turn.result?.answer) {
+        parts.push(answerAsMarkdown(turn.query, turn.result).split("\n").slice(2).join("\n").trim());
+      } else if (turn.result?.next_action) {
+        parts.push(`_[${turn.result.outcome}]_ ${turn.result.next_action.message}`);
+      } else if (turn.error) {
+        parts.push(`_[failed]_ ${turn.error}`);
+      } else {
+        parts.push("_[no response recorded]_");
+      }
+    });
+    downloadTextFile(parts.join("\n") + "\n", safeDownloadName(entry.text, "md"));
+  }
+
   function deleteRecent(id: string) {
     setRecents((prev) => {
       const next = prev.filter((r) => r.id !== id);
@@ -505,6 +727,18 @@ export default function AskKritonPage() {
     setUploadStatus("idle");
     setUploadMsg("");
     if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  /** Enter sends; Shift+Enter keeps the newline the textarea is there for.
+   * isComposing guards IME input, where Enter commits the candidate word and
+   * must never be read as "send" — without that check, typing in Japanese,
+   * Chinese or Korean fires the query mid-word. Blocked while a document is
+   * still uploading, matching the send button's own disabled state. */
+  function handleComposerKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+    e.preventDefault();
+    if (uploadStatus === "uploading" || turns.some((t) => t.loading)) return;
+    void handleSubmit(e);
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -663,6 +897,13 @@ export default function AskKritonPage() {
                         </button>
                         <button
                           type="button"
+                          onClick={() => downloadChat(entry)}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-soft"
+                        >
+                          <Download size={13} /> Download
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => deleteRecent(entry.id)}
                           className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-bad hover:bg-bad/10"
                         >
@@ -751,6 +992,7 @@ export default function AskKritonPage() {
                       <textarea
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
+                        onKeyDown={handleComposerKeyDown}
                         placeholder="Ask Kriton..."
                         rows={2}
                         className="min-h-20 w-full resize-none rounded-xl !border-transparent !bg-transparent px-1 py-1 text-base font-medium leading-7 text-ink !shadow-none outline-none placeholder:text-muted"
@@ -924,8 +1166,18 @@ export default function AskKritonPage() {
                                       />
                                     )}
                                     {turn.result.answer.citations.length > 0 && (
-                                      <div className="mt-5 border-t border-line/70 pt-3">
-                                        <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">Sources</p>
+                                      <details className="group mt-5 border-t border-line/70 pt-3" open>
+                                        {/* Collapsible, but open by default: provenance is the
+                                            point of a governed answer, so it must not be a
+                                            thing you have to go looking for. The toggle exists
+                                            for long answers with many citations. */}
+                                        <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-muted transition hover:text-ink">
+                                          <ChevronDown size={12} className="transition-transform group-open:rotate-180" />
+                                          Sources
+                                          <span className="rounded-full bg-soft px-1.5 py-0.5 text-[10px] font-semibold tracking-normal text-muted">
+                                            {turn.result.answer.citations.length}
+                                          </span>
+                                        </summary>
                                         <ul className="mt-2 space-y-1.5">
                                           {turn.result.answer.citations.map((c) => {
                                             const preview = sourcePreview(c.source_id, c.url);
@@ -946,8 +1198,14 @@ export default function AskKritonPage() {
                                             );
                                           })}
                                         </ul>
-                                      </div>
+                                      </details>
                                     )}
+
+                                    <ResponseActions
+                                      query={turn.query}
+                                      result={turn.result}
+                                      onReuse={() => setQuery(turn.query)}
+                                    />
                                   </>
                               ) : action ? (
                                 <div>
@@ -1023,6 +1281,7 @@ export default function AskKritonPage() {
                       <textarea
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
+                        onKeyDown={handleComposerKeyDown}
                         placeholder="Ask a follow-up..."
                         rows={2}
                         className="min-h-14 w-full resize-none rounded-xl !border-transparent !bg-transparent px-1 py-1 text-sm font-medium leading-6 text-ink !shadow-none outline-none placeholder:text-muted"

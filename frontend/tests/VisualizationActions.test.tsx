@@ -45,6 +45,26 @@ describe("VisualizationActions", () => {
     await waitFor(() => expect(screen.getByText("Done")).toBeTruthy());
   });
 
+  it("renders Copy image only when the renderer supports it", async () => {
+    const user = userEvent.setup();
+    const onCopyImage = vi.fn().mockResolvedValue(true);
+    const { rerender } = render(<VisualizationActions onCopyImage={onCopyImage} />);
+    await user.click(screen.getByRole("button", { name: /copy image/i }));
+    await waitFor(() => expect(onCopyImage).toHaveBeenCalledTimes(1));
+
+    rerender(<VisualizationActions onExportCsv={() => {}} />);
+    expect(screen.queryByRole("button", { name: /copy image/i })).toBeNull();
+  });
+
+  it("reports a clipboard-image failure rather than claiming success", async () => {
+    const user = userEvent.setup();
+    // Safari/Firefox without ClipboardItem, or a denied permission.
+    const onCopyImage = vi.fn().mockRejectedValue(new Error("no ClipboardItem"));
+    render(<VisualizationActions onCopyImage={onCopyImage} />);
+    await user.click(screen.getByRole("button", { name: /copy image/i }));
+    await waitFor(() => expect(screen.getByText(/failed/i)).toBeTruthy());
+  });
+
   it("shows a failure state without crashing when an action rejects", async () => {
     const user = userEvent.setup();
     const onDownloadPng = vi.fn().mockRejectedValue(new Error("boom"));

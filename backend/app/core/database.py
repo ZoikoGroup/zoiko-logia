@@ -6,9 +6,16 @@ from collections.abc import AsyncGenerator
 from typing import Generator
 
 from app.core.config import get_settings
+from app.core.net_ipv4 import prefer_ipv4_addresses
 from app.core.supabase_auth import verify_token
 
 settings = get_settings()
+
+# Installed before any engine below opens a socket. This module is imported
+# early by main.py, so the resolver filter is also in place for the outbound
+# HTTP clients (live sources, Supabase auth) that hit the same NAT64 stall.
+if settings.DB_PREFER_IPV4:
+    prefer_ipv4_addresses()
 
 
 def _pool_options(url: str) -> dict:

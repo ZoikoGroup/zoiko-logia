@@ -102,6 +102,48 @@ _COUNTRY_ALIASES: dict[str, tuple[str, str]] = {
     "eurozone": ("EURO_AREA", "Euro area"),
 }
 
+# The canonical jurisdiction token for each resolvable country — the exact
+# spelling the UI dropdown and sources.jurisdiction_scope use, which is NOT
+# the same as the human display label above ("UK" vs "United Kingdom").
+# Callers that need to report "which jurisdiction is this answer scoped to"
+# in the application's own vocabulary go through jurisdiction_for_query()
+# rather than reaching for country_label.
+_JURISDICTION_BY_COUNTRY_CODE: dict[str, str] = {
+    "IN": "India",
+    "US": "US",
+    "GB": "UK",
+    "EURO_AREA": "EU",
+}
+
+# Drift guard: every canonical token must itself be an alias that resolves
+# back to the country code it is registered under. Without this, adding a
+# country to _COUNTRY_ALIASES and mis-spelling it here would silently report
+# the wrong jurisdiction rather than failing at import.
+assert all(
+    _COUNTRY_ALIASES[token.lower()][0] == code
+    for code, token in _JURISDICTION_BY_COUNTRY_CODE.items()
+), "_JURISDICTION_BY_COUNTRY_CODE drifted from _COUNTRY_ALIASES"
+
+
+def jurisdiction_for_query(query: str, jurisdiction: str = "") -> str:
+    """The jurisdiction an answer to `query` is actually scoped to, in the
+    application's own vocabulary ("US" / "UK" / "India" / "EU"), or "" when
+    no country can be resolved.
+
+    Deliberately resolved through detect_live_data_intent() — the same
+    resolver that decides which country's data is actually fetched — so the
+    jurisdiction reported to the user can never disagree with the data they
+    were given. Reimplementing the country match here is exactly how the two
+    drift apart.
+
+    Returns "" rather than guessing when the query names no country and no
+    jurisdiction is selected; the caller decides what to fall back to.
+    """
+    intent = detect_live_data_intent(query, jurisdiction)
+    if intent is None:
+        return ""
+    return _JURISDICTION_BY_COUNTRY_CODE.get(intent.country_code, "")
+
 # World Bank uses its own aggregate codes, not this module's internal country
 # codes — same shape as _OECD_REF_AREA_BY_COUNTRY_CODE and
 # _IMF_ISO3_BY_COUNTRY_CODE below, which already translate for their own

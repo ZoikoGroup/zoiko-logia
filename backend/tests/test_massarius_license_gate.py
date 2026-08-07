@@ -139,6 +139,73 @@ async def test_bundle_authority_level_reflects_real_source_data_not_category_gue
     print("test_bundle_authority_level_reflects_real_source_data_not_category_guess: PASSED")
 
 
+async def test_source_summary_carries_source_type_for_checkpoint_a_routing():
+    """Regression test: check_eligibility() routes on SourceSummary.source_type
+    to decide whether a source is licence-checked against source_library.Source
+    or the LiveSourceProvider registry. The field was being passed by
+    live_sources.service.to_source_summary() but was not declared on the model,
+    so Pydantic silently dropped the keyword argument and the attribute never
+    existed — Checkpoint A then raised
+    'SourceSummary object has no attribute source_type' and returned a 500 on
+    the first query that retrieved anything at all.
+
+    Pure schema test on purpose: it guards the declaration itself, which is
+    what actually broke, and so keeps failing even if the routing logic in
+    license_gate.py is later rewritten."""
+    default_summary = SourceSummary(
+        id="src-1", title="Doc", category="tax",
+        jurisdiction_scope="Global", version_label="v1", status="ACTIVE",
+    )
+    assert default_summary.source_type == "document", (
+        "producers that omit source_type must keep their previous document behaviour"
+    )
+
+    live_summary = SourceSummary(
+        id="live-fred-gdp", title="FRED GDP", category="economic_data",
+        jurisdiction_scope="US", version_label="v1", status="ACTIVE",
+        source_type="live_api",
+    )
+    assert live_summary.source_type == "live_api", (
+        "source_type must be declared on the model or Pydantic drops the kwarg"
+    )
+
+    # The routing predicate Checkpoint A actually uses, exercised directly.
+    sources = [default_summary, live_summary]
+    assert [s.id for s in sources if s.source_type != "live_api"] == ["src-1"]
+    assert [s.id for s in sources if s.source_type == "live_api"] == ["live-fred-gdp"]
+    print("test_source_summary_carries_source_type_for_checkpoint_a_routing: PASSED")
+
+
+async def test_check_eligibility_accepts_a_mixed_document_and_live_source_list():
+    """The end-to-end shape of the crash: a bundle mixing a document source
+    and a live-API source must pass through Checkpoint A without raising.
+    The live source has no LiveSourceProvider registry row here, so it is
+    expected to be excluded rather than admitted — the point is that the call
+    completes instead of blowing up on attribute access."""
+    tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
+    async with AsyncSessionLocal() as db:
+        doc_source = await _make_source(db, tenant_id=tenant_id, licence_state="permitted")
+        await db.commit()
+
+        live_summary = SourceSummary(
+            id="live-unregistered-provider-1", title="Unregistered live feed",
+            category="economic_data", jurisdiction_scope="US", version_label="v1",
+            status="ACTIVE", source_type="live_api",
+        )
+        result = await check_eligibility(
+            db, [_summary_for(doc_source), live_summary], tenant_id=tenant_id
+        )
+
+        assert doc_source.id in {s.id for s in result.eligible}
+        assert live_summary.id not in {s.id for s in result.eligible}, (
+            "a live source with no registry row must not be silently admitted"
+        )
+
+        await db.execute(Source.__table__.delete().where(Source.id == doc_source.id))
+        await db.commit()
+    print("test_check_eligibility_accepts_a_mixed_document_and_live_source_list: PASSED")
+
+
 async def test_raise_if_denied_hard_stops_when_everything_excluded():
     tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
     async with AsyncSessionLocal() as db:
@@ -162,6 +229,8 @@ async def main():
     await test_restricted_licence_source_excluded_from_final_bundle()
     await test_tenant_private_source_excluded_for_other_tenant()
     await test_bundle_authority_level_reflects_real_source_data_not_category_guess()
+    await test_source_summary_carries_source_type_for_checkpoint_a_routing()
+    await test_check_eligibility_accepts_a_mixed_document_and_live_source_list()
     await test_raise_if_denied_hard_stops_when_everything_excluded()
     print("All tests passed successfully!")
 

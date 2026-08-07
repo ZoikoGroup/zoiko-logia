@@ -215,8 +215,16 @@ async def fetch_live_data(db: AsyncSession, *, query: str, tenant_id: str, juris
     )
 
 
+# Every live-source id starts with this, so orchestration can recognise a
+# live-data chunk by node_id alone — that is how such a chunk is kept out of
+# the reranker's reach and marked as mandatory context. Defined here, beside
+# the id format it describes, rather than restated in orchestration where it
+# could drift out of step with make_live_source_id().
+LIVE_SOURCE_NODE_PREFIX = "live-"
+
+
 def make_live_source_id(normalized: NormalizedResponse) -> str:
-    base = f"live-{normalized.provider_key}-{normalized.indicator_code}-{normalized.country_code}"
+    base = f"{LIVE_SOURCE_NODE_PREFIX}{normalized.provider_key}-{normalized.indicator_code}-{normalized.country_code}"
     # Company-lookup results (SEC EDGAR/Companies House) need the company
     # in the id too — otherwise two different companies' identical
     # indicator_code (e.g. both "Assets") would collide onto the same
@@ -409,6 +417,13 @@ def to_synthetic_chunk(
             "file_path": normalized.source_url,
             "source_id": summary.id,
             "source_type": "live_api",
+            # Carried so orchestration/retrieve.py can rebuild this source's
+            # SourceSummary from the chunk alone. A live-API source has no
+            # source_library.Source row to look those facts up from — that
+            # lookup returning None is exactly what used to exclude every
+            # live figure from the bundle as "source_record_not_found".
+            "category": summary.category,
+            "version_label": summary.version_label,
             # Carried on the chunk so the citation layer can decide which
             # source is controlling from the catalogue's authority
             # hierarchy rather than from retrieval position.

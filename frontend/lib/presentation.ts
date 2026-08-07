@@ -51,6 +51,24 @@ export async function writeTextToClipboard(value: string) {
   if (!copied) throw new Error("Clipboard copy was rejected");
 }
 
+/** Writes a rendered figure to the clipboard as a real image, so it pastes
+ * into Word/Slides/Teams as a picture rather than as a file path. There is no
+ * execCommand fallback here: legacy browsers cannot put binary data on the
+ * clipboard at all, and silently copying nothing would be worse than a
+ * reported failure, so this throws and the caller surfaces it.
+ *
+ * Chromium requires the ClipboardItem to be constructed synchronously with a
+ * Promise<Blob> when the blob is produced asynchronously, but passing an
+ * already-resolved Blob is valid everywhere and keeps the call sites simple —
+ * callers rasterize first, then copy. */
+export async function writeImageToClipboard(blob: Blob) {
+  const clipboard = navigator.clipboard;
+  if (!clipboard?.write || typeof ClipboardItem === "undefined") {
+    throw new Error("This browser cannot copy images to the clipboard");
+  }
+  await clipboard.write([new ClipboardItem({ [blob.type || "image/png"]: blob })]);
+}
+
 export function tableRowsToTsv(rows: readonly (readonly string[])[]) {
   return rows
     .map((row) => row.map((cell) => cell.replace(/\s+/g, " ").trim()).join("\t"))

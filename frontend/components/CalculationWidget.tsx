@@ -68,14 +68,28 @@ export function buildWaterfallOption(chartData: { x: string; y: number }[]) {
   };
 }
 
+// Pinned for the same reason as AnswerChartFigure's formatValue and
+// lib/presentation.ts's formatPresentationValue: a calculated figure is part
+// of a governed answer and must not regroup (120,000 -> 1,20,000) according
+// to whose workstation is displaying it. Dates elsewhere in the app do follow
+// the viewer's locale — that is a display preference, this is a number whose
+// exact rendering is quoted, copied and reviewed.
+const VALUE_LOCALE = "en-US";
+
 function formatNumber(raw: string, unit: string): string {
   const value = Number(raw);
   if (Number.isNaN(value)) return raw;
   if (unit === "USD" || unit === "annual_amount" || unit === "monthly_amount") {
-    return value.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
+    return value.toLocaleString(VALUE_LOCALE, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
   }
-  if (unit === "percent") return `${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}%`;
-  return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  if (unit === "percent") return `${value.toLocaleString(VALUE_LOCALE, { maximumFractionDigits: 2 })}%`;
+  return value.toLocaleString(VALUE_LOCALE, { maximumFractionDigits: 2 });
+}
+
+/** Chart tooltips quote the same governed figures as the widget body, so they
+ * use the same pinned locale rather than the viewer's. */
+function formatTooltipCurrency(value: unknown): string {
+  return Number(value).toLocaleString(VALUE_LOCALE, { style: "currency", currency: "USD" });
 }
 
 export function CalculationWidget({
@@ -178,7 +192,7 @@ export function CalculationWidget({
         <Pie data={chartData} dataKey="y" nameKey="x" innerRadius={48} outerRadius={82} paddingAngle={2}>
           {chartData.map((entry, index) => <Cell key={entry.x} fill={palette[index % palette.length]} />)}
         </Pie>
-        <Tooltip formatter={(value) => Number(value).toLocaleString(undefined, { style: "currency", currency: "USD" })} />
+        <Tooltip formatter={formatTooltipCurrency} />
       </PieChart>;
     }
     if (widget.chart_type === "gauge") {
@@ -202,7 +216,7 @@ export function CalculationWidget({
         <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
         <XAxis type="number" tick={{ fill: "var(--muted)", fontSize: 11 }} />
         <YAxis type="category" dataKey="x" width={90} tick={{ fill: "var(--muted)", fontSize: 11 }} />
-        <Tooltip formatter={(value) => Number(value).toLocaleString(undefined, { style: "currency", currency: "USD" })} />
+        <Tooltip formatter={formatTooltipCurrency} />
         <Bar dataKey="quick" name="Quick assets" stackId="a" fill="var(--brand)" isAnimationActive={false} />
         <Bar dataKey="inventory" name="Inventory" stackId="a" fill="#f4b860" isAnimationActive={false} />
         <Bar dataKey="liabilities" name="Current liabilities" stackId="a" fill="#67c7c2" isAnimationActive={false} />
@@ -213,7 +227,7 @@ export function CalculationWidget({
         <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
         <XAxis dataKey="x" stroke="var(--muted)" tick={{ fill: "var(--muted)", fontSize: 10 }} interval={0} />
         <YAxis stroke="var(--muted)" tick={{ fill: "var(--muted)", fontSize: 11 }} width={70} />
-        <Tooltip formatter={(value) => [Number(value).toLocaleString(undefined, { style: "currency", currency: "USD" }), "Amount"]} />
+        <Tooltip formatter={(value) => [formatTooltipCurrency(value), "Amount"]} />
         <Bar dataKey="y" radius={[5, 5, 0, 0]} isAnimationActive={false}>
           {chartData.map((entry, index) => <Cell key={entry.x} fill={palette[index % palette.length]} />)}
         </Bar>
@@ -223,7 +237,7 @@ export function CalculationWidget({
       <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
       <XAxis dataKey="x" stroke="var(--muted)" tick={{ fill: "var(--muted)", fontSize: 11 }} />
       <YAxis stroke="var(--muted)" tick={{ fill: "var(--muted)", fontSize: 11 }} width={70} />
-      <Tooltip formatter={(value) => [Number(value).toLocaleString(undefined, { style: "currency", currency: "USD" }), widget.chart_y_label]} />
+      <Tooltip formatter={(value) => [formatTooltipCurrency(value), widget.chart_y_label]} />
       <Line type="monotone" dataKey="y" stroke="var(--brand)" strokeWidth={2} dot={false} />
     </LineChart>;
   }

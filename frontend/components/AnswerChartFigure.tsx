@@ -32,16 +32,18 @@ import {
   ZAxis,
 } from "recharts";
 import type ReactECharts from "echarts-for-react";
-import { ArrowDownRight, ArrowUpRight } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, Check, Copy } from "lucide-react";
 import { getAuthToken, getVisualizationPreferences, putVisualizationPreferences, type PresentationChart, type VisualizationPreferences } from "@/lib/api";
 import { DOMAIN_LABELS, chartFamily } from "@/lib/presentationLabels";
+import { formatPresentationValue, tableRowsToTsv, writeImageToClipboard, writeTextToClipboard } from "@/lib/presentation";
+import { serializeContainerSvg, svgToPngBlob } from "@/lib/export/svgToPngBlob";
 import { BoxPlotChart } from "@/components/BoxPlotChart";
 import { EChartsPresentationChart } from "@/components/EChartsPresentationChart";
 import { ChartErrorBoundary } from "@/components/ChartErrorBoundary";
 import { emitVisualizationEvent } from "@/lib/telemetry";
 import { VisualizationActions } from "@/components/VisualizationActions";
 import { exportSvgElementPng } from "@/lib/export/exportSvgElementPng";
-import { exportEChartPng } from "@/lib/export/exportEChartPng";
+import { echartToPngBlob, exportEChartPng } from "@/lib/export/exportEChartPng";
 import { exportPresentationChartCsv } from "@/lib/export/exportPresentationChartCsv";
 import { exportPresentationWaterfallCsv } from "@/lib/export/exportPresentationWaterfallCsv";
 import { saveVisualization } from "@/lib/export/saveVisualization";
@@ -73,13 +75,21 @@ function formatRecommendedView(chart: PresentationChart): string {
   return formatChartTypeLabel(chart.type);
 }
 
+// Pinned to en-US rather than the workstation locale, matching
+// lib/presentation.ts's formatPresentationValue — a governed financial report
+// must read identically for every reviewer, and an undefined locale silently
+// regroups 120,000 as 1,20,000 on an en-IN machine. That mismatch also made
+// the chart disagree with its own "Copy table" output, which has always gone
+// through the pinned formatter.
+const VALUE_LOCALE = "en-US";
+
 function formatValue(value: number, unit: string): string {
-  if (unit === "%") return `${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}%`;
+  if (unit === "%") return `${value.toLocaleString(VALUE_LOCALE, { maximumFractionDigits: 2 })}%`;
   const currency = unit === "$" || unit === "USD" ? "USD" : unit === "£" || unit === "GBP" ? "GBP" : unit === "€" || unit === "EUR" ? "EUR" : null;
   if (currency) {
-    return value.toLocaleString(undefined, { style: "currency", currency, maximumFractionDigits: 2 });
+    return value.toLocaleString(VALUE_LOCALE, { style: "currency", currency, maximumFractionDigits: 2 });
   }
-  return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return value.toLocaleString(VALUE_LOCALE, { maximumFractionDigits: 2 });
 }
 
 /** series[1] minus series[0] per category — e.g. Actual minus Budget — so a
@@ -198,6 +208,46 @@ function buildLollipopData(chart: PresentationChart): { category: string; value:
     category, value: Number(chart.series[0]?.values[index] ?? 0),
   }));
   return [...rows].sort((a, b) => b.value - a.value);
+}
+
+/** Copies the "View as table" data as TSV rather than CSV: TSV is what
+ * Excel and Google Sheets paste straight into columns, which is the whole
+ * point of copying a governed figure table. CSV stays available as a file
+ * download via VisualizationActions. Values are formatted with the chart's
+ * own currency/percent settings so a pasted cell reads the same as the one
+ * on screen. */
+function CopyTableButton({ chart }: { chart: PresentationChart }) {
+  const [copied, setCopied] = useState(false);
+
+  async function copy() {
+    const header = [chart.x_axis_label || "Label", ...chart.series.map((s) => s.name)];
+    const rows = chart.categories.map((category, index) => [
+      category,
+      ...chart.series.map((series) => {
+        const raw = Number(series.values[index]);
+        return Number.isFinite(raw) ? formatPresentationValue(raw, chart) : "";
+      }),
+    ]);
+    try {
+      await writeTextToClipboard(tableRowsToTsv([header, ...rows]));
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      // Clipboard denial is the browser's call, not an app error — the
+      // table is still on screen and still exportable as CSV.
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2 py-1 text-[11px] font-semibold text-muted transition hover:border-brand/40 hover:text-brand"
+    >
+      {copied ? <Check size={11} /> : <Copy size={11} />}
+      {copied ? "Copied" : "Copy table"}
+    </button>
+  );
 }
 
 function buildTableAlternative(chart: PresentationChart) {
@@ -676,6 +726,9 @@ export function AnswerChartFigure({
         }}
       >
         <summary className="cursor-pointer text-xs font-semibold text-muted">View as table</summary>
+        <div className="mt-2 flex justify-end">
+          <CopyTableButton chart={chart} />
+        </div>
         <div className="mt-2 overflow-x-auto">{buildTableAlternative(chart)}</div>
       </details>
       <div className="border-t border-line px-4 py-3">
@@ -689,6 +742,20 @@ export function AnswerChartFigure({
             // (returns/resolves false) never reports success.
             if (ok) emitVisualizationEvent({ ...telemetryBase, event_name: "visualization_exported_png" });
             return ok;
+          }}
+          onCopyImage={async () => {
+            // Same rasterization as the download above, so the pasted figure
+            // and the saved file are the same image.
+            const blob =
+              usesGrammarRenderer || chart.type === "box_plot" || ECHARTS_PRESENTATION_TYPES.has(chart.type)
+                ? echartToPngBlob(echartsRef)
+                : await svgToPngBlob(serializeContainerSvg(containerRef.current) ?? "");
+            if (!blob) return false;
+            await writeImageToClipboard(blob);
+            // Counted as a PNG export: it is the same artefact leaving the
+            // app, just via the clipboard instead of the filesystem.
+            emitVisualizationEvent({ ...telemetryBase, event_name: "visualization_exported_png" });
+            return true;
           }}
           onExportCsv={async () => {
             if (chart.type === "waterfall") exportPresentationWaterfallCsv(chart);

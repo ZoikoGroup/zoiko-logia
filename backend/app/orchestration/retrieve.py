@@ -28,6 +28,8 @@ from functools import lru_cache
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.domains.jurisdiction_locale.service import acceptable_jurisdiction_scopes
+from app.domains.live_sources.classifier import jurisdiction_for_query
 from app.domains.source_library.service import list_sources, get_source_by_id
 from app.orchestration.schemas import SourceBundle, SourceSummary
 from app.orchestration.routing_matrix import (
@@ -383,6 +385,28 @@ _ELIGIBLE_STATUSES = {"ACTIVE", "APPROVED"}
 _RESTRICTED_STATUSES = {"DRAFT", "DEPRECATED", "BLOCKED", "RESTRICTED"}
 
 
+def _jurisdiction_ok(scope: str, jurisdiction: str) -> bool:
+    """Is a source scoped to `scope` in-scope for a request asking about
+    `jurisdiction`?
+
+    A plain `scope in ("Global", jurisdiction)` equality test looks right and
+    is wrong for state-qualified US jurisdictions, which are additive to
+    federal law rather than a replacement for it. No source carries the
+    literal scope "US-CA" — federal content is tagged "US" and state content
+    "CA" — so equality excluded both, and a California tax question resolved
+    to 0 eligible / 27 excluded (see jurisdiction_locale/service.py, which
+    owns the expansion and records that live confirmation).
+
+    Every non-state-qualified jurisdiction still matches only itself, so this
+    is strictly a widening for the case that was broken.
+    """
+    if not jurisdiction:
+        return True
+    if scope == "Global":
+        return True
+    return scope in acceptable_jurisdiction_scopes(jurisdiction)
+
+
 @lru_cache(maxsize=256)
 def infer_category(query: str) -> str:
     """Keyword match always wins when it hits (unchanged, zero behavior
@@ -537,6 +561,10 @@ async def build_source_bundle(
 
     eligible = []
     excluded = []
+    # Live-API sources are already SourceSummary-shaped rather than
+    # source_library rows, so they are collected separately and merged into
+    # the bundle at the end — see the live_api branch in the chunk loop.
+    live_summaries: list[SourceSummary] = []
     exclusion_reasons = []
     has_restricted = False
     has_conflict = False
@@ -575,7 +603,7 @@ async def build_source_bundle(
     )
     for c in candidates:
         version_status = c["latest_version"].status
-        jur_ok = (not jurisdiction) or c["jurisdiction_scope"] in ("Global", jurisdiction)
+        jur_ok = _jurisdiction_ok(c["jurisdiction_scope"], jurisdiction)
         is_live_fetch_only = c["id"] in _SINGLE_SOURCE_IS_SUFFICIENT
         has_real_content = chunk_source_ids is None or c["id"] in chunk_source_ids
 
@@ -632,13 +660,40 @@ async def build_source_bundle(
                     continue
                 checked_source_ids.add(source_id)
 
+                # A live-API source (World Bank, ONS, ECB, ...) is governed by
+                # the LiveSourceProvider registry, not by source_library —
+                # there is deliberately no Source row to look up. Checking it
+                # against source_library anyway excluded every live figure as
+                # "source_record_not_found", which is how a query whose answer
+                # had already been fetched successfully still degraded to
+                # "could not find sufficient sources".
+                #
+                # Eligibility is NOT decided here: the summary carries
+                # source_type="live_api", and licence_gate.check_eligibility()
+                # routes on exactly that field to check the provider's
+                # registry row (DISABLED / restricted licence / tenant
+                # boundary) on every request. Admitting it here only lets it
+                # reach that gate.
+                if meta.get("source_type") == "live_api":
+                    live_summaries.append(SourceSummary(
+                        id=source_id,
+                        title=title,
+                        category=meta.get("category") or category,
+                        jurisdiction_scope=meta.get("jurisdiction") or "",
+                        version_label=meta.get("version_label") or meta.get("version") or "",
+                        status="ACTIVE",
+                        source_type="live_api",
+                    ))
+                    seen_ids.add(source_id)
+                    continue
+
                 governed = await get_source_by_id(db, source_id, tenant_id=tenant_id)
                 if governed is None:
                     exclusion_reasons.append(f"{source_id}: source_record_not_found")
                     continue
 
                 version_status = governed["latest_version"].status if governed["latest_version"] else None
-                jur_ok = (not jurisdiction) or governed["jurisdiction_scope"] in ("Global", jurisdiction)
+                jur_ok = _jurisdiction_ok(governed["jurisdiction_scope"], jurisdiction)
 
                 if version_status in _RESTRICTED_STATUSES:
                     excluded.append(governed)
@@ -666,15 +721,20 @@ async def build_source_bundle(
         for v in dated_versions
     )
 
-    # Determine confidence_state per §7.2
+    # Determine confidence_state per §7.2. A live-API source is evidence like
+    # any other — it carries the actual figure — so it counts towards the
+    # eligible total rather than leaving an answer that has real data
+    # reported as "insufficient".
+    total_eligible = len(eligible) + len(live_summaries)
     if expired:
         confidence_state = CONF_STALE
-    elif has_restricted and len(eligible) == 0:
+    elif has_restricted and total_eligible == 0:
         confidence_state = CONF_RESTRICTED
-    elif len(eligible) == 0:
+    elif total_eligible == 0:
         confidence_state = CONF_INSUFFICIENT
     elif (
         len(eligible) == 1
+        and not live_summaries
         and eligible[0]["id"] not in _SINGLE_SOURCE_IS_SUFFICIENT
         and not any(
             marker in eligible[0]["title"].lower()
@@ -694,26 +754,41 @@ async def build_source_bundle(
         c["jurisdiction_scope"] for c in eligible
         if c["jurisdiction_scope"] and c["jurisdiction_scope"] != "Global"
     }
-    us_authority_present = any(
-        marker in c["title"].lower()
-        for c in eligible
-        for marker in ("irs ", "pcaob", "congress.gov", "sec ", "u.s. code")
-    )
-    national_us_data = category in {"economic-data", "interest-rate", "exchange-rate"}
+    # What jurisdiction is this answer actually scoped to?
+    #
+    # Previously this forced "US" whenever the category was economic-data /
+    # interest-rate / exchange-rate, or whenever an eligible source's title
+    # contained a US marker ("irs ", "pcaob", ...). Both were wrong for any
+    # non-US question in those categories: "what is India's current GDP?"
+    # classifies as economic-data, so the bundle reported jurisdiction "US"
+    # regardless of what the user selected or which country the query named —
+    # and the reported jurisdiction then contradicted the data actually
+    # fetched.
+    #
+    # Resolution order, most authoritative first:
+    #   1. the user's explicit selection — it already governs both retrieval
+    #      filtering (_jurisdiction_ok) and the live-data country, so the
+    #      bundle must agree with it;
+    #   2. the country the query itself names, resolved through the very same
+    #      classifier that chooses which country's live data to fetch, so the
+    #      label and the data cannot disagree;
+    #   3. the sources' own jurisdiction_scope, when they unanimously agree;
+    #   4. "" — unknown, rendered as "Any jurisdiction".
     resolved_jurisdiction = (
-        "US" if us_authority_present or national_us_data
-        else jurisdiction
-    ) or (
-        next(iter(explicit_scopes)) if len(explicit_scopes) == 1
-        else ""
+        jurisdiction
+        or jurisdiction_for_query(query, jurisdiction)
+        or (next(iter(explicit_scopes)) if len(explicit_scopes) == 1 else "")
     )
 
     return SourceBundle(
         source_bundle_id=f"sb-{uuid.uuid4().hex[:12]}",
         retrieval_method="keyword_mvp",  # §7: do not label as RAG
-        eligible_source_count=len(eligible),
+        eligible_source_count=total_eligible,
         excluded_source_count=len(excluded),
-        sources=[
+        # Live-API summaries lead: they carry the figure the question actually
+        # asked for, whereas the document sources beside them typically only
+        # describe the indicator.
+        sources=live_summaries + [
             SourceSummary(
                 id=c["id"],
                 title=c["title"],
