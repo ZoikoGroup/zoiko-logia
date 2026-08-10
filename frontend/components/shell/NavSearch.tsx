@@ -49,6 +49,16 @@ export function NavSearch() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  useEffect(() => {
+    const clearForContextSwitch = () => {
+      setQuery("");
+      setOpen(false);
+      setActiveIndex(0);
+    };
+    window.addEventListener("zoiko:context-changed", clearForContextSwitch);
+    return () => window.removeEventListener("zoiko:context-changed", clearForContextSwitch);
+  }, []);
+
   function goTo(href: string) {
     router.push(href);
     setQuery("");

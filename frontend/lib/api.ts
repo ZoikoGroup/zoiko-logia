@@ -1,5 +1,7 @@
 import { supabase } from "@/lib/supabase";
 import { getCurrentAccessToken } from "@/lib/session-token";
+import type { GovernanceDashboardViewModel } from "@/lib/governance-dashboard-types";
+import type { CommandCenterViewModel } from "@/lib/command-center-types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010/api/v1";
 
@@ -104,6 +106,42 @@ async function authedFetch(path: string, token: string, init?: RequestInit): Pro
     throw new ApiError(res.status, body?.detail ?? `Request to ${path} failed`);
   }
   return res;
+}
+
+export async function getGovernanceDashboard(
+  token: string,
+  options: { environment: string; jurisdiction: string; windowDays: number },
+  signal?: AbortSignal,
+): Promise<GovernanceDashboardViewModel> {
+  const query = new URLSearchParams({
+    environment: options.environment,
+    jurisdiction: options.jurisdiction,
+    window_days: String(options.windowDays),
+  });
+  const res = await authedFetch(`/governance-dashboard?${query}`, token, { signal });
+  return res.json();
+}
+
+export async function getCommandCenter(
+  token: string,
+  context: { jurisdiction: string; framework: string; period: string },
+  signal?: AbortSignal,
+): Promise<CommandCenterViewModel> {
+  const query = new URLSearchParams(context);
+  const res = await authedFetch(`/command-center?${query}`, token, { signal });
+  return res.json();
+}
+
+export async function switchCommandCenterContext(
+  token: string,
+  payload: { jurisdiction: string; framework: string; period: string; previous_context_token: string },
+): Promise<{ accepted: boolean; boundaryType: string }> {
+  const res = await authedFetch("/command-center/context", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
 }
 
 export async function listRoles(token: string): Promise<Role[]> {
@@ -499,11 +537,58 @@ export type AskKritonRequest = {
   query: string;
   jurisdiction?: string;
   mode?: string;
-  /** Playground overrides — not trusted from body in production */
-  source_confidence?: string;
-  pre_bundle_state?: string;
-  privacy_class?: string;
+  clarification_cycle?: number;
+  /** Scopes chart-repetition/telemetry to one thread. Not yet read by the
+   * backend — accepted here so the frontend contract is forward-compatible. */
+  conversation_id?: string;
 };
+
+// ---- Top-level response ----
+
+export type OutcomeType =
+  | "answered"
+  | "refused"
+  | "clarification_required"
+  | "escalated"
+  | "limited_response"
+  | "rejected";
+
+export type RouteType =
+  | "LLM"
+  | "REFUSAL"
+  | "CLARIFICATION"
+  | "HUMAN_REVIEW"
+  | "REFERRAL"
+  | "SECURITY_INCIDENT"
+  | "REJECTED";
+
+export type ConfidenceState =
+  | "sufficient"
+  | "limited"
+  | "insufficient"
+  | "conflicting_sources"
+  | "stale_sources"
+  | "restricted_sources";
+
+/** §12 SafetyState — frontend renders from this, not by parsing answer text */
+export type SafetyState = {
+  risk_level: "ZERO" | "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
+  policy_state: "allowed" | "blocked" | "needs_more_context";
+  disclaimer_required: boolean;
+  refusal_text?: string;
+};
+
+export type NextAction = {
+  type: string;  // ask_clarifying_question | escalate | refusal | security_incident | composition_failed
+  message: string;
+};
+
+/** §12 — opaque audit reference; never exposes internal hashes */
+export type AuditReference = {
+  audit_chain_id: string;
+};
+
+// ---- Source grounding ----
 
 export type SourceSummary = {
   id: string;
@@ -529,62 +614,140 @@ export type SourceBundle = {
   confidence_state: ConfidenceState;
 };
 
-export type ConfidenceState =
-  | "sufficient"
-  | "limited"
-  | "insufficient"
-  | "conflicting_sources"
-  | "stale_sources"
-  | "restricted_sources";
-
 export type SourceCitation = {
   ref_id: string;
   source_id: string;
   title: string;
-  /** Public URL the answer was grounded in (web sources) — clickable in the UI. */
-  url?: string | null;
+  /** External URL, internal doc link, or null. */
+  url: string | null;
+  /** Exact supporting excerpt — not yet returned by the backend. */
+  evidence_preview?: string;
+};
+
+// ---- The answer itself ----
+
+export type ResponseBlockType =
+  | "markdown"
+  | "visualization"
+  | "calculation"
+  | "limitations"
+  | "citations"
+  | "suggested_actions";
+
+export type ResponseBlock = {
+  id: string;
+  type: ResponseBlockType;
+  content?: string | null;
+  /** Points into charts/guides/graphs/etc. */
+  resource_ids: string[];
+};
+
+// ---- Calculation widget (interactive slider + chart) ----
+
+export type WidgetInput = {
+  name: string;
+  label: string;
+  value: string;   // Decimal-as-string
+  unit: string;
+  min: string;      // Decimal-as-string
+  max: string;      // Decimal-as-string
+  step: string;     // Decimal-as-string
+};
+
+export type ChartPoint = { x: string; y: string };
+
+export type CalculationWidget = {
+  formula_id: string;
+  formula_name: string;
+  formula_display: string;
+  methodology_reference: string;
+  inputs: WidgetInput[];
+  output_label: string;
+  output_value: string;
+  output_unit: string;
+  chart_type: "line" | "bar" | "donut" | "gauge" | "waterfall" | "stacked_bar" | "bullet" | "treemap" | "sankey" | "kpi";
+  chart_label: string;
+  chart_x_label: string;
+  chart_y_label: string;
+  chart_points: ChartPoint[];
+  calculation_id: string;
+};
+
+// ---- Presentation / visualization payload ----
+
+export type PresentationChartType =
+  | "bar" | "line" | "area" | "donut" | "dual_axis" | "grouped_bar" | "stacked_bar"
+  | "percentage_stacked_bar" | "diverging_bar" | "histogram" | "box_plot" | "radar"
+  | "funnel" | "slope" | "scatter" | "bubble" | "heatmap" | "correlation_matrix"
+  | "dumbbell" | "lollipop" | "bullet" | "waterfall" | "composition_bar";
+
+export type PresentationSeries = { name: string; values: string[]; unit: string };
+
+export type VisualizationGrammar = {
+  version: "1.0";
+  renderer: "echarts";
+  composition: "layer" | "facet";
+  layers: Array<{
+    mark: "bar" | "line" | "area" | "point";
+    series_index: number;
+    axis: "primary" | "secondary";
+    stack?: string | null;
+  }>;
+  facet_columns?: number | null;
+  fallback_chart_type?: PresentationChartType | null;
+};
+
+export type PresentationChart = {
+  chart_id: string;
+  type: PresentationChartType;
+  title: string;
+  categories: string[];
+  series: PresentationSeries[];
+  unit: string;
+  domain: "general" | "accounting" | "audit" | "tax";
+  summary_mode: "latest" | "total" | "average";
+  // Optional — chart-selection alternatives, telemetry, and personalization
+  // metadata layered on across v3–v10; never required for rendering.
+  alternatives?: PresentationChartType[];
+  original_chart_type?: PresentationChartType | null;
+  fallback_note?: string | null;
+  schema_version?: string;
+  grammar?: VisualizationGrammar | null;
+  deterministic_candidates?: PresentationChartType[];
+  candidate_scores?: Record<string, number>;
+  validation_result?: "accepted" | "safe_fallback";
+};
+
+export type PresentationGuide = Record<string, unknown>;
+export type PresentationGraph = Record<string, unknown>;
+
+export type AnswerPresentation = {
+  layout: "concise" | "descriptive" | "comparison" | "step_by_step" | "data_visualization" | "calculation";
+  table_count: number;
+  has_steps: boolean;
+  charts: PresentationChart[];
+  guides: PresentationGuide[];
+  graphs: PresentationGraph[];
+  sections: string[];
+  follow_up_questions: string[];
+  response_form?: "TEXT_ONLY" | "TEXT_KPI" | "TEXT_TABLE" | "TEXT_CHART" | "TEXT_GRAPH" | "TEXT_FLOWCHART" | "TEXT_TIMELINE" | "TEXT_MULTI_VISUAL" | "VISUAL_ONLY";
+  visual_required?: boolean;
+  visual_family?: "NONE" | "STATISTICAL" | "RELATIONSHIP" | "PROCESS" | "TABULAR" | "MULTI";
+  planner_confidence?: number;
 };
 
 export type ComposedAnswer = {
   text: string;
   citations: SourceCitation[];
   limitations: string[];
+  calculation_widget?: CalculationWidget | null;
+  presentation?: AnswerPresentation | null;
+  response_mode?: "concise" | "educational" | "analytical" | "calculation" | "workflow" | "compound";
+  /** Preferred, ordered rendering path — not yet returned by the backend. */
+  blocks?: ResponseBlock[];
   /** @deprecated use text — retained for backward compatibility */
   output_text?: string;
 };
-
-/** §12 SafetyState — frontend renders from this, not by parsing answer text */
-export type SafetyState = {
-  risk_level: "ZERO" | "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
-  policy_state: "allowed" | "blocked" | "needs_more_context";
-  disclaimer_required: boolean;
-  refusal_text?: string;
-};
-
-export type NextAction = {
-  type: string;  // ask_clarifying_question | escalate | refusal | security_incident | composition_failed
-  message: string;
-};
-
-/** §12 — opaque audit reference; never exposes internal hashes */
-export type AuditReference = {
-  audit_chain_id: string;
-};
-
-export type OutcomeType =
-  | "answered"
-  | "refused"
-  | "clarification_required"
-  | "escalated"
-  | "rejected";
-
-export type RouteType =
-  | "LLM"
-  | "REFUSAL"
-  | "CLARIFICATION"
-  | "HUMAN_REVIEW"
-  | "SECURITY_INCIDENT"
-  | "REJECTED";
 
 /** §12 Canonical response contract — frontend renders from route/outcome ONLY */
 export type AskKritonResponse = {
@@ -633,6 +796,45 @@ export type SavedAnswerCreateRequest = {
   risk_level: string;
   tags?: string[];
 };
+
+export type AttachmentUploadResult = { document_id: string; filename: string; chunk_count: number };
+
+/** XHR (not fetch) because upload progress events need `xhr.upload.onprogress`. */
+export function uploadKritonAttachment(
+  token: string,
+  file: File,
+  onProgress?: (fraction: number) => void,
+): Promise<AttachmentUploadResult> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_URL}/kriton-workspace/attachments`);
+    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch {
+          reject(new ApiError(xhr.status, "The attachment response could not be read."));
+        }
+      } else {
+        let detail = `Attachment upload failed (${xhr.status})`;
+        try {
+          detail = JSON.parse(xhr.responseText)?.detail ?? detail;
+        } catch {
+          /* keep default detail */
+        }
+        reject(new ApiError(xhr.status, detail));
+      }
+    };
+    xhr.onerror = () => reject(new ApiError(0, "Could not reach the attachment service."));
+    const form = new FormData();
+    form.append("file", file);
+    xhr.send(form);
+  });
+}
 
 export async function listSavedAnswers(token: string): Promise<SavedAnswer[]> {
   const res = await authedFetch("/kriton-workspace/saved-answers", token);
@@ -696,4 +898,3 @@ export async function updateDraft(token: string, id: string, payload: DraftUpdat
   });
   return res.json();
 }
-

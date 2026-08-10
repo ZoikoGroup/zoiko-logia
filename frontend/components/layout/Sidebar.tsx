@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ChevronDown, LogOut, X } from "lucide-react";
+import { ChevronDown, HelpCircle, LogOut, Palette, UserRound, X } from "lucide-react";
 import { NAV_SECTIONS, isVisible, navHref } from "@/lib/nav";
 import { useRole } from "@/components/shell/RoleProvider";
 import { useAuth } from "@/hooks/useAuth";
@@ -18,8 +18,9 @@ export function Sidebar({
   const pathname = usePathname();
   const router = useRouter();
   const { role } = useRole();
-  const { signOut } = useAuth();
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const { signOut, user } = useAuth();
+  const [expanded, setExpanded] = useState<Set<string>>(new Set(["overview"]));
+  const [identityOpen, setIdentityOpen] = useState(false);
 
   async function handleLogout() {
     await signOut();
@@ -30,14 +31,6 @@ export function Sidebar({
     ...section,
     items: section.items.filter((item) => isVisible(item.allowedRoles, role)),
   }));
-
-  useEffect(() => {
-    const active = visibleSections.find((section) => section.items.some((item) => navHref(item.slug) === pathname));
-    if (active) {
-      setExpanded((prev) => new Set(prev).add(active.id));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pathname, role]);
 
   useEffect(() => {
     onMobileClose();
@@ -73,7 +66,7 @@ export function Sidebar({
 
       <nav className="flex-1 overflow-y-auto py-4 space-y-1">
         {visibleSections.map((section) => {
-          const isOpen = expanded.has(section.id);
+          const isOpen = expanded.has(section.id) || section.items.some((item) => navHref(item.slug) === pathname);
           return (
             <div key={section.id}>
               <button
@@ -119,12 +112,16 @@ export function Sidebar({
       </nav>
 
       <div className="pt-3 mt-1 border-t border-line">
-        <button
-          onClick={handleLogout}
-          className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl border border-line text-sm font-medium text-ink hover:bg-bad/10 hover:border-bad/30 hover:text-bad transition-colors"
-        >
-          <LogOut size={16} />
-          Sign out
+        {identityOpen && <div className="mb-2 space-y-0.5 rounded-xl border border-line bg-panel p-1.5 shadow-lg">
+          <Link href="/my-workspace" className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-ink hover:bg-soft"><UserRound size={15} /> Profile & My Workspace</Link>
+          <Link href="/tenant-settings" className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-ink hover:bg-soft"><Palette size={15} /> Appearance & accessibility</Link>
+          <Link href="/support-tickets" className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-ink hover:bg-soft"><HelpCircle size={15} /> Help</Link>
+          <button onClick={handleLogout} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-bad hover:bg-bad/10"><LogOut size={15} /> Log out</button>
+        </div>}
+        <button onClick={() => setIdentityOpen((value) => !value)} aria-expanded={identityOpen} className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-line px-3 text-left hover:bg-soft">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand/10 text-xs font-bold text-brand">{(user?.user_metadata?.full_name || user?.email || "U").split(/\s|@/).slice(0, 2).map((part: string) => part[0]?.toUpperCase()).join("")}</span>
+          <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-ink">{user?.user_metadata?.full_name || user?.email || "User"}</span><span className="block truncate text-xs text-muted">{role}</span></span>
+          <span aria-hidden="true">›</span>
         </button>
       </div>
     </>

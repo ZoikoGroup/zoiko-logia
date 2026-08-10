@@ -60,4 +60,6 @@ async def post_ask(
         role=current_user.role,
         request=payload,
         idempotency_key=idempotency_key,
+        clarification_cycle=payload.clarification_cycle,
+        conversation_id=payload.conversation_id,
     )

@@ -56,9 +56,12 @@ async def _emit(
     )
 
 
-async def audit_query_received(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id, query_hash: str):
+async def audit_query_received(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id, query_hash: str, conversation_id: Optional[str] = None):
+    payload: dict[str, Any] = {"query_hash": query_hash}
+    if conversation_id:
+        payload["conversation_id"] = conversation_id
     await _emit(db, "query_received", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
-                {"query_hash": query_hash}, replay_relevance="REQUIRED")
+                payload, replay_relevance="REQUIRED")
 
 async def audit_request_validated(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id):
     await _emit(db, "request_validated", query_id, correlation_id, tenant_id, audit_chain_id, actor_id, {})
