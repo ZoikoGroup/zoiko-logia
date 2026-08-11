@@ -771,12 +771,24 @@ export async function askKriton(
 ): Promise<AskKritonResponse> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
-  const res = await authedFetch("/orchestration/ask", token, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  });
-  return res.json();
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 120_000);
+  try {
+    const res = await authedFetch("/orchestration/ask", token, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    return res.json();
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new ApiError(408, "Kriton took too long to respond. Please try again.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 export type SavedAnswer = {

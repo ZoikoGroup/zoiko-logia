@@ -22,6 +22,7 @@ export type Conversation = {
 
 const CONVERSATIONS_KEY = "kriton_conversations_v3";
 const LEGACY_CONVERSATIONS_KEY = "kriton_conversations";
+const ACTIVE_CONVERSATION_KEY = "kriton_active_conversation_v1";
 export const MAX_CONVERSATIONS = 30;
 
 type LegacyTurn = { id: string; question: string; result: AskKritonResponse | null; error: string | null; loading: boolean };
@@ -85,6 +86,24 @@ export function persistConversations(conversations: Conversation[]): void {
     localStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(conversations.slice(0, MAX_CONVERSATIONS)));
   } catch {
     /* ignore storage write failures (e.g. private mode / quota) */
+  }
+}
+
+export function loadActiveConversationId(conversations: Conversation[]): string | null {
+  try {
+    const id = localStorage.getItem(ACTIVE_CONVERSATION_KEY);
+    return id && conversations.some((conversation) => conversation.id === id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+export function persistActiveConversationId(id: string | null): void {
+  try {
+    if (id) localStorage.setItem(ACTIVE_CONVERSATION_KEY, id);
+    else localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
+  } catch {
+    /* ignore storage write failures */
   }
 }
 

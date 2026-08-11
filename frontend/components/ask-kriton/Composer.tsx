@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
   AlertTriangle,
   ArrowUp,
@@ -60,7 +60,15 @@ export function Composer({
   const [listening, setListening] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`;
+  }, [query]);
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -149,6 +157,7 @@ export function Composer({
           )}
 
           <textarea
+            ref={textareaRef}
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -196,7 +205,7 @@ export function Composer({
                 onClick={toggleVoice}
                 aria-label={listening ? "Stop voice input" : "Voice input"}
                 title={voiceError ?? undefined}
-                className={`hidden h-9 w-9 items-center justify-center rounded-full transition lg:flex ${
+                className={`flex h-9 w-9 items-center justify-center rounded-full transition ${
                   listening ? "animate-pulse bg-bad/10 text-bad" : "text-muted hover:bg-soft"
                 }`}
               >

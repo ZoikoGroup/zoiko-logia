@@ -25,6 +25,8 @@ import { Composer } from "@/components/ask-kriton/Composer";
 import { ExploreFurther } from "@/components/ask-kriton/ExploreFurther";
 import {
   loadConversations,
+  loadActiveConversationId,
+  persistActiveConversationId,
   persistConversations,
   sortConversations,
   type Conversation,
@@ -56,6 +58,15 @@ const ROUTE_LABELS: Record<string, string> = {
   HUMAN_REVIEW: "Escalated for human review",
   SECURITY_INCIDENT: "Security incident — blocked",
   REJECTED: "Rejected — invalid request",
+};
+
+const OUTCOME_STYLES: Record<string, { label: string; dot: string; text: string }> = {
+  answered: { label: "Answered", dot: "bg-ok", text: "text-ok" },
+  clarification_required: { label: "Clarification needed", dot: "bg-info", text: "text-info" },
+  escalated: { label: "Escalated", dot: "bg-warn", text: "text-warn" },
+  limited_response: { label: "Limited", dot: "bg-warn", text: "text-warn" },
+  refused: { label: "Refused", dot: "bg-bad", text: "text-bad" },
+  rejected: { label: "Blocked", dot: "bg-bad", text: "text-bad" },
 };
 
 function genId(prefix: string): string {
@@ -114,6 +125,7 @@ function ConversationTurn({ turn, onFollowUp }: { turn: Turn; onFollowUp?: (ques
   const style = safety ? RISK_STYLES[riskLevel] : null;
   const route = result?.route ?? null;
   const outcome = result?.outcome ?? null;
+  const outcomeStyle = outcome ? OUTCOME_STYLES[outcome] : null;
   const bundle = result?.source_bundle ?? null;
 
   return (
@@ -140,8 +152,12 @@ function ConversationTurn({ turn, onFollowUp }: { turn: Turn; onFollowUp?: (ques
           <article className="min-w-0 flex-1 py-1 text-ink">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
-                <p className="text-sm font-bold text-ink">Kriton response</p>
-                <p className="text-xs text-muted">{ROUTE_LABELS[route ?? ""] ?? route}</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-bold text-ink">Kriton</p>
+                  {outcomeStyle && <span className={`h-2 w-2 rounded-full ${outcomeStyle.dot}`} />}
+                  {outcomeStyle && <span className={`text-xs font-semibold ${outcomeStyle.text}`}>{outcomeStyle.label}</span>}
+                </div>
+                <p className="mt-0.5 text-xs text-muted">{ROUTE_LABELS[route ?? ""] ?? route}</p>
               </div>
               <div className="flex items-center gap-2">
                 <Link
@@ -221,13 +237,22 @@ function ConversationTurn({ turn, onFollowUp }: { turn: Turn; onFollowUp?: (ques
 export default function AskKritonPage() {
   const [query, setQuery] = useState("");
   const [jurisdiction, setJurisdiction] = useState("");
+  const [mode, setMode] = useState("Kriton's choice");
   const [submitting, setSubmitting] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>(() =>
     typeof window === "undefined" ? [] : loadConversations(),
   );
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeId, setActiveIdState] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return loadActiveConversationId(loadConversations());
+  });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  function setActiveId(id: string | null) {
+    setActiveIdState(id);
+    persistActiveConversationId(id);
+  }
 
   function persist(next: Conversation[]) {
     setConversations(next);
@@ -310,7 +335,7 @@ export default function AskKritonPage() {
       const idempotencyKey = genId("idem");
       const response = await askKriton(
         token,
-        { query: trimmed, jurisdiction, mode: "Workflow", clarification_cycle: cycle, conversation_id: convId },
+        { query: trimmed, jurisdiction, mode, clarification_cycle: cycle, conversation_id: convId },
         idempotencyKey,
       );
       patchTurn(convId, turnId, { result: response, loading: false });
@@ -348,7 +373,7 @@ export default function AskKritonPage() {
 
   return (
     <main className="kriton-page-background relative min-h-screen w-full min-w-0 overflow-hidden text-ink">
-      <div className="kriton-page-ambient pointer-events-none absolute inset-0" />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-soft" />
       <div className="relative z-10 grid h-screen w-full min-w-0 grid-cols-1 md:grid-cols-[252px_minmax(0,1fr)]">
         <DesktopSidebar {...sidebarProps} showMenu />
         <MobileDrawer {...sidebarProps} showMenu open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} />
@@ -399,8 +424,11 @@ export default function AskKritonPage() {
                       <button
                         key={label}
                         type="button"
-                        onClick={() => setQuery((current) => `${prompt}${current}`.trim())}
-                        className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-line bg-panel px-2 text-xs font-bold text-ink shadow-sm transition hover:border-brand/30 hover:bg-soft"
+                        onClick={() => {
+                          setMode(label);
+                          setQuery((current) => `${prompt}${current}`.trim());
+                        }}
+                        className={`inline-flex h-10 items-center justify-center gap-2 rounded-xl border px-2 text-xs font-bold shadow-sm transition ${mode === label ? "border-brand/40 bg-brand/10 text-brand" : "border-line bg-panel text-ink hover:border-brand/30 hover:bg-soft"}`}
                       >
                         <ModeIcon size={16} />
                         {label}
@@ -411,7 +439,9 @@ export default function AskKritonPage() {
               ) : (
                 <div className="w-full max-w-4xl space-y-6 self-stretch">
                   {activeConversation?.turns.map((turn) => (
-                    <ConversationTurn key={turn.id} turn={turn} onFollowUp={handleFollowUp} />
+                    <div key={turn.id} className="space-y-6 border-b border-line/70 pb-7 last:border-b-0">
+                      <ConversationTurn turn={turn} onFollowUp={handleFollowUp} />
+                    </div>
                   ))}
 
                   <Composer
