@@ -1,0 +1,7 @@
+{
+  "name": "zoikologia-backend",
+  "private": true,
+  "scripts": {
+    "dev": "../.venv/bin/python -m uvicorn app.main:app --reload --port 8010"
+  }
+}

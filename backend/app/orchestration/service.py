@@ -109,6 +109,7 @@ async def ask_kriton(
     request: AskKritonRequest,
     idempotency_key: Optional[str] = None,
     clarification_cycle: int = 0,
+    conversation_id: Optional[str] = None,
 ) -> AskKritonResponse:
 
     start_time = time.monotonic()
@@ -129,7 +130,7 @@ async def ask_kriton(
     await audit_query_received(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-        actor_id=actor_id, query_hash=query_hash,
+        actor_id=actor_id, query_hash=query_hash, conversation_id=conversation_id,
     )
 
     # ── Step 2: Request validation (§6) ──────────────────────────────────────
@@ -505,6 +506,9 @@ async def ask_kriton(
             source_id=s.url,
             title=s.title,
             url=s.url,
+            # Genuine retrieved snippet, capped to a preview length — not a
+            # fabricated summary.
+            evidence_preview=(s.snippet[:240].strip() or None) if s.snippet else None,
         )
         for i, s in enumerate(web_sources)
     ]

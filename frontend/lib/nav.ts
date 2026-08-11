@@ -50,7 +50,7 @@ export const NAV_SECTIONS: NavL1Section[] = [
     allowedRoles: ALL,
     items: [
       { label: "Command Center", slug: "", allowedRoles: ALL, icon: LayoutGrid },
-      { label: "Governance Dashboard", slug: "governance-dashboard", allowedRoles: ALL_EXCEPT_LEARNER, icon: ShieldCheck },
+      { label: "Governance Dashboard", slug: "overview/governance", allowedRoles: ALL_EXCEPT_LEARNER, icon: ShieldCheck },
       { label: "My Workspace", slug: "my-workspace", allowedRoles: ALL, icon: Briefcase },
     ],
   },

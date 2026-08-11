@@ -6,6 +6,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
+import { cssVar } from "@/lib/css-var";
 
 // echarts-for-react touches the DOM (canvas), so load it client-only.
 const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false });
@@ -107,7 +108,7 @@ function MermaidDiagram({ code }: { code: string }) {
     // If the model produced invalid Mermaid, fall back to showing the raw code
     // rather than a blank space.
     return (
-      <pre className="my-4 overflow-x-auto rounded-xl border border-[#dfe8e5] bg-[#f7faf8] p-4 text-xs leading-5 text-[#31413e]">
+      <pre className="my-4 overflow-x-auto rounded-xl border border-line bg-soft p-4 text-xs leading-5 text-ink">
         {code}
       </pre>
     );
@@ -131,28 +132,43 @@ type ChartSpec = {
   links?: { source: string; target: string; value: number }[];
 };
 
-// Brand-tinted palette so charts sit consistently in the answer card.
-const CHART_PALETTE = ["#16799a", "#f3c437", "#31a06a", "#e2725b", "#7b61ff", "#0ea5b7", "#e18b2b"];
+// Theme-tinted palette so charts sit consistently in the answer card in both
+// light and dark mode — read live via cssVar() since ECharts can't consume
+// var(--x) directly.
+function chartPalette(): string[] {
+  return [
+    cssVar("--brand", "#16799a"),
+    cssVar("--gold", "#f3c437"),
+    cssVar("--ok", "#31a06a"),
+    cssVar("--bad", "#e2725b"),
+    cssVar("--info", "#0ea5b7"),
+    cssVar("--brand-2", "#7b61ff"),
+    cssVar("--warn", "#e18b2b"),
+  ];
+}
 
 function buildChartOption(spec: ChartSpec): Record<string, unknown> {
+  const ink = cssVar("--ink", "#17211f");
+  const muted = cssVar("--muted", "#667673");
+  const line = cssVar("--line", "#eef3f2");
   const title = spec.title
-    ? { text: spec.title, left: "center", textStyle: { fontSize: 14, fontWeight: 600, color: "#17211f" } }
+    ? { text: spec.title, left: "center", textStyle: { fontSize: 14, fontWeight: 600, color: ink } }
     : undefined;
-  const color = CHART_PALETTE;
+  const color = chartPalette();
 
   if (spec.type === "pie") {
     return {
       color,
       title,
       tooltip: { trigger: "item" },
-      legend: { bottom: 0, textStyle: { color: "#667673" } },
+      legend: { bottom: 0, textStyle: { color: muted } },
       series: [
         {
           type: "pie",
           radius: ["35%", "62%"],
           center: ["50%", "46%"],
           data: spec.data ?? [],
-          label: { color: "#31413e" },
+          label: { color: ink },
         },
       ],
     };
@@ -169,7 +185,7 @@ function buildChartOption(spec: ChartSpec): Record<string, unknown> {
           data: spec.nodes ?? [],
           links: spec.links ?? [],
           emphasis: { focus: "adjacency" },
-          label: { color: "#31413e" },
+          label: { color: ink },
         },
       ],
     };
@@ -182,14 +198,14 @@ function buildChartOption(spec: ChartSpec): Record<string, unknown> {
     color,
     title,
     tooltip: { trigger: "axis" },
-    legend: { bottom: 0, textStyle: { color: "#667673" } },
+    legend: { bottom: 0, textStyle: { color: muted } },
     // containLabel keeps rotated axis labels and the y-axis inside the box.
     grid: { left: 8, right: 24, top: title ? 48 : 24, bottom: 48, containLabel: true },
     xAxis: {
       type: "category",
       data: spec.categories ?? [],
       axisLabel: {
-        color: "#667673",
+        color: muted,
         interval: 0, // show every label, don't silently drop crowded ones
         // Rotate labels when there are several categories (e.g. many states)
         // so long names stay readable instead of overlapping.
@@ -200,8 +216,8 @@ function buildChartOption(spec: ChartSpec): Record<string, unknown> {
     },
     yAxis: {
       type: "value",
-      axisLabel: { color: "#667673" },
-      splitLine: { lineStyle: { color: "#eef3f2" } },
+      axisLabel: { color: muted },
+      splitLine: { lineStyle: { color: line } },
     },
     series: (spec.series ?? []).map((s) => ({
       name: s.name,
@@ -210,7 +226,7 @@ function buildChartOption(spec: ChartSpec): Record<string, unknown> {
       smooth: isLine,
       barMaxWidth: 54,
       // Print the value on each bar so amounts are readable at a glance.
-      label: isLine ? undefined : { show: true, position: "top", color: "#31413e", fontSize: 11 },
+      label: isLine ? undefined : { show: true, position: "top", color: ink, fontSize: 11 },
       ...(isLine ? { symbolSize: 7, lineStyle: { width: 3 } } : {}),
     })),
   };
@@ -239,7 +255,7 @@ function ChartRenderer({ code }: { code: string }) {
   // Invalid JSON or missing type → show the raw block rather than a blank space.
   if (!spec || !spec.type) {
     return (
-      <pre className="my-4 overflow-x-auto rounded-xl border border-[#dfe8e5] bg-[#f7faf8] p-4 text-xs leading-5 text-[#31413e]">
+      <pre className="my-4 overflow-x-auto rounded-xl border border-line bg-soft p-4 text-xs leading-5 text-ink">
         {code}
       </pre>
     );
@@ -248,7 +264,7 @@ function ChartRenderer({ code }: { code: string }) {
   // Right shape but no numbers to plot → a clear note beats a blank chart frame.
   if (isChartEmpty(spec)) {
     return (
-      <div className="my-4 rounded-xl border border-dashed border-[#dfe8e5] bg-[#f7faf8] p-4 text-xs leading-5 text-[#667673]">
+      <div className="my-4 rounded-xl border border-dashed border-line bg-soft p-4 text-xs leading-5 text-muted">
         No numeric data was available to plot this chart. Provide the figures
         (e.g. “State A 120, State B 90, State C 60”) and it will render as a chart.
       </div>
@@ -256,45 +272,48 @@ function ChartRenderer({ code }: { code: string }) {
   }
 
   return (
-    <div className="my-4 rounded-xl border border-[#dfe8e5] bg-white p-3">
+    <div className="my-4 rounded-xl border border-line bg-panel p-3">
       <ReactECharts option={buildChartOption(spec)} style={{ height: 380, width: "100%" }} notMerge />
     </div>
   );
 }
 
-// Markdown element styling — tuned to match the existing answer look.
+// Markdown element styling — theme-tokenized so it stays legible in dark mode
+// (the container it sits in, e.g. Ask Kriton's response card, is theme-aware
+// and goes dark — hardcoded dark-mode-unaware text here used to render
+// dark-on-dark).
 const mdComponents = {
   p: (props: ComponentPropsWithoutRef<"p">) => <p className="mb-3 last:mb-0" {...props} />,
   ul: (props: ComponentPropsWithoutRef<"ul">) => <ul className="mb-3 list-disc space-y-1 pl-5" {...props} />,
   ol: (props: ComponentPropsWithoutRef<"ol">) => <ol className="mb-3 list-decimal space-y-1 pl-5" {...props} />,
-  strong: (props: ComponentPropsWithoutRef<"strong">) => <strong className="font-semibold text-[#17211f]" {...props} />,
+  strong: (props: ComponentPropsWithoutRef<"strong">) => <strong className="font-semibold text-ink" {...props} />,
   a: (props: ComponentPropsWithoutRef<"a">) => (
-    <a className="text-[#16799a] underline" target="_blank" rel="noreferrer" {...props} />
+    <a className="text-brand underline" target="_blank" rel="noreferrer" {...props} />
   ),
   table: (props: ComponentPropsWithoutRef<"table">) => (
     <div className="my-3 overflow-x-auto">
       <table className="w-full border-collapse text-left text-xs" {...props} />
     </div>
   ),
-  thead: (props: ComponentPropsWithoutRef<"thead">) => <thead className="bg-[#f1f7f8]" {...props} />,
+  thead: (props: ComponentPropsWithoutRef<"thead">) => <thead className="bg-soft" {...props} />,
   th: (props: ComponentPropsWithoutRef<"th">) => (
-    <th className="border border-[#dfe8e5] px-3 py-2 font-semibold text-[#17211f]" {...props} />
+    <th className="border border-line px-3 py-2 font-semibold text-ink" {...props} />
   ),
   td: (props: ComponentPropsWithoutRef<"td">) => (
-    <td className="border border-[#dfe8e5] px-3 py-2 align-top" {...props} />
+    <td className="border border-line px-3 py-2 align-top text-ink" {...props} />
   ),
   code: (props: ComponentPropsWithoutRef<"code">) => (
-    <code className="rounded bg-[#f1f7f8] px-1 py-0.5 text-[12px]" {...props} />
+    <code className="rounded bg-soft px-1 py-0.5 text-[12px] text-ink" {...props} />
   ),
-  h1: (props: ComponentPropsWithoutRef<"h1">) => <h3 className="mb-2 mt-3 text-base font-bold text-[#17211f]" {...props} />,
-  h2: (props: ComponentPropsWithoutRef<"h2">) => <h3 className="mb-2 mt-3 text-sm font-bold text-[#17211f]" {...props} />,
-  h3: (props: ComponentPropsWithoutRef<"h3">) => <h4 className="mb-1 mt-2 text-sm font-semibold text-[#17211f]" {...props} />,
+  h1: (props: ComponentPropsWithoutRef<"h1">) => <h3 className="mb-2 mt-3 text-base font-bold text-ink" {...props} />,
+  h2: (props: ComponentPropsWithoutRef<"h2">) => <h3 className="mb-2 mt-3 text-sm font-bold text-ink" {...props} />,
+  h3: (props: ComponentPropsWithoutRef<"h3">) => <h4 className="mb-1 mt-2 text-sm font-semibold text-ink" {...props} />,
 };
 
 export function AnswerRenderer({ text, className }: { text: string; className?: string }) {
   const segments = parseSegments(text);
   return (
-    <div className={`min-w-0 text-sm leading-7 text-[#31413e] ${className ?? ""}`}>
+    <div className={`min-w-0 text-sm leading-7 text-ink ${className ?? ""}`}>
       {segments.map((seg, i) =>
         seg.type === "mermaid" ? (
           <MermaidDiagram key={i} code={seg.content} />

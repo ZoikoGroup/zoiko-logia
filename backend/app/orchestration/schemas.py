@@ -17,6 +17,13 @@ class AskKritonRequest(BaseModel):
     query: str
     jurisdiction: str = ""
     mode: str = "Workflow"
+    # Round-tripped by the client across a clarification exchange so
+    # resolve_policy() can escalate instead of looping forever on a query that
+    # keeps coming back "needs clarification".
+    clarification_cycle: int = 0
+    # Client-generated — scopes audit correlation to one chat thread. Not yet
+    # used for any server-side conversation memory.
+    conversation_id: Optional[str] = None
     # Safety simulation overrides (playground only — not trusted in production)
     source_confidence: Optional[str] = None
     pre_bundle_state: Optional[str] = None
@@ -145,6 +152,9 @@ class SourceCitation(BaseModel):
     # frontend renders this as a clickable link. None for internal/governed
     # sources with no public URL.
     url: Optional[str] = None
+    # The actual retrieved snippet this citation was grounded in (WebSource.snippet)
+    # — not a fabricated summary. None for sources with no snippet text.
+    evidence_preview: Optional[str] = None
 
 
 class ComposedAnswer(BaseModel):
