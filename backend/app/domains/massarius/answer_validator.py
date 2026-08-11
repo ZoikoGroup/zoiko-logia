@@ -70,23 +70,41 @@ def validate_answer_or_raise(
     source_bundle: SourceBundle,
     *,
     disclaimer_required: bool = False,
+    external_source_count: int = 0,
 ) -> None:
     """
     Run all seven Checkpoint C checks. Raises ValidationFailed listing every
     failure (not just the first) if any check fails. Returns None on success.
+
+    external_source_count is the number of live retrieval sources the answer was
+    actually composed against — SearXNG hits plus the exact-figure connectors
+    (orchestration/live_data.py), which become the [REF-N] citations the reader
+    sees. They are evidence, but they are not registered in the governed
+    SourceBundle, so counting only bundle sources treats a fully web-grounded
+    answer as ungrounded and degrades it to HUMAN_REVIEW. An answer is
+    unsupported only when NEITHER kind of source exists.
     """
     failures: list[str] = []
 
-    # 1. Grounding — answer must not claim substantive content with no eligible sources
-    if source_bundle.eligible_source_count == 0 and len(answer_text.strip()) > 50:
+    # 1. Grounding — answer must not claim substantive content with no sources
+    # of any kind behind it.
+    total_sources = source_bundle.eligible_source_count + max(external_source_count, 0)
+    if total_sources == 0 and len(answer_text.strip()) > 50:
         failures.append(
             "Grounding check failed: answer contains substantive content "
-            "but no eligible sources exist in the SourceBundle."
+            "but no eligible sources exist in the SourceBundle and no live "
+            "retrieval sources were supplied."
         )
 
-    # 2. Citation binding — every [REF-N] must map to an eligible source
+    # 2. Citation binding — every [REF-N] must map to a source the reader can
+    # actually open. [REF-N] is assigned positionally over the live citations
+    # when there are any (see orchestration/service.py), so the valid range is
+    # whichever collection the markers were drawn from.
     ref_ids_in_answer = set(_REF_PATTERN.findall(answer_text))
-    eligible_ids = set(str(i + 1) for i in range(source_bundle.eligible_source_count))
+    eligible_ids = set(
+        str(i + 1)
+        for i in range(max(source_bundle.eligible_source_count, max(external_source_count, 0)))
+    )
     unbound_refs = ref_ids_in_answer - eligible_ids
     if unbound_refs:
         failures.append(
@@ -158,12 +176,18 @@ def validate_answer(
     source_bundle: SourceBundle,
     *,
     disclaimer_required: bool = False,
+    external_source_count: int = 0,
 ) -> ValidationResult:
     """Call-site-friendly wrapper: same checks as validate_answer_or_raise(),
     but returns a ValidationResult instead of raising — matches the
     return-value pattern the rest of orchestration/service.py already uses."""
     try:
-        validate_answer_or_raise(answer_text, source_bundle, disclaimer_required=disclaimer_required)
+        validate_answer_or_raise(
+            answer_text,
+            source_bundle,
+            disclaimer_required=disclaimer_required,
+            external_source_count=external_source_count,
+        )
     except ValidationFailed as exc:
         return ValidationResult(passed=False, failures=exc.failures, degraded_route=exc.degraded_route)
     return ValidationResult(passed=True)

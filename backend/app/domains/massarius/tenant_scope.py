@@ -31,26 +31,47 @@ async def assert_tenant_isolated(
     table: str,
     tenant_a: str,
     tenant_b: str,
+    tenant_b_private_ids: set[str],
     id_column: str = "id",
 ) -> None:
     """Test helper — proves cross-tenant leakage is impossible at the query
-    layer, not just the API layer (Acceptance Criterion 5). Opens a fresh
-    session scoped to tenant_a and asserts it cannot see any row belonging
-    to tenant_b in `table`, using a plain unfiltered SELECT * — i.e. even a
-    query that forgets to filter by tenant_id itself must still come back
-    empty for another tenant's rows, because RLS is doing the filtering.
+    layer, not just the API layer (Acceptance Criterion 5). Both reads use a
+    plain unfiltered `SELECT <id_column> FROM <table>`, so even a query that
+    forgets to filter by tenant_id must still come back without another
+    tenant's private rows, because RLS is doing the filtering.
+
+    Takes the specific private row ids owned by tenant_b rather than comparing
+    what the two tenants can each see. Intersecting the two visible sets looks
+    equivalent but is not: non-private rows are deliberately shared with every
+    tenant (massarius/license_gate.py's Checkpoint A), so that intersection is
+    full of shared-by-design rows and reports leakage on a correctly isolated
+    database. Naming the private ids tests the claim that is actually made.
+
+    Also asserts tenant_b can still see its own rows. Without that, the
+    isolation assertion would pass trivially on a database where RLS hides
+    everything from everyone — a broken policy would look like a clean pass.
 
     Raises AssertionError on leakage; returns None on success.
     """
-    async with request_sessionmaker() as session:
-        await set_session_tenant(session, tenant_a)
-        result = await session.execute(text(f"SELECT {id_column} FROM {table}"))
-        visible_ids = {row[0] for row in result.all()}
+    expected = set(tenant_b_private_ids)
 
     async with request_sessionmaker() as session:
         await set_session_tenant(session, tenant_b)
         result = await session.execute(text(f"SELECT {id_column} FROM {table}"))
-        tenant_b_ids = {row[0] for row in result.all()}
+        owner_visible = {row[0] for row in result.all()}
 
-    leaked = visible_ids & tenant_b_ids
-    assert not leaked, f"Tenant isolation violated on {table}: tenant_a saw tenant_b rows {leaked}"
+    missing = expected - owner_visible
+    assert not missing, (
+        f"Setup invalid on {table}: tenant_b cannot see its own rows {missing} — "
+        "the isolation assertion below would pass vacuously."
+    )
+
+    async with request_sessionmaker() as session:
+        await set_session_tenant(session, tenant_a)
+        result = await session.execute(text(f"SELECT {id_column} FROM {table}"))
+        other_visible = {row[0] for row in result.all()}
+
+    leaked = expected & other_visible
+    assert not leaked, (
+        f"Tenant isolation violated on {table}: tenant_a saw tenant_b private rows {leaked}"
+    )

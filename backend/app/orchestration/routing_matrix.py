@@ -37,6 +37,12 @@ CONF_STALE = "stale_sources"
 CONF_RESTRICTED = "restricted_sources"
 
 # Risk level constants
+# ZERO is what the LLM classifier (orchestration/risk_llm.py) returns for
+# greetings, assistant-capability questions and plain definitions. It had no
+# rows here, so every such question missed the matrix and fell through to the
+# conservative CLARIFICATION fallback — asking "which jurisdiction?" in reply
+# to "hi". Only FORCE_DIRECT_ANSWER=true was masking it.
+RISK_ZERO = "ZERO"
 RISK_LOW = "LOW"
 RISK_MEDIUM = "MEDIUM"
 RISK_HIGH = "HIGH"
@@ -48,6 +54,16 @@ MAX_CLARIFICATION_CYCLES = 2  # §8.1 — 3rd unresolved cycle escalates to HUMA
 # ── Policy Matrix — §8 ────────────────────────────────────────────────────────
 # (risk_level, confidence_state) → route
 _MATRIX: dict[tuple[str, str], str] = {
+    # ZERO risk — greetings, capability questions, plain definitions. No
+    # regulated stakes, so insufficient governed sources is NOT a reason to
+    # withhold: unlike LOW, there is nothing here a missing jurisdiction could
+    # make unsafe, and a clarification prompt in reply to "what is IFRS?" is
+    # just a dead end. Grounding still applies — answer_validator rejects an
+    # unsupported answer regardless of route.
+    (RISK_ZERO, CONF_SUFFICIENT):    ROUTE_LLM,
+    (RISK_ZERO, CONF_LIMITED):       ROUTE_LLM,
+    (RISK_ZERO, CONF_INSUFFICIENT):  ROUTE_LLM,
+
     # LOW risk
     (RISK_LOW, CONF_SUFFICIENT):    ROUTE_LLM,
     (RISK_LOW, CONF_LIMITED):       ROUTE_LLM,            # with mandatory caveats

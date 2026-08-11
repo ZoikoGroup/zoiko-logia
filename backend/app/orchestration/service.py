@@ -633,8 +633,18 @@ async def ask_kriton(
     # for the same reason — build_validated_disclaimer below appends it
     # deterministically, so that check would only ever fail if this function
     # itself were broken, not the model's answer.
+    # external_source_count carries the live retrieval sources (SearXNG + the
+    # exact-figure connectors) the answer was actually composed against — they
+    # are the [REF-N] citations the reader gets, but they are not registered in
+    # the governed SourceBundle. Without it, every answer grounded purely in
+    # live sources fails the grounding check and degrades to HUMAN_REVIEW.
     validation = (
-        validate_answer(composed_text, source_bundle, disclaimer_required=False)
+        validate_answer(
+            composed_text,
+            source_bundle,
+            disclaimer_required=False,
+            external_source_count=len(rag_citations),
+        )
         if source_bundle else None
     )
     final_text = build_validated_disclaimer(
