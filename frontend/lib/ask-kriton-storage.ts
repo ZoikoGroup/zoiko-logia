@@ -21,7 +21,6 @@ export type Conversation = {
 };
 
 const CONVERSATIONS_KEY = "kriton_conversations_v3";
-const ACTIVE_CONVERSATION_KEY = "kriton_active_conversation_v3";
 const LEGACY_CONVERSATIONS_KEY = "kriton_conversations";
 export const MAX_CONVERSATIONS = 30;
 
@@ -81,28 +80,11 @@ export function loadConversations(): Conversation[] {
   return [];
 }
 
-export function loadActiveConversationId(): string | null {
-  try {
-    return localStorage.getItem(ACTIVE_CONVERSATION_KEY);
-  } catch {
-    return null;
-  }
-}
-
 export function persistConversations(conversations: Conversation[]): void {
   try {
     localStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(conversations.slice(0, MAX_CONVERSATIONS)));
   } catch {
     /* ignore storage write failures (e.g. private mode / quota) */
-  }
-}
-
-export function persistActiveConversationId(id: string | null): void {
-  try {
-    if (id) localStorage.setItem(ACTIVE_CONVERSATION_KEY, id);
-    else localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
-  } catch {
-    /* ignore */
   }
 }
 

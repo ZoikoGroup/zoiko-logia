@@ -24,9 +24,7 @@ import { DesktopSidebar, MobileDrawer } from "@/components/ask-kriton/Sidebar";
 import { Composer } from "@/components/ask-kriton/Composer";
 import { ExploreFurther } from "@/components/ask-kriton/ExploreFurther";
 import {
-  loadActiveConversationId,
   loadConversations,
-  persistActiveConversationId,
   persistConversations,
   sortConversations,
   type Conversation,
@@ -227,11 +225,7 @@ export default function AskKritonPage() {
   const [conversations, setConversations] = useState<Conversation[]>(() =>
     typeof window === "undefined" ? [] : loadConversations(),
   );
-  const [activeId, setActiveId] = useState<string | null>(() => {
-    if (typeof window === "undefined") return null;
-    const saved = loadActiveConversationId();
-    return saved && conversations.some((c) => c.id === saved) ? saved : null;
-  });
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -252,7 +246,6 @@ export default function AskKritonPage() {
 
   function startNewChat() {
     setActiveId(null);
-    persistActiveConversationId(null);
     setQuery("");
   }
 
@@ -264,7 +257,6 @@ export default function AskKritonPage() {
 
   function selectConversation(id: string) {
     setActiveId(id);
-    persistActiveConversationId(id);
     setQuery("");
   }
 
@@ -280,7 +272,6 @@ export default function AskKritonPage() {
     persist(conversations.filter((c) => c.id !== id));
     if (activeId === id) {
       setActiveId(null);
-      persistActiveConversationId(null);
     }
   }
 
@@ -310,7 +301,6 @@ export default function AskKritonPage() {
     });
     if (isNew) {
       setActiveId(convId);
-      persistActiveConversationId(convId);
     }
 
     setQuery("");
