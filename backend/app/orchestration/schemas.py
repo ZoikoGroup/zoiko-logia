@@ -155,6 +155,12 @@ class SourceCitation(BaseModel):
     # The actual retrieved snippet this citation was grounded in (WebSource.snippet)
     # — not a fabricated summary. None for sources with no snippet text.
     evidence_preview: Optional[str] = None
+    # Provenance for sources that know their own origin and currency (market
+    # and company data). None for a plain web-search hit, which has neither a
+    # named provider nor a meaningful freshness class.
+    provider: Optional[str] = None
+    fetched_at: Optional[str] = None
+    freshness: Optional[str] = None   # realtime | delayed | historical | filing
 
 
 class ComposedAnswer(BaseModel):

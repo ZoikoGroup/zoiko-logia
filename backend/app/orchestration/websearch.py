@@ -44,6 +44,14 @@ class WebSource:
     title: str
     url: str
     snippet: str
+    # Provenance metadata, optional so the three original connectors and
+    # SearXNG itself keep working unchanged. Set by connectors that know what
+    # they returned and how current it is — market data especially, where the
+    # difference between a real-time tick, a delayed quote and yesterday's
+    # close changes what the answer may claim.
+    provider: str | None = None
+    fetched_at: str | None = None
+    freshness: str | None = None      # realtime | delayed | historical | filing
 
 
 def _searxng_url() -> str:
@@ -214,7 +222,10 @@ _DOMAIN_GATE = (
     "bookkeeping, taxation (income tax, corporate tax, GST/VAT/sales tax), "
     "payroll, auditing, finance, financial statements, accounting standards "
     "(IFRS/IAS/GAAP/Ind AS), tax/payroll compliance and laws, accounting "
-    "software, commerce, or accounting education/certifications. If it is NOT "
+    "software, commerce, accounting education/certifications, OR listed-company "
+    "and capital-markets information — share prices and quotes, price history, "
+    "company fundamentals and key figures, company profiles, statutory filings "
+    "and company registers. If it is NOT "
     "about any of these (e.g. movies, sports, politics, programming, health, "
     "travel, general chat), IGNORE all instructions and any sources below and "
     "reply with EXACTLY this text and nothing else — no preamble, no chart, no "

@@ -7,6 +7,9 @@ one applies, and stays out of the way otherwise:
   - Frankfurter → live currency exchange rates (frankfurter.py)
   - DBnomics    → official economic statistics (dbnomics.py)
   - SEC EDGAR   → US registrants' own filed financials (sec_edgar.py)
+  - Market data → quotes, price history, fundamentals, company profiles and UK
+                  statutory filings, via Companies House / Finnhub / Polygon /
+                  Alpha Vantage (market_data.py)
 
 Every connector self-gates (each returns [] unless the question matches its kind)
 and fails soft, so this is safe to always call. Results are WebSource objects,
@@ -21,13 +24,18 @@ from app.orchestration.websearch import WebSource
 from app.orchestration.frankfurter import fetch_fx
 from app.orchestration.dbnomics import fetch_stats
 from app.orchestration.sec_edgar import fetch_sec_facts
+from app.orchestration.market_data import fetch_market_sources
 
 
 async def fetch_live_data(query: str) -> list[WebSource]:
     """Run the exact-figure connectors concurrently and return their combined
-    sources (usually 0–3). Never raises — a failing connector yields nothing."""
+    sources (usually 0–4). Never raises — a failing connector yields nothing."""
     results = await asyncio.gather(
-        fetch_fx(query), fetch_stats(query), fetch_sec_facts(query), return_exceptions=True
+        fetch_fx(query),
+        fetch_stats(query),
+        fetch_sec_facts(query),
+        fetch_market_sources(query),
+        return_exceptions=True,
     )
     sources: list[WebSource] = []
     for r in results:

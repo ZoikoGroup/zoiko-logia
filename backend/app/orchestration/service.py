@@ -509,6 +509,12 @@ async def ask_kriton(
             # Genuine retrieved snippet, capped to a preview length — not a
             # fabricated summary.
             evidence_preview=(s.snippet[:240].strip() or None) if s.snippet else None,
+            # Carried through so the reader can see whether a figure is
+            # real-time, delayed, end-of-day or as-filed. Only market/company
+            # connectors set these; a plain web hit leaves them None.
+            provider=s.provider,
+            fetched_at=s.fetched_at,
+            freshness=s.freshness,
         )
         for i, s in enumerate(web_sources)
     ]
