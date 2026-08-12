@@ -21,8 +21,9 @@ from app.core.rate_limit import limiter
 from app.core.supabase_auth import verify_token
 from app.domains.identity.models import User
 from app.domains.identity.rbac import get_current_user
-from app.orchestration.schemas import AskKritonRequest, AskKritonResponse
+from app.orchestration.schemas import AskKritonRequest, AskKritonResponse, VisualizationTelemetryEvent
 from app.orchestration.service import ask_kriton
+from app.orchestration.visualization.frontend_telemetry import log_frontend_interaction
 
 router = APIRouter(prefix="/orchestration", tags=["Ask Kriton™ Orchestration"])
 
@@ -62,4 +63,26 @@ async def post_ask(
         idempotency_key=idempotency_key,
         clarification_cycle=payload.clarification_cycle,
         conversation_id=payload.conversation_id,
+    )
+
+
+@router.post("/telemetry", status_code=204)
+@limiter.limit("120/minute", key_func=_user_key)
+async def post_visualization_telemetry(
+    request: Request,
+    payload: VisualizationTelemetryEvent,
+    current_user: User = Depends(get_current_user),
+) -> None:
+    """Fire-and-forget visualization-interaction telemetry (view switched,
+    exported, saved, render failed, ...) — see frontend_telemetry.py's
+    docstring for why this logs structurally rather than writing through the
+    audit ledger. A dropped/rejected event is not an error the client needs
+    to see: always 204, even when the event/category isn't recognized."""
+    log_frontend_interaction(
+        event=payload.event,
+        category=payload.category,
+        visualization_id=payload.visualization_id,
+        visualization_type=payload.visualization_type,
+        renderer=payload.renderer,
+        detail=payload.detail,
     )

@@ -749,6 +749,86 @@ export type ComposedAnswer = {
   output_text?: string;
 };
 
+/**
+ * Deterministic, evidence-backed visualization decided server-side by
+ * orchestration/visualization/orchestrator.py — never LLM-authored, never
+ * executable code. Only ever set on "answered" outcomes. See that module's
+ * docstring for current scope: LINE/BAR/KPI (statistical), EVIDENCE_GRAPH
+ * (renderer=GRAPH_ADAPTER, resolves to Cytoscape or G6), PROCESS_FLOW
+ * (renderer=FLOW_ADAPTER, resolves to X6). Graph/flow specs are only ever
+ * populated from entities/relationships the USER explicitly supplied in
+ * their own query text (see backend/app/orchestration/extraction.py) —
+ * never fabricated.
+ */
+export type VisualizationEncodingField = {
+  field: string;
+  type: "temporal" | "quantitative" | "nominal" | "ordinal";
+  unit?: string | null;
+};
+
+export type VisualizationDataPoint = { x: string; y: number };
+
+export type VisualizationGraphNode = { id: string; label: string; type: string };
+export type VisualizationGraphEdge = { source: string; target: string; type: string; directed: boolean };
+export type VisualizationHeatmapCell = { x: string; y: string; value: number };
+export type VisualizationBoxSummary = {
+  label: string;
+  minimum: number;
+  q1: number;
+  median: number;
+  q3: number;
+  maximum: number;
+  outliers: number[];
+};
+export type VisualizationScatterPoint = { label: string; x: number; y: number };
+/** DONUT only — value is always a band midpoint (e.g. Companies House PSC
+ * "25-50%" ownership), never an exact filed percentage; is_estimated flags
+ * that per slice rather than spec-wide, so a future exact-percentage source
+ * could mix in real slices without every slice appearing falsely precise. */
+export type VisualizationDonutSlice = { label: string; value: number; is_estimated: boolean };
+
+export type VisualizationSpec = {
+  version: string;
+  id: string;
+  type: "LINE" | "BAR" | "HISTOGRAM" | "BOX" | "SCATTER" | "KPI" | "EVIDENCE_GRAPH" | "HEATMAP" | "PROCESS_FLOW" | "TABLE" | "DONUT";
+  family: string;
+  capability_id?: string | null;
+  canonical?: string | null;
+  variant?: string | null;
+  /** Same-family fallback types the backend would degrade to if this one
+   * failed — real, backend-declared alternatives for the "View" menu. */
+  fallback_order: string[];
+  domain_context?: {
+    domain: string;
+    subdomain: string;
+    intent?: string | null;
+  };
+  renderer: "ECHARTS" | "KPI_TILE" | "GRAPH_ADAPTER" | "FLOW_ADAPTER" | "TABLE_ADAPTER";
+  title?: string | null;
+  summary?: string | null;
+  unit?: string | null;
+  encoding?: { x: VisualizationEncodingField; y: VisualizationEncodingField } | null;
+  data: VisualizationDataPoint[];
+  value?: number | null;
+  label?: string | null;
+  nodes: VisualizationGraphNode[];
+  edges: VisualizationGraphEdge[];
+  /** PROCESS_FLOW only — true routes to X6, false to Mermaid. Meaningless for other types. */
+  interactive: boolean;
+  cells: VisualizationHeatmapCell[];
+  /** BOX only — real min/Q1/median/Q3/max computed from the same values HISTOGRAM bins. */
+  box?: VisualizationBoxSummary | null;
+  /** SCATTER only — real paired values from two independently-fetched, period-aligned series. */
+  scatter: VisualizationScatterPoint[];
+  correlation_coefficient?: number | null;
+  /** DONUT only — real, named holders and their percent share. */
+  donut: VisualizationDonutSlice[];
+  /** TABLE only — real rows, column order given by `columns`. */
+  columns: string[];
+  rows: Record<string, string>[];
+  sources: string[];
+};
+
 /** §12 Canonical response contract — frontend renders from route/outcome ONLY */
 export type AskKritonResponse = {
   query_id: string;
@@ -762,6 +842,11 @@ export type AskKritonResponse = {
   next_action: NextAction | null;
   /** Opaque — never expose audit_chain_id internals to UI rendering logic */
   audit_reference: AuditReference;
+  visualization?: VisualizationSpec | null;
+  /** Complementary visuals (spec §17) — a different lens on the SAME
+   * evidence as `visualization` (e.g. current-value KPI beside a trend
+   * line), never a redundant alternate chart type. */
+  secondary_visualizations?: VisualizationSpec[];
 };
 
 export async function askKriton(
