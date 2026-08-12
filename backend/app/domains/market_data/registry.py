@@ -12,14 +12,11 @@ Two jobs, both pure functions of the query and the environment:
      table, not scattered if-statements, so changing priority is a data edit
      and the whole policy is readable in one place.
 
-Priority rationale, not arbitrary:
-  - UK filings go to Companies House alone. It is the statutory register; no
-    other provider here can supply UK filing history, and none should be
-    consulted as a "fallback" for it.
-  - Alpha Vantage is last for every market intent. Its free tier is roughly 25
-    calls per day — viable as a backstop, not as a primary.
-  - Polygon leads history (deep, adjusted aggregates) but not quotes, where its
-    free tier only reaches the previous close.
+Provider set: Twelve Data serves every market intent (quotes, history,
+fundamentals, profiles, symbol search). Company filings have no provider here —
+that data (UK Companies House / US SEC statutory records) is not something a
+market price API carries — so the filings intent resolves to no provider and
+the connector stays silent for it, falling back to the web-grounded answer.
 """
 from __future__ import annotations
 
@@ -27,7 +24,6 @@ import os
 import re
 from typing import Optional
 
-from app.domains.market_data.providers.alpha_vantage import AlphaVantageProvider
 from app.domains.market_data.providers.base import (
     CAP_FILINGS,
     CAP_FUNDAMENTALS,
@@ -37,9 +33,7 @@ from app.domains.market_data.providers.base import (
     CAP_SEARCH,
     BaseStockProvider,
 )
-from app.domains.market_data.providers.companies_house import CompaniesHouseProvider
-from app.domains.market_data.providers.finnhub import FinnhubProvider
-from app.domains.market_data.providers.polygon import PolygonProvider
+from app.domains.market_data.providers.twelve_data import TwelveDataProvider
 
 # ── Intents ──────────────────────────────────────────────────────────────────
 INTENT_QUOTE = "stock_quote"
@@ -157,16 +151,19 @@ def requested_bars(query: str, default: int = 30) -> int:
 
 
 def all_providers() -> list[BaseStockProvider]:
-    return [CompaniesHouseProvider(), FinnhubProvider(), PolygonProvider(), AlphaVantageProvider()]
+    return [TwelveDataProvider()]
 
 
 _DEFAULT_PRIORITY: dict[str, tuple[str, ...]] = {
-    INTENT_QUOTE: ("finnhub", "polygon", "alpha_vantage"),
-    INTENT_HISTORY: ("polygon", "alpha_vantage"),
-    INTENT_FUNDAMENTALS: ("finnhub", "alpha_vantage"),
-    INTENT_PROFILE: ("finnhub", "polygon", "alpha_vantage"),
-    INTENT_FILINGS: ("companies_house",),
-    INTENT_LOOKUP: ("companies_house", "finnhub", "polygon", "alpha_vantage"),
+    INTENT_QUOTE: ("twelve_data",),
+    INTENT_HISTORY: ("twelve_data",),
+    INTENT_FUNDAMENTALS: ("twelve_data",),
+    INTENT_PROFILE: ("twelve_data",),
+    # Filings are UK/US statutory records a market-price API does not carry, so
+    # this intent has no provider — providers_for() returns [] and the connector
+    # stays silent, falling back to the normal web-grounded answer.
+    INTENT_FILINGS: (),
+    INTENT_LOOKUP: ("twelve_data",),
 }
 
 
