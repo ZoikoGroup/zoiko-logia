@@ -622,6 +622,15 @@ export type SourceCitation = {
   url: string | null;
   /** Exact supporting excerpt — not yet returned by the backend. */
   evidence_preview?: string;
+  /** Which connector produced this source (e.g. "finnhub", "companies_house").
+   * Absent for plain web-search hits, which have no named provider. */
+  provider?: string | null;
+  /** ISO timestamp of when the backend fetched it. */
+  fetched_at?: string | null;
+  /** How current the figure is. The distinction between a live tick, a delayed
+   * quote and yesterday's close changes what an answer may claim, so it is
+   * shown rather than left for the reader to assume. */
+  freshness?: "realtime" | "delayed" | "historical" | "filing" | null;
 };
 
 // ---- The answer itself ----

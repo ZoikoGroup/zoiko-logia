@@ -15,3 +15,22 @@ search:
   formats:
     - html
     - json
+  # Upstream default is 3.0s, which every engine was exceeding under load —
+  # the logs showed google/duckduckgo/wikipedia/startpage all timing out at
+  # ~3.2s, so a query returned HTTP 200 with an EMPTY result list. The backend
+  # cannot tell that apart from "no matches", so answers silently lost their
+  # sources. More headroom costs latency only when engines are slow.
+  default_lang: "en"
+  max_request_timeout: 10.0
+
+# Engines that actively fight self-hosted instances. Startpage served a CAPTCHA
+# and suspended this instance for 3600s, and the resulting
+# SearxEngineCaptchaException took the container down with exit 255. Brave
+# rate-limits to "Suspended: too many requests" within a handful of queries.
+# Disabling them keeps the remaining engines answering instead of one bad
+# engine degrading — or ending — the whole search.
+engines:
+  - name: startpage
+    disabled: true
+  - name: brave
+    disabled: true
