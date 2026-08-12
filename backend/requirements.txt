@@ -31,3 +31,10 @@ google-genai
 
 # Rate limiting
 slowapi
+
+# Test runner for backend/tests. pytest-asyncio is required because the
+# tenant-isolation and licence-gate suites are written as bare `async def
+# test_*` with no marker — pytest.ini sets asyncio_mode = auto so they run
+# under pytest as well as standalone via their own main().
+pytest
+pytest-asyncio

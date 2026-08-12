@@ -4,13 +4,16 @@ import { useRef, useState } from "react";
 import Link from "next/link";
 import {
   BookOpen,
+  Download,
   FolderKanban,
   MessageSquare,
   MoreHorizontal,
+  Pencil,
   Pin,
   PinOff,
   Plus,
   Search,
+  Trash2,
   X,
 } from "lucide-react";
 import type { Conversation } from "@/lib/ask-kriton-storage";
@@ -51,6 +54,7 @@ function RecentRow({
   onStartRename,
   onCommitRename,
   onCancelRename,
+  onDownload,
   onDelete,
 }: {
   conversation: Conversation;
@@ -64,6 +68,7 @@ function RecentRow({
   onStartRename: () => void;
   onCommitRename: (title: string) => void;
   onCancelRename: () => void;
+  onDownload: () => void;
   onDelete: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -112,9 +117,18 @@ function RecentRow({
                 {conversation.pinned ? "Unpin" : "Pin"}
               </button>
               <button type="button" onClick={onStartRename} className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-soft">
+                <Pencil size={13} />
                 Rename
               </button>
+              <button type="button" onClick={onDownload} className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-soft">
+                <Download size={13} />
+                Download .md
+              </button>
+              {/* Destructive action last and visually separated, so it is not
+                  adjacent to the action a user reaches for most often. */}
+              <div className="my-1 border-t border-line" />
               <button type="button" onClick={onDelete} className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-bad hover:bg-bad/10">
+                <Trash2 size={13} />
                 Delete
               </button>
             </div>
@@ -132,10 +146,22 @@ export type RecentsListProps = {
   onSelect: (id: string) => void;
   onPin: (id: string) => void;
   onRename: (id: string, title: string) => void;
+  /** Export one thread as markdown. The sidebar only signals intent — the page
+   * owns the conversation data and the rendering, same as rename and delete. */
+  onDownload: (id: string) => void;
   onDelete: (id: string) => void;
 };
 
-export function RecentsList({ conversations, activeId, showMenu, onSelect, onPin, onRename, onDelete }: RecentsListProps) {
+export function RecentsList({
+  conversations,
+  activeId,
+  showMenu,
+  onSelect,
+  onPin,
+  onRename,
+  onDownload,
+  onDelete,
+}: RecentsListProps) {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
 
@@ -159,6 +185,7 @@ export function RecentsList({ conversations, activeId, showMenu, onSelect, onPin
           onStartRename={() => { setRenamingId(c.id); setOpenMenuId(null); }}
           onCommitRename={(title) => { onRename(c.id, title); setRenamingId(null); }}
           onCancelRename={() => setRenamingId(null)}
+          onDownload={() => { onDownload(c.id); setOpenMenuId(null); }}
           onDelete={() => { onDelete(c.id); setOpenMenuId(null); }}
         />
       ))}

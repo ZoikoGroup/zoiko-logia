@@ -5,18 +5,38 @@ import Link from "next/link";
 import {
   AlertTriangle,
   BookOpen,
+  Bookmark,
   BriefcaseBusiness,
+  CheckCircle2,
+  ChevronDown,
+  Copy,
+  Download,
+  Loader2,
   ExternalLink,
   History,
   Lightbulb,
   PenLine,
+  RotateCcw,
   ShieldAlert,
   ShieldCheck,
   ShieldOff,
   Sparkles,
 } from "lucide-react";
 import { AnswerRenderer } from "@/components/AnswerRenderer";
-import { askKriton, getAuthToken, ApiError, type SourceCitation } from "@/lib/api";
+import {
+  askKriton,
+  createSavedAnswer,
+  getAuthToken,
+  ApiError,
+  type AskKritonResponse,
+  type SourceCitation,
+} from "@/lib/api";
+import {
+  answerBodyOnly,
+  downloadTextFile,
+  safeDownloadName,
+  writeTextToClipboard,
+} from "@/lib/presentation";
 import { openSourcePopup } from "@/lib/source-popup";
 import { getFollowUpSuggestions } from "@/lib/follow-up-suggestions";
 import { ThinkingIndicator } from "@/components/ask-kriton/ThinkingIndicator";
@@ -52,7 +72,10 @@ const RISK_STYLES: Record<RiskLevel, { badge: string; icon: typeof ShieldCheck; 
 };
 
 const ROUTE_LABELS: Record<string, string> = {
-  LLM: "Answered — source grounded",
+  // LLM is deliberately absent — "source grounded" is only true when sources
+  // were actually retrieved, and retrieval fails soft (a dead SearXNG yields
+  // zero citations silently). routeLabel() below reads the real count instead
+  // of asserting provenance the answer may not have.
   REFUSAL: "Refused — policy blocked",
   CLARIFICATION: "Clarification required",
   HUMAN_REVIEW: "Escalated for human review",
@@ -117,7 +140,195 @@ function SourceButton({ citation }: { citation: SourceCitation }) {
   );
 }
 
-function ConversationTurn({ turn, onFollowUp }: { turn: Turn; onFollowUp?: (question: string, originalQuery: string) => void }) {
+/** Outcome caption under "Kriton". For an answered turn this reports the
+ * citations the answer actually carries, rather than claiming it is source
+ * grounded on the strength of the route alone — retrieval fails soft, so an
+ * unreachable SearXNG produces a confident-looking answer with no provenance
+ * behind it at all. */
+function routeLabel(route: string | null, citationCount: number) {
+  if (route !== "LLM") return ROUTE_LABELS[route ?? ""] ?? route;
+  if (citationCount === 0) return "Answered — model knowledge, no sources retrieved";
+  return `Answered — grounded in ${citationCount} source${citationCount === 1 ? "" : "s"}`;
+}
+
+/** One answer as a self-contained markdown document — the *export*, as opposed
+ * to Copy. Where Copy gives the response body alone (what you paste into an
+ * email), this restates the references and the governance metadata so an
+ * exported answer stays attributable once it leaves the app. */
+function answerAsMarkdown(question: string, result: AskKritonResponse) {
+  const answer = result.answer;
+  if (!answer) return "";
+  const parts = [`# ${question.trim()}`, "", answerBodyOnly(answer.text)];
+
+  if (answer.limitations?.length) {
+    parts.push("", "## Limitations", "", ...answer.limitations.map((l) => `- ${l}`));
+  }
+  if (answer.citations.length) {
+    parts.push("", "## Sources", "");
+    parts.push(
+      ...answer.citations.map((c) => `- ${c.ref_id}: ${c.title}${c.url ? ` — ${c.url}` : ""}`),
+    );
+  }
+  parts.push(
+    "",
+    "---",
+    `Risk: ${result.safety.risk_level} · Route: ${result.route} · ` +
+      `Confidence: ${result.confidence_state.replaceAll("_", " ")} · ` +
+      `Jurisdiction: ${result.source_bundle?.jurisdiction || "Any"}`,
+  );
+  return parts.join("\n");
+}
+
+/** A whole thread as one markdown transcript — every question with its answer,
+ * in order. Turns that never produced an answer (refused, escalated, still
+ * loading, errored) are kept and labelled rather than dropped: a transcript
+ * that silently omits them would misrepresent the conversation. */
+function conversationAsMarkdown(conversation: Conversation) {
+  const parts = [`# ${conversation.title}`, ""];
+  for (const turn of conversation.turns) {
+    parts.push(`## ${turn.submittedQuery.trim()}`, "");
+    if (turn.result?.answer) {
+      parts.push(answerBodyOnly(turn.result.answer.text), "");
+      const citations = turn.result.answer.citations;
+      if (citations.length) {
+        parts.push("**Sources**", "");
+        parts.push(...citations.map((c) => `- ${c.ref_id}: ${c.title}${c.url ? ` — ${c.url}` : ""}`), "");
+      }
+    } else if (turn.error) {
+      parts.push(`_No response — ${turn.error}_`, "");
+    } else if (turn.loading) {
+      parts.push("_Still awaiting a response._", "");
+    } else {
+      const action = turn.result?.next_action?.message;
+      parts.push(`_No answer composed (${turn.result?.outcome ?? "unknown outcome"})._`, "");
+      if (action) parts.push(`> ${action}`, "");
+    }
+  }
+  return parts.join("\n");
+}
+
+// Copy / Download / Reuse for one composed answer. Each button owns a
+// short-lived status so the result is visible without a toast system: an
+// action that silently succeeds reads as an action that did nothing.
+function ResponseActions({
+  question,
+  result,
+  onReuse,
+}: {
+  question: string;
+  result: AskKritonResponse;
+  onReuse?: () => void;
+}) {
+  const [status, setStatus] = useState<Record<string, "idle" | "busy" | "done" | "error">>({});
+  const [saveError, setSaveError] = useState("");
+
+  function flash(key: string, value: "done" | "error") {
+    setStatus((prev) => ({ ...prev, [key]: value }));
+    window.setTimeout(() => setStatus((prev) => ({ ...prev, [key]: "idle" })), 1800);
+  }
+
+  // Copy gives the response body ALONE — no disclaimer, no sources, no
+  // governance footer. It is the "paste this into an email" action, and the
+  // boilerplate the app appends is not part of what Kriton said. Download
+  // below is the archival counterpart and keeps all of it.
+  async function copyAnswer() {
+    try {
+      await writeTextToClipboard(answerBodyOnly(result.answer?.text ?? ""));
+      flash("copy", "done");
+    } catch {
+      flash("copy", "error");
+    }
+  }
+
+  function downloadAnswer() {
+    try {
+      downloadTextFile(answerAsMarkdown(question, result), safeDownloadName(question, "md"));
+      flash("download", "done");
+    } catch {
+      flash("download", "error");
+    }
+  }
+
+  // Save is the only action that can fail for a reason the user must act on
+  // (signed out, server down), so it surfaces its error text rather than just
+  // flashing red.
+  async function saveAnswer() {
+    const token = getAuthToken();
+    if (!token) {
+      setSaveError("Sign in to save answers.");
+      flash("save", "error");
+      return;
+    }
+    setStatus((prev) => ({ ...prev, save: "busy" }));
+    setSaveError("");
+    try {
+      await createSavedAnswer(token, {
+        query_id: result.query_id,
+        query_text: question,
+        answer_text: result.answer?.text ?? "",
+        risk_level: result.safety.risk_level,
+      });
+      flash("save", "done");
+    } catch (err) {
+      setSaveError(err instanceof ApiError ? err.message : "Could not save this answer.");
+      flash("save", "error");
+    }
+  }
+
+  const actions = [
+    { key: "copy", label: "Copy", doneLabel: "Copied", icon: Copy, onClick: copyAnswer },
+    { key: "download", label: "Download .md", doneLabel: "Downloaded", icon: Download, onClick: downloadAnswer },
+    { key: "save", label: "Save", doneLabel: "Saved", icon: Bookmark, onClick: saveAnswer },
+    ...(onReuse
+      ? [{ key: "reuse", label: "Reuse prompt", doneLabel: "Reuse prompt", icon: RotateCcw, onClick: onReuse }]
+      : []),
+  ];
+
+  return (
+    <div className="mt-4 border-t border-line pt-3">
+      <div className="flex flex-wrap items-center gap-1.5">
+      {actions.map(({ key, label, doneLabel, icon: Icon, onClick }) => {
+        const state = status[key] ?? "idle";
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={onClick}
+            disabled={state === "busy"}
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition disabled:opacity-50 ${
+              state === "error"
+                ? "border-bad/40 text-bad"
+                : state === "done"
+                  ? "border-ok/40 text-ok"
+                  : "border-line text-muted hover:border-brand/40 hover:text-brand"
+            }`}
+          >
+            {state === "busy" ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : state === "done" ? (
+              <CheckCircle2 size={12} />
+            ) : (
+              <Icon size={12} />
+            )}
+            {state === "done" ? doneLabel : label}
+          </button>
+        );
+      })}
+      </div>
+      {saveError && <p className="mt-1.5 text-[11px] font-medium text-bad">{saveError}</p>}
+    </div>
+  );
+}
+
+function ConversationTurn({
+  turn,
+  onFollowUp,
+  onReuse,
+}: {
+  turn: Turn;
+  onFollowUp?: (question: string, originalQuery: string) => void;
+  onReuse?: (query: string) => void;
+}) {
   const { submittedQuery, result, error, loading } = turn;
   const followUps = useMemo(() => getFollowUpSuggestions(result, submittedQuery), [result, submittedQuery]);
   const safety = result?.safety ?? null;
@@ -157,7 +368,9 @@ function ConversationTurn({ turn, onFollowUp }: { turn: Turn; onFollowUp?: (ques
                   {outcomeStyle && <span className={`h-2 w-2 rounded-full ${outcomeStyle.dot}`} />}
                   {outcomeStyle && <span className={`text-xs font-semibold ${outcomeStyle.text}`}>{outcomeStyle.label}</span>}
                 </div>
-                <p className="mt-0.5 text-xs text-muted">{ROUTE_LABELS[route ?? ""] ?? route}</p>
+                <p className="mt-0.5 text-xs text-muted">
+                  {routeLabel(route, result.answer?.citations.length ?? 0)}
+                </p>
               </div>
               <div className="flex items-center gap-2">
                 <Link
@@ -175,14 +388,23 @@ function ConversationTurn({ turn, onFollowUp }: { turn: Turn; onFollowUp?: (ques
                 <>
                   <AnswerRenderer text={result.answer.text} />
                   {result.answer.citations.length > 0 && (
-                    <div className="mt-5 border-t border-line pt-4">
-                      <p className="text-xs font-bold uppercase text-muted">
-                        Sources ({result.answer.citations.length}) — the answer is drawn from these
-                      </p>
+                    <details className="group/sources mt-5 border-t border-line pt-4">
+                      {/* Collapsed by default — the list only opens on click, so a
+                          long answer is not pushed down by its own provenance.
+                          Named group: SourceButton carries its own bare `group`,
+                          and an unnamed group here would fire its hover styles
+                          from anywhere in the panel. */}
+                      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs font-bold uppercase text-muted transition hover:text-ink">
+                        <ChevronDown size={13} className="shrink-0 transition-transform group-open/sources:rotate-180" />
+                        Sources
+                        <span className="rounded-full bg-soft px-1.5 py-0.5 text-[10px] font-semibold normal-case text-muted">
+                          {result.answer.citations.length}
+                        </span>
+                      </summary>
                       <div className="mt-2 space-y-1">
                         {result.answer.citations.map((c) => <SourceButton key={c.ref_id} citation={c} />)}
                       </div>
-                    </div>
+                    </details>
                   )}
                   {result.answer.limitations.length > 0 && (
                     <div className="mt-4 space-y-2 border-t border-line pt-4">
@@ -212,6 +434,14 @@ function ConversationTurn({ turn, onFollowUp }: { turn: Turn; onFollowUp?: (ques
                   <span className="block text-[11px] font-bold uppercase text-info">{result.next_action.type}</span>
                   {result.next_action.message}
                 </div>
+              )}
+
+              {result.answer && (
+                <ResponseActions
+                  question={submittedQuery}
+                  result={result}
+                  onReuse={onReuse ? () => onReuse(turn.query) : undefined}
+                />
               )}
 
               <ExploreFurther
@@ -293,6 +523,18 @@ export default function AskKritonPage() {
     persist(conversations.map((c) => (c.id === id ? { ...c, title } : c)));
   }
 
+  /** Export any thread from the sidebar, not just the one currently open —
+   * looked up by id rather than using activeConversation, so downloading an
+   * old chat does not require switching to it first. */
+  function downloadConversation(id: string) {
+    const conversation = conversations.find((c) => c.id === id);
+    if (!conversation) return;
+    downloadTextFile(
+      conversationAsMarkdown(conversation),
+      safeDownloadName(conversation.title || "kriton-chat", "md"),
+    );
+  }
+
   function deleteConversation(id: string) {
     persist(conversations.filter((c) => c.id !== id));
     if (activeId === id) {
@@ -367,6 +609,7 @@ export default function AskKritonPage() {
     onSelect: selectConversation,
     onPin: pinConversation,
     onRename: renameConversation,
+    onDownload: downloadConversation,
     onDelete: deleteConversation,
     onNewChat: startNewChat,
   };
@@ -438,9 +681,34 @@ export default function AskKritonPage() {
                 </div>
               ) : (
                 <div className="w-full max-w-4xl space-y-6 self-stretch">
+                  {activeConversation && (
+                    <div className="flex items-center justify-between gap-3 border-b border-line/70 pb-3">
+                      <p className="truncate text-xs font-semibold text-muted">
+                        {activeConversation.title}
+                        <span className="ml-2 font-normal">
+                          {activeConversation.turns.length} exchange
+                          {activeConversation.turns.length === 1 ? "" : "s"}
+                        </span>
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          downloadTextFile(
+                            conversationAsMarkdown(activeConversation),
+                            safeDownloadName(activeConversation.title || "kriton-chat", "md"),
+                          )
+                        }
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[11px] font-semibold text-muted transition hover:border-brand/40 hover:text-brand"
+                      >
+                        <Download size={12} />
+                        Download chat
+                      </button>
+                    </div>
+                  )}
+
                   {activeConversation?.turns.map((turn) => (
                     <div key={turn.id} className="space-y-6 border-b border-line/70 pb-7 last:border-b-0">
-                      <ConversationTurn turn={turn} onFollowUp={handleFollowUp} />
+                      <ConversationTurn turn={turn} onFollowUp={handleFollowUp} onReuse={setQuery} />
                     </div>
                   ))}
 

@@ -43,10 +43,11 @@ async def _make_tenant_with_source(
     db.add(tenant)
     await db.flush()
 
+    # No password column: Supabase owns credentials now, so users.hashed_password
+    # was dropped and this fixture stopped constructing.
     user = User(
         tenant_id=tenant.id,
         email=f"{uuid.uuid4().hex[:8]}@tenant-isolation-test.local",
-        hashed_password="unused",
         full_name="Isolation Test User",
         role="Admin",
     )

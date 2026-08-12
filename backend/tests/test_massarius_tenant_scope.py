@@ -58,6 +58,10 @@ async def test_sources_table_isolated_bypassing_application_layer():
     try:
         await assert_tenant_isolated(
             RequestSessionLocal, table="sources", tenant_a=tenant_a, tenant_b=tenant_b,
+            # Only source_b's id: the assertion is that tenant_b's *private*
+            # row is invisible to tenant_a, not that the two tenants see
+            # disjoint tables — every non-private row is shared with both.
+            tenant_b_private_ids={source_b.id},
         )
     finally:
         async with AsyncSessionLocal() as db:

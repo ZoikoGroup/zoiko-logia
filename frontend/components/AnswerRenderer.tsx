@@ -1,12 +1,23 @@
 "use client";
 
-import { useEffect, useRef, useState, type ComponentPropsWithoutRef } from "react";
+import { useEffect, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
+import { CheckCircle2, Copy, Download, Table2 } from "lucide-react";
 import { cssVar } from "@/lib/css-var";
+import {
+  canvasElementToPngBlob,
+  downloadBlob,
+  safeDownloadName,
+  svgElementToPngBlob,
+  tableElementToRows,
+  tableRowsToTsv,
+  writeImageToClipboard,
+  writeTextToClipboard,
+} from "@/lib/presentation";
 
 // echarts-for-react touches the DOM (canvas), so load it client-only.
 const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false });
@@ -36,6 +47,68 @@ function stripInlineRefs(text: string): string {
     .replace(/\s*\[\s*(?:REF-)?\d+(?:\s*,\s*(?:REF-)?\d+)*\s*\]/gi, "")
     .replace(/[ \t]+([.,;:])/g, "$1")
     .replace(/[ \t]{2,}/g, " ");
+}
+
+// ── Figure toolbar ───────────────────────────────────────────────────────────
+// Charts, diagrams and tables all get the same small action row, so a user
+// learns one control surface rather than three. Each button owns a short-lived
+// status: an export that silently succeeds reads as one that did nothing, and
+// clipboard/rasterization failures are real (permissions, browser support) and
+// must be visible rather than swallowed.
+
+type FigureAction = {
+  key: string;
+  label: string;
+  doneLabel: string;
+  icon: typeof Copy;
+  onClick: () => void | Promise<void>;
+};
+
+function FigureToolbar({ actions, children }: { actions: FigureAction[]; children?: ReactNode }) {
+  const [status, setStatus] = useState<Record<string, "idle" | "busy" | "done" | "error">>({});
+
+  function flash(key: string, value: "done" | "error") {
+    setStatus((prev) => ({ ...prev, [key]: value }));
+    window.setTimeout(() => setStatus((prev) => ({ ...prev, [key]: "idle" })), 1800);
+  }
+
+  async function run(action: FigureAction) {
+    setStatus((prev) => ({ ...prev, [action.key]: "busy" }));
+    try {
+      await action.onClick();
+      flash(action.key, "done");
+    } catch {
+      flash(action.key, "error");
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {actions.map((action) => {
+        const state = status[action.key] ?? "idle";
+        const Icon = action.icon;
+        return (
+          <button
+            key={action.key}
+            type="button"
+            onClick={() => void run(action)}
+            disabled={state === "busy"}
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px] font-semibold transition disabled:opacity-50 ${
+              state === "error"
+                ? "border-bad/40 text-bad"
+                : state === "done"
+                  ? "border-ok/40 text-ok"
+                  : "border-line text-muted hover:border-brand/40 hover:text-brand"
+            }`}
+          >
+            {state === "done" ? <CheckCircle2 size={11} /> : <Icon size={11} />}
+            {state === "done" ? action.doneLabel : state === "error" ? "Failed" : action.label}
+          </button>
+        );
+      })}
+      {children}
+    </div>
+  );
 }
 
 function parseSegments(text: string): Segment[] {
@@ -114,7 +187,39 @@ function MermaidDiagram({ code }: { code: string }) {
     );
   }
 
-  return <div ref={ref} className="my-4 flex justify-center overflow-x-auto" />;
+  // Rasterized from the live SVG rather than re-rendered, so the exported image
+  // is exactly the diagram on screen.
+  async function diagramPng(): Promise<Blob> {
+    const svg = ref.current?.querySelector("svg");
+    if (!svg) throw new Error("Diagram is not ready yet");
+    return await svgElementToPngBlob(svg as SVGSVGElement);
+  }
+
+  return (
+    <figure className="my-4">
+      <div ref={ref} className="flex justify-center overflow-x-auto" />
+      <figcaption className="mt-2 flex justify-end">
+        <FigureToolbar
+          actions={[
+            {
+              key: "copy-image",
+              label: "Copy image",
+              doneLabel: "Copied",
+              icon: Copy,
+              onClick: async () => writeImageToClipboard(await diagramPng()),
+            },
+            {
+              key: "download",
+              label: "Download",
+              doneLabel: "Downloaded",
+              icon: Download,
+              onClick: async () => downloadBlob(await diagramPng(), safeDownloadName("kriton-diagram", "png")),
+            },
+          ]}
+        />
+      </figcaption>
+    </figure>
+  );
 }
 
 // ── Data charts (Apache ECharts) ────────────────────────────────────────────
@@ -244,7 +349,33 @@ function isChartEmpty(spec: ChartSpec): boolean {
   return !(hasCategories && hasSeriesData);
 }
 
+/** The chart's own numbers as table rows (header first) — the data behind
+ * "View as table" and "Copy table". Derived from the same spec the chart is
+ * drawn from, so the table can never disagree with the picture. */
+function chartSpecToRows(spec: ChartSpec): string[][] {
+  const num = (v: number) => (Number.isFinite(v) ? String(v) : "");
+
+  if (spec.type === "pie") {
+    return [["Name", "Value"], ...(spec.data ?? []).map((d) => [d.name, num(d.value)])];
+  }
+  if (spec.type === "sankey") {
+    return [
+      ["Source", "Target", "Value"],
+      ...(spec.links ?? []).map((l) => [l.source, l.target, num(l.value)]),
+    ];
+  }
+  const series = spec.series ?? [];
+  const categories = spec.categories ?? [];
+  return [
+    ["Category", ...series.map((s, i) => s.name || `Series ${i + 1}`)],
+    ...categories.map((c, row) => [c, ...series.map((s) => num(s.data?.[row]))]),
+  ];
+}
+
 function ChartRenderer({ code }: { code: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [showTable, setShowTable] = useState(false);
+
   let spec: ChartSpec | null = null;
   try {
     spec = JSON.parse(code) as ChartSpec;
@@ -271,9 +402,123 @@ function ChartRenderer({ code }: { code: string }) {
     );
   }
 
+  const rows = chartSpecToRows(spec);
+  const title = spec.title || "kriton-chart";
+
+  // Rasterized from the canvas ECharts actually drew, so the export is exactly
+  // what is on screen. next/dynamic does not forward refs, so the instance is
+  // reached through the DOM rather than through a component ref.
+  async function chartPng(): Promise<Blob> {
+    const canvas = containerRef.current?.querySelector("canvas");
+    if (!canvas) throw new Error("Chart is not ready yet");
+    return await canvasElementToPngBlob(canvas as HTMLCanvasElement, cssVar("--panel", "#ffffff"));
+  }
+
   return (
-    <div className="my-4 rounded-xl border border-line bg-panel p-3">
-      <ReactECharts option={buildChartOption(spec)} style={{ height: 380, width: "100%" }} notMerge />
+    <figure className="my-4 rounded-xl border border-line bg-panel p-3">
+      <div ref={containerRef}>
+        <ReactECharts option={buildChartOption(spec)} style={{ height: 380, width: "100%" }} notMerge />
+      </div>
+
+      {showTable && (
+        <div className="mt-3 overflow-x-auto rounded-lg border border-line">
+          <table className="w-full border-collapse text-left text-xs">
+            <thead className="bg-soft">
+              <tr>
+                {rows[0].map((cell, i) => (
+                  <th key={i} className="border-b border-line px-3 py-2 font-semibold text-ink">
+                    {cell}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(1).map((row, r) => (
+                <tr key={r}>
+                  {row.map((cell, c) => (
+                    <td key={c} className="border-b border-line px-3 py-2 align-top text-ink last:border-b-0">
+                      {cell}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <figcaption className="mt-2 flex justify-end">
+        <FigureToolbar
+          actions={[
+            {
+              key: "copy-image",
+              label: "Copy image",
+              doneLabel: "Copied",
+              icon: Copy,
+              onClick: async () => writeImageToClipboard(await chartPng()),
+            },
+            {
+              key: "download",
+              label: "Download",
+              doneLabel: "Downloaded",
+              icon: Download,
+              onClick: async () => downloadBlob(await chartPng(), safeDownloadName(title, "png")),
+            },
+            {
+              key: "copy-table",
+              label: "Copy table",
+              doneLabel: "Copied",
+              icon: Table2,
+              // TSV, not CSV: spreadsheets split TSV into cells straight off the
+              // clipboard with no import dialog.
+              onClick: async () => writeTextToClipboard(tableRowsToTsv(rows)),
+            },
+          ]}
+        >
+          <button
+            type="button"
+            onClick={() => setShowTable((v) => !v)}
+            aria-expanded={showTable}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2 py-1 text-[11px] font-semibold text-muted transition hover:border-brand/40 hover:text-brand"
+          >
+            <Table2 size={11} />
+            {showTable ? "Hide table" : "View as table"}
+          </button>
+        </FigureToolbar>
+      </figcaption>
+    </figure>
+  );
+}
+
+/** A table inside the answer prose — the rate/comparison tables Kriton writes
+ * into its narrative, which are the ones a user most often wants in a
+ * spreadsheet. Distinct from a chart's "Copy table", which reads the chart
+ * spec; here the rendered DOM IS the source, so every column comes across
+ * exactly as displayed. */
+function MarkdownTable(props: ComponentPropsWithoutRef<"table">) {
+  const ref = useRef<HTMLTableElement>(null);
+
+  return (
+    <div className="my-3">
+      <div className="overflow-x-auto">
+        <table ref={ref} className="w-full border-collapse text-left text-xs" {...props} />
+      </div>
+      <div className="mt-1.5 flex justify-end">
+        <FigureToolbar
+          actions={[
+            {
+              key: "copy-table",
+              label: "Copy table",
+              doneLabel: "Copied",
+              icon: Table2,
+              onClick: async () => {
+                if (!ref.current) throw new Error("Table is not ready yet");
+                await writeTextToClipboard(tableRowsToTsv(tableElementToRows(ref.current)));
+              },
+            },
+          ]}
+        />
+      </div>
     </div>
   );
 }
@@ -290,11 +535,7 @@ const mdComponents = {
   a: (props: ComponentPropsWithoutRef<"a">) => (
     <a className="text-brand underline" target="_blank" rel="noreferrer" {...props} />
   ),
-  table: (props: ComponentPropsWithoutRef<"table">) => (
-    <div className="my-3 overflow-x-auto">
-      <table className="w-full border-collapse text-left text-xs" {...props} />
-    </div>
-  ),
+  table: (props: ComponentPropsWithoutRef<"table">) => <MarkdownTable {...props} />,
   thead: (props: ComponentPropsWithoutRef<"thead">) => <thead className="bg-soft" {...props} />,
   th: (props: ComponentPropsWithoutRef<"th">) => (
     <th className="border border-line px-3 py-2 font-semibold text-ink" {...props} />
