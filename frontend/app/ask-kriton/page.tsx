@@ -523,6 +523,18 @@ export default function AskKritonPage() {
     persist(conversations.map((c) => (c.id === id ? { ...c, title } : c)));
   }
 
+  /** Export any thread from the sidebar, not just the one currently open —
+   * looked up by id rather than using activeConversation, so downloading an
+   * old chat does not require switching to it first. */
+  function downloadConversation(id: string) {
+    const conversation = conversations.find((c) => c.id === id);
+    if (!conversation) return;
+    downloadTextFile(
+      conversationAsMarkdown(conversation),
+      safeDownloadName(conversation.title || "kriton-chat", "md"),
+    );
+  }
+
   function deleteConversation(id: string) {
     persist(conversations.filter((c) => c.id !== id));
     if (activeId === id) {
@@ -597,6 +609,7 @@ export default function AskKritonPage() {
     onSelect: selectConversation,
     onPin: pinConversation,
     onRename: renameConversation,
+    onDownload: downloadConversation,
     onDelete: deleteConversation,
     onNewChat: startNewChat,
   };
