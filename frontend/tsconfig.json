@@ -30,5 +30,10 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  // vitest.config.ts is excluded because vitest ships its own copy of vite,
+  // and the two Plugin types are structurally incompatible — type-checking it
+  // here fails `next build` over a mismatch in tooling that never reaches the
+  // bundle. Vitest reads its own config at runtime; the tests themselves ARE
+  // still type-checked.
+  "exclude": ["node_modules", "vitest.config.ts"]
 }

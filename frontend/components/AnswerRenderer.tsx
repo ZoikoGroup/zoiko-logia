@@ -563,7 +563,13 @@ export function AnswerRenderer({ text, className }: { text: string; className?: 
         ) : (
           <ReactMarkdown
             key={i}
-            remarkPlugins={[remarkGfm, remarkMath]}
+            // singleDollarTextMath: false — "$94.8 billion ($94,827,000,000)"
+            // was being parsed as inline math between the first and second $,
+            // rendering the figure as stacked italic letters. Currency is far
+            // more common than inline formulas in an accounting answer, so the
+            // dollar sign belongs to money here. Display math ($$…$$) is
+            // unaffected; see _FORMATTING_INSTRUCTIONS for the prompt side.
+            remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
             rehypePlugins={[rehypeKatex]}
             components={mdComponents}
           >

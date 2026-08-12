@@ -23,6 +23,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { AnswerRenderer } from "@/components/AnswerRenderer";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import {
   askKriton,
   createSavedAnswer,
@@ -71,16 +72,19 @@ const RISK_STYLES: Record<RiskLevel, { badge: string; icon: typeof ShieldCheck; 
   RESTRICTED: { badge: "border-bad/30 bg-bad/10 text-bad", icon: ShieldOff, label: "Restricted — blocked" },
 };
 
-const ROUTE_LABELS: Record<string, string> = {
-  // LLM is deliberately absent — "source grounded" is only true when sources
-  // were actually retrieved, and retrieval fails soft (a dead SearXNG yields
-  // zero citations silently). routeLabel() below reads the real count instead
-  // of asserting provenance the answer may not have.
-  REFUSAL: "Refused — policy blocked",
-  CLARIFICATION: "Clarification required",
-  HUMAN_REVIEW: "Escalated for human review",
-  SECURITY_INCIDENT: "Security incident — blocked",
-  REJECTED: "Rejected — invalid request",
+/** Why a route ended the way it did — the detail beside the outcome chip, so
+ * these deliberately omit the outcome word the chip already shows.
+ *
+ * LLM is absent: "source grounded" is only true when sources were actually
+ * retrieved, and retrieval fails soft (a dead SearXNG yields zero citations
+ * silently). routeDetail() below reads the real count instead of asserting
+ * provenance the answer may not have. */
+const ROUTE_DETAILS: Record<string, string> = {
+  REFUSAL: "blocked by policy",
+  CLARIFICATION: "needs more context",
+  HUMAN_REVIEW: "sent for human review",
+  SECURITY_INCIDENT: "blocked by security policy",
+  REJECTED: "invalid request",
 };
 
 const OUTCOME_STYLES: Record<string, { label: string; dot: string; text: string }> = {
@@ -124,31 +128,61 @@ function ZoikoGlyph({ className = "h-9 w-9" }: { className?: string }) {
   );
 }
 
+/** How each freshness class reads, and how alarming it should look. A figure's
+ * currency is part of its meaning here — "delayed" next to a share price is
+ * information the reader needs, not decoration. */
+const FRESHNESS_BADGE: Record<string, { label: string; className: string }> = {
+  realtime: { label: "real-time", className: "border-ok/40 bg-ok/10 text-ok" },
+  delayed: { label: "delayed", className: "border-warn/40 bg-warn/10 text-warn" },
+  historical: { label: "end of day", className: "border-line bg-soft text-muted" },
+  filing: { label: "as filed", className: "border-info/40 bg-info/10 text-info" },
+};
+
 function SourceButton({ citation }: { citation: SourceCitation }) {
   const label = citation.url ? new URL(citation.url).hostname.replace(/^www\./, "") : citation.title;
+  // Only market/company connectors set these; a plain web hit has neither a
+  // named provider nor a meaningful freshness class, and gets no badge.
+  const badge = citation.freshness ? FRESHNESS_BADGE[citation.freshness] : undefined;
+
   return (
     <button
       type="button"
       onClick={() => openSourcePopup(citation)}
+      title={citation.fetched_at ? `Retrieved ${citation.fetched_at}` : undefined}
       className="group flex w-full items-start gap-2 rounded-lg px-1 py-1 text-left text-xs leading-5 text-muted hover:bg-soft hover:text-brand"
     >
       <BookOpen size={13} className="mt-0.5 shrink-0 text-brand" />
       <span className="font-mono text-brand">[{citation.ref_id}]</span>
-      <span className="flex-1 truncate">{citation.title || label}</span>
+      <span className="min-w-0 flex-1 truncate">{citation.title || label}</span>
+      {citation.provider && (
+        <span className="shrink-0 rounded-full border border-line bg-soft px-1.5 text-[10px] font-semibold text-muted">
+          {citation.provider.replaceAll("_", " ")}
+        </span>
+      )}
+      {badge && (
+        <span className={`shrink-0 rounded-full border px-1.5 text-[10px] font-semibold ${badge.className}`}>
+          {badge.label}
+        </span>
+      )}
       <ExternalLink size={12} className="mt-0.5 shrink-0 opacity-0 group-hover:opacity-100" />
     </button>
   );
 }
 
-/** Outcome caption under "Kriton". For an answered turn this reports the
- * citations the answer actually carries, rather than claiming it is source
- * grounded on the strength of the route alone — retrieval fails soft, so an
- * unreachable SearXNG produces a confident-looking answer with no provenance
- * behind it at all. */
-function routeLabel(route: string | null, citationCount: number) {
-  if (route !== "LLM") return ROUTE_LABELS[route ?? ""] ?? route;
-  if (citationCount === 0) return "Answered — model knowledge, no sources retrieved";
-  return `Answered — grounded in ${citationCount} source${citationCount === 1 ? "" : "s"}`;
+/** The detail line under the outcome chip.
+ *
+ * Carries only the *reason*, never the outcome word — the chip beside it
+ * already says "Answered" / "Refused", and repeating it read as a stutter
+ * ("Answered · Answered — grounded in 4 sources").
+ *
+ * For an answered turn it reports the citations the answer actually carries,
+ * rather than claiming source grounding on the strength of the route alone:
+ * retrieval fails soft, so an unreachable SearXNG produces a confident-looking
+ * answer with no provenance behind it at all. */
+function routeDetail(route: string | null, citationCount: number) {
+  if (route !== "LLM") return ROUTE_DETAILS[route ?? ""] ?? route;
+  if (citationCount === 0) return "model knowledge, no sources retrieved";
+  return `grounded in ${citationCount} source${citationCount === 1 ? "" : "s"}`;
 }
 
 /** One answer as a self-contained markdown document — the *export*, as opposed
@@ -369,7 +403,7 @@ function ConversationTurn({
                   {outcomeStyle && <span className={`text-xs font-semibold ${outcomeStyle.text}`}>{outcomeStyle.label}</span>}
                 </div>
                 <p className="mt-0.5 text-xs text-muted">
-                  {routeLabel(route, result.answer?.citations.length ?? 0)}
+                  {routeDetail(route, result.answer?.citations.length ?? 0)}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -386,7 +420,12 @@ function ConversationTurn({
             <div className="kriton-animate-answer-reveal">
               {result.answer ? (
                 <>
-                  <AnswerRenderer text={result.answer.text} />
+                  {/* Model-generated Mermaid and chart JSON are the most
+                      likely things to throw during render; contain the damage
+                      to this answer rather than losing the whole thread. */}
+                  <ErrorBoundary label="AnswerRenderer">
+                    <AnswerRenderer text={result.answer.text} />
+                  </ErrorBoundary>
                   {result.answer.citations.length > 0 && (
                     <details className="group/sources mt-5 border-t border-line pt-4">
                       {/* Collapsed by default — the list only opens on click, so a
@@ -450,10 +489,18 @@ function ConversationTurn({
               />
             </div>
 
+            {/* Explicitly labelled "Governed library" because these counts
+                measure the registered Source Library, NOT the citations above
+                — the two are different collections, and an unlabelled
+                "3 eligible" sitting beside "no sources retrieved" reads as a
+                contradiction rather than as two separate facts. */}
             {bundle && (
-              <p className="mt-4 border-t border-line pt-3 text-[11px] text-muted">
-                {bundle.eligible_source_count} eligible
-                {bundle.excluded_source_count > 0 ? ` · ${bundle.excluded_source_count} excluded` : ""} · {result.confidence_state.replaceAll("_", " ")} confidence
+              <p
+                className="mt-4 border-t border-line pt-3 text-[11px] text-muted"
+                title="Counts refer to the governed Source Library, which drives routing. Citations above are the live sources the answer was grounded in."
+              >
+                Governed library: {bundle.eligible_source_count} eligible
+                {bundle.excluded_source_count > 0 ? `, ${bundle.excluded_source_count} excluded` : ""} · {result.confidence_state.replaceAll("_", " ")} confidence
                 {bundle.jurisdiction ? ` · ${bundle.jurisdiction}` : " · Any jurisdiction"} · {bundle.freshness_state} sources · {style?.label ?? "Unknown risk"}
               </p>
             )}
