@@ -10,6 +10,8 @@ from __future__ import annotations
 from typing import Literal, Optional, List
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.orchestration.visualization.spec import VisualizationSpec
+
 
 # ── Request ──────────────────────────────────────────────────────────────────
 
@@ -207,3 +209,27 @@ class AskKritonResponse(BaseModel):
     answer: Optional[ComposedAnswer] = None
     next_action: Optional[NextAction] = None
     audit_reference: AuditReference
+    # Additive field — deterministic, evidence-backed visualization decided by
+    # orchestration/visualization/orchestrator.py. Only ever set on "answered"
+    # outcomes, after safety/validation has already approved the text answer
+    # (see service.py) — never a substitute for or bypass of that gate. None
+    # on every response this pipeline can't back with real (non-fabricated)
+    # evidence; existing clients that don't read this field are unaffected.
+    visualization: Optional[VisualizationSpec] = None
+    # Complementary visuals (spec §17) — a genuinely different lens on the
+    # SAME evidence as `visualization` (e.g. current-value KPI alongside a
+    # trend line), never a redundant alternate chart type. Empty list when
+    # none apply; each entry independently validated before being attached
+    # (see orchestrator.py's _build_complementary_specs docstring).
+    secondary_visualizations: List[VisualizationSpec] = Field(default_factory=list)
+
+
+# ── Frontend visualization-interaction telemetry ─────────────────────────────
+
+class VisualizationTelemetryEvent(BaseModel):
+    event: str
+    category: str
+    visualization_id: Optional[str] = None
+    visualization_type: Optional[str] = None
+    renderer: Optional[str] = None
+    detail: dict = Field(default_factory=dict)

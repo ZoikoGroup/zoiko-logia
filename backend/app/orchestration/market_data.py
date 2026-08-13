@@ -26,12 +26,19 @@ cannot travel this path — see the market_data package docstring.
 """
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
+
 from app.domains.market_data import registry, service
+from app.domains.market_data.http import make_client
+from app.domains.market_data.identity import company_name_hint, resolve_local
+from app.domains.market_data.providers.companies_house import CompaniesHouseProvider
 from app.domains.market_data.schemas import (
     CompanyProfile,
     FilingRecord,
     FinancialMetric,
     OHLCVBar,
+    ProviderError,
     StockQuote,
 )
 from app.orchestration.websearch import WebSource
@@ -179,6 +186,108 @@ def _profile_source(profile: CompanyProfile) -> WebSource:
         + f". Source: {profile.provider}.",
         provider=profile.provider,
         freshness="filing" if profile.provider == "companies_house" else "historical",
+    )
+
+
+# ── Ownership (persons with significant control) ─────────────────────────
+# A dedicated, self-gating connector — same contract as dbnomics.py's
+# _find_best_series / frankfurter.py's _find_rate, NOT routed through
+# service.fetch_market_data()'s generic multi-provider dispatch above: PSC
+# data only exists at Companies House (no fallback-provider chain is
+# possible for it), so going through the shared dispatcher would buy nothing
+# and risks a second, wasted network fetch if a caller also calls
+# fetch_market_sources() for the same query. Fetched exactly once; that one
+# result builds BOTH the grounding WebSource and the composition evidence
+# fetch_live_data() populates (see evidence.py's "never two independent
+# fetches for the same fact" rule).
+_OWNERSHIP_HINTS = re.compile(
+    r"\b(persons? with significant control|significant control|\bpsc\b|"
+    r"shareholders?|shareholding|major shareholders?|cap table|who owns|"
+    r"ownership (breakdown|split|percentage|stake)|beneficial owners?)\b",
+    re.I,
+)
+
+
+@dataclass
+class OwnershipMatch:
+    company_name: str
+    company_number: str
+    # (holder label, percent) — percent is always a declared PSC BAND's
+    # midpoint, never an exact filed figure; the last slice, when present, is
+    # the synthesized "Other shareholders" gap (100% minus known midpoints) —
+    # a real arithmetic consequence of the known slices, not fabricated data.
+    slices: list[tuple[str, float]]
+    url: str
+    caveat: str
+
+
+async def _find_ownership(query: str) -> OwnershipMatch | None:
+    if not _OWNERSHIP_HINTS.search(query or ""):
+        return None
+
+    provider = CompaniesHouseProvider()
+    if not provider.configured():
+        return None
+
+    ref = resolve_local(query)
+    hint = company_name_hint(query)
+    if not ref.company_number and not hint:
+        return None
+
+    try:
+        async with make_client() as client:
+            if not ref.company_number:
+                matches = await provider.search(client, hint, limit=1)
+                if not matches or not matches[0].company_number:
+                    return None
+                ref = matches[0]
+            stakes = await provider.get_ownership(client, ref)
+    except ProviderError:
+        return None
+    except Exception:  # noqa: BLE001 — connector boundary must fail soft
+        return None
+
+    # Only PSCs with a real ownership-of-shares band count toward a "share of
+    # the whole" figure — voting-rights-only/appointment-only/influence-only
+    # control is a real fact but not a percentage of shares (see
+    # companies_house.py's get_ownership docstring). Ceased PSCs are historic,
+    # not current ownership.
+    active = [s for s in stakes if not s.ceased and s.min_percent is not None and s.max_percent is not None]
+    if not active:
+        return None
+
+    slices: list[tuple[str, float]] = [(s.name, (s.min_percent + s.max_percent) / 2.0) for s in active]
+    known_total = sum(v for _, v in slices)
+    if known_total < 99.5:
+        slices.append(("Other shareholders (below statutory disclosure threshold)", 100.0 - known_total))
+
+    caveat = (
+        "Ownership bands as filed with Companies House (persons with significant control). "
+        "Values are the midpoint of each holder's declared band (e.g. \"25-50%\" → ~38%), not "
+        "an exact filed percentage, and only holders the register requires to be disclosed "
+        "(generally over 25% control) are listed."
+    )
+    return OwnershipMatch(
+        company_name=active[0].company_name, company_number=active[0].company_number,
+        slices=slices, url=active[0].source_url, caveat=caveat,
+    )
+
+
+def _build_ownership_source(match: OwnershipMatch) -> WebSource:
+    lines = "; ".join(
+        f"{label}: ~{value:.0f}%" for label, value in match.slices
+        if not label.startswith("Other shareholders")
+    )
+    return WebSource(
+        title=f"Companies House — {match.company_name} persons with significant control"[:200],
+        url=match.url,
+        snippet=(
+            f"{match.company_name} (company number {match.company_number}) persons with significant "
+            f"control, as filed with Companies House: {lines}. {match.caveat} Other, smaller "
+            "shareholders may exist and are not shown."
+        ),
+        provider="companies_house",
+        freshness="filing",
     )
 
 
