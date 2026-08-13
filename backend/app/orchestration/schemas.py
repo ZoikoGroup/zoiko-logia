@@ -199,7 +199,10 @@ class AuditReference(BaseModel):
 class AskKritonResponse(BaseModel):
     query_id: str
     correlation_id: str
-    outcome: str       # answered | refused | clarification_required | escalated | rejected
+    # out_of_scope: the domain gate declined the question. `answer` still carries
+    # the message so it renders as prose, but it is not an answer to what was
+    # asked, and surfaces that act on answers (follow-up suggestions) skip it.
+    outcome: str       # answered | out_of_scope | refused | clarification_required | escalated | rejected
     route: str         # LLM | REFUSAL | CLARIFICATION | HUMAN_REVIEW | SECURITY_INCIDENT | REJECTED
     safety: SafetyState
     confidence_state: str

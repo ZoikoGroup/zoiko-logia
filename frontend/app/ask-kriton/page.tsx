@@ -89,6 +89,9 @@ const ROUTE_DETAILS: Record<string, string> = {
 
 const OUTCOME_STYLES: Record<string, { label: string; dot: string; text: string }> = {
   answered: { label: "Answered", dot: "bg-ok", text: "text-ok" },
+  // Not a failure and not an answer — Kriton declining a question outside its
+  // domain. Neutral rather than red: nothing went wrong.
+  out_of_scope: { label: "Out of scope", dot: "bg-muted", text: "text-muted" },
   clarification_required: { label: "Clarification needed", dot: "bg-info", text: "text-info" },
   escalated: { label: "Escalated", dot: "bg-warn", text: "text-warn" },
   limited_response: { label: "Limited", dot: "bg-warn", text: "text-warn" },
@@ -138,6 +141,14 @@ const FRESHNESS_BADGE: Record<string, { label: string; className: string }> = {
   filing: { label: "as filed", className: "border-info/40 bg-info/10 text-info" },
 };
 
+/** Only the citations the reader can actually open. A source with no URL is a
+ * dead entry in the panel — it names something the reader cannot go and verify,
+ * which is worse than not listing it at all. Applied to the panel and to both
+ * exports, so what a reader sees on screen matches what they get in the file. */
+function linkedCitations(citations: SourceCitation[]): SourceCitation[] {
+  return citations.filter((c) => !!c.url);
+}
+
 function SourceButton({ citation }: { citation: SourceCitation }) {
   const label = citation.url ? new URL(citation.url).hostname.replace(/^www\./, "") : citation.title;
   // Only market/company connectors set these; a plain web hit has neither a
@@ -152,7 +163,6 @@ function SourceButton({ citation }: { citation: SourceCitation }) {
       className="group flex w-full items-start gap-2 rounded-lg px-1 py-1 text-left text-xs leading-5 text-muted hover:bg-soft hover:text-brand"
     >
       <BookOpen size={13} className="mt-0.5 shrink-0 text-brand" />
-      <span className="font-mono text-brand">[{citation.ref_id}]</span>
       <span className="min-w-0 flex-1 truncate">{citation.title || label}</span>
       {citation.provider && (
         <span className="shrink-0 rounded-full border border-line bg-soft px-1.5 text-[10px] font-semibold text-muted">
@@ -166,6 +176,30 @@ function SourceButton({ citation }: { citation: SourceCitation }) {
       )}
       <ExternalLink size={12} className="mt-0.5 shrink-0 opacity-0 group-hover:opacity-100" />
     </button>
+  );
+}
+
+/** The provenance list under an answer. Collapsed by default — the list only
+ * opens on click, so a long answer is not pushed down by its own provenance. */
+function SourcesPanel({ citations }: { citations: SourceCitation[] }) {
+  const linked = linkedCitations(citations);
+  if (linked.length === 0) return null;
+
+  return (
+    <details className="group/sources mt-5 border-t border-line pt-4">
+      {/* Named group: SourceButton carries its own bare `group`, and an unnamed
+          group here would fire its hover styles from anywhere in the panel. */}
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs font-bold uppercase text-muted transition hover:text-ink">
+        <ChevronDown size={13} className="shrink-0 transition-transform group-open/sources:rotate-180" />
+        Sources
+        <span className="rounded-full bg-soft px-1.5 py-0.5 text-[10px] font-semibold normal-case text-muted">
+          {linked.length}
+        </span>
+      </summary>
+      <div className="mt-2 space-y-1">
+        {linked.map((c) => <SourceButton key={c.ref_id} citation={c} />)}
+      </div>
+    </details>
   );
 }
 
@@ -197,11 +231,10 @@ function answerAsMarkdown(question: string, result: AskKritonResponse) {
   if (answer.limitations?.length) {
     parts.push("", "## Limitations", "", ...answer.limitations.map((l) => `- ${l}`));
   }
-  if (answer.citations.length) {
+  const sources = linkedCitations(answer.citations);
+  if (sources.length) {
     parts.push("", "## Sources", "");
-    parts.push(
-      ...answer.citations.map((c) => `- ${c.ref_id}: ${c.title}${c.url ? ` — ${c.url}` : ""}`),
-    );
+    parts.push(...sources.map((c) => `- ${c.title} — ${c.url}`));
   }
   parts.push(
     "",
@@ -223,10 +256,10 @@ function conversationAsMarkdown(conversation: Conversation) {
     parts.push(`## ${turn.submittedQuery.trim()}`, "");
     if (turn.result?.answer) {
       parts.push(answerBodyOnly(turn.result.answer.text), "");
-      const citations = turn.result.answer.citations;
+      const citations = linkedCitations(turn.result.answer.citations);
       if (citations.length) {
         parts.push("**Sources**", "");
-        parts.push(...citations.map((c) => `- ${c.ref_id}: ${c.title}${c.url ? ` — ${c.url}` : ""}`), "");
+        parts.push(...citations.map((c) => `- ${c.title} — ${c.url}`), "");
       }
     } else if (turn.error) {
       parts.push(`_No response — ${turn.error}_`, "");
@@ -426,25 +459,7 @@ function ConversationTurn({
                   <ErrorBoundary label="AnswerRenderer">
                     <AnswerRenderer text={result.answer.text} />
                   </ErrorBoundary>
-                  {result.answer.citations.length > 0 && (
-                    <details className="group/sources mt-5 border-t border-line pt-4">
-                      {/* Collapsed by default — the list only opens on click, so a
-                          long answer is not pushed down by its own provenance.
-                          Named group: SourceButton carries its own bare `group`,
-                          and an unnamed group here would fire its hover styles
-                          from anywhere in the panel. */}
-                      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs font-bold uppercase text-muted transition hover:text-ink">
-                        <ChevronDown size={13} className="shrink-0 transition-transform group-open/sources:rotate-180" />
-                        Sources
-                        <span className="rounded-full bg-soft px-1.5 py-0.5 text-[10px] font-semibold normal-case text-muted">
-                          {result.answer.citations.length}
-                        </span>
-                      </summary>
-                      <div className="mt-2 space-y-1">
-                        {result.answer.citations.map((c) => <SourceButton key={c.ref_id} citation={c} />)}
-                      </div>
-                    </details>
-                  )}
+                  <SourcesPanel citations={result.answer.citations} />
                   {result.answer.limitations.length > 0 && (
                     <div className="mt-4 space-y-2 border-t border-line pt-4">
                       {result.answer.limitations.map((l, i) => (

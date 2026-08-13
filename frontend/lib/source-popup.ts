@@ -26,7 +26,6 @@ export function openSourcePopup(citation: SourceCitation): void {
       </head>
       <body>
         <h1>${safeTitle}</h1>
-        <p>Reference ${citation.ref_id}</p>
         ${citation.evidence_preview ? `<blockquote>${escape(citation.evidence_preview)}${citation.evidence_preview.length >= 240 ? "…" : ""}</blockquote>` : ""}
         ${citation.url ? `<a href="${citation.url}" target="_blank" rel="noopener noreferrer">Open source ↗</a>` : "<p>No external link available for this source.</p>"}
       </body>

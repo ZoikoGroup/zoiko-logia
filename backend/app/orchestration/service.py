@@ -747,6 +747,16 @@ async def ask_kriton(
         rag_citations = []
         limitations = []
 
+    # An off-domain reply is Kriton declining a question outside its domain, not
+    # an answer to it — so it is reported as its own outcome rather than as
+    # "answered". Downstream surfaces read outcome to decide what an answer
+    # affords: the frontend's follow-up suggestions ("Explore further") are
+    # suppressed for any outcome other than answered/clarification_required, and
+    # offering "Summarize this as a checklist" against a scope refusal is
+    # nonsense. The message itself is still returned as `answer` so it renders
+    # normally rather than as a bare policy notice.
+    outcome = "out_of_scope" if is_offdomain_refusal else "answered"
+
     answer = ComposedAnswer(
         text=final_text,
         citations=rag_citations,
@@ -759,7 +769,7 @@ async def ask_kriton(
     response = AskKritonResponse(
         query_id=query_id,
         correlation_id=correlation_id,
-        outcome="answered",
+        outcome=outcome,
         route=ROUTE_LLM,
         safety=safety_state,
         confidence_state=effective_confidence,

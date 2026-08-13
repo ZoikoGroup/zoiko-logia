@@ -547,6 +547,9 @@ export type AskKritonRequest = {
 
 export type OutcomeType =
   | "answered"
+  /** The domain gate declined the question. `answer` carries the scope message,
+   * but it is not an answer to what was asked. */
+  | "out_of_scope"
   | "refused"
   | "clarification_required"
   | "escalated"
