@@ -12,21 +12,26 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@antv/g6": "^5.1.1",
+    "@antv/x6": "^3.1.8",
     "@supabase/ssr": "^0.12.3",
     "@supabase/supabase-js": "^2.109.0",
     "clsx": "^2.1.1",
+    "cytoscape": "^3.34.0",
     "echarts": "^5.5.1",
     "echarts-for-react": "^3.0.2",
     "katex": "^0.16.47",
     "lucide-react": "^1.23.0",
-    "mermaid": "^11.4.1",
+    "mermaid": "^11.16.1",
     "next": "16.2.10",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-markdown": "^9.0.1",
+    "recharts": "^3.10.1",
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.0",
-    "remark-math": "^6.0.0"
+    "remark-math": "^6.0.0",
+    "zoikologia-dashboard": "file:.."
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

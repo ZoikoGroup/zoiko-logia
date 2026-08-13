@@ -22,9 +22,9 @@ def _select_adapter():
     row) — this is a flat "first configured provider wins" default until a
     real per-model routing decision is wired to run_test_prompt's caller.
 
-    Gemini is preferred for answering when configured (far more reliable at
-    emitting the ```chart / ```mermaid blocks than Llama), with Groq as the
-    fallback — see _complete_with_fallback.
+    Gemini is preferred for answering when configured (generally higher
+    answer quality than Llama), with Groq as the fallback — see
+    _complete_with_fallback.
     """
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
         return GeminiAdapter()
@@ -47,12 +47,50 @@ async def _try_complete(adapter, prompt: str, model: str | None) -> str:
     return await adapter.complete(prompt)
 
 
+_PROVIDER_FAILURE_MESSAGE = (
+    "Kriton is temporarily unable to reach the language model provider. "
+    "Please try again in a moment."
+)
+
+
+class ProviderUnavailable(RuntimeError):
+    """Every configured provider failed (quota, network, bad model id).
+
+    Raised rather than returned as text. Returning it made a provider outage
+    indistinguishable from a composed answer: `composed_text` was non-empty, so
+    orchestration's "did the model produce anything?" guard passed, Checkpoint C
+    validated the failure notice as if it were prose, and the turn was reported
+    as outcome="answered" — carrying a disclaimer, live citations and follow-up
+    suggestions around a sentence that answered nothing. Raising routes it to
+    orchestration's existing composition_failed handler instead, which audits
+    the failure and returns a refusal with no answer body.
+
+    str() is deliberately the clean, generic message and never the provider's
+    own text: this propagates into audit records and user-facing copy, and
+    provider errors carry account/org identifiers and rate-limit internals. The
+    raw string is kept on `.detail` for server-side diagnosis only.
+    """
+
+    def __init__(self, detail: str = ""):
+        super().__init__(_PROVIDER_FAILURE_MESSAGE)
+        self.detail = detail
+
+
 async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
     """Answer via the preferred provider, and if that provider is Gemini and it
     fails (network blip, quota, bad model id — adapters fail soft with an
     "[Error…]" string), transparently fall back to Groq so the user still gets
     an answer. The `model` override is a Groq-specific fast-model name, so it is
-    only forwarded when Groq is the one actually answering."""
+    only forwarded when Groq is the one actually answering.
+
+    If every attempted provider still failed (e.g. Groq itself hit a rate
+    limit with no further fallback configured), the raw "[Error…]" string —
+    which can include internal account/org identifiers and provider-internal
+    rate-limit detail — must never reach the composed answer. This is the one
+    choke point every caller goes through, so it's the one place that can
+    catch that. It raises ProviderUnavailable rather than returning a message:
+    a total provider outage is not an answer, and anything returned here is
+    treated downstream as one."""
     adapter = _select_adapter()
     is_gemini = isinstance(adapter, GeminiAdapter)
     # A Gemini answer must not receive a Groq model id — only pass `model`
@@ -60,6 +98,8 @@ async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
     output = await _try_complete(adapter, prompt, None if is_gemini else model)
     if output.startswith("[Error") and is_gemini and os.environ.get("GROQ_API_KEY"):
         output = await _try_complete(GroqAdapter(), prompt, model)
+    if output.startswith("[Error"):
+        raise ProviderUnavailable(output)
     return output
 
 
@@ -116,8 +156,10 @@ async def run_grounded_completion(input_text: str, model: str | None = None) -> 
     """Direct provider completion with no approved-prompt-template row —
     the fallback used by orchestration when no PromptTemplate is seeded yet,
     so web-grounded answering still works out of the box. Returns the model
-    output text (adapters fail soft, returning an error string rather than
-    raising). Uses the preferred provider with Groq fallback."""
+    output text, or raises ProviderUnavailable when every provider failed —
+    individual adapters still fail soft, but a total outage is surfaced as an
+    exception so callers cannot mistake it for an answer. Uses the preferred
+    provider with Groq fallback."""
     return await _complete_with_fallback(input_text, model)
 
 

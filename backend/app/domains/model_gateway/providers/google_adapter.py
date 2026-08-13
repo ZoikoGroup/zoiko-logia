@@ -10,8 +10,7 @@ from app.domains.model_gateway.providers.groq_adapter import _SYSTEM_PROMPT
 # exact id your API key can access (list them: models?key=... — see
 # RUNNING_KRITON.md). gemini-flash-latest always resolves to a current flash
 # model (so it won't 404 when a dated version is retired — e.g. gemini-2.5-flash
-# is blocked for new keys) and is much better than Llama at reliably emitting
-# the ```chart / ```mermaid blocks.
+# is blocked for new keys).
 _DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 
 
@@ -31,8 +30,17 @@ class GeminiAdapter:
         if self.api_key:
             try:
                 from google import genai
+                from google.genai import types
 
-                self.client = genai.Client(api_key=self.api_key)
+                # Explicit bounded timeout — see GroqAdapter.__init__'s
+                # docstring for why an unbounded LLM call is the one place in
+                # this pipeline that could actually look like a hang to the
+                # user, unlike every other network call here (already 6s-
+                # bounded and fail-soft).
+                self.client = genai.Client(
+                    api_key=self.api_key,
+                    http_options=types.HttpOptions(timeout=25_000),
+                )
             except Exception:
                 # SDK not installed / failed to init — stay soft (complete()
                 # returns a clear error string rather than crashing the request).

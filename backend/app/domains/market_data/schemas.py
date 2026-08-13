@@ -170,6 +170,31 @@ class FinancialMetric:
 
 
 @dataclass
+class OwnershipStake:
+    """One persons-with-significant-control (PSC) entry from Companies House —
+    a real, named shareholder and their declared band of control, never an
+    exact percentage (the statutory filing itself only ever states a band).
+
+    min_percent/max_percent are None when the PSC's natures_of_control carry
+    no ownership-of-shares band at all (e.g. voting-rights-only or
+    right-to-appoint-directors entries) — those are real control facts but
+    not a share-of-the-whole figure, so callers building a composition view
+    must skip stakes with no percent band rather than inventing one.
+    """
+    name: str
+    kind: str                                  # individual|corporate-entity|legal-person|super-secure ...-with-significant-control
+    provider: str
+    nature_of_control: list[str] = field(default_factory=list)
+    min_percent: Optional[float] = None
+    max_percent: Optional[float] = None
+    notified_on: str = ""
+    ceased: bool = False
+    company_number: str = ""
+    company_name: str = ""
+    source_url: str = ""
+
+
+@dataclass
 class FilingRecord:
     company_name: str
     filing_type: str
