@@ -13,14 +13,11 @@ Docs: https://developer.company-information.service.gov.uk/
 """
 from __future__ import annotations
 
-import re
-
 import httpx
 
 from app.domains.market_data.http import request_json
 from app.domains.market_data.providers.base import (
     CAP_FILINGS,
-    CAP_OWNERSHIP,
     CAP_PROFILE,
     CAP_SEARCH,
     BaseStockProvider,
@@ -30,37 +27,15 @@ from app.domains.market_data.schemas import (
     CompanyProfile,
     EntityRef,
     FilingRecord,
-    OwnershipStake,
     ProviderBadResponse,
 )
 
 _WEB_BASE = "https://find-and-update.company-information.service.gov.uk"
 
-# PSC "natures_of_control" band strings — statutory filing vocabulary, not
-# something this codebase invents. Only "ownership-of-shares-*" entries state
-# a share-of-the-whole figure; voting-rights/appointment/influence entries are
-# real control facts but not a percentage of shares, so get_ownership() below
-# skips PSCs whose natures_of_control carry none of these.
-_SHARE_BAND = re.compile(r"^ownership-of-shares-(\d+)-to-(\d+)-percent$")
-# Older filings use open-ended wording instead of the newer banded system —
-# economically the same 75-100% band, so normalized to it rather than treated
-# as a separate, narrower case.
-_SHARE_MORE_THAN = re.compile(r"^ownership-of-shares-more-than-(\d+)-percent$")
-
-
-def _parse_share_band(nature: str) -> tuple[float, float] | None:
-    match = _SHARE_BAND.match(nature)
-    if match:
-        return float(match.group(1)), float(match.group(2))
-    match = _SHARE_MORE_THAN.match(nature)
-    if match:
-        return float(match.group(1)), 100.0
-    return None
-
 
 class CompaniesHouseProvider(BaseStockProvider):
     name = "companies_house"
-    CAPABILITIES = frozenset({CAP_FILINGS, CAP_PROFILE, CAP_SEARCH, CAP_OWNERSHIP})
+    CAPABILITIES = frozenset({CAP_FILINGS, CAP_PROFILE, CAP_SEARCH})
     API_KEY_ENV = "COMPANIES_HOUSE_API_KEY"
     BASE_URL_ENV = "COMPANIES_HOUSE_API_BASE_URL"
     DEFAULT_BASE_URL = "https://api.company-information.service.gov.uk"
@@ -162,56 +137,6 @@ class CompaniesHouseProvider(BaseStockProvider):
                 )
             )
         return records
-
-    async def get_ownership(self, client: httpx.AsyncClient, ref: EntityRef) -> list[OwnershipStake]:
-        """Real, named persons-with-significant-control (PSC) — the only
-        genuine "share of the whole" data this codebase has access to. Bands,
-        never exact percentages (min_percent/max_percent), and only PSCs the
-        register discloses (generally >25% control) — both real properties of
-        the filing, not something this method loses on the way out."""
-        number = await self._resolve_number(client, ref)
-        if not number:
-            raise ProviderBadResponse(self.name, "no UK company matched that name")
-
-        profile = await request_json(client, self.name, f"{self.base_url()}/company/{number}", auth=self.auth())
-        company_name = str((profile or {}).get("company_name", "")) if isinstance(profile, dict) else ""
-
-        payload = await request_json(
-            client, self.name, f"{self.base_url()}/company/{number}/persons-with-significant-control",
-            auth=self.auth(),
-        )
-        items = (payload or {}).get("items") or []
-
-        stakes: list[OwnershipStake] = []
-        for item in items:
-            natures = [str(n) for n in (item.get("natures_of_control") or [])]
-            bands = [b for n in natures if (b := _parse_share_band(n)) is not None]
-            # Multiple ownership-of-shares entries should not occur per PSC,
-            # but if they do, the widest reported band is the honest one to
-            # show rather than an arbitrary first match.
-            min_percent = min((b[0] for b in bands), default=None)
-            max_percent = max((b[1] for b in bands), default=None)
-            name = str(item.get("name", "")).strip()
-            if not name:
-                continue
-            stakes.append(
-                OwnershipStake(
-                    name=name,
-                    kind=str(item.get("kind", "")),
-                    provider=self.name,
-                    nature_of_control=natures,
-                    min_percent=min_percent,
-                    max_percent=max_percent,
-                    notified_on=str(item.get("notified_on", "")),
-                    ceased=bool(item.get("ceased_on")),
-                    company_number=number,
-                    company_name=company_name,
-                    source_url=f"{_WEB_BASE}/company/{number}/persons-with-significant-control",
-                )
-            )
-        if not stakes:
-            raise ProviderBadResponse(self.name, "no persons with significant control on record")
-        return stakes
 
 
 # Statutory filings are as-filed and dated — never "delayed" or "realtime".

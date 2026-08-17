@@ -120,71 +120,88 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
     return parsed[:limit]
 
 
-# The table/formula formatting rules apply whether or not web sources were
-# found — so they live in one shared block that BOTH prompt branches include.
-#
-# Visual authorship is split by whether real DATA is involved:
-#
-#   - Numeric data series (charts, histograms, box plots, heatmaps, KPI tiles,
-#     exact-value tables) are NEVER authored here. The deterministic,
-#     evidence-backed pipeline (orchestration/visualization/) builds those from
-#     structured observations, and a model free-writing its own figures
-#     alongside it could disagree with them. Fenced ```chart JSON stays
-#     stripped by the frontend for the same reason.
-#
-#   - Structural/conceptual diagrams (flowcharts, process flows, decision
-#     trees, org charts) ARE requested here, as a fenced ```mermaid block.
-#     There is no server-side equivalent: orchestrator.py only builds a
-#     PROCESS_FLOW from relationships the user stated in their own query
-#     (extraction.py), and returns nothing when evidence is empty — so for
-#     "explain the types of taxes with a flow diagram" the pipeline correctly
-#     declines, and with no instruction here the model wrote a prose "Flow
-#     Diagram (Textual Description)" instead: the exact substitution the rules
-#     below forbid. The data-honesty argument does not apply to a labelled
-#     concept diagram; it applies to invented numbers, which the rule below
-#     still prohibits.
-#
-# AnswerRenderer.tsx renders the ```mermaid block (and only that block) back
-# into a diagram — keep the two sides in step.
+# The table/diagram/chart formatting rules apply whether or not web sources
+# were found — so they live in one shared block that BOTH prompt branches
+# include. (Previously they lived only inside the with-sources branch, so a
+# question that returned no sources — e.g. "chart of these numbers I gave you"
+# — lost every visualisation instruction and the model just described the chart
+# in prose instead of drawing it.)
 _FORMATTING_INSTRUCTIONS = (
-    "Return only the user-facing answer. Never print internal routing labels "
-    "such as 'CLASSIFICATION:', 'CLASSIFIED:', or 'ANSWER:'. Start directly "
-    "with the answer content. Do not use double-asterisk Markdown emphasis; "
-    "use plain text or Markdown headings instead.\n"
-        "When the user requests a chart, graph, heatmap, flowchart, workflow, "
-        "distribution, histogram, box plot, spread, or other visualization of "
-        "a real numeric data series, a separate validated renderer handles "
-        "it. Do not substitute a markdown data table, recommend third-party "
-        "drawing tools, describe a hypothetical image, invent "
-        "values/relationships, or re-list every individual data point "
-        "yourself — give only a concise 1-2 sentence interpretation of the "
-        "supplied evidence (e.g. the overall range or direction), not a full "
-        "restatement of it.\n"
-        "That rule covers visuals of NUMERIC data. When the user instead asks "
-        "for a flowchart, flow diagram, process flow, decision tree, org chart "
-        "or similar STRUCTURAL diagram of concepts, steps, roles or "
-        "relationships — something with no numeric data series behind it — draw "
-        "it yourself as a fenced code block tagged mermaid, for example:\n"
-        "```mermaid\nflowchart TD\n  A[Taxable event] --> B[Apply rate]\n  B --> "
-        "C[Collect and remit]\n```\n"
-        "The app renders that block as a real diagram. Never describe a diagram "
-        "in prose as a substitute (no 'Flow Diagram (Textual Description)' "
-        "sections), never suggest external drawing tools, and never put invented "
-        "figures inside it — labelled concepts and steps are fine, made-up "
-        "numbers are not. Keep node labels short, and put any explanation in "
-        "normal prose outside the block.\n"
-        "When the user asks for the exact/precise values of a real numeric "
-        "data series already given as sources (not a comparison of different "
-        "items), the exact-values table is rendered separately and "
-        "automatically — give a short 1-2 sentence summary instead of "
-        "re-listing every value yourself.\n"
         "When the user asks for a table, a comparison, 'tabular format', or the "
-        "content is naturally a comparison of two or more DIFFERENT items across "
-        "attributes (not a single data series' own values over time), present it "
-        "as a GitHub-flavoured Markdown table using pipe "
+        "content is naturally a comparison of two or more items across "
+        "attributes, present it as a GitHub-flavoured Markdown table using pipe "
         "syntax — a header row like '| Attribute | Option A | Option B |', then "
         "a separator row '| --- | --- | --- |', then one row per attribute. Keep "
         "cell text concise.\n"
+        "If the user asks for a diagram, chart, workflow, flowchart, process, "
+        "decision tree, org chart, hierarchy, tree, architecture, mind map, "
+        "timeline, or a proportion/allocation breakdown, include it as a "
+        "Mermaid diagram inside a fenced ```mermaid code block, alongside a "
+        "short text explanation. Choose the Mermaid diagram type that best "
+        "fits the request:\n"
+        "- 'flowchart TD' (top-down) for processes, workflows, the accounting "
+        "cycle, decision trees, org charts / organisation hierarchies, tree "
+        "breakdowns (e.g. a balance-sheet structure), ERP modules and system "
+        "architecture;\n"
+        "- 'flowchart LR' (left-to-right) when the flow reads better "
+        "horizontally;\n"
+        "- 'sequenceDiagram' for step-by-step interactions between parties "
+        "(e.g. a tax-filing exchange);\n"
+        "- 'stateDiagram-v2' for statuses and transitions;\n"
+        "- 'mindmap' for a mind map / concept breakdown of a topic;\n"
+        "- 'gantt' for schedules or timelines (e.g. a compliance calendar);\n"
+        "- 'pie title <Title>' for a simple proportion or allocation "
+        "breakdown (e.g. budget allocation), with rows like \"Label\" : 40.\n"
+        "For flowcharts: define nodes as ID[Short Label], plain edges as "
+        "A --> B and labelled edges as A -->|Yes| B — the label is wrapped in "
+        "single pipes only, never write '|Yes|>' or add an extra '>'. Keep "
+        "labels short and avoid parentheses, quotes, %, or other special "
+        "characters inside the square brackets. Only add a diagram when one is "
+        "actually requested or clearly helpful.\n"
+        "For a QUANTITATIVE data chart — bar, line, pie or sankey (e.g. an "
+        "income-statement trend, expense breakdown, budget allocation, "
+        "financial ratios, or a flow of funds) — do NOT use Mermaid. Instead "
+        "output a fenced ```chart code block containing a SINGLE valid JSON "
+        "object, using exactly one of these shapes:\n"
+        '- bar or line: {"type":"bar","title":"Revenue by year","categories":'
+        '["2021","2022","2023"],"series":[{"name":"Revenue","data":[10,20,30]}]}\n'
+        '- pie: {"type":"pie","title":"Expense split","data":[{"name":"COGS",'
+        '"value":60},{"name":"Admin","value":25},{"name":"Marketing","value":15}]}\n'
+        '- sankey: {"type":"sankey","title":"Fund flow","nodes":[{"name":'
+        '"Revenue"},{"name":"Costs"},{"name":"Profit"}],"links":[{"source":'
+        '"Revenue","target":"Costs","value":60},{"source":"Revenue","target":'
+        '"Profit","value":40}]}\n'
+        "Use 'line' for trends over time, 'bar' for comparisons across "
+        "categories, 'pie' for parts of a whole, 'sankey' for flows. A pie's "
+        "values do NOT need to sum to 100 — just use the given amounts.\n"
+        "LINE CHARTS specifically: whenever the question involves a quantity "
+        "that changes across a sequence of periods (years, months, quarters, "
+        "or steps) — a trend, a projection, a forecast, or a period-by-period "
+        "schedule such as a depreciation book-value schedule, a loan "
+        "amortisation balance, or revenue/growth over several years — include "
+        "a 'line' chart, putting the periods in 'categories' and the value at "
+        "each period in a series. If the user explicitly asks for a line chart "
+        "or a graph, you MUST output a ```chart line block. IMPORTANT: when you "
+        "CALCULATE those period-by-period values yourself from figures the user "
+        "gave (e.g. the remaining book value at the end of each year in a "
+        "depreciation question, from the cost, salvage and useful life the user "
+        "provided), those computed values COUNT as real numbers — chart them; "
+        "deriving them from the user's own inputs is NOT inventing data.\n"
+        "NUMBERS FOR CHARTS: Prefer REAL numbers — ones the user gave you, ones "
+        "you correctly computed from what the user gave, or ones that appear in "
+        "the sources. BUT if the user explicitly asks for a chart or graph and "
+        "you do NOT have real numbers, still DRAW the chart using reasonable "
+        "ILLUSTRATIVE / EXAMPLE figures rather than refusing — the user wants to "
+        "see the chart. In that case you MUST: (a) put the word 'Illustrative' "
+        "in the chart title, e.g. \"Monthly Revenue vs Expenses (Illustrative)\"; "
+        "and (b) immediately after the chart add one short line: 'Note: the "
+        "figures above are illustrative examples — replace them with your actual "
+        "data.' Never present illustrative figures as real, exact or official, "
+        "and do not state a specific named company's actual results or a "
+        "government's actual published statistics as if they were true — frame "
+        "them clearly as an example pattern. (This applies to line, bar, pie and "
+        "all chart types.) Never fabricate tax rates, laws or citations as "
+        "fact.\n"
         "For mathematical formulas, methods and calculations, use LaTeX so they "
         "render cleanly: wrap an INLINE formula or value in single dollar signs "
         "$...$ (e.g. $Depreciation = (Cost - Salvage) / Life$), and put a "
@@ -208,30 +225,11 @@ _DOMAIN_GATE = (
     "software, commerce, accounting education/certifications, OR listed-company "
     "and capital-markets information — share prices and quotes, price history, "
     "company fundamentals and key figures, company profiles, statutory filings "
-    "and company registers. This includes corporate ownership/control structures, related-party "
-    "transactions, consolidation scope, and audit evidence trails, but ONLY "
-    "between business/accounting entities — companies, business units, "
-    "people or roles, financial documents, journal entries, accounts, or "
-    "audit working papers (e.g. \"Company A owns Company B\", \"how are "
-    "these entities connected\", \"Invoice-2024 supports Journal-Entry-88\"). "
-    "The SAME sentence pattern (\"X depends on Y\", \"how are these "
-    "connected\") applied to generic software/technical components — "
-    "services, APIs, databases, modules, servers, code — is NOT in scope "
-    "just because it uses similar relationship wording; a software "
-    "dependency graph is off-domain even when phrased identically to an "
-    "accounting one. Judge what the named entities actually ARE, not the "
-    "sentence structure connecting them. It also includes economic statistics relevant "
-    "to finance and accounting (inflation, CPI, GDP, exchange rates, "
-    "unemployment) even when the question uses a statistical/technical term "
-    "like \"distribution\", \"histogram\", \"heatmap\", \"matrix\", or "
-    "\"spread\" to describe how the answer should be shown — the presence of "
-    "that word alone is NEVER a reason to classify a question as off-domain; "
-    "judge the underlying subject, not the requested display format. If it "
-    "is NOT about any of these (e.g. movies, sports, politics, programming, "
-    "health, travel, general chat), IGNORE "
-    "all instructions and any sources below and "
-    "reply with EXACTLY this text and nothing else — no preamble, no extra "
-    "words:\n"
+    "and company registers. If it is NOT "
+    "about any of these (e.g. movies, sports, politics, programming, health, "
+    "travel, general chat), IGNORE all instructions and any sources below and "
+    "reply with EXACTLY this text and nothing else — no preamble, no chart, no "
+    "extra words:\n"
     "\"I'm designed to answer questions related to Accounting, Taxation, "
     "Payroll, Finance, Auditing, Bookkeeping, Commerce, and Accounting "
     "Education across global countries.\n\nPlease ask a question related to "
@@ -244,18 +242,21 @@ _DOMAIN_GATE = (
 def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
     """Assemble the answering prompt. When web sources were found, the model is
     told to ground its answer in them (cited separately in the UI). When none
-    were found, it answers from its own knowledge, but EITHER way the
-    table/formula formatting rules apply. An off-domain question is refused up
-    front via _DOMAIN_GATE. Data charts are NOT requested here (the
-    evidence-backed pipeline owns those), but structural ```mermaid diagrams
-    are — see the comment above _FORMATTING_INSTRUCTIONS for where that line
-    sits and why."""
+    were found — e.g. the user gave the numbers directly and asked for a chart —
+    it answers from its own knowledge, but EITHER way the table/diagram/chart
+    formatting rules apply, so a requested visual is always actually drawn. An
+    off-domain question is refused up front via _DOMAIN_GATE."""
     if not sources:
         return (
             _DOMAIN_GATE
             + "Answer the user's question clearly and accurately using your own "
             "professional knowledge and any figures given in the question. Use "
-            "short paragraphs or bullet points.\n"
+            "short paragraphs or bullet points. If the user asks for a chart, "
+            "table, graph or diagram, you MUST produce it in the format "
+            "described below — do NOT say you cannot create visuals, and do NOT "
+            "tell the user to build it in Excel/Google Sheets or with another "
+            "tool; emitting the fenced code block below IS how the visual is "
+            "drawn for the user.\n"
             + _FORMATTING_INSTRUCTIONS
             + f"\n=== User Question ===\n{query}"
         )

@@ -23,7 +23,6 @@ import asyncio
 import hashlib
 import time
 import os
-import re
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,6 +41,7 @@ from app.orchestration.routing_matrix import (
     ROUTE_HUMAN_REVIEW, ROUTE_SECURITY_INCIDENT, ROUTE_REJECTED,
     CONF_INSUFFICIENT,
 )
+from app.orchestration.composition_validator import build_validated_disclaimer
 from app.orchestration.persisted_objects import create_review_case, create_security_incident_sync
 from app.orchestration.schemas import (
     AskKritonRequest, AskKritonResponse,
@@ -64,20 +64,7 @@ from app.domains.model_gateway import service as model_gateway_service
 from app.orchestration.compose import select_prompt
 from app.orchestration.redaction import redact_for_external_exposure
 from app.orchestration.websearch import web_search, build_web_grounded_prompt
-from app.orchestration.live_data import fetch_live_data, LiveDataResult
-from app.orchestration.evidence import EvidenceModel, Entity, Relationship
-from app.orchestration.extraction import extract_graph
-from app.orchestration.intent_classifier import (
-    classify_intent, GRAPH_INTENTS, PROCESS, DISTRIBUTION, TREND,
-    CURRENT_METRIC, PRECISE_DATA,
-)
-from app.orchestration.data_shape import classify_data_shape
-from app.orchestration.response_planner import (
-    plan_response, detect_explicit_visual_request, detect_requested_chart_variant,
-)
-from app.orchestration.visualization.orchestrator import VisualizationOrchestrator
-from app.orchestration.visualization.validator import VisualizationValidator
-from app.orchestration.visualization import telemetry as viz_telemetry
+from app.orchestration.live_data import fetch_live_data
 from app.orchestration.risk_llm import classify_risk, classify_risk_gemini
 
 # Massarius™ retrieval and evidence subsystem — Phase 1 control modules
@@ -94,113 +81,6 @@ from app.domains.massarius.policy_matrix import resolve_policy
 def _hash_query(query: str) -> str:
     """Hash query text — raw query text is not stored in plaintext per §13 RG-04."""
     return hashlib.sha256(query.encode("utf-8")).hexdigest()[:32]
-
-
-_MODEL_DOMAIN_REFUSAL = "designed to answer questions related to Accounting"
-_MODEL_DOMAIN_REFUSAL_TEXT = (
-    "I'm designed to answer questions related to Accounting, Taxation, Payroll, "
-    "Finance, Auditing, Bookkeeping, Commerce, and Accounting Education across "
-    "global countries.\n\nPlease ask a question related to these topics."
-)
-_ACCOUNTING_RELATIONS = {
-    "owns", "controls", "invoices", "pays", "supplies", "audits",
-    "guarantees", "borrows_from", "lends_to", "reports_to",
-    "is_a_subsidiary_of", "is_owned_by",
-}
-_ACCOUNTING_ENTITY_HINTS = re.compile(
-    r"\b(account|accounting|audit|auditor|evidence|working[- ]?paper|finding|"
-    r"invoice|payment|expense|journal|ledger|purchase order|supplier|customer|"
-    r"company|companies|corp|corporation|holdings?|subsidiar(y|ies)|parent|"
-    r"consolidation|tax|payroll|financial|finance|control|ownership|"
-    r"partner|sign[- ]?off|delivery note|goods receipt|requisition)\b",
-    re.I,
-)
-_TECHNICAL_ENTITY_HINTS = re.compile(
-    r"\b(api|database|frontend|backend|service|server|module|code|repository|"
-    r"microservice|deployment|container|kubernetes|function|class|package)\b",
-    re.I,
-)
-
-
-def _grounded_domain_fallback(query: str, evidence: EvidenceModel) -> str | None:
-    """Correct a model-only false off-domain decision when deterministic,
-    governed evidence proves the request is finance/accounting-related.
-
-    This does not broaden the product domain: generic module dependencies and
-    generic publishing flows remain off-domain. The fallback only covers live
-    financial statistics or explicitly supplied accounting relationships and
-    is subsequently processed by the normal validation/disclaimer pipeline.
-    """
-    intent = classify_intent(query)
-    # Naming ANY chart rendering this pipeline supports ("box plot", "step
-    # line chart", "column chart", ...) is itself proof the request is a
-    # statistical-data ask, independent of whether intent_classifier.py's
-    # trend/distribution wordlists also happen to match — those wordlists
-    # can't enumerate every current and future chart-variant phrase, so this
-    # checks the visualization layer's own request detectors directly rather
-    # than needing to keep two regex files in sync.
-    is_named_chart_request = (
-        detect_explicit_visual_request(query) or detect_requested_chart_variant(query) is not None
-    )
-    if evidence.observations and (
-        intent in {DISTRIBUTION, TREND, CURRENT_METRIC, PRECISE_DATA} or is_named_chart_request
-    ):
-        subject = evidence.subject or "financial series"
-        return (
-            f"Kriton found {len(evidence.observations)} source-grounded observations for {subject}. "
-            "The validated visualization below presents those values without adding model-generated figures."
-        )
-
-    graph = extract_graph(query)
-    # Accept either a known accounting relation verb OR an accounting-entity
-    # match — matching _structured_visual_query_is_in_domain's own, more
-    # permissive check. A hardcoded verb-only list here previously drifted
-    # out of sync with extraction.py's _RELATION_VERBS (e.g. "supports" was
-    # added there but never mirrored into _ACCOUNTING_RELATIONS), so a
-    # correctly-extracted, genuinely in-domain relationship like "Purchase
-    # Order supports Goods Receipt" fell through and kept a false refusal.
-    if graph and intent in GRAPH_INTENTS and (
-        any(edge.type in _ACCOUNTING_RELATIONS for edge in graph.edges)
-        or _ACCOUNTING_ENTITY_HINTS.search(query)
-    ):
-        relationships = "; ".join(
-            f"{edge.source} {edge.type.replace('_', ' ')} {edge.target}" for edge in graph.edges
-        )
-        return (
-            "Kriton mapped the accounting relationships exactly as supplied: "
-            f"{relationships}. The validated visualization below does not infer additional links."
-        )
-
-    # Same entity-hint check as _structured_visual_query_is_in_domain's own
-    # PROCESS branch — the previous separate, narrower keyword list here
-    # (invoice|payment|audit|journal|expense|purchase order) missed generic
-    # accounting-process phrasing like "tax filing process".
-    if graph and intent == PROCESS and _ACCOUNTING_ENTITY_HINTS.search(query):
-        return (
-            f"Kriton mapped the {len(graph.nodes)} supplied accounting-workflow stages in order. "
-            "The validated process visualization below does not add or remove stages."
-        )
-    return None
-
-
-def _structured_visual_query_is_in_domain(query: str) -> bool | None:
-    """Deterministically scope structured graph/flow prompts.
-
-    Returns None when the query is not a structured graph/flow request, so the
-    ordinary domain policy remains authoritative. For a recognized structured
-    request, True/False is a code-enforced decision rather than an LLM guess.
-    """
-    intent = classify_intent(query)
-    graph = extract_graph(query)
-    if graph is None or (intent not in GRAPH_INTENTS and intent != PROCESS):
-        return None
-    if _TECHNICAL_ENTITY_HINTS.search(query) and not _ACCOUNTING_ENTITY_HINTS.search(query):
-        return False
-    if intent == PROCESS:
-        return bool(_ACCOUNTING_ENTITY_HINTS.search(query))
-    if any(edge.type in _ACCOUNTING_RELATIONS for edge in graph.edges):
-        return True
-    return bool(_ACCOUNTING_ENTITY_HINTS.search(query))
 
 
 def _force_direct_answer() -> bool:
@@ -615,12 +495,11 @@ async def ask_kriton(
     # the model grounds numeric answers in the precise value rather than a web
     # snippet. Fail-soft: no live data (or an error) just leaves web_sources as is.
     try:
-        live_result: LiveDataResult = await live_data_task
+        live_sources = await live_data_task
     except Exception:
-        live_result = LiveDataResult()
-    if live_result.sources:
-        web_sources = live_result.sources + web_sources
-    live_evidence: EvidenceModel = live_result.evidence
+        live_sources = []
+    if live_sources:
+        web_sources = live_sources + web_sources
     rag_citations: list[SourceCitation] = [
         SourceCitation(
             ref_id=f"REF-{i + 1}",
@@ -743,30 +622,6 @@ async def ask_kriton(
         )
         return response
 
-    # Provider models occasionally ignore the shared domain instructions and
-    # refuse clearly in-domain CPI/FX or corporate-relationship prompts. Use a
-    # deliberately narrow deterministic correction only when governed
-    # structured evidence independently proves the request is in scope. The
-    # replacement then continues through the same audit, answer validation,
-    # disclaimer and visualization gates as every other composed response.
-    structured_scope = _structured_visual_query_is_in_domain(request.query)
-    if structured_scope is False:
-        composed_text = _MODEL_DOMAIN_REFUSAL_TEXT
-    elif structured_scope is True:
-        # Structured graph/flow data comes directly from the user's query.
-        # Use the deterministic description whenever that governed structure
-        # is in scope, not only when the model happened to refuse it. This
-        # prevents provider prose from contradicting the visualization (for
-        # example claiming Kriton cannot draw the flow that is rendered below)
-        # or silently changing the meaning/order of a supplied stage.
-        structured_answer = _grounded_domain_fallback(request.query, live_evidence)
-        if structured_answer:
-            composed_text = structured_answer
-    elif _MODEL_DOMAIN_REFUSAL in composed_text:
-        grounded_fallback = _grounded_domain_fallback(request.query, live_evidence)
-        if grounded_fallback:
-            composed_text = grounded_fallback
-
     output_hash = hashlib.sha256(composed_text.encode()).hexdigest()[:32]
     await audit_composition_completed(
         db, query_id=query_id, correlation_id=correlation_id,
@@ -776,8 +631,18 @@ async def ask_kriton(
 
     # ── Step 7: Post-composition validation — Massarius™ Checkpoint C
     # (§10, RG-03; ZL-ENG-03 §5.7) ────────────────────────────────────────────
-    # Validate the provider's composed text directly. Generic disclaimer copy
-    # is intentionally not appended to user-visible answers.
+    # Validated against composed_text (the model's own output), not the
+    # disclaimer-appended text: the mandatory disclaimer is fixed boilerplate
+    # we fully control, not model output, so content-safety checks (grounding,
+    # citation binding, prohibited-claim, authority ceiling, confidence
+    # support) shouldn't run against it — and in practice can't safely: the
+    # disclaimer's own required wording ("does not constitute professional
+    # ... tax, audit or legal advice") trips the prohibited-claim scanner,
+    # which matches "legal advice" regardless of a preceding negation. Passing
+    # disclaimer_required=False here skips checkpoint 6 (disclaimer presence)
+    # for the same reason — build_validated_disclaimer below appends it
+    # deterministically, so that check would only ever fail if this function
+    # itself were broken, not the model's answer.
     # external_source_count carries the live retrieval sources (SearXNG + the
     # exact-figure connectors) the answer was actually composed against — they
     # are the [REF-N] citations the reader gets, but they are not registered in
@@ -792,7 +657,11 @@ async def ask_kriton(
         )
         if source_bundle else None
     )
-    final_text = composed_text
+    final_text = build_validated_disclaimer(
+        composed_text, risk_level,
+        route_decision.disclaimer_required,
+        effective_confidence,
+    )
     await audit_validation_completed(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
@@ -864,25 +733,19 @@ async def ask_kriton(
             l for l in limitations
             if "CLASSIFICATION_UNCERTAIN" not in l and "clarification" not in l.lower()
         ]
-    # Do not duplicate generic disclaimer copy in the limitations panel.
+    if route_decision.disclaimer_required:
+        limitations.append(
+            "This response is for educational purposes only. Consult a qualified professional."
+        )
 
     # Off-domain refusal: when the domain gate declined the question (it is not
     # about accounting/tax/payroll/finance/audit/bookkeeping/commerce), the
     # web-search results are irrelevant to the reply — so return NO sources and
     # NO disclaimer. Sources are shown only for genuine in-domain answers.
-    is_offdomain_refusal = _MODEL_DOMAIN_REFUSAL in (composed_text or "")
+    is_offdomain_refusal = "designed to answer questions related to Accounting" in (composed_text or "")
     if is_offdomain_refusal:
-        # This is a scope notice, not accounting guidance. Do not attach the
-        # professional-advice disclaimer that may already have been added for
-        # the provisional LLM route before deterministic scope correction.
-        final_text = composed_text
         rag_citations = []
         limitations = []
-        await audit_refusal_returned(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, reason="Structured visualization request is outside Kriton's supported domain",
-        )
 
     # An off-domain reply is Kriton declining a question outside its domain, not
     # an answer to it — so it is reported as its own outcome rather than as
@@ -903,67 +766,14 @@ async def ask_kriton(
         output_text=final_text,
     )
 
-    # ── Visualization pipeline (runs ONLY here — after safety, validation and
-    # disclaimer have all already approved the text answer above; it can
-    # never bypass or run ahead of that gate). Best-effort: any failure here
-    # must never affect the already-composed text answer (spec §19/§29
-    # DoD #15-16), so the whole block is wrapped and defaults to None.
-    visualization = None
-    secondary_visualizations: list = []
-    if not is_offdomain_refusal:
-        try:
-            intent = classify_intent(request.query)
-
-            # Entities/relationships the user explicitly supplied in their OWN
-            # query text (extraction.py) — the only source EVIDENCE_GRAPH /
-            # PROCESS_FLOW are backed by; merged into the same EvidenceModel
-            # DBnomics/Frankfurter already populated, so a query can carry
-            # both a numeric figure AND a supplied relationship structure.
-            viz_evidence = live_evidence.model_copy(deep=True)
-            graph = extract_graph(request.query)
-            if graph and (intent in GRAPH_INTENTS or intent == PROCESS):
-                viz_evidence.entities = [Entity(id=n, name=n) for n in graph.nodes]
-                viz_evidence.relationships = [
-                    Relationship(source_id=e.source, target_id=e.target, type=e.type)
-                    for e in graph.edges
-                ]
-                viz_evidence.subject = viz_evidence.subject or request.query[:80]
-
-            shape = classify_data_shape(viz_evidence, intent)
-            plan = plan_response(request.query, intent, shape)
-            result = VisualizationOrchestrator().decide(
-                viz_evidence, shape, plan, spec_id=f"viz-{query_id}", query=request.query,
-            )
-            validation_result = None
-            if result.spec is not None:
-                validation_result = VisualizationValidator().validate(result.spec)
-                if validation_result.passed:
-                    visualization = result.spec
-            # Each secondary is validated independently — a secondary that
-            # fails never blocks the primary or the text answer (spec §16).
-            if visualization is not None:
-                for secondary in result.secondary_specs:
-                    if VisualizationValidator().validate(secondary).passed:
-                        secondary_visualizations.append(secondary)
-            viz_telemetry.log_decision(
-                query_id=query_id, query=request.query, intent=intent, data_shape=shape,
-                response_mode=plan.response_mode, visual_required=plan.visual_required,
-                result=result, validation=validation_result, render_success=visualization is not None,
-            )
-        except Exception:
-            visualization = None
-            secondary_visualizations = []
-
     response = AskKritonResponse(
         query_id=query_id,
         correlation_id=correlation_id,
         outcome=outcome,
-        route=ROUTE_REFUSAL if is_offdomain_refusal else ROUTE_LLM,
+        route=ROUTE_LLM,
         safety=safety_state,
         confidence_state=effective_confidence,
         source_bundle=source_bundle,
-        visualization=visualization,
-        secondary_visualizations=secondary_visualizations,
         answer=answer,
         next_action=None,
         audit_reference=AuditReference(audit_chain_id=audit_chain_id),
@@ -973,7 +783,7 @@ async def ask_kriton(
     await _finalise_and_return(
         db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
         audit_chain_id=audit_chain_id, actor_id=actor_id,
-        outcome=response.outcome, route=response.route, start_time=start_time,
+        outcome=response.outcome, route=route, start_time=start_time,
     )
 
     if idempotency_key:

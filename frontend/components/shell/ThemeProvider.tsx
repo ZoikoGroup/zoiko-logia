@@ -10,25 +10,22 @@ type ThemeContextValue = {
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
-function readResolvedTheme(): Theme {
-  // The inline script in layout.tsx (THEME_INIT_SCRIPT) runs before hydration
-  // and already sets this attribute — read it back rather than re-deriving
-  // independently from the cookie/prefers-color-scheme here. Two separate
-  // computations of "what theme should this be" can disagree (e.g. if the
-  // OS-level dark-mode signal isn't perfectly stable between the script's
-  // run and this effect's), which reads as the background randomly flipping
-  // between loads. The DOM attribute the script set is the single source of
-  // truth for what was actually painted.
-  if (typeof document === "undefined") return "light";
-  const attr = document.documentElement.getAttribute("data-theme");
-  return attr === "dark" ? "dark" : "light";
+function readThemeCookie(): Theme | null {
+  if (typeof document === "undefined") return null;
+  const match = document.cookie.match(new RegExp(`(?:^|; )${THEME_COOKIE}=([^;]*)`));
+  return (match ? decodeURIComponent(match[1]) : null) as Theme | null;
+}
+
+function systemPrefersDark(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches;
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>("light");
 
   useEffect(() => {
-    setThemeState(readResolvedTheme());
+    setThemeState(readThemeCookie() ?? (systemPrefersDark() ? "dark" : "light"));
   }, []);
 
   function applyTheme(next: Theme) {

@@ -17,28 +17,6 @@
   --warn: #9a6700;
   --bad: #b42318;
   --info: #295ea7;
-  /* Data-viz categorical series colors — deliberately separate from --brand
-     (too low-chroma at 0.084 to read as a vivid data mark; validated via
-     dataviz skill's validate_palette.js) and from the --ok/--warn/--bad/
-     --info status colors (reserved for genuine state, never generic series
-     identity — see chartPalette() in AnswerRenderer.tsx). Fixed order,
-     validated blue/orange pair: light ΔE 17.7 CVD / 31.9 normal-vision,
-     both well above the 8/15 floors. */
-  --chart-1: #0a6f96;
-  --chart-2: #eb6834;
-  /* Slots 3-6 extend the pair above for categorical charts with more than 2
-     series (e.g. a DONUT's shareholder slices) — aqua/yellow/magenta/green,
-     appended in this fixed order per the dataviz skill's validated ordering
-     (never cycled/regenerated). Validated as a 6-slot set against --panel:
-     light ΔE 9.1 CVD / 19.6 normal-vision (worst adjacent pair), both above
-     the 8/15 floors; 3 of the 6 slots read below 3:1 contrast on the light
-     panel, so charts using slot 3+ must ship a visible legend/labels or a
-     table view (never color-only identity) — see chartPalette() below and
-     ChartRenderer.tsx's always-present "View as table" toggle. */
-  --chart-3: #1baf7a;
-  --chart-4: #eda100;
-  --chart-5: #e87ba4;
-  --chart-6: #008300;
   --kriton-bg-start: #f9fcff;
   --kriton-bg-middle: #e6f2f7;
   --kriton-bg-end: #d7e8f0;
@@ -65,12 +43,6 @@
     --warn: #d99a2b;
     --bad: #e5564a;
     --info: #5b8fd6;
-    --chart-1: #2f9cc2;
-    --chart-2: #d95926;
-    --chart-3: #199e70;
-    --chart-4: #c98500;
-    --chart-5: #d55181;
-    --chart-6: #008300;
     --kriton-bg-start: #111820;
     --kriton-bg-middle: #0d141b;
     --kriton-bg-end: #090e13;
@@ -94,12 +66,6 @@
   --warn: #d99a2b;
   --bad: #e5564a;
   --info: #5b8fd6;
-  --chart-1: #2f9cc2;
-  --chart-2: #d95926;
-  --chart-3: #199e70;
-  --chart-4: #c98500;
-  --chart-5: #d55181;
-  --chart-6: #008300;
   --kriton-bg-start: #111820;
   --kriton-bg-middle: #0d141b;
   --kriton-bg-end: #090e13;
@@ -123,12 +89,6 @@
   --color-warn: var(--warn);
   --color-bad: var(--bad);
   --color-info: var(--info);
-  --color-chart-1: var(--chart-1);
-  --color-chart-2: var(--chart-2);
-  --color-chart-3: var(--chart-3);
-  --color-chart-4: var(--chart-4);
-  --color-chart-5: var(--chart-5);
-  --color-chart-6: var(--chart-6);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
@@ -249,14 +209,40 @@ main select:focus {
     88% { opacity: 1; transform: translateY(0); }
     100% { opacity: 0; transform: translateY(-3px); }
   }
-  @keyframes kriton-text-cursor-blink {
-    0%, 45% { opacity: 1; }
-    46%, 100% { opacity: 0; }
+  @keyframes kriton-ledger-glow {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 22%, transparent); }
+    50% { box-shadow: 0 0 22px 4px color-mix(in srgb, var(--brand) 22%, transparent); }
+  }
+  @keyframes kriton-ledger-shimmer {
+    0% { background-position: -120% 0; }
+    100% { background-position: 220% 0; }
+  }
+  @keyframes kriton-ledger-scan {
+    0% { transform: translateY(-2px); opacity: 0; }
+    15% { opacity: 1; }
+    85% { opacity: 1; }
+    100% { transform: translateY(38px); opacity: 0; }
+  }
+  @keyframes kriton-ledger-check-pulse {
+    0%, 100% { opacity: 0.35; transform: scale(0.92); }
+    50% { opacity: 1; transform: scale(1); }
   }
 
   .kriton-animate-msg-user { animation: kriton-msg-user-in 0.28s ease-out both; }
   .kriton-animate-msg-response { animation: kriton-msg-response-in 0.32s ease-out both; }
   .kriton-animate-answer-reveal { animation: kriton-answer-reveal 0.35s ease-out both; }
   .kriton-animate-status { animation: kriton-status-crossfade 2.2s ease-in-out infinite; }
-  .kriton-text-cursor { animation: kriton-text-cursor-blink 0.28s steps(1, end) infinite; }
+  .kriton-ledger-card { animation: kriton-ledger-glow 2.4s ease-in-out infinite; }
+  .kriton-ledger-row {
+    background-image: linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--brand) 16%, var(--soft)) 0%,
+      color-mix(in srgb, var(--brand) 38%, var(--soft)) 50%,
+      color-mix(in srgb, var(--brand) 16%, var(--soft)) 100%
+    );
+    background-size: 200% 100%;
+    animation: kriton-ledger-shimmer 1.6s ease-in-out infinite;
+  }
+  .kriton-ledger-scan { animation: kriton-ledger-scan 1.8s ease-in-out infinite; }
+  .kriton-ledger-check { animation: kriton-ledger-check-pulse 2.2s ease-in-out infinite; }
 }

@@ -1,16 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
+import dynamic from "next/dynamic";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { CheckCircle2, Copy, Download, Table2 } from "lucide-react";
-import type { VisualizationSpec } from "@/lib/api";
-import { GraphRendererAdapter } from "@/components/visualization/GraphRendererAdapter";
-import { FlowRendererAdapter } from "@/components/visualization/FlowRendererAdapter";
-import { ChartRenderer } from "@/components/visualization/charts/ChartRenderer";
+import { cssVar } from "@/lib/css-var";
 import {
+  canvasElementToPngBlob,
   downloadBlob,
   safeDownloadName,
   svgElementToPngBlob,
@@ -20,54 +19,40 @@ import {
   writeTextToClipboard,
 } from "@/lib/presentation";
 
+// echarts-for-react touches the DOM (canvas), so load it client-only.
+const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false });
+
 /**
  * Renders a Kriton answer. Text is rendered as Markdown (so tables, bullet
- * lists, bold, and headings display properly, like ChatGPT).
- *
- * Data charts come from the typed, server-decided `visualization` field — never
- * from LLM-authored ```chart JSON, which is stripped below: the deterministic
- * pipeline builds charts from evidence, and a model free-writing its own
- * figures alongside it could disagree with them.
- *
- * ```mermaid blocks ARE still rendered. There is no server-side equivalent for
- * a diagram the model reasons out in prose (PROCESS_FLOW covers only
- * evidence-backed flows), so stripping them silently deleted content instead of
- * degrading it.
+ * lists, bold, and headings display properly, like ChatGPT). A fenced
+ * ```mermaid block becomes a diagram (flowchart, org chart, mind map, …), and
+ * a fenced ```chart block (JSON) becomes a real data chart (bar / line / pie /
+ * sankey) via Apache ECharts. Citations, risk badge and everything else are
+ * unchanged.
  */
+
+type Segment =
+  | { type: "text"; content: string }
+  | { type: "mermaid"; content: string }
+  | { type: "chart"; content: string };
 
 /**
  * Safety net: strip any inline citation markers the model still slips into the
  * answer text (e.g. "[REF-1]", "[REF-2, REF-5]", "[1]"). Sources are shown in
  * the separate Sources panel, so the answer body should read cleanly. Also
- * strips stray ```chart fenced blocks a stale prompt/cached response might
- * still contain, rather than dumping raw JSON as text — charts are the
- * deterministic pipeline's job now (see websearch.py's
- * _FORMATTING_INSTRUCTIONS docstring for why). ```mermaid is deliberately NOT
- * stripped here: parseSegments below pulls those out and draws them. Also
- * tidies up the leftover spaces/punctuation the removals leave behind.
+ * tidies up the leftover spaces/punctuation the removal leaves behind.
  */
 function stripInlineRefs(text: string): string {
   return text
-    .replace(/```chart\s*[\s\S]*?```/g, "")
-    // Hide disclaimer boilerplate from legacy turns persisted before the
-    // backend stopped emitting it. The generated block is always terminal.
-    .replace(/\n*\s*---\s*\n\s*⚠️\s*(?:\*\*)?Kriton™ Disclaimer(?:\*\*)?:[\s\S]*?latest effective standards\.\s*/gi, "")
-    .replace(/\n*This response is for educational purposes only\. Consult a qualified professional\.\s*/gi, "")
-    // Provider models occasionally expose their internal domain-routing
-    // preamble. It is not part of the user-facing answer, so remove both
-    // Markdown-bold and plain variants from new and locally persisted turns.
-    .replace(/^\s*(?:\*\*|__)?CLASSIF(?:ICATION|IED)(?:\*\*|__)?\s*:\s*[^\n]*\n?/gim, "")
-    .replace(/^\s*(?:\*\*|__)?ANSWER(?:\*\*|__)?\s*:\s*/gim, "")
-    .replace(/\*\*/g, "")
     .replace(/\s*\[\s*(?:REF-)?\d+(?:\s*,\s*(?:REF-)?\d+)*\s*\]/gi, "")
     .replace(/[ \t]+([.,;:])/g, "$1")
     .replace(/[ \t]{2,}/g, " ");
 }
 
 // ── Figure toolbar ───────────────────────────────────────────────────────────
-// Diagrams and prose tables share one small action row, so a user learns one
-// control surface rather than two. Each button owns a short-lived status: an
-// export that silently succeeds reads as one that did nothing, and
+// Charts, diagrams and tables all get the same small action row, so a user
+// learns one control surface rather than three. Each button owns a short-lived
+// status: an export that silently succeeds reads as one that did nothing, and
 // clipboard/rasterization failures are real (permissions, browser support) and
 // must be visible rather than swallowed.
 
@@ -126,25 +111,18 @@ function FigureToolbar({ actions, children }: { actions: FigureAction[]; childre
   );
 }
 
-// ── Mermaid diagrams from the answer text ────────────────────────────────────
-// The one visual still authored by the model rather than by the deterministic
-// pipeline: a flowchart/org-chart/mind-map it reasons out in prose has no
-// evidence rows behind it, so there is nothing for orchestrator.py to build a
-// spec from. Rendering is contained — an invalid diagram falls back to showing
-// its own source rather than blanking or throwing.
-
-type Segment = { type: "text"; content: string } | { type: "mermaid"; content: string };
-
 function parseSegments(text: string): Segment[] {
   const segments: Segment[] = [];
-  const regex = /```mermaid\s*([\s\S]*?)```/g;
+  // Capture both ```mermaid (diagrams) and ```chart (data charts) blocks.
+  const regex = /```(mermaid|chart)\s*([\s\S]*?)```/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
     if (match.index > lastIndex) {
       segments.push({ type: "text", content: text.slice(lastIndex, match.index) });
     }
-    segments.push({ type: "mermaid", content: match[1].trim() });
+    const kind = match[1] === "chart" ? "chart" : "mermaid";
+    segments.push({ type: kind, content: match[2].trim() });
     lastIndex = regex.lastIndex;
   }
   if (lastIndex < text.length) {
@@ -218,7 +196,7 @@ function MermaidDiagram({ code }: { code: string }) {
   }
 
   return (
-    <figure className="my-4 min-w-0">
+    <figure className="my-4">
       <div ref={ref} className="flex justify-center overflow-x-auto" />
       <figcaption className="mt-2 flex justify-end">
         <FigureToolbar
@@ -235,8 +213,7 @@ function MermaidDiagram({ code }: { code: string }) {
               label: "Download",
               doneLabel: "Downloaded",
               icon: Download,
-              onClick: async () =>
-                downloadBlob(await diagramPng(), safeDownloadName("kriton-diagram", "png")),
+              onClick: async () => downloadBlob(await diagramPng(), safeDownloadName("kriton-diagram", "png")),
             },
           ]}
         />
@@ -245,16 +222,284 @@ function MermaidDiagram({ code }: { code: string }) {
   );
 }
 
+// ── Data charts (Apache ECharts) ────────────────────────────────────────────
+// The model emits a ```chart block containing a SIMPLE JSON spec (just data),
+// not raw ECharts options — that keeps the model's job easy and reliable. This
+// component maps the spec deterministically onto an ECharts option, so the
+// chart always renders correctly from whatever data was provided.
+type ChartSpec = {
+  type?: "bar" | "line" | "pie" | "sankey";
+  title?: string;
+  categories?: string[];
+  series?: { name?: string; data: number[] }[];
+  data?: { name: string; value: number }[];
+  nodes?: { name: string }[];
+  links?: { source: string; target: string; value: number }[];
+};
+
+// Theme-tinted palette so charts sit consistently in the answer card in both
+// light and dark mode — read live via cssVar() since ECharts can't consume
+// var(--x) directly.
+function chartPalette(): string[] {
+  return [
+    cssVar("--brand", "#16799a"),
+    cssVar("--gold", "#f3c437"),
+    cssVar("--ok", "#31a06a"),
+    cssVar("--bad", "#e2725b"),
+    cssVar("--info", "#0ea5b7"),
+    cssVar("--brand-2", "#7b61ff"),
+    cssVar("--warn", "#e18b2b"),
+  ];
+}
+
+function buildChartOption(spec: ChartSpec): Record<string, unknown> {
+  const ink = cssVar("--ink", "#17211f");
+  const muted = cssVar("--muted", "#667673");
+  const line = cssVar("--line", "#eef3f2");
+  const title = spec.title
+    ? { text: spec.title, left: "center", textStyle: { fontSize: 14, fontWeight: 600, color: ink } }
+    : undefined;
+  const color = chartPalette();
+
+  if (spec.type === "pie") {
+    return {
+      color,
+      title,
+      tooltip: { trigger: "item" },
+      legend: { bottom: 0, textStyle: { color: muted } },
+      series: [
+        {
+          type: "pie",
+          radius: ["35%", "62%"],
+          center: ["50%", "46%"],
+          data: spec.data ?? [],
+          label: { color: ink },
+        },
+      ],
+    };
+  }
+
+  if (spec.type === "sankey") {
+    return {
+      color,
+      title,
+      tooltip: { trigger: "item", triggerOn: "mousemove" },
+      series: [
+        {
+          type: "sankey",
+          data: spec.nodes ?? [],
+          links: spec.links ?? [],
+          emphasis: { focus: "adjacency" },
+          label: { color: ink },
+        },
+      ],
+    };
+  }
+
+  // bar / line (default)
+  const isLine = spec.type === "line";
+  const categoryCount = spec.categories?.length ?? 0;
+  return {
+    color,
+    title,
+    tooltip: { trigger: "axis" },
+    legend: { bottom: 0, textStyle: { color: muted } },
+    // containLabel keeps rotated axis labels and the y-axis inside the box.
+    grid: { left: 8, right: 24, top: title ? 48 : 24, bottom: 48, containLabel: true },
+    xAxis: {
+      type: "category",
+      data: spec.categories ?? [],
+      axisLabel: {
+        color: muted,
+        interval: 0, // show every label, don't silently drop crowded ones
+        // Rotate labels when there are several categories (e.g. many states)
+        // so long names stay readable instead of overlapping.
+        rotate: categoryCount > 4 ? 35 : 0,
+        hideOverlap: false,
+      },
+      axisTick: { alignWithLabel: true },
+    },
+    yAxis: {
+      type: "value",
+      axisLabel: { color: muted },
+      splitLine: { lineStyle: { color: line } },
+    },
+    series: (spec.series ?? []).map((s) => ({
+      name: s.name,
+      type: isLine ? "line" : "bar",
+      data: s.data,
+      smooth: isLine,
+      barMaxWidth: 54,
+      // Print the value on each bar so amounts are readable at a glance.
+      label: isLine ? undefined : { show: true, position: "top", color: ink, fontSize: 11 },
+      ...(isLine ? { symbolSize: 7, lineStyle: { width: 3 } } : {}),
+    })),
+  };
+}
+
+// A chart block is "empty" when the model emitted the right shape but no actual
+// numbers to plot (its data-honesty guardrail: it won't invent figures). Rather
+// than render a blank ECharts frame — which just looks broken — we detect that
+// and show a short, clear note instead.
+function isChartEmpty(spec: ChartSpec): boolean {
+  if (spec.type === "pie") return !(spec.data && spec.data.length > 0);
+  if (spec.type === "sankey") return !(spec.links && spec.links.length > 0);
+  const hasCategories = !!(spec.categories && spec.categories.length > 0);
+  const hasSeriesData = !!(spec.series && spec.series.some((s) => s.data && s.data.length > 0));
+  return !(hasCategories && hasSeriesData);
+}
+
+/** The chart's own numbers as table rows (header first) — the data behind
+ * "View as table" and "Copy table". Derived from the same spec the chart is
+ * drawn from, so the table can never disagree with the picture. */
+function chartSpecToRows(spec: ChartSpec): string[][] {
+  const num = (v: number) => (Number.isFinite(v) ? String(v) : "");
+
+  if (spec.type === "pie") {
+    return [["Name", "Value"], ...(spec.data ?? []).map((d) => [d.name, num(d.value)])];
+  }
+  if (spec.type === "sankey") {
+    return [
+      ["Source", "Target", "Value"],
+      ...(spec.links ?? []).map((l) => [l.source, l.target, num(l.value)]),
+    ];
+  }
+  const series = spec.series ?? [];
+  const categories = spec.categories ?? [];
+  return [
+    ["Category", ...series.map((s, i) => s.name || `Series ${i + 1}`)],
+    ...categories.map((c, row) => [c, ...series.map((s) => num(s.data?.[row]))]),
+  ];
+}
+
+function ChartRenderer({ code }: { code: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [showTable, setShowTable] = useState(false);
+
+  let spec: ChartSpec | null = null;
+  try {
+    spec = JSON.parse(code) as ChartSpec;
+  } catch {
+    spec = null;
+  }
+
+  // Invalid JSON or missing type → show the raw block rather than a blank space.
+  if (!spec || !spec.type) {
+    return (
+      <pre className="my-4 overflow-x-auto rounded-xl border border-line bg-soft p-4 text-xs leading-5 text-ink">
+        {code}
+      </pre>
+    );
+  }
+
+  // Right shape but no numbers to plot → a clear note beats a blank chart frame.
+  if (isChartEmpty(spec)) {
+    return (
+      <div className="my-4 rounded-xl border border-dashed border-line bg-soft p-4 text-xs leading-5 text-muted">
+        No numeric data was available to plot this chart. Provide the figures
+        (e.g. “State A 120, State B 90, State C 60”) and it will render as a chart.
+      </div>
+    );
+  }
+
+  const rows = chartSpecToRows(spec);
+  const title = spec.title || "kriton-chart";
+
+  // Rasterized from the canvas ECharts actually drew, so the export is exactly
+  // what is on screen. next/dynamic does not forward refs, so the instance is
+  // reached through the DOM rather than through a component ref.
+  async function chartPng(): Promise<Blob> {
+    const canvas = containerRef.current?.querySelector("canvas");
+    if (!canvas) throw new Error("Chart is not ready yet");
+    return await canvasElementToPngBlob(canvas as HTMLCanvasElement, cssVar("--panel", "#ffffff"));
+  }
+
+  return (
+    <figure className="my-4 rounded-xl border border-line bg-panel p-3">
+      <div ref={containerRef}>
+        <ReactECharts option={buildChartOption(spec)} style={{ height: 380, width: "100%" }} notMerge />
+      </div>
+
+      {showTable && (
+        <div className="mt-3 overflow-x-auto rounded-lg border border-line">
+          <table className="w-full border-collapse text-left text-xs">
+            <thead className="bg-soft">
+              <tr>
+                {rows[0].map((cell, i) => (
+                  <th key={i} className="border-b border-line px-3 py-2 font-semibold text-ink">
+                    {cell}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(1).map((row, r) => (
+                <tr key={r}>
+                  {row.map((cell, c) => (
+                    <td key={c} className="border-b border-line px-3 py-2 align-top text-ink last:border-b-0">
+                      {cell}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <figcaption className="mt-2 flex justify-end">
+        <FigureToolbar
+          actions={[
+            {
+              key: "copy-image",
+              label: "Copy image",
+              doneLabel: "Copied",
+              icon: Copy,
+              onClick: async () => writeImageToClipboard(await chartPng()),
+            },
+            {
+              key: "download",
+              label: "Download",
+              doneLabel: "Downloaded",
+              icon: Download,
+              onClick: async () => downloadBlob(await chartPng(), safeDownloadName(title, "png")),
+            },
+            {
+              key: "copy-table",
+              label: "Copy table",
+              doneLabel: "Copied",
+              icon: Table2,
+              // TSV, not CSV: spreadsheets split TSV into cells straight off the
+              // clipboard with no import dialog.
+              onClick: async () => writeTextToClipboard(tableRowsToTsv(rows)),
+            },
+          ]}
+        >
+          <button
+            type="button"
+            onClick={() => setShowTable((v) => !v)}
+            aria-expanded={showTable}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2 py-1 text-[11px] font-semibold text-muted transition hover:border-brand/40 hover:text-brand"
+          >
+            <Table2 size={11} />
+            {showTable ? "Hide table" : "View as table"}
+          </button>
+        </FigureToolbar>
+      </figcaption>
+    </figure>
+  );
+}
+
 /** A table inside the answer prose — the rate/comparison tables Kriton writes
  * into its narrative, which are the ones a user most often wants in a
- * spreadsheet. Distinct from a chart's own table view, which reads the typed
+ * spreadsheet. Distinct from a chart's "Copy table", which reads the chart
  * spec; here the rendered DOM IS the source, so every column comes across
  * exactly as displayed. */
 function MarkdownTable(props: ComponentPropsWithoutRef<"table">) {
   const ref = useRef<HTMLTableElement>(null);
 
   return (
-    <div className="my-3 min-w-0">
+    <div className="my-3">
       <div className="overflow-x-auto">
         <table ref={ref} className="w-full border-collapse text-left text-xs" {...props} />
       </div>
@@ -266,8 +511,6 @@ function MarkdownTable(props: ComponentPropsWithoutRef<"table">) {
               label: "Copy table",
               doneLabel: "Copied",
               icon: Table2,
-              // TSV, not CSV: spreadsheets split TSV into cells straight off the
-              // clipboard with no import dialog.
               onClick: async () => {
                 if (!ref.current) throw new Error("Table is not ready yet");
                 await writeTextToClipboard(tableRowsToTsv(tableElementToRows(ref.current)));
@@ -278,92 +521,6 @@ function MarkdownTable(props: ComponentPropsWithoutRef<"table">) {
       </div>
     </div>
   );
-}
-
-// ── Data charts ──────────────────────────────────────────────────────────
-// LINE/BAR/HISTOGRAM/HEATMAP/BOX/SCATTER/DONUT now render through
-// components/visualization/charts/ChartRenderer.tsx — the dual-engine
-// (Recharts + ECharts) rendering layer with its full interactivity shell
-// (states, view switching, table fallback, PNG/CSV export, metric cards,
-// error boundary, telemetry). See VisualizationRenderer below.
-
-function KpiTile({ viz }: { viz: VisualizationSpec }) {
-  if (viz.value == null) return null;
-  return (
-    <section className="my-4 min-w-0 overflow-hidden rounded-2xl border border-line bg-panel shadow-sm">
-      <header className="flex items-center justify-between p-3 sm:p-4">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted">{viz.label ?? "Metric"}</p>
-        <span className="rounded-full bg-soft px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">KPI</span>
-      </header>
-      <div className="border-t border-line p-3 sm:p-4">
-      <p className="mt-1 text-2xl font-bold text-ink">
-        {viz.value.toLocaleString()}
-        {viz.unit && <span className="ml-1 text-base font-semibold text-muted">{viz.unit}</span>}
-      </p>
-      {viz.summary && <p className="mt-2 text-xs leading-5 text-muted">{viz.summary}</p>}
-      </div>
-    </section>
-  );
-}
-
-// TABLE_ADAPTER — a plain HTML table, no chart engine involved. Real rows
-// straight from EvidenceModel.observations (orchestrator.py's
-// _build_table_spec), never LLM-authored markdown.
-function TableViz({ viz }: { viz: VisualizationSpec }) {
-  if (!viz.columns.length || !viz.rows.length) return null;
-  return (
-    <section className="my-4 min-w-0 overflow-hidden rounded-2xl border border-line bg-panel shadow-sm">
-      <header className="flex items-center justify-between p-3 sm:p-4"><h4 className="text-sm font-semibold text-ink">Data table</h4><span className="rounded-full bg-soft px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">Table</span></header>
-      <div className="min-w-0 overflow-x-auto border-t border-line p-3 sm:p-4"><table className="w-full border-collapse text-left text-xs">
-        <thead>
-          <tr>
-            {viz.columns.map((col) => (
-              <th key={col} className="border border-line px-3 py-2 font-semibold text-ink">
-                {col}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {viz.rows.map((row, i) => (
-            <tr key={i}>
-              {viz.columns.map((col) => (
-                <td key={col} className="border border-line px-3 py-2 align-top text-ink">
-                  {row[col] ?? ""}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table></div>
-      {viz.summary && <p className="truncate border-t border-line px-3 py-2 text-[11px] text-muted sm:px-4">{viz.summary}</p>}
-    </section>
-  );
-}
-
-function VisualizationRenderer({ viz }: { viz: VisualizationSpec }) {
-  if (viz.type === "TABLE") return <TableViz viz={viz} />;
-  if (viz.type === "KPI") return <KpiTile viz={viz} />;
-  if (viz.type === "LINE" || viz.type === "BAR" || viz.type === "HISTOGRAM" || viz.type === "HEATMAP" || viz.type === "BOX" || viz.type === "SCATTER" || viz.type === "DONUT") {
-    return <ChartRenderer viz={viz} />;
-  }
-  if (viz.type === "EVIDENCE_GRAPH") {
-    return (
-      <div className="min-w-0">
-        <GraphRendererAdapter nodes={viz.nodes} edges={viz.edges} />
-        {viz.summary && <p className="mt-1 px-1 text-xs leading-5 text-muted">{viz.summary}</p>}
-      </div>
-    );
-  }
-  if (viz.type === "PROCESS_FLOW") {
-    return (
-      <div className="min-w-0">
-        <FlowRendererAdapter nodes={viz.nodes} edges={viz.edges} interactive={viz.interactive} />
-        {viz.summary && <p className="mt-1 px-1 text-xs leading-5 text-muted">{viz.summary}</p>}
-      </div>
-    );
-  }
-  return null;
 }
 
 // Markdown element styling — theme-tokenized so it stays legible in dark mode
@@ -394,52 +551,24 @@ const mdComponents = {
   h3: (props: ComponentPropsWithoutRef<"h3">) => <h4 className="mb-1 mt-2 text-sm font-semibold text-ink" {...props} />,
 };
 
-export function AnswerRenderer({
-  text,
-  visualization,
-  secondaryVisualizations,
-  className,
-}: {
-  text: string;
-  /** Deterministic, evidence-backed visual from the response's top-level
-   * `visualization` field. */
-  visualization?: VisualizationSpec | null;
-  /** Complementary visuals (spec §17) — a different lens on the SAME
-   * evidence as `visualization`, rendered after it. */
-  secondaryVisualizations?: VisualizationSpec[] | null;
-  className?: string;
-}) {
-  // Text is split so a ```mermaid block becomes a real diagram instead of a
-  // code dump, while the prose around it still goes through Markdown. The
-  // server-decided visualizations render after all of it, unaffected.
-  //
-  // One exception: when the pipeline DID build a structural visual from real
-  // evidence, that one wins and any model-authored mermaid is dropped. Both can
-  // occur together — the prompt asks for a mermaid diagram (websearch.py) before
-  // the visualization decision is made, so the model cannot know a validated
-  // diagram is already coming. Showing two diagrams of the same thing invites
-  // the reader to spot the differences and trust the wrong one.
-  const structuralViz = [visualization, ...(secondaryVisualizations ?? [])].some(
-    (viz) => viz?.type === "PROCESS_FLOW" || viz?.type === "EVIDENCE_GRAPH",
-  );
-  const segments = parseSegments(text).filter(
-    (seg) => !(structuralViz && seg.type === "mermaid"),
-  );
-
+export function AnswerRenderer({ text, className }: { text: string; className?: string }) {
+  const segments = parseSegments(text);
   return (
-    <div className={`w-full min-w-0 text-sm leading-7 text-ink ${className ?? ""}`}>
+    <div className={`min-w-0 text-sm leading-7 text-ink ${className ?? ""}`}>
       {segments.map((seg, i) =>
         seg.type === "mermaid" ? (
           <MermaidDiagram key={i} code={seg.content} />
+        ) : seg.type === "chart" ? (
+          <ChartRenderer key={i} code={seg.content} />
         ) : (
           <ReactMarkdown
             key={i}
-            // singleDollarTextMath: false — "$94.8 billion ($94,827,000,000)" was
-            // being parsed as inline math between the first and second $, rendering
-            // the figure as stacked italic letters. Currency is far more common than
-            // inline formulas in an accounting answer, so the dollar sign belongs to
-            // money here. Display math ($$…$$) is unaffected; see
-            // _FORMATTING_INSTRUCTIONS for the prompt side.
+            // singleDollarTextMath: false — "$94.8 billion ($94,827,000,000)"
+            // was being parsed as inline math between the first and second $,
+            // rendering the figure as stacked italic letters. Currency is far
+            // more common than inline formulas in an accounting answer, so the
+            // dollar sign belongs to money here. Display math ($$…$$) is
+            // unaffected; see _FORMATTING_INSTRUCTIONS for the prompt side.
             remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
             rehypePlugins={[rehypeKatex]}
             components={mdComponents}
@@ -448,8 +577,6 @@ export function AnswerRenderer({
           </ReactMarkdown>
         ),
       )}
-      {visualization && <VisualizationRenderer viz={visualization} />}
-      {secondaryVisualizations?.map((viz) => <VisualizationRenderer key={viz.id} viz={viz} />)}
     </div>
   );
 }

@@ -14,26 +14,23 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
 
 import httpx
 
 from app.orchestration.websearch import WebSource
 
-# Currencies Frankfurter (ECB daily reference rates) actually publishes —
-# NOT a generic ISO-4217 list. AED, SAR and RUB were previously included here
-# despite Frankfurter never having rates for them: _find_rate would silently
-# return None for those pairs, and the LLM would then fill the gap with an
-# approximate rate from its own training data instead of an honest "not
-# available" — a real fabrication bug found via live testing. Keep this list
-# exactly matched to https://frankfurter.dev's supported currencies so a
-# "recognised" code always means Frankfurter can actually answer for it.
+# Common ISO-4217 currency codes we recognise in a question. Advisory only —
+# Frankfurter itself validates; anything it rejects just yields no rate.
 _CURRENCY_CODES = {
     "USD", "EUR", "GBP", "INR", "JPY", "AUD", "CAD", "CHF", "CNY", "HKD",
-    "SGD", "NZD", "SEK", "NOK", "DKK", "ZAR", "BRL", "MXN",
-    "KRW", "TRY", "PLN", "THB", "IDR", "MYR", "PHP", "CZK", "HUF",
+    "SGD", "NZD", "SEK", "NOK", "DKK", "ZAR", "AED", "SAR", "BRL", "MXN",
+    "RUB", "KRW", "TRY", "PLN", "THB", "IDR", "MYR", "PHP", "CZK", "HUF",
     "ILS", "RON", "BGN", "ISK",
 }
+
+# Signals that the question is actually about currency/FX (so we don't fire on a
+# random 3-letter token that happens to look like a code).
+_FX_HINTS = re.compile(r"\b(convert|conversion|exchange rate|forex|fx|currency|rate of|in terms of|worth in|equal to)\b", re.I)
 
 
 def _frankfurter_base() -> str:
@@ -56,32 +53,16 @@ def _find_amount(query: str) -> float:
     return float(m.group(1)) if m else 1.0
 
 
-@dataclass
-class RateMatch:
-    """The full result of a Frankfurter lookup — WebSource text (via fetch_fx)
-    and structured evidence are both built from this SAME object, so they can
-    never disagree about the underlying rate."""
-
-    base_cur: str
-    quote_cur: str
-    rate: float
-    amount: float
-    converted: float
-    date: str
-    url: str
-
-
-async def _find_rate(query: str) -> RateMatch | None:
-    """One HTTP round-trip to Frankfurter, returning the matched rate (or
-    None). The sole source of truth both fetch_fx() and the structured
-    evidence path build from."""
+async def fetch_fx(query: str) -> list[WebSource]:
+    """Return a single WebSource with the live exchange rate when the question
+    is an FX/currency query with two recognised currencies; otherwise []."""
     codes = _find_currencies(query)
-    # Two recognised currency codes (from -> to) is itself a strong enough
-    # signal — no separate FX-hint check needed on top of it (a prior version
-    # of this check was a tautology: it only ever ran once len(codes) >= 2
-    # was already known true, so it could never actually reject anything).
+    # Need two currencies (from -> to). Require either two codes, or one code
+    # plus an explicit FX hint (still need a second to convert, so two codes).
     if len(codes) < 2:
-        return None
+        return []
+    if not (_FX_HINTS.search(query) or len(codes) >= 2):
+        return []
 
     base_cur, quote_cur = codes[0], codes[1]
     amount = _find_amount(query)
@@ -95,29 +76,18 @@ async def _find_rate(query: str) -> RateMatch | None:
         rate = float((data.get("rates") or {}).get(quote_cur))
         date = data.get("date", "")
     except Exception:
-        return None
+        return []
 
-    return RateMatch(
-        base_cur=base_cur, quote_cur=quote_cur, rate=rate,
-        amount=amount, converted=amount * rate, date=date, url=url,
-    )
-
-
-def _build_source(match: RateMatch) -> WebSource:
+    converted = amount * rate
     snippet = (
-        f"Live ECB reference rate (Frankfurter), {match.date}: "
-        f"1 {match.base_cur} = {match.rate:g} {match.quote_cur}. "
-        f"{match.amount:g} {match.base_cur} = {match.converted:g} {match.quote_cur}."
+        f"Live ECB reference rate (Frankfurter), {date}: "
+        f"1 {base_cur} = {rate:g} {quote_cur}. "
+        f"{amount:g} {base_cur} = {converted:g} {quote_cur}."
     )
-    return WebSource(
-        title=f"Frankfurter — {match.base_cur}/{match.quote_cur} exchange rate ({match.date})",
-        url=match.url,
-        snippet=snippet,
-    )
-
-
-async def fetch_fx(query: str) -> list[WebSource]:
-    """Return a single WebSource with the live exchange rate when the question
-    is an FX/currency query with two recognised currencies; otherwise []."""
-    match = await _find_rate(query)
-    return [_build_source(match)] if match else []
+    return [
+        WebSource(
+            title=f"Frankfurter — {base_cur}/{quote_cur} exchange rate ({date})",
+            url=url,
+            snippet=snippet,
+        )
+    ]

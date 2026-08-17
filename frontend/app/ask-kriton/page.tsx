@@ -46,6 +46,8 @@ import { Composer } from "@/components/ask-kriton/Composer";
 import { ExploreFurther } from "@/components/ask-kriton/ExploreFurther";
 import {
   loadConversations,
+  loadActiveConversationId,
+  persistActiveConversationId,
   persistConversations,
   sortConversations,
   type Conversation,
@@ -70,16 +72,19 @@ const RISK_STYLES: Record<RiskLevel, { badge: string; icon: typeof ShieldCheck; 
   RESTRICTED: { badge: "border-bad/30 bg-bad/10 text-bad", icon: ShieldOff, label: "Restricted — blocked" },
 };
 
-const ROUTE_LABELS: Record<string, string> = {
-  // LLM is deliberately absent; the per-turn label below uses actual citation
-  // and visualization state instead of asserting provenance from route alone —
-  // retrieval fails soft, so a dead SearXNG yields zero citations silently and
-  // the route alone cannot vouch for provenance.
-  REFUSAL: "Refused — policy blocked",
-  CLARIFICATION: "Clarification required",
-  HUMAN_REVIEW: "Escalated for human review",
-  SECURITY_INCIDENT: "Security incident — blocked",
-  REJECTED: "Rejected — invalid request",
+/** Why a route ended the way it did — the detail beside the outcome chip, so
+ * these deliberately omit the outcome word the chip already shows.
+ *
+ * LLM is absent: "source grounded" is only true when sources were actually
+ * retrieved, and retrieval fails soft (a dead SearXNG yields zero citations
+ * silently). routeDetail() below reads the real count instead of asserting
+ * provenance the answer may not have. */
+const ROUTE_DETAILS: Record<string, string> = {
+  REFUSAL: "blocked by policy",
+  CLARIFICATION: "needs more context",
+  HUMAN_REVIEW: "sent for human review",
+  SECURITY_INCIDENT: "blocked by security policy",
+  REJECTED: "invalid request",
 };
 
 const OUTCOME_STYLES: Record<string, { label: string; dot: string; text: string }> = {
@@ -198,6 +203,22 @@ function SourcesPanel({ citations }: { citations: SourceCitation[] }) {
   );
 }
 
+/** The detail line under the outcome chip.
+ *
+ * Carries only the *reason*, never the outcome word — the chip beside it
+ * already says "Answered" / "Refused", and repeating it read as a stutter
+ * ("Answered · Answered — grounded in 4 sources").
+ *
+ * For an answered turn it reports the citations the answer actually carries,
+ * rather than claiming source grounding on the strength of the route alone:
+ * retrieval fails soft, so an unreachable SearXNG produces a confident-looking
+ * answer with no provenance behind it at all. */
+function routeDetail(route: string | null, citationCount: number) {
+  if (route !== "LLM") return ROUTE_DETAILS[route ?? ""] ?? route;
+  if (citationCount === 0) return "model knowledge, no sources retrieved";
+  return `grounded in ${citationCount} source${citationCount === 1 ? "" : "s"}`;
+}
+
 /** One answer as a self-contained markdown document — the *export*, as opposed
  * to Copy. Where Copy gives the response body alone (what you paste into an
  * email), this restates the references and the governance metadata so an
@@ -207,11 +228,8 @@ function answerAsMarkdown(question: string, result: AskKritonResponse) {
   if (!answer) return "";
   const parts = [`# ${question.trim()}`, "", answerBodyOnly(answer.text)];
 
-  const visibleLimitations = answer.limitations.filter(
-    (l) => l !== "This response is for educational purposes only. Consult a qualified professional.",
-  );
-  if (visibleLimitations.length) {
-    parts.push("", "## Limitations", "", ...visibleLimitations.map((l) => `- ${l}`));
+  if (answer.limitations?.length) {
+    parts.push("", "## Limitations", "", ...answer.limitations.map((l) => `- ${l}`));
   }
   const sources = linkedCitations(answer.citations);
   if (sources.length) {
@@ -387,28 +405,11 @@ function ConversationTurn({
   const outcome = result?.outcome ?? null;
   const outcomeStyle = outcome ? OUTCOME_STYLES[outcome] : null;
   const bundle = result?.source_bundle ?? null;
-  const visibleLimitations = result?.answer?.limitations.filter(
-    (l) => l !== "This response is for educational purposes only. Consult a qualified professional.",
-  ) ?? [];
-  const citationCount = result?.answer?.citations.length ?? 0;
-  // out_of_scope is checked before the route table: it arrives on ROUTE_REFUSAL,
-  // but "Refused — policy blocked" misreads a polite scope notice as an
-  // enforcement action — nothing was blocked, the question was simply not one
-  // Kriton covers.
-  const routeLabel = outcome === "out_of_scope"
-    ? "Outside Kriton's supported domain"
-    : route === "LLM"
-      ? citationCount > 0
-        ? "Answered — source grounded"
-        : result?.visualization
-          ? "Answered — structured from your input"
-          : "Answered — no cited sources"
-      : ROUTE_LABELS[route ?? ""] ?? route;
 
   return (
     <>
       <div className="flex justify-end">
-        <div className="kriton-animate-msg-user kriton-user-query mr-2 max-w-[76%] rounded-2xl rounded-tr-md border px-5 py-3 text-sm font-medium leading-6 text-ink shadow-sm sm:mr-4">
+        <div className="kriton-animate-msg-user kriton-user-query max-w-[82%] rounded-2xl rounded-tr-md border px-5 py-3 text-sm font-medium leading-6 text-ink shadow-sm">
           {submittedQuery}
         </div>
       </div>
@@ -416,7 +417,7 @@ function ConversationTurn({
       {loading && <ThinkingIndicator />}
 
       {!loading && error && (
-        <div className="kriton-animate-msg-response min-w-0">
+        <div className="kriton-animate-msg-response">
           <div className="rounded-2xl rounded-tl-md border border-bad/30 bg-bad/5 px-5 py-4 shadow-sm">
             <p className="text-sm font-semibold text-bad">Kriton could not respond</p>
             <p className="mt-1 text-xs text-bad/80">{error}</p>
@@ -426,7 +427,7 @@ function ConversationTurn({
 
       {result && safety && (
         <div className="kriton-animate-msg-response">
-          <article className="min-w-0 w-full flex-1 py-1 text-ink">
+          <article className="min-w-0 flex-1 py-1 text-ink">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
@@ -434,7 +435,9 @@ function ConversationTurn({
                   {outcomeStyle && <span className={`h-2 w-2 rounded-full ${outcomeStyle.dot}`} />}
                   {outcomeStyle && <span className={`text-xs font-semibold ${outcomeStyle.text}`}>{outcomeStyle.label}</span>}
                 </div>
-                <p className="mt-0.5 text-xs text-muted">{routeLabel}</p>
+                <p className="mt-0.5 text-xs text-muted">
+                  {routeDetail(route, result.answer?.citations.length ?? 0)}
+                </p>
               </div>
               <div className="flex items-center gap-2">
                 <Link
@@ -450,20 +453,16 @@ function ConversationTurn({
             <div className="kriton-animate-answer-reveal">
               {result.answer ? (
                 <>
-                  {/* The chart, graph and flow renderers are the most likely
-                      things to throw during render; contain the damage to this
-                      answer rather than losing the whole thread. */}
+                  {/* Model-generated Mermaid and chart JSON are the most
+                      likely things to throw during render; contain the damage
+                      to this answer rather than losing the whole thread. */}
                   <ErrorBoundary label="AnswerRenderer">
-                    <AnswerRenderer
-                      text={result.answer.text}
-                      visualization={result.visualization}
-                      secondaryVisualizations={result.secondary_visualizations}
-                    />
+                    <AnswerRenderer text={result.answer.text} />
                   </ErrorBoundary>
                   <SourcesPanel citations={result.answer.citations} />
-                  {visibleLimitations.length > 0 && (
+                  {result.answer.limitations.length > 0 && (
                     <div className="mt-4 space-y-2 border-t border-line pt-4">
-                      {visibleLimitations.map((l, i) => (
+                      {result.answer.limitations.map((l, i) => (
                         <div key={i} className="flex items-start gap-2 text-xs leading-5 text-muted">
                           <AlertTriangle size={13} className="mt-0.5 shrink-0 text-warn" />
                           {l}
@@ -508,16 +507,16 @@ function ConversationTurn({
             {/* Explicitly labelled "Governed library" because these counts
                 measure the registered Source Library, NOT the citations above
                 — the two are different collections, and an unlabelled
-                "3 eligible records" sitting beside "no cited sources" reads as
-                a contradiction rather than as two separate facts. */}
-            {bundle && outcome === "answered" && (
+                "3 eligible" sitting beside "no sources retrieved" reads as a
+                contradiction rather than as two separate facts. */}
+            {bundle && (
               <p
                 className="mt-4 border-t border-line pt-3 text-[11px] text-muted"
                 title="Counts refer to the governed Source Library, which drives routing. Citations above are the live sources the answer was grounded in."
               >
-                Governed library: {bundle.eligible_source_count} eligible records
-                {bundle.excluded_source_count > 0 ? ` · ${bundle.excluded_source_count} excluded` : ""} · {result.confidence_state.replaceAll("_", " ")} confidence
-                {bundle.jurisdiction ? ` · ${bundle.jurisdiction}` : " · Any jurisdiction"} · {bundle.freshness_state === "unknown" ? "freshness not recorded" : `${bundle.freshness_state} freshness`} · {style?.label ?? "Unknown risk"}
+                Governed library: {bundle.eligible_source_count} eligible
+                {bundle.excluded_source_count > 0 ? `, ${bundle.excluded_source_count} excluded` : ""} · {result.confidence_state.replaceAll("_", " ")} confidence
+                {bundle.jurisdiction ? ` · ${bundle.jurisdiction}` : " · Any jurisdiction"} · {bundle.freshness_state} sources · {style?.label ?? "Unknown risk"}
               </p>
             )}
           </article>
@@ -535,9 +534,17 @@ export default function AskKritonPage() {
   const [conversations, setConversations] = useState<Conversation[]>(() =>
     typeof window === "undefined" ? [] : loadConversations(),
   );
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeId, setActiveIdState] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return loadActiveConversationId(loadConversations());
+  });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  function setActiveId(id: string | null) {
+    setActiveIdState(id);
+    persistActiveConversationId(id);
+  }
 
   function persist(next: Conversation[]) {
     setConversations(next);
@@ -687,8 +694,8 @@ export default function AskKritonPage() {
             </button>
           </header>
 
-          <div ref={scrollRef} className="relative z-10 min-w-0 flex-1 overflow-y-auto px-4">
-            <div className="mx-auto flex min-h-full min-w-0 w-full max-w-5xl flex-col items-center justify-center pb-16 pt-6 md:pb-24 md:pt-8">
+          <div ref={scrollRef} className="relative z-10 flex-1 overflow-y-auto px-4">
+            <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col items-center justify-center pb-16 pt-6 md:pb-24 md:pt-8">
               {!hasConversation ? (
                 <div className="flex w-full max-w-3xl flex-col items-center text-center">
                   <div className="w-full">
@@ -735,7 +742,7 @@ export default function AskKritonPage() {
                   </div>
                 </div>
               ) : (
-                <div className="w-full min-w-0 max-w-3xl space-y-6 self-stretch md:translate-x-14 lg:translate-x-24">
+                <div className="w-full max-w-4xl space-y-6 self-stretch">
                   {activeConversation && (
                     <div className="flex items-center justify-between gap-3 border-b border-line/70 pb-3">
                       <p className="truncate text-xs font-semibold text-muted">
@@ -760,8 +767,9 @@ export default function AskKritonPage() {
                       </button>
                     </div>
                   )}
+
                   {activeConversation?.turns.map((turn) => (
-                    <div key={turn.id} className="min-w-0 space-y-6 border-b border-line/70 pb-7 last:border-b-0">
+                    <div key={turn.id} className="space-y-6 border-b border-line/70 pb-7 last:border-b-0">
                       <ConversationTurn turn={turn} onFollowUp={handleFollowUp} onReuse={setQuery} />
                     </div>
                   ))}
