@@ -228,13 +228,28 @@ function MermaidDiagram({ code }: { code: string }) {
 // component maps the spec deterministically onto an ECharts option, so the
 // chart always renders correctly from whatever data was provided.
 type ChartSpec = {
-  type?: "bar" | "line" | "pie" | "sankey";
+  type?: "bar" | "line" | "pie" | "sankey" | "scatter" | "radar" | "heatmap" | "candlestick";
   title?: string;
   categories?: string[];
-  series?: { name?: string; data: number[] }[];
+  /** Bar charts only: stacks the series when they are parts of one total. */
+  stacked?: boolean;
+  // `data` carries the y-values for bar/line/radar; `points` carries the
+  // [x, y] pairs for scatter. A series uses one or the other, never both.
+  series?: { name?: string; data?: number[]; points?: [number, number][] }[];
   data?: { name: string; value: number }[];
   nodes?: { name: string }[];
   links?: { source: string; target: string; value: number }[];
+  // Scatter axis captions — the two measures being correlated.
+  xName?: string;
+  yName?: string;
+  /** Radar spokes. `max` bounds each axis so profiles stay comparable. */
+  indicators?: { name: string; max?: number }[];
+  // Heatmap: `categories` is the x axis, `yCategories` the y axis, and each
+  // cell is [xIndex, yIndex, value] — indices into those two arrays.
+  yCategories?: string[];
+  cells?: [number, number, number][];
+  /** Candlestick rows, aligned to `categories`: [open, close, low, high]. */
+  ohlc?: [number, number, number, number][];
 };
 
 // Theme-tinted palette so charts sit consistently in the answer card in both
@@ -296,8 +311,121 @@ function buildChartOption(spec: ChartSpec): Record<string, unknown> {
     };
   }
 
+  if (spec.type === "scatter") {
+    return {
+      color,
+      title,
+      tooltip: { trigger: "item" },
+      legend: { bottom: 0, textStyle: { color: muted } },
+      grid: { left: 8, right: 24, top: title ? 48 : 24, bottom: 56, containLabel: true },
+      // Both axes are numeric here — a scatter plots one measure against
+      // another, so neither side is a category list.
+      xAxis: {
+        type: "value",
+        name: spec.xName,
+        nameLocation: "middle",
+        nameGap: 30,
+        nameTextStyle: { color: muted },
+        axisLabel: { color: muted },
+        splitLine: { lineStyle: { color: line } },
+      },
+      yAxis: {
+        type: "value",
+        name: spec.yName,
+        nameTextStyle: { color: muted },
+        axisLabel: { color: muted },
+        splitLine: { lineStyle: { color: line } },
+      },
+      series: (spec.series ?? []).map((s) => ({
+        name: s.name,
+        type: "scatter",
+        data: s.points ?? [],
+        symbolSize: 12,
+      })),
+    };
+  }
+
+  if (spec.type === "radar") {
+    return {
+      color,
+      title,
+      tooltip: { trigger: "item" },
+      legend: { bottom: 0, textStyle: { color: muted } },
+      radar: {
+        indicator: (spec.indicators ?? []).map((i) => ({ name: i.name, max: i.max })),
+        axisName: { color: muted },
+        axisLine: { lineStyle: { color: line } },
+        splitLine: { lineStyle: { color: line } },
+        // The default alternating grey bands fight the answer card's own
+        // background, so the web is drawn on the card instead.
+        splitArea: { show: false },
+      },
+      series: [
+        {
+          type: "radar",
+          data: (spec.series ?? []).map((s) => ({ name: s.name, value: s.data ?? [] })),
+          areaStyle: { opacity: 0.15 },
+        },
+      ],
+    };
+  }
+
+  if (spec.type === "heatmap") {
+    const values = (spec.cells ?? []).map((c) => c[2]);
+    return {
+      title,
+      tooltip: { position: "top" },
+      grid: { left: 8, right: 24, top: title ? 56 : 32, bottom: 76, containLabel: true },
+      xAxis: { type: "category", data: spec.categories ?? [], axisLabel: { color: muted } },
+      yAxis: { type: "category", data: spec.yCategories ?? [], axisLabel: { color: muted } },
+      visualMap: {
+        min: values.length ? Math.min(...values) : 0,
+        max: values.length ? Math.max(...values) : 1,
+        calculable: true,
+        orient: "horizontal",
+        left: "center",
+        bottom: 0,
+        textStyle: { color: muted },
+        // Ramp from the card's own background to the brand colour, so the
+        // scale reads as part of the answer rather than a stock rainbow.
+        inRange: { color: [cssVar("--panel", "#ffffff"), cssVar("--brand", "#16799a")] },
+      },
+      series: [{ type: "heatmap", data: spec.cells ?? [] }],
+    };
+  }
+
+  if (spec.type === "candlestick") {
+    return {
+      title,
+      tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
+      grid: { left: 8, right: 24, top: title ? 48 : 24, bottom: 48, containLabel: true },
+      xAxis: { type: "category", data: spec.categories ?? [], axisLabel: { color: muted } },
+      yAxis: {
+        type: "value",
+        // Price series rarely start near zero — let the axis frame the range
+        // actually traded rather than squashing every candle at the top.
+        scale: true,
+        axisLabel: { color: muted },
+        splitLine: { lineStyle: { color: line } },
+      },
+      series: [
+        {
+          type: "candlestick",
+          data: spec.ohlc ?? [],
+          itemStyle: {
+            color: cssVar("--ok", "#31a06a"),
+            color0: cssVar("--bad", "#e2725b"),
+            borderColor: cssVar("--ok", "#31a06a"),
+            borderColor0: cssVar("--bad", "#e2725b"),
+          },
+        },
+      ],
+    };
+  }
+
   // bar / line (default)
   const isLine = spec.type === "line";
+  const isStacked = !isLine && !!spec.stacked;
   const categoryCount = spec.categories?.length ?? 0;
   return {
     color,
@@ -327,11 +455,18 @@ function buildChartOption(spec: ChartSpec): Record<string, unknown> {
     series: (spec.series ?? []).map((s) => ({
       name: s.name,
       type: isLine ? "line" : "bar",
-      data: s.data,
+      data: s.data ?? [],
       smooth: isLine,
       barMaxWidth: 54,
+      ...(isStacked ? { stack: "total" } : {}),
       // Print the value on each bar so amounts are readable at a glance.
-      label: isLine ? undefined : { show: true, position: "top", color: ink, fontSize: 11 },
+      // Stacked bars are the exception: a top label would sit on the segment
+      // above it, and an inside one is unreadable on the lighter palette
+      // entries — the tooltip carries the numbers there instead.
+      label:
+        isLine || isStacked
+          ? undefined
+          : { show: true, position: "top", color: ink, fontSize: 11 },
       ...(isLine ? { symbolSize: 7, lineStyle: { width: 3 } } : {}),
     })),
   };
@@ -344,6 +479,16 @@ function buildChartOption(spec: ChartSpec): Record<string, unknown> {
 function isChartEmpty(spec: ChartSpec): boolean {
   if (spec.type === "pie") return !(spec.data && spec.data.length > 0);
   if (spec.type === "sankey") return !(spec.links && spec.links.length > 0);
+  if (spec.type === "scatter") {
+    return !spec.series?.some((s) => s.points && s.points.length > 0);
+  }
+  if (spec.type === "radar") {
+    // A radar needs both the spokes and at least one profile plotted on them.
+    const hasSpokes = !!spec.indicators?.length;
+    return !(hasSpokes && spec.series?.some((s) => s.data && s.data.length > 0));
+  }
+  if (spec.type === "heatmap") return !(spec.cells && spec.cells.length > 0);
+  if (spec.type === "candlestick") return !(spec.ohlc && spec.ohlc.length > 0);
   const hasCategories = !!(spec.categories && spec.categories.length > 0);
   const hasSeriesData = !!(spec.series && spec.series.some((s) => s.data && s.data.length > 0));
   return !(hasCategories && hasSeriesData);
@@ -353,7 +498,9 @@ function isChartEmpty(spec: ChartSpec): boolean {
  * "View as table" and "Copy table". Derived from the same spec the chart is
  * drawn from, so the table can never disagree with the picture. */
 function chartSpecToRows(spec: ChartSpec): string[][] {
-  const num = (v: number) => (Number.isFinite(v) ? String(v) : "");
+  // Accepts undefined so a ragged series (fewer points than categories)
+  // exports as a blank cell rather than "undefined".
+  const num = (v?: number) => (typeof v === "number" && Number.isFinite(v) ? String(v) : "");
 
   if (spec.type === "pie") {
     return [["Name", "Value"], ...(spec.data ?? []).map((d) => [d.name, num(d.value)])];
@@ -362,6 +509,44 @@ function chartSpecToRows(spec: ChartSpec): string[][] {
     return [
       ["Source", "Target", "Value"],
       ...(spec.links ?? []).map((l) => [l.source, l.target, num(l.value)]),
+    ];
+  }
+  if (spec.type === "scatter") {
+    // One row per point, tagged with its series, so a multi-series scatter
+    // still pastes into a spreadsheet as a single flat table.
+    return [
+      [spec.xName || "X", spec.yName || "Y", "Series"],
+      ...(spec.series ?? []).flatMap((s, i) =>
+        (s.points ?? []).map((p) => [num(p[0]), num(p[1]), s.name || `Series ${i + 1}`]),
+      ),
+    ];
+  }
+  if (spec.type === "radar") {
+    const spokes = spec.indicators ?? [];
+    const profiles = spec.series ?? [];
+    return [
+      ["Indicator", ...profiles.map((s, i) => s.name || `Series ${i + 1}`)],
+      ...spokes.map((spoke, row) => [spoke.name, ...profiles.map((s) => num(s.data?.[row]))]),
+    ];
+  }
+  if (spec.type === "heatmap") {
+    const xs = spec.categories ?? [];
+    const ys = spec.yCategories ?? [];
+    // Re-grid the sparse [x, y, value] cells into the matrix the chart shows;
+    // any cell the model omitted exports blank rather than zero.
+    const byIndex = new Map((spec.cells ?? []).map((c) => [`${c[0]}:${c[1]}`, c[2]]));
+    return [
+      ["", ...xs],
+      ...ys.map((y, yi) => [y, ...xs.map((_, xi) => num(byIndex.get(`${xi}:${yi}`)))]),
+    ];
+  }
+  if (spec.type === "candlestick") {
+    return [
+      ["Period", "Open", "Close", "Low", "High"],
+      ...(spec.categories ?? []).map((c, i) => {
+        const row = spec.ohlc?.[i];
+        return [c, num(row?.[0]), num(row?.[1]), num(row?.[2]), num(row?.[3])];
+      }),
     ];
   }
   const series = spec.series ?? [];

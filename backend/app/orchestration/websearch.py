@@ -134,45 +134,88 @@ _FORMATTING_INSTRUCTIONS = (
         "a separator row '| --- | --- | --- |', then one row per attribute. Keep "
         "cell text concise.\n"
         "If the user asks for a diagram, chart, workflow, flowchart, process, "
-        "decision tree, org chart, hierarchy, tree, architecture, mind map, "
-        "timeline, or a proportion/allocation breakdown, include it as a "
+        "decision tree, org chart, hierarchy, tree, architecture, data model, "
+        "mind map, timeline, risk matrix, or a proportion/allocation "
+        "breakdown, include it as a "
         "Mermaid diagram inside a fenced ```mermaid code block, alongside a "
         "short text explanation. Choose the Mermaid diagram type that best "
         "fits the request:\n"
         "- 'flowchart TD' (top-down) for processes, workflows, the accounting "
-        "cycle, decision trees, org charts / organisation hierarchies, tree "
-        "breakdowns (e.g. a balance-sheet structure), ERP modules and system "
-        "architecture;\n"
+        "cycle, decision trees, org charts / organisation hierarchies and tree "
+        "breakdowns (e.g. a balance-sheet structure);\n"
         "- 'flowchart LR' (left-to-right) when the flow reads better "
         "horizontally;\n"
         "- 'sequenceDiagram' for step-by-step interactions between parties "
         "(e.g. a tax-filing exchange);\n"
-        "- 'stateDiagram-v2' for statuses and transitions;\n"
+        "- 'stateDiagram-v2' for statuses and transitions (e.g. an invoice "
+        "approval or escalation lifecycle);\n"
         "- 'mindmap' for a mind map / concept breakdown of a topic;\n"
-        "- 'gantt' for schedules or timelines (e.g. a compliance calendar);\n"
+        "- 'gantt' for schedules with DURATIONS (e.g. an audit plan);\n"
+        "- 'timeline' for dated milestones with no duration (e.g. a filing "
+        "calendar), with rows like '2024-01 : VAT return due';\n"
+        "- 'erDiagram' for data models and entity relationships (e.g. how "
+        "Invoice, Customer and Payment relate), with rows like "
+        "'CUSTOMER ||--o{ INVOICE : places';\n"
+        "- 'architecture-beta' for system, service or ERP-module architecture "
+        "— declare 'group name(icon)[Label]', then "
+        "'service id(icon)[Label] in name', then edges like 'a:R -- L:b';\n"
+        "- 'C4Context' or 'C4Container' when a FORMAL layered architecture is "
+        "asked for, using Person(), System(), Container() and Rel();\n"
+        "- 'block-beta' for a layered stack (e.g. a technology or control "
+        "stack), using 'columns N' then block ids;\n"
+        "- 'quadrantChart' for a 2x2 matrix such as a risk or impact/"
+        "likelihood grid, with 'x-axis', 'y-axis', 'quadrant-1'..'quadrant-4' "
+        "and rows like 'Fraud risk: [0.8, 0.9]' (values 0-1);\n"
+        "- 'journey' for a user/client journey with satisfaction scores;\n"
+        "- 'kanban' for work grouped into status columns;\n"
         "- 'pie title <Title>' for a simple proportion or allocation "
         "breakdown (e.g. budget allocation), with rows like \"Label\" : 40.\n"
         "For flowcharts: define nodes as ID[Short Label], plain edges as "
         "A --> B and labelled edges as A -->|Yes| B — the label is wrapped in "
         "single pipes only, never write '|Yes|>' or add an extra '>'. Keep "
         "labels short and avoid parentheses, quotes, %, or other special "
-        "characters inside the square brackets. Only add a diagram when one is "
-        "actually requested or clearly helpful.\n"
-        "For a QUANTITATIVE data chart — bar, line, pie or sankey (e.g. an "
+        "characters inside the square brackets.\n"
+        "For EVERY Mermaid type: the first line is the diagram keyword alone "
+        "(plus its direction or title where shown above) and every later line "
+        "is indented consistently. Never mix two diagram types in one block, "
+        "and never put Markdown, backticks or LaTeX inside a mermaid block. "
+        "Only add a diagram when one is actually requested or clearly "
+        "helpful.\n"
+        "For a QUANTITATIVE data chart (e.g. an "
         "income-statement trend, expense breakdown, budget allocation, "
         "financial ratios, or a flow of funds) — do NOT use Mermaid. Instead "
         "output a fenced ```chart code block containing a SINGLE valid JSON "
         "object, using exactly one of these shapes:\n"
         '- bar or line: {"type":"bar","title":"Revenue by year","categories":'
         '["2021","2022","2023"],"series":[{"name":"Revenue","data":[10,20,30]}]}\n'
+        '- stacked bar: same as bar plus "stacked":true — use when the series '
+        'are PARTS of a total (e.g. cost lines making up total expenses)\n'
         '- pie: {"type":"pie","title":"Expense split","data":[{"name":"COGS",'
         '"value":60},{"name":"Admin","value":25},{"name":"Marketing","value":15}]}\n'
         '- sankey: {"type":"sankey","title":"Fund flow","nodes":[{"name":'
         '"Revenue"},{"name":"Costs"},{"name":"Profit"}],"links":[{"source":'
         '"Revenue","target":"Costs","value":60},{"source":"Revenue","target":'
         '"Profit","value":40}]}\n'
+        '- scatter: {"type":"scatter","title":"Revenue vs headcount",'
+        '"xName":"Headcount","yName":"Revenue","series":[{"name":"Branches",'
+        '"points":[[12,340],[18,520]]}]}\n'
+        '- radar: {"type":"radar","title":"Ratio profile","indicators":'
+        '[{"name":"Liquidity","max":100},{"name":"Solvency","max":100}],'
+        '"series":[{"name":"2024","data":[80,65]}]}\n'
+        '- heatmap: {"type":"heatmap","title":"Spend by region and quarter",'
+        '"categories":["Q1","Q2"],"yCategories":["North","South"],"cells":'
+        '[[0,0,12],[1,0,18],[0,1,9],[1,1,22]]} — each cell is '
+        "[xIndex, yIndex, value]\n"
+        '- candlestick: {"type":"candlestick","title":"Share price",'
+        '"categories":["2024-01","2024-02"],"ohlc":[[10,14,9,15],[14,12,11,16]]}'
+        " — each row is [open, close, low, high]\n"
         "Use 'line' for trends over time, 'bar' for comparisons across "
-        "categories, 'pie' for parts of a whole, 'sankey' for flows. A pie's "
+        "categories, stacked bar for part-to-whole across categories, "
+        "'pie' for parts of a single whole, 'sankey' for flows, "
+        "'scatter' for correlation between two measures, 'radar' for comparing "
+        "several ratios on one profile, 'heatmap' for a value across two "
+        "dimensions, and 'candlestick' only for open/close/low/high price "
+        "data. A pie's "
         "values do NOT need to sum to 100 — just use the given amounts.\n"
         "LINE CHARTS specifically: whenever the question involves a quantity "
         "that changes across a sequence of periods (years, months, quarters, "

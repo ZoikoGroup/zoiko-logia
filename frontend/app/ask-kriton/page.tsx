@@ -16,6 +16,7 @@ import {
   History,
   Lightbulb,
   PenLine,
+  Quote,
   RotateCcw,
   ShieldAlert,
   ShieldCheck,
@@ -127,16 +128,38 @@ function ZoikoGlyph({ className = "h-9 w-9" }: { className?: string }) {
 function SourceButton({ citation }: { citation: SourceCitation }) {
   const label = citation.url ? new URL(citation.url).hostname.replace(/^www\./, "") : citation.title;
   return (
-    <button
-      type="button"
-      onClick={() => openSourcePopup(citation)}
-      className="group flex w-full items-start gap-2 rounded-lg px-1 py-1 text-left text-xs leading-5 text-muted hover:bg-soft hover:text-brand"
-    >
+    <div className="group flex w-full items-start gap-2 rounded-lg px-1 py-1 text-xs leading-5 text-muted hover:bg-soft">
       <BookOpen size={13} className="mt-0.5 shrink-0 text-brand" />
-      <span className="font-mono text-brand">[{citation.ref_id}]</span>
-      <span className="flex-1 truncate">{citation.title || label}</span>
-      <ExternalLink size={12} className="mt-0.5 shrink-0 opacity-0 group-hover:opacity-100" />
-    </button>
+      {citation.url ? (
+        <a
+          href={citation.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex-1 truncate text-left hover:text-brand hover:underline"
+        >
+          {citation.title || label}
+        </a>
+      ) : (
+        <span className="flex-1 truncate">{citation.title || label}</span>
+      )}
+      {/* The retrieved snippet is the audit evidence for this citation, so it
+          stays reachable — but only when the backend actually returned one,
+          otherwise the control would open an empty popup. */}
+      {citation.evidence_preview && (
+        <button
+          type="button"
+          onClick={() => openSourcePopup(citation)}
+          title="Show the retrieved evidence for this source"
+          aria-label="Show the retrieved evidence for this source"
+          className="mt-0.5 shrink-0 rounded p-0.5 hover:text-brand"
+        >
+          <Quote size={12} />
+        </button>
+      )}
+      {citation.url && (
+        <ExternalLink size={12} className="mt-0.5 shrink-0 opacity-0 group-hover:opacity-100" />
+      )}
+    </div>
   );
 }
 
