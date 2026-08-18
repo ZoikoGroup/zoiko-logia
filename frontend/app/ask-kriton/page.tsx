@@ -18,6 +18,7 @@ import {
   PenLine,
   Quote,
   RotateCcw,
+  Share2,
   ShieldAlert,
   ShieldCheck,
   ShieldOff,
@@ -343,6 +344,81 @@ function ResponseActions({
   );
 }
 
+/** Hover actions on the user's own question bubble, mirroring the affordances
+ * people expect from a chat UI. Kept deliberately separate from
+ * ResponseActions: that toolbar acts on Kriton's answer (and can hit the
+ * network to save), whereas everything here is local to the question text. */
+function QuestionActions({ question, onEdit }: { question: string; onEdit?: () => void }) {
+  const [status, setStatus] = useState<Record<string, "idle" | "done" | "error">>({});
+
+  function flash(key: string, value: "done" | "error") {
+    setStatus((prev) => ({ ...prev, [key]: value }));
+    window.setTimeout(() => setStatus((prev) => ({ ...prev, [key]: "idle" })), 1800);
+  }
+
+  async function copyQuestion() {
+    try {
+      await writeTextToClipboard(question);
+      flash("copy", "done");
+    } catch {
+      flash("copy", "error");
+    }
+  }
+
+  // Uses the OS share sheet where the browser exposes one and falls back to the
+  // clipboard everywhere else — navigator.share is missing in most desktop
+  // browsers, and a button that silently does nothing is worse than one that
+  // copies.
+  async function shareQuestion() {
+    try {
+      if (typeof navigator !== "undefined" && navigator.share) {
+        await navigator.share({ text: question });
+      } else {
+        await writeTextToClipboard(question);
+      }
+      flash("share", "done");
+    } catch (err) {
+      // Dismissing the OS share sheet rejects with AbortError. That is a
+      // cancellation, not a failure, so it must not flash red.
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        flash("share", "error");
+      }
+    }
+  }
+
+  // "Edit" refills the composer rather than rewriting history: every question
+  // already carries a query_id and a durable audit chain, so silently replacing
+  // a past turn would break the audit trail. The edited question is asked as a
+  // new turn, and the original stays on the record.
+  const actions = [
+    { key: "copy", label: "Copy message", icon: Copy, onClick: copyQuestion },
+    { key: "share", label: "Share prompt", icon: Share2, onClick: shareQuestion },
+    ...(onEdit ? [{ key: "edit", label: "Edit message", icon: PenLine, onClick: onEdit }] : []),
+  ];
+
+  return (
+    <div className="mt-1 flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+      {actions.map(({ key, label, icon: Icon, onClick }) => {
+        const state = status[key] ?? "idle";
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={onClick}
+            title={label}
+            aria-label={label}
+            className={`rounded-md p-1.5 transition hover:bg-soft ${
+              state === "error" ? "text-bad" : state === "done" ? "text-ok" : "text-muted hover:text-brand"
+            }`}
+          >
+            {state === "done" ? <CheckCircle2 size={13} /> : <Icon size={13} />}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ConversationTurn({
   turn,
   onFollowUp,
@@ -364,10 +440,14 @@ function ConversationTurn({
 
   return (
     <>
-      <div className="flex justify-end">
+      <div className="group flex flex-col items-end">
         <div className="kriton-animate-msg-user kriton-user-query max-w-[82%] rounded-2xl rounded-tr-md border px-5 py-3 text-sm font-medium leading-6 text-ink shadow-sm">
           {submittedQuery}
         </div>
+        <QuestionActions
+          question={submittedQuery}
+          onEdit={onReuse ? () => onReuse(submittedQuery) : undefined}
+        />
       </div>
 
       {loading && <ThinkingIndicator />}
