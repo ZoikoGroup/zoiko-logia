@@ -252,6 +252,13 @@ _FORMATTING_INSTRUCTIONS = (
         "signs $$...$$. Do NOT wrap an inline value in $$...$$. Show the "
         "calculation steps clearly, one step per line, substituting the actual "
         "numbers so the working is easy to follow.\n"
+        "Do NOT end the answer with your own disclaimer, caveat or "
+        "'consult a professional' closing paragraph. The application "
+        "adds its own safety notice outside your output, so anything you "
+        "add there is a duplicate — finish on the substance of the "
+        "answer instead. (You may still answer a question that is "
+        "genuinely ABOUT disclaimers, e.g. what wording an audit report "
+        "should carry.)\n"
 )
 
 
