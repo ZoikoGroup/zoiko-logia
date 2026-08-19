@@ -158,6 +158,7 @@ export function Composer({
 
           <textarea
             ref={textareaRef}
+            data-kriton-composer=""
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
             onKeyDown={handleKeyDown}

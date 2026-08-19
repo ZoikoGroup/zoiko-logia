@@ -390,10 +390,30 @@ function QuestionActions({ question, onEdit }: { question: string; onEdit?: () =
   // already carries a query_id and a durable audit chain, so silently replacing
   // a past turn would break the audit trail. The edited question is asked as a
   // new turn, and the original stays on the record.
+  //
+  // Refilling alone reads as a no-op, because the composer sits at the bottom
+  // of a long conversation and is usually out of view — so scroll to it, put
+  // the caret at the end of the restored text, and flash the button.
+  function editQuestion() {
+    if (!onEdit) return;
+    onEdit();
+    const box = document.querySelector<HTMLTextAreaElement>("[data-kriton-composer]");
+    if (box) {
+      box.scrollIntoView({ behavior: "smooth", block: "center" });
+      // Deferred: the value lands on the next render, and focusing before that
+      // would put the caret in a textarea that is still empty.
+      window.setTimeout(() => {
+        box.focus();
+        box.setSelectionRange(box.value.length, box.value.length);
+      }, 0);
+    }
+    flash("edit", "done");
+  }
+
   const actions = [
     { key: "copy", label: "Copy message", icon: Copy, onClick: copyQuestion },
     { key: "share", label: "Share prompt", icon: Share2, onClick: shareQuestion },
-    ...(onEdit ? [{ key: "edit", label: "Edit message", icon: PenLine, onClick: onEdit }] : []),
+    ...(onEdit ? [{ key: "edit", label: "Edit message", icon: PenLine, onClick: editQuestion }] : []),
   ];
 
   return (
