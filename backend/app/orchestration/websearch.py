@@ -26,17 +26,15 @@ from dataclasses import dataclass
 
 import httpx
 
-
-# Trusted, authoritative domains per jurisdiction. Results outside these are
-# dropped when an allowlist applies (see resolve). "GLOBAL" always applies.
-_TRUSTED_DOMAINS: dict[str, list[str]] = {
-    "GLOBAL": ["ifrs.org", "iasb.org", "ifac.org", "iaasb.org"],
-    "UK": ["gov.uk", "hmrc.gov.uk", "frc.org.uk", "icaew.com", "accaglobal.com", "legislation.gov.uk"],
-    "US": ["irs.gov", "fasb.org", "sec.gov", "pcaobus.org", "aicpa.org", "gao.gov"],
-    "EU": ["europa.eu", "efrag.org"],
-    "UAE": ["mof.gov.ae", "tax.gov.ae"],
-    "INDIA": ["incometax.gov.in", "icai.org", "mca.gov.in"],
-}
+# The authoritative-source allowlist lives in source_taxonomy.py: it is keyed on
+# jurisdiction x topic, so a payroll question is matched against payroll bodies
+# rather than every domain for the country. See that module for the matrix.
+from app.orchestration.source_taxonomy import (
+    allowed_domains,
+    detect_topics,
+    matches_allowlist,
+    organisation_key,
+)
 
 
 @dataclass
@@ -62,21 +60,62 @@ def _strict_allowlist() -> bool:
     return os.getenv("SEARXNG_STRICT_ALLOWLIST", "").lower() in {"1", "true", "yes"}
 
 
-def _allowed_domains(jurisdiction: str) -> list[str]:
-    key = (jurisdiction or "").upper().split("-")[0]  # "US-CA" -> "US"
-    domains = list(_TRUSTED_DOMAINS.get("GLOBAL", []))
-    if key in _TRUSTED_DOMAINS:
-        domains += _TRUSTED_DOMAINS[key]
-    return domains
+def _max_per_organisation() -> int:
+    """How many results one organisation may contribute before others get a
+    turn. 2 keeps the definitive body well represented without letting it fill
+    the whole panel."""
+    try:
+        return max(1, int(os.getenv("SEARXNG_MAX_PER_ORG", "2")))
+    except ValueError:
+        return 2
 
 
-def _matches_allowlist(url: str, domains: list[str]) -> bool:
-    return any(d in url for d in domains)
+def _spread_across_organisations(
+    sources: list[WebSource], domains: list[str], limit: int
+) -> list[WebSource]:
+    """Pick `limit` sources spread across DIFFERENT bodies rather than taking
+    the top N by relevance.
+
+    Relevance order alone returned five gov.uk pages for a VAT question — all
+    correct, all one organisation, and no corroboration. Round-robin over
+    organisations instead: the most relevant hit from each body first, then the
+    second from each, up to SEARXNG_MAX_PER_ORG.
+
+    Relevance is preserved within each organisation, and if too few bodies
+    replied to fill `limit` the remainder is topped up in the original order —
+    a thin panel is worse than a slightly repetitive one.
+    """
+    buckets: dict[str, list[WebSource]] = {}
+    order: list[str] = []
+    for s in sources:
+        key = organisation_key(s.url, domains)
+        if key not in buckets:
+            buckets[key] = []
+            order.append(key)
+        buckets[key].append(s)
+
+    picked: list[WebSource] = []
+    for rank in range(_max_per_organisation()):
+        for key in order:
+            if len(picked) >= limit:
+                return picked
+            bucket = buckets[key]
+            if len(bucket) > rank:
+                picked.append(bucket[rank])
+
+    # Fewer organisations than slots — fill the rest by relevance.
+    if len(picked) < limit:
+        taken = {id(s) for s in picked}
+        for s in sources:
+            if id(s) not in taken:
+                picked.append(s)
+                if len(picked) >= limit:
+                    break
+    return picked[:limit]
 
 
-async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list[WebSource]:
-    """Query SearXNG and return up to `limit` sources, preferring trusted
-    domains for the jurisdiction. Returns [] on any failure (fail-soft)."""
+async def _query_searxng(query: str) -> list[WebSource]:
+    """One SearXNG call, normalised. Returns [] on any failure (fail-soft)."""
     base = _searxng_url()
     params = {
         "q": query,
@@ -92,11 +131,9 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
     except Exception:
         return []
 
-    results = data.get("results", []) or []
-
-    # Normalise into WebSource, keeping only entries with a usable URL.
+    # Keep only entries with a usable URL.
     parsed: list[WebSource] = []
-    for r in results:
+    for r in data.get("results", []) or []:
         url = (r.get("url") or "").strip()
         if not url:
             continue
@@ -107,17 +144,39 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
                 snippet=(r.get("content") or "").strip(),
             )
         )
+    return parsed
 
-    domains = _allowed_domains(jurisdiction)
-    trusted = [s for s in parsed if _matches_allowlist(s.url, domains)]
+
+async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list[WebSource]:
+    """Query SearXNG and return up to `limit` sources from the bodies with
+    authority over the question's topic. Returns [] on any failure (fail-soft).
+
+    ONE SearXNG call per question, deliberately. An earlier version ran a second
+    `site:`-biased pass to steer the engines toward the authoritative domains.
+    It did retrieve better sources, but it doubled the query volume, and the
+    public engines behind SearXNG (DuckDuckGo, Brave, Startpage, Google CSE)
+    rate-limit and serve CAPTCHAs well before that pays off — the whole panel
+    then comes back empty, which is far worse than a slightly weaker source.
+    Topic relevance is still applied, just by filtering rather than by asking
+    twice.
+    """
+    topics = detect_topics(query)
+    domains = allowed_domains(jurisdiction, topics)
+
+    parsed = await _query_searxng(query)
+    if not parsed:
+        return []
+
+    trusted = [s for s in parsed if matches_allowlist(s.url, domains)]
 
     if trusted:
-        return trusted[:limit]
+        return _spread_across_organisations(trusted, domains, limit)
     if _strict_allowlist():
         return []
     # Fallback: no trusted-domain hits — return the general top results so the
     # bot still answers (allowlist is advisory unless SEARXNG_STRICT_ALLOWLIST).
-    return parsed[:limit]
+    # Spread these too: five pages from one content farm is the worst case.
+    return _spread_across_organisations(parsed, domains, limit)
 
 
 # The table/diagram/chart formatting rules apply whether or not web sources
@@ -224,7 +283,18 @@ _FORMATTING_INSTRUCTIONS = (
         "amortisation balance, or revenue/growth over several years — include "
         "a 'line' chart, putting the periods in 'categories' and the value at "
         "each period in a series. If the user explicitly asks for a line chart "
-        "or a graph, you MUST output a ```chart line block. IMPORTANT: when you "
+        "or a graph, you MUST output a ```chart line block.\n"
+        "WHEN THE USER NAMES A CHART TYPE, USE THAT TYPE. If they ask for a pie "
+        "chart, bar chart, scatter, radar, heatmap or candlestick, emit that "
+        "type — do not silently substitute another and do not answer in prose "
+        "only. The single exception is data the type genuinely cannot show: a "
+        "pie needs parts of one positive whole, so if any value is negative or "
+        "the figures are a trend across periods rather than shares of a total, "
+        "draw the chart type that fits (usually 'bar' or 'line'), and say in "
+        "one short line why a pie would not represent this data. Never respond "
+        "to an explicit chart request with neither a chart nor an "
+        "explanation.\n"
+        "IMPORTANT: when you "
         "CALCULATE those period-by-period values yourself from figures the user "
         "gave (e.g. the remaining book value at the end of each year in a "
         "depreciation question, from the cost, salvage and useful life the user "
@@ -272,7 +342,10 @@ _DOMAIN_GATE = (
     "bookkeeping, taxation (income tax, corporate tax, GST/VAT/sales tax), "
     "payroll, auditing, finance, financial statements, accounting standards "
     "(IFRS/IAS/GAAP/Ind AS), tax/payroll compliance and laws, accounting "
-    "software, commerce, accounting education/certifications, OR listed-company "
+    "software, commerce, accounting education/certifications, economic and "
+    "fiscal statistics (GDP, inflation/CPI, unemployment, interest rates, "
+    "tax-to-GDP, public debt and similar official indicators), OR "
+    "listed-company "
     "and capital-markets information — share prices and quotes, price history, "
     "company fundamentals and key figures, company profiles, statutory filings "
     "and company registers. If it is NOT "
