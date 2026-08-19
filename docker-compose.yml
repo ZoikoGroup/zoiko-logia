@@ -17,6 +17,18 @@ services:
 
   backend:
     build: ./backend
+    # Secrets and provider config come from the same file a local run uses, so
+    # there is one source of truth and no keys in version control. Requires
+    # backend/.env to exist — copy backend/.env.example and fill it in.
+    #
+    # IMPORTANT: the values under `environment:` below are container-specific
+    # and deliberately stay there. Compose gives `environment:` precedence over
+    # `env_file:`, which is what stops the local .env's Supabase DATABASE_URL
+    # and its localhost SEARXNG_URL from overriding the services defined here —
+    # otherwise `docker compose up` would start postgres and searxng and then
+    # quietly talk to production instead.
+    env_file:
+      - ./backend/.env
     environment:
       DATABASE_URL: postgresql+asyncpg://zoiko:zoiko@postgres:5432/zoiko
       # Non-superuser role for request-time queries — provisioned automatically
@@ -24,21 +36,21 @@ services:
       # (sources/source_versions tenant isolation) to actually apply: RLS
       # always exempts superusers, and DATABASE_URL's "zoiko" role is one.
       APP_DATABASE_URL: postgresql+asyncpg://zoiko_app:zoiko_app@postgres:5432/zoiko
-      # Without this, risk_classifier.py's _get_classifier_pipeline() never
-      # loads the real zero-shot model — every query gets a fixed 0.5
-      # confidence, which is always below the 0.65 routing threshold, so
-      # every query falls back to "needs clarification" regardless of content.
-      ENABLE_ML_CLASSIFIER: "true"
-      CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001","http://localhost:3005"]'
-      # Auth is now Supabase-backed — set these to a real Supabase project
-      # for sign-up/sign-in to work (see backend/.env.example).
-      SUPABASE_URL: ""
-      SUPABASE_SERVICE_ROLE_KEY: ""
-      # Live web-search grounding for Ask Kriton (the searxng service below).
+      # Service name, not localhost — the searxng service below is reachable on
+      # the compose network at its internal port.
       SEARXNG_URL: http://searxng:8080
-      # LLM answer composition — set GROQ_API_KEY here (or via env_file) for
-      # real answers; GROQ_MODEL overrides the default model.
-      GROQ_API_KEY: ""
+      CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001","http://localhost:3005"]'
+      # Everything else — GROQ_API_KEY, GROQ_MODEL, GROQ_CLASSIFIER_MODEL,
+      # SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, TWELVE_DATA_API_KEY,
+      # ENABLE_ML_CLASSIFIER, FORCE_DIRECT_ANSWER — comes from backend/.env via
+      # env_file above. Listing them here with empty defaults would WIN over
+      # env_file and blank them out, which is what previously left this stack
+      # unable to answer at all.
+      #
+      # GROQ_MODEL and GROQ_CLASSIFIER_MODEL in particular must be set in
+      # backend/.env: the in-code default in groq_adapter.py is a model Groq
+      # has since retired, so falling through to it returns HTTP 404
+      # "model_not_found" on every request.
     ports:
       - "8010:8010"
     depends_on:
@@ -75,7 +87,18 @@ services:
 
   frontend:
     build: ./frontend
+    # Supabase's URL and anon key are read by lib/supabase.ts and the auth
+    # pages; without them sign-in fails at runtime. They live in
+    # frontend/.env.local (copy frontend/.env.example). Safe to expose — the
+    # anon key is public by design; the service role key is backend-only.
+    # This works because the image runs `npm run dev`, where Next reads
+    # NEXT_PUBLIC_* at runtime. A production `next build` would bake them in at
+    # build time instead, and they would need to become build args.
+    env_file:
+      - ./frontend/.env.local
     environment:
+      # Browser-facing, so it must be the host-published port, not the compose
+      # service name — this URL is fetched from the user's machine.
       NEXT_PUBLIC_API_URL: http://localhost:8010/api/v1
     ports:
       - "3005:3000"
