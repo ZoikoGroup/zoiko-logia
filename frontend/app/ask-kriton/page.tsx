@@ -744,7 +744,7 @@ export default function AskKritonPage() {
               ) : (
                 <div className="w-full max-w-4xl space-y-6 self-stretch">
                   {activeConversation && (
-                    <div className="flex items-center justify-between gap-3 border-b border-line/70 pb-3">
+                    <div className="border-b border-line/70 pb-3">
                       <p className="truncate text-xs font-semibold text-muted">
                         {activeConversation.title}
                         <span className="ml-2 font-normal">
@@ -752,19 +752,6 @@ export default function AskKritonPage() {
                           {activeConversation.turns.length === 1 ? "" : "s"}
                         </span>
                       </p>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          downloadTextFile(
-                            conversationAsMarkdown(activeConversation),
-                            safeDownloadName(activeConversation.title || "kriton-chat", "md"),
-                          )
-                        }
-                        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[11px] font-semibold text-muted transition hover:border-brand/40 hover:text-brand"
-                      >
-                        <Download size={12} />
-                        Download chat
-                      </button>
                     </div>
                   )}
 

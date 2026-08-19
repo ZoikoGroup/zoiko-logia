@@ -552,7 +552,7 @@ async def ask_kriton(
     answer_model: Optional[str] = None
     gemini_active = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
     if risk_level in ("ZERO", "LOW") and os.getenv("GROQ_API_KEY") and not gemini_active:
-        answer_model = os.getenv("GROQ_FAST_ANSWER_MODEL", "llama-3.1-8b-instant")
+        answer_model = os.getenv("GROQ_FAST_ANSWER_MODEL", "openai/gpt-oss-20b")
 
     try:
         if prompt:

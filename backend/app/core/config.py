@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: str = ""
     AZURE_OPENAI_API_KEY: str = ""
 
+    # ── Official structured data sources ───────────────────────────────
+    # Public/keyless, but configurable so deployments can use a controlled
+    # proxy or test endpoint without changing connector code.
+    LEGISLATION_API_BASE_URL: str = "https://www.legislation.gov.uk"
+
     # ── Infrastructure ──────────────────────────────────────────────────
     OBJECT_STORAGE_URL: str = ""
     CELERY_BROKER_URL: str = ""

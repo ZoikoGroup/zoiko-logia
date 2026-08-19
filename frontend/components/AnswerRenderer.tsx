@@ -44,6 +44,11 @@ type Segment =
  */
 function stripInlineRefs(text: string): string {
   return text
+    // KaTeX has no metrics for U+202F (narrow no-break space), which commonly
+    // arrives in copied or model-generated numbers and units. A regular space
+    // preserves the intended separation without producing a warning for every
+    // occurrence inside a math node.
+    .replace(/\u202F/g, " ")
     .replace(/\s*\[\s*(?:REF-)?\d+(?:\s*,\s*(?:REF-)?\d+)*\s*\]/gi, "")
     .replace(/[ \t]+([.,;:])/g, "$1")
     .replace(/[ \t]{2,}/g, " ");

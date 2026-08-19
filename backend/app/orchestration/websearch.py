@@ -51,7 +51,7 @@ class WebSource:
     # close changes what the answer may claim.
     provider: str | None = None
     fetched_at: str | None = None
-    freshness: str | None = None      # realtime | delayed | historical | filing
+    freshness: str | None = None      # realtime | delayed | historical | filing | legislation
 
 
 def _searxng_url() -> str:
@@ -187,12 +187,14 @@ _FORMATTING_INSTRUCTIONS = (
         "depreciation question, from the cost, salvage and useful life the user "
         "provided), those computed values COUNT as real numbers — chart them; "
         "deriving them from the user's own inputs is NOT inventing data.\n"
-        "NUMBERS FOR CHARTS: Prefer REAL numbers — ones the user gave you, ones "
-        "you correctly computed from what the user gave, or ones that appear in "
-        "the sources. BUT if the user explicitly asks for a chart or graph and "
-        "you do NOT have real numbers, still DRAW the chart using reasonable "
-        "ILLUSTRATIVE / EXAMPLE figures rather than refusing — the user wants to "
-        "see the chart. In that case you MUST: (a) put the word 'Illustrative' "
+        "NUMBERS FOR CHARTS: Use only REAL numbers — ones the user gave you, "
+        "ones you correctly computed from what the user gave, or ones that "
+        "appear in the sources. If the request concerns a real government, "
+        "economy, company, market, filing, historical period or other factual "
+        "external subject and verified numbers are unavailable, DO NOT invent "
+        "a chart: clearly state that verified data could not be retrieved. Only "
+        "use ILLUSTRATIVE / EXAMPLE figures when the user explicitly requests a "
+        "hypothetical example or template. In that case you MUST: (a) put the word 'Illustrative' "
         "in the chart title, e.g. \"Monthly Revenue vs Expenses (Illustrative)\"; "
         "and (b) immediately after the chart add one short line: 'Note: the "
         "figures above are illustrative examples — replace them with your actual "
