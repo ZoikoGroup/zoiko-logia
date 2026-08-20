@@ -12,6 +12,12 @@ psycopg2-binary
 
 python-multipart
 email-validator
+pypdf
+python-docx
+openpyxl
+python-pptx
+reportlab
+Pillow
 
 # Supabase Auth — JWKS token verification + Admin API calls
 pyjwt[crypto]
@@ -31,6 +37,8 @@ google-genai
 
 # Rate limiting
 slowapi
+redis
+celery
 
 # Test runner for backend/tests. pytest-asyncio is required because the
 # tenant-isolation and licence-gate suites are written as bare `async def

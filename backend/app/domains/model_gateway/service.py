@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import os
 
@@ -11,6 +12,10 @@ from app.domains.model_gateway.providers.mock_adapter import MockProviderAdapter
 from app.domains.model_gateway.providers.groq_adapter import GroqAdapter
 from app.domains.model_gateway.providers.google_adapter import GeminiAdapter
 from app.domains.model_gateway.providers.openai_adapter import OpenAIAdapter
+from app.core.config import get_settings
+
+
+_provider_slots = asyncio.Semaphore(max(1, get_settings().MODEL_PROVIDER_CONCURRENCY))
 
 
 def _select_adapter():
@@ -39,12 +44,17 @@ async def _try_complete(adapter, prompt: str, model: str | None) -> str:
     """Call an adapter's complete(), passing an optional per-call model
     override. Adapters whose complete() takes no `model` argument (the mock)
     raise TypeError — fall back to the no-arg form for them."""
-    if model:
-        try:
-            return await adapter.complete(prompt, model=model)
-        except TypeError:
-            return await adapter.complete(prompt)
-    return await adapter.complete(prompt)
+    async with _provider_slots:
+        if model:
+            try:
+                return await asyncio.wait_for(adapter.complete(prompt, model=model), timeout=40)
+            except TypeError:
+                return await asyncio.wait_for(adapter.complete(prompt), timeout=40)
+        return await asyncio.wait_for(adapter.complete(prompt), timeout=40)
+
+
+def _invalid_output(output: str | None) -> bool:
+    return not output or not output.strip() or output.lstrip().startswith("[Error")
 
 
 async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
@@ -57,9 +67,15 @@ async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
     is_gemini = isinstance(adapter, GeminiAdapter)
     # A Gemini answer must not receive a Groq model id — only pass `model`
     # through when the answering adapter is Groq.
-    output = await _try_complete(adapter, prompt, None if is_gemini else model)
-    if output.startswith("[Error") and is_gemini and os.environ.get("GROQ_API_KEY"):
-        output = await _try_complete(GroqAdapter(), prompt, model)
+    try:
+        output = await _try_complete(adapter, prompt, None if is_gemini else model)
+    except (TimeoutError, asyncio.TimeoutError):
+        output = ""
+    if _invalid_output(output) and is_gemini and os.environ.get("GROQ_API_KEY"):
+        try:
+            output = await _try_complete(GroqAdapter(), prompt, model)
+        except (TimeoutError, asyncio.TimeoutError):
+            output = ""
     return output
 
 

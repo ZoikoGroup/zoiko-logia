@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type Dispatch, type KeyboardEvent, type SetStateAction } from "react";
 import {
   AlertTriangle,
   ArrowUp,
@@ -11,12 +11,26 @@ import {
   Plus,
   X,
 } from "lucide-react";
-import { getAuthToken, uploadKritonAttachment, ApiError } from "@/lib/api";
+import { getAuthToken, getKritonAttachment, uploadKritonAttachment, ApiError, type WorkspaceDocument } from "@/lib/api";
 
 const JURISDICTIONS = ["", "UK", "US", "US-CA", "IFRS", "UAE", "India", "EU"];
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".xlsx", ".pptx"];
 
-type Attachment = { name: string; status: "uploading" | "success" | "error"; progress: number; chunkCount?: number; error?: string };
+export type AttachmentState = { documentId?: string; name: string; status: "uploading" | "processing" | "success" | "error"; progress: number; chunkCount?: number; error?: string };
+
+const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function waitUntilReady(token: string, documentId: string): Promise<WorkspaceDocument> {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const document = await getKritonAttachment(token, documentId);
+    if (document.status === "READY") return document;
+    if (document.status === "FAILED") {
+      throw new ApiError(422, document.processing_error ?? "The document could not be processed.");
+    }
+    await wait(1000);
+  }
+  throw new ApiError(408, "Document processing is taking longer than expected. Select it again when it becomes ready.");
+}
 
 // Minimal ambient shape for the (non-standard) Web Speech API — no @types
 // package ships one, and most of its surface is unused here.
@@ -44,6 +58,10 @@ export function Composer({
   jurisdiction,
   onJurisdictionChange,
   onSubmit,
+  attachment,
+  onAttachmentChange,
+  documents,
+  onUploadComplete,
   submitting,
   error,
 }: {
@@ -52,11 +70,14 @@ export function Composer({
   onQueryChange: (value: string) => void;
   jurisdiction: string;
   onJurisdictionChange: (value: string) => void;
-  onSubmit: () => void;
+  onSubmit: (documentIds?: string[]) => void;
+  attachment: AttachmentState | null;
+  onAttachmentChange: Dispatch<SetStateAction<AttachmentState | null>>;
+  documents: WorkspaceDocument[];
+  onUploadComplete: () => void;
   submitting: boolean;
   error: string | null;
 }) {
-  const [attachment, setAttachment] = useState<Attachment | null>(null);
   const [listening, setListening] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -73,29 +94,37 @@ export function Composer({
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      onSubmit();
+      if (attachment?.status === "uploading" || attachment?.status === "processing") return;
+      onSubmit(attachment?.documentId ? [attachment.documentId] : []);
     }
   }
 
   async function handleFileSelected(file: File) {
     const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
     if (!ACCEPTED_EXTENSIONS.includes(ext)) {
-      setAttachment({ name: file.name, status: "error", progress: 0, error: `Unsupported file type — allowed: ${ACCEPTED_EXTENSIONS.join(", ")}` });
+      onAttachmentChange({ name: file.name, status: "error", progress: 0, error: `Unsupported file type — allowed: ${ACCEPTED_EXTENSIONS.join(", ")}` });
       return;
     }
     const token = getAuthToken();
     if (!token) {
-      setAttachment({ name: file.name, status: "error", progress: 0, error: "Please sign in before uploading." });
+      onAttachmentChange({ name: file.name, status: "error", progress: 0, error: "Please sign in before uploading." });
       return;
     }
-    setAttachment({ name: file.name, status: "uploading", progress: 0 });
+    onAttachmentChange({ name: file.name, status: "uploading", progress: 0 });
     try {
       const result = await uploadKritonAttachment(token, file, (fraction) => {
-        setAttachment((prev) => (prev && prev.name === file.name ? { ...prev, progress: fraction } : prev));
+        onAttachmentChange((previous) => previous?.name === file.name ? { ...previous, progress: fraction } : previous);
       });
-      setAttachment({ name: file.name, status: "success", progress: 1, chunkCount: result.chunk_count });
+      if (result.status === "READY") {
+        onAttachmentChange({ documentId: result.document_id, name: file.name, status: "success", progress: 1, chunkCount: result.chunk_count });
+      } else {
+        onAttachmentChange({ documentId: result.document_id, name: file.name, status: "processing", progress: 1, chunkCount: 0 });
+        const ready = await waitUntilReady(token, result.document_id);
+        onAttachmentChange({ documentId: ready.id, name: ready.filename, status: "success", progress: 1, chunkCount: ready.chunk_count });
+      }
+      onUploadComplete();
     } catch (err) {
-      setAttachment({ name: file.name, status: "error", progress: 0, error: err instanceof ApiError ? err.message : "Upload failed." });
+      onAttachmentChange({ name: file.name, status: "error", progress: 0, error: err instanceof ApiError ? err.message : "Upload failed." });
     }
   }
 
@@ -134,23 +163,30 @@ export function Composer({
   return (
     <div>
       <form
-        onSubmit={(e) => { e.preventDefault(); onSubmit(); }}
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (attachment?.status === "uploading" || attachment?.status === "processing") return;
+          onSubmit(attachment?.documentId ? [attachment.documentId] : []);
+        }}
         className={variant === "sticky" ? "sticky bottom-5 mx-auto max-w-2xl" : "mt-8 w-full"}
       >
         <div className={`kriton-composer-surface ${cardRadius} border p-4 shadow-[0_18px_48px_rgba(18,34,32,0.08)]`}>
           {attachment && (
             <div className="mb-3 flex items-center gap-2 rounded-xl border border-line bg-soft/60 px-3 py-2 text-xs">
               {attachment.status === "uploading" && <Loader2 size={14} className="shrink-0 animate-spin text-brand" />}
+              {attachment.status === "processing" && <Loader2 size={14} className="shrink-0 animate-spin text-brand" />}
               {attachment.status === "success" && <CheckCircle2 size={14} className="shrink-0 text-ok" />}
               {attachment.status === "error" && <AlertTriangle size={14} className="shrink-0 text-bad" />}
               <FileText size={14} className="shrink-0 text-muted" />
               <span className="min-w-0 flex-1 truncate font-medium text-ink">{attachment.name}</span>
+              {attachment.status === "success" && <span className="shrink-0 text-ok">Used in this chat</span>}
               <span className="shrink-0 text-muted">
                 {attachment.status === "uploading" && `${Math.round(attachment.progress * 100)}%`}
+                {attachment.status === "processing" && "Processing…"}
                 {attachment.status === "success" && `${attachment.chunkCount} chunks`}
                 {attachment.status === "error" && attachment.error}
               </span>
-              <button type="button" onClick={() => setAttachment(null)} aria-label="Remove attachment" className="shrink-0 rounded p-0.5 text-muted hover:bg-soft">
+              <button type="button" onClick={() => onAttachmentChange(null)} aria-label="Remove attachment" className="shrink-0 rounded p-0.5 text-muted hover:bg-soft">
                 <X size={13} />
               </button>
             </div>
@@ -167,7 +203,7 @@ export function Composer({
           />
 
           <div className="flex items-center justify-between gap-3">
-            <div>
+            <div className="flex items-center gap-2">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -182,12 +218,36 @@ export function Composer({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={attachment?.status === "uploading"}
+                disabled={attachment?.status === "uploading" || attachment?.status === "processing"}
                 aria-label="Attach a document"
                 className="flex h-9 w-9 items-center justify-center rounded-full text-muted transition hover:bg-soft disabled:opacity-50"
               >
-                {attachment?.status === "uploading" ? <Loader2 size={17} className="animate-spin" /> : <Plus size={19} />}
+                {attachment?.status === "uploading" || attachment?.status === "processing" ? <Loader2 size={17} className="animate-spin" /> : <Plus size={19} />}
               </button>
+              {documents.length > 0 && (
+                <select
+                  aria-label="Select an uploaded document"
+                  value={attachment?.documentId ?? ""}
+                  disabled={attachment?.status === "uploading" || attachment?.status === "processing"}
+                  onChange={(event) => {
+                    const document = documents.find((item) => item.id === event.target.value);
+                    onAttachmentChange(document ? {
+                      documentId: document.id,
+                      name: document.filename,
+                      status: document.status === "READY" ? "success" : "error",
+                      progress: 1,
+                      chunkCount: document.chunk_count,
+                      error: document.processing_error ?? undefined,
+                    } : null);
+                  }}
+                  className="h-9 max-w-48 rounded-full !border-transparent !bg-soft px-3 text-xs font-semibold text-ink outline-none"
+                >
+                  <option value="">Saved documents</option>
+                  {documents.filter((document) => document.status === "READY").map((document) => (
+                    <option key={document.id} value={document.id}>{document.filename}</option>
+                  ))}
+                </select>
+              )}
             </div>
 
             <div className="flex min-w-0 items-center justify-end gap-2">
@@ -213,7 +273,7 @@ export function Composer({
               </button>
               <button
                 type="submit"
-                disabled={submitting || !query.trim()}
+                disabled={submitting || !query.trim() || attachment?.status === "uploading" || attachment?.status === "processing"}
                 className="flex h-9 w-9 items-center justify-center rounded-full bg-brand text-white transition hover:bg-brand-2 disabled:opacity-40"
                 aria-label={variant === "hero" ? "Ask Kriton" : "Ask follow-up"}
               >
