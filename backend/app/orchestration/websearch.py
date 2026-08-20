@@ -22,6 +22,7 @@ Design notes:
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -185,13 +186,45 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
 # question that returned no sources — e.g. "chart of these numbers I gave you"
 # — lost every visualisation instruction and the model just described the chart
 # in prose instead of drawing it.)
-_FORMATTING_INSTRUCTIONS = (
+# Formatting rules are split in two so the model is not handed the full
+# diagram/chart specification on every request.
+#
+# Measured: bolting the extra Mermaid types and chart schemas onto the shared
+# block took the prompt from ~6,000 to ~9,700 characters — 1.6x — on EVERY
+# question, including "what is tax". That much instruction competes with the
+# actual question for the model's attention and measurably degraded plain
+# answers. _VISUAL_INSTRUCTIONS is therefore appended only when the question
+# asks for a visual (see wants_visual), which keeps the base prompt smaller
+# than it was before the extra types were added, with no loss of capability
+# when a chart or diagram IS requested.
+
+# Always sent: cheap, and a table or a formula can be the right shape for any
+# answer.
+_CORE_FORMATTING = (
         "When the user asks for a table, a comparison, 'tabular format', or the "
         "content is naturally a comparison of two or more items across "
         "attributes, present it as a GitHub-flavoured Markdown table using pipe "
         "syntax — a header row like '| Attribute | Option A | Option B |', then "
         "a separator row '| --- | --- | --- |', then one row per attribute. Keep "
         "cell text concise.\n"
+        "For mathematical formulas, methods and calculations, use LaTeX so they "
+        "render cleanly: wrap an INLINE formula or value in single dollar signs "
+        "$...$ (e.g. $Depreciation = (Cost - Salvage) / Life$), and put a "
+        "standalone/display equation on its own line wrapped in double dollar "
+        "signs $$...$$. Do NOT wrap an inline value in $$...$$. Show the "
+        "calculation steps clearly, one step per line, substituting the actual "
+        "numbers so the working is easy to follow.\n"
+        "Do NOT end the answer with your own disclaimer, caveat or "
+        "'consult a professional' closing paragraph. The application "
+        "adds its own safety notice outside your output, so anything you "
+        "add there is a duplicate — finish on the substance of the "
+        "answer instead. (You may still answer a question that is "
+        "genuinely ABOUT disclaimers, e.g. what wording an audit report "
+        "should carry.)\n"
+)
+
+# Sent only for questions that ask for a visual.
+_VISUAL_INSTRUCTIONS = (
         "If the user asks for a diagram, chart, workflow, flowchart, process, "
         "decision tree, org chart, hierarchy, tree, architecture, data model, "
         "mind map, timeline, risk matrix, or a proportion/allocation "
@@ -315,21 +348,48 @@ _FORMATTING_INSTRUCTIONS = (
         "them clearly as an example pattern. (This applies to line, bar, pie and "
         "all chart types.) Never fabricate tax rates, laws or citations as "
         "fact.\n"
-        "For mathematical formulas, methods and calculations, use LaTeX so they "
-        "render cleanly: wrap an INLINE formula or value in single dollar signs "
-        "$...$ (e.g. $Depreciation = (Cost - Salvage) / Life$), and put a "
-        "standalone/display equation on its own line wrapped in double dollar "
-        "signs $$...$$. Do NOT wrap an inline value in $$...$$. Show the "
-        "calculation steps clearly, one step per line, substituting the actual "
-        "numbers so the working is easy to follow.\n"
-        "Do NOT end the answer with your own disclaimer, caveat or "
-        "'consult a professional' closing paragraph. The application "
-        "adds its own safety notice outside your output, so anything you "
-        "add there is a duplicate — finish on the substance of the "
-        "answer instead. (You may still answer a question that is "
-        "genuinely ABOUT disclaimers, e.g. what wording an audit report "
-        "should carry.)\n"
 )
+
+# Signals that the user wants something drawn. Deliberately broad: a false
+# positive costs some prompt length, a false negative means a requested chart
+# is silently not drawn — which is the worse failure.
+_VISUAL_REQUEST = re.compile(
+    r"\b(chart|charts|graph|graphs|plot|plotted|diagram|diagrams|flowchart|"
+    r"flow chart|workflow|work flow|mindmap|mind map|timeline|roadmap|"
+    r"architecture|org chart|hierarchy|tree|sequence diagram|state diagram|"
+    r"er diagram|entity relationship|data model|quadrant|risk matrix|"
+    r"kanban|journey|gantt|pie|bar|line|scatter|radar|heatmap|heat map|"
+    r"candlestick|sankey|visuali[sz]e|visuali[sz]ation|draw|illustrate|"
+    r"show me a|breakdown|proportion|allocation|distribution|trend|"
+    r"compare|comparison|correlation)\b",
+    re.I,
+)
+
+
+def wants_visual(query: str) -> bool:
+    """True when the question asks for a table, chart or diagram."""
+    return bool(_VISUAL_REQUEST.search(query or ""))
+
+
+def _always_send_visual_rules() -> bool:
+    """Send the full visual specification on EVERY question, the way the
+    dev-main branch does, instead of only when a visual is requested.
+
+    Off by default. The conditional behaviour exists because the always-on
+    block measured 1.6x dev-main's prompt size once the extra Mermaid and chart
+    types were added, and that instruction bulk competes with the user's actual
+    question — plain answers got noticeably worse. This switch is here so the
+    two can be compared on real questions rather than argued about.
+    """
+    return os.getenv("KRITON_ALWAYS_SEND_VISUAL_RULES", "").lower() in {"1", "true", "yes"}
+
+
+def formatting_instructions(query: str) -> str:
+    """Formatting rules for this question — visual specification included only
+    when one was asked for, unless KRITON_ALWAYS_SEND_VISUAL_RULES is set."""
+    if _always_send_visual_rules() or wants_visual(query):
+        return _CORE_FORMATTING + _VISUAL_INSTRUCTIONS
+    return _CORE_FORMATTING
 
 
 # Domain gate: Kriton only serves accounting/tax/payroll/finance/audit/
@@ -341,7 +401,13 @@ _DOMAIN_GATE = (
     "STEP 1 — CLASSIFY: Decide whether the user's question is about accounting, "
     "bookkeeping, taxation (income tax, corporate tax, GST/VAT/sales tax), "
     "payroll, auditing, finance, financial statements, accounting standards "
-    "(IFRS/IAS/GAAP/Ind AS), tax/payroll compliance and laws, accounting "
+    "(IFRS/IAS/GAAP/Ind AS), tax/payroll compliance and laws, "
+    "intangible assets and intellectual property — patents, trademarks, "
+    "copyrights, licences, brands and goodwill, including how they are "
+    "recognised, valued, amortised, impaired and taxed (a bare question "
+    "such as 'what are intellectual properties' IS in scope: these are "
+    "balance-sheet assets under IAS 38, so explain them from the "
+    "accounting and tax perspective), accounting "
     "software, commerce, accounting education/certifications, economic and "
     "fiscal statistics (GDP, inflation/CPI, unemployment, interest rates, "
     "tax-to-GDP, public debt and similar official indicators), OR "
@@ -380,7 +446,7 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
             "tell the user to build it in Excel/Google Sheets or with another "
             "tool; emitting the fenced code block below IS how the visual is "
             "drawn for the user.\n"
-            + _FORMATTING_INSTRUCTIONS
+            + formatting_instructions(query)
             + f"\n=== User Question ===\n{query}"
         )
     blocks = []
@@ -396,7 +462,7 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
         "read cleanly without them. If the sources do not contain the answer, "
         "say so plainly instead of guessing. Format the answer clearly with "
         "short paragraphs or bullet points where helpful.\n"
-        + _FORMATTING_INSTRUCTIONS
+        + formatting_instructions(query)
         + f"\n=== Web Sources ===\n{context}\n\n"
         + f"=== User Question ===\n{query}"
     )
