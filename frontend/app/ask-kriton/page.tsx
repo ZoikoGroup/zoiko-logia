@@ -11,6 +11,7 @@ import {
   ChevronDown,
   Copy,
   Download,
+  FileText,
   Loader2,
   ExternalLink,
   History,
@@ -43,7 +44,7 @@ import { openSourcePopup } from "@/lib/source-popup";
 import { getFollowUpSuggestions } from "@/lib/follow-up-suggestions";
 import { ThinkingIndicator } from "@/components/ask-kriton/ThinkingIndicator";
 import { DesktopSidebar, MobileDrawer } from "@/components/ask-kriton/Sidebar";
-import { Composer } from "@/components/ask-kriton/Composer";
+import { Composer, type Attachment } from "@/components/ask-kriton/Composer";
 import { ExploreFurther } from "@/components/ask-kriton/ExploreFurther";
 import {
   loadConversations,
@@ -53,6 +54,7 @@ import {
   sortConversations,
   type Conversation,
   type Turn,
+  type TurnAttachment,
 } from "@/lib/ask-kriton-storage";
 
 type RiskLevel = "ZERO" | "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
@@ -128,9 +130,20 @@ function ZoikoGlyph({ className = "h-9 w-9" }: { className?: string }) {
 
 function SourceButton({ citation }: { citation: SourceCitation }) {
   const label = citation.url ? new URL(citation.url).hostname.replace(/^www\./, "") : citation.title;
+  // An uploaded file is the user's own evidence, not a published authority, so
+  // it is marked with a document icon instead of the source icon. The panel
+  // otherwise reads as though the user's own spreadsheet carried the same
+  // standing as HMRC guidance sitting next to it.
+  const isUserDocument = citation.freshness === "user_upload";
   return (
     <div className="group flex w-full items-start gap-2 rounded-lg px-1 py-1 text-xs leading-5 text-muted hover:bg-soft">
-      <BookOpen size={13} className="mt-0.5 shrink-0 text-brand" />
+      {isUserDocument ? (
+        <span title="Your uploaded document" className="mt-0.5 flex shrink-0">
+          <FileText size={13} className="text-muted" aria-label="Your uploaded document" />
+        </span>
+      ) : (
+        <BookOpen size={13} className="mt-0.5 shrink-0 text-brand" />
+      )}
       {citation.url ? (
         <a
           href={citation.url}
@@ -461,6 +474,30 @@ function ConversationTurn({
   return (
     <>
       <div className="group flex flex-col items-end">
+        {/* The documents this question was asked with, above the bubble and
+            aligned with it. Shown per turn rather than only in the composer so
+            a conversation scrolled back to weeks later still says which file an
+            answer was grounded in — without it, an answer full of the client's
+            own figures has no visible origin at all. */}
+        {turn.attachments?.length ? (
+          <div className="mb-1.5 flex max-w-[82%] flex-col items-end gap-1">
+            {turn.attachments.map((attachment) => (
+              <div
+                key={attachment.documentId}
+                className="flex max-w-full items-center gap-1.5 rounded-lg border border-line bg-soft/70 px-2.5 py-1 text-[11px] text-muted"
+                title={attachment.name}
+              >
+                <FileText size={11} className="shrink-0" />
+                <span className="min-w-0 truncate font-medium text-ink">{attachment.name}</span>
+                {attachment.chunkCount ? (
+                  <span className="shrink-0">
+                    · {attachment.chunkCount} section{attachment.chunkCount === 1 ? "" : "s"}
+                  </span>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
         <div className="kriton-animate-msg-user kriton-user-query max-w-[82%] rounded-2xl rounded-tr-md border px-5 py-3 text-sm font-medium leading-6 text-ink shadow-sm">
           {submittedQuery}
         </div>
@@ -591,6 +628,20 @@ export default function AskKritonPage() {
   const [query, setQuery] = useState("");
   const [jurisdiction, setJurisdiction] = useState("");
   const [mode, setMode] = useState("Kriton's choice");
+  // Attachments live HERE, not in the Composer. The page renders a "hero"
+  // Composer until a conversation exists and a "sticky" one afterwards, so
+  // asking the first question unmounts one and mounts the other. While this
+  // list was local to the Composer, that swap silently discarded the file the
+  // user had just attached: the chip vanished and no document_ids reached the
+  // request, so the answer came back grounded in web sources only. Owning it
+  // one level up also means an attachment survives follow-up questions, which
+  // is what lets someone interrogate the same document several times.
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // Only successfully indexed uploads are sent. A failed extraction has no
+  // chunks behind it, so passing its id would add nothing but noise.
+  const readyAttachments: TurnAttachment[] = attachments
+    .filter((a) => a.status === "success" && a.documentId)
+    .map((a) => ({ documentId: a.documentId as string, name: a.name, chunkCount: a.chunkCount }));
   const [submitting, setSubmitting] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>(() =>
     typeof window === "undefined" ? [] : loadConversations(),
@@ -625,6 +676,10 @@ export default function AskKritonPage() {
   function startNewChat() {
     setActiveId(null);
     setQuery("");
+    // Attachments belong to the conversation that was using them. Carrying
+    // them into a fresh chat would quietly ground an unrelated question in a
+    // document the user has visually left behind.
+    setAttachments([]);
   }
 
   /** Seeds the composer with the suggestion + the just-answered turn's own
@@ -675,7 +730,15 @@ export default function AskKritonPage() {
     }
 
     const turnId = genId("turn");
-    const newTurn: Turn = { id: turnId, query: trimmed, submittedQuery: trimmed, result: null, error: null, loading: true };
+    // Snapshot the attachments onto this turn and clear the composer below, so
+    // the file is recorded against the question it was actually asked with and
+    // is not silently re-sent with the next one.
+    const turnAttachments = readyAttachments;
+    const newTurn: Turn = {
+      id: turnId, query: trimmed, submittedQuery: trimmed,
+      result: null, error: null, loading: true,
+      attachments: turnAttachments.length ? turnAttachments : undefined,
+    };
 
     const isNew = activeId === null;
     const convId = activeId ?? genId("conv");
@@ -694,13 +757,24 @@ export default function AskKritonPage() {
     }
 
     setQuery("");
+    // Cleared here, not on response: the question has left, so the chip has to
+    // leave with it. Leaving it in place would re-attach the same document to
+    // every following question without the user asking for that.
+    setAttachments([]);
     setSubmitError(null);
     setSubmitting(true);
     try {
       const idempotencyKey = genId("idem");
       const response = await askKriton(
         token,
-        { query: trimmed, jurisdiction, mode, clarification_cycle: cycle, conversation_id: convId },
+        {
+          query: trimmed,
+          jurisdiction,
+          mode,
+          clarification_cycle: cycle,
+          conversation_id: convId,
+          document_ids: turnAttachments.map((a) => a.documentId),
+        },
         idempotencyKey,
       );
       patchTurn(convId, turnId, { result: response, loading: false });
@@ -782,6 +856,8 @@ export default function AskKritonPage() {
                       onSubmit={handleSubmit}
                       submitting={submitting}
                       error={submitError}
+                      attachments={attachments}
+                      onAttachmentsChange={setAttachments}
                     />
                   </div>
 
@@ -844,6 +920,8 @@ export default function AskKritonPage() {
                     onSubmit={handleSubmit}
                     submitting={submitting}
                     error={submitError}
+                    attachments={attachments}
+                    onAttachmentsChange={setAttachments}
                   />
                 </div>
               )}

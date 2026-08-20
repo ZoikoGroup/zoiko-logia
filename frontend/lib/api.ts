@@ -541,6 +541,10 @@ export type AskKritonRequest = {
   /** Scopes chart-repetition/telemetry to one thread. Not yet read by the
    * backend — accepted here so the frontend contract is forward-compatible. */
   conversation_id?: string;
+  /** Documents attached to this turn. Ids of successfully indexed uploads
+   * only; the backend re-verifies ownership and readiness, so sending an id
+   * the caller does not own simply retrieves nothing. */
+  document_ids?: string[];
 };
 
 // ---- Top-level response ----
@@ -618,10 +622,19 @@ export type SourceCitation = {
   ref_id: string;
   source_id: string;
   title: string;
-  /** External URL, internal doc link, or null. */
+  /** External URL, internal doc link, or null. Null for an uploaded document —
+   *  there is no public link to the user's own file. */
   url: string | null;
-  /** Exact supporting excerpt — not yet returned by the backend. */
-  evidence_preview?: string;
+  /** The genuine retrieved snippet this citation was grounded in. */
+  evidence_preview?: string | null;
+  /** Provenance, for connectors that know their own origin and currency
+   *  (market data, and uploaded documents). Absent for a plain web hit. */
+  provider?: string | null;
+  fetched_at?: string | null;
+  /** realtime | delayed | historical | filing | user_upload. "user_upload"
+   *  marks a citation that came from a file the user attached, which the panel
+   *  must present as their own evidence rather than as a published source. */
+  freshness?: string | null;
 };
 
 // ---- The answer itself ----
@@ -809,7 +822,25 @@ export type SavedAnswerCreateRequest = {
   tags?: string[];
 };
 
-export type AttachmentUploadResult = { document_id: string; filename: string; chunk_count: number };
+/** `status` is the real ingestion outcome, not just "the bytes arrived":
+ *  "ready" means the file was parsed, chunked and is now searchable;
+ *  "failed" means it was not, and `failure_reason` says why (a scanned PDF, a
+ *  password-protected file, an empty spreadsheet). The UI must not show a
+ *  success tick for "failed" — the user would then ask questions about a
+ *  document that contributes nothing to the answer. */
+export type AttachmentUploadResult = {
+  document_id: string;
+  filename: string;
+  status: "ready" | "failed" | "pending";
+  chunk_count: number;
+  char_count: number;
+  failure_reason: string | null;
+};
+
+export type AttachmentSummary = AttachmentUploadResult & {
+  size_bytes: number;
+  created_at: string | null;
+};
 
 /** XHR (not fetch) because upload progress events need `xhr.upload.onprogress`. */
 export function uploadKritonAttachment(
@@ -845,6 +876,17 @@ export function uploadKritonAttachment(
     const form = new FormData();
     form.append("file", file);
     xhr.send(form);
+  });
+}
+
+export async function listKritonAttachments(token: string): Promise<AttachmentSummary[]> {
+  const res = await authedFetch("/kriton-workspace/attachments", token);
+  return res.json();
+}
+
+export async function deleteKritonAttachment(token: string, documentId: string): Promise<void> {
+  await authedFetch(`/kriton-workspace/attachments/${encodeURIComponent(documentId)}`, token, {
+    method: "DELETE",
   });
 }
 

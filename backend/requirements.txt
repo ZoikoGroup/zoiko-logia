@@ -29,6 +29,16 @@ openai
 groq
 google-genai
 
+# Document text extraction for uploaded attachments (app/domains/documents).
+# All four are pure-Python with no system libraries to install, which is why
+# they can be added without touching the Dockerfile. Scanned/image-only PDFs
+# are NOT handled here — that needs OCR (a system binary) and is reported to
+# the user as "no extractable text" rather than silently indexed as empty.
+pypdf
+python-docx
+openpyxl
+python-pptx
+
 # Rate limiting
 slowapi
 

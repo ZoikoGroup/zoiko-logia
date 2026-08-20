@@ -397,6 +397,54 @@ def formatting_instructions(query: str) -> str:
 # ABOVE everything (including any web sources) so an off-domain question is
 # refused with the exact fixed message even if the web search happened to
 # return results for it.
+# One retrieved excerpt from a file the user uploaded. Declared here rather
+# than imported from app.domains.documents so this module keeps its single
+# direction of dependency (orchestration does not reach into domains);
+# orchestration/service.py maps the domain type onto this one.
+@dataclass
+class DocumentExcerpt:
+    filename: str
+    locator: str
+    content: str
+
+
+# Appended to the domain gate when the user has attached files. Without it the
+# gate refuses perfectly legitimate questions: someone who uploads a trial
+# balance and asks "what is the total in the closing column" is asking an
+# accounting question, but the bare words do not look like one, and refusing it
+# while their own document sits in the prompt is the worst possible answer.
+_DOCUMENT_SCOPE_NOTE = (
+    "SCOPE NOTE: the user has attached one or more of their own documents and "
+    "excerpts from them appear below. A question about the content of those "
+    "attached documents IS in scope and must be answered from them — including "
+    "questions about specific figures, rows, totals, dates, names, clauses or "
+    "sections in the file. Do not refuse such a question as off-topic.\n\n"
+)
+
+# How uploaded documents are described to the model. The distinction this
+# paragraph draws is the whole point of the feature: the user's own file is
+# EVIDENCE ABOUT THEIR SITUATION, never AUTHORITY about what the rules are.
+# Conflating the two would let a client spreadsheet answer "what does the
+# standard require", which is exactly the failure this platform exists to
+# prevent. The model is told to keep the two apart, and the answer surfaces the
+# document by name so the reader can see which claim rests on what.
+_DOCUMENT_INSTRUCTIONS = (
+    "=== The User's Own Uploaded Documents ===\n"
+    "The excerpts below are from files the USER uploaded. They are the user's "
+    "own material, not published guidance and not an authoritative source.\n"
+    "  - Use them for facts about the user's own situation: their figures, "
+    "their dates, their contract terms, their balances.\n"
+    "  - Do NOT treat them as authority on what the law, a standard or a tax "
+    "rule REQUIRES. Statements of the rules must come from your professional "
+    "knowledge or from the web sources, never from the user's file.\n"
+    "  - When a figure or fact comes from an uploaded document, say which "
+    "document and where in it (for example: \"your Q3 ledger, sheet 'Summary'\").\n"
+    "  - If the excerpts do not contain what was asked, say so plainly and say "
+    "what the document does contain. Never invent a figure that is not there, "
+    "and never assume the rest of the file says what the excerpts do not.\n"
+)
+
+
 _DOMAIN_GATE = (
     "STEP 1 — CLASSIFY: Decide whether the user's question is about accounting, "
     "bookkeeping, taxation (income tax, corporate tax, GST/VAT/sales tax), "
@@ -428,16 +476,55 @@ _DOMAIN_GATE = (
 )
 
 
-def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
+def _document_block(documents: list[DocumentExcerpt]) -> str:
+    """The uploaded-document evidence block, or "" when nothing is attached."""
+    if not documents:
+        return ""
+    blocks = [
+        f"[DOC {i}] {d.filename} — {d.locator}\n{d.content}"
+        for i, d in enumerate(documents, start=1)
+    ]
+    return _DOCUMENT_INSTRUCTIONS + "\n\n".join(blocks) + "\n\n"
+
+
+def build_web_grounded_prompt(
+    query: str,
+    sources: list[WebSource],
+    documents: list[DocumentExcerpt] | None = None,
+) -> str:
     """Assemble the answering prompt. When web sources were found, the model is
     told to ground its answer in them (cited separately in the UI). When none
     were found — e.g. the user gave the numbers directly and asked for a chart —
     it answers from its own knowledge, but EITHER way the table/diagram/chart
     formatting rules apply, so a requested visual is always actually drawn. An
-    off-domain question is refused up front via _DOMAIN_GATE."""
+    off-domain question is refused up front via _DOMAIN_GATE.
+
+    `documents` are excerpts from files the user uploaded. They are added as a
+    clearly separated block and are deliberately NOT merged into `sources`:
+    web sources are authoritative publications the answer may state rules from,
+    an uploaded file is the user's own evidence about their own situation, and
+    the prompt has to keep that distinction for the answer to be safe.
+    """
+    documents = documents or []
+    gate = _DOMAIN_GATE + (_DOCUMENT_SCOPE_NOTE if documents else "")
+    docs = _document_block(documents)
+
     if not sources:
+        # No web sources. With documents attached the answer is grounded in
+        # them; with neither it falls back to the model's own knowledge.
+        if documents:
+            return (
+                gate
+                + "Answer the user's question using the excerpts from their own "
+                "uploaded documents below, plus your professional knowledge for "
+                "any statement of the rules. Quote the figures exactly as they "
+                "appear. If the excerpts do not answer the question, say so.\n"
+                + formatting_instructions(query)
+                + f"\n{docs}"
+                + f"=== User Question ===\n{query}"
+            )
         return (
-            _DOMAIN_GATE
+            gate
             + "Answer the user's question clearly and accurately using your own "
             "professional knowledge and any figures given in the question. Use "
             "short paragraphs or bullet points. If the user asks for a chart, "
@@ -453,16 +540,28 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
     for i, s in enumerate(sources, start=1):
         blocks.append(f"[REF-{i}] {s.title}\nURL: {s.url}\n{s.snippet}")
     context = "\n\n".join(blocks)
+    # "ONLY the web sources" is relaxed to "the web sources AND your own
+    # documents" when files are attached — otherwise the instruction forbids the
+    # model from using the very excerpts sitting in the same prompt.
+    grounding_rule = (
+        "Answer the user's question using the numbered web sources below "
+        "together with the excerpts from the user's own uploaded documents. "
+        "Take statements of the rules from the web sources; take the user's own "
+        "figures and facts from their documents. "
+        if documents else
+        "Answer the user's question using ONLY the numbered web sources below. "
+    )
     return (
-        _DOMAIN_GATE
-        + "Answer the user's question using ONLY the numbered web sources below. "
-        "Write a clean, natural answer. Do NOT insert citation markers such as "
+        gate
+        + grounding_rule
+        + "Write a clean, natural answer. Do NOT insert citation markers such as "
         "[REF-1], [1], or source numbers anywhere in the answer text — the "
         "sources are shown to the reader separately below, so the answer must "
         "read cleanly without them. If the sources do not contain the answer, "
         "say so plainly instead of guessing. Format the answer clearly with "
         "short paragraphs or bullet points where helpful.\n"
         + formatting_instructions(query)
-        + f"\n=== Web Sources ===\n{context}\n\n"
+        + f"\n{docs}"
+        + f"=== Web Sources ===\n{context}\n\n"
         + f"=== User Question ===\n{query}"
     )

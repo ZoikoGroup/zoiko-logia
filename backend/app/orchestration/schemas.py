@@ -24,6 +24,10 @@ class AskKritonRequest(BaseModel):
     # Client-generated — scopes audit correlation to one chat thread. Not yet
     # used for any server-side conversation memory.
     conversation_id: Optional[str] = None
+    # Documents the user attached to this turn (app/domains/documents). Ids
+    # only: ownership and readiness are re-verified server-side against the
+    # caller's identity, because the client is not an authority on either.
+    document_ids: List[str] = Field(default_factory=list)
     # Safety simulation overrides (playground only — not trusted in production)
     source_confidence: Optional[str] = None
     pre_bundle_state: Optional[str] = None

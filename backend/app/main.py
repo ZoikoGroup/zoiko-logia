@@ -45,6 +45,45 @@ _TENANT_POLICY_USING = {
 }
 
 
+# Uploaded-document tables (app/domains/documents). Kept apart from
+# _TENANT_SCOPED_TABLES because these are strictly private: `sources` has a
+# shared, non-tenant-private case by design, a client's own uploaded
+# spreadsheet never does.
+#
+# The predicate keys on the UPLOADER ONLY, deliberately not on tenant as well.
+# Two reasons, and the second one is why the first is safe:
+#
+#   1. app.user_id is reliable; app.tenant_id is not. Both are set in
+#      core/database.py's get_db from the caller's JWT. app.user_id is
+#      claims.sub, which is exactly the value get_current_user looks the local
+#      row up by (users.id), so the two cannot disagree. app.tenant_id is
+#      claims.tenant_id, read from Supabase app_metadata — a SECOND copy of
+#      the tenant that has to be kept in step with users.tenant_id by hand at
+#      provision time, and in this database it has drifted for several
+#      accounts (one of them points at a tenant id that no longer exists in
+#      `tenants` at all). Writing a row with users.tenant_id while the policy
+#      checks app_metadata's copy makes every insert hostage to that drift.
+#
+#   2. Nothing is lost by dropping it. A user belongs to exactly one tenant,
+#      and every document row is written with its uploader's own tenant_id, so
+#      "only rows whose user_id is you" already implies "only rows in your
+#      tenant". Tenant isolation follows from uploader isolation here rather
+#      than being weakened by its absence — and tenant_id stays on the row for
+#      filtering, reporting and retention.
+#
+# WITH CHECK is stated explicitly rather than left to default to USING: the
+# reader of a policy should not have to know that Postgres reuses USING for
+# INSERT when WITH CHECK is omitted.
+_HAS_USER_CONTEXT = (
+    "current_setting('app.user_id', true) IS NOT NULL "
+    "AND current_setting('app.user_id', true) != ''"
+)
+_DOCUMENT_TABLES = ("user_documents", "document_chunks")
+_DOCUMENT_POLICY_USING = (
+    f"({_HAS_USER_CONTEXT} AND user_id = current_setting('app.user_id', true))"
+)
+
+
 @asynccontextmanager
 async def _ddl_conn():
     """Open a transaction for startup DDL with short lock/statement timeouts so a
@@ -296,6 +335,19 @@ async def _setup_source_rls():
             await conn.execute(text(f"DROP POLICY IF EXISTS {policy} ON {table}"))
             await conn.execute(
                 text(f"CREATE POLICY {policy} ON {table} USING {_TENANT_POLICY_USING[table]}")
+            )
+        # Uploaded documents: private to the uploader, not merely to the tenant.
+        for table in _DOCUMENT_TABLES:
+            policy = f"owner_isolation_{table}"
+            await conn.execute(text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
+            await conn.execute(text(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY"))
+            await conn.execute(text(f"DROP POLICY IF EXISTS {policy} ON {table}"))
+            await conn.execute(
+                text(
+                    f"CREATE POLICY {policy} ON {table} "
+                    f"USING {_DOCUMENT_POLICY_USING} "
+                    f"WITH CHECK {_DOCUMENT_POLICY_USING}"
+                )
             )
 
 

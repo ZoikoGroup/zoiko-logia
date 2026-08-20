@@ -63,7 +63,12 @@ from app.domains.risk_safety.schemas import ClassifyRequest
 from app.domains.model_gateway import service as model_gateway_service
 from app.orchestration.compose import select_prompt
 from app.orchestration.redaction import redact_for_external_exposure
-from app.orchestration.websearch import web_search, build_web_grounded_prompt
+from app.orchestration.websearch import (
+    DocumentExcerpt,
+    build_web_grounded_prompt,
+    web_search,
+)
+from app.domains.documents import service as documents_service
 from app.orchestration.live_data import fetch_live_data
 from app.orchestration.risk_llm import classify_risk, classify_risk_gemini
 
@@ -202,6 +207,22 @@ async def ask_kriton(
     # so figures flow through the exact same grounding pipeline as SearXNG hits,
     # with no change to the prompt, citations, or answer format.
     live_data_task = asyncio.create_task(fetch_live_data(request.query))
+    # Excerpts from any files the user attached to this turn. Also concurrent:
+    # it is a keyword query against a few hundred rows, so it finishes long
+    # before the web search, and starting it here costs nothing. Returns []
+    # when nothing is attached, when the caller does not own the ids they sent,
+    # or when the documents simply do not mention what was asked — in every one
+    # of those cases the pipeline continues exactly as it does with no
+    # attachment at all.
+    document_task = asyncio.create_task(
+        documents_service.retrieve_passages(
+            db,
+            query=request.query,
+            document_ids=list(request.document_ids or []),
+            tenant_id=tenant_id,
+            user_id=actor_id,
+        )
+    )
 
     # ── Step 4: Retrieve SourceBundle (Massarius™ keyword_mvp layer) (§7) ────
     await audit_retrieval_started(
@@ -500,6 +521,21 @@ async def ask_kriton(
         live_sources = []
     if live_sources:
         web_sources = live_sources + web_sources
+
+    # Uploaded-document excerpts. Kept in their OWN list rather than merged
+    # into web_sources: a web source is an authoritative publication the answer
+    # may state rules from, an uploaded file is the user's own evidence about
+    # their own situation, and the prompt (see websearch.build_web_grounded_prompt)
+    # has to keep the two apart for the answer to be safe. They are cited to
+    # the reader, but as documents, never as authority.
+    try:
+        document_passages = await document_task
+    except Exception:
+        document_passages = []
+    document_excerpts = [
+        DocumentExcerpt(filename=p.filename, locator=p.locator, content=p.content)
+        for p in document_passages
+    ]
     rag_citations: list[SourceCitation] = [
         SourceCitation(
             ref_id=f"REF-{i + 1}",
@@ -518,10 +554,34 @@ async def ask_kriton(
         )
         for i, s in enumerate(web_sources)
     ]
+    # Document citations continue the same REF numbering so the reader sees one
+    # ordered evidence list. url is empty by design — there is no public link to
+    # a client's own file, and the frontend renders a non-clickable row for it
+    # rather than a dead link. provider names it as the user's own upload so it
+    # is never mistaken in the panel for an authoritative source.
+    seen_documents: set[tuple[str, str]] = set()
+    for p in document_passages:
+        key = (p.filename, p.locator)
+        if key in seen_documents:
+            continue
+        seen_documents.add(key)
+        rag_citations.append(
+            SourceCitation(
+                ref_id=f"REF-{len(rag_citations) + 1}",
+                source_id=f"{p.document_id}:{p.locator}",
+                title=f"{p.filename} — {p.locator}",
+                url=None,
+                evidence_preview=(p.content[:240].strip() or None),
+                provider="Your uploaded document",
+                freshness="user_upload",
+            )
+        )
 
     # Build grounded prompt input from the web sources.
     prompt = await select_prompt(db, request.mode)
-    grounded_input = build_web_grounded_prompt(request.query, web_sources)
+    grounded_input = build_web_grounded_prompt(
+        request.query, web_sources, documents=document_excerpts
+    )
 
     # External-provider exposure boundary (ZL-ENG-03 §5.8): redact before
     # grounded_input leaves the tenant trust boundary for the model gateway.
