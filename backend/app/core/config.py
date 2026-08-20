@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: str = ""
     AZURE_OPENAI_API_KEY: str = ""
 
+    # Public/keyless official UK legislation endpoint.
+    LEGISLATION_API_BASE_URL: str = "https://www.legislation.gov.uk"
+
     # ── Infrastructure ──────────────────────────────────────────────────
     OBJECT_STORAGE_URL: str = ""
     OBJECT_STORAGE_PROVIDER: str = "local"
