@@ -9,6 +9,7 @@ export type Turn = {
   loading: boolean;
   error: string | null;
   result: AskKritonResponse | null;
+  attachments?: Array<{ documentId: string; filename: string }>;
 };
 
 export type Conversation = {
@@ -18,6 +19,7 @@ export type Conversation = {
   createdAt: number;
   updatedAt: number;
   pinned: boolean;
+  documentIds?: string[];
 };
 
 const CONVERSATIONS_KEY = "kriton_conversations_v3";
@@ -42,6 +44,7 @@ function migrateLegacy(raw: unknown): Conversation[] {
     createdAt: c.createdAt,
     updatedAt: c.createdAt,
     pinned: false,
+    documentIds: [],
     turns: (c.turns ?? []).map((t) =>
       isLegacyTurn(t)
         ? { id: t.id, query: t.question, submittedQuery: t.question, loading: t.loading, error: t.error, result: t.result }

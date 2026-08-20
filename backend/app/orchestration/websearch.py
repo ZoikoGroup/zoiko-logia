@@ -51,7 +51,10 @@ class WebSource:
     # close changes what the answer may claim.
     provider: str | None = None
     fetched_at: str | None = None
-    freshness: str | None = None      # realtime | delayed | historical | filing
+    freshness: str | None = None      # realtime | delayed | historical | filing | legislation
+    # Internal uploaded documents have no public URL; preserve their stable ID
+    # separately so response citations can still resolve to the exact document.
+    source_id: str | None = None
 
 
 def _searxng_url() -> str:
@@ -216,29 +219,25 @@ _DOMAIN_GATE = (
 
 
 def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
-    """Assemble the answering prompt. When web sources were found, the model is
-    told to ground its answer in them (cited separately in the UI). When none
-    were found, it answers from its own knowledge, but EITHER way the
-    table/formula formatting rules apply. An off-domain question is refused up
-    front via _DOMAIN_GATE. Charts/diagrams are NOT requested here — see
-    _FORMATTING_INSTRUCTIONS' docstring for why that moved to a separate,
-    evidence-backed pipeline instead of free-text LLM authorship."""
+    """Assemble a grounded prompt from document, live-data, or web evidence."""
     if not sources:
         return (
             _DOMAIN_GATE
-            + "Answer the user's question clearly and accurately using your own "
-            "professional knowledge and any figures given in the question. Use "
-            "short paragraphs or bullet points.\n"
+            + "No reliable document, live-data, or web evidence was retrieved. "
+            "Do not answer from model knowledge and do not invent facts. State "
+            "briefly that reliable evidence could not be retrieved and ask the "
+            "user to attach a readable document or clarify the source scope.\n"
             + _FORMATTING_INSTRUCTIONS
             + f"\n=== User Question ===\n{query}"
         )
     blocks = []
     for i, s in enumerate(sources, start=1):
-        blocks.append(f"[REF-{i}] {s.title}\nURL: {s.url}\n{s.snippet}")
+        source_location = f"URL: {s.url}" if s.url else f"Document ID: {s.source_id or 'uploaded'}"
+        blocks.append(f"[REF-{i}] {s.title}\n{source_location}\n{s.snippet}")
     context = "\n\n".join(blocks)
     return (
         _DOMAIN_GATE
-        + "Answer the user's question using ONLY the numbered web sources below. "
+        + "Answer the user's question using ONLY the numbered evidence sources below. "
         "Write a clean, natural answer. Do NOT insert citation markers such as "
         "[REF-1], [1], or source numbers anywhere in the answer text — the "
         "sources are shown to the reader separately below, so the answer must "
@@ -246,6 +245,6 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
         "say so plainly instead of guessing. Format the answer clearly with "
         "short paragraphs or bullet points where helpful.\n"
         + _FORMATTING_INSTRUCTIONS
-        + f"\n=== Web Sources ===\n{context}\n\n"
+        + f"\n=== Evidence Sources ===\n{context}\n\n"
         + f"=== User Question ===\n{query}"
     )

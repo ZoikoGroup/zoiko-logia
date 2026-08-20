@@ -51,7 +51,19 @@ class Settings(BaseSettings):
 
     # ── Infrastructure ──────────────────────────────────────────────────
     OBJECT_STORAGE_URL: str = ""
+    OBJECT_STORAGE_PROVIDER: str = "local"
+    DOCUMENT_STORAGE_BUCKET: str = "kriton-documents"
+    ARTIFACT_STORAGE_BUCKET: str = "kriton-artifacts"
+    SIGNED_URL_EXPIRY_SECONDS: int = 300
     CELERY_BROKER_URL: str = ""
+    CELERY_RESULT_BACKEND: str = ""
+    ASYNC_DOCUMENT_INGESTION: bool = False
+    RATE_LIMIT_STORAGE_URI: str = "memory://"
+    MODEL_PROVIDER_CONCURRENCY: int = 8
+    DOCUMENT_RETENTION_DAYS: int = 30
+    ARTIFACT_RETENTION_DAYS: int = 7
+    FAILED_UPLOAD_RETENTION_HOURS: int = 24
+    RETENTION_CLEANUP_BATCH_SIZE: int = 200
 
     # ── Safety Service Tuning ───────────────────────────────────────────
     # cross-encoder/nli-distilroberta-base's actual score distribution runs

@@ -15,6 +15,20 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build: ./backend
     # backend/.env supplies every provider credential (Supabase, Groq, Gemini,
@@ -37,6 +51,12 @@ services:
       # (sources/source_versions tenant isolation) to actually apply: RLS
       # always exempts superusers, and DATABASE_URL's "zoiko" role is one.
       APP_DATABASE_URL: postgresql+asyncpg://zoiko_app:zoiko_app@postgres:5432/zoiko
+      # Redis logical DB 0 carries queued jobs; DB 1 stores task results.
+      # Container services address Redis by its Compose service name, not localhost.
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      RATE_LIMIT_STORAGE_URI: redis://redis:6379/2
+      ASYNC_DOCUMENT_INGESTION: "true"
       # Without this, risk_classifier.py's _get_classifier_pipeline() never
       # loads the real zero-shot model — every query gets a fixed 0.5
       # confidence, which is always below the 0.65 routing threshold, so
@@ -57,6 +77,8 @@ services:
       - "8010:8010"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       searxng:
         condition: service_started
@@ -102,6 +124,38 @@ services:
       sh -c "sleep 5 &&
       python scripts/seed_dev_user.py"
 
+  document-worker:
+    build: ./backend
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://zoiko:zoiko@postgres:5432/zoiko
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    command: celery -A app.jobs.celery_app:celery_app worker --loglevel=INFO --queues=documents,maintenance
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  retention-scheduler:
+    build: ./backend
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://zoiko:zoiko@postgres:5432/zoiko
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    command: celery -A app.jobs.celery_app:celery_app beat --loglevel=INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   frontend:
     build: ./frontend
     environment:
@@ -113,3 +167,4 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:

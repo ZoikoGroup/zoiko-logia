@@ -26,6 +26,7 @@ import os
 import re
 from typing import Optional
 
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -40,12 +41,13 @@ from app.orchestration.routing_matrix import (
     map_safety_confidence,
     ROUTE_LLM, ROUTE_REFUSAL, ROUTE_CLARIFICATION,
     ROUTE_HUMAN_REVIEW, ROUTE_SECURITY_INCIDENT, ROUTE_REJECTED,
-    CONF_INSUFFICIENT,
+    CONF_INSUFFICIENT, CONF_SUFFICIENT,
 )
 from app.orchestration.persisted_objects import create_review_case, create_security_incident_sync
 from app.orchestration.schemas import (
     AskKritonRequest, AskKritonResponse,
     ComposedAnswer, SourceCitation, SafetyState, NextAction, AuditReference,
+    GeneratedArtifactPublic,
 )
 from app.orchestration.audit_events import (
     audit_query_received, audit_request_validated, audit_request_rejected,
@@ -58,6 +60,8 @@ from app.orchestration.audit_events import (
     audit_licence_prefilter_completed, audit_licence_denied,
     audit_bundle_built, audit_validation_completed,
     audit_redaction_applied,
+    audit_document_retrieval,
+    audit_artifact_generation_failed,
 )
 from app.domains.risk_safety.schemas import ClassifyRequest
 from app.domains.model_gateway import service as model_gateway_service
@@ -79,6 +83,13 @@ from app.orchestration.visualization.orchestrator import VisualizationOrchestrat
 from app.orchestration.visualization.validator import VisualizationValidator
 from app.orchestration.visualization import telemetry as viz_telemetry
 from app.orchestration.risk_llm import classify_risk, classify_risk_gemini
+from app.domains.kriton_workspace.documents import retrieve_document_sources, resolve_conversation_document_ids
+from app.domains.kriton_workspace.artifacts import create_generated_artifact
+from app.orchestration.document_pipeline import (
+    analyse_spreadsheet_sources,
+    build_document_generation_prompt,
+    plan_document_task,
+)
 
 # Massarius™ retrieval and evidence subsystem — Phase 1 control modules
 # (ZL-ENG-03). These wrap/replace the inline licence filtering, bundle
@@ -235,8 +246,12 @@ async def ask_kriton(
     start_time = time.monotonic()
 
     # ── Idempotency check ─────────────────────────────────────────────────────
+    request_hash = hashlib.sha256(request.model_dump_json().encode("utf-8")).hexdigest()
     if idempotency_key:
-        cached = check_idempotency(idempotency_key, tenant_id)
+        try:
+            cached = await check_idempotency(db, idempotency_key, tenant_id, request_hash)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         if cached is not None:
             return AskKritonResponse(**cached)
 
@@ -300,7 +315,7 @@ async def ask_kriton(
             outcome=response.outcome, route=response.route, start_time=start_time,
         )
         if idempotency_key:
-            store_idempotency(idempotency_key, tenant_id, response.model_dump())
+            await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
         return response
 
     # ── Kick off the live web search NOW, concurrently ──────────────────────
@@ -312,8 +327,10 @@ async def ask_kriton(
     # answer actually needs the sources. This overlaps the long search with
     # the rest of the pipeline instead of paying for them one after another.
     # Fails soft exactly as before (returns [] on any error).
-    web_search_task = asyncio.create_task(
-        web_search(request.query, jurisdiction=request.jurisdiction, limit=5)
+    needs_web = request.source_scope != "DOCUMENTS_ONLY"
+    web_search_task = (
+        asyncio.create_task(web_search(request.query, jurisdiction=request.jurisdiction, limit=5))
+        if needs_web else None
     )
     # Live exact-figure sources (currency via Frankfurter, economic stats via
     # DBnomics). Self-gating + fail-soft: returns [] unless the question is
@@ -321,12 +338,46 @@ async def ask_kriton(
     # web search, and its results are merged into web_sources at composition —
     # so figures flow through the exact same grounding pipeline as SearXNG hits,
     # with no change to the prompt, citations, or answer format.
-    live_data_task = asyncio.create_task(fetch_live_data(request.query))
-
+    live_data_task = asyncio.create_task(fetch_live_data(request.query)) if needs_web else None
     # ── Step 4: Retrieve SourceBundle (Massarius™ keyword_mvp layer) (§7) ────
     await audit_retrieval_started(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
+    )
+    resolved_document_ids = await resolve_conversation_document_ids(
+        db,
+        conversation_id=request.conversation_id,
+        requested_ids=request.document_ids,
+        tenant_id=tenant_id,
+        user_id=actor_id,
+    )
+    document_plan = plan_document_task(request.query, has_documents=bool(resolved_document_ids))
+    document_retrieval_error: str | None = None
+    try:
+        # AsyncSession cannot safely execute two queries concurrently. Keep
+        # document and governed-library retrieval sequential; web/live API
+        # work still runs concurrently because it does not use this session.
+        document_sources = await retrieve_document_sources(
+            db,
+            query=request.query,
+            document_ids=resolved_document_ids,
+            tenant_id=tenant_id,
+            user_id=actor_id,
+            full_document=document_plan.retrieval_mode == "full_document",
+        )
+    except Exception as exc:
+        document_sources = []
+        document_retrieval_error = str(exc)[:1000]
+    await audit_document_retrieval(
+        db,
+        query_id=query_id,
+        correlation_id=correlation_id,
+        tenant_id=tenant_id,
+        audit_chain_id=audit_chain_id,
+        actor_id=actor_id,
+        document_ids=resolved_document_ids,
+        hit_count=len(document_sources),
+        error=document_retrieval_error,
     )
     try:
         preliminary_bundle = await build_source_bundle(
@@ -385,7 +436,11 @@ async def ask_kriton(
     effective_confidence = (
         map_safety_confidence(request.source_confidence)
         if request.source_confidence
-        else (source_bundle.confidence_state if source_bundle else CONF_INSUFFICIENT)
+        else (
+            CONF_SUFFICIENT
+            if document_sources
+            else (source_bundle.confidence_state if source_bundle else CONF_INSUFFICIENT)
+        )
     )
 
     classify_request = ClassifyRequest(
@@ -487,7 +542,7 @@ async def ask_kriton(
             outcome=response.outcome, route=ROUTE_CLARIFICATION, start_time=start_time,
         )
         if idempotency_key:
-            store_idempotency(idempotency_key, tenant_id, response.model_dump())
+            await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
         return response
 
     if not force_direct and (not decision.allowed or route == ROUTE_REFUSAL):
@@ -516,7 +571,7 @@ async def ask_kriton(
             outcome=response.outcome, route=route, start_time=start_time,
         )
         if idempotency_key:
-            store_idempotency(idempotency_key, tenant_id, response.model_dump())
+            await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
         return response
 
     if route == ROUTE_HUMAN_REVIEW:
@@ -557,7 +612,7 @@ async def ask_kriton(
             outcome=response.outcome, route=route, start_time=start_time,
         )
         if idempotency_key:
-            store_idempotency(idempotency_key, tenant_id, response.model_dump())
+            await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
         return response
 
     if route == ROUTE_CLARIFICATION:
@@ -587,12 +642,57 @@ async def ask_kriton(
             outcome=response.outcome, route=route, start_time=start_time,
         )
         if idempotency_key:
-            store_idempotency(idempotency_key, tenant_id, response.model_dump())
+            await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
         return response
 
     # ── LLM Route ─────────────────────────────────────────────────────────────
     # Model gateway executes ONLY when route == LLM (§9)
     assert route == ROUTE_LLM
+
+    # A document-only request must never fall through to an ungrounded model
+    # call. This also covers an attachment that was deleted, is not READY, or
+    # was hidden by an unexpected storage/database failure. Returning a
+    # clarification outcome keeps the UI from labelling the model's inability
+    # to read the workbook as an "Answered" response.
+    if request.source_scope == "DOCUMENTS_ONLY" and not document_sources:
+        pending_tasks = [task for task in (web_search_task, live_data_task) if task is not None]
+        for task in pending_tasks:
+            task.cancel()
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+        await audit_refusal_returned(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, reason="No readable document evidence was retrieved",
+        )
+        response = AskKritonResponse(
+            query_id=query_id,
+            correlation_id=correlation_id,
+            outcome="clarification_required",
+            route=ROUTE_CLARIFICATION,
+            safety=safety_state,
+            confidence_state=CONF_INSUFFICIENT,
+            source_bundle=source_bundle,
+            answer=None,
+            next_action=NextAction(
+                type="document_retrieval_failed",
+                message=(
+                    "Kriton™ could not retrieve readable evidence from the attached "
+                    "document. Confirm that the attachment is ready, then attach it again "
+                    "or choose another document."
+                ),
+            ),
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        )
+        await _finalise_and_return(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, outcome=response.outcome,
+            route=ROUTE_CLARIFICATION, start_time=start_time,
+        )
+        if idempotency_key:
+            await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
+        return response
 
     await audit_composition_started(
         db, query_id=query_id, correlation_id=correlation_id,
@@ -608,25 +708,33 @@ async def ask_kriton(
     # Started as a background task back at Step 4 so it ran concurrently with
     # retrieval + risk classification — by now it is usually already done.
     try:
-        web_sources = await web_search_task
+        web_sources = await web_search_task if web_search_task is not None else []
     except Exception:
         web_sources = []
     # Merge in the exact-figure sources (currency / statistics), ranked FIRST so
     # the model grounds numeric answers in the precise value rather than a web
     # snippet. Fail-soft: no live data (or an error) just leaves web_sources as is.
     try:
-        live_result: LiveDataResult = await live_data_task
+        live_result: LiveDataResult = await live_data_task if live_data_task is not None else LiveDataResult()
     except Exception:
         live_result = LiveDataResult()
     if live_result.sources:
         web_sources = live_result.sources + web_sources
     live_evidence: EvidenceModel = live_result.evidence
+    if request.source_scope == "DOCUMENTS_ONLY":
+        evidence_sources = document_sources
+    elif request.source_scope == "WEB_ONLY":
+        evidence_sources = web_sources
+    elif request.source_scope == "COMBINED":
+        evidence_sources = document_sources + web_sources
+    else:  # DOCUMENTS_THEN_WEB
+        evidence_sources = document_sources or web_sources
     rag_citations: list[SourceCitation] = [
         SourceCitation(
             ref_id=f"REF-{i + 1}",
-            source_id=s.url,
+            source_id=s.source_id or s.url,
             title=s.title,
-            url=s.url,
+            url=s.url or None,
             # Genuine retrieved snippet, capped to a preview length — not a
             # fabricated summary.
             evidence_preview=(s.snippet[:240].strip() or None) if s.snippet else None,
@@ -637,12 +745,19 @@ async def ask_kriton(
             fetched_at=s.fetched_at,
             freshness=s.freshness,
         )
-        for i, s in enumerate(web_sources)
+        for i, s in enumerate(evidence_sources)
     ]
 
     # Build grounded prompt input from the web sources.
     prompt = await select_prompt(db, request.mode)
-    grounded_input = build_web_grounded_prompt(request.query, web_sources)
+    document_analysis: dict = {}
+    if document_plan.task_type == "document_generation" and document_sources:
+        document_analysis = analyse_spreadsheet_sources(document_sources)
+        grounded_input = build_document_generation_prompt(
+            request.query, document_sources, document_analysis
+        )
+    else:
+        grounded_input = build_web_grounded_prompt(request.query, evidence_sources)
 
     # External-provider exposure boundary (ZL-ENG-03 §5.8): redact before
     # grounded_input leaves the tenant trust boundary for the model gateway.
@@ -712,7 +827,7 @@ async def ask_kriton(
             outcome=response.outcome, route=ROUTE_REFUSAL, start_time=start_time,
         )
         if idempotency_key:
-            store_idempotency(idempotency_key, tenant_id, response.model_dump())
+            await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
         return response
 
     if not composed_text:
@@ -847,7 +962,7 @@ async def ask_kriton(
             outcome=response.outcome, route=response.route, start_time=start_time,
         )
         if idempotency_key:
-            store_idempotency(idempotency_key, tenant_id, response.model_dump())
+            await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
         return response
 
     # ── Step 8: Finalise response ─────────────────────────────────────────────
@@ -944,6 +1059,49 @@ async def ask_kriton(
             visualization = None
             secondary_visualizations = []
 
+    generated_artifacts: list[GeneratedArtifactPublic] = []
+    artifact_error: str | None = None
+    if (
+        outcome == "answered"
+        and document_plan.response_mode == "chat_with_artifact"
+        and document_sources
+    ):
+        try:
+            artifact = await create_generated_artifact(
+                db,
+                title="Kriton Management Report",
+                narrative=final_text,
+                analysis=document_analysis,
+                format_name=document_plan.output_format,
+                tenant_id=tenant_id,
+                user_id=actor_id,
+                conversation_id=request.conversation_id,
+                query_id=query_id,
+                source_document_ids=resolved_document_ids,
+                request_text=request.query,
+            )
+            generated_artifacts.append(GeneratedArtifactPublic(
+                id=artifact.id,
+                filename=artifact.filename,
+                mime_type=artifact.mime_type,
+                download_url=f"/kriton-workspace/artifacts/{artifact.id}/download",
+                expires_at=artifact.expires_at.isoformat() if artifact.expires_at else None,
+            ))
+        except Exception as exc:
+            # Preserve the valid grounded answer, but make the additive file
+            # failure visible instead of silently degrading to Download .md.
+            generated_artifacts = []
+            artifact_error = (
+                f"The report content was generated, but the requested "
+                f"{document_plan.output_format.upper()} file could not be created."
+            )
+            await audit_artifact_generation_failed(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+                actor_id=actor_id, format_name=document_plan.output_format,
+                error_type=type(exc).__name__,
+            )
+
     response = AskKritonResponse(
         query_id=query_id,
         correlation_id=correlation_id,
@@ -956,6 +1114,8 @@ async def ask_kriton(
         secondary_visualizations=secondary_visualizations,
         answer=answer,
         next_action=None,
+        artifacts=generated_artifacts,
+        artifact_error=artifact_error,
         audit_reference=AuditReference(audit_chain_id=audit_chain_id),
     )
 
@@ -967,7 +1127,7 @@ async def ask_kriton(
     )
 
     if idempotency_key:
-        store_idempotency(idempotency_key, tenant_id, response.model_dump())
+        await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
 
     return response
 
