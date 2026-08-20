@@ -48,7 +48,9 @@ import { DesktopSidebar, MobileDrawer } from "@/components/ask-kriton/Sidebar";
 import { Composer, type AttachmentState } from "@/components/ask-kriton/Composer";
 import { ExploreFurther } from "@/components/ask-kriton/ExploreFurther";
 import {
+  loadActiveConversationId,
   loadConversations,
+  persistActiveConversationId,
   persistConversations,
   sortConversations,
   type Conversation,
@@ -552,7 +554,10 @@ export default function AskKritonPage() {
   const [conversations, setConversations] = useState<Conversation[]>(() =>
     typeof window === "undefined" ? [] : loadConversations(),
   );
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeId, setActiveIdState] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return loadActiveConversationId(loadConversations());
+  });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
