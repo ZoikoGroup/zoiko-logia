@@ -24,3 +24,8 @@ export function sanitizeAnswerMarkdown(text: string): string {
 // become one accidental LaTeX expression. Display formulas (`$$...$$`) remain
 // supported.
 export const ANSWER_MATH_OPTIONS = { singleDollarTextMath: false } as const;
+
+/** Only explicit multiline display-math fences are allowed to activate KaTeX. */
+export function hasDisplayMath(text: string): boolean {
+  return /(?:^|\n)[ \t]*\$\$[ \t]*\n[\s\S]*?\n[ \t]*\$\$(?=\n|$)/.test(text);
+}

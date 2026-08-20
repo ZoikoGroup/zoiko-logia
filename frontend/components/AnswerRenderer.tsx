@@ -9,7 +9,7 @@ import type { VisualizationSpec } from "@/lib/api";
 import { GraphRendererAdapter } from "@/components/visualization/GraphRendererAdapter";
 import { FlowRendererAdapter } from "@/components/visualization/FlowRendererAdapter";
 import { ChartRenderer } from "@/components/visualization/charts/ChartRenderer";
-import { ANSWER_MATH_OPTIONS, sanitizeAnswerMarkdown } from "@/lib/answer-markdown";
+import { ANSWER_MATH_OPTIONS, hasDisplayMath, sanitizeAnswerMarkdown } from "@/lib/answer-markdown";
 
 /**
  * Renders a Kriton answer. Text is rendered as Markdown (so tables, bullet
@@ -162,14 +162,17 @@ export function AnswerRenderer({
   secondaryVisualizations?: VisualizationSpec[] | null;
   className?: string;
 }) {
+  const sanitizedText = sanitizeAnswerMarkdown(text);
+  const renderMath = hasDisplayMath(sanitizedText);
+
   return (
     <div className={`w-full min-w-0 text-sm leading-7 text-ink ${className ?? ""}`}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, [remarkMath, ANSWER_MATH_OPTIONS]]}
-        rehypePlugins={[rehypeKatex]}
+        remarkPlugins={renderMath ? [remarkGfm, [remarkMath, ANSWER_MATH_OPTIONS]] : [remarkGfm]}
+        rehypePlugins={renderMath ? [rehypeKatex] : []}
         components={mdComponents}
       >
-        {sanitizeAnswerMarkdown(text)}
+        {sanitizedText}
       </ReactMarkdown>
       {visualization && <VisualizationRenderer viz={visualization} />}
       {secondaryVisualizations?.map((viz) => <VisualizationRenderer key={viz.id} viz={viz} />)}
