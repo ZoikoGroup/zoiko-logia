@@ -297,6 +297,36 @@ async def _search_fallback(
     return scored[:limit]
 
 
+async def _count_chunks(db: AsyncSession, document_ids: list[str]) -> int:
+    result = await db.execute(
+        select(func.count(DocumentChunk.id)).where(
+            DocumentChunk.document_id.in_(document_ids)
+        )
+    )
+    return int(result.scalar() or 0)
+
+
+async def _all_chunks(
+    db: AsyncSession, document_ids: list[str], limit: int
+) -> list[DocumentPassage]:
+    """The opening `limit` chunks of the attached documents, in document order,
+    with no keyword filtering at all."""
+    result = await db.execute(
+        select(DocumentChunk, UserDocument.filename)
+        .join(UserDocument, UserDocument.id == DocumentChunk.document_id)
+        .where(DocumentChunk.document_id.in_(document_ids))
+        .order_by(UserDocument.filename.asc(), DocumentChunk.ordinal.asc())
+        .limit(limit)
+    )
+    return [
+        DocumentPassage(
+            document_id=chunk.document_id, filename=filename,
+            locator=chunk.locator, content=chunk.content, score=1.0,
+        )
+        for chunk, filename in result.all()
+    ]
+
+
 def _speaks_sqlite(db: AsyncSession) -> bool:
     """Whether THIS session speaks SQLite.
 
@@ -351,12 +381,39 @@ async def retrieve_passages(
     if not allowed:
         return []
 
-    search = _search_fallback if _speaks_sqlite(db) else _search_postgres
     try:
+        # Attaching a file IS the intent signal. When everything the user
+        # attached fits inside the answer budget, all of it goes in and keyword
+        # ranking is skipped entirely — there is nothing to rank, and filtering
+        # can only lose content that was already going to fit.
+        #
+        # This is not an optimisation, it is a correctness fix. A question can
+        # be unmistakably about the attached file while sharing no vocabulary
+        # with it: "is there anything here an auditor should question?" asked of
+        # a trial balance whose columns are account_code / debit / credit
+        # matches on none of "trial", "balance", "auditor" or "question",
+        # because those words live in the FILENAME, not in the rows. Keyword
+        # ranking returned nothing and the answer silently ignored the file.
+        total = await _count_chunks(db, allowed)
+        if total <= limit:
+            return await _all_chunks(db, allowed, limit)
+
+        search = _search_fallback if _speaks_sqlite(db) else _search_postgres
         passages = await search(
             db, query=query, document_ids=allowed,
             tenant_id=tenant_id, user_id=user_id, limit=limit,
         )
+        # A larger document whose text shares no words with the question hits
+        # the same problem. Falling back to its opening chunks is imperfect —
+        # they are where titles, headers and summaries live, not necessarily the
+        # answer — but it beats ignoring a file the user explicitly attached,
+        # and the answer will say plainly if what was asked is not in them.
+        if not passages:
+            print(
+                f"NOTE: no keyword match in {len(allowed)} attached document(s) "
+                f"({total} chunks); falling back to their opening sections."
+            )
+            return await _all_chunks(db, allowed, limit)
     except Exception as exc:
         print(f"WARNING: document retrieval failed, answering without attachments: {exc}")
         return []

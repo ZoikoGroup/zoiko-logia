@@ -207,22 +207,15 @@ async def ask_kriton(
     # so figures flow through the exact same grounding pipeline as SearXNG hits,
     # with no change to the prompt, citations, or answer format.
     live_data_task = asyncio.create_task(fetch_live_data(request.query))
-    # Excerpts from any files the user attached to this turn. Also concurrent:
-    # it is a keyword query against a few hundred rows, so it finishes long
-    # before the web search, and starting it here costs nothing. Returns []
-    # when nothing is attached, when the caller does not own the ids they sent,
-    # or when the documents simply do not mention what was asked — in every one
-    # of those cases the pipeline continues exactly as it does with no
-    # attachment at all.
-    document_task = asyncio.create_task(
-        documents_service.retrieve_passages(
-            db,
-            query=request.query,
-            document_ids=list(request.document_ids or []),
-            tenant_id=tenant_id,
-            user_id=actor_id,
-        )
-    )
+    # Attached-document retrieval is deliberately NOT started as a concurrent
+    # task here, unlike the two above. Those talk to HTTP APIs; this one talks
+    # to `db`, the request's own AsyncSession, which retrieval, risk
+    # classification and every audit write also use. A SQLAlchemy session is
+    # not safe for concurrent use, so running it alongside them raised
+    # InvalidRequestError, the fail-soft `except` below turned that into "no
+    # passages", and an attached document silently contributed nothing to the
+    # answer. It runs inline at the point of use instead — a keyword query over
+    # a few hundred rows, so there was nothing to gain by overlapping it.
 
     # ── Step 4: Retrieve SourceBundle (Massarius™ keyword_mvp layer) (§7) ────
     await audit_retrieval_started(
@@ -529,16 +522,56 @@ async def ask_kriton(
     # has to keep the two apart for the answer to be safe. They are cited to
     # the reader, but as documents, never as authority.
     try:
-        document_passages = await document_task
-    except Exception:
+        document_passages = await documents_service.retrieve_passages(
+            db,
+            query=request.query,
+            document_ids=list(request.document_ids or []),
+            tenant_id=tenant_id,
+            user_id=actor_id,
+        )
+    except Exception as exc:
+        # Fail soft — an attachment must never take the whole answer down — but
+        # NOT silently. The silent version of this block hid a real defect for
+        # a full debugging cycle: uploads succeeded, retrieval worked when
+        # called directly, and answers still ignored the document.
+        print(
+            "WARNING: attached-document retrieval failed, answering without it: "
+            f"{type(exc).__name__}: {exc}"
+        )
         document_passages = []
     document_excerpts = [
         DocumentExcerpt(filename=p.filename, locator=p.locator, content=p.content)
         for p in document_passages
     ]
-    rag_citations: list[SourceCitation] = [
+    # Document citations are assembled first and web citations after, so the
+    # reader sees the evidence the answer actually rests on at the top of the
+    # panel. Without this, a question about the user's own VAT return listed
+    # five generic VAT-calculator pages above the return itself, which reads as
+    # though the answer came from the web.
+    document_citations: list[SourceCitation] = []
+    seen_documents: set[tuple[str, str]] = set()
+    for passage in document_passages:
+        key = (passage.filename, passage.locator)
+        if key in seen_documents:
+            continue
+        seen_documents.add(key)
+        document_citations.append(
+            SourceCitation(
+                ref_id="",                      # assigned below, once ordered
+                source_id=f"{passage.document_id}:{passage.locator}",
+                title=f"{passage.filename} — {passage.locator}",
+                # No public URL exists for a file the user uploaded; the
+                # frontend renders a non-clickable row rather than a dead link.
+                url=None,
+                evidence_preview=(passage.content[:240].strip() or None),
+                provider="Your uploaded document",
+                freshness="user_upload",
+            )
+        )
+
+    web_citations: list[SourceCitation] = [
         SourceCitation(
-            ref_id=f"REF-{i + 1}",
+            ref_id="",
             source_id=s.url,
             title=s.title,
             url=s.url,
@@ -552,30 +585,15 @@ async def ask_kriton(
             fetched_at=s.fetched_at,
             freshness=s.freshness,
         )
-        for i, s in enumerate(web_sources)
+        for s in web_sources
     ]
-    # Document citations continue the same REF numbering so the reader sees one
-    # ordered evidence list. url is empty by design — there is no public link to
-    # a client's own file, and the frontend renders a non-clickable row for it
-    # rather than a dead link. provider names it as the user's own upload so it
-    # is never mistaken in the panel for an authoritative source.
-    seen_documents: set[tuple[str, str]] = set()
-    for p in document_passages:
-        key = (p.filename, p.locator)
-        if key in seen_documents:
-            continue
-        seen_documents.add(key)
-        rag_citations.append(
-            SourceCitation(
-                ref_id=f"REF-{len(rag_citations) + 1}",
-                source_id=f"{p.document_id}:{p.locator}",
-                title=f"{p.filename} — {p.locator}",
-                url=None,
-                evidence_preview=(p.content[:240].strip() or None),
-                provider="Your uploaded document",
-                freshness="user_upload",
-            )
-        )
+
+    # One ordered evidence list, numbered after ordering so REF-1 is the first
+    # row the reader sees.
+    rag_citations: list[SourceCitation] = [
+        c.model_copy(update={"ref_id": f"REF-{i + 1}"})
+        for i, c in enumerate(document_citations + web_citations)
+    ]
 
     # Build grounded prompt input from the web sources.
     prompt = await select_prompt(db, request.mode)

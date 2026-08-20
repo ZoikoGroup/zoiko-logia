@@ -730,21 +730,36 @@ export default function AskKritonPage() {
     }
 
     const turnId = genId("turn");
-    // Snapshot the attachments onto this turn and clear the composer below, so
-    // the file is recorded against the question it was actually asked with and
-    // is not silently re-sent with the next one.
-    const turnAttachments = readyAttachments;
-    const newTurn: Turn = {
-      id: turnId, query: trimmed, submittedQuery: trimmed,
-      result: null, error: null, loading: true,
-      attachments: turnAttachments.length ? turnAttachments : undefined,
-    };
-
     const isNew = activeId === null;
     const convId = activeId ?? genId("conv");
     const now = timestamp();
     const priorConversation = conversations.find((c) => c.id === convId) ?? null;
     const cycle = clarificationCycleFor(priorConversation);
+
+    // Documents stay in scope for the whole conversation, not just the question
+    // they arrived with. "Summarise this" followed by "what are total
+    // non-current assets?" is one line of enquiry about one file, and making
+    // the user re-attach it between the two would be absurd — the second
+    // question came back saying the figure could not be determined, because by
+    // then nothing was attached.
+    //
+    // The composer is still cleared on submit (below), so nothing is repeated
+    // there; what carries forward is the conversation's context, and each
+    // question shows which documents answered it. `startNewChat` clears it.
+    const carriedForward = (priorConversation?.turns ?? []).flatMap((t) => t.attachments ?? []);
+    const turnAttachments: TurnAttachment[] = [];
+    const seenDocumentIds = new Set<string>();
+    for (const attachment of [...carriedForward, ...readyAttachments]) {
+      if (seenDocumentIds.has(attachment.documentId)) continue;
+      seenDocumentIds.add(attachment.documentId);
+      turnAttachments.push(attachment);
+    }
+
+    const newTurn: Turn = {
+      id: turnId, query: trimmed, submittedQuery: trimmed,
+      result: null, error: null, loading: true,
+      attachments: turnAttachments.length ? turnAttachments : undefined,
+    };
     setConversations((prev) => {
       const next = isNew
         ? [{ id: convId, title: trimmed.slice(0, 80), turns: [newTurn], createdAt: now, updatedAt: now, pinned: false }, ...prev]

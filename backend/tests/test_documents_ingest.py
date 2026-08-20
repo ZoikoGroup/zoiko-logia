@@ -283,6 +283,51 @@ async def test_retrieval_finds_the_document_that_holds_the_answer():
         assert all(p.locator for p in vat + tax)
 
 
+async def test_small_document_is_returned_whole_even_with_no_keyword_match():
+    """Attaching a file IS the intent signal.
+
+    A question can be unmistakably about the attached document while sharing no
+    vocabulary with it: "is there anything here an auditor should question?"
+    asked of a trial balance whose columns are account_code / debit / credit
+    matches on none of "trial", "balance", "auditor" or "question" — those words
+    are in the FILENAME, not the rows. Keyword ranking returned nothing and the
+    answer silently ignored the file the user had just attached.
+    """
+    async with _Fixture() as fx:
+        # A tiny CSV that shares no words with the question below.
+        csv_bytes = (
+            b"account_code,account_name,debit,credit\n"
+            b"2100,Accruals,,146000.00\n"
+            b"8000,Suspense,196750.00,\n"
+        )
+        doc = await fx.ingest("tb.csv", ".csv", csv_bytes)
+        assert doc.status == "ready"
+        assert doc.chunk_count <= documents_service.MAX_CHUNKS_PER_ANSWER
+
+        question = "Is there anything here an auditor should question?"
+        assert not any(
+            term in csv_bytes.decode().lower()
+            for term in documents_service._query_terms(question)
+        ), "fixture no longer demonstrates the vocabulary mismatch"
+
+        passages = await fx.retrieve(question, [doc.document_id])
+        assert passages, "a small attached document must be returned in full"
+        assert "Suspense" in passages[0].content
+
+
+async def test_large_document_falls_back_to_its_opening_sections():
+    """The same mismatch on a document too big to include whole must still
+    contribute something rather than being dropped."""
+    async with _Fixture() as fx:
+        doc = await fx.ingest("big.xlsx", ".xlsx", _xlsx_bytes(rows=4000))
+        assert doc.chunk_count > documents_service.MAX_CHUNKS_PER_ANSWER, (
+            "fixture is not large enough to exercise the fallback"
+        )
+        passages = await fx.retrieve("zzqqxx unrelated vocabulary", [doc.document_id])
+        assert passages, "a large attached document must not be silently ignored"
+        assert len(passages) <= documents_service.MAX_CHUNKS_PER_ANSWER
+
+
 async def test_retrieval_is_capped_at_the_answer_budget():
     """More evidence is not better past a point: eight 2,000-character chunks
     already fill the context the model has to reason in."""
@@ -309,15 +354,21 @@ async def test_another_tenant_cannot_retrieve_the_document():
         assert await fx.retrieve("net VAT to pay", [owned.document_id], tenant="tenant-elsewhere") == []
 
 
-async def test_absent_or_unmatched_input_returns_nothing_rather_than_failing():
-    """Attaching a document that does not answer the question must leave the
-    pipeline behaving exactly as it does with no attachment at all."""
+async def test_absent_input_returns_nothing_rather_than_failing():
+    """No attachment, no question, or ids the caller does not own must all leave
+    the pipeline behaving exactly as it does with no attachment at all.
+
+    Note what is deliberately NOT asserted here: that an unrelated question
+    returns nothing. A small attached document is returned in full regardless of
+    keyword overlap — see
+    test_small_document_is_returned_whole_even_with_no_keyword_match for why
+    that is the correct behaviour rather than a leak.
+    """
     async with _Fixture() as fx:
         doc = await fx.ingest("vat-return.pdf", ".pdf", _pdf_bytes())
         assert await fx.retrieve("net VAT", []) == []
         assert await fx.retrieve("   ", [doc.document_id]) == []
         assert await fx.retrieve("net VAT", ["doc-that-does-not-exist"]) == []
-        assert await fx.retrieve("zzqqxx unrelated gibberish", [doc.document_id]) == []
 
 
 async def test_delete_removes_the_chunks_as_well_as_the_row():
