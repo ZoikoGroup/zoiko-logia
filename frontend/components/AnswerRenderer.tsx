@@ -9,6 +9,7 @@ import type { VisualizationSpec } from "@/lib/api";
 import { GraphRendererAdapter } from "@/components/visualization/GraphRendererAdapter";
 import { FlowRendererAdapter } from "@/components/visualization/FlowRendererAdapter";
 import { ChartRenderer } from "@/components/visualization/charts/ChartRenderer";
+import { ANSWER_MATH_OPTIONS, sanitizeAnswerMarkdown } from "@/lib/answer-markdown";
 
 /**
  * Renders a Kriton answer. Text is rendered as Markdown (so tables, bullet
@@ -28,27 +29,6 @@ import { ChartRenderer } from "@/components/visualization/charts/ChartRenderer";
  * websearch.py's _FORMATTING_INSTRUCTIONS docstring for why). Also tidies up
  * the leftover spaces/punctuation the removals leave behind.
  */
-function stripInlineRefs(text: string): string {
-  return text
-    // KaTeX has no metrics for U+202F (narrow no-break space), which commonly
-    // appears in copied/model-generated numbers and units.
-    .replace(/\u202F/g, " ")
-    .replace(/```(mermaid|chart)\s*[\s\S]*?```/g, "")
-    // Hide disclaimer boilerplate from legacy turns persisted before the
-    // backend stopped emitting it. The generated block is always terminal.
-    .replace(/\n*\s*---\s*\n\s*⚠️\s*(?:\*\*)?Kriton™ Disclaimer(?:\*\*)?:[\s\S]*?latest effective standards\.\s*/gi, "")
-    .replace(/\n*This response is for educational purposes only\. Consult a qualified professional\.\s*/gi, "")
-    // Provider models occasionally expose their internal domain-routing
-    // preamble. It is not part of the user-facing answer, so remove both
-    // Markdown-bold and plain variants from new and locally persisted turns.
-    .replace(/^\s*(?:\*\*|__)?CLASSIF(?:ICATION|IED)(?:\*\*|__)?\s*:\s*[^\n]*\n?/gim, "")
-    .replace(/^\s*(?:\*\*|__)?ANSWER(?:\*\*|__)?\s*:\s*/gim, "")
-    .replace(/\*\*/g, "")
-    .replace(/\s*\[\s*(?:REF-)?\d+(?:\s*,\s*(?:REF-)?\d+)*\s*\]/gi, "")
-    .replace(/[ \t]+([.,;:])/g, "$1")
-    .replace(/[ \t]{2,}/g, " ");
-}
-
 // ── Data charts ──────────────────────────────────────────────────────────
 // LINE/BAR/HISTOGRAM/HEATMAP/BOX/SCATTER/DONUT now render through
 // components/visualization/charts/ChartRenderer.tsx — the dual-engine
@@ -185,11 +165,11 @@ export function AnswerRenderer({
   return (
     <div className={`w-full min-w-0 text-sm leading-7 text-ink ${className ?? ""}`}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={[remarkGfm, [remarkMath, ANSWER_MATH_OPTIONS]]}
         rehypePlugins={[rehypeKatex]}
         components={mdComponents}
       >
-        {stripInlineRefs(text)}
+        {sanitizeAnswerMarkdown(text)}
       </ReactMarkdown>
       {visualization && <VisualizationRenderer viz={visualization} />}
       {secondaryVisualizations?.map((viz) => <VisualizationRenderer key={viz.id} viz={viz} />)}
