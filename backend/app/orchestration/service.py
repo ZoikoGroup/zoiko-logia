@@ -1059,10 +1059,16 @@ async def ask_kriton(
             visualization = None
             secondary_visualizations = []
 
+    # Compute the terminal response state before the optional artifact branch.
+    # The response object is constructed below, so referencing `response.outcome`
+    # (or an undeclared `outcome`) here would crash every otherwise-successful
+    # request before it can be returned.
+    response_outcome, response_route = _terminal_response_state(is_offdomain_refusal)
+
     generated_artifacts: list[GeneratedArtifactPublic] = []
     artifact_error: str | None = None
     if (
-        outcome == "answered"
+        response_outcome == "answered"
         and document_plan.response_mode == "chat_with_artifact"
         and document_sources
     ):
@@ -1105,8 +1111,8 @@ async def ask_kriton(
     response = AskKritonResponse(
         query_id=query_id,
         correlation_id=correlation_id,
-        outcome="refused" if is_offdomain_refusal else "answered",
-        route=ROUTE_REFUSAL if is_offdomain_refusal else ROUTE_LLM,
+        outcome=response_outcome,
+        route=response_route,
         safety=safety_state,
         confidence_state=effective_confidence,
         source_bundle=source_bundle,
@@ -1133,6 +1139,13 @@ async def ask_kriton(
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _terminal_response_state(is_offdomain_refusal: bool) -> tuple[str, str]:
+    """Return the single terminal state used by artifacts and the response."""
+    if is_offdomain_refusal:
+        return "refused", ROUTE_REFUSAL
+    return "answered", ROUTE_LLM
+
 
 async def _finalise_and_return(
     db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,

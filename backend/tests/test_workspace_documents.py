@@ -13,6 +13,8 @@ from app.orchestration.document_pipeline import (
     build_document_generation_prompt,
     plan_document_task,
 )
+from app.orchestration.service import _terminal_response_state
+from app.orchestration.routing_matrix import ROUTE_LLM, ROUTE_REFUSAL
 from app.domains.kriton_workspace.artifacts import _render
 from app.domains.kriton_workspace.document_spec import build_document_spec
 from app.domains.kriton_workspace import documents as document_service
@@ -101,6 +103,11 @@ def test_plain_summary_uses_full_document_without_creating_artifact():
     assert plan.retrieval_mode == "full_document"
     assert plan.response_mode == "chat"
     assert plan.output_format == "chat"
+
+
+def test_terminal_response_state_is_available_before_artifact_generation():
+    assert _terminal_response_state(False) == ("answered", ROUTE_LLM)
+    assert _terminal_response_state(True) == ("refused", ROUTE_REFUSAL)
 
 
 def test_explicit_summary_document_still_creates_download():
