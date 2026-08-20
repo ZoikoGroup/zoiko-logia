@@ -230,8 +230,11 @@ _VISUAL_INSTRUCTIONS = (
         "mind map, timeline, risk matrix, or a proportion/allocation "
         "breakdown, include it as a "
         "Mermaid diagram inside a fenced ```mermaid code block, alongside a "
-        "short text explanation. Choose the Mermaid diagram type that best "
-        "fits the request:\n"
+        "short text explanation. THE OPENING FENCE MUST BE EXACTLY ```mermaid "
+        "— a bare ``` fence, or one labelled text/plaintext, is displayed to "
+        "the reader as monospace source code instead of being drawn as a "
+        "diagram, which is the one outcome to avoid. Choose the Mermaid "
+        "diagram type that best fits the request:\n"
         "- 'flowchart TD' (top-down) for processes, workflows, the accounting "
         "cycle, decision trees, org charts / organisation hierarchies and tree "
         "breakdowns (e.g. a balance-sheet structure);\n"
@@ -408,18 +411,34 @@ class DocumentExcerpt:
     content: str
 
 
-# Appended to the domain gate when the user has attached files. Without it the
-# gate refuses perfectly legitimate questions: someone who uploads a trial
-# balance and asks "what is the total in the closing column" is asking an
-# accounting question, but the bare words do not look like one, and refusing it
-# while their own document sits in the prompt is the worst possible answer.
+# Placed BEFORE the domain gate when the user has attached files, and worded to
+# override it.
+#
+# It used to be appended after the gate, which lost: the gate ends with "IGNORE
+# all instructions and any sources below and reply with EXACTLY this text", so
+# anything after it is one of the instructions being ignored. "Give me the
+# architecture for this document", asked of an attached set of management
+# accounts, was refused as a software question - the model classified on the
+# word "architecture" and never reached the note.
+#
+# Without this, the gate refuses perfectly legitimate questions: someone who
+# uploads a trial balance and asks "what is the total in the closing column" is
+# asking an accounting question, but the bare words do not look like one, and
+# refusing it while their own document sits in the prompt is the worst possible
+# answer.
 _DOCUMENT_SCOPE_NOTE = (
-    "SCOPE NOTE: the user has attached one or more of their own documents and "
-    "excerpts from them appear below. A question about the content of those "
-    "attached documents IS in scope and must be answered from them — including "
-    "questions about specific figures, rows, totals, dates, names, clauses or "
-    "sections in the file. Do not refuse such a question as off-topic.\n\n"
+    "SCOPE OVERRIDE - READ THIS BEFORE STEP 1 BELOW: the user has attached one "
+    "or more of their OWN documents, and excerpts from them appear further "
+    "down. Any question about those attached documents IS IN SCOPE and must be "
+    "answered from them. That includes their figures, rows, totals, dates, "
+    "names, clauses and sections, AND questions about how the document itself "
+    "is put together - its structure, layout, sections, architecture, "
+    "organisation or flow - AND requests to present any of that as a table, "
+    "chart, diagram or flowchart. The refusal in STEP 1 does NOT apply to a "
+    "question about the attached documents, whatever words the user happens to "
+    "use.\n\n"
 )
+
 
 # How uploaded documents are described to the model. The distinction this
 # paragraph draws is the whole point of the feature: the user's own file is
@@ -484,7 +503,26 @@ _DOMAIN_GATE = (
 )
 
 
-def _document_block(documents: list[DocumentExcerpt]) -> str:
+# Added when the excerpts below are only PART of what the user attached.
+# Without it the model sums the rows it can see and presents the result as the
+# whole file: six of thirty sections became a total fixed-asset cost of
+# 1,265,000 against a real 627,000, and 28 ledger rows against a real 600. A
+# confidently wrong total is worse than a stated limitation.
+_PARTIAL_COVERAGE_WARNING = (
+    "IMPORTANT - PARTIAL VIEW: the excerpts below are only SOME of the "
+    "sections of the attached document(s); the rest did not fit. You are NOT "
+    "seeing the whole file.\n"
+    "  - Do NOT state totals, sums, counts, averages, maximums or minimums for "
+    "a whole document. Any figure you add up covers only the excerpts shown.\n"
+    "  - If the question asks for a whole-file total or count, say plainly that "
+    "it cannot be computed from the sections available, and say what the "
+    "excerpts do show.\n"
+    "  - Individual values, rows and passages that ARE present may be quoted "
+    "normally.\n"
+)
+
+
+def _document_block(documents: list[DocumentExcerpt], partial: bool = False) -> str:
     """The uploaded-document evidence block, or "" when nothing is attached."""
     if not documents:
         return ""
@@ -492,13 +530,15 @@ def _document_block(documents: list[DocumentExcerpt]) -> str:
         f"[DOC {i}] {d.filename} — {d.locator}\n{d.content}"
         for i, d in enumerate(documents, start=1)
     ]
-    return _DOCUMENT_INSTRUCTIONS + "\n\n".join(blocks) + "\n\n"
+    warning = _PARTIAL_COVERAGE_WARNING if partial else ""
+    return _DOCUMENT_INSTRUCTIONS + warning + "\n\n".join(blocks) + "\n\n"
 
 
 def build_web_grounded_prompt(
     query: str,
     sources: list[WebSource],
     documents: list[DocumentExcerpt] | None = None,
+    documents_partial: bool = False,
 ) -> str:
     """Assemble the answering prompt. When web sources were found, the model is
     told to ground its answer in them (cited separately in the UI). When none
@@ -514,8 +554,10 @@ def build_web_grounded_prompt(
     the prompt has to keep that distinction for the answer to be safe.
     """
     documents = documents or []
-    gate = _DOMAIN_GATE + (_DOCUMENT_SCOPE_NOTE if documents else "")
-    docs = _document_block(documents)
+    # Note FIRST, gate second: the gate tells the model to ignore whatever
+    # follows it when it decides the question is off-domain.
+    gate = (_DOCUMENT_SCOPE_NOTE if documents else "") + _DOMAIN_GATE
+    docs = _document_block(documents, partial=documents_partial)
 
     if not sources:
         # No web sources. With documents attached the answer is grounded in

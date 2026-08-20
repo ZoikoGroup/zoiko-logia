@@ -521,14 +521,19 @@ async def ask_kriton(
     # their own situation, and the prompt (see websearch.build_web_grounded_prompt)
     # has to keep the two apart for the answer to be safe. They are cited to
     # the reader, but as documents, never as authority.
+    documents_partial = False
     try:
-        document_passages = await documents_service.retrieve_passages(
+        document_context = await documents_service.retrieve_context(
             db,
             query=request.query,
             document_ids=list(request.document_ids or []),
             tenant_id=tenant_id,
             user_id=actor_id,
         )
+        document_passages = document_context.passages
+        # Whether the model is seeing the WHOLE of what was attached. Carried
+        # into the prompt so it does not report a partial sum as a total.
+        documents_partial = not document_context.complete
     except Exception as exc:
         # Fail soft — an attachment must never take the whole answer down — but
         # NOT silently. The silent version of this block hid a real defect for
@@ -598,7 +603,9 @@ async def ask_kriton(
     # Build grounded prompt input from the web sources.
     prompt = await select_prompt(db, request.mode)
     grounded_input = build_web_grounded_prompt(
-        request.query, web_sources, documents=document_excerpts
+        request.query, web_sources,
+        documents=document_excerpts,
+        documents_partial=documents_partial,
     )
 
     # External-provider exposure boundary (ZL-ENG-03 §5.8): redact before

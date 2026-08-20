@@ -111,17 +111,48 @@ function FigureToolbar({ actions, children }: { actions: FigureAction[]; childre
   );
 }
 
+/**
+ * Mermaid diagram types, by the keyword that opens the block. Used to recognise
+ * a diagram whose fence carries no language tag.
+ *
+ * The model is asked for ```mermaid and usually complies, but not always — the
+ * same question can come back with a bare ``` fence, and then a perfectly good
+ * diagram renders as a wall of monospace text. Sniffing the first keyword makes
+ * the diagram appear either way, which matters more than the model's fence
+ * discipline: the alternative is a feature that works intermittently for
+ * reasons the reader cannot see.
+ */
+const MERMAID_OPENERS =
+  /^\s*(?:%%\{[\s\S]*?\}%%\s*)?(flowchart|graph\s+(?:TB|TD|BT|RL|LR)|sequenceDiagram|classDiagram(?:-v2)?|stateDiagram(?:-v2)?|erDiagram|journey|gantt|pie(?:\s|$)|mindmap|timeline|quadrantChart|gitGraph|sankey-beta|xychart-beta|block-beta|requirementDiagram|C4Context)\b/i;
+
+/** Language tags that mean "the model did not label this", as opposed to a
+ *  genuine code block someone wants to read as code. */
+const UNLABELLED_FENCE = /^(|text|txt|plaintext|plain|markdown|md|mmd)$/i;
+
+function classifyFence(language: string, body: string): "mermaid" | "chart" | null {
+  const lang = language.trim().toLowerCase();
+  if (lang === "chart") return "chart";
+  if (lang === "mermaid" || lang === "mmd") return "mermaid";
+  // An unlabelled block that opens with a Mermaid keyword is a diagram the
+  // model forgot to tag. A ```python or ```sql block is left alone.
+  if (UNLABELLED_FENCE.test(lang) && MERMAID_OPENERS.test(body)) return "mermaid";
+  return null;
+}
+
 function parseSegments(text: string): Segment[] {
   const segments: Segment[] = [];
-  // Capture both ```mermaid (diagrams) and ```chart (data charts) blocks.
-  const regex = /```(mermaid|chart)\s*([\s\S]*?)```/g;
+  // Every fenced block is examined; only diagram/chart blocks are extracted,
+  // and anything else is left inside the surrounding markdown so real code
+  // blocks still render as code.
+  const regex = /```([A-Za-z0-9_+-]*)[ \t]*\r?\n?([\s\S]*?)```/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
+    const kind = classifyFence(match[1], match[2]);
+    if (!kind) continue;                       // ordinary code block — leave it in the text
     if (match.index > lastIndex) {
       segments.push({ type: "text", content: text.slice(lastIndex, match.index) });
     }
-    const kind = match[1] === "chart" ? "chart" : "mermaid";
     segments.push({ type: kind, content: match[2].trim() });
     lastIndex = regex.lastIndex;
   }

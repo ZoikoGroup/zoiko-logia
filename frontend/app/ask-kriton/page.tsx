@@ -746,10 +746,22 @@ export default function AskKritonPage() {
     // The composer is still cleared on submit (below), so nothing is repeated
     // there; what carries forward is the conversation's context, and each
     // question shows which documents answered it. `startNewChat` clears it.
-    const carriedForward = (priorConversation?.turns ?? []).flatMap((t) => t.attachments ?? []);
+    // A newly attached file REPLACES what was in scope rather than joining it.
+    // Attaching a second document is how someone moves on to a different one,
+    // so accumulating them left the first file still feeding every later
+    // question and still listed above it.
+    //
+    // Carry-forward therefore reads the MOST RECENT turn that had documents,
+    // not every turn: earlier turns keep their own record for display, and
+    // flattening all of them would resurrect a document that had already been
+    // replaced.
+    const previouslyInScope =
+      [...(priorConversation?.turns ?? [])].reverse().find((t) => t.attachments?.length)
+        ?.attachments ?? [];
+
     const turnAttachments: TurnAttachment[] = [];
     const seenDocumentIds = new Set<string>();
-    for (const attachment of [...carriedForward, ...readyAttachments]) {
+    for (const attachment of readyAttachments.length ? readyAttachments : previouslyInScope) {
       if (seenDocumentIds.has(attachment.documentId)) continue;
       seenDocumentIds.add(attachment.documentId);
       turnAttachments.push(attachment);

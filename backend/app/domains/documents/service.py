@@ -51,6 +51,18 @@ MAX_CHUNKS_PER_ANSWER = 8
 # a 20MB CSV of one-column rows can otherwise generate tens of thousands.
 MAX_CHUNKS_PER_DOCUMENT = 2_000
 
+# Character ceiling on the evidence injected into one answer, across ALL
+# attached documents. ~9,000 characters is ~2,250 tokens, which leaves room
+# for the answering instructions, the web snippets and the reply itself
+# inside a modest provider token-per-minute allowance.
+#
+# Learned the hard way: eight 2,000-character chunks is ~4,000 tokens, and
+# five attached files took one request to 8,715 tokens against an 8,000 TPM
+# limit. The provider rejected it, and the rejection was rendered to the
+# reader where the answer should have been. A chunk count alone does not
+# bound a request; a character budget does.
+MAX_CHARS_PER_ANSWER = 9_000
+
 _WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'.-]*")
 
 # Question scaffolding carries no signal about which chunk to retrieve, and
@@ -75,6 +87,22 @@ class DocumentPassage:
     locator: str
     content: str
     score: float
+
+
+@dataclass
+class RetrievedContext:
+    """Passages plus whether they are the WHOLE of what was attached.
+
+    `complete` is False when the budget or the chunk cap kept some of the
+    attached documents out. The distinction has to travel with the evidence:
+    asked to summarise five files, the model saw six of thirty sections and
+    reported a total fixed-asset cost of 1,265,000 against a real 627,000, and
+    28 ledger transactions against a real 600. It was not hallucinating so much
+    as summing what it could see and presenting it as the whole.
+    """
+    passages: list["DocumentPassage"]
+    complete: bool
+    total_chunks: int
 
 
 @dataclass
@@ -309,22 +337,87 @@ async def _count_chunks(db: AsyncSession, document_ids: list[str]) -> int:
 async def _all_chunks(
     db: AsyncSession, document_ids: list[str], limit: int
 ) -> list[DocumentPassage]:
-    """The opening `limit` chunks of the attached documents, in document order,
-    with no keyword filtering at all."""
+    """Up to `limit` chunks from the attached documents, taking a turn from each
+    document in rotation rather than filling the budget from the first one.
+
+    Ordering by filename and truncating gave every slot to whichever document
+    sorted first: five files attached and asked to summarise, and the answer saw
+    eight sections of the alphabetically-first file and nothing at all from the
+    other four.
+    """
     result = await db.execute(
         select(DocumentChunk, UserDocument.filename)
         .join(UserDocument, UserDocument.id == DocumentChunk.document_id)
         .where(DocumentChunk.document_id.in_(document_ids))
         .order_by(UserDocument.filename.asc(), DocumentChunk.ordinal.asc())
-        .limit(limit)
+        # A cap on rows READ, not on rows returned — enough to fill the rotation
+        # below for any realistic attachment set without loading a whole ledger.
+        .limit(max(limit * 8, 64))
     )
-    return [
-        DocumentPassage(
-            document_id=chunk.document_id, filename=filename,
-            locator=chunk.locator, content=chunk.content, score=1.0,
+
+    buckets: dict[str, list[DocumentPassage]] = {}
+    order: list[str] = []
+    for chunk, filename in result.all():
+        if chunk.document_id not in buckets:
+            buckets[chunk.document_id] = []
+            order.append(chunk.document_id)
+        buckets[chunk.document_id].append(
+            DocumentPassage(
+                document_id=chunk.document_id, filename=filename,
+                locator=chunk.locator, content=chunk.content, score=1.0,
+            )
         )
-        for chunk, filename in result.all()
-    ]
+
+    picked: list[DocumentPassage] = []
+    for rank in range(limit):
+        for document_id in order:
+            if len(picked) >= limit:
+                return picked
+            bucket = buckets[document_id]
+            if len(bucket) > rank:
+                picked.append(bucket[rank])
+    return picked
+
+
+def _trim_to_budget(passages: list[DocumentPassage]) -> list[DocumentPassage]:
+    """Drop passages once the character budget is spent.
+
+    The chunk count alone is not a safe budget: eight chunks of 2,000 characters
+    is ~4,000 tokens of evidence, and on a small provider tier that is enough to
+    push the whole request over the limit and get it rejected outright — the
+    answer then comes back as a provider error rather than an answer. Bounding
+    the characters bounds the request.
+
+    Whole passages are dropped rather than all of them shortened, so every
+    excerpt the model does see is complete and citable. The first passage is
+    truncated only if it alone exceeds the budget, which would otherwise leave
+    the model with nothing.
+    """
+    kept: list[DocumentPassage] = []
+    spent = 0
+    for passage in passages:
+        cost = len(passage.content)
+        if spent + cost > MAX_CHARS_PER_ANSWER:
+            if kept:
+                break
+            room = MAX_CHARS_PER_ANSWER
+            passage = DocumentPassage(
+                document_id=passage.document_id, filename=passage.filename,
+                locator=passage.locator, score=passage.score,
+                content=passage.content[:room] + "\n[section truncated]",
+            )
+            cost = len(passage.content)
+        kept.append(passage)
+        spent += cost
+
+    if len(kept) < len(passages):
+        # Never silent: an answer built on part of the evidence must be
+        # traceable to that fact in the logs.
+        print(
+            f"NOTE: injected {len(kept)} of {len(passages)} document section(s) "
+            f"({spent:,} chars); the rest did not fit the context budget."
+        )
+    return kept
 
 
 def _speaks_sqlite(db: AsyncSession) -> bool:
@@ -356,6 +449,23 @@ async def retrieve_passages(
     user_id: str,
     limit: int = MAX_CHUNKS_PER_ANSWER,
 ) -> list[DocumentPassage]:
+    """Passages only. Callers that must know whether the evidence is complete
+    should use retrieve_context instead."""
+    return (await retrieve_context(
+        db, query=query, document_ids=document_ids,
+        tenant_id=tenant_id, user_id=user_id, limit=limit,
+    )).passages
+
+
+async def retrieve_context(
+    db: AsyncSession,
+    *,
+    query: str,
+    document_ids: list[str],
+    tenant_id: str,
+    user_id: str,
+    limit: int = MAX_CHUNKS_PER_ANSWER,
+) -> RetrievedContext:
     """The best chunks from the named documents for this question.
 
     Returns [] — never raises — when there is nothing to search, nothing
@@ -364,7 +474,7 @@ async def retrieve_passages(
     working exactly as it does with no attachment at all.
     """
     if not document_ids or not (query or "").strip():
-        return []
+        return RetrievedContext(passages=[], complete=True, total_chunks=0)
 
     # Only documents this caller owns, and only ones that actually indexed.
     # Done as its own query rather than trusted from the request body: the
@@ -379,7 +489,7 @@ async def retrieve_passages(
     )
     allowed = [row[0] for row in owned.all()]
     if not allowed:
-        return []
+        return RetrievedContext(passages=[], complete=True, total_chunks=0)
 
     try:
         # Attaching a file IS the intent signal. When everything the user
@@ -396,7 +506,10 @@ async def retrieve_passages(
         # ranking returned nothing and the answer silently ignored the file.
         total = await _count_chunks(db, allowed)
         if total <= limit:
-            return await _all_chunks(db, allowed, limit)
+            kept = _trim_to_budget(await _all_chunks(db, allowed, limit))
+            return RetrievedContext(
+                passages=kept, complete=len(kept) >= total, total_chunks=total,
+            )
 
         search = _search_fallback if _speaks_sqlite(db) else _search_postgres
         passages = await search(
@@ -413,16 +526,22 @@ async def retrieve_passages(
                 f"NOTE: no keyword match in {len(allowed)} attached document(s) "
                 f"({total} chunks); falling back to their opening sections."
             )
-            return await _all_chunks(db, allowed, limit)
+            kept = _trim_to_budget(await _all_chunks(db, allowed, limit))
+            return RetrievedContext(
+                passages=kept, complete=len(kept) >= total, total_chunks=total,
+            )
     except Exception as exc:
         print(f"WARNING: document retrieval failed, answering without attachments: {exc}")
-        return []
+        return RetrievedContext(passages=[], complete=True, total_chunks=0)
 
     # Presented in document order, not score order: the model reads the
     # evidence block top to bottom, and out-of-order excerpts from the same
     # file read as contradictory when they are merely non-sequential.
     passages.sort(key=lambda p: (p.filename, p.locator))
-    return passages
+    kept = _trim_to_budget(passages)
+    return RetrievedContext(
+        passages=kept, complete=len(kept) >= total, total_chunks=total,
+    )
 
 
 async def list_documents(
