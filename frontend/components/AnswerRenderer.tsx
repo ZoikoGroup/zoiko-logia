@@ -30,6 +30,9 @@ import { ChartRenderer } from "@/components/visualization/charts/ChartRenderer";
  */
 function stripInlineRefs(text: string): string {
   return text
+    // KaTeX has no metrics for U+202F (narrow no-break space), which commonly
+    // appears in copied/model-generated numbers and units.
+    .replace(/\u202F/g, " ")
     .replace(/```(mermaid|chart)\s*[\s\S]*?```/g, "")
     // Hide disclaimer boilerplate from legacy turns persisted before the
     // backend stopped emitting it. The generated block is always terminal.
