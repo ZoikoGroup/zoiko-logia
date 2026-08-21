@@ -105,6 +105,10 @@ _DISTRIBUTION_HINTS = re.compile(
     re.I,
 )
 
+_COMPOSITION_VISUAL_HINTS = re.compile(
+    r"\b(donut chart|doughnut chart|ring chart|pie chart)\b", re.I,
+)
+
 # Deliberately narrower than _RELATIONSHIP_HINTS's "relationship between" —
 # "correlat*" wording only, so a statistical-correlation question (two real
 # numeric series) and an entity-relationship-graph question never collide on
@@ -151,6 +155,8 @@ def classify_intent(query: str) -> str:
     q = query or ""
     if _EVIDENCE_ANALYSIS_HINTS.search(q):
         return EVIDENCE_ANALYSIS
+    if _COMPOSITION_VISUAL_HINTS.search(q):
+        return COMPOSITION
     # Checked early and narrowly (shareholders/PSC/cap table/"who owns" —
     # never RELATIONSHIP's "ownership structure") so a real shareholding
     # lookup is never shadowed by, or mistaken for, a user-supplied entity

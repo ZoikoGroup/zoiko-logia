@@ -62,6 +62,7 @@ from app.orchestration.audit_events import (
     audit_redaction_applied,
     audit_document_retrieval,
     audit_artifact_generation_failed,
+    audit_calculation_completed,
 )
 from app.domains.risk_safety.schemas import ClassifyRequest
 from app.domains.model_gateway import service as model_gateway_service
@@ -70,7 +71,7 @@ from app.orchestration.redaction import redact_for_external_exposure
 from app.orchestration.websearch import web_search, build_web_grounded_prompt
 from app.orchestration.live_data import fetch_live_data, LiveDataResult
 from app.orchestration.evidence import EvidenceModel, Entity, Relationship
-from app.orchestration.extraction import extract_graph
+from app.orchestration.extraction import extract_graph, extract_user_visual_evidence
 from app.orchestration.intent_classifier import (
     classify_intent, GRAPH_INTENTS, PROCESS, DISTRIBUTION, TREND,
     CURRENT_METRIC, PRECISE_DATA,
@@ -90,6 +91,8 @@ from app.orchestration.document_pipeline import (
     build_document_generation_prompt,
     plan_document_task,
 )
+from app.orchestration.calculations import calculate_from_query
+from app.orchestration.calculations.engine import calculation_markdown
 
 # Massarius™ retrieval and evidence subsystem — Phase 1 control modules
 # (ZL-ENG-03). These wrap/replace the inline licence filtering, bundle
@@ -316,6 +319,85 @@ async def ask_kriton(
         )
         if idempotency_key:
             await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
+        return response
+
+    # Self-contained, allow-listed calculations are executed after the hard
+    # safety pre-screen and before retrieval/model calls.  The matcher only
+    # accepts known accounting formula families with explicitly labelled
+    # inputs, so this path is deterministic and provider-independent.
+    calculation_result = calculate_from_query(request.query)
+    calculation_needs_evidence = bool(request.document_ids) or request.source_scope == "DOCUMENTS_ONLY"
+    if calculation_result.status == "clarification_required" and re.search(
+        r"\b(current|latest|today|uploaded|attached|document|workbook|spreadsheet|sheet)\b",
+        request.query,
+        re.IGNORECASE,
+    ):
+        calculation_needs_evidence = True
+    if calculation_result.matched and not calculation_needs_evidence:
+        risk_level = "LOW"
+        effective_confidence = CONF_SUFFICIENT
+        safety_state = SafetyState(
+            risk_level=risk_level,
+            policy_state="allowed",
+            disclaimer_required=False,
+        )
+        await audit_risk_classified(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, risk_level=risk_level,
+            confidence_state=effective_confidence,
+        )
+        await audit_route_selected(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, route="CALCULATION", risk_level=risk_level,
+            confidence_state=effective_confidence,
+        )
+        await audit_calculation_completed(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
+            formula_ids=calculation_result.formula_ids,
+            status=calculation_result.status,
+            verification_status=calculation_result.verification_status,
+            input_names=[item.name for item in calculation_result.inputs],
+        )
+        if calculation_result.status == "clarification_required":
+            response = AskKritonResponse(
+                query_id=query_id, correlation_id=correlation_id,
+                outcome="clarification_required", route="CALCULATION",
+                safety=safety_state, confidence_state=effective_confidence,
+                next_action=NextAction(
+                    type="calculation_input_missing",
+                    message=calculation_result.message,
+                ),
+                audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+                calculation=calculation_result,
+            )
+        else:
+            text = calculation_markdown(calculation_result)
+            response = AskKritonResponse(
+                query_id=query_id, correlation_id=correlation_id,
+                outcome="answered", route="CALCULATION",
+                safety=safety_state, confidence_state=effective_confidence,
+                answer=ComposedAnswer(
+                    text=text, output_text=text, citations=[], limitations=[],
+                    prompt_id="deterministic-calculation-v1",
+                    prompt_name="Deterministic Calculation",
+                ),
+                audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+                calculation=calculation_result,
+            )
+        await _finalise_and_return(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, outcome=response.outcome,
+            route=response.route, start_time=start_time,
+        )
+        if idempotency_key:
+            await store_idempotency(
+                db, idempotency_key, tenant_id, request_hash,
+                response.model_dump(mode="json"),
+            )
         return response
 
     # ── Kick off the live web search NOW, concurrently ──────────────────────
@@ -1025,6 +1107,18 @@ async def ask_kriton(
             # DBnomics/Frankfurter already populated, so a query can carry
             # both a numeric figure AND a supplied relationship structure.
             viz_evidence = live_evidence.model_copy(deep=True)
+            supplied_evidence = extract_user_visual_evidence(request.query, intent)
+            if supplied_evidence.observations and not viz_evidence.observations:
+                viz_evidence.observations = supplied_evidence.observations
+                viz_evidence.subject = supplied_evidence.subject
+                viz_evidence.dimensions = supplied_evidence.dimensions
+                viz_evidence.measures = supplied_evidence.measures
+                viz_evidence.units = supplied_evidence.units
+            if supplied_evidence.composition and not viz_evidence.composition:
+                viz_evidence.composition = supplied_evidence.composition
+                viz_evidence.composition_subject = supplied_evidence.composition_subject
+                viz_evidence.composition_caveat = supplied_evidence.composition_caveat
+                viz_evidence.composition_is_estimated = supplied_evidence.composition_is_estimated
             graph = extract_graph(request.query)
             if graph and (intent in GRAPH_INTENTS or intent == PROCESS):
                 viz_evidence.entities = [Entity(id=n, name=n) for n in graph.nodes]

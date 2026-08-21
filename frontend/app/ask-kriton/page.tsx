@@ -47,6 +47,7 @@ import { ThinkingIndicator } from "@/components/ask-kriton/ThinkingIndicator";
 import { DesktopSidebar, MobileDrawer } from "@/components/ask-kriton/Sidebar";
 import { Composer, type AttachmentState } from "@/components/ask-kriton/Composer";
 import { ExploreFurther } from "@/components/ask-kriton/ExploreFurther";
+import { useAuth } from "@/hooks/useAuth";
 import {
   loadActiveConversationId,
   loadConversations,
@@ -405,7 +406,13 @@ function ConversationTurn({
       : result?.visualization
         ? "Answered — structured from your input"
         : "Answered — no cited sources"
-    : ROUTE_LABELS[route ?? ""] ?? route;
+    : route === "CALCULATION"
+      ? result?.calculation?.status === "clarification_required"
+        ? "Clarification required — missing calculation input"
+        : result?.calculation?.status === "undefined"
+        ? "Calculation undefined — verified"
+        : "Answered — calculated and verified"
+      : ROUTE_LABELS[route ?? ""] ?? route;
 
   return (
     <>
@@ -545,6 +552,7 @@ function ConversationTurn({
 }
 
 export default function AskKritonPage() {
+  const { session, loading: authLoading } = useAuth();
   const [query, setQuery] = useState("");
   const [jurisdiction, setJurisdiction] = useState("");
   const [mode, setMode] = useState("Kriton's choice");
@@ -572,7 +580,8 @@ export default function AskKritonPage() {
   }
 
   useEffect(() => {
-    const token = getAuthToken();
+    if (authLoading) return;
+    const token = session?.access_token;
     if (!token) return;
     void listKritonAttachments(token).then((loadedDocuments) => {
       setDocuments(loadedDocuments);
@@ -584,9 +593,10 @@ export default function AskKritonPage() {
     }).catch(() => {
       // Upload remains available even when the saved-document library cannot load.
     });
-    // Initial hydration only; conversation changes are handled by selectConversation.
+    // Reload when Supabase restores or changes the authenticated session;
+    // conversation changes are handled by selectConversation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [authLoading, session?.access_token]);
 
   function setActiveId(id: string | null) {
     setActiveIdState(id);

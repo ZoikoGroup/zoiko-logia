@@ -150,6 +150,23 @@ async def audit_redaction_applied(db, *, query_id, correlation_id, tenant_id, au
 async def audit_composition_started(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id):
     await _emit(db, "composition_started", query_id, correlation_id, tenant_id, audit_chain_id, actor_id, {})
 
+async def audit_calculation_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id,
+                                      actor_id, formula_ids: list[str], status: str,
+                                      verification_status: str, input_names: list[str]):
+    await _emit(
+        db, "calculation_completed", query_id, correlation_id, tenant_id,
+        audit_chain_id, actor_id,
+        {
+            "formula_ids": formula_ids,
+            "formula_version": "1.0",
+            "status": status,
+            "verification_status": verification_status,
+            "input_names": input_names,
+            "input_source": "user_query",
+        },
+        replay_relevance="REQUIRED",
+    )
+
 async def audit_composition_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                        prompt_id: str, output_hash: str):
     await _emit(db, "composition_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,

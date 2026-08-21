@@ -260,7 +260,13 @@ def _build_donut_spec(evidence: EvidenceModel, spec_id: str) -> VisualizationSpe
     significant-control) — every slice value is a band midpoint, never an
     exact filed figure (DonutSlice.is_estimated)."""
     title = evidence.composition_subject or evidence.subject or "Ownership composition"
-    slices = [DonutSlice(label=o.dimension, value=o.value) for o in evidence.composition]
+    slices = [
+        DonutSlice(
+            label=o.dimension, value=o.value,
+            is_estimated=evidence.composition_is_estimated,
+        )
+        for o in evidence.composition
+    ]
     return VisualizationSpec(
         id=spec_id,
         type="DONUT",

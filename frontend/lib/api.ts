@@ -557,6 +557,7 @@ export type OutcomeType =
 
 export type RouteType =
   | "LLM"
+  | "CALCULATION"
   | "REFUSAL"
   | "CLARIFICATION"
   | "HUMAN_REVIEW"
@@ -848,6 +849,32 @@ export type GeneratedArtifact = {
   expires_at?: string | null;
 };
 
+export type CalculationResult = {
+  matched: boolean;
+  status: "success" | "undefined" | "clarification_required" | "not_matched";
+  formula_ids: string[];
+  formula_version: string;
+  inputs: Array<{
+    name: string;
+    value: string;
+    display_value: string;
+    kind: "money" | "percentage" | "number" | "years" | "units";
+    currency?: string | null;
+    source_type: "user";
+    source_location: string;
+  }>;
+  outputs: Array<{
+    name: string;
+    value?: string | null;
+    display_value?: string | null;
+    kind: "money" | "percentage" | "ratio" | "number" | "units";
+  }>;
+  steps: string[];
+  verification_status: "passed" | "not_run";
+  error_code?: string | null;
+  message: string;
+};
+
 /** §12 Canonical response contract — frontend renders from route/outcome ONLY */
 export type AskKritonResponse = {
   query_id: string;
@@ -868,6 +895,7 @@ export type AskKritonResponse = {
    * evidence as `visualization` (e.g. current-value KPI beside a trend
    * line), never a redundant alternate chart type. */
   secondary_visualizations?: VisualizationSpec[];
+  calculation?: CalculationResult | null;
 };
 
 export async function downloadKritonArtifact(token: string, artifact: GeneratedArtifact): Promise<void> {

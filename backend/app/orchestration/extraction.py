@@ -23,6 +23,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from app.orchestration.evidence import EvidenceModel, Observation
+from app.orchestration.intent_classifier import COMPOSITION, DISTRIBUTION
+
 _MAX_LABEL_LEN = 60
 _MAX_NODES = 40  # sanity cap — a query listing more than this is almost
                   # certainly a parsing false-positive, not a real graph.
@@ -157,3 +160,94 @@ def extract_graph(query: str) -> ExtractedGraph | None:
     which is strictly more informative than an arrow chain's generic "next"/
     "related_to". Falls back to an arrow chain when no typed clause is found."""
     return extract_relation_clauses(query) or extract_arrow_statements(query) or extract_arrow_chain(query)
+
+
+# User-authored chart data is trusted only as quoted input, never inferred
+# from model prose. Requiring an explicit supported visual intent plus a
+# colon-delimited payload keeps ordinary questions containing numbers from
+# being silently reinterpreted as datasets.
+_PERCENT_PAIR = re.compile(
+    r"(?:^|[,;])\s*([A-Za-z][\w &/().'’-]{0,59}?)\s*(?::|=)?\s*"
+    r"(-?\d+(?:\.\d+)?)\s*%",
+)
+_NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?!\w)")
+_UNIT_HINT = re.compile(
+    r"\b(days?|hours?|minutes?|seconds?|weeks?|months?|years?|percent(?:age)?|%)\b",
+    re.I,
+)
+_MAX_USER_POINTS = 500
+
+
+def _payload_after_colon(query: str) -> tuple[str, str] | None:
+    prefix, separator, payload = (query or "").partition(":")
+    if not separator or not payload.strip():
+        return None
+    return prefix.strip(), payload.strip()
+
+
+def extract_user_visual_evidence(query: str, intent: str) -> EvidenceModel:
+    """Extract explicitly supplied chart values from the user's query.
+
+    Supported general shapes are labelled percentages for composition charts
+    and an unlabelled numeric sample for distributions. Invalid/ambiguous
+    input returns empty evidence so the established text fallback remains in
+    control.
+    """
+    split = _payload_after_colon(query)
+    if split is None:
+        return EvidenceModel()
+    prefix, payload = split
+
+    if intent == COMPOSITION:
+        pairs = [
+            (re.sub(r"^and\s+", "", m.group(1).strip(), flags=re.I), float(m.group(2)))
+            for m in _PERCENT_PAIR.finditer(payload)
+        ]
+        if not 2 <= len(pairs) <= _MAX_USER_POINTS:
+            return EvidenceModel()
+        labels = [label.casefold() for label, _ in pairs]
+        values = [value for _, value in pairs]
+        if len(labels) != len(set(labels)) or any(value < 0 for value in values):
+            return EvidenceModel()
+        if sum(values) > 100.5:
+            return EvidenceModel()
+        return EvidenceModel(
+            subject="Ownership composition" if "ownership" in prefix.casefold() else "Composition",
+            composition_subject="Ownership composition" if "ownership" in prefix.casefold() else "Composition",
+            composition=[
+                Observation(dimension=label, value=value, measure="percent")
+                for label, value in pairs
+            ],
+            composition_caveat="Percentages supplied directly by the user.",
+            composition_is_estimated=False,
+            dimensions=["category"],
+            measures=["percent"],
+            units=["%"],
+        )
+
+    if intent == DISTRIBUTION:
+        # Percent-pair input belongs to composition, not a numeric sample.
+        if "%" in payload:
+            return EvidenceModel()
+        values = [float(match.group(0)) for match in _NUMBER.finditer(payload)]
+        if not 8 <= len(values) <= _MAX_USER_POINTS:
+            return EvidenceModel()
+        unit_match = _UNIT_HINT.search(prefix)
+        unit = unit_match.group(1).lower() if unit_match else None
+        subject = re.sub(
+            r"\b(create|make|show|plot|draw|a|an|the|histogram|distribution|for|of|these|this)\b",
+            " ", prefix, flags=re.I,
+        )
+        subject = re.sub(r"\s+", " ", subject).strip(" -") or "supplied values"
+        return EvidenceModel(
+            subject=subject,
+            observations=[
+                Observation(dimension=str(index), value=value, measure=subject)
+                for index, value in enumerate(values, start=1)
+            ],
+            dimensions=["observation"],
+            measures=[subject],
+            units=[unit] if unit else [],
+        )
+
+    return EvidenceModel()

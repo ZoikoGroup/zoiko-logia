@@ -11,6 +11,7 @@ from typing import Literal, Optional, List
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.orchestration.visualization.spec import VisualizationSpec
+from app.orchestration.calculations.schemas import CalculationResult
 
 
 # ── Request ──────────────────────────────────────────────────────────────────
@@ -234,6 +235,9 @@ class AskKritonResponse(BaseModel):
     # none apply; each entry independently validated before being attached
     # (see orchestrator.py's _build_complementary_specs docstring).
     secondary_visualizations: List[VisualizationSpec] = Field(default_factory=list)
+    # Present only when trusted local code, rather than a model, handled a
+    # self-contained calculation. Additive for backward-compatible clients.
+    calculation: Optional[CalculationResult] = None
 
 
 # ── Frontend visualization-interaction telemetry ─────────────────────────────
