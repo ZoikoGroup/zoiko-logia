@@ -58,10 +58,10 @@ async def classify_risk(query: str) -> Optional[str]:
     if not api_key:
         return None
     # Classification is a trivial one-word task — use a small, fast model
-    # (llama-3.1-8b-instant) instead of the large answer model, so this extra
+    # (GPT-OSS 20B) instead of the large answer model, so this extra
     # call is near-instant. Configurable via GROQ_CLASSIFIER_MODEL; the big
     # GROQ_MODEL stays reserved for actual answer generation.
-    model = os.getenv("GROQ_CLASSIFIER_MODEL", "llama-3.1-8b-instant")
+    model = os.getenv("GROQ_CLASSIFIER_MODEL", "openai/gpt-oss-20b")
     try:
         client = AsyncGroq(api_key=api_key)
         resp = await client.chat.completions.create(

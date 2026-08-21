@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 
 from app.orchestration.websearch import WebSource
 from app.orchestration.sec_edgar import fetch_sec_facts
+from app.orchestration.legislation import fetch_legislation
 from app.orchestration.market_data import (
     fetch_market_sources, _find_ownership, _build_ownership_source,
 )
@@ -54,9 +55,9 @@ async def fetch_live_data(query: str) -> LiveDataResult:
     entirely to _find_two_series — see dbnomics.py), so all three connectors
     can run concurrently without one path double-populating evidence for the
     same query."""
-    fx_match, series_match, pair_match, ownership_match, sec_sources, market_sources = await asyncio.gather(
+    fx_match, series_match, pair_match, ownership_match, sec_sources, market_sources, legislation_sources = await asyncio.gather(
         _find_rate(query), _find_best_series(query), _find_two_series(query), _find_ownership(query),
-        fetch_sec_facts(query), fetch_market_sources(query),
+        fetch_sec_facts(query), fetch_market_sources(query), fetch_legislation(query),
         return_exceptions=True,
     )
     if isinstance(fx_match, BaseException):
@@ -122,5 +123,7 @@ async def fetch_live_data(query: str) -> LiveDataResult:
         sources.extend(sec_sources)
     if isinstance(market_sources, list):
         sources.extend(market_sources)
+    if isinstance(legislation_sources, list):
+        sources.extend(legislation_sources)
 
     return LiveDataResult(sources=sources, evidence=evidence)

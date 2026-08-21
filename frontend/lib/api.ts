@@ -535,6 +535,8 @@ export async function getReplayManifest(token: string, correlationId: string): P
 
 export type AskKritonRequest = {
   query: string;
+  document_ids?: string[];
+  source_scope?: "WEB_ONLY" | "DOCUMENTS_ONLY" | "DOCUMENTS_THEN_WEB" | "COMBINED";
   jurisdiction?: string;
   mode?: string;
   clarification_cycle?: number;
@@ -622,6 +624,15 @@ export type SourceCitation = {
   url: string | null;
   /** Exact supporting excerpt — not yet returned by the backend. */
   evidence_preview?: string;
+  /** Which connector produced this source (e.g. "finnhub", "companies_house").
+   * Absent for plain web-search hits, which have no named provider. */
+  provider?: string | null;
+  /** ISO timestamp of when the backend fetched it. */
+  fetched_at?: string | null;
+  /** How current the figure is. The distinction between a live tick, a delayed
+   * quote and yesterday's close changes what an answer may claim, so it is
+   * shown rather than left for the reader to assume. */
+  freshness?: "realtime" | "delayed" | "historical" | "filing" | null;
 };
 
 // ---- The answer itself ----
@@ -829,6 +840,14 @@ export type VisualizationSpec = {
   sources: string[];
 };
 
+export type GeneratedArtifact = {
+  id: string;
+  filename: string;
+  mime_type: string;
+  download_url: string;
+  expires_at?: string | null;
+};
+
 /** §12 Canonical response contract — frontend renders from route/outcome ONLY */
 export type AskKritonResponse = {
   query_id: string;
@@ -840,6 +859,8 @@ export type AskKritonResponse = {
   source_bundle: SourceBundle | null;
   answer: ComposedAnswer | null;
   next_action: NextAction | null;
+  artifacts: GeneratedArtifact[];
+  artifact_error?: string | null;
   /** Opaque — never expose audit_chain_id internals to UI rendering logic */
   audit_reference: AuditReference;
   visualization?: VisualizationSpec | null;
@@ -848,6 +869,19 @@ export type AskKritonResponse = {
    * line), never a redundant alternate chart type. */
   secondary_visualizations?: VisualizationSpec[];
 };
+
+export async function downloadKritonArtifact(token: string, artifact: GeneratedArtifact): Promise<void> {
+  const res = await authedFetch(artifact.download_url, token);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = artifact.filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
 
 export async function askKriton(
   token: string,
@@ -894,7 +928,17 @@ export type SavedAnswerCreateRequest = {
   tags?: string[];
 };
 
-export type AttachmentUploadResult = { document_id: string; filename: string; chunk_count: number };
+export type AttachmentUploadResult = { document_id: string; filename: string; chunk_count: number; status: string };
+export type WorkspaceDocument = {
+  id: string;
+  filename: string;
+  mime_type: string;
+  status: string;
+  processing_error: string | null;
+  chunk_count: number;
+  created_at: string;
+  expires_at?: string | null;
+};
 
 /** XHR (not fetch) because upload progress events need `xhr.upload.onprogress`. */
 export function uploadKritonAttachment(
@@ -931,6 +975,20 @@ export function uploadKritonAttachment(
     form.append("file", file);
     xhr.send(form);
   });
+}
+
+export async function listKritonAttachments(token: string): Promise<WorkspaceDocument[]> {
+  const res = await authedFetch("/kriton-workspace/attachments", token);
+  return res.json();
+}
+
+export async function getKritonAttachment(token: string, documentId: string): Promise<WorkspaceDocument> {
+  const res = await authedFetch(`/kriton-workspace/attachments/${encodeURIComponent(documentId)}`, token);
+  return res.json();
+}
+
+export async function deleteKritonAttachment(token: string, documentId: string): Promise<void> {
+  await authedFetch(`/kriton-workspace/attachments/${encodeURIComponent(documentId)}`, token, { method: "DELETE" });
 }
 
 export async function listSavedAnswers(token: string): Promise<SavedAnswer[]> {

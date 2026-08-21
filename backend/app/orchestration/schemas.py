@@ -17,6 +17,8 @@ from app.orchestration.visualization.spec import VisualizationSpec
 
 class AskKritonRequest(BaseModel):
     query: str
+    document_ids: List[str] = Field(default_factory=list)
+    source_scope: Literal["WEB_ONLY", "DOCUMENTS_ONLY", "DOCUMENTS_THEN_WEB", "COMBINED"] = "DOCUMENTS_THEN_WEB"
     jurisdiction: str = ""
     mode: str = "Workflow"
     # Round-tripped by the client across a clarification exchange so
@@ -175,6 +177,14 @@ class ComposedAnswer(BaseModel):
     output_text: str = ""  # alias for text, retained for backward compat
 
 
+class GeneratedArtifactPublic(BaseModel):
+    id: str
+    filename: str
+    mime_type: str
+    download_url: str
+    expires_at: Optional[str] = None
+
+
 # ── Safety State — §12 ───────────────────────────────────────────────────────
 
 class SafetyState(BaseModel):
@@ -208,6 +218,8 @@ class AskKritonResponse(BaseModel):
     source_bundle: Optional[SourceBundle] = None
     answer: Optional[ComposedAnswer] = None
     next_action: Optional[NextAction] = None
+    artifacts: List[GeneratedArtifactPublic] = Field(default_factory=list)
+    artifact_error: Optional[str] = None
     audit_reference: AuditReference
     # Additive field — deterministic, evidence-backed visualization decided by
     # orchestration/visualization/orchestrator.py. Only ever set on "answered"

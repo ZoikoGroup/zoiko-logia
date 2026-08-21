@@ -98,10 +98,9 @@ _SYSTEM_PROMPT = (
 )
 
 # Default Groq model. Override with GROQ_MODEL in the environment. Note: Groq
-# periodically retires models — if you get a "model_decommissioned" error,
-# check console.groq.com/docs/models and update GROQ_MODEL (e.g. to
-# llama-3.3-70b-versatile).
-_DEFAULT_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile")
+# periodically retires models — check console.groq.com/docs/models before
+# deployment and update GROQ_MODEL when its production catalog changes.
+_DEFAULT_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 
 class GroqAdapter:

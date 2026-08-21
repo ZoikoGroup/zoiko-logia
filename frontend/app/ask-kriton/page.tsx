@@ -13,6 +13,7 @@ import {
   Download,
   Loader2,
   ExternalLink,
+  FileText,
   History,
   Lightbulb,
   PenLine,
@@ -26,10 +27,13 @@ import { AnswerRenderer } from "@/components/AnswerRenderer";
 import {
   askKriton,
   createSavedAnswer,
+  downloadKritonArtifact,
   getAuthToken,
+  listKritonAttachments,
   ApiError,
   type AskKritonResponse,
   type SourceCitation,
+  type WorkspaceDocument,
 } from "@/lib/api";
 import {
   answerBodyOnly,
@@ -41,10 +45,12 @@ import { openSourcePopup } from "@/lib/source-popup";
 import { getFollowUpSuggestions } from "@/lib/follow-up-suggestions";
 import { ThinkingIndicator } from "@/components/ask-kriton/ThinkingIndicator";
 import { DesktopSidebar, MobileDrawer } from "@/components/ask-kriton/Sidebar";
-import { Composer } from "@/components/ask-kriton/Composer";
+import { Composer, type AttachmentState } from "@/components/ask-kriton/Composer";
 import { ExploreFurther } from "@/components/ask-kriton/ExploreFurther";
 import {
+  loadActiveConversationId,
   loadConversations,
+  persistActiveConversationId,
   persistConversations,
   sortConversations,
   type Conversation,
@@ -118,6 +124,23 @@ function ZoikoGlyph({ className = "h-9 w-9" }: { className?: string }) {
       <div className="absolute bottom-[31%] left-[60%] h-[26%] w-[8%] bg-[#F3C437]" />
     </div>
   );
+}
+
+/** How each freshness class reads, and how alarming it should look. A figure's
+ * currency is part of its meaning here — "delayed" next to a share price is
+ * information the reader needs, not decoration. */
+const FRESHNESS_BADGE: Record<string, { label: string; className: string }> = {
+  realtime: { label: "real-time", className: "border-ok/40 bg-ok/10 text-ok" },
+  delayed: { label: "delayed", className: "border-warn/40 bg-warn/10 text-warn" },
+  historical: { label: "end of day", className: "border-line bg-soft text-muted" },
+  filing: { label: "as filed", className: "border-info/40 bg-info/10 text-info" },
+};
+
+/** Keep externally linked citations and uploaded-document evidence. Uploaded
+ * files have no public URL, but their filename, location and evidence preview
+ * are still verifiable in Kriton's source popup. */
+function linkedCitations(citations: SourceCitation[]): SourceCitation[] {
+  return citations.filter((c) => !!c.url || c.provider === "uploaded_document");
 }
 
 function SourceButton({ citation }: { citation: SourceCitation }) {
@@ -237,6 +260,22 @@ function ResponseActions({
     }
   }
 
+  async function downloadArtifact(artifact: AskKritonResponse["artifacts"][number]) {
+    const token = getAuthToken();
+    if (!token) {
+      setSaveError("Sign in to download generated documents.");
+      return;
+    }
+    const key = `artifact-${artifact.id}`;
+    setStatus((prev) => ({ ...prev, [key]: "busy" }));
+    try {
+      await downloadKritonArtifact(token, artifact);
+      flash(key, "done");
+    } catch {
+      flash(key, "error");
+    }
+  }
+
   // Save is the only action that can fail for a reason the user must act on
   // (signed out, server down), so it surfaces its error text rather than just
   // flashing red.
@@ -303,6 +342,36 @@ function ResponseActions({
         );
       })}
       </div>
+      {(result.artifacts ?? []).length > 0 && (
+        <div className="mt-3 space-y-2">
+          {result.artifacts.map((artifact) => {
+            const key = `artifact-${artifact.id}`;
+            const state = status[key] ?? "idle";
+            return (
+              <button
+                key={artifact.id}
+                type="button"
+                onClick={() => void downloadArtifact(artifact)}
+                disabled={state === "busy"}
+                className="flex w-full items-center gap-3 rounded-xl border border-brand/30 bg-brand/5 px-3 py-2.5 text-left hover:bg-brand/10 disabled:opacity-60"
+              >
+                {state === "busy" ? <Loader2 size={17} className="animate-spin text-brand" /> : <FileText size={17} className="text-brand" />}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs font-semibold text-ink">{artifact.filename}</span>
+                  <span className="block text-[11px] text-muted">Generated document · Click to download</span>
+                </span>
+                <Download size={15} className="text-brand" />
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {result.artifact_error && (
+        <div className="mt-3 flex items-start gap-2 rounded-xl border border-bad/30 bg-bad/5 px-3 py-2.5 text-xs leading-5 text-bad">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          {result.artifact_error}
+        </div>
+      )}
       {saveError && <p className="mt-1.5 text-[11px] font-medium text-bad">{saveError}</p>}
     </div>
   );
@@ -317,7 +386,7 @@ function ConversationTurn({
   onFollowUp?: (question: string, originalQuery: string) => void;
   onReuse?: (query: string) => void;
 }) {
-  const { submittedQuery, result, error, loading } = turn;
+  const { submittedQuery, result, error, loading, attachments = [] } = turn;
   const followUps = useMemo(() => getFollowUpSuggestions(result, submittedQuery), [result, submittedQuery]);
   const safety = result?.safety ?? null;
   const riskLevel = (safety?.risk_level ?? "LOW") as RiskLevel;
@@ -342,7 +411,17 @@ function ConversationTurn({
     <>
       <div className="flex justify-end">
         <div className="kriton-animate-msg-user kriton-user-query mr-2 max-w-[76%] rounded-2xl rounded-tr-md border px-5 py-3 text-sm font-medium leading-6 text-ink shadow-sm sm:mr-4">
-          {submittedQuery}
+          {attachments.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {attachments.map((item) => (
+                <span key={item.documentId} className="inline-flex items-center gap-1.5 rounded-lg border border-brand/30 bg-brand/10 px-2 py-1 text-xs font-semibold text-brand">
+                  <FileText size={13} />
+                  {item.filename}
+                </span>
+              ))}
+            </div>
+          )}
+          <div>{submittedQuery}</div>
         </div>
       </div>
 
@@ -469,13 +548,50 @@ export default function AskKritonPage() {
   const [query, setQuery] = useState("");
   const [jurisdiction, setJurisdiction] = useState("");
   const [mode, setMode] = useState("Kriton's choice");
+  const [attachment, setAttachment] = useState<AttachmentState | null>(null);
+  const [documents, setDocuments] = useState<WorkspaceDocument[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>(() =>
     typeof window === "undefined" ? [] : loadConversations(),
   );
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeId, setActiveIdState] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return loadActiveConversationId(loadConversations());
+  });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  async function refreshDocuments() {
+    const token = getAuthToken();
+    if (!token) return;
+    try {
+      setDocuments(await listKritonAttachments(token));
+    } catch {
+      // Upload remains available even when the saved-document library cannot load.
+    }
+  }
+
+  useEffect(() => {
+    const token = getAuthToken();
+    if (!token) return;
+    void listKritonAttachments(token).then((loadedDocuments) => {
+      setDocuments(loadedDocuments);
+      const selectedId = conversations.find((item) => item.id === activeId)?.documentIds?.[0];
+      const document = loadedDocuments.find((item) => item.id === selectedId && item.status === "READY");
+      if (document) {
+        setAttachment({ documentId: document.id, name: document.filename, status: "success", progress: 1, chunkCount: document.chunk_count });
+      }
+    }).catch(() => {
+      // Upload remains available even when the saved-document library cannot load.
+    });
+    // Initial hydration only; conversation changes are handled by selectConversation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function setActiveId(id: string | null) {
+    setActiveIdState(id);
+    persistActiveConversationId(id);
+  }
 
   function persist(next: Conversation[]) {
     setConversations(next);
@@ -495,6 +611,7 @@ export default function AskKritonPage() {
   function startNewChat() {
     setActiveId(null);
     setQuery("");
+    setAttachment(null);
   }
 
   /** Seeds the composer with the suggestion + the just-answered turn's own
@@ -506,6 +623,15 @@ export default function AskKritonPage() {
   function selectConversation(id: string) {
     setActiveId(id);
     setQuery("");
+    const conversation = conversations.find((item) => item.id === id);
+    const document = documents.find((item) => item.id === conversation?.documentIds?.[0]);
+    setAttachment(document && document.status === "READY" ? {
+      documentId: document.id,
+      name: document.filename,
+      status: "success",
+      progress: 1,
+      chunkCount: document.chunk_count,
+    } : null);
   }
 
   function pinConversation(id: string) {
@@ -535,7 +661,7 @@ export default function AskKritonPage() {
     }
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(documentIds: string[] = []) {
     const trimmed = query.trim();
     if (!trimmed || submitting) return;
     const token = getAuthToken();
@@ -545,7 +671,19 @@ export default function AskKritonPage() {
     }
 
     const turnId = genId("turn");
-    const newTurn: Turn = { id: turnId, query: trimmed, submittedQuery: trimmed, result: null, error: null, loading: true };
+    const turnAttachments = documentIds.map((documentId) => ({
+      documentId,
+      filename: documents.find((document) => document.id === documentId)?.filename ?? "Uploaded document",
+    }));
+    const newTurn: Turn = {
+      id: turnId,
+      query: trimmed,
+      submittedQuery: trimmed,
+      result: null,
+      error: null,
+      loading: true,
+      attachments: turnAttachments,
+    };
 
     const isNew = activeId === null;
     const convId = activeId ?? genId("conv");
@@ -554,8 +692,8 @@ export default function AskKritonPage() {
     const cycle = clarificationCycleFor(priorConversation);
     setConversations((prev) => {
       const next = isNew
-        ? [{ id: convId, title: trimmed.slice(0, 80), turns: [newTurn], createdAt: now, updatedAt: now, pinned: false }, ...prev]
-        : prev.map((c) => (c.id === convId ? { ...c, updatedAt: now, turns: [...c.turns, newTurn] } : c));
+        ? [{ id: convId, title: trimmed.slice(0, 80), turns: [newTurn], createdAt: now, updatedAt: now, pinned: false, documentIds }, ...prev]
+        : prev.map((c) => (c.id === convId ? { ...c, updatedAt: now, documentIds, turns: [...c.turns, newTurn] } : c));
       persistConversations(next);
       return next;
     });
@@ -564,13 +702,28 @@ export default function AskKritonPage() {
     }
 
     setQuery("");
+    // The submitted attachment is captured on the turn above. Clear only the
+    // composer selection so the sent query and file no longer remain in the
+    // input box while the response is loading.
+    setAttachment(null);
     setSubmitError(null);
     setSubmitting(true);
     try {
       const idempotencyKey = genId("idem");
       const response = await askKriton(
         token,
-        { query: trimmed, jurisdiction, mode, clarification_cycle: cycle, conversation_id: convId },
+        {
+          query: trimmed,
+          jurisdiction,
+          mode,
+          clarification_cycle: cycle,
+          conversation_id: convId,
+          document_ids: documentIds,
+          // An attached file defines the entity/source scope for this chat.
+          // Do not silently replace a document miss with same-name web results
+          // (for example, another company called "Apex").
+          source_scope: documentIds.length ? "DOCUMENTS_ONLY" : "WEB_ONLY",
+        },
         idempotencyKey,
       );
       patchTurn(convId, turnId, { result: response, loading: false });
@@ -650,6 +803,10 @@ export default function AskKritonPage() {
                       jurisdiction={jurisdiction}
                       onJurisdictionChange={setJurisdiction}
                       onSubmit={handleSubmit}
+                      attachment={attachment}
+                      onAttachmentChange={setAttachment}
+                      documents={documents}
+                      onUploadComplete={refreshDocuments}
                       submitting={submitting}
                       error={submitError}
                     />
@@ -711,6 +868,10 @@ export default function AskKritonPage() {
                     jurisdiction={jurisdiction}
                     onJurisdictionChange={setJurisdiction}
                     onSubmit={handleSubmit}
+                    attachment={attachment}
+                    onAttachmentChange={setAttachment}
+                    documents={documents}
+                    onUploadComplete={refreshDocuments}
                     submitting={submitting}
                     error={submitError}
                   />

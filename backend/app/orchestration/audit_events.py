@@ -87,6 +87,21 @@ async def audit_retrieval_failed(db, *, query_id, correlation_id, tenant_id, aud
     await _emit(db, "retrieval_failed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"error": error}, replay_relevance="REQUIRED")
 
+async def audit_document_retrieval(db, *, query_id, correlation_id, tenant_id, audit_chain_id,
+                                   actor_id, document_ids: list[str], hit_count: int,
+                                   error: str | None = None):
+    await _emit(
+        db, "document_retrieval_completed", query_id, correlation_id, tenant_id,
+        audit_chain_id, actor_id,
+        {
+            "requested_document_ids": document_ids,
+            "requested_document_count": len(document_ids),
+            "hit_count": hit_count,
+            "error": error,
+        },
+        replay_relevance="REQUIRED" if error else "SUPPORTING",
+    )
+
 # ── Massarius™ Phase 1 control events — ZL-ENG-03 §12 ────────────────────────
 
 async def audit_licence_prefilter_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
@@ -143,6 +158,16 @@ async def audit_composition_completed(db, *, query_id, correlation_id, tenant_id
 async def audit_composition_failed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id, error: str):
     await _emit(db, "composition_failed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"error": error}, replay_relevance="REQUIRED")
+
+async def audit_artifact_generation_failed(db, *, query_id, correlation_id, tenant_id,
+                                            audit_chain_id, actor_id, format_name: str,
+                                            error_type: str):
+    await _emit(
+        db, "artifact_generation_failed", query_id, correlation_id, tenant_id,
+        audit_chain_id, actor_id,
+        {"format": format_name, "error_type": error_type},
+        replay_relevance="REQUIRED",
+    )
 
 async def audit_composition_rejected(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                       failures: list[str], degraded_route: str):

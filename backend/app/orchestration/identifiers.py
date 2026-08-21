@@ -11,9 +11,13 @@ MVP concession per §5: query_id is reused as correlation_id where documented.
 """
 from __future__ import annotations
 
-import time
 import uuid
 from typing import Optional
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.domains.orchestration_state.models import IdempotencyRecord
 
 
 def _new_id(prefix: str) -> str:
@@ -36,29 +40,40 @@ def generate_audit_chain_id() -> str:
     return _new_id("aud")
 
 
-# ── In-memory Idempotency Store ───────────────────────────────────────────────
-# MVP: in-memory dict. Production requires a Redis/DB-backed store.
-
-_idempotency_cache: dict[str, dict] = {}
-_IDEMPOTENCY_TTL_SECONDS = 86_400  # 24 hours
-
-
-def check_idempotency(key: str, tenant_id: str) -> Optional[dict]:
+async def check_idempotency(
+    db: AsyncSession, key: str, tenant_id: str, request_hash: str
+) -> Optional[dict]:
     """
-    Returns the cached terminal response if the idempotency key was already used
-    for this tenant within the TTL window. Returns None if this is a fresh request.
+    Return the durable terminal response for this tenant/key. The request hash
+    prevents a client from accidentally reusing one key for different input.
     """
-    cache_key = f"{tenant_id}:{key}"
-    entry = _idempotency_cache.get(cache_key)
-    if entry and (time.monotonic() - entry["stored_at"]) < _IDEMPOTENCY_TTL_SECONDS:
-        return entry["response"]
-    return None
+    result = await db.execute(select(IdempotencyRecord).where(
+        IdempotencyRecord.tenant_id == tenant_id,
+        IdempotencyRecord.idempotency_key == key,
+    ))
+    record = result.scalar_one_or_none()
+    if record is None:
+        return None
+    envelope = record.response_json
+    if envelope.get("request_hash") != request_hash:
+        raise ValueError("Idempotency-Key was already used for a different request")
+    return envelope.get("response")
 
 
-def store_idempotency(key: str, tenant_id: str, response: dict) -> None:
-    """Persist the terminal response for an idempotency key."""
-    cache_key = f"{tenant_id}:{key}"
-    _idempotency_cache[cache_key] = {
-        "response": response,
-        "stored_at": time.monotonic(),
-    }
+async def store_idempotency(
+    db: AsyncSession, key: str, tenant_id: str, request_hash: str, response: dict
+) -> None:
+    """Persist a terminal response so every API worker sees the same result."""
+    result = await db.execute(select(IdempotencyRecord).where(
+        IdempotencyRecord.tenant_id == tenant_id,
+        IdempotencyRecord.idempotency_key == key,
+    ))
+    record = result.scalar_one_or_none()
+    envelope = {"request_hash": request_hash, "response": response}
+    if record is None:
+        db.add(IdempotencyRecord(
+            tenant_id=tenant_id, idempotency_key=key, response_json=envelope,
+        ))
+    else:
+        record.response_json = envelope
+    await db.commit()
