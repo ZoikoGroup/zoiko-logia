@@ -163,8 +163,47 @@ function parseSegments(text: string): Segment[] {
 }
 
 /**
+ * Characters that make Mermaid reject an UNQUOTED node label.
+ *
+ * `(` and `&` are the ones that actually bite in this product: real accounting
+ * labels are full of them — "Profit & Loss Account (Page 1)",
+ * "Corporation Tax (25 %)" — and each one turns the whole diagram into a parse
+ * error, which the renderer then shows as raw code. Quoting the label fixes it.
+ *
+ * `<` and `>` are deliberately absent: `<br/>` inside a label is a legitimate
+ * line break that already works, and quoting is not needed for it.
+ */
+const LABEL_NEEDS_QUOTING = /[()&:;,%#=|]/;
+
+/** Node shapes, longest delimiter first so `((x))` is not mistaken for `(x)`. */
+const NODE_SHAPES: Array<[RegExp, string, string]> = [
+  [/([A-Za-z0-9_-]+)\(\(([^()\n]*)\)\)/g, "((", "))"],
+  [/([A-Za-z0-9_-]+)\[\[([^[\]\n]*)\]\]/g, "[[", "]]"],
+  [/([A-Za-z0-9_-]+)\[\(([^[\]\n]*)\)\]/g, "[(", ")]"],
+  [/([A-Za-z0-9_-]+)\[([^[\]\n]*)\]/g, "[", "]"],
+  [/([A-Za-z0-9_-]+)\{([^{}\n]*)\}/g, "{", "}"],
+];
+
+function quoteNodeLabels(src: string): string {
+  let out = src;
+  for (const [pattern, open, close] of NODE_SHAPES) {
+    out = out.replace(pattern, (whole, id: string, label: string) => {
+      const trimmed = label.trim();
+      // Already quoted, or nothing that needs it — leave exactly as written.
+      if (!trimmed || /^".*"$/.test(trimmed) || !LABEL_NEEDS_QUOTING.test(trimmed)) {
+        return whole;
+      }
+      // A double quote inside the label would close the quoting early; a single
+      // quote reads the same to a human and parses.
+      return `${id}${open}"${trimmed.replace(/"/g, "'")}"${close}`;
+    });
+  }
+  return out;
+}
+
+/**
  * Repair the most common Mermaid mistakes LLMs make, so a small slip doesn't
- * blow up the whole diagram into a syntax error.
+ * blow up the whole diagram into a syntax error shown as raw code.
  */
 function sanitizeMermaid(raw: string): string {
   let c = raw.trim();
@@ -175,6 +214,12 @@ function sanitizeMermaid(raw: string): string {
   c = c.replace(/\|\s*>/g, "|");
   // Curly/smart quotes inside labels break the parser — normalise them.
   c = c.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
+  // Non-breaking and narrow spaces come back from the model inside figures
+  // ("25 %", "1 605 000") and are not valid label characters.
+  c = c.replace(/[\u00a0\u202f\u2007\u2009]/g, " ");
+  // Quote labels containing brackets, ampersands and the like. Only applied to
+  // node/edge syntax, so `flowchart TD` and arrows are untouched.
+  c = quoteNodeLabels(c);
   return c;
 }
 
