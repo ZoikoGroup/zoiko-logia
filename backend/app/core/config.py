@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     # Public/keyless official UK legislation endpoint.
     LEGISLATION_API_BASE_URL: str = "https://www.legislation.gov.uk"
 
+    # ── Economic Data ────────────────────────────────────────────────────
+    # Backend-only FRED credentials. Never expose this key through a
+    # NEXT_PUBLIC_* variable; app/orchestration/fred.py sends it server-side.
+    FRED_API_KEY: str = ""
+    FRED_API_BASE_URL: str = "https://api.stlouisfed.org/fred"
+
     # ── Infrastructure ──────────────────────────────────────────────────
     OBJECT_STORAGE_URL: str = ""
     OBJECT_STORAGE_PROVIDER: str = "local"

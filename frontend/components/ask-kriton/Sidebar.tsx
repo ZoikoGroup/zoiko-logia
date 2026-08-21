@@ -223,7 +223,13 @@ export function RecentsList({
   );
 }
 
-export function DesktopSidebar(props: RecentsListProps & { onNewChat: () => void }) {
+type KritonNavigationProps = {
+  onNewChat: () => void;
+  onOpenProjects: () => void;
+  onOpenSources: () => void;
+};
+
+export function DesktopSidebar(props: RecentsListProps & KritonNavigationProps) {
   return (
     <aside className="kriton-sidebar-background hidden min-h-0 border-r border-line md:flex md:flex-col">
       <div className="flex items-center justify-between px-5 py-5">
@@ -240,8 +246,8 @@ export function DesktopSidebar(props: RecentsListProps & { onNewChat: () => void
       <nav className="space-y-1 px-3">
         <NavRow icon={Plus} label="New chat" onClick={props.onNewChat} />
         <NavRow icon={MessageSquare} label="Chats" />
-        <NavRow icon={FolderKanban} label="Projects" href="/my-workspace" />
-        <NavRow icon={BookOpen} label="Sources" href="/source-licensing" />
+        <NavRow icon={FolderKanban} label="Projects" onClick={props.onOpenProjects} />
+        <NavRow icon={BookOpen} label="Sources" onClick={props.onOpenSources} />
       </nav>
 
       <div className="mt-6 flex min-h-0 flex-1 flex-col px-5">
@@ -260,7 +266,7 @@ export function DesktopSidebar(props: RecentsListProps & { onNewChat: () => void
   );
 }
 
-export function MobileDrawer(props: RecentsListProps & { onNewChat: () => void; open: boolean; onClose: () => void }) {
+export function MobileDrawer(props: RecentsListProps & KritonNavigationProps & { open: boolean; onClose: () => void }) {
   if (!props.open) return null;
   return (
     <div className="fixed inset-0 z-40 md:hidden" role="dialog" aria-modal="true">
@@ -277,6 +283,8 @@ export function MobileDrawer(props: RecentsListProps & { onNewChat: () => void; 
         </div>
         <nav className="space-y-1 px-3">
           <NavRow icon={Plus} label="New chat" onClick={() => { props.onNewChat(); props.onClose(); }} />
+          <NavRow icon={FolderKanban} label="Projects" onClick={() => { props.onOpenProjects(); props.onClose(); }} />
+          <NavRow icon={BookOpen} label="Sources" onClick={() => { props.onOpenSources(); props.onClose(); }} />
         </nav>
         <div className="mt-6 flex min-h-0 flex-1 flex-col px-5">
           <p className="mb-2 text-xs font-bold text-muted">Recents</p>

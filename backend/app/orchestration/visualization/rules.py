@@ -9,7 +9,9 @@ orchestrator.py's module docstring for why nothing here needs one yet.
 """
 from __future__ import annotations
 
-from app.orchestration.data_shape import DIRECTED_STAGES, NODES_EDGES, PART_TO_WHOLE, SCALAR, TIME_SERIES, XY_NUMERIC
+from app.orchestration.data_shape import (
+    DIRECTED_STAGES, NODES_EDGES, OHLC, PART_TO_WHOLE, SCALAR, TIME_SERIES, XY_NUMERIC,
+)
 from app.orchestration.intent_classifier import COMPOSITION, CORRELATION, DISTRIBUTION, PRECISE_DATA
 from app.orchestration.visualization import ava_advisor
 
@@ -18,6 +20,8 @@ _MIN_HISTOGRAM_POINTS = 8
 _MIN_BOX_POINTS = 4
 _MIN_TABLE_POINTS = 2
 _MIN_DONUT_SLICES = 2
+_MIN_GROUPED_BAR_POINTS = 2
+_MIN_OHLC_BARS = 2
 
 
 def score_candidates(
@@ -30,6 +34,8 @@ def score_candidates(
     explicit_heatmap_request: bool = False,
     explicit_box_request: bool = False,
     composition_count: int = 0,
+    explicit_grouped_bar_request: bool = False,
+    ohlc_count: int = 0,
 ) -> list[tuple[str, float]]:
     scores: dict[str, float] = {}
 
@@ -71,8 +77,25 @@ def score_candidates(
     if data_shape == XY_NUMERIC and intent == CORRELATION and observation_count >= 3:
         add_score("SCATTER", 0.90)
 
+    # GROUPED_BAR/STACKED_BAR reinterpret the SAME real, period-aligned pair
+    # SCATTER uses — a second honest way to look at data already fetched,
+    # same precedent as BOX above: only wins when explicitly requested, a
+    # grouped/stacked bar being a much less familiar default for a paired-
+    # numeric question than a scatter plot.
+    if (
+        data_shape == XY_NUMERIC and intent == CORRELATION
+        and explicit_grouped_bar_request and observation_count >= _MIN_GROUPED_BAR_POINTS
+    ):
+        add_score("GROUPED_BAR", 0.95)
+
     if data_shape == SCALAR:
         add_score("KPI", 0.75)
+
+    # CANDLESTICK is only ever reachable when real OHLC bars were actually
+    # fetched (market_data.py's fetch_market_sources()) — an unconditional
+    # score here is safe on the same basis as SCATTER's above.
+    if data_shape == OHLC and ohlc_count >= _MIN_OHLC_BARS:
+        add_score("CANDLESTICK", 0.90)
 
     # DONUT is only ever reachable via COMPOSITION intent + PART_TO_WHOLE
     # shape (real, named PSC shareholders — market_data.py's _find_ownership)

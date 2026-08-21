@@ -8,8 +8,12 @@ import rehypeKatex from "rehype-katex";
 import type { VisualizationSpec } from "@/lib/api";
 import { GraphRendererAdapter } from "@/components/visualization/GraphRendererAdapter";
 import { FlowRendererAdapter } from "@/components/visualization/FlowRendererAdapter";
+import { GraphErrorBoundary, RelationshipTableFallback } from "@/components/visualization/GraphErrorBoundary";
 import { ChartRenderer } from "@/components/visualization/charts/ChartRenderer";
 import { ANSWER_MATH_OPTIONS, hasDisplayMath, sanitizeAnswerMarkdown } from "@/lib/answer-markdown";
+import { ChartErrorBoundary } from "@/components/visualization/charts/ChartErrorBoundary";
+import { checkChartValidity } from "@/components/visualization/charts/chartValidity";
+import { familyFor } from "@/components/visualization/registry";
 
 /**
  * Renders a Kriton answer. Text is rendered as Markdown (so tables, bullet
@@ -91,28 +95,71 @@ function TableViz({ viz }: { viz: VisualizationSpec }) {
 }
 
 function VisualizationRenderer({ viz }: { viz: VisualizationSpec }) {
-  if (viz.type === "TABLE") return <TableViz viz={viz} />;
-  if (viz.type === "KPI") return <KpiTile viz={viz} />;
-  if (viz.type === "LINE" || viz.type === "BAR" || viz.type === "HISTOGRAM" || viz.type === "HEATMAP" || viz.type === "BOX" || viz.type === "SCATTER" || viz.type === "DONUT") {
-    return <ChartRenderer viz={viz} />;
+  // Defensive re-check before any family-specific rendering: catches specs
+  // whose shape has drifted from what this frontend build expects (e.g. an
+  // old payload persisted to localStorage before a field existed). Only
+  // ChartRenderer used to consult this — KPI/TABLE/EVIDENCE_GRAPH/
+  // PROCESS_FLOW had no equivalent gate.
+  const validity = checkChartValidity(viz);
+  if (validity === "EMPTY") {
+    return <p className="my-4 text-xs text-muted">No data available for this visualization.</p>;
   }
-  if (viz.type === "EVIDENCE_GRAPH") {
+  if (validity === "STRUCTURALLY_INVALID") {
+    const isGraphLike = viz.type === "EVIDENCE_GRAPH" || viz.type === "PROCESS_FLOW";
     return (
-      <div className="min-w-0">
-        <GraphRendererAdapter nodes={viz.nodes} edges={viz.edges} />
-        {viz.summary && <p className="mt-1 px-1 text-xs leading-5 text-muted">{viz.summary}</p>}
+      <div className="my-4 min-w-0 overflow-hidden rounded-2xl border border-line bg-panel shadow-sm">
+        <div className="p-3 sm:p-4">
+          <p className="mb-2 text-xs leading-5 text-muted">
+            This visualization&apos;s saved data no longer matches what a {viz.type.toLowerCase().replace(/_/g, " ")} needs.
+          </p>
+          {isGraphLike && <RelationshipTableFallback nodes={viz.nodes} edges={viz.edges} />}
+        </div>
       </div>
     );
   }
-  if (viz.type === "PROCESS_FLOW") {
-    return (
-      <div className="min-w-0">
-        <FlowRendererAdapter nodes={viz.nodes} edges={viz.edges} interactive={viz.interactive} />
-        {viz.summary && <p className="mt-1 px-1 text-xs leading-5 text-muted">{viz.summary}</p>}
-      </div>
-    );
+
+  switch (familyFor(viz.type)) {
+    case "table":
+      return (
+        <ChartErrorBoundary viz={viz} renderer="TABLE_ADAPTER">
+          <TableViz viz={viz} />
+        </ChartErrorBoundary>
+      );
+    case "kpi":
+      return (
+        <ChartErrorBoundary viz={viz} renderer="KPI_TILE">
+          <KpiTile viz={viz} />
+        </ChartErrorBoundary>
+      );
+    case "chart":
+      return <ChartRenderer viz={viz} />;
+    case "graph":
+      return (
+        <div className="min-w-0">
+          <GraphRendererAdapter nodes={viz.nodes} edges={viz.edges} preferredEngine={viz.graph_engine} />
+          {viz.summary && <p className="mt-1 px-1 text-xs leading-5 text-muted">{viz.summary}</p>}
+        </div>
+      );
+    case "flow":
+      return (
+        <div className="min-w-0">
+          <GraphErrorBoundary
+            category="flow"
+            failedRenderer="flow"
+            fallbackRenderer="table"
+            fallback={<RelationshipTableFallback nodes={viz.nodes} edges={viz.edges} />}
+          >
+            <FlowRendererAdapter
+              nodes={viz.nodes}
+              edges={viz.edges}
+              interactive={viz.interactive}
+              preferredEngine={viz.flow_engine}
+            />
+          </GraphErrorBoundary>
+          {viz.summary && <p className="mt-1 px-1 text-xs leading-5 text-muted">{viz.summary}</p>}
+        </div>
+      );
   }
-  return null;
 }
 
 // Markdown element styling — theme-tokenized so it stays legible in dark mode

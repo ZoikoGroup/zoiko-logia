@@ -10,9 +10,9 @@ produce/verify it — an entry with no producer is a renderer no one can reach.
 from __future__ import annotations
 
 VISUALIZATION_REGISTRY: dict[str, dict[str, str]] = {
-    "LINE": {"renderer": "ECHARTS"},
-    "BAR": {"renderer": "ECHARTS"},
-    "HISTOGRAM": {"renderer": "ECHARTS"},
+    "LINE": {"renderer": "RECHARTS"},
+    "BAR": {"renderer": "RECHARTS"},
+    "HISTOGRAM": {"renderer": "RECHARTS"},
     "BOX": {"renderer": "ECHARTS"},
     "SCATTER": {"renderer": "ECHARTS"},
     "KPI": {"renderer": "KPI_TILE"},
@@ -21,10 +21,13 @@ VISUALIZATION_REGISTRY: dict[str, dict[str, str]] = {
     "PROCESS_FLOW": {"renderer": "FLOW_ADAPTER"},
     "TABLE": {"renderer": "TABLE_ADAPTER"},
     "DONUT": {"renderer": "ECHARTS"},
+    "CANDLESTICK": {"renderer": "ECHARTS"},
+    "GROUPED_BAR": {"renderer": "RECHARTS"},
 }
 
 RENDERER_CAPABILITIES: dict[str, frozenset[str]] = {
-    "ECHARTS": frozenset({"LINE", "BAR", "HISTOGRAM", "HEATMAP", "BOX", "SCATTER", "DONUT"}),
+    "RECHARTS": frozenset({"LINE", "BAR", "HISTOGRAM", "GROUPED_BAR"}),
+    "ECHARTS": frozenset({"HEATMAP", "BOX", "SCATTER", "DONUT", "CANDLESTICK"}),
     "KPI_TILE": frozenset({"KPI"}),
     "GRAPH_ADAPTER": frozenset({"EVIDENCE_GRAPH"}),
     "FLOW_ADAPTER": frozenset({"PROCESS_FLOW"}),
@@ -43,6 +46,8 @@ FALLBACKS: dict[str, list[str]] = {
     "KPI": ["TEXT"],
     "TABLE": ["TEXT"],
     "DONUT": ["TABLE", "TEXT"],
+    "CANDLESTICK": ["TABLE", "TEXT"],
+    "GROUPED_BAR": ["SCATTER", "TABLE", "TEXT"],
 }
 
 

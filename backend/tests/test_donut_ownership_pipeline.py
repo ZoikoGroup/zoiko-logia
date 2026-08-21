@@ -7,7 +7,17 @@ data shape, planning, orchestration, validation) is exercised with real,
 honestly-banded synthetic evidence, never a fabricated exact percentage.
 """
 from app.domains.market_data.providers.companies_house import _parse_share_band
-from app.orchestration.market_data import _OWNERSHIP_HINTS
+from app.domains.market_data.schemas import EntityRef
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from app.orchestration.market_data import (
+    _OWNERSHIP_HINTS, _OWNERSHIP_STRUCTURE_CHART_HINT, _OWNERSHIP_STRUCTURE_CHART_PHRASES,
+    _best_company_match, _build_ownership_source, _find_ownership,
+)
+from app.domains.market_data.identity import resolve_local
+from app.domains.market_data.schemas import ProviderBadResponse
 from app.orchestration.intent_classifier import classify_intent, COMPOSITION, RELATIONSHIP
 from app.orchestration.data_shape import classify_data_shape, PART_TO_WHOLE, NONE
 from app.orchestration.evidence import EvidenceModel, Observation
@@ -16,6 +26,7 @@ from app.orchestration.visualization.orchestrator import VisualizationOrchestrat
 from app.orchestration.visualization.validator import VisualizationValidator
 from app.orchestration.visualization.registry import renderer_for, fallbacks_for
 from app.orchestration.visualization.rules import score_candidates
+from app.orchestration.service import _grounded_domain_fallback
 
 
 def _ownership_evidence():
@@ -24,7 +35,7 @@ def _ownership_evidence():
         composition_subject="Acme Corp — shareholding",
         composition=[
             Observation(dimension="Jane Doe", value=37.5, measure="ownership_percent"),
-            Observation(dimension="Acme Holdings Ltd", value=87.5, measure="ownership_percent"),
+            Observation(dimension="Acme Holdings Ltd", value=50.0, measure="ownership_percent"),
         ],
         composition_caveat="Ownership bands as filed with Companies House.",
         sources=["https://find-and-update.company-information.service.gov.uk/company/00000001/persons-with-significant-control"],
@@ -53,6 +64,134 @@ def test_appointment_right_is_not_a_share_band():
     assert _parse_share_band("right-to-appoint-and-remove-directors") is None
 
 
+# ── company-search relevance guard ───────────────────────────────────────
+# Regression: Companies House's free-text search once ranked two entirely
+# unrelated companies ("Trott CP Limited", "Chesnara Life (UK) Limited")
+# ABOVE every real HSBC entity for the search term "HSBC" — blindly trusting
+# the top hit attached a stranger's real PSC data to the query. Only a
+# candidate whose actual name starts with the search term is acceptable.
+
+def test_best_match_picks_name_prefix_over_earlier_unrelated_result():
+    candidates = [
+        EntityRef(name="Trott CP Limited", company_number="06388542"),
+        EntityRef(name="Chesnara Life (UK) Limited", company_number="00088695"),
+        EntityRef(name="HSBC Alternative Investments Limited", company_number="02845800"),
+    ]
+    best = _best_company_match("HSBC", candidates)
+    assert best is not None
+    assert best.company_number == "02845800"
+
+
+def test_best_match_is_case_insensitive():
+    candidates = [EntityRef(name="barclays plc", company_number="00048839")]
+    assert _best_company_match("Barclays", candidates).company_number == "00048839"
+
+
+def test_best_match_declines_when_nothing_starts_with_the_term():
+    candidates = [
+        EntityRef(name="Trott CP Limited", company_number="06388542"),
+        EntityRef(name="Chesnara Life (UK) Limited", company_number="00088695"),
+    ]
+    assert _best_company_match("HSBC", candidates) is None
+
+
+def test_best_match_declines_on_empty_term():
+    candidates = [EntityRef(name="Anything Limited", company_number="00000001")]
+    assert _best_company_match("", candidates) is None
+
+
+def test_best_match_prefers_active_listed_group_parent():
+    candidates = [
+        EntityRef(name="MARKS AND SPENCER P.L.C.", company_number="00214436", company_status="active", company_type="plc"),
+        EntityRef(name="MARKS AND SPENCER GROUP P.L.C.", company_number="04256886", company_status="active", company_type="plc"),
+    ]
+    assert _best_company_match("Marks and Spencer", candidates).company_number == "04256886"
+
+
+def test_best_match_penalizes_shell_like_sainsburys_entity():
+    candidates = [
+        EntityRef(name="SAINSBURYS CORPORATE DIRECTOR LIMITED", company_number="09999999", company_status="active"),
+        EntityRef(name="J SAINSBURY PLC", company_number="00185647", company_status="active", company_type="plc"),
+    ]
+    assert _best_company_match("Sainsbury", candidates).company_number == "00185647"
+
+
+def test_well_known_listed_parents_resolve_without_ambiguous_search():
+    marks = resolve_local("Who owns Marks and Spencer?")
+    sainsbury = resolve_local("Show Sainsbury's major shareholders")
+    assert (marks.name, marks.company_number) == ("MARKS AND SPENCER GROUP P.L.C.", "04256886")
+    assert (sainsbury.name, sainsbury.company_number) == ("J SAINSBURY PLC", "00185647")
+
+
+@pytest.mark.asyncio
+async def test_listed_parent_without_psc_returns_grounded_scope_notice():
+    provider = MagicMock()
+    provider.configured.return_value = True
+    provider.get_ownership = AsyncMock(side_effect=ProviderBadResponse(
+        "companies_house", "no persons with significant control on record",
+    ))
+    with patch("app.orchestration.market_data.CompaniesHouseProvider", return_value=provider):
+        match = await _find_ownership("Who owns Marks and Spencer?")
+
+    assert match is not None
+    assert match.company_number == "04256886"
+    assert match.slices == []
+    source = _build_ownership_source(match)
+    assert "no reportable ownership-of-shares PSC entries" in source.snippet
+    assert "not a complete shareholder register" in source.snippet
+
+    evidence = EvidenceModel(
+        composition_subject=f"{match.company_name} — shareholding",
+        sources=[match.url],
+    )
+    answer = _grounded_domain_fallback("Show the PSC register for Marks and Spencer", evidence)
+    assert answer is not None
+    assert "No reportable ownership-of-shares PSC entries" in answer
+
+
+@pytest.mark.asyncio
+async def test_listed_parent_without_psc_and_pie_chart_wording_returns_grounded_scope_notice():
+    # Reproduces the reported bug: "ownership structure ... pie chart" wording
+    # for a widely-held listed company with no PSC on record must still
+    # produce the honest grounded notice, not a fabricated shareholder table.
+    query = "Show the ownership structure of Marks and Spencer as a pie chart."
+    provider = MagicMock()
+    provider.configured.return_value = True
+    provider.get_ownership = AsyncMock(side_effect=ProviderBadResponse(
+        "companies_house", "no persons with significant control on record",
+    ))
+    with patch("app.orchestration.market_data.CompaniesHouseProvider", return_value=provider):
+        match = await _find_ownership(query)
+
+    assert match is not None
+    assert match.slices == []
+
+    evidence = EvidenceModel(
+        composition_subject=f"{match.company_name} — shareholding",
+        sources=[match.url],
+    )
+    assert classify_intent(query) == COMPOSITION
+    answer = _grounded_domain_fallback(query, evidence)
+    assert answer is not None
+    assert "No reportable ownership-of-shares PSC entries" in answer
+
+
+# ── search hint must not carry the ownership-trigger phrase itself ───────
+# Regression: "Show persons with significant control for Barclays" derived
+# the raw search hint "persons with significant control Barclays" — the
+# word "significant" alone matched a real, unrelated company ("Life's
+# Significant Moments With Anne Limited") instead of Barclays. The trigger
+# phrase must be stripped before any part of the query becomes a search term.
+
+def test_ownership_phrase_stripped_before_becoming_a_search_hint():
+    from app.domains.market_data.identity import company_name_hint
+
+    q = "Show persons with significant control for Barclays"
+    hint = company_name_hint(_OWNERSHIP_HINTS.sub(" ", q))
+    assert "significant" not in hint.lower()
+    assert "barclays" in hint.lower()
+
+
 # ── self-gate ─────────────────────────────────────────────────────────────
 
 def test_ownership_hints_match_shareholder_phrasing():
@@ -64,6 +203,34 @@ def test_ownership_hints_match_shareholder_phrasing():
 def test_ownership_hints_do_not_match_unrelated_query():
     assert not _OWNERSHIP_HINTS.search("What is the share price of Apple?")
     assert not _OWNERSHIP_HINTS.search("Explain how revenue is recognised under IFRS 15")
+
+
+def test_ownership_structure_chart_hint_matches_either_order():
+    assert _OWNERSHIP_STRUCTURE_CHART_HINT.search(
+        "Show the ownership structure of Barclays PLC as a pie chart."
+    )
+    assert _OWNERSHIP_STRUCTURE_CHART_HINT.search(
+        "As a donut chart, show the ownership structure of Barclays PLC."
+    )
+
+
+def test_ownership_structure_chart_hint_does_not_match_either_phrase_alone():
+    assert not _OWNERSHIP_STRUCTURE_CHART_HINT.search(
+        "Show the ownership structure: Acme Corp owns Beta Ltd"
+    )
+    assert not _OWNERSHIP_STRUCTURE_CHART_HINT.search(
+        "Show quarterly revenue by region as a pie chart."
+    )
+
+
+def test_ownership_structure_chart_phrase_stripped_without_deleting_company_name():
+    from app.domains.market_data.identity import company_name_hint
+
+    q = "Show the ownership structure of Barclays PLC as a pie chart."
+    hint = company_name_hint(_OWNERSHIP_STRUCTURE_CHART_PHRASES.sub(" ", _OWNERSHIP_HINTS.sub(" ", q)))
+    assert "barclays" in hint.lower()
+    assert "ownership structure" not in hint.lower()
+    assert "pie chart" not in hint.lower()
 
 
 # ── intent classification: COMPOSITION vs RELATIONSHIP disjointness ──────
@@ -84,6 +251,23 @@ def test_user_supplied_ownership_structure_stays_relationship():
     # Deliberately NOT reusing "ownership structure" for COMPOSITION — that
     # phrase stays owned by a user-SUPPLIED entity graph.
     assert classify_intent("Show the ownership structure: Acme Corp owns Beta Ltd") == RELATIONSHIP
+
+
+def test_ownership_structure_with_pie_chart_wording_classifies_as_composition():
+    assert classify_intent("Show the ownership structure of Barclays PLC as a pie chart.") == COMPOSITION
+
+
+def test_ownership_structure_with_donut_chart_wording_classifies_as_composition():
+    assert classify_intent("Show the ownership structure of Barclays PLC as a donut chart.") == COMPOSITION
+
+
+def test_chart_word_before_ownership_structure_also_classifies_as_composition():
+    assert classify_intent("As a pie chart, show the ownership structure of Barclays PLC.") == COMPOSITION
+
+
+def test_bare_pie_chart_without_ownership_structure_does_not_trigger_composition():
+    # A pie chart about something unrelated to ownership must not misfire.
+    assert classify_intent("Show quarterly revenue by region as a pie chart.") != COMPOSITION
 
 
 # ── data shape ────────────────────────────────────────────────────────────
@@ -174,6 +358,25 @@ def test_orchestrator_builds_donut_spec_end_to_end():
     labels = {s.label for s in result.spec.donut}
     assert labels == {"Jane Doe", "Acme Holdings Ltd"}
     assert result.spec.sources == evidence.sources
+
+
+def test_orchestrator_builds_donut_spec_via_pie_chart_wording():
+    # Same pipeline as test_orchestrator_builds_donut_spec_end_to_end, but
+    # driven through classify_intent() (not a hardcoded COMPOSITION) to prove
+    # the "ownership structure ... pie chart" phrasing reaches DONUT for a
+    # company that DOES have real PSC data.
+    query = "Show the ownership structure of Acme Corp as a pie chart."
+    evidence = _ownership_evidence()
+    intent = classify_intent(query)
+    assert intent == COMPOSITION
+    shape = classify_data_shape(evidence, intent)
+    plan = plan_response(query, intent, shape)
+
+    result = VisualizationOrchestrator().decide(evidence, shape, plan, spec_id="viz-donut-pie", query=query)
+
+    assert result.selected == "DONUT"
+    assert result.spec is not None
+    assert result.spec.type == "DONUT"
 
 
 def test_orchestrator_no_visual_without_visual_required():

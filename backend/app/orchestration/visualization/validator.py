@@ -51,6 +51,10 @@ class VisualizationValidator:
             failures.extend(self._flow(spec))
         elif spec.type == "DONUT":
             failures.extend(self._donut(spec))
+        elif spec.type == "CANDLESTICK":
+            failures.extend(self._candlestick(spec))
+        elif spec.type == "GROUPED_BAR":
+            failures.extend(self._grouped_bar(spec))
         else:
             failures.append(f"unknown visualization type: {spec.type!r}")
 
@@ -76,6 +80,12 @@ class VisualizationValidator:
             failures.append(f"LINE requires at least {_MIN_LINE_POINTS} observations, got {len(spec.data)}")
         if any(not isinstance(p.y, (int, float)) for p in spec.data):
             failures.append("LINE requires all y values to be numeric")
+        if spec.series:
+            if len(spec.series) < 2:
+                failures.append("multi-series LINE requires at least 2 named series")
+            expected = [p.x for p in spec.series[0].data]
+            if any([p.x for p in series.data] != expected for series in spec.series[1:]):
+                failures.append("multi-series LINE requires aligned period labels")
         # Ordered dimension: DBnomics returns points in period order already,
         # but verify rather than assume — an unordered series renders as a
         # meaningless zig-zag.
@@ -183,6 +193,37 @@ class VisualizationValidator:
         total = sum(s.value for s in spec.donut)
         if total > 100.5:
             failures.append(f"DONUT slice values must not exceed 100% of the whole, got {total:.1f}%")
+        return failures
+
+    def _candlestick(self, spec: VisualizationSpec) -> list[str]:
+        failures: list[str] = []
+        if len(spec.candlestick) < 2:
+            failures.append(f"CANDLESTICK requires at least 2 bars, got {len(spec.candlestick)}")
+        for i, bar in enumerate(spec.candlestick):
+            if bar.low > bar.high:
+                failures.append(f"CANDLESTICK bar {i} has low > high")
+                continue
+            if not (bar.low <= bar.open <= bar.high):
+                failures.append(f"CANDLESTICK bar {i} has open outside [low, high]")
+            if not (bar.low <= bar.close <= bar.high):
+                failures.append(f"CANDLESTICK bar {i} has close outside [low, high]")
+        return failures
+
+    def _grouped_bar(self, spec: VisualizationSpec) -> list[str]:
+        failures: list[str] = []
+        if len(spec.series) < 2:
+            failures.append(f"GROUPED_BAR requires at least 2 series, got {len(spec.series)}")
+            return failures
+        for s in spec.series:
+            if len(s.data) < 2:
+                failures.append(f"GROUPED_BAR series {s.name!r} requires at least 2 points, got {len(s.data)}")
+        # Real, period-aligned data only — a grouped/stacked bar comparing
+        # mismatched categories across its series would misrepresent the
+        # underlying evidence (dbnomics.py's _find_two_series already
+        # guarantees alignment upstream; this re-checks it, never assumes it).
+        label_sets = [tuple(p.x for p in s.data) for s in spec.series]
+        if len(set(label_sets)) > 1:
+            failures.append("GROUPED_BAR series must share the same category labels")
         return failures
 
     def _flow(self, spec: VisualizationSpec) -> list[str]:

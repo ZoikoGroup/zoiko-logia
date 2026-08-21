@@ -39,6 +39,19 @@ persons-with-significant-control (Companies House) into named shareholders
 and their declared ownership BAND. Every DonutSlice.value is a band
 midpoint, never an exact filed percentage — see DonutSlice.is_estimated and
 orchestrator.py's _build_donut_spec.
+
+CANDLESTICK (family=FINANCIAL, renderer=ECHARTS) uses real OHLC bars already
+fetched by market_data.py's fetch_market_sources() for a history-shaped
+market-data question (Polygon/Alpha Vantage) — previously only ever
+surfaced as a text citation, never a chart; see orchestrator.py's
+_build_candlestick_spec.
+
+GROUPED_BAR (family=COMPARISON, renderer=ECHARTS; STACKED_BAR_CHART is a
+`variant` of the same type, not a separate one) is NOT a new data source —
+it reinterprets the SAME real, independently-fetched, period-aligned pair
+SCATTER already uses (dbnomics.py's _find_two_series), only when explicitly
+requested as a bar chart rather than a scatter plot; see orchestrator.py's
+_build_grouped_bar_spec.
 """
 from __future__ import annotations
 
@@ -98,6 +111,25 @@ class DonutSlice(BaseModel):
     is_estimated: bool = True
 
 
+class OHLCSlice(BaseModel):
+    """One real trading-period bar (open/high/low/close), straight from
+    Polygon/Alpha Vantage's get_history() — never a synthesized bar."""
+    dimension: str    # a date/timestamp label
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float | None = None
+
+
+class NamedSeries(BaseModel):
+    """One labeled series within a multi-series chart (GROUPED_BAR/
+    STACKED_BAR_CHART variant) — general-purpose, reusable shape for any
+    future multi-series need, not hardcoded to exactly two series."""
+    name: str
+    data: list[VisualizationDataPoint] = Field(default_factory=list)
+
+
 class BoxSummary(BaseModel):
     label: str
     minimum: float
@@ -113,7 +145,7 @@ class VisualizationSpec(BaseModel):
     id: str
     type: str             # "LINE" | "BAR" | "HISTOGRAM" | "BOX" | "SCATTER" | "KPI" | "EVIDENCE_GRAPH" | "HEATMAP" | "PROCESS_FLOW" | "TABLE"
     family: str            # "STATISTICAL" | "RELATIONSHIP" | "PROCESS"
-    renderer: str           # "ECHARTS" | "KPI_TILE" | "GRAPH_ADAPTER" | "FLOW_ADAPTER" | "TABLE_ADAPTER"
+    renderer: str           # "RECHARTS" | "ECHARTS" | "KPI_TILE" | "GRAPH_ADAPTER" | "FLOW_ADAPTER" | "TABLE_ADAPTER"
     capability_id: str | None = None
     # Hierarchical routing metadata. `type` remains the wire-compatible
     # concrete type consumed by existing clients.
@@ -144,6 +176,10 @@ class VisualizationSpec(BaseModel):
     # PROCESS_FLOW only — True routes to X6 (interactive), False to Mermaid
     # (simple/read-only). Meaningless for other types.
     interactive: bool = False
+    # Optional user-selected frontend engines. Old/saved payloads omit these
+    # and continue through the adapters' automatic selection.
+    graph_engine: str | None = None       # auto | cytoscape | g6
+    flow_engine: str | None = None        # mermaid | x6
 
     # Matrix types (HEATMAP) — x/y axis category labels are derived from the
     # cells themselves at render time rather than duplicated here.
@@ -163,6 +199,13 @@ class VisualizationSpec(BaseModel):
     # share; see DonutSlice.is_estimated for why these are band midpoints,
     # not exact filed figures.
     donut: list[DonutSlice] = Field(default_factory=list)
+
+    # Trading-bar types (CANDLESTICK) — real OHLC bars, never synthesized.
+    candlestick: list[OHLCSlice] = Field(default_factory=list)
+
+    # Multi-series types (GROUPED_BAR — `variant="STACKED_BAR_CHART"` flips
+    # the frontend to stacked rendering of the SAME series data).
+    series: list[NamedSeries] = Field(default_factory=list)
 
     # Tabular types (TABLE) — real rows, each a plain string->string map;
     # column order is `columns`, not dict iteration order (Python dicts

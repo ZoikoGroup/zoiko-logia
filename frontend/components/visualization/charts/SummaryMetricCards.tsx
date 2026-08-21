@@ -2,7 +2,7 @@ import { TrendingUp, TrendingDown, Minus } from "lucide-react";
 import type { VisualizationSpec } from "@/lib/api";
 
 /**
- * First/latest/total + trend arrow, above the chart. Suppressed entirely
+ * First/latest + trend arrow, above the chart. Suppressed entirely
  * for chart types where "latest value of a series" isn't a meaningful
  * concept — HISTOGRAM (a distribution, not a sequence), BOX (a five-number
  * summary), SCATTER (paired values, no single ordered series), HEATMAP (a
@@ -13,10 +13,9 @@ export function shouldShowSummaryMetrics(type: VisualizationSpec["type"]): boole
 }
 
 export function SummaryMetricCards({ viz }: { viz: VisualizationSpec }) {
-  if (!shouldShowSummaryMetrics(viz.type) || viz.data.length < 2) return null;
+  if (!shouldShowSummaryMetrics(viz.type) || viz.data.length < 2 || viz.series.length > 1) return null;
   const first = viz.data[0];
   const latest = viz.data[viz.data.length - 1];
-  const total = viz.data.reduce((sum, p) => sum + p.y, 0);
   const delta = latest.y - first.y;
   const direction = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
   const unit = viz.unit ? ` ${viz.unit}` : "";
@@ -24,12 +23,11 @@ export function SummaryMetricCards({ viz }: { viz: VisualizationSpec }) {
   const cards = [
     { label: "First", value: first.y, sub: first.x },
     { label: "Latest", value: latest.y, sub: latest.x },
-    { label: "Total", value: total, sub: `${viz.data.length} periods` },
   ];
 
   return (
-    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-      {cards.slice(0, 3).map((c) => (
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      {cards.map((c) => (
         <div key={c.label} className="rounded-lg border border-line bg-soft px-3 py-2">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">{c.label}</p>
           <p className="mt-0.5 flex items-center gap-1 text-sm font-bold text-ink">

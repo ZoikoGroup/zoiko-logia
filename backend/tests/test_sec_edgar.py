@@ -5,6 +5,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.orchestration.sec_edgar import (
+    _recent_filings_source,
     filing_index_url,
     find_year,
     format_value,
@@ -126,6 +127,34 @@ def test_non_financial_question_selects_no_concept():
     assert pick_concepts("What is a deferred tax liability?") == []
     assert pick_concepts("hello") == []
     print("test_non_financial_question_selects_no_concept: PASSED")
+
+
+def test_generic_sec_filings_build_official_edgar_source():
+    submissions = {"filings": {"recent": {
+        "accessionNumber": ["0000320193-26-000001", "0000320193-25-000079"],
+        "filingDate": ["2026-01-30", "2025-10-31"],
+        "form": ["10-Q", "10-K"],
+        "primaryDocDescription": ["Quarterly report", "Annual report"],
+    }}}
+    source = _recent_filings_source("Show SEC filings for AAPL", _REGISTRANTS[0], submissions)
+    assert source is not None
+    assert source.provider == "sec_edgar"
+    assert "Apple Inc." in source.title
+    assert "10-Q" in source.snippet and "10-K" in source.snippet
+    assert "sec.gov/Archives/edgar/data/320193/" in source.url
+
+
+def test_named_sec_form_filters_other_forms():
+    submissions = {"filings": {"recent": {
+        "accessionNumber": ["a", "b"],
+        "filingDate": ["2026-01-30", "2025-10-31"],
+        "form": ["10-Q", "10-K"],
+        "primaryDocDescription": ["Quarterly report", "Annual report"],
+    }}}
+    source = _recent_filings_source("Show AAPL 10-K filings", _REGISTRANTS[0], submissions)
+    assert source is not None
+    assert "10-K" in source.snippet
+    assert "10-Q" not in source.snippet
 
 
 def test_concept_fan_out_is_capped():

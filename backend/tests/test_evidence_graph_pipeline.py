@@ -4,7 +4,7 @@ extraction.py, the new intent_classifier.py graph intents, data_shape.py's
 NODES_EDGES/DIRECTED_STAGES, ava_advisor.py, and the orchestrator/validator
 EVIDENCE_GRAPH/PROCESS_FLOW/BAR paths.
 """
-from app.orchestration.extraction import extract_arrow_chain, extract_relation_clauses, extract_graph
+from app.orchestration.extraction import extract_arrow_chain, extract_relation_clauses, extract_graph, extract_stage_list
 from app.orchestration.intent_classifier import (
     classify_intent, EVIDENCE_ANALYSIS, RELATIONSHIP, DEPENDENCY, LINEAGE, PROCESS, FACT, GRAPH_INTENTS,
 )
@@ -44,6 +44,32 @@ def test_extract_relation_clauses_avoids_false_positive_prose():
 def test_extract_graph_prefers_typed_relation_clauses_over_arrow_chain():
     graph = extract_graph("Acme Corp owns Beta Ltd.")
     assert graph.edges[0].type == "owns"
+
+
+def test_extracts_comma_stages_only_for_an_explicit_flow_request():
+    query = "Show a Mermaid flowchart: Invoice received, invoice checked, payment approved, payment released."
+    graph = extract_stage_list(query)
+    assert graph is not None
+    assert graph.nodes == ["Invoice received", "invoice checked", "payment approved", "payment released"]
+    assert len(graph.edges) == 3
+    assert extract_stage_list("Common accounting items: cash, inventory, receivables") is None
+
+
+def test_comma_stage_mermaid_request_builds_valid_process_flow():
+    query = "Show a Mermaid flowchart: Invoice received, invoice checked, payment approved, payment released."
+    intent = classify_intent(query)
+    graph = extract_graph(query)
+    evidence = EvidenceModel(
+        entities=[Entity(id=node, name=node) for node in graph.nodes],
+        relationships=[Relationship(source_id=edge.source, target_id=edge.target, type=edge.type) for edge in graph.edges],
+    )
+    shape = classify_data_shape(evidence, intent)
+    plan = plan_response(query, intent, shape)
+    result = VisualizationOrchestrator().decide(evidence, shape, plan, spec_id="comma-flow", query=query)
+    assert intent == PROCESS
+    assert shape == DIRECTED_STAGES
+    assert result.spec.flow_engine == "mermaid"
+    assert VisualizationValidator().validate(result.spec).passed
 
 
 # ── intent_classifier.py graph intents ──────────────────────────────────────
@@ -134,6 +160,24 @@ def test_orchestrator_builds_evidence_graph_from_supplied_entities():
     assert len(result.spec.nodes) == 2
     assert len(result.spec.edges) == 1
     assert result.spec.edges[0].type == "owns"
+
+
+def test_named_graph_engines_are_carried_to_the_frontend_adapter():
+    evidence = _graph_evidence()
+    for engine, query in (
+        ("g6", "Show this as a G6 graph: Acme Corp owns Beta Ltd."),
+        ("cytoscape", "Show this as a Cytoscape graph: Acme Corp owns Beta Ltd."),
+        ("cytoscape", "Show a Cytoscape relationship graph: Acme Corp owns Beta Ltd."),
+        ("cytoscape", "Use Cytoscape to show: Acme Corp owns Beta Ltd."),
+    ):
+        intent = classify_intent(query)
+        plan = plan_response(query, intent, NODES_EDGES)
+        result = VisualizationOrchestrator().decide(
+            evidence, NODES_EDGES, plan, spec_id=f"viz-{engine}", query=query,
+        )
+        assert intent == RELATIONSHIP
+        assert plan.explicit_visual_request is True
+        assert result.spec.graph_engine == engine
 
 
 def test_orchestrator_builds_process_flow_from_supplied_stages():

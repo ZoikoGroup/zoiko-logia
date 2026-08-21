@@ -84,6 +84,19 @@ function buildScatterOption(viz: VisualizationSpec): Record<string, unknown> {
   const [seriesColor] = chartPalette();
   const xLabel = viz.encoding?.x.field ?? "X";
   const yLabel = viz.encoding?.y.field ?? "Y";
+  const points = viz.scatter.map((p) => [p.x, p.y] as [number, number]);
+  const xMean = points.reduce((sum, point) => sum + point[0], 0) / Math.max(points.length, 1);
+  const yMean = points.reduce((sum, point) => sum + point[1], 0) / Math.max(points.length, 1);
+  const denominator = points.reduce((sum, point) => sum + (point[0] - xMean) ** 2, 0);
+  const slope = denominator
+    ? points.reduce((sum, point) => sum + (point[0] - xMean) * (point[1] - yMean), 0) / denominator
+    : 0;
+  const intercept = yMean - slope * xMean;
+  const sortedX = points.map((point) => point[0]).sort((a, b) => a - b);
+  const trendData = sortedX.length
+    ? [[sortedX[0], slope * sortedX[0] + intercept], [sortedX[sortedX.length - 1], slope * sortedX[sortedX.length - 1] + intercept]]
+    : [];
+  const showTrend = viz.variant === "SCATTER_TREND";
   return {
     tooltip: {
       trigger: "item",
@@ -96,11 +109,14 @@ function buildScatterOption(viz: VisualizationSpec): Record<string, unknown> {
     // scale, so forcing it in would bunch every point into one corner.
     xAxis: { type: "value", name: xLabel, scale: true, axisLabel: { color: muted }, splitLine: { lineStyle: { color: line } } },
     yAxis: { type: "value", name: yLabel, scale: true, axisLabel: { color: muted }, splitLine: { lineStyle: { color: line } } },
-    series: [{
-      type: "scatter", symbolSize: 10,
-      data: viz.scatter.map((p) => ({ name: p.label, value: [p.x, p.y] })),
-      itemStyle: { color: seriesColor },
-    }],
+    series: [
+      {
+        type: "scatter", symbolSize: 10,
+        data: viz.scatter.map((p) => ({ name: p.label, value: [p.x, p.y] })),
+        itemStyle: { color: seriesColor },
+      },
+      ...(showTrend ? [{ type: "line", data: trendData, symbol: "none", lineStyle: { color: seriesColor, type: "dashed", width: 2 }, silent: true }] : []),
+    ],
   };
 }
 
@@ -131,11 +147,76 @@ function buildDonutOption(viz: VisualizationSpec): Record<string, unknown> {
   };
 }
 
+function buildCompositionOption(viz: VisualizationSpec): Record<string, unknown> {
+  if (viz.variant === "TREEMAP_CHART") {
+    return {
+      tooltip: { trigger: "item", formatter: "{b}: {c}" },
+      color: chartPalette(),
+      series: [{
+        type: "treemap", roam: false, breadcrumb: { show: false },
+        label: { show: true, formatter: "{b}\n{c}" },
+        data: viz.donut.map((slice) => ({ name: slice.label, value: slice.value })),
+      }],
+    };
+  }
+  if (viz.variant === "RADAR_CHART") {
+    const [seriesColor] = chartPalette();
+    const maximum = Math.max(1, ...viz.donut.map((slice) => slice.value)) * 1.1;
+    return {
+      tooltip: { trigger: "item" },
+      radar: { indicator: viz.donut.map((slice) => ({ name: slice.label, max: maximum })) },
+      series: [{
+        type: "radar",
+        data: [{ value: viz.donut.map((slice) => slice.value), name: viz.title ?? "Values" }],
+        lineStyle: { color: seriesColor }, itemStyle: { color: seriesColor }, areaStyle: { color: seriesColor, opacity: 0.2 },
+      }],
+    };
+  }
+  return buildDonutOption(viz);
+}
+
+function buildCandlestickOption(viz: VisualizationSpec): Record<string, unknown> {
+  const muted = cssVar("--muted", "#667673");
+  const line = cssVar("--line", "#eef3f2");
+  const ink = cssVar("--ink", "#17211f");
+  // Up/down is genuine state (a real price movement direction), not generic
+  // series identity — the dataviz skill reserves status colors for exactly
+  // this case, never the categorical palette.
+  const up = cssVar("--ok", "#1f7a4d");
+  const down = cssVar("--bad", "#b42318");
+  const categories = viz.candlestick.map((b) => b.dimension);
+  // ECharts' own candlestick data order: [open, close, lowest, highest].
+  const data = viz.candlestick.map((b) => [b.open, b.close, b.low, b.high]);
+  return {
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "cross" },
+      formatter: (params: Array<{ axisValue: string; data: [number, number, number, number] }>) => {
+        const p = params[0];
+        const [open, close, low, high] = p.data;
+        return `${p.axisValue}<br/>Open: ${open}<br/>High: ${high}<br/>Low: ${low}<br/>Close: ${close}`;
+      },
+    },
+    grid: { left: 8, right: 24, top: 16, bottom: 48, containLabel: true },
+    xAxis: { type: "category", data: categories, axisLabel: { color: muted, rotate: categories.length > 8 ? 35 : 0 } },
+    yAxis: { type: "value", scale: true, axisLabel: { color: muted }, splitLine: { lineStyle: { color: line } } },
+    series: [{
+      type: "candlestick",
+      data,
+      itemStyle: {
+        color: up, color0: down, borderColor: up, borderColor0: down,
+      },
+    }],
+    textStyle: { color: ink },
+  };
+}
+
 export function buildEChartsOption(viz: VisualizationSpec): Record<string, unknown> {
   if (viz.type === "HEATMAP") return buildHeatmapOption(viz);
   if (viz.type === "BOX") return buildBoxplotOption(viz);
   if (viz.type === "SCATTER") return buildScatterOption(viz);
-  if (viz.type === "DONUT") return buildDonutOption(viz);
+  if (viz.type === "DONUT") return buildCompositionOption(viz);
+  if (viz.type === "CANDLESTICK") return buildCandlestickOption(viz);
   return {};
 }
 

@@ -102,6 +102,15 @@ export function exportChartCsv(viz: VisualizationSpec) {
   } else if (viz.type === "DONUT") {
     lines.push(csvRow(["Holder", "Share (%)", "Estimated"]));
     for (const s of viz.donut) lines.push(csvRow([s.label, s.value, s.is_estimated ? "Yes (band midpoint)" : "No"]));
+  } else if (viz.type === "CANDLESTICK") {
+    lines.push(csvRow(["Date", "Open", "High", "Low", "Close", "Volume"]));
+    for (const b of viz.candlestick) lines.push(csvRow([b.dimension, b.open, b.high, b.low, b.close, b.volume ?? ""]));
+  } else if (viz.type === "GROUPED_BAR") {
+    lines.push(csvRow(["Period", ...viz.series.map((s) => s.name)]));
+    const categories = viz.series[0]?.data.map((p) => p.x) ?? [];
+    categories.forEach((cat, i) => {
+      lines.push(csvRow([cat, ...viz.series.map((s) => s.data[i]?.y ?? 0)]));
+    });
   } else {
     return;
   }

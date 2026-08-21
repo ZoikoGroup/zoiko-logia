@@ -88,3 +88,49 @@ def test_never_offers_redundant_alternate_chart_types():
     ev = _line_evidence()
     specs = _build_complementary_specs("LINE", ev, "x")
     assert all(s.type != "BAR" for s in specs)
+
+
+# ── Real companions: explicit ask, genuinely different lens ─────────────────
+
+def test_line_primary_gets_kpi_companion_on_explicit_request():
+    q = "Show India CPI inflation over the last few quarters, and give me the latest value too."
+    ev = _line_evidence()
+    specs = _build_complementary_specs("LINE", ev, "mv-x", query=q)
+    assert len(specs) == 1
+    assert specs[0].type == "KPI"
+    assert specs[0].id == "mv-x-kpi"
+
+
+def test_bar_primary_gets_kpi_companion_on_explicit_request():
+    q = "Compare CPI across periods as a bar chart, and what's the current value?"
+    ev = _line_evidence()
+    specs = _build_complementary_specs("BAR", ev, "mv-y", query=q)
+    assert len(specs) == 1
+    assert specs[0].type == "KPI"
+
+
+def test_kpi_companion_not_added_when_observations_empty():
+    specs = _build_complementary_specs("LINE", EvidenceModel(), "x", query="show the kpi too")
+    assert specs == []
+
+
+def test_heatmap_primary_gets_evidence_graph_companion_on_explicit_request():
+    q = "Show this as a heatmap and also as a network graph: Acme Corp owns Beta Ltd."
+    ev = _graph_evidence()
+    specs = _build_complementary_specs("HEATMAP", ev, "mv-z", query=q)
+    assert len(specs) == 1
+    assert specs[0].type == "EVIDENCE_GRAPH"
+    assert specs[0].id == "mv-z-graph"
+
+
+def test_heatmap_companion_not_added_when_relationships_empty():
+    specs = _build_complementary_specs("HEATMAP", EvidenceModel(), "x", query="also show a network graph")
+    assert specs == []
+
+
+def test_table_trigger_still_takes_priority_over_kpi_trigger():
+    q = "Show CPI over time as a table, and give me the latest value too."
+    ev = _line_evidence()
+    specs = _build_complementary_specs("LINE", ev, "mv-w", query=q)
+    assert len(specs) == 1
+    assert specs[0].type == "TABLE"
