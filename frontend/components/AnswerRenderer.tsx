@@ -49,6 +49,64 @@ function stripInlineRefs(text: string): string {
     .replace(/[ \t]{2,}/g, " ");
 }
 
+/** A pipe-delimited table row: `| a | b |`, with optional leading spaces. */
+const TABLE_ROW = /^ {0,3}\|.*\|\s*$/;
+/** The `|---|:--:|` line that turns pipe rows into a real table. */
+const TABLE_RULE = /^ {0,3}\|[\s:|-]+\|\s*$/;
+
+/**
+ * Make GFM tables render as tables.
+ *
+ * GitHub-flavoured Markdown only recognises a table when it STARTS A BLOCK, so
+ * a table written immediately under its heading —
+ *
+ *     5. Quick-look sample of the Reconciliation table
+ *     | Metric | Calculated | Reported |
+ *     |--------|------------|----------|
+ *
+ * — is absorbed into the preceding paragraph and shown to the reader as rows of
+ * literal pipe characters. The model does this often, and the answer looks
+ * broken even though the content is right.
+ *
+ * A blank line is inserted before the table (and after it, so a following
+ * paragraph is not swallowed). Rows indented four or more spaces are also
+ * de-indented: at that depth Markdown treats them as a code block, and a code
+ * block of pipes is never what was meant.
+ */
+function normaliseMarkdownTables(text: string): string {
+  const lines = text.split("\n");
+  const out: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const deindented = line.replace(/^\s+(?=\|)/, "");
+    const isRow = TABLE_ROW.test(deindented);
+
+    // A table proper needs a rule line directly under its header row, so only
+    // treat this as the start of one when the next line is that rule.
+    const startsTable =
+      isRow && i + 1 < lines.length && TABLE_RULE.test(lines[i + 1].replace(/^\s+(?=\|)/, ""));
+
+    if (startsTable) {
+      const previous = out[out.length - 1];
+      if (previous !== undefined && previous.trim() !== "") out.push("");
+    }
+
+    if (isRow) {
+      out.push(deindented);
+      // Close the block when the next line is neither a row nor already blank.
+      const next = lines[i + 1];
+      const nextIsRow = next !== undefined && TABLE_ROW.test(next.replace(/^\s+(?=\|)/, ""));
+      if (next !== undefined && !nextIsRow && next.trim() !== "") out.push("");
+      continue;
+    }
+
+    out.push(line);
+  }
+
+  return out.join("\n");
+}
+
 // ── Figure toolbar ───────────────────────────────────────────────────────────
 // Charts, diagrams and tables all get the same small action row, so a user
 // learns one control surface rather than three. Each button owns a short-lived
@@ -828,7 +886,7 @@ export function AnswerRenderer({ text, className }: { text: string; className?: 
             rehypePlugins={[rehypeKatex]}
             components={mdComponents}
           >
-            {stripInlineRefs(seg.content)}
+            {normaliseMarkdownTables(stripInlineRefs(seg.content))}
           </ReactMarkdown>
         ),
       )}
