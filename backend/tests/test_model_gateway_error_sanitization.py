@@ -13,6 +13,7 @@ the 8 pre-existing unrelated failures under test_massarius_*/test_tenant_*),
 matching the pattern already used in test_histogram_heatmap_and_fixes.py.
 """
 import asyncio
+from unittest.mock import AsyncMock
 
 from app.domains.model_gateway import service as gateway_service
 from app.domains.model_gateway.service import _complete_with_fallback, _PROVIDER_FAILURE_MESSAGE
@@ -50,3 +51,18 @@ def test_successful_provider_output_passes_through_unchanged(monkeypatch):
     output = asyncio.run(_complete_with_fallback("some prompt"))
 
     assert output == "A real, grounded answer."
+
+
+def test_gemini_error_falls_back_to_groq(monkeypatch):
+    class FailingGemini(gateway_service.GeminiAdapter):
+        async def complete(self, prompt: str, model: str | None = None) -> str:
+            return "[Error connecting to Gemini API: transient 503]"
+
+    monkeypatch.setattr(gateway_service, "_select_adapter", lambda: FailingGemini())
+    monkeypatch.setenv("GROQ_API_KEY", "dummy")
+    monkeypatch.setattr(
+        gateway_service,
+        "_try_complete",
+        AsyncMock(side_effect=["[Error connecting to Gemini API: transient 503]", "Groq fallback answer."]),
+    )
+    assert asyncio.run(_complete_with_fallback("prompt")) == "Groq fallback answer."

@@ -20,10 +20,13 @@ export function FlowRendererAdapter({
   nodes,
   edges,
   interactive,
+  preferredEngine,
 }: {
   nodes: VisualizationGraphNode[];
   edges: VisualizationGraphEdge[];
   interactive: boolean;
+  preferredEngine?: "mermaid" | "x6" | null;
 }) {
-  return interactive ? <X6Flow nodes={nodes} edges={edges} /> : <MermaidFlow nodes={nodes} edges={edges} />;
+  const useX6 = preferredEngine === "x6" || (preferredEngine !== "mermaid" && interactive);
+  return useX6 ? <X6Flow nodes={nodes} edges={edges} /> : <MermaidFlow nodes={nodes} edges={edges} />;
 }

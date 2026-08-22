@@ -43,8 +43,28 @@ class Relationship(BaseModel):
     directed: bool = True
 
 
+class OHLCBar(BaseModel):
+    """One real trading-period bar — market_data.py's fetch_market_sources()
+    populates this from Polygon/Alpha Vantage's get_history(), never a
+    synthesized/interpolated bar."""
+
+    dimension: str    # a date/timestamp label, e.g. "2024-08-01"
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float | None = None
+
+
 class EvidenceModel(BaseModel):
     subject: str | None = None
+    provider: str | None = None
+    series_id: str | None = None
+    requested_start: str | None = None
+    requested_end: str | None = None
+    retrieved_start: str | None = None
+    retrieved_end: str | None = None
+    coverage_complete: bool = True
 
     facts: list[str] = Field(default_factory=list)
     observations: list[Observation] = Field(default_factory=list)
@@ -67,6 +87,12 @@ class EvidenceModel(BaseModel):
     composition: list[Observation] = Field(default_factory=list)
     composition_caveat: str | None = None
 
+    # Real OHLC trading bars (Polygon/Alpha Vantage, via market_data.py's
+    # fetch_market_sources()) — populated only when the resolved market-data
+    # intent is a price-history request, never fabricated/interpolated bars.
+    ohlc_subject: str | None = None
+    ohlc: list[OHLCBar] = Field(default_factory=list)
+
     entities: list[Entity] = Field(default_factory=list)
     relationships: list[Relationship] = Field(default_factory=list)
     events: list[str] = Field(default_factory=list)
@@ -79,4 +105,7 @@ class EvidenceModel(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
     def is_empty(self) -> bool:
-        return not self.observations and not self.entities and not self.relationships and not self.composition
+        return (
+            not self.observations and not self.entities and not self.relationships
+            and not self.composition and not self.ohlc
+        )

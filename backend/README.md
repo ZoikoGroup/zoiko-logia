@@ -1,6 +1,9 @@
-# ZoikoLogia Backend — Structure Only
+# ZoikoLogia Backend
 
-This is a **folder/file skeleton, not an implementation**. Every `.py` file (except `__init__.py`) contains a single one-line comment describing its intended purpose — no classes, no routes, no logic. It was scaffolded by reading all 26 specification documents in `../docs/` and organizing their requirements into a concrete backend layout, so implementation work has a place to land.
+This directory contains the implemented FastAPI backend for ZoikoLogia and
+Kriton™. It includes safety classification and routing, model-provider
+adapters, governed source retrieval, audit and tenant controls, domain APIs,
+and an evidence-backed visualization pipeline consumed by the frontend.
 
 ## Tech stack (per `ZoikoLogia_Project_Execution_Roadmap.docx`)
 
@@ -12,7 +15,9 @@ The other architecture docs (Back-End Architecture Spec, Master Architecture Bui
 - **Celery or APScheduler** — background jobs
 - Provider-agnostic **model gateway** in front of Claude / GPT / Gemini / self-hosted models
 
-See `requirements.txt` (names only, unpinned) and `.env.example` (variable names only, no values).
+See `requirements.txt` for Python dependencies and `app/core/config.py` for
+supported environment variables. Local secrets belong in `backend/.env`,
+which is excluded from Git.
 
 ## Layout
 
@@ -51,14 +56,40 @@ Each domain folder generally has `models.py` / `schemas.py` / `router.py` / `ser
 | `zoikosuite_integration/` | ZoikoSuite Embedded Kriton UX Specification | — (embed contract, no admin page) |
 | `notifications_workflow/` | Back-End Architecture Spec (Notification & Workflow Queue Services) | — (cross-cutting SLA/queue engine) |
 
-## What's deliberately not here
+## Implementation status
 
-- No actual route handlers, ORM column definitions, or business logic — every file is a stub comment.
-- No `alembic.ini` / migration files — `app/db/migrations/` is an empty folder waiting for `alembic init`.
-- No Dockerfile or CI config — not specified in the docs read so far; the docs defer full API contracts to two documents that weren't in this doc set (`ZL-T1-03 API Specification`, `ZL-T1-14` integration architecture).
-- Not wired to the frontend — `frontend/` still runs entirely on static mock data (see `frontend/lib/governance-data.ts`). Connecting the two is a separate step.
+- FastAPI routes and SQLAlchemy models are implemented across the service domains.
+- Alembic configuration and baseline/Supabase migrations are present under `alembic/`.
+- The frontend calls the backend for Ask Kriton, safety, audit, evaluation,
+  source-library, incident and governance workflows; selected screens still
+  use local presentation data where no backend workflow is required.
+- Ask Kriton retrieves governed text and structured data through SearXNG,
+  DBnomics, FRED, Frankfurter, SEC EDGAR and configured market/company-data
+  providers. Provider failures degrade without fabricating chart data.
+- Visualizations are built deterministically from `EvidenceModel`, validated,
+  and returned as typed specifications for the frontend renderers.
+- Docker and Railway deployment configuration are included.
 
-## Naming rule for when this gets implemented (ZL-ENG-01)
+## Testing
+
+Run the deterministic default suite with:
+
+```bash
+python3 -m pytest -q
+```
+
+Live and database suites are opt-in so ordinary test runs never consume API
+quota or connect to a developer/production database:
+
+```bash
+RUN_LIVE_LLM_TESTS=1 python3 -m pytest -m live
+RUN_DB_INTEGRATION_TESTS=1 python3 -m pytest -m integration
+```
+
+Database integration tests must be pointed at an isolated disposable database,
+never a production Supabase project.
+
+## Naming rule (ZL-ENG-01)
 
 Two-tier advisor naming — enforce this the moment real code lands here:
 

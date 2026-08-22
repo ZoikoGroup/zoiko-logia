@@ -15,7 +15,17 @@ import { trackVisualizationInteraction } from "@/lib/telemetry";
  * retries the engine that just failed.
  */
 export class GraphErrorBoundary extends Component<
-  { failedRenderer: string; fallbackRenderer: string; fallback: ReactNode; children: ReactNode },
+  {
+    failedRenderer: string;
+    fallbackRenderer: string;
+    fallback: ReactNode;
+    children: ReactNode;
+    /** Telemetry category for the thing being rendered — "graph" (default,
+     * EVIDENCE_GRAPH/Cytoscape/G6) or "flow" (PROCESS_FLOW/X6/Mermaid). This
+     * boundary's fallback mechanics are identical either way; only the
+     * telemetry label differs. */
+    category?: "graph" | "flow";
+  },
   { failed: boolean }
 > {
   state = { failed: false };
@@ -25,7 +35,7 @@ export class GraphErrorBoundary extends Component<
   }
 
   componentDidCatch() {
-    trackVisualizationInteraction("engine_fallback", "graph", {
+    trackVisualizationInteraction("engine_fallback", this.props.category ?? "graph", {
       renderer: this.props.failedRenderer,
       detail: { from: this.props.failedRenderer, to: this.props.fallbackRenderer },
     });

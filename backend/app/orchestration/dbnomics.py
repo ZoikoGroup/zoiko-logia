@@ -24,6 +24,7 @@ import asyncio
 import os
 import re
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 
 import httpx
 
@@ -46,13 +47,50 @@ _STOPWORDS = {
     "distribution", "spread", "histogram", "figures", "last", "past", "few", "quarters",
 }
 
+# Also the general country-name detector (_country_in_query/countries_in_query
+# below) — not CPI-specific despite the name, so adding a country here makes
+# it resolvable by every precise per-country lookup (CPI, unemployment, …).
 _CPI_COUNTRIES = {
     "india": "India",
+    "us": "United States",
+    "u.s.": "United States",
+    "usa": "United States",
+    "united states": "United States",
+    "america": "United States",
     "uk": "United Kingdom",
     "united kingdom": "United Kingdom",
     "britain": "United Kingdom",
     "great britain": "United Kingdom",
+    "germany": "Germany",
+    "france": "France",
+    "canada": "Canada",
+    "japan": "Japan",
 }
+
+_CPI_COUNTRY_CODES = {
+    "India": "IN",
+    "United States": "US",
+    "United Kingdom": "GB",
+    "Germany": "DE",
+    "France": "FR",
+    "Canada": "CA",
+    "Japan": "JP",
+}
+
+# OECD MEI's harmonised-unemployment-rate series code uses ISO3, unlike CPI's
+# ISO2 — a different provider/dataset entirely, so a separate code map.
+# India omitted: not an OECD member, no series exists there — better to
+# return no data honestly than force a lookup that 404s.
+_UNEMPLOYMENT_COUNTRY_CODES = {
+    "United States": "USA",
+    "United Kingdom": "GBR",
+    "Germany": "DEU",
+    "France": "FRA",
+    "Canada": "CAN",
+    "Japan": "JPN",
+}
+
+_UNEMPLOYMENT_HINTS = re.compile(r"\b(unemployment|jobless(?:ness)?|labou?r force)\b", re.I)
 
 
 def _dbnomics_base() -> str:
@@ -95,38 +133,62 @@ def _country_in_query(query: str) -> str | None:
     return None
 
 
-async def _find_cpi_series(query: str) -> SeriesMatch | None:
+def countries_in_query(query: str) -> list[str]:
+    """Return distinct canonical country labels in their query order."""
+    lowered = query.lower()
+    matches: list[tuple[int, str]] = []
+    for alias in sorted(_CPI_COUNTRIES, key=len, reverse=True):
+        match = re.search(rf"\b{re.escape(alias)}\b", lowered)
+        if match:
+            matches.append((match.start(), _CPI_COUNTRIES[alias]))
+    ordered: list[str] = []
+    for _, country in sorted(matches):
+        if country not in ordered:
+            ordered.append(country)
+    return ordered
+
+
+async def _find_cpi_series(query: str, window: int = 12) -> SeriesMatch | None:
     """Resolve common CPI prompts against IMF/CPI's explicit all-items
     series instead of trusting full-text dataset ranking. This prevents terms
     such as "distribution" from selecting an unrelated tax-distribution
-    dataset that merely mentions the requested country."""
+    dataset that merely mentions the requested country.
+
+    `window` is only widened by the two-series correlation path (see
+    _find_series_for_phrase) — different providers publish on different
+    lags, so trimming each side to its own last 12 points independently can
+    leave zero overlapping periods once _find_two_series intersects them."""
     country = _country_in_query(query)
     if not country:
         return None
-    # Keep the legacy generic connector path for broad natural-language
-    # "consumer prices" requests. The targeted path is for explicit CPI
-    # prompts, plus UK inflation where the country-specific ONS dataset was
-    # otherwise selected without a usable all-items series.
-    if not re.search(r"\bcpi\b", query, re.I) and not (
-        country == "United Kingdom" and re.search(r"\binflation\b", query, re.I)
-    ):
+    # Country + CPI/inflation is specific enough to bypass generic full-text
+    # ranking. Generic ranking previously failed outright for US/France and
+    # matched an unrelated tax dataset for "India inflation". IMF/CPI's
+    # explicit country/all-items dimensions are the safer common source for
+    # cross-country comparison.
+    if not re.search(r"\b(cpi|inflation|consumer prices?)\b", query, re.I):
         return None
+
+    wants_quarterly = bool(re.search(r"\bquarter", query, re.I))
+    wants_annual = bool(re.search(r"\b(annual|yearly|by year)\b", query, re.I))
+    wants_change = bool(re.search(r"\binflation\b|percentage change|change in cpi", query, re.I))
+    frequency_code = "Q" if wants_quarterly else ("A" if wants_annual else "M")
+    indicator_code = "PCPI_PC_CP_A_PT" if wants_change else "PCPI_IX"
+    country_code = _CPI_COUNTRY_CODES[country]
+    requested_series_code = f"{frequency_code}.{country_code}.{indicator_code}"
 
     base = _dbnomics_base()
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(
-                f"{base}/series/IMF/CPI",
-                params={"q": f"{country} all items", "observations": "1", "limit": 100},
+                f"{base}/series/IMF/CPI/{requested_series_code}",
+                params={"observations": "1"},
             )
             response.raise_for_status()
             candidates = response.json().get("series", {}).get("docs", [])
     except Exception:
         return None
 
-    wants_quarterly = bool(re.search(r"\bquarter", query, re.I))
-    wants_annual = bool(re.search(r"\b(annual|yearly|by year)\b", query, re.I))
-    wants_change = bool(re.search(r"\binflation\b|percentage change|change in cpi", query, re.I))
     preferred_frequency = "Quarterly" if wants_quarterly else ("Annual" if wants_annual else "Monthly")
 
     ranked: list[tuple[int, dict, list[tuple[str, float]]]] = []
@@ -154,7 +216,7 @@ async def _find_cpi_series(query: str) -> SeriesMatch | None:
     # One shared window for both the grounding excerpt and visualization.
     # Twelve points are sufficient for a meaningful histogram/trend while
     # remaining small enough for the narrative model to inspect in full.
-    points = points[-12:]
+    points = points[-window:]
     series_name = str(best.get("series_name") or "series").replace("�", "·").strip()
     series_code = best.get("series_code", "")
     return SeriesMatch(
@@ -163,6 +225,58 @@ async def _find_cpi_series(query: str) -> SeriesMatch | None:
         url=f"{base}/series/IMF/CPI/{series_code}",
         provider_name="International Monetary Fund",
         dataset_name="Consumer Price Index (CPI)",
+    )
+
+
+async def _find_unemployment_series(query: str, window: int = 12) -> SeriesMatch | None:
+    """Resolve unemployment-rate prompts against OECD/MEI's explicit
+    harmonised-unemployment-rate series (Total > All persons, seasonally
+    adjusted) instead of trusting full-text dataset ranking — the same
+    data-honesty rationale as _find_cpi_series. Generic ranking previously
+    matched a completely unrelated Argentina education/demographics dataset
+    for "UK unemployment", since the plain word "unemployment" appears in
+    hundreds of narrowly-segmented (age/sex/education) series across many
+    countries with no reliable way to text-rank the right one."""
+    country = _country_in_query(query)
+    if not country or not _UNEMPLOYMENT_HINTS.search(query):
+        return None
+    country_code = _UNEMPLOYMENT_COUNTRY_CODES.get(country)
+    if not country_code:
+        return None
+
+    base = _dbnomics_base()
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                f"{base}/series/OECD/MEI/{country_code}.LRHUTTTT.STSA.M",
+                params={"observations": "1"},
+            )
+            response.raise_for_status()
+            candidates = response.json().get("series", {}).get("docs", [])
+    except Exception:
+        return None
+
+    points: list[tuple[str, float]] = []
+    series_name = ""
+    series_code = ""
+    for candidate in candidates:
+        pts = _real_points(candidate)
+        if not pts:
+            continue
+        points = pts
+        series_name = str(candidate.get("series_name") or "series").replace("�", "·").strip()
+        series_code = candidate.get("series_code", "")
+        break
+    if not points:
+        return None
+
+    points = points[-window:]
+    return SeriesMatch(
+        series_name=series_name,
+        points=points,
+        url=f"{base}/series/OECD/MEI/{series_code}",
+        provider_name="OECD",
+        dataset_name="Main Economic Indicators — Harmonised Unemployment Rate",
     )
 
 
@@ -178,9 +292,17 @@ async def _find_best_series(query: str) -> SeriesMatch | None:
     # evidence with one confused, mixed-keyword series instead.
     if _split_correlation_subjects(query) is not None:
         return None
-    cpi_match = await _find_cpi_series(query)
-    if cpi_match is not None:
-        return cpi_match
+    # A named-country CPI/inflation request must never fall through to broad
+    # full-text search: that is how "Canada inflation" matched an energy
+    # projection mentioning the US Inflation Reduction Act. No exact CPI
+    # series is safer than an unrelated numeric series.
+    if _country_in_query(query) and re.search(r"\b(cpi|inflation|consumer prices?)\b", query, re.I):
+        return await _find_cpi_series(query)
+    # Same rationale for unemployment — see _find_unemployment_series'
+    # docstring for the specific false-positive (Argentina demographics) this
+    # replaces.
+    if _country_in_query(query) and _UNEMPLOYMENT_HINTS.search(query):
+        return await _find_unemployment_series(query)
     return await _find_generic_series(query)
 
 
@@ -259,8 +381,13 @@ async def _find_generic_series(text: str) -> SeriesMatch | None:
 # intent_classifier.py's _RELATIONSHIP_HINTS ("relationship between") so a
 # statistical-correlation question and an entity-relationship-graph question
 # never collide on the same phrasing.
+# "and" / "vs" / "versus" are interchangeable subject separators throughout —
+# "correlation between X and Y" and "correlation between X vs Y" are the same
+# request, just phrased differently.
+_AND_OR_VS = r"(?:and|vs\.?|versus)"
+
 _CORRELATION_SPLIT_PATTERNS = (
-    re.compile(r"correlation (?:between|of)\s+(?P<a>.+?)\s+and\s+(?P<b>.+?)[\?\.]?\s*$", re.I),
+    re.compile(rf"correlation (?:between|of)\s+(?P<a>.+?)\s+{_AND_OR_VS}\s+(?P<b>.+?)[\?\.]?\s*$", re.I),
     re.compile(r"(?:is\s+)?(?P<a>.+?)\s+correlated with\s+(?P<b>.+?)[\?\.]?\s*$", re.I),
     re.compile(r"correlate\s+(?P<a>.+?)\s+with\s+(?P<b>.+?)[\?\.]?\s*$", re.I),
     # "relationship between X and Y" is ambiguous with an entity-relationship
@@ -269,7 +396,20 @@ _CORRELATION_SPLIT_PATTERNS = (
     # intent_classifier.py's own disambiguation (are both named subjects
     # real economic-statistic terms?) has already decided it's CORRELATION,
     # not a fallback used blindly.
-    re.compile(r"relationship between\s+(?P<a>.+?)\s+and\s+(?P<b>.+?)[\?\.]?\s*$", re.I),
+    re.compile(rf"relationship between\s+(?P<a>.+?)\s+{_AND_OR_VS}\s+(?P<b>.+?)[\?\.]?\s*$", re.I),
+    re.compile(
+        rf"compare\s+(?P<a>.+?)\s+{_AND_OR_VS}\s+(?P<b>.+?)"
+        r"(?:\s+(?:using|as|with|in)\s+(?:an?\s+)?.*)?[\?\.]?\s*$",
+        re.I,
+    ),
+    re.compile(
+        rf"(?:create|show|plot|make).*?scatter plot\s+(?:comparing|of)\s+"
+        rf"(?P<a>.+?)\s+{_AND_OR_VS}\s+(?P<b>.+?)[\?\.]?\s*$",
+        re.I,
+    ),
+    # "show a scatter plot for A vs B" — no "correlation"/"compare" verb of
+    # its own, just "for ... vs ..." carrying the whole request.
+    re.compile(r"(?:scatter plot|chart|graph)\s+(?:for|of)\s+(?P<a>.+?)\s+vs\.?\s+(?P<b>.+?)[\?\.]?\s*$", re.I),
 )
 
 
@@ -282,19 +422,41 @@ def _split_correlation_subjects(query: str) -> tuple[str, str] | None:
         if m:
             a, b = m.group("a").strip(), m.group("b").strip()
             if a and b:
+                # Comparison prompts often state the measure only once:
+                # "compare Germany and France inflation". Inherit that
+                # explicit statistic onto the country-only side so both
+                # targeted lookups resolve the same concept.
+                combined = f"{a} {b}"
+                metric_match = re.search(r"\b(cpi|inflation|consumer prices?)\b", combined, re.I)
+                if metric_match:
+                    metric = metric_match.group(1)
+                    if not _STAT_HINTS.search(a):
+                        a = f"{a} {metric}"
+                    if not _STAT_HINTS.search(b):
+                        b = f"{b} {metric}"
                 return a, b
     return None
 
 
-async def _find_series_for_phrase(phrase: str) -> SeriesMatch | None:
+async def _find_series_for_phrase(phrase: str, window: int = 12) -> SeriesMatch | None:
     """Resolve ONE named subject phrase to a real DBnomics series — the same
     CPI-targeted-then-generic search _find_best_series applies to a whole
     query, scoped to a single phrase so each side of a correlation query can
     be looked up independently."""
-    cpi_match = await _find_cpi_series(phrase)
-    if cpi_match is not None:
-        return cpi_match
+    if _country_in_query(phrase) and re.search(r"\b(cpi|inflation|consumer prices?)\b", phrase, re.I):
+        return await _find_cpi_series(phrase, window=window)
+    if _country_in_query(phrase) and _UNEMPLOYMENT_HINTS.search(phrase):
+        return await _find_unemployment_series(phrase, window=window)
     return await _find_generic_series(phrase)
+
+
+# Two independent providers publish on different lags (IMF's CPI is far more
+# current than OECD's harmonised-unemployment release) — asking each side for
+# only its own last 12 points before intersecting can leave zero overlap even
+# though both series are real and both cover the requested country. Widening
+# the window before the intersection (never after) is what actually fixes
+# this; _find_generic_series is unaffected since it never pre-trims.
+_CORRELATION_LOOKUP_WINDOW = 60
 
 
 async def _find_two_series(query: str) -> tuple[SeriesMatch, SeriesMatch] | None:
@@ -308,14 +470,15 @@ async def _find_two_series(query: str) -> tuple[SeriesMatch, SeriesMatch] | None
         return None
     phrase_a, phrase_b = subjects
     match_a, match_b = await asyncio.gather(
-        _find_series_for_phrase(phrase_a), _find_series_for_phrase(phrase_b),
+        _find_series_for_phrase(phrase_a, window=_CORRELATION_LOOKUP_WINDOW),
+        _find_series_for_phrase(phrase_b, window=_CORRELATION_LOOKUP_WINDOW),
     )
     if match_a is None or match_b is None:
         return None
 
     values_a = dict(match_a.points)
     values_b = dict(match_b.points)
-    common_periods = sorted(set(values_a) & set(values_b))
+    common_periods = sorted(set(values_a) & set(values_b))[-12:]
     if len(common_periods) < 3:
         return None
 
@@ -334,7 +497,14 @@ def _build_source(match: SeriesMatch) -> WebSource:
         f"Official data via DBnomics ({match.provider_name} — {match.dataset_name}). "
         f"Series: {match.series_name}. Recent values — {values_txt}."
     )
-    return WebSource(title=f"DBnomics — {match.series_name}"[:200], url=match.url, snippet=snippet)
+    return WebSource(
+        title=f"DBnomics — {match.series_name}"[:200],
+        url=match.url,
+        snippet=snippet,
+        provider=match.provider_name or "DBnomics",
+        fetched_at=datetime.now(timezone.utc).isoformat(),
+        freshness="historical",
+    )
 
 
 def _build_pair_source(match_a: SeriesMatch, match_b: SeriesMatch) -> WebSource:
@@ -349,7 +519,11 @@ def _build_pair_source(match_a: SeriesMatch, match_b: SeriesMatch) -> WebSource:
     )
     return WebSource(
         title=f"DBnomics — {match_a.series_name} vs {match_b.series_name}"[:200],
-        url=match_a.url, snippet=snippet,
+        url=match_a.url,
+        snippet=snippet,
+        provider="DBnomics",
+        fetched_at=datetime.now(timezone.utc).isoformat(),
+        freshness="historical",
     )
 
 

@@ -38,7 +38,7 @@ export function G6Graph({
 
         const brand = cssVar("--brand", "#16799a");
         const ink = cssVar("--ink", "#17211f");
-        const line = cssVar("--line", "#eef3f2");
+        const edgeColor = cssVar("--muted", "#667673");
         const gold = cssVar("--gold", "#f3c437");
 
         graph = new Graph({
@@ -66,7 +66,7 @@ export function G6Graph({
           },
           edge: {
             style: {
-              stroke: line,
+              stroke: edgeColor,
               labelText: (d: { data?: { label?: string } }) => d.data?.label ?? "",
               labelFill: ink,
               labelFontSize: 9,
@@ -119,12 +119,7 @@ export function G6Graph({
   }, [nodes, edges, theme]);
 
   if (failed) {
-    return (
-      <div className="my-4 rounded-xl border border-dashed border-line bg-soft p-4 text-xs leading-5 text-muted">
-        G6 failed to render this graph. Try the Cytoscape renderer instead
-        (unset NEXT_PUBLIC_GRAPH_RENDERER, or set it to &quot;cytoscape&quot;).
-      </div>
-    );
+    throw new Error("G6 failed to initialize");
   }
 
   return (

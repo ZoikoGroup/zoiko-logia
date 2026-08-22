@@ -20,19 +20,16 @@ function GraphLoadingPlaceholder() {
   return <div className="my-4 h-[360px] min-w-0 animate-pulse rounded-2xl border border-line bg-soft shadow-sm" />;
 }
 
-// "Auto" mode's node-count threshold: below this, Cytoscape (the proven
-// production default per this repo's dev/graph-benchmark harness) stays
-// selected; at/above it, G6 (the experimental engine, still unproven on
-// small graphs) gets a chance to show its edge on a genuinely larger graph.
-// extraction.py only ever produces a handful of nodes from user-typed text
-// today, so this threshold realistically selects Cytoscape in practice —
-// the honest complexity signal available, same posture as
-// orchestrator.py's own _INTERACTIVE_STAGE_THRESHOLD.
-const AUTO_G6_NODE_THRESHOLD = 40;
+// "Auto" mode keeps Cytoscape for small relationship diagrams and selects
+// G6 once the supplied graph is large enough for its layout/runtime strengths
+// to matter. A named G6/Cytoscape request in the backend spec takes priority,
+// followed by the deployment-wide environment override.
+const AUTO_G6_NODE_THRESHOLD = 8;
 
 type GraphEngineName = "cytoscape" | "g6";
 
-function resolveEngine(nodeCount: number): GraphEngineName {
+function resolveEngine(nodeCount: number, preferred?: GraphEngineName | "auto" | null): GraphEngineName {
+  if (preferred === "g6" || preferred === "cytoscape") return preferred;
   const override = (process.env.NEXT_PUBLIC_GRAPH_RENDERER ?? "auto").toLowerCase();
   if (override === "g6" || override === "cytoscape") return override;
   return nodeCount >= AUTO_G6_NODE_THRESHOLD ? "g6" : "cytoscape";
@@ -49,9 +46,9 @@ function resolveEngine(nodeCount: number): GraphEngineName {
  * retried, permanently for this mount (spec §19's full chain).
  */
 export function GraphRendererAdapter({
-  nodes, edges,
-}: { nodes: VisualizationGraphNode[]; edges: VisualizationGraphEdge[] }) {
-  const primary = resolveEngine(nodes.length);
+  nodes, edges, preferredEngine,
+}: { nodes: VisualizationGraphNode[]; edges: VisualizationGraphEdge[]; preferredEngine?: GraphEngineName | "auto" | null }) {
+  const primary = resolveEngine(nodes.length, preferredEngine);
   const secondary: GraphEngineName = primary === "g6" ? "cytoscape" : "g6";
 
   const secondaryEl = secondary === "g6" ? <G6Graph nodes={nodes} edges={edges} /> : <CytoscapeGraph nodes={nodes} edges={edges} />;

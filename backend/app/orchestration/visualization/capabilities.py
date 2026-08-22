@@ -49,6 +49,24 @@ ROUTABLE_CAPABILITIES: tuple[VisualizationCapability, ...] = (
         fallbacks=("LINE", "TABLE", "TEXT"),
     ),
     VisualizationCapability(
+        "horizontal_bar", "Horizontal Bar", "COMPARISON", "BAR", "HORIZONTAL_BAR", "BAR",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        minimum_observations=3, priority=0.98, requested_variant="HORIZONTAL_BAR",
+        fallbacks=("BAR", "TABLE", "TEXT"),
+    ),
+    VisualizationCapability(
+        "diverging_bar", "Diverging Bar", "COMPARISON", "BAR", "DIVERGING_BAR", "BAR",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        minimum_observations=3, priority=0.98, requested_variant="DIVERGING_BAR",
+        fallbacks=("BAR", "TABLE", "TEXT"),
+    ),
+    VisualizationCapability(
+        "waterfall_chart", "Waterfall Chart", "FINANCIAL", "WATERFALL", "WATERFALL_CHART", "BAR",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        minimum_observations=3, priority=0.98, requested_variant="WATERFALL_CHART",
+        fallbacks=("BAR", "TABLE", "TEXT"),
+    ),
+    VisualizationCapability(
         "step_line_chart", "Step Line Chart", "TREND", "LINE", "STEP_LINE_CHART", "LINE",
         ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
         minimum_observations=3, priority=0.98, requested_variant="STEP_LINE_CHART",
@@ -67,6 +85,36 @@ ROUTABLE_CAPABILITIES: tuple[VisualizationCapability, ...] = (
         "line_with_markers", "Line with Markers", "TREND", "LINE", "LINE_WITH_MARKERS", "LINE",
         ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
         minimum_observations=3, priority=0.98, requested_variant="LINE_WITH_MARKERS",
+    ),
+    VisualizationCapability(
+        "plain_line", "Plain Line", "TREND", "LINE", "PLAIN_LINE", "LINE",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        minimum_observations=3, priority=0.98, requested_variant="PLAIN_LINE",
+    ),
+    VisualizationCapability(
+        "dashed_line", "Dashed Line", "TREND", "LINE", "DASHED_LINE", "LINE",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        minimum_observations=3, priority=0.98, requested_variant="DASHED_LINE",
+    ),
+    VisualizationCapability(
+        "dotted_line", "Dotted Line", "TREND", "LINE", "DOTTED_LINE", "LINE",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        minimum_observations=3, priority=0.98, requested_variant="DOTTED_LINE",
+    ),
+    VisualizationCapability(
+        "dash_dot_line", "Dash-dot Line", "TREND", "LINE", "DASH_DOT_LINE", "LINE",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        minimum_observations=3, priority=0.98, requested_variant="DASH_DOT_LINE",
+    ),
+    VisualizationCapability(
+        "area_with_markers", "Area + Markers", "TREND", "AREA", "AREA_WITH_MARKERS", "LINE",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        minimum_observations=3, priority=0.98, requested_variant="AREA_WITH_MARKERS",
+    ),
+    VisualizationCapability(
+        "value_labeled_line", "Value-labeled Line", "TREND", "LINE", "VALUE_LABELED_LINE", "LINE",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        minimum_observations=3, priority=0.98, requested_variant="VALUE_LABELED_LINE",
     ),
     VisualizationCapability(
         "heatmap", "Heatmap", "RELATIONSHIP", "HEATMAP",
@@ -114,6 +162,46 @@ ROUTABLE_CAPABILITIES: tuple[VisualizationCapability, ...] = (
         fallbacks=("TABLE", "TEXT"),
     ),
     VisualizationCapability(
+        "scatter_trend", "Scatter Plot with Trend Line", "CORRELATION", "SCATTER", "SCATTER_TREND", "SCATTER",
+        ALL_DOMAINS, ("CORRELATION",), ("XY_NUMERIC",), "ECHARTS",
+        minimum_observations=3, priority=0.98, requested_variant="SCATTER_TREND",
+        fallbacks=("SCATTER", "TABLE", "TEXT"),
+    ),
+    # GROUPED_BAR/STACKED_BAR reinterpret the SAME real two-series pair
+    # SCATTER uses — outscore scatter_plot's 0.93 so an explicit request
+    # wins, same precedence rule as box_plot outscoring the default LINE/BAR
+    # candidates for a distribution question.
+    VisualizationCapability(
+        "grouped_bar_chart", "Grouped Bar Chart", "COMPARISON", "BAR",
+        "GROUPED_BAR_CHART", "GROUPED_BAR", ALL_DOMAINS, ("CORRELATION",),
+        ("XY_NUMERIC",), "ECHARTS", minimum_observations=2, priority=0.96,
+        requested_variant="GROUPED_BAR_CHART", fallbacks=("SCATTER", "TABLE", "TEXT"),
+    ),
+    VisualizationCapability(
+        "stacked_bar_chart", "Stacked Bar Chart", "COMPARISON", "BAR",
+        "STACKED_BAR_CHART", "GROUPED_BAR", ALL_DOMAINS, ("CORRELATION",),
+        ("XY_NUMERIC",), "ECHARTS", minimum_observations=2, priority=0.96,
+        requested_variant="STACKED_BAR_CHART", fallbacks=("SCATTER", "TABLE", "TEXT"),
+    ),
+    VisualizationCapability(
+        "100_stacked_bar", "100% Stacked Bar", "COMPARISON", "BAR",
+        "HUNDRED_PERCENT_STACKED_BAR", "GROUPED_BAR", ALL_DOMAINS, ("CORRELATION",),
+        ("XY_NUMERIC",), "ECHARTS", minimum_observations=2, priority=0.96,
+        requested_variant="HUNDRED_PERCENT_STACKED_BAR", fallbacks=("TABLE", "TEXT"),
+    ),
+    VisualizationCapability(
+        "stacked_horizontal", "Stacked Horizontal Bar", "COMPARISON", "BAR",
+        "STACKED_HORIZONTAL_BAR", "GROUPED_BAR", ALL_DOMAINS, ("CORRELATION",),
+        ("XY_NUMERIC",), "ECHARTS", minimum_observations=2, priority=0.96,
+        requested_variant="STACKED_HORIZONTAL_BAR", fallbacks=("TABLE", "TEXT"),
+    ),
+    VisualizationCapability(
+        "100_stacked_horizontal", "100% Stacked Horizontal Bar", "COMPARISON", "BAR",
+        "HUNDRED_PERCENT_STACKED_HORIZONTAL_BAR", "GROUPED_BAR", ALL_DOMAINS, ("CORRELATION",),
+        ("XY_NUMERIC",), "ECHARTS", minimum_observations=2, priority=0.96,
+        requested_variant="HUNDRED_PERCENT_STACKED_HORIZONTAL_BAR", fallbacks=("TABLE", "TEXT"),
+    ),
+    VisualizationCapability(
         "table_data_grid", "Table / Data Grid", "TABULAR", "TABLE",
         "EXACT_VALUES_TABLE", "TABLE", ALL_DOMAINS, ("PRECISE_DATA",),
         ("TIME_SERIES",), "TABLE_ADAPTER", minimum_observations=2, priority=0.90,
@@ -129,11 +217,31 @@ ROUTABLE_CAPABILITIES: tuple[VisualizationCapability, ...] = (
         ALL_DOMAINS, ("CURRENT_METRIC", "PRECISE_DATA"), ("SCALAR",),
         "KPI_TILE", minimum_observations=1, priority=0.85,
     ),
+    # Real OHLC bars (Polygon/Alpha Vantage, via market_data.py's
+    # fetch_market_sources()) — a history-shaped market-data question
+    # classifies as TREND under intent_classifier.py's own phrasing overlap
+    # ("history", "over the last/past").
+    VisualizationCapability(
+        "candlestick_chart", "Candlestick Chart", "FINANCIAL", "CANDLESTICK",
+        "CANDLESTICK_CHART", "CANDLESTICK", ALL_DOMAINS, ("TREND",),
+        ("OHLC",), "ECHARTS", minimum_observations=0, priority=0.90,
+        fallbacks=("TABLE", "TEXT"),
+    ),
     VisualizationCapability(
         "donut_chart", "Donut Chart", "COMPOSITION", "PIE_DONUT",
         "DONUT_CHART", "DONUT", ALL_DOMAINS, ("COMPOSITION",),
         ("PART_TO_WHOLE",), "ECHARTS", priority=0.85,
         fallbacks=("TABLE", "TEXT"),
+    ),
+    VisualizationCapability(
+        "treemap", "Treemap", "COMPOSITION", "TREEMAP", "TREEMAP_CHART", "DONUT",
+        ALL_DOMAINS, ("COMPOSITION",), ("PART_TO_WHOLE",), "ECHARTS",
+        priority=0.98, requested_variant="TREEMAP_CHART", fallbacks=("DONUT", "TABLE", "TEXT"),
+    ),
+    VisualizationCapability(
+        "radar_chart", "Radar Chart", "COMPARISON", "RADAR", "RADAR_CHART", "DONUT",
+        ALL_DOMAINS, ("COMPOSITION",), ("PART_TO_WHOLE",), "ECHARTS",
+        priority=0.98, requested_variant="RADAR_CHART", fallbacks=("DONUT", "TABLE", "TEXT"),
     ),
 )
 

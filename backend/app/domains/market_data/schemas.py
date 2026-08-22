@@ -96,6 +96,8 @@ class EntityRef:
     cik: str = ""                 # SEC (US)
     exchange: str = ""
     country: str = ""
+    company_status: str = ""
+    company_type: str = ""
 
     def has_any_id(self) -> bool:
         return bool(self.ticker or self.company_number or self.cik)

@@ -14,6 +14,22 @@ export function DataTableView({ viz }: { viz: VisualizationSpec }) {
   const td = "border border-line px-3 py-2 align-top text-ink";
 
   if (viz.type === "LINE" || viz.type === "BAR") {
+    if (viz.type === "LINE" && viz.series.length > 1) {
+      const periods = viz.series[0].data.map((point) => point.x);
+      return (
+        <Table>
+          <thead><tr><th className={th}>Period</th>{viz.series.map((series) => <th key={series.name} className={th}>{series.name}</th>)}</tr></thead>
+          <tbody>
+            {periods.map((period, index) => (
+              <tr key={period}>
+                <td className={td}>{period}</td>
+                {viz.series.map((series) => <td key={series.name} className={td}>{series.data[index].y.toLocaleString()}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      );
+    }
     return (
       <Table>
         <thead><tr><th className={th}>Period</th><th className={th}>{viz.title ?? "Value"}</th></tr></thead>
@@ -100,6 +116,79 @@ export function DataTableView({ viz }: { viz: VisualizationSpec }) {
               <td className={td}>{s.value.toLocaleString()}</td>
               <td className={td}>{s.is_estimated ? "Yes (band midpoint)" : "No"}</td>
             </tr>
+          ))}
+        </tbody>
+      </Table>
+    );
+  }
+
+  if (viz.type === "CANDLESTICK") {
+    return (
+      <Table>
+        <thead>
+          <tr>
+            <th className={th}>Date</th><th className={th}>Open</th><th className={th}>High</th>
+            <th className={th}>Low</th><th className={th}>Close</th><th className={th}>Volume</th>
+          </tr>
+        </thead>
+        <tbody>
+          {viz.candlestick.map((b, i) => (
+            <tr key={i}>
+              <td className={td}>{b.dimension}</td>
+              <td className={td}>{b.open.toLocaleString()}</td>
+              <td className={td}>{b.high.toLocaleString()}</td>
+              <td className={td}>{b.low.toLocaleString()}</td>
+              <td className={td}>{b.close.toLocaleString()}</td>
+              <td className={td}>{b.volume?.toLocaleString() ?? ""}</td>
+            </tr>
+          ))}
+        </tbody>
+      </Table>
+    );
+  }
+
+  if (viz.type === "GROUPED_BAR") {
+    const categories = viz.series[0]?.data.map((p) => p.x) ?? [];
+    return (
+      <Table>
+        <thead>
+          <tr>
+            <th className={th}>Period</th>
+            {viz.series.map((s) => <th key={s.name} className={th}>{s.name}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {categories.map((cat, i) => (
+            <tr key={i}>
+              <td className={td}>{cat}</td>
+              {viz.series.map((s) => <td key={s.name} className={td}>{(s.data[i]?.y ?? 0).toLocaleString()}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </Table>
+    );
+  }
+
+  if (viz.type === "KPI" && viz.value != null) {
+    return (
+      <Table>
+        <tbody>
+          <tr>
+            <td className={td}>{viz.label ?? "Value"}</td>
+            <td className={td}>{viz.value.toLocaleString()}{viz.unit ? ` ${viz.unit}` : ""}</td>
+          </tr>
+        </tbody>
+      </Table>
+    );
+  }
+
+  if (viz.type === "TABLE") {
+    return (
+      <Table>
+        <thead><tr>{viz.columns.map((c) => <th key={c} className={th}>{c}</th>)}</tr></thead>
+        <tbody>
+          {viz.rows.map((r, i) => (
+            <tr key={i}>{viz.columns.map((c) => <td key={c} className={td}>{r[c] ?? ""}</td>)}</tr>
           ))}
         </tbody>
       </Table>
