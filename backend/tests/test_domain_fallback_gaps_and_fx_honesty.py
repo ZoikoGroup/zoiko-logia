@@ -72,6 +72,23 @@ def test_tax_filing_process_flowchart_corrects_false_refusal():
     assert "I'm designed to answer" not in text
 
 
+def test_flow_diagram_wording_is_deterministically_in_scope():
+    q = "Show a flow diagram for: Calculate Gross Pay -> Deduct Tax -> Pay Net Salary"
+    assert _structured_visual_query_is_in_domain(q) is True
+    text = _grounded_domain_fallback(q, EvidenceModel())
+    assert text is not None
+    assert "3 supplied accounting-workflow stages" in text
+
+
+def test_show_relationship_as_network_wording_is_deterministically_in_scope():
+    q = "Show this relationship as a network: Parent Company owns Subsidiary; Subsidiary pays Supplier."
+    assert _structured_visual_query_is_in_domain(q) is True
+    text = _grounded_domain_fallback(q, EvidenceModel())
+    assert text is not None
+    assert "Parent Company owns Subsidiary" in text
+    assert "Subsidiary pays Supplier" in text
+
+
 def test_generic_non_accounting_flowchart_still_returns_none():
     # Guard: a technical/non-accounting flowchart should NOT be force-corrected.
     q = "Show this as a flowchart: Draft -> Manager Review -> Approved -> Published."
@@ -98,4 +115,3 @@ def test_structured_visuals_do_not_repeat_supplied_counts_below_renderer():
     )
     assert _build_evidence_graph_spec(evidence, "graph").summary == ""
     assert _build_process_flow_spec(evidence, "flow").summary == ""
-

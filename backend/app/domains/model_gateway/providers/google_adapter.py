@@ -1,5 +1,8 @@
 # Provider adapter - Google Gemini
+import asyncio
+import logging
 import os
+import random
 
 # Reuse the exact same answering system prompt as the Groq adapter, so
 # switching providers changes only *who* answers, not *how* it is asked to
@@ -12,6 +15,40 @@ from app.domains.model_gateway.providers.groq_adapter import _SYSTEM_PROMPT
 # model (so it won't 404 when a dated version is retired — e.g. gemini-2.5-flash
 # is blocked for new keys).
 _DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+logger = logging.getLogger(__name__)
+
+
+def _status_code(exc: Exception) -> int | None:
+    """Extract only the sanitized HTTP status from google-genai errors."""
+    for value in (getattr(exc, "status_code", None), getattr(exc, "code", None)):
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    value = getattr(response, "status_code", None)
+    return value if isinstance(value, int) else None
+
+
+def _is_transient(exc: Exception) -> bool:
+    status = _status_code(exc)
+    if status is not None:
+        return status in _RETRYABLE_STATUS_CODES
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    name = type(exc).__name__.casefold()
+    return any(token in name for token in ("timeout", "connection", "servererror", "serviceunavailable"))
+
+
+def _retry_delay(exc: Exception) -> float:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    retry_after = headers.get("retry-after") if headers else None
+    if retry_after:
+        try:
+            return max(0.0, min(float(retry_after), 2.0))
+        except (TypeError, ValueError):
+            pass
+    return random.uniform(0.3, 0.8)
 
 
 class GeminiAdapter:
@@ -53,17 +90,33 @@ class GeminiAdapter:
                 "and install 'google-genai' (pip install google-genai).]"
             )
 
-        try:
-            from google.genai import types
+        from google.genai import types
+        config = types.GenerateContentConfig(
+            system_instruction=_SYSTEM_PROMPT,
+            temperature=0.0,
+        )
 
+        async def call() -> str:
             response = await self.client.aio.models.generate_content(
                 model=model,
                 contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=_SYSTEM_PROMPT,
-                    temperature=0.0,  # Deterministic answering per governance
-                ),
+                config=config,
             )
             return response.text or ""
+
+        try:
+            return await call()
         except Exception as e:
-            return f"[Error connecting to Gemini API: {str(e)}]"
+            if not _is_transient(e):
+                return f"[Error connecting to Gemini API: {str(e)}]"
+            status = _status_code(e)
+            logger.info("gemini transient failure; retrying once (status=%s, attempt=1)", status)
+            await asyncio.sleep(_retry_delay(e))
+            try:
+                return await call()
+            except Exception as retry_exc:
+                logger.info(
+                    "gemini retry failed; provider fallback may proceed (status=%s, attempt=2)",
+                    _status_code(retry_exc),
+                )
+                return f"[Error connecting to Gemini API: {str(retry_exc)}]"

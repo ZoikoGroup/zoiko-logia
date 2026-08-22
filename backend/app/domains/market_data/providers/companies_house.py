@@ -86,6 +86,8 @@ class CompaniesHouseProvider(BaseStockProvider):
                 name=str(item.get("title", "")).strip(),
                 company_number=str(item.get("company_number", "")).strip(),
                 country="GB",
+                company_status=str(item.get("company_status", "")).strip(),
+                company_type=str(item.get("company_type", "")).strip(),
             )
             for item in items
             if item.get("company_number")

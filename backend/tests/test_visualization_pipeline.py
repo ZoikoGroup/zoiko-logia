@@ -89,10 +89,20 @@ def test_explicit_chart_request_detected():
     assert plan.explicit_visual_request is True
 
 
+def test_common_line_chart_and_plot_phrasings_are_explicit_visual_requests():
+    for query in (
+        "Show a line chart of US CPI.",
+        "Create a chart for US GDP.",
+        "Plot the US unemployment rate.",
+    ):
+        plan = plan_response(query, TREND, TIME_SERIES)
+        assert plan.explicit_visual_request is True, query
+
+
 # ── Registry ──────────────────────────────────────────────────────────────────
 
-def test_registry_maps_line_to_echarts():
-    assert renderer_for("LINE") == "ECHARTS"
+def test_registry_maps_line_to_recharts():
+    assert renderer_for("LINE") == "RECHARTS"
 
 
 def test_registry_maps_evidence_graph_to_graph_adapter():
@@ -164,7 +174,7 @@ def test_orchestrator_builds_line_spec_from_time_series_evidence():
 
     assert result.visual_required is True
     assert result.selected == "LINE"
-    assert result.renderer == "ECHARTS"
+    assert result.renderer == "RECHARTS"
     assert result.spec is not None
     assert result.spec.type == "LINE"
     assert len(result.spec.data) == 4
@@ -210,7 +220,7 @@ def test_orchestrator_returns_no_visual_for_empty_evidence():
 
 def _valid_line_spec() -> VisualizationSpec:
     return VisualizationSpec(
-        id="viz-1", type="LINE", family="STATISTICAL", renderer="ECHARTS",
+        id="viz-1", type="LINE", family="STATISTICAL", renderer="RECHARTS",
         encoding=VisualizationEncoding(
             x=EncodingField(field="period", type="temporal"),
             y=EncodingField(field="value", type="quantitative"),
@@ -266,3 +276,104 @@ def test_validator_rejects_kpi_spec_without_value():
     spec = VisualizationSpec(id="viz-3", type="KPI", family="STATISTICAL", renderer="KPI_TILE")
     result = VisualizationValidator().validate(spec)
     assert not result.passed
+
+
+# ── Auto-fallback cascade ─────────────────────────────────────────────────────
+# fallbacks_for() has always computed a degrade chain (e.g. LINE -> [BAR,
+# TABLE, TEXT]) but it was only ever surfaced as frontend "View alternatives"
+# metadata — a spec that failed validation was silently dropped to no visual.
+# decide() now retries the chain itself before giving up.
+
+def _invalid_line_spec(spec_id: str) -> VisualizationSpec:
+    # Empty data + no encoding fails validator._line on both counts.
+    return VisualizationSpec(id=spec_id, type="LINE", family="STATISTICAL", renderer="RECHARTS", data=[])
+
+
+def test_line_validation_failure_falls_back_to_bar(monkeypatch):
+    import app.orchestration.visualization.orchestrator as orch
+
+    monkeypatch.setattr(orch, "_build_line_spec", lambda evidence, spec_id: _invalid_line_spec(spec_id))
+
+    evidence = _time_series_evidence()
+    plan = plan_response("Show inflation over the last four quarters.", TREND, TIME_SERIES)
+    result = VisualizationOrchestrator().decide(evidence, TIME_SERIES, plan, spec_id="viz-fallback-1")
+
+    assert result.requested_type == "LINE"
+    assert result.selected == "BAR"
+    assert result.spec is not None
+    assert result.spec.type == "BAR"
+    assert len(result.spec.data) == 4
+    # A fallback substitution has no capability-routing decision behind it.
+    assert result.capability_id is None
+    assert result.canonical is None
+    assert result.variant is None
+
+
+def test_all_fallbacks_exhausted_degrades_to_no_visual(monkeypatch):
+    import app.orchestration.visualization.orchestrator as orch
+
+    def _invalid(spec_type):
+        def _builder(evidence, spec_id):
+            return VisualizationSpec(id=spec_id, type=spec_type, family="STATISTICAL", renderer=renderer_for(spec_type), data=[])
+        return _builder
+
+    monkeypatch.setattr(orch, "_build_line_spec", _invalid("LINE"))
+    monkeypatch.setattr(orch, "_build_bar_spec", _invalid("BAR"))
+    monkeypatch.setattr(orch, "_build_table_spec", lambda evidence, spec_id: VisualizationSpec(
+        id=spec_id, type="TABLE", family="STATISTICAL", renderer="TABLE_ADAPTER", columns=[], rows=[],
+    ))
+
+    evidence = _time_series_evidence()
+    plan = plan_response("Show inflation over the last four quarters.", TREND, TIME_SERIES)
+    result = VisualizationOrchestrator().decide(evidence, TIME_SERIES, plan, spec_id="viz-fallback-2")
+
+    assert result.requested_type == "LINE"
+    assert result.spec is None
+    assert result.visual_required is False
+    assert result.selected is None
+
+
+def test_fallback_never_raises_into_caller(monkeypatch):
+    import app.orchestration.visualization.orchestrator as orch
+
+    def _boom(evidence, spec_id):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(orch, "_build_line_spec", _boom)
+
+    evidence = _time_series_evidence()
+    plan = plan_response("Show inflation over the last four quarters.", TREND, TIME_SERIES)
+    result = VisualizationOrchestrator().decide(evidence, TIME_SERIES, plan, spec_id="viz-fallback-3")
+
+    # LINE's own build raised -> treated as invalid -> cascades to BAR, which
+    # builds fine from the same real evidence.
+    assert result.selected == "BAR"
+    assert result.spec is not None
+
+
+def test_fallback_spec_gets_recomputed_fallback_order(monkeypatch):
+    import app.orchestration.visualization.orchestrator as orch
+
+    monkeypatch.setattr(orch, "_build_line_spec", lambda evidence, spec_id: _invalid_line_spec(spec_id))
+
+    evidence = _time_series_evidence()
+    plan = plan_response("Show inflation over the last four quarters.", TREND, TIME_SERIES)
+    result = VisualizationOrchestrator().decide(evidence, TIME_SERIES, plan, spec_id="viz-fallback-4")
+
+    assert result.selected == "BAR"
+    from app.orchestration.visualization.registry import fallbacks_for
+    assert result.fallback_order == fallbacks_for("BAR")
+    assert result.spec.fallback_order == fallbacks_for("BAR")
+
+
+def test_no_fallback_when_primary_succeeds_keeps_existing_stamping():
+    evidence = _time_series_evidence()
+    plan = plan_response("Show inflation over the last four quarters.", TREND, TIME_SERIES)
+    result = VisualizationOrchestrator().decide(evidence, TIME_SERIES, plan, spec_id="viz-fallback-5")
+
+    assert result.requested_type == "LINE"
+    assert result.selected == "LINE"
+    assert result.capability_id is not None
+    assert result.canonical is not None
+    assert result.spec.capability_id == result.capability_id
+    assert result.spec.canonical == result.canonical

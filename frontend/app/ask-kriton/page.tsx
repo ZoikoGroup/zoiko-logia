@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
@@ -14,14 +14,13 @@ import {
   Loader2,
   ExternalLink,
   FileText,
+  FolderKanban,
   History,
   Lightbulb,
   PenLine,
   RotateCcw,
-  ShieldAlert,
-  ShieldCheck,
-  ShieldOff,
   Sparkles,
+  X,
 } from "lucide-react";
 import { AnswerRenderer } from "@/components/AnswerRenderer";
 import {
@@ -41,7 +40,6 @@ import {
   safeDownloadName,
   writeTextToClipboard,
 } from "@/lib/presentation";
-import { openSourcePopup } from "@/lib/source-popup";
 import { getFollowUpSuggestions } from "@/lib/follow-up-suggestions";
 import { ThinkingIndicator } from "@/components/ask-kriton/ThinkingIndicator";
 import { DesktopSidebar, MobileDrawer } from "@/components/ask-kriton/Sidebar";
@@ -58,8 +56,6 @@ import {
   type Turn,
 } from "@/lib/ask-kriton-storage";
 
-type RiskLevel = "ZERO" | "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
-
 const QUICK_MODES = [
   { label: "Source check", icon: BookOpen, prompt: "Review this question with eligible source grounding: " },
   { label: "Learn", icon: Lightbulb, prompt: "Explain this as a learning note without giving regulated advice: " },
@@ -67,14 +63,6 @@ const QUICK_MODES = [
   { label: "Workflow", icon: BriefcaseBusiness, prompt: "Turn this into a practical accounting workflow: " },
   { label: "Kriton's choice", icon: Sparkles, prompt: "" },
 ];
-
-const RISK_STYLES: Record<RiskLevel, { badge: string; icon: typeof ShieldCheck; label: string }> = {
-  ZERO: { badge: "border-line bg-soft text-muted", icon: ShieldCheck, label: "Zero risk" },
-  LOW: { badge: "border-ok/30 bg-ok/10 text-ok", icon: ShieldCheck, label: "Low risk" },
-  MEDIUM: { badge: "border-info/30 bg-info/10 text-info", icon: ShieldCheck, label: "Medium risk" },
-  HIGH: { badge: "border-warn/30 bg-warn/10 text-warn", icon: ShieldAlert, label: "High risk" },
-  RESTRICTED: { badge: "border-bad/30 bg-bad/10 text-bad", icon: ShieldOff, label: "Restricted — blocked" },
-};
 
 const ROUTE_LABELS: Record<string, string> = {
   // LLM is deliberately absent; the per-turn label below uses actual citation
@@ -144,19 +132,81 @@ function linkedCitations(citations: SourceCitation[]): SourceCitation[] {
   return citations.filter((c) => !!c.url || c.provider === "uploaded_document");
 }
 
-function SourceButton({ citation }: { citation: SourceCitation }) {
-  const label = citation.url ? new URL(citation.url).hostname.replace(/^www\./, "") : citation.title;
+function KritonPanel({
+  title,
+  description,
+  onClose,
+  children,
+}: {
+  title: string;
+  description: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
   return (
-    <button
-      type="button"
-      onClick={() => openSourcePopup(citation)}
-      className="group flex w-full items-start gap-2 rounded-lg px-1 py-1 text-left text-xs leading-5 text-muted hover:bg-soft hover:text-brand"
-    >
+    <div className="absolute inset-0 z-30 flex items-start justify-center bg-ink/20 px-4 pt-20 backdrop-blur-sm" onClick={onClose}>
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(event) => event.stopPropagation()}
+        className="w-full max-w-2xl rounded-2xl border border-line bg-panel p-5 shadow-2xl"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-line pb-4">
+          <div>
+            <h2 className="text-lg font-bold text-ink">{title}</h2>
+            <p className="mt-1 text-sm text-muted">{description}</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label={`Close ${title}`} className="rounded-lg p-2 text-muted hover:bg-soft hover:text-ink">
+            <X size={17} />
+          </button>
+        </div>
+        <div className="max-h-[60vh] overflow-y-auto pt-4">{children}</div>
+      </section>
+    </div>
+  );
+}
+
+function externalSourceUrl(rawUrl?: string | null): string | null {
+  if (!rawUrl) return null;
+  try {
+    const url = new URL(rawUrl);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function SourceButton({ citation }: { citation: SourceCitation }) {
+  const href = externalSourceUrl(citation.url);
+  const content = (
+    <>
       <BookOpen size={13} className="mt-0.5 shrink-0 text-brand" />
-      <span className="font-mono text-brand">[{citation.ref_id}]</span>
-      <span className="flex-1 truncate">{citation.title || label}</span>
-      <ExternalLink size={12} className="mt-0.5 shrink-0 opacity-0 group-hover:opacity-100" />
-    </button>
+      <span className="min-w-0 flex-1 truncate">{citation.title || "Untitled source"}</span>
+      {href && <ExternalLink size={12} className="mt-0.5 shrink-0 opacity-70 group-hover:opacity-100" />}
+    </>
+  );
+
+  if (!href) {
+    return (
+      <div
+        className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-xs leading-5 text-muted"
+        title="No external link is available for this source"
+      >
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-xs leading-5 text-muted hover:bg-soft hover:text-brand"
+    >
+      {content}
+    </a>
   );
 }
 
@@ -219,7 +269,9 @@ function conversationAsMarkdown(conversation: Conversation) {
   return parts.join("\n");
 }
 
-// Copy / Download / Reuse for one composed answer. Each button owns a
+// Familiar assistant-style action row: lightweight controls immediately
+// below the response, with one unambiguous copy action.
+// Each button owns a
 // short-lived status so the result is visible without a toast system: an
 // action that silently succeeds reads as an action that did nothing.
 function ResponseActions({
@@ -304,44 +356,63 @@ function ResponseActions({
   }
 
   const actions = [
-    { key: "copy", label: "Copy", doneLabel: "Copied", icon: Copy, onClick: copyAnswer },
-    { key: "download", label: "Download .md", doneLabel: "Downloaded", icon: Download, onClick: downloadAnswer },
-    { key: "save", label: "Save", doneLabel: "Saved", icon: Bookmark, onClick: saveAnswer },
+    { key: "copy", label: "Copy answer", doneLabel: "Copied", icon: Copy, onClick: copyAnswer, title: "Copy the answer text" },
+    { key: "download", label: "Download .md", doneLabel: "Downloaded", icon: Download, onClick: downloadAnswer, title: "Download the complete response as Markdown" },
+    { key: "save", label: "Save", doneLabel: "Saved", icon: Bookmark, onClick: saveAnswer, title: "Save this answer in Kriton" },
     ...(onReuse
-      ? [{ key: "reuse", label: "Reuse prompt", doneLabel: "Reuse prompt", icon: RotateCcw, onClick: onReuse }]
+      ? [{ key: "reuse", label: "Reuse prompt", doneLabel: "Reuse prompt", icon: RotateCcw, onClick: onReuse, title: "Put this prompt back in the composer" }]
       : []),
   ];
 
   return (
-    <div className="mt-4 border-t border-line pt-3">
-      <div className="flex flex-wrap items-center gap-1.5">
-      {actions.map(({ key, label, doneLabel, icon: Icon, onClick }) => {
+    <div className="mt-4">
+      <div className="flex flex-wrap items-center gap-0.5" aria-label="Response actions">
+      {actions.map(({ key, label, doneLabel, icon: Icon, onClick, title }) => {
         const state = status[key] ?? "idle";
         return (
           <button
             key={key}
             type="button"
             onClick={onClick}
+            title={title}
+            aria-label={title}
             disabled={state === "busy"}
-            className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition disabled:opacity-50 ${
+            className={`inline-flex h-8 min-w-8 items-center justify-center gap-1.5 rounded-lg px-2 text-[11px] font-semibold transition disabled:opacity-50 ${
               state === "error"
-                ? "border-bad/40 text-bad"
+                ? "bg-bad/10 text-bad"
                 : state === "done"
-                  ? "border-ok/40 text-ok"
-                  : "border-line text-muted hover:border-brand/40 hover:text-brand"
+                  ? "bg-ok/10 text-ok"
+                  : "text-muted hover:bg-soft hover:text-ink"
             }`}
           >
             {state === "busy" ? (
-              <Loader2 size={12} className="animate-spin" />
+              <Loader2 size={16} className="animate-spin" />
             ) : state === "done" ? (
-              <CheckCircle2 size={12} />
+              <CheckCircle2 size={16} />
             ) : (
-              <Icon size={12} />
+              <Icon size={16} />
             )}
-            {state === "done" ? doneLabel : label}
+            <span>{state === "done" ? doneLabel : label}</span>
           </button>
         );
       })}
+      {result.answer && result.answer.citations.length > 0 && (
+        <details className="group/sources basis-full sm:basis-auto">
+          <summary className="flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-muted transition hover:bg-soft hover:text-ink">
+            <BookOpen size={15} />
+            Sources
+            <span className="rounded-full bg-soft px-1.5 py-0.5 text-[10px]">{result.answer.citations.length}</span>
+            <ChevronDown size={13} className="transition-transform group-open/sources:rotate-180" />
+          </summary>
+          <div className="mt-1 w-full min-w-0 rounded-xl border border-line bg-panel p-2 shadow-lg sm:w-[420px]">
+            <div className="max-h-56 overscroll-contain overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+              {result.answer.citations.map((citation) => (
+                <SourceButton key={citation.ref_id} citation={citation} />
+              ))}
+            </div>
+          </div>
+        </details>
+      )}
       </div>
       {(result.artifacts ?? []).length > 0 && (
         <div className="mt-3 space-y-2">
@@ -373,6 +444,11 @@ function ResponseActions({
           {result.artifact_error}
         </div>
       )}
+      <span className="sr-only" aria-live="polite">
+        {Object.entries(status).find(([, state]) => state === "done")?.[0]
+          ? "Response action completed"
+          : Object.values(status).includes("error") ? "Response action failed" : ""}
+      </span>
       {saveError && <p className="mt-1.5 text-[11px] font-medium text-bad">{saveError}</p>}
     </div>
   );
@@ -390,12 +466,9 @@ function ConversationTurn({
   const { submittedQuery, result, error, loading, attachments = [] } = turn;
   const followUps = useMemo(() => getFollowUpSuggestions(result, submittedQuery), [result, submittedQuery]);
   const safety = result?.safety ?? null;
-  const riskLevel = (safety?.risk_level ?? "LOW") as RiskLevel;
-  const style = safety ? RISK_STYLES[riskLevel] : null;
   const route = result?.route ?? null;
   const outcome = result?.outcome ?? null;
   const outcomeStyle = outcome ? OUTCOME_STYLES[outcome] : null;
-  const bundle = result?.source_bundle ?? null;
   const visibleLimitations = result?.answer?.limitations.filter(
     (l) => l !== "This response is for educational purposes only. Consult a qualified professional.",
   ) ?? [];
@@ -474,25 +547,6 @@ function ConversationTurn({
                     visualization={result.visualization}
                     secondaryVisualizations={result.secondary_visualizations}
                   />
-                  {result.answer.citations.length > 0 && (
-                    <details className="group/sources mt-5 border-t border-line pt-4">
-                      {/* Collapsed by default — the list only opens on click, so a
-                          long answer is not pushed down by its own provenance.
-                          Named group: SourceButton carries its own bare `group`,
-                          and an unnamed group here would fire its hover styles
-                          from anywhere in the panel. */}
-                      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs font-bold uppercase text-muted transition hover:text-ink">
-                        <ChevronDown size={13} className="shrink-0 transition-transform group-open/sources:rotate-180" />
-                        Sources
-                        <span className="rounded-full bg-soft px-1.5 py-0.5 text-[10px] font-semibold normal-case text-muted">
-                          {result.answer.citations.length}
-                        </span>
-                      </summary>
-                      <div className="mt-2 space-y-1">
-                        {result.answer.citations.map((c) => <SourceButton key={c.ref_id} citation={c} />)}
-                      </div>
-                    </details>
-                  )}
                   {visibleLimitations.length > 0 && (
                     <div className="mt-4 space-y-2 border-t border-line pt-4">
                       {visibleLimitations.map((l, i) => (
@@ -536,14 +590,6 @@ function ConversationTurn({
                 onFollowUp={onFollowUp ? (question) => onFollowUp(question, submittedQuery) : undefined}
               />
             </div>
-
-            {bundle && outcome === "answered" && (
-              <p className="mt-4 border-t border-line pt-3 text-[11px] text-muted">
-                {bundle.eligible_source_count} eligible records
-                {bundle.excluded_source_count > 0 ? ` · ${bundle.excluded_source_count} excluded` : ""} · {result.confidence_state.replaceAll("_", " ")} confidence
-                {bundle.jurisdiction ? ` · ${bundle.jurisdiction}` : " · Any jurisdiction"} · {bundle.freshness_state === "unknown" ? "freshness not recorded" : `${bundle.freshness_state} freshness`} · {style?.label ?? "Unknown risk"}
-              </p>
-            )}
           </article>
         </div>
       )}
@@ -567,6 +613,7 @@ export default function AskKritonPage() {
     return loadActiveConversationId(loadConversations());
   });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [sidebarPanel, setSidebarPanel] = useState<"projects" | "sources" | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   async function refreshDocuments() {
@@ -699,6 +746,7 @@ export default function AskKritonPage() {
     const convId = activeId ?? genId("conv");
     const now = timestamp();
     const priorConversation = conversations.find((c) => c.id === convId) ?? null;
+    const previousQuery = priorConversation?.turns.at(-1)?.submittedQuery.trim() || undefined;
     const cycle = clarificationCycleFor(priorConversation);
     setConversations((prev) => {
       const next = isNew
@@ -724,6 +772,7 @@ export default function AskKritonPage() {
         token,
         {
           query: trimmed,
+          previous_query: previousQuery,
           jurisdiction,
           mode,
           clarification_cycle: cycle,
@@ -752,6 +801,17 @@ export default function AskKritonPage() {
   const activeConversation = conversations.find((c) => c.id === activeId) ?? null;
   const hasConversation = activeConversation !== null && activeConversation.turns.length > 0;
   const sorted = useMemo(() => sortConversations(conversations), [conversations]);
+  const conversationSources = useMemo(() => {
+    const unique = new Map<string, SourceCitation>();
+    for (const conversation of conversations) {
+      for (const turn of conversation.turns) {
+        for (const citation of turn.result?.answer?.citations ?? []) {
+          unique.set(citation.url || `${citation.ref_id}:${citation.title}`, citation);
+        }
+      }
+    }
+    return [...unique.values()];
+  }, [conversations]);
   const lastTurnLoading = activeConversation?.turns.at(-1)?.loading;
   const turnCount = activeConversation?.turns.length;
 
@@ -768,6 +828,8 @@ export default function AskKritonPage() {
     onDownload: downloadConversation,
     onDelete: deleteConversation,
     onNewChat: startNewChat,
+    onOpenProjects: () => setSidebarPanel("projects"),
+    onOpenSources: () => setSidebarPanel("sources"),
   };
 
   return (
@@ -787,6 +849,53 @@ export default function AskKritonPage() {
               <History size={19} />
             </button>
           </header>
+
+          {sidebarPanel === "projects" && (
+            <KritonPanel
+              title="Projects"
+              description="Continue your Kriton work without leaving the assistant."
+              onClose={() => setSidebarPanel(null)}
+            >
+              {sorted.length === 0 ? (
+                <p className="text-sm text-muted">No project conversations yet. Start a new chat to create your first one.</p>
+              ) : (
+                <div className="space-y-2">
+                  {sorted.map((conversation) => (
+                    <button
+                      key={conversation.id}
+                      type="button"
+                      onClick={() => { selectConversation(conversation.id); setSidebarPanel(null); }}
+                      className="flex w-full items-center justify-between gap-4 rounded-xl border border-line p-3 text-left hover:border-brand/30 hover:bg-soft"
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-semibold text-ink">{conversation.title}</span>
+                        <span className="mt-0.5 block text-xs text-muted">{conversation.turns.length} exchange{conversation.turns.length === 1 ? "" : "s"}</span>
+                      </span>
+                      <FolderKanban size={17} className="shrink-0 text-brand" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </KritonPanel>
+          )}
+
+          {sidebarPanel === "sources" && (
+            <KritonPanel
+              title="Sources"
+              description="Sources cited across your Kriton conversations."
+              onClose={() => setSidebarPanel(null)}
+            >
+              {conversationSources.length === 0 ? (
+                <p className="text-sm text-muted">No cited sources yet. Sources used in answers will appear here.</p>
+              ) : (
+                <div className="space-y-1">
+                  {conversationSources.map((citation) => (
+                    <SourceButton key={citation.url || `${citation.ref_id}:${citation.title}`} citation={citation} />
+                  ))}
+                </div>
+              )}
+            </KritonPanel>
+          )}
 
           <div ref={scrollRef} className="relative z-10 min-w-0 flex-1 overflow-y-auto px-4">
             <div className="mx-auto flex min-h-full min-w-0 w-full max-w-5xl flex-col items-center justify-center pb-16 pt-6 md:pb-24 md:pt-8">
@@ -841,30 +950,6 @@ export default function AskKritonPage() {
                 </div>
               ) : (
                 <div className="w-full min-w-0 max-w-3xl space-y-6 self-stretch md:translate-x-14 lg:translate-x-24">
-                  {activeConversation && (
-                    <div className="flex items-center justify-between gap-3 border-b border-line/70 pb-3">
-                      <p className="truncate text-xs font-semibold text-muted">
-                        {activeConversation.title}
-                        <span className="ml-2 font-normal">
-                          {activeConversation.turns.length} exchange
-                          {activeConversation.turns.length === 1 ? "" : "s"}
-                        </span>
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          downloadTextFile(
-                            conversationAsMarkdown(activeConversation),
-                            safeDownloadName(activeConversation.title || "kriton-chat", "md"),
-                          )
-                        }
-                        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[11px] font-semibold text-muted transition hover:border-brand/40 hover:text-brand"
-                      >
-                        <Download size={12} />
-                        Download chat
-                      </button>
-                    </div>
-                  )}
                   {activeConversation?.turns.map((turn) => (
                     <div key={turn.id} className="min-w-0 space-y-6 border-b border-line/70 pb-7 last:border-b-0">
                       <ConversationTurn turn={turn} onFollowUp={handleFollowUp} onReuse={setQuery} />

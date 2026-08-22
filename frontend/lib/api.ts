@@ -537,11 +537,12 @@ export type AskKritonRequest = {
   query: string;
   document_ids?: string[];
   source_scope?: "WEB_ONLY" | "DOCUMENTS_ONLY" | "DOCUMENTS_THEN_WEB" | "COMBINED";
+  /** Immediately preceding user query, used to resolve contextual follow-ups. */
+  previous_query?: string;
   jurisdiction?: string;
   mode?: string;
   clarification_cycle?: number;
-  /** Scopes chart-repetition/telemetry to one thread. Not yet read by the
-   * backend — accepted here so the frontend contract is forward-compatible. */
+  /** Scopes audit correlation and follow-up context to one thread. */
   conversation_id?: string;
 };
 
@@ -767,7 +768,7 @@ export type ComposedAnswer = {
  * executable code. Only ever set on "answered" outcomes. See that module's
  * docstring for current scope: LINE/BAR/KPI (statistical), EVIDENCE_GRAPH
  * (renderer=GRAPH_ADAPTER, resolves to Cytoscape or G6), PROCESS_FLOW
- * (renderer=FLOW_ADAPTER, resolves to X6). Graph/flow specs are only ever
+ * (renderer=FLOW_ADAPTER, resolves to X6 or Mermaid). Graph/flow specs are only ever
  * populated from entities/relationships the USER explicitly supplied in
  * their own query text (see backend/app/orchestration/extraction.py) —
  * never fabricated.
@@ -798,11 +799,20 @@ export type VisualizationScatterPoint = { label: string; x: number; y: number };
  * that per slice rather than spec-wide, so a future exact-percentage source
  * could mix in real slices without every slice appearing falsely precise. */
 export type VisualizationDonutSlice = { label: string; value: number; is_estimated: boolean };
+/** CANDLESTICK only — one real trading-period bar, never synthesized. */
+export type VisualizationOHLCBar = {
+  dimension: string; open: number; high: number; low: number; close: number; volume: number | null;
+};
+/** GROUPED_BAR only — one labeled series; `variant === "STACKED_BAR_CHART"`
+ * flips the frontend to stacked rendering of the SAME series data. */
+export type VisualizationNamedSeries = { name: string; data: VisualizationDataPoint[] };
 
 export type VisualizationSpec = {
   version: string;
   id: string;
-  type: "LINE" | "BAR" | "HISTOGRAM" | "BOX" | "SCATTER" | "KPI" | "EVIDENCE_GRAPH" | "HEATMAP" | "PROCESS_FLOW" | "TABLE" | "DONUT";
+  type:
+    | "LINE" | "BAR" | "HISTOGRAM" | "BOX" | "SCATTER" | "KPI" | "EVIDENCE_GRAPH" | "HEATMAP"
+    | "PROCESS_FLOW" | "TABLE" | "DONUT" | "CANDLESTICK" | "GROUPED_BAR";
   family: string;
   capability_id?: string | null;
   canonical?: string | null;
@@ -815,7 +825,7 @@ export type VisualizationSpec = {
     subdomain: string;
     intent?: string | null;
   };
-  renderer: "ECHARTS" | "KPI_TILE" | "GRAPH_ADAPTER" | "FLOW_ADAPTER" | "TABLE_ADAPTER";
+  renderer: "RECHARTS" | "ECHARTS" | "KPI_TILE" | "GRAPH_ADAPTER" | "FLOW_ADAPTER" | "TABLE_ADAPTER";
   title?: string | null;
   summary?: string | null;
   unit?: string | null;
@@ -827,6 +837,9 @@ export type VisualizationSpec = {
   edges: VisualizationGraphEdge[];
   /** PROCESS_FLOW only — true routes to X6, false to Mermaid. Meaningless for other types. */
   interactive: boolean;
+  /** Optional explicit graph/flow engine requested by the user. */
+  graph_engine?: "auto" | "cytoscape" | "g6" | null;
+  flow_engine?: "mermaid" | "x6" | null;
   cells: VisualizationHeatmapCell[];
   /** BOX only — real min/Q1/median/Q3/max computed from the same values HISTOGRAM bins. */
   box?: VisualizationBoxSummary | null;
@@ -835,6 +848,11 @@ export type VisualizationSpec = {
   correlation_coefficient?: number | null;
   /** DONUT only — real, named holders and their percent share. */
   donut: VisualizationDonutSlice[];
+  /** CANDLESTICK only — real OHLC trading bars. */
+  candlestick: VisualizationOHLCBar[];
+  /** GROUPED_BAR only — real, period-aligned series (reinterprets the same
+   * pair SCATTER uses when explicitly requested as a bar chart). */
+  series: VisualizationNamedSeries[];
   /** TABLE only — real rows, column order given by `columns`. */
   columns: string[];
   rows: Record<string, string>[];
@@ -929,7 +947,7 @@ export async function askKriton(
     });
     return res.json();
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
+    if (error instanceof Error && error.name === "AbortError") {
       throw new ApiError(408, "Kriton took too long to respond. Please try again.");
     }
     throw error;

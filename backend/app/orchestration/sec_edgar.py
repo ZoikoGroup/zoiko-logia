@@ -106,6 +106,14 @@ _CONCEPTS: list[tuple[re.Pattern, str, tuple[str, ...]]] = [
 # being useful provenance and starts being noise.
 _MAX_CONCEPTS = 3
 
+_GENERIC_FILING_REQUEST = re.compile(
+    r"\b(?:SEC|EDGAR)\b(?:(?![.;]).){0,80}\bfilings?\b|"
+    r"\bfilings?\b(?:(?![.;]).){0,80}\b(?:SEC|EDGAR)\b|"
+    r"\b(?:10-K|10-Q|8-K|20-F|6-K)\s+(?:filings?|reports?)\b|"
+    r"\b(?:show|list|get|find)\b(?:(?![.;]).){0,60}\b(?:10-K|10-Q|8-K|20-F|6-K)s?\b",
+    re.I,
+)
+
 # Corporate-form suffixes stripped when matching a company name in prose, so
 # "Apple" matches the registrant titled "Apple Inc.".
 _NAME_SUFFIXES = re.compile(
@@ -328,6 +336,50 @@ def filing_index_url(cik: int, accession: str) -> str:
     return f"{_www_base()}/Archives/edgar/data/{cik}/{compact}/{accession}-index.htm"
 
 
+def _requested_forms(query: str) -> set[str]:
+    return {form.upper() for form in re.findall(r"\b(10-K|10-Q|8-K|20-F|6-K)\b", query, re.I)}
+
+
+def _recent_filings_source(query: str, company: dict, submissions: dict) -> WebSource | None:
+    """Build one honest source summary from EDGAR's submissions feed."""
+    recent = ((submissions.get("filings") or {}).get("recent") or {})
+    accessions = recent.get("accessionNumber") or []
+    forms = recent.get("form") or []
+    dates = recent.get("filingDate") or []
+    descriptions = recent.get("primaryDocDescription") or []
+    requested = _requested_forms(query)
+    rows: list[tuple[str, str, str, str]] = []
+    for index, accession in enumerate(accessions):
+        form = str(forms[index]) if index < len(forms) else ""
+        if requested and form.upper() not in requested:
+            continue
+        date = str(dates[index]) if index < len(dates) else ""
+        description = str(descriptions[index]) if index < len(descriptions) else ""
+        rows.append((date, form, str(accession), description))
+        if len(rows) >= 8:
+            break
+    if not rows:
+        return None
+
+    cik = int(company["cik_str"])
+    entity = str(company.get("title", "")).strip()
+    ticker = str(company.get("ticker", "")).strip()
+    lines = "; ".join(
+        f"{date}: {form}{f' — {description}' if description else ''}"
+        for date, form, _, description in rows
+    )
+    return WebSource(
+        title=f"SEC EDGAR — {entity} recent filings"[:200],
+        url=filing_index_url(cik, rows[0][2]),
+        snippet=(
+            f"Recent filings submitted to the SEC by {entity} ({ticker}): {lines}. "
+            "Dates and form types come directly from the registrant's EDGAR submissions record."
+        ),
+        provider="sec_edgar",
+        freshness="filing",
+    )
+
+
 async def _load_registrants(client: httpx.AsyncClient) -> list[dict]:
     """Ticker/CIK index, cached in-process for _TICKERS_TTL_SECONDS."""
     global _tickers_cache, _tickers_fetched_at
@@ -381,7 +433,8 @@ async def fetch_sec_facts(query: str) -> list[WebSource]:
         return []
 
     concepts = pick_concepts(query)
-    if not concepts:
+    generic_filings = bool(_GENERIC_FILING_REQUEST.search(query))
+    if not concepts and not generic_filings:
         return []
 
     year = find_year(query)
@@ -394,6 +447,11 @@ async def fetch_sec_facts(query: str) -> list[WebSource]:
                 return []
 
             cik = int(company["cik_str"])
+            if generic_filings and not concepts:
+                response = await client.get(f"{_data_base()}/submissions/CIK{cik:010d}.json")
+                response.raise_for_status()
+                source = _recent_filings_source(query, company, response.json())
+                return [source] if source else []
             results = await asyncio.gather(
                 *(_fetch_concept(client, cik, label, tags, year) for label, tags in concepts),
                 return_exceptions=True,

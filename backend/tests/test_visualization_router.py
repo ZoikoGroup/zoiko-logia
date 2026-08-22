@@ -135,11 +135,67 @@ def test_explicit_chart_variants_route_to_distinct_capabilities():
     cases = {
         "Show CPI as a bar chart over time.": ("bar_chart", "BAR", "BAR_CHART"),
         "Show CPI as a step line chart over time.": ("step_line_chart", "LINE", "STEP_LINE_CHART"),
+        "Show CPI as a smooth spline over time.": ("spline_line_chart", "LINE", "SPLINE_LINE_CHART"),
         "Show CPI as an area chart over time.": ("area_chart", "AREA", "AREA_CHART"),
         "Show CPI as a line with markers over time.": ("line_with_markers", "LINE", "LINE_WITH_MARKERS"),
+        "Show CPI as a plain line over time.": ("plain_line", "LINE", "PLAIN_LINE"),
+        "Show CPI as a dashed line over time.": ("dashed_line", "LINE", "DASHED_LINE"),
+        "Show CPI as a dotted line over time.": ("dotted_line", "LINE", "DOTTED_LINE"),
+        "Show CPI as a dash-dot line over time.": ("dash_dot_line", "LINE", "DASH_DOT_LINE"),
+        "Show CPI as an area chart with markers over time.": ("area_with_markers", "AREA", "AREA_WITH_MARKERS"),
+        "Show CPI as a value-labeled line over time.": ("value_labeled_line", "LINE", "VALUE_LABELED_LINE"),
     }
     from app.orchestration.response_planner import plan_response
     for query, expected in cases.items():
         plan = plan_response(query, "TREND", TIME_SERIES)
         route = choose_visual_route(data_shape=TIME_SERIES, plan=plan, observation_count=12, query=query)
         assert (route.capability_id, route.canonical, route.variant) == expected
+
+
+def test_single_series_bar_variants_route_dynamically():
+    cases = {
+        "Show CPI as a vertical bar chart.": ("bar_chart", "BAR_CHART"),
+        "Show CPI as a horizontal bar chart.": ("horizontal_bar", "HORIZONTAL_BAR"),
+        "Show CPI as a diverging bar chart.": ("diverging_bar", "DIVERGING_BAR"),
+        "Show CPI as a waterfall chart.": ("waterfall_chart", "WATERFALL_CHART"),
+    }
+    from app.orchestration.response_planner import plan_response
+    for query, expected in cases.items():
+        plan = plan_response(query, "TREND", TIME_SERIES)
+        route = choose_visual_route(data_shape=TIME_SERIES, plan=plan, observation_count=12, query=query)
+        assert (route.capability_id, route.variant) == expected
+
+
+def test_multi_series_bar_variants_route_dynamically():
+    cases = {
+        "Show the series as a grouped bar chart.": ("grouped_bar_chart", "GROUPED_BAR_CHART"),
+        "Show the series as a clustered bar (multi-series).": ("grouped_bar_chart", "GROUPED_BAR_CHART"),
+        "Show the series as a stacked bar chart.": ("stacked_bar_chart", "STACKED_BAR_CHART"),
+        "Show the series as a 100% stacked bar.": ("100_stacked_bar", "HUNDRED_PERCENT_STACKED_BAR"),
+        "Show the series as a stacked horizontal bar.": ("stacked_horizontal", "STACKED_HORIZONTAL_BAR"),
+        "Show the series as a 100% stacked horizontal bar.": ("100_stacked_horizontal", "HUNDRED_PERCENT_STACKED_HORIZONTAL_BAR"),
+    }
+    from app.orchestration.response_planner import plan_response
+    from app.orchestration.data_shape import XY_NUMERIC
+    for query, expected in cases.items():
+        plan = plan_response(query, "CORRELATION", XY_NUMERIC)
+        route = choose_visual_route(data_shape=XY_NUMERIC, plan=plan, observation_count=12, query=query)
+        assert (route.capability_id, route.variant) == expected
+
+
+def test_additional_reference_variants_route_only_on_compatible_data():
+    from app.orchestration.response_planner import plan_response
+    from app.orchestration.data_shape import PART_TO_WHOLE, XY_NUMERIC
+
+    scatter_query = "Show the correlation as a scatter plot with trend line."
+    scatter_plan = plan_response(scatter_query, "CORRELATION", XY_NUMERIC)
+    scatter_route = choose_visual_route(data_shape=XY_NUMERIC, plan=scatter_plan, observation_count=12, query=scatter_query)
+    assert (scatter_route.capability_id, scatter_route.variant) == ("scatter_trend", "SCATTER_TREND")
+
+    for query, expected in (
+        ("Show the ownership composition as a treemap.", ("treemap", "TREEMAP_CHART")),
+        ("Show the ownership composition as a radar chart.", ("radar_chart", "RADAR_CHART")),
+    ):
+        plan = plan_response(query, "COMPOSITION", PART_TO_WHOLE)
+        route = choose_visual_route(data_shape=PART_TO_WHOLE, plan=plan, observation_count=0, query=query)
+        assert (route.capability_id, route.variant) == expected

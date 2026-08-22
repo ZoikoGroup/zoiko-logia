@@ -64,6 +64,10 @@ def _slug(name: str) -> str:
 
 def _canonical(name: str, group: str) -> str:
     n = name.lower()
+    # Specific compound names must be resolved before substring checks below
+    # ("treemap" contains "map", but is hierarchical composition, not geo).
+    if "treemap" in n or "sunburst" in n:
+        return "TREEMAP"
     if group == "NETWORK_GRAPH":
         return "GRAPH"
     if group == "FLOW":
@@ -76,6 +80,12 @@ def _canonical(name: str, group: str) -> str:
         if any(word in n for word in ("sequence", "state", "activity", "use case")):
             return "FLOW"
         return "GRAPH"
+    # Several source labels in these groups omit the literal words "bar" or
+    # "column" (for example, "Stacked Horizontal"). Their group is the
+    # authoritative family; more-specific checks below still identify
+    # waterfall variants before this fallback is used.
+    if group in {"BAR", "COLUMN"} and "waterfall" not in n:
+        return "BAR"
     checks = (
         (("table", "trial balance", "balance sheet", "income statement", "cash flow statement"), "TABLE"),
         (("candlestick", "ohlc", "heikin", "renko", "kagi", "ichimoku", "bollinger", "point & figure"), "CANDLESTICK"),
@@ -90,6 +100,7 @@ def _canonical(name: str, group: str) -> str:
         (("histogram", "distribution", "density", "violin", "ridgeline", "benford"), "HISTOGRAM"),
         (("pie", "donut", "ring chart", "breakdown"), "PIE_DONUT"),
         (("treemap", "sunburst"), "TREEMAP"), (("gauge", "speedometer", "dial"), "GAUGE"),
+        (("radar chart",), "RADAR"),
         (("kpi", "scorecard", "dashboard"), "KPI"), (("timeline", "chronology", "milestone", "roadmap"), "TIMELINE"),
         (("area",), "AREA"), (("bar", "column", "bullet"), "BAR"),
         (("funnel", "pyramid"), "PIE_DONUT"),
@@ -114,6 +125,7 @@ _META = {
     "KPI": ("KPI", ("KPI",), ("SCALAR",), "KPI_TILE", {"numeric_columns": 1}),
     "PIE_DONUT": ("COMPOSITION", ("COMPOSITION",), ("PART_TO_WHOLE",), "ECHARTS", {"min_rows": 2}),
     "TREEMAP": ("COMPOSITION", ("COMPOSITION", "HIERARCHY"), ("HIERARCHY",), "ECHARTS", {"min_rows": 2}),
+    "RADAR": ("COMPARISON", ("COMPOSITION", "MULTI_METRIC_ANALYSIS"), ("PART_TO_WHOLE",), "ECHARTS", {"min_rows": 3}),
     "WATERFALL": ("FINANCIAL", ("BRIDGE", "MOVEMENT", "VARIANCE"), ("SIGNED_SEQUENCE",), "ECHARTS", {"min_rows": 3}),
     "GAUGE": ("KPI", ("KPI",), ("SCALAR",), "ECHARTS", {"numeric_columns": 1}),
     "TIMELINE": ("TIMELINE", ("TIMELINE", "SEQUENCE"), ("EVENT_SEQUENCE",), "ECHARTS", {"min_rows": 2}),
@@ -148,3 +160,43 @@ for _group, _domain, _names in _GROUPS:
 
 IMAGE_TAXONOMY: tuple[TaxonomyEntry, ...] = tuple(_entries)
 IMAGE_TAXONOMY_BY_ID: dict[str, TaxonomyEntry] = {entry.id: entry for entry in IMAGE_TAXONOMY}
+
+# Supplemental taxonomy supplied as the "10 types of line charts" reference.
+# These are rendering variants over the same proven TIME_SERIES shape, not
+# additional data families.  Keep them separate from the original numbered
+# 290-entry catalogue so its source numbering remains stable and auditable.
+_LINE_VARIANT_NAMES = (
+    ("plain_line", "Plain Line"),
+    ("dashed_line", "Dashed Line"),
+    ("dotted_line", "Dotted Line"),
+    ("dash_dot_line", "Dash-dot Line"),
+    ("area_with_markers", "Area + Markers"),
+    ("value_labeled_line", "Value-labeled Line"),
+)
+LINE_VARIANT_TAXONOMY: tuple[TaxonomyEntry, ...] = tuple(
+    TaxonomyEntry(
+        id=entry_id, name=name, group="LINE_AREA", family="TREND",
+        canonical_type="AREA" if entry_id == "area_with_markers" else "LINE",
+        domains=("GENERAL_ANALYTICS",), supported_intents=("TREND",),
+        supported_data_shapes=("TIME_SERIES",), renderer="RECHARTS",
+        minimum_requirements={"min_rows": 3}, interaction_level="MEDIUM",
+        fallbacks=("TABLE", "TEXT"), source_number=index,
+    )
+    for index, (entry_id, name) in enumerate(_LINE_VARIANT_NAMES, start=1)
+)
+IMAGE_TAXONOMY_BY_ID.update({entry.id: entry for entry in LINE_VARIANT_TAXONOMY})
+
+# The bar-chart reference adds one normalized style that was not named in the
+# original catalogue. "Clustered bar" is already the standard grouped-bar
+# capability, so it remains an input synonym rather than duplicate metadata.
+BAR_VARIANT_TAXONOMY: tuple[TaxonomyEntry, ...] = (
+    TaxonomyEntry(
+        id="100_stacked_horizontal", name="100% Stacked Horizontal Bar",
+        group="BAR", family="COMPARISON", canonical_type="BAR",
+        domains=("GENERAL_ANALYTICS",), supported_intents=("CORRELATION",),
+        supported_data_shapes=("XY_NUMERIC",), renderer="RECHARTS",
+        minimum_requirements={"min_rows": 2}, interaction_level="MEDIUM",
+        fallbacks=("TABLE", "TEXT"), source_number=1,
+    ),
+)
+IMAGE_TAXONOMY_BY_ID.update({entry.id: entry for entry in BAR_VARIANT_TAXONOMY})

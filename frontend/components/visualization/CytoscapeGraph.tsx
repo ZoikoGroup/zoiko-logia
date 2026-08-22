@@ -56,7 +56,7 @@ export function CytoscapeGraph({
         const chart2 = cssVar("--chart-2", "#eb6834");
         const ink = cssVar("--ink", "#17211f");
         const muted = cssVar("--muted", "#667673");
-        const line = cssVar("--line", "#eef3f2");
+        const edgeColor = cssVar("--muted", "#667673");
         const panel = cssVar("--panel", "#ffffff");
         const gold = cssVar("--gold", "#f3c437");
 
@@ -136,8 +136,8 @@ export function CytoscapeGraph({
               selector: "edge",
               style: {
                 width: 1.5,
-                "line-color": line,
-                "target-arrow-color": line,
+                "line-color": edgeColor,
+                "target-arrow-color": edgeColor,
                 "target-arrow-shape": "triangle",
                 "curve-style": "bezier",
                 label: "data(label)",
@@ -200,11 +200,7 @@ export function CytoscapeGraph({
   }, [nodes, edges, theme]);
 
   if (failed) {
-    return (
-      <div className="my-4 rounded-xl border border-dashed border-line bg-soft p-4 text-xs leading-5 text-muted">
-        The interactive graph could not be displayed. The relationship summary remains available below.
-      </div>
-    );
+    throw new Error("Cytoscape failed to initialize");
   }
 
   return (

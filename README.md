@@ -13,10 +13,11 @@ A deterministic Python/FastAPI service that acts as the absolute authority on ri
 - **L1 Fast Scan:** Regex-based defense-in-depth for PII, explicit bypass attempts, and academic integrity violations.
 - **L2 ML Semantic Engine:** A Zero-Shot Classification pipeline (powered by HuggingFace `transformers`) that mathematically scores the intent of a prompt against semantic labels (e.g., "regulated tax advice" vs "general educational concept").
 - **Strict Governance:** Automatically triggers `CLASSIFICATION_UNCERTAIN` states for ambiguous queries, routing them to clarification workflows instead of guessing.
-- **Audit Ledger:** Records 100% of routing decisions, overrides, escalations, and maker-checker violations in a local SQLite database (`zoikologia.db`), matching the exact payload schema mandated by Section 15 of ZL-T0-04.
+- **Audit Ledger:** Records governed routing decisions, overrides, escalations, and maker-checker events. Local development defaults to SQLite; deployed environments can use PostgreSQL/Supabase.
+- **Evidence-backed data:** Structured economic, FX, company and market data can be retrieved through DBnomics, FRED, Frankfurter, SEC EDGAR and configured providers, then converted into validated chart specifications.
 
 ### 2. Frontend: Governance Dashboard (`/frontend`)
-A Next.js 15 application that visualizes the AI safety state and provides operational workflows.
+A Next.js 16 application that visualizes the AI safety state and provides operational workflows.
 - **Ask Kriton™:** An interactive query interface where you can type queries and simulate upstream source/privacy states to see the Risk Engine's real-time routing logic.
 - **Escalation Queue:** A dashboard for reviewing HIGH-risk or RESTRICTED queries, complete with SLA countdowns and Maker-Checker enforcement.
 - **Risk Policy & Taxonomy:** A real-time view of active risk policies and refusal templates.
@@ -36,7 +37,7 @@ cd backend
 # Install dependencies including FastAPI, SQLAlchemy, and Transformers
 pip install -r requirements.txt
 
-# Run the server (auto-creates the SQLite database on first boot)
+# Run the server (uses DATABASE_URL, defaulting to local SQLite)
 uvicorn app.main:app --reload --port 8000
 ```
 *Verify it's running by visiting http://localhost:8000/health*
@@ -62,7 +63,7 @@ npm run dev
 
 ## Key Compliance Features (ZL-T0-04-WF-01)
 
-- **CLASSIFICATION_UNCERTAIN State:** If the ML classifier's confidence falls below `0.65`, the system refuses to guess and triggers a safe clarification workflow.
+- **CLASSIFICATION_UNCERTAIN State:** If classification confidence falls below the configured threshold (`0.35` by default), the system triggers its safe clarification workflow.
 - **Maker-Checker Rules:** Reviewers cannot approve their own queries or policy edits. 
 - **Professional Boundary Controls:** Post-generation validators block prohibited statements (like *"I certify"* or *"I advise as your accountant"*).
 - **Time-Bounded Overrides:** Emergency safety blocks and routing overrides are strictly limited to 72 hours.

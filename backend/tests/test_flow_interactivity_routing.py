@@ -90,3 +90,29 @@ def test_same_evidence_backs_both_renderer_choices():
     assert [n.label for n in r1.spec.nodes] == [n.label for n in r2.spec.nodes]
     assert r1.spec.interactive is False
     assert r2.spec.interactive is True
+
+
+def test_named_mermaid_and_x6_requests_reach_the_requested_engine():
+    evidence = _stage_evidence(8)
+
+    mermaid_query = "Show a Mermaid flowchart: " + " -> ".join(f"Stage{i}" for i in range(8))
+    mermaid_intent = classify_intent(mermaid_query)
+    mermaid_plan = plan_response(mermaid_query, mermaid_intent, DIRECTED_STAGES)
+    mermaid = VisualizationOrchestrator().decide(
+        evidence, DIRECTED_STAGES, mermaid_plan, spec_id="flow-mermaid", query=mermaid_query,
+    )
+    assert mermaid_intent == PROCESS
+    assert mermaid_plan.explicit_visual_request is True
+    assert mermaid.spec.flow_engine == "mermaid"
+    assert mermaid.spec.interactive is False
+
+    x6_query = "Show an X6 workflow: A -> B -> C."
+    x6_intent = classify_intent(x6_query)
+    x6_plan = plan_response(x6_query, x6_intent, DIRECTED_STAGES)
+    x6 = VisualizationOrchestrator().decide(
+        _stage_evidence(3), DIRECTED_STAGES, x6_plan, spec_id="flow-x6", query=x6_query,
+    )
+    assert x6_intent == PROCESS
+    assert x6_plan.explicit_interactive_request is True
+    assert x6.spec.flow_engine == "x6"
+    assert x6.spec.interactive is True

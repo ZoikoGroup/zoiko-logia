@@ -20,14 +20,16 @@ class AskKritonRequest(BaseModel):
     query: str
     document_ids: List[str] = Field(default_factory=list)
     source_scope: Literal["WEB_ONLY", "DOCUMENTS_ONLY", "DOCUMENTS_THEN_WEB", "COMBINED"] = "DOCUMENTS_THEN_WEB"
+    # Immediately preceding user query. conversation_id is correlation, not
+    # server-side chat memory; this context is still treated as untrusted.
+    previous_query: Optional[str] = Field(default=None, max_length=2000)
     jurisdiction: str = ""
     mode: str = "Workflow"
     # Round-tripped by the client across a clarification exchange so
     # resolve_policy() can escalate instead of looping forever on a query that
     # keeps coming back "needs clarification".
     clarification_cycle: int = 0
-    # Client-generated — scopes audit correlation to one chat thread. Not yet
-    # used for any server-side conversation memory.
+    # Client-generated — scopes audit correlation to one chat thread.
     conversation_id: Optional[str] = None
     # Safety simulation overrides (playground only — not trusted in production)
     source_confidence: Optional[str] = None

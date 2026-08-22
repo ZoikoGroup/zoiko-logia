@@ -32,7 +32,7 @@ _DBNOMICS_SERIES_PAYLOAD = {
     "series": {
         "docs": [
             {
-                "series_name": "India · Consumer prices",
+                "series_name": "Monthly · India · All items · Index",
                 "series_code": "IN.CPI",
                 "provider_code": "IMF",
                 "dataset_code": "CPI",
@@ -47,7 +47,7 @@ _DBNOMICS_SERIES_PAYLOAD = {
 @pytest.mark.asyncio
 async def test_fetch_stats_unchanged_after_refactor():
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
-        mock_get.side_effect = [_FakeResponse(_DBNOMICS_SEARCH_PAYLOAD), _FakeResponse(_DBNOMICS_SERIES_PAYLOAD)]
+        mock_get.return_value = _FakeResponse(_DBNOMICS_SERIES_PAYLOAD)
         sources = await fetch_stats("consumer prices india inflation")
 
     assert len(sources) == 1
@@ -58,7 +58,7 @@ async def test_fetch_stats_unchanged_after_refactor():
 @pytest.mark.asyncio
 async def test_fetch_live_data_evidence_matches_source_numbers():
     with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
-        mock_get.side_effect = [_FakeResponse(_DBNOMICS_SEARCH_PAYLOAD), _FakeResponse(_DBNOMICS_SERIES_PAYLOAD)]
+        mock_get.return_value = _FakeResponse(_DBNOMICS_SERIES_PAYLOAD)
         result = await fetch_live_data("consumer prices india inflation")
 
     assert len(result.sources) == 1

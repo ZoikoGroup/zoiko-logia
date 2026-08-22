@@ -28,7 +28,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>("light");
 
   useEffect(() => {
-    setThemeState(readResolvedTheme());
+    const timer = window.setTimeout(() => setThemeState(readResolvedTheme()), 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   function applyTheme(next: Theme) {

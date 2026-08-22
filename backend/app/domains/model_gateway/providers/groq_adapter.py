@@ -1,5 +1,7 @@
+import asyncio
 import os
-from groq import AsyncGroq
+
+from groq import AsyncGroq, RateLimitError
 
 _SYSTEM_PROMPT = (
     "You are Kriton™, a professional AI assistant specialised ONLY in these "
@@ -23,12 +25,17 @@ _SYSTEM_PROMPT = (
     "to an accounting one. Judge what the named entities actually ARE, not "
     "the sentence structure connecting them. It also includes economic statistics "
     "relevant to finance and accounting (inflation, CPI, GDP, exchange "
-    "rates, unemployment) even when the question uses a statistical/"
-    "technical term like \"distribution\", \"histogram\", \"heatmap\", "
-    "\"matrix\", or \"spread\" to describe how the answer should be shown — "
-    "the presence of that word alone is NEVER a reason to classify a "
-    "question as off-domain; judge the underlying subject, not the "
-    "requested display format.\n"
+    "rates, unemployment), and listed-company/capital-markets information — "
+    "share prices, price history, company fundamentals, ownership/"
+    "shareholding — even when the question names ANY chart/diagram/display "
+    "type to describe how the answer should be shown — e.g. \"distribution\", "
+    "\"histogram\", \"heatmap\", \"matrix\", \"spread\", \"treemap\", \"radar "
+    "chart\", \"waterfall chart\", \"candlestick\", \"scatter plot\", \"box "
+    "plot\", \"step line chart\", or any other named chart/graph type. The "
+    "presence of ANY such word, however unfamiliar it sounds, is NEVER by "
+    "itself a reason to classify a question as off-domain — judge only the "
+    "underlying subject (a real company, a real economic statistic, a real "
+    "accounting relationship), never the requested display format.\n"
     "CLASSIFY every question first. If it is NOT about the domains above (e.g. "
     "movies, sports, politics, programming, health, travel, general chat), do "
     "NOT answer and do NOT add anything — reply with EXACTLY this text and "
@@ -88,18 +95,38 @@ _SYSTEM_PROMPT = (
     "or series of values from your own training data, even if it looks "
     "reasonable. This applies however many periods were requested, not only "
     "when a full history was asked for.\n"
+    "For a question about a specific company's shareholders, beneficial "
+    "owners, persons with significant control, or ownership/shareholding "
+    "breakdown, if NO numbered source below actually contains real, named "
+    "holders retrieved for that exact company, say plainly that no real "
+    "ownership/PSC data was retrieved for it and that the user should check "
+    "the relevant company register (e.g. UK Companies House, or the "
+    "company's own filings) — do NOT construct a plausible-looking table of "
+    "named institutional investors and percentages from your own training "
+    "data, even if it looks reasonable. A named holder and a percentage are "
+    "exactly the kind of specific-looking detail that is most damaging to "
+    "invent, since a reader has no way to tell it apart from a real filing.\n"
     "When a source below states a correlation coefficient (Pearson r) "
     "between two series, that exact number is the ONLY correct "
     "characterization of the relationship — state it plainly (e.g. \"a weak "
     "negative correlation (r = -0.11)\") and do NOT independently judge the "
     "relationship as positive, negative, strong, or weak from your own "
     "reading of the listed values; the visible pattern in a short list of "
-    "paired numbers is not a substitute for the real computed statistic."
+    "paired numbers is not a substitute for the real computed statistic.\n"
+    "If NO source below actually states a computed Pearson r (or any other "
+    "correlation statistic) for that exact pair, say plainly that no real "
+    "paired data series was retrieved to compute a correlation for it, and "
+    "that the figures would need to be checked with an official source — do "
+    "NOT invent a plausible-looking coefficient (e.g. \"r = 0.23\") or cite "
+    "a specific-sounding but unverified growth-rate figure to a body like "
+    "the World Bank/IMF/ONS from your own training data. A named number "
+    "attributed to a real institution is exactly the kind of detail a "
+    "reader cannot tell apart from a genuine citation."
 )
 
 # Default Groq model. Override with GROQ_MODEL in the environment. Note: Groq
-# periodically retires models — check console.groq.com/docs/models before
-# deployment and update GROQ_MODEL when its production catalog changes.
+# periodically retires models — if you get a "model_decommissioned" error,
+# check console.groq.com/docs/models and update GROQ_MODEL.
 _DEFAULT_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 
@@ -126,19 +153,45 @@ class GroqAdapter:
             if self.api_key else None
         )
 
+    async def _call(self, model: str, messages: list[dict]) -> str:
+        response = await self.client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.0,  # Deterministic routing/answering per governance
+        )
+        return response.choices[0].message.content or ""
+
     async def complete(self, prompt: str, model: str = _DEFAULT_MODEL) -> str:
         if not self.client:
             return "[Error: GROQ_API_KEY not found in environment. Please add it to backend/.env]"
 
+        messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
         try:
-            response = await self.client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.0,  # Deterministic routing/answering per governance
-            )
-            return response.choices[0].message.content or ""
+            return await self._call(model, messages)
+        except RateLimitError as e:
+            # The on-demand tier's tokens-per-minute cap (8000 TPM for
+            # openai/gpt-oss-120b at time of writing) is easy to hit under
+            # normal, non-abusive traffic — a handful of detailed accounting
+            # answers in the same minute is enough. Groq's 429 body names
+            # the exact cooldown (e.g. "try again in 3.375s"); honoring the
+            # `retry-after` header and trying once more turns most of these
+            # into a normal answer instead of surfacing as a hard "policy
+            # blocked" refusal. One retry, capped well under this adapter's
+            # own 25s client timeout.
+            retry_after = 4.0
+            header_value = getattr(e, "response", None) and e.response.headers.get("retry-after")
+            if header_value:
+                try:
+                    retry_after = min(float(header_value), 10.0)
+                except ValueError:
+                    pass
+            await asyncio.sleep(retry_after)
+            try:
+                return await self._call(model, messages)
+            except Exception as retry_exc:
+                return f"[Error connecting to Groq API: {str(retry_exc)}]"
         except Exception as e:
             return f"[Error connecting to Groq API: {str(e)}]"

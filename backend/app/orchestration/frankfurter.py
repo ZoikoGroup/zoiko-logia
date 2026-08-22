@@ -52,7 +52,10 @@ def _find_currencies(query: str) -> list[str]:
 
 
 def _find_amount(query: str) -> float:
-    m = re.search(r"\b(\d+(?:[.,]\d+)?)\b", query.replace(",", ""))
+    # Strip thousands separators before parsing, but do not remove every
+    # comma from the query (which could join unrelated tokens).
+    normalized = re.sub(r"(?<=\d),(?=\d{3}\b)", "", query)
+    m = re.search(r"\b(\d+(?:\.\d+)?)\b", normalized)
     return float(m.group(1)) if m else 1.0
 
 

@@ -5,6 +5,7 @@ Regression suite for:
   - HEATMAP (adjacency matrix from user-supplied relationship graph)
 """
 import asyncio
+from unittest.mock import AsyncMock, patch
 
 from app.orchestration.frankfurter import _find_rate
 from app.orchestration.intent_classifier import classify_intent, DISTRIBUTION, RELATIONSHIP
@@ -22,10 +23,22 @@ from app.orchestration.service import _grounded_domain_fallback
 # ── Frankfurter "how much is X in Y" phrasing ────────────────────────────────
 
 def test_frankfurter_matches_how_much_is_phrasing():
-    match = asyncio.run(_find_rate("Exactly how much is 250 GBP in USD right now?"))
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"rates": {"USD": 1.25}, "date": "2026-08-20"}
+
+    # This is a deterministic parser regression test, not a live-network
+    # smoke test. Mocking the transport keeps CI independent of Frankfurter.
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock, return_value=Response()):
+        match = asyncio.run(_find_rate("Exactly how much is 250 GBP in USD right now?"))
     assert match is not None
     assert match.base_cur == "GBP"
     assert match.quote_cur == "USD"
+    assert match.amount == 250
+    assert match.converted == 312.5
 
 
 # ── DISTRIBUTION intent ──────────────────────────────────────────────────────
@@ -56,7 +69,7 @@ def _long_series_evidence(n=12) -> EvidenceModel:
 
 
 def test_registry_maps_histogram_to_echarts():
-    assert renderer_for("HISTOGRAM") == "ECHARTS"
+    assert renderer_for("HISTOGRAM") == "RECHARTS"
 
 
 def test_orchestrator_builds_histogram_from_real_values():
@@ -65,7 +78,7 @@ def test_orchestrator_builds_histogram_from_real_values():
     result = VisualizationOrchestrator().decide(evidence, TIME_SERIES, plan, spec_id="hist-1")
 
     assert result.selected == "HISTOGRAM"
-    assert result.renderer == "ECHARTS"
+    assert result.renderer == "RECHARTS"
     # Every real observation must land in exactly one bin — total count
     # across all bins must equal the number of real values, nothing lost.
     assert sum(p.y for p in result.spec.data) == len(evidence.observations)
@@ -82,7 +95,7 @@ def test_histogram_not_chosen_below_minimum_points():
 
 def test_validator_accepts_well_formed_histogram():
     spec = VisualizationSpec(
-        id="h1", type="HISTOGRAM", family="STATISTICAL", renderer="ECHARTS",
+        id="h1", type="HISTOGRAM", family="STATISTICAL", renderer="RECHARTS",
         data=[VisualizationDataPoint(x="100-105", y=3), VisualizationDataPoint(x="105-110", y=5)],
     )
     result = VisualizationValidator().validate(spec)
@@ -91,7 +104,7 @@ def test_validator_accepts_well_formed_histogram():
 
 def test_validator_rejects_histogram_with_all_zero_bins():
     spec = VisualizationSpec(
-        id="h2", type="HISTOGRAM", family="STATISTICAL", renderer="ECHARTS",
+        id="h2", type="HISTOGRAM", family="STATISTICAL", renderer="RECHARTS",
         data=[VisualizationDataPoint(x="100-105", y=0)],
     )
     result = VisualizationValidator().validate(spec)
@@ -129,6 +142,21 @@ def test_intent_relationship_from_heatmap_phrasing_without_connected_wording():
     # FACT, so the whole graph pipeline never engaged despite extraction.py
     # correctly finding the relationship).
     assert classify_intent("Show this as a heatmap: Acme Corp owns Beta Ltd.") == RELATIONSHIP
+
+
+def test_natural_relationship_graph_and_adjacency_matrix_phrasings_route_structurally():
+    questions = [
+        "Show this relationship graph: Company A owns Company B. Company B owns Company C.",
+        "Create an adjacency matrix: Customer pays Company. Company pays Supplier. Supplier invoices Company.",
+    ]
+    for query in questions:
+        assert classify_intent(query) == RELATIONSHIP
+        assert extract_graph(query) is not None
+
+    graph_plan = plan_response(questions[0], RELATIONSHIP, NODES_EDGES)
+    matrix_plan = plan_response(questions[1], RELATIONSHIP, NODES_EDGES)
+    assert graph_plan.visual_required is True
+    assert matrix_plan.explicit_heatmap_request is True
 
 
 def test_orchestrator_builds_heatmap_when_explicitly_requested():

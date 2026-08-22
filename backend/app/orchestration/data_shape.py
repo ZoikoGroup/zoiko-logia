@@ -4,9 +4,10 @@ Deterministic data-shape classification for Ask Kriton's visualization pipeline.
 Kept separate from intent (per the design spec) — intent is about what the
 user is asking for, data shape is about what the evidence actually looks
 like. Only NONE / SCALAR / TIME_SERIES / NODES_EDGES / DIRECTED_STAGES /
-XY_NUMERIC / PART_TO_WHOLE are implemented, matching what EvidenceModel can
-actually contain today — CATEGORY_VALUE and the rest of the wider taxonomy
-still aren't, because no data source produces those shapes in this codebase.
+XY_NUMERIC / PART_TO_WHOLE / OHLC are implemented, matching what EvidenceModel
+can actually contain today — CATEGORY_VALUE and the rest of the wider
+taxonomy still aren't, because no data source produces those shapes in this
+codebase.
 
 NODES_EDGES vs DIRECTED_STAGES: both are backed by the SAME
 entities/relationships storage (see extraction.py) — which one applies is
@@ -28,6 +29,7 @@ NODES_EDGES = "NODES_EDGES"
 DIRECTED_STAGES = "DIRECTED_STAGES"
 XY_NUMERIC = "XY_NUMERIC"
 PART_TO_WHOLE = "PART_TO_WHOLE"
+OHLC = "OHLC"
 
 # Below this many observations, a line chart is more noise than signal — a
 # two-point "trend" line is just a single change, better said in text.
@@ -41,6 +43,11 @@ _MIN_XY_POINTS = 3
 # real holders (or a holder + the synthesized "Other" gap) for a composition
 # to say anything a single figure couldn't.
 _MIN_COMPOSITION_SLICES = 2
+
+# A candlestick with one bar is just a KPI wearing a costume — need at least
+# two real trading periods for a chart to say anything a single figure
+# couldn't.
+_MIN_OHLC_BARS = 2
 
 
 def classify_data_shape(evidence: EvidenceModel, intent: str | None = None) -> str:
@@ -61,6 +68,14 @@ def classify_data_shape(evidence: EvidenceModel, intent: str | None = None) -> s
     # mixed into `observations`, so this never collides with TIME_SERIES.
     if intent == COMPOSITION and len(evidence.composition) >= _MIN_COMPOSITION_SLICES:
         return PART_TO_WHOLE
+
+    # Real OHLC trading bars (market_data.py's fetch_market_sources(), a
+    # history-shaped market-data question) — checked by evidence presence,
+    # not intent: market_data.py's own intent detection (registry.py's
+    # INTENT_HISTORY) already gated this evidence into existing, so there is
+    # no matching concept in classify_intent() above to re-check against.
+    if len(evidence.ohlc) >= _MIN_OHLC_BARS:
+        return OHLC
 
     if evidence.entities and evidence.relationships:
         if intent == PROCESS:

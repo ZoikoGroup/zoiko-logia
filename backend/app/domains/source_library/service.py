@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import select
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domains.audit_ledger.event_envelope import record_event_async
@@ -34,15 +35,6 @@ async def save_uploaded_file(file: UploadFile, tenant_id: str) -> str:
     return str(dest.relative_to(backend_root))
 
 
-async def _latest_version(db: AsyncSession, source_id: str) -> SourceVersion:
-    result = await db.execute(
-        select(SourceVersion)
-        .where(SourceVersion.source_id == source_id)
-        .order_by(SourceVersion.created_at.desc())
-    )
-    return result.scalars().first()
-
-
 async def list_sources(
     db: AsyncSession, category: str | None = None, *, tenant_id: str | None = None
 ) -> list[dict]:
@@ -54,19 +46,32 @@ async def list_sources(
     data-access layer as well, not just app-layer, per ZL-ENG-03 §7.1 —
     filtering strictly on tenant_id equality here would incorrectly hide
     shared sources from every tenant that doesn't literally own the row."""
-    query = select(Source)
+    # Resolve each source's latest version in the same SQL statement.  The old
+    # implementation fetched Sources first and then issued one ordered query
+    # per source.  Against remote Supabase that N+1 pattern made a three-source
+    # retrieval take more than two minutes, beyond Ask Kriton's 120s client
+    # deadline.
+    latest_version_id = (
+        select(SourceVersion.id)
+        .where(SourceVersion.source_id == Source.id)
+        .order_by(SourceVersion.created_at.desc(), SourceVersion.id.desc())
+        .limit(1)
+        .correlate(Source)
+        .scalar_subquery()
+    )
+    latest_version = aliased(SourceVersion)
+    query = select(Source, latest_version).join(
+        latest_version, latest_version.id == latest_version_id
+    )
     if category:
         query = query.where(Source.category == category)
     if tenant_id is not None:
         query = query.where((Source.is_tenant_private.is_(False)) | (Source.tenant_id == tenant_id))
     result = await db.execute(query)
-    sources = result.scalars().all()
-
-    combined = []
-    for source in sources:
-        latest = await _latest_version(db, source.id)
-        combined.append({**source.__dict__, "latest_version": latest})
-    return combined
+    return [
+        {**source.__dict__, "latest_version": version}
+        for source, version in result.all()
+    ]
 
 
 async def get_source_by_id(

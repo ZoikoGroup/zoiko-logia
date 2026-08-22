@@ -5,12 +5,15 @@
  *
  * RECHARTS: types the declarative library expresses natively (grid/axis/
  * tooltip/legend/series composition) — LINE and BAR share one shape
- * (VisualizationDataPoint[]), HISTOGRAM is a bar-of-precomputed-bins.
+ * (VisualizationDataPoint[]), HISTOGRAM is a bar-of-precomputed-bins,
+ * GROUPED_BAR is multiple <Bar> children over a shared category axis
+ * (Recharts' own stackId prop handles grouped vs stacked natively).
  *
  * ECHARTS (canvas engine): types needing capabilities Recharts doesn't have
  * natively — HEATMAP (category-axis matrix + visualMap), BOX (native
  * boxplot series type), SCATTER (dual numeric axes with a tooltip formatter
- * keyed on paired values), DONUT (native pie/donut series type).
+ * keyed on paired values), DONUT (native pie/donut series type),
+ * CANDLESTICK (native candlestick series type).
  *
  * Only the types this backend actually produces today are listed (see
  * backend/app/orchestration/visualization/registry.py) — the wider
@@ -24,8 +27,8 @@ import type { VisualizationSpec } from "@/lib/api";
 
 export type ChartEngine = "RECHARTS" | "ECHARTS";
 
-const RECHARTS_TYPES = new Set<VisualizationSpec["type"]>(["LINE", "BAR", "HISTOGRAM"]);
-const ECHARTS_TYPES = new Set<VisualizationSpec["type"]>(["HEATMAP", "BOX", "SCATTER", "DONUT"]);
+const RECHARTS_TYPES = new Set<VisualizationSpec["type"]>(["LINE", "BAR", "HISTOGRAM", "GROUPED_BAR"]);
+const ECHARTS_TYPES = new Set<VisualizationSpec["type"]>(["HEATMAP", "BOX", "SCATTER", "DONUT", "CANDLESTICK"]);
 
 export function engineFor(type: VisualizationSpec["type"]): ChartEngine | null {
   if (RECHARTS_TYPES.has(type)) return "RECHARTS";

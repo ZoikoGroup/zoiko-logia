@@ -56,6 +56,8 @@ def log_decision(
         "validation_result": validation.passed if validation else None,
         "validation_failures": validation.failures if validation else [],
         "render_success": render_success,
-        "fallback_used": not render_success and visual_required,
+        "fallback_used": bool(
+            result.requested_type and result.selected and result.requested_type != result.selected
+        ),
     }
     logger.info(json.dumps(event, default=str))

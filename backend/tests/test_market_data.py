@@ -359,6 +359,28 @@ async def test_filings_resolution_reaches_a_company_number(monkeypatch):
     print("test_filings_resolution_reaches_a_company_number: PASSED")
 
 
+async def test_filings_resolution_rejects_unrelated_top_search_result(monkeypatch):
+    from app.domains.market_data.service import _resolve_entity
+
+    monkeypatch.setenv("COMPANIES_HOUSE_API_KEY", "dummy")
+    payload = {"items": [
+        {"title": "RANDOM CONSTRUCTION LIMITED", "company_number": "11111111"},
+        {"title": "BARCLAYS PLC", "company_number": "00048839", "company_status": "active"},
+    ]}
+    async with json_client(payload) as client:
+        ref = await _resolve_entity(
+            client, "Show me Barclays filings", [CompaniesHouseProvider()], registry.INTENT_FILINGS
+        )
+    assert ref.company_number == "00048839"
+
+
+async def test_explicit_sec_filings_never_route_to_companies_house(monkeypatch):
+    from app.domains.market_data.service import fetch_market_data
+
+    monkeypatch.setenv("COMPANIES_HOUSE_API_KEY", "dummy")
+    assert await fetch_market_data("Show me SEC filings for AAPL") is None
+
+
 async def test_quote_resolution_is_satisfied_by_a_ticker(monkeypatch):
     """The converse: a market intent needs a ticker, and a locally-resolved one
     is enough — no search round-trip should happen."""
@@ -421,7 +443,9 @@ async def test_connector_returns_nothing_without_any_provider(monkeypatch):
 
     for var in ("FINNHUB_API_KEY", "POLYGON_API_KEY", "ALPHA_VANTAGE_API_KEY", "COMPANIES_HOUSE_API_KEY"):
         monkeypatch.delenv(var, raising=False)
-    assert await fetch_market_sources("What is Apple's share price?") == []
+    result = await fetch_market_sources("What is Apple's share price?")
+    assert result.sources == []
+    assert result.ohlc is None
     print("test_connector_returns_nothing_without_any_provider: PASSED")
 
 
@@ -429,7 +453,9 @@ async def test_connector_ignores_non_market_questions(monkeypatch):
     from app.orchestration.market_data import fetch_market_sources
 
     monkeypatch.setenv("FINNHUB_API_KEY", "dummy")
-    assert await fetch_market_sources("How is revenue recognised under IFRS 15?") == []
+    result = await fetch_market_sources("How is revenue recognised under IFRS 15?")
+    assert result.sources == []
+    assert result.ohlc is None
     print("test_connector_ignores_non_market_questions: PASSED")
 
 
@@ -463,6 +489,63 @@ async def test_market_cap_is_scaled_to_absolute_units(monkeypatch):
     assert cap.value == 1_307_000_000_000
     assert cap.unit == "USD"
     print("test_market_cap_is_scaled_to_absolute_units: PASSED")
+
+
+# ── service-level fallback (a runtime failure, not just a missing key) ───────
+
+async def test_quote_falls_through_to_next_provider_on_auth_failure(monkeypatch):
+    """A configured-but-rejected key (expired/invalid) must not take down the
+    whole lookup — the next provider in priority order should still answer.
+    This is the runtime counterpart to test_unconfigured_providers_are_skipped,
+    which only covers a key that was never set."""
+    from app.domains.market_data import service
+
+    monkeypatch.setenv("FINNHUB_API_KEY", "dummy")
+    monkeypatch.setenv("POLYGON_API_KEY", "dummy")
+    monkeypatch.delenv("ALPHA_VANTAGE_API_KEY", raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "finnhub.io":
+            return httpx.Response(401, json={})  # rejected key
+        if request.url.host == "api.polygon.io":
+            return httpx.Response(200, json={"results": [{"c": 305.59}]})
+        raise AssertionError(f"unexpected host: {request.url.host}")
+
+    monkeypatch.setattr(service, "make_client", lambda **kw: client_returning(handler))
+
+    result = await service.fetch_market_data("What is Apple's share price?")
+    assert result is not None
+    data, provider_name, intent = result
+    assert provider_name == "polygon"
+    assert intent == registry.INTENT_QUOTE
+    assert data.price == 305.59
+    print("test_quote_falls_through_to_next_provider_on_auth_failure: PASSED")
+
+
+async def test_quote_falls_through_on_rate_limit(monkeypatch):
+    """Same as the auth-failure case but for a 429 — exhausted retries on the
+    first provider must still leave the second provider reachable."""
+    from app.domains.market_data import service
+
+    monkeypatch.setenv("FINNHUB_API_KEY", "dummy")
+    monkeypatch.setenv("POLYGON_API_KEY", "dummy")
+    monkeypatch.delenv("ALPHA_VANTAGE_API_KEY", raising=False)
+    monkeypatch.setenv("STOCK_WS_RECONNECT_DELAY", "0")  # skip real backoff sleep in the test
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "finnhub.io":
+            return httpx.Response(429, json={})
+        if request.url.host == "api.polygon.io":
+            return httpx.Response(200, json={"results": [{"c": 305.59}]})
+        raise AssertionError(f"unexpected host: {request.url.host}")
+
+    monkeypatch.setattr(service, "make_client", lambda **kw: client_returning(handler))
+
+    result = await service.fetch_market_data("What is Apple's share price?")
+    assert result is not None
+    _, provider_name, _ = result
+    assert provider_name == "polygon"
+    print("test_quote_falls_through_on_rate_limit: PASSED")
 
 
 def test_websource_carries_freshness_for_citations():

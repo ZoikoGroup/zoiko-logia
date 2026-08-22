@@ -34,6 +34,7 @@ async def _emit(
     payload: dict[str, Any],
     classification: str = "INTERNAL",
     replay_relevance: str = "SUPPORTING",
+    restore_tenant_context: bool = True,
 ) -> None:
     """Internal helper — wraps record_event_async with canonical envelope fields."""
     await record_event_async(
@@ -47,6 +48,7 @@ async def _emit(
         correlation_id=correlation_id,
         classification=classification,
         replay_relevance=replay_relevance,
+        restore_tenant_context=restore_tenant_context,
         payload={
             "audit_chain_id": audit_chain_id,
             "classifier_version": CLASSIFIER_VERSION,
@@ -218,5 +220,11 @@ async def audit_response_finalised(db, *, query_id, correlation_id, tenant_id, a
 
 async def audit_response_returned(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                    latency_ms: float):
+    # This is the terminal database write for the request.  Re-applying the
+    # session-scoped tenant setting after its commit would open a brand-new
+    # transaction that FastAPI must roll back during dependency teardown
+    # before it can deliver the HTTP response.  On a degraded Supabase link
+    # that unnecessary rollback has blocked for ~120s.  Earlier events still
+    # restore the context because more tenant-scoped work follows them.
     await _emit(db, "response_returned", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
-                {"latency_ms": round(latency_ms, 2)})
+                {"latency_ms": round(latency_ms, 2)}, restore_tenant_context=False)

@@ -58,9 +58,9 @@ async def classify_risk(query: str) -> Optional[str]:
     if not api_key:
         return None
     # Classification is a trivial one-word task — use a small, fast model
-    # (GPT-OSS 20B) instead of the large answer model, so this extra
-    # call is near-instant. Configurable via GROQ_CLASSIFIER_MODEL; the big
-    # GROQ_MODEL stays reserved for actual answer generation.
+    # instead of the large answer model, so this extra call is near-instant.
+    # Configurable via GROQ_CLASSIFIER_MODEL; the big GROQ_MODEL stays
+    # reserved for actual answer generation.
     model = os.getenv("GROQ_CLASSIFIER_MODEL", "openai/gpt-oss-20b")
     try:
         client = AsyncGroq(api_key=api_key)
@@ -71,7 +71,18 @@ async def classify_risk(query: str) -> Optional[str]:
                 {"role": "user", "content": query},
             ],
             temperature=0.0,
-            max_tokens=4,
+            # openai/gpt-oss-20b is a reasoning model: its internal
+            # chain-of-thought is billed against max_tokens before any
+            # visible content, so a tiny cap (e.g. 4) is fully consumed by
+            # reasoning and returns EMPTY content (finish_reason="length")
+            # every time — silently disabling this classifier entirely, with
+            # every call falling through to classify_risk_gemini below (see
+            # that function's own max_output_tokens for the analogous fix on
+            # the Gemini side). Some queries reason for 250+ tokens before
+            # reaching a one-word verdict, so 1024 leaves real headroom
+            # rather than just raising the same failure mode's ceiling —
+            # still well under a second for this small/fast model.
+            max_tokens=1024,
         )
         raw = (resp.choices[0].message.content or "").strip().upper()
     except Exception:

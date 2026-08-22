@@ -39,7 +39,8 @@ from __future__ import annotations
 import re
 
 from app.orchestration.dbnomics import _STAT_HINTS
-from app.orchestration.market_data import _OWNERSHIP_HINTS
+from app.orchestration.market_data import _OWNERSHIP_HINTS, _OWNERSHIP_STRUCTURE_CHART_HINT
+from app.orchestration.number_words import SPELLED_NUMBER_PATTERN
 
 TREND = "TREND"
 DISTRIBUTION = "DISTRIBUTION"
@@ -61,7 +62,8 @@ GRAPH_INTENTS = frozenset({EVIDENCE_ANALYSIS, RELATIONSHIP, NETWORK, DEPENDENCY,
 
 _PROCESS_HINTS = re.compile(
     r"\b(process|workflow|procedure|steps? (to|for|in)|approval flow|"
-    r"flowchart|interactive flow|interactive diagram|"
+    r"flowchart|flow diagram|interactive flow|interactive diagram|"
+    r"process flow|process diagram|mermaid (?:flowchart|flow|diagram)|x6 (?:workflow|flow|diagram)|"
     r"explain (the|how) .*(process|workflow|procedure)|how does .* work)\b",
     re.I,
 )
@@ -80,12 +82,17 @@ _RELATIONSHIP_HINTS = re.compile(
     # whether the query also uses "connected"/"related" wording — e.g. "show
     # this as a heatmap: Acme Corp owns Beta Ltd" has no "connected" phrase
     # but is still asking to visualize a relationship structure. Matched both
-    # with and without a leading "as a" (response_planner.py's own explicit-
-    # heatmap-request regex matches bare "matrix view" too — this must stay
-    # in sync with that, or the intent gate blocks a request the planner
-    # already recognises as an explicit heatmap ask).
-    r"show (this|it) as an? (heatmap|heat ?map|graph|network|matrix)|"
-    r"as an? (heatmap|heat ?map|matrix)|matrix view|matrix of)\b",
+    # with and without a leading "as a"/"of" — response_planner.py's own
+    # explicit-heatmap-request regex (_EXPLICIT_HEATMAP_HINTS) matches bare
+    # "heatmap"/"heat map" anywhere in the query with no "as a"/"of" needed;
+    # this must stay in sync with that or the intent gate blocks a request
+    # the planner already recognises as an explicit heatmap ask (e.g. "Show a
+    # heatmap of: A pays B" has no "as a"/"of a" heatmap phrase, only "of:").
+    r"show (this|it|this relationship) as an? (heatmap|heat ?map|graph|network|matrix)|"
+    r"heatmap|heat ?map|as an? matrix|matrix view|matrix of|adjacency matrix|"
+    r"(?:show|create|draw|render) (?:this |an? )?(?:relationship )?graph|"
+    r"(?:g6|cytoscape)(?:\.js)? (?:evidence |relationship )?(?:graph|network)|"
+    r"use (?:g6|cytoscape)(?:\.js)? to (?:show|visuali[sz]e))\b",
     re.I,
 )
 
@@ -109,25 +116,51 @@ _COMPOSITION_VISUAL_HINTS = re.compile(
     r"\b(donut chart|doughnut chart|ring chart|pie chart)\b", re.I,
 )
 
+_EXPLICIT_PERCENT_VALUE = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?\s*%")
+
+
+def _has_explicit_composition_values(query: str) -> bool:
+    """Recognize a user-supplied part-to-whole request without inventing it.
+
+    Naming a pie/donut is only a presentation preference; it becomes
+    composition intent here only when the same query supplies at least two
+    percentage values. extraction.py performs the stricter label, duplicate,
+    sign, count, and total validation before any evidence is constructed.
+    """
+    return bool(
+        _COMPOSITION_VISUAL_HINTS.search(query or "")
+        and len(_EXPLICIT_PERCENT_VALUE.findall(query or "")) >= 2
+    )
+
 # Deliberately narrower than _RELATIONSHIP_HINTS's "relationship between" —
 # "correlat*" wording only, so a statistical-correlation question (two real
 # numeric series) and an entity-relationship-graph question never collide on
 # the same phrasing. Must stay in sync with dbnomics.py's
 # _CORRELATION_SPLIT_PATTERNS, which extracts the two named subjects.
 _CORRELATION_HINTS = re.compile(
-    r"\b(correlation between|correlated with|correlation of|correlate .+ with)\b", re.I,
+    r"\b(correlation between|correlated with|correlation of|correlate .+ with|"
+    r"scatter plot with (a )?trend line|scatter plot (comparing|of) .+ and .+|"
+    r"scatter (plot|chart|graph) (for|of) .+ vs\.? .+|"
+    r"scatter trend|regression plot|correlation plot|"
+    r"compare .+ (and|vs\.?|versus) .+ (using|as|with|in) (an? )?(grouped|stacked|100% stacked|scatter))\b", re.I,
 )
 
 _TREND_HINTS = re.compile(
     r"\b(trend|over time|over the (last|past)|history|historical|"
-    r"last \d+ (years?|quarters?|months?)|since \d{4}|growth (rate|over)|"
+    # \d+ OR a spelled-out number ("the last ten years") — see
+    # number_words.py's docstring for why this needed a shared fix.
+    rf"last (?:\d+|{SPELLED_NUMBER_PATTERN}) (years?|quarters?|months?)|since \d{{4}}|growth (rate|over)|"
     r"track(ed)? over|movement of|change over|"
     # A request for any of the pipeline's supported chart renderings over a
     # named subject implies "plot this measure over its dimension" — the
     # only real chart-worthy reading of a bare subject name is a trend view.
     # Must stay in sync with response_planner.py's _CHART_VARIANTS regexes.
-    r"bar chart|column chart|step line|stepped line|spline line|smoothed? line|"
-    r"area chart|filled line|line with markers?|marked line|line chart)\b",
+    r"bar chart|column chart|vertical bar|horizontal bar|grouped bar|clustered bar|"
+    r"stacked bar|stacked horizontal bar|diverging bar|waterfall chart|plain line|"
+    r"dashed line|dotted line|dash[ -]?dot line|"
+    r"step[ -]?line|stepped[ -]?line|spline|smooth spline|smooth(?:ed)? line|area chart|filled line|filled area|"
+    r"area (chart )?with markers?|area \+ markers?|value[ -]?labell?ed line|"
+    r"line with value labels?|line with markers?|marked line|line chart)\b",
     re.I,
 )
 
@@ -138,6 +171,24 @@ _CURRENT_METRIC_HINTS = re.compile(
 
 _PRECISE_DATA_HINTS = re.compile(
     r"\b(exact|precise|exactly|exact figure|exact value|convert|conversion)\b",
+    re.I,
+)
+
+# Catch-all for an explicit "draw/visualize this" ask that names no more
+# specific graph-shaped phrasing (e.g. "Visualize: A owns B" — a real,
+# parseable relation clause per extraction.py, but neither "relationship
+# between" nor "ownership structure" nor any other _RELATIONSHIP_HINTS
+# phrase appears). Checked LAST, only once every narrower/more specific
+# hint above (TREND, CORRELATION, COMPOSITION, DISTRIBUTION, etc.) has
+# already had first refusal — so "visualize Apple's stock trend" still
+# resolves via _TREND_HINTS, never here. Resolving to RELATIONSHIP is
+# arbitrary among GRAPH_INTENTS (all map to the same NODES_EDGES shape in
+# data_shape.py) — this only ever matters paired with real extracted
+# structure; service.py still discards it when extract_graph() finds
+# nothing to draw.
+_EXPLICIT_DIAGRAM_HINTS = re.compile(
+    r"\b(visuali[sz]e|visuali[sz]ation of|diagram (of|for)|graph (of|for)|"
+    r"draw (a |the )?(diagram|graph)|map (out|this))\b",
     re.I,
 )
 
@@ -155,13 +206,19 @@ def classify_intent(query: str) -> str:
     q = query or ""
     if _EVIDENCE_ANALYSIS_HINTS.search(q):
         return EVIDENCE_ANALYSIS
-    if _COMPOSITION_VISUAL_HINTS.search(q):
-        return COMPOSITION
     # Checked early and narrowly (shareholders/PSC/cap table/"who owns" —
     # never RELATIONSHIP's "ownership structure") so a real shareholding
     # lookup is never shadowed by, or mistaken for, a user-supplied entity
-    # graph request.
-    if _OWNERSHIP_HINTS.search(q):
+    # graph request. The second condition is a narrow exception: "ownership
+    # structure" co-occurring with an explicit pie/donut-chart request is
+    # unambiguous — the user is asking for this company's real, fetched
+    # shareholding, not a graph they're about to supply themselves. See
+    # _OWNERSHIP_STRUCTURE_CHART_HINT's own docstring in market_data.py.
+    if (
+        _OWNERSHIP_HINTS.search(q)
+        or _OWNERSHIP_STRUCTURE_CHART_HINT.search(q)
+        or _has_explicit_composition_values(q)
+    ):
         return COMPOSITION
     # "relationship between X and Y" is ambiguous between an entity-graph
     # request and a statistical-correlation request. When X/Y look like real
@@ -198,4 +255,6 @@ def classify_intent(query: str) -> str:
         return TREND
     if _CURRENT_METRIC_HINTS.search(q):
         return CURRENT_METRIC
+    if _EXPLICIT_DIAGRAM_HINTS.search(q):
+        return RELATIONSHIP
     return FACT

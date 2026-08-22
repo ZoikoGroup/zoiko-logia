@@ -102,6 +102,31 @@ def extract_arrow_statements(query: str) -> ExtractedGraph | None:
     return ExtractedGraph(nodes=nodes, edges=edges[:_MAX_NODES]) if len(nodes) >= 2 and edges else None
 
 
+_STAGE_LIST_HINT = re.compile(
+    r"\b(?:flowchart|flow diagram|process flow|process diagram|workflow|"
+    r"mermaid (?:flowchart|flow|diagram)|x6 (?:workflow|flow|diagram))\b",
+    re.I,
+)
+
+
+def extract_stage_list(query: str) -> ExtractedGraph | None:
+    """Extract stages only from an explicit comma-separated flow request."""
+    q = query or ""
+    if not _STAGE_LIST_HINT.search(q) or ":" not in q:
+        return None
+    tail = q.rsplit(":", 1)[1].strip().rstrip(".!?")
+    parts = [part.strip() for part in tail.split(",") if part.strip()]
+    if not 2 <= len(parts) <= _MAX_NODES:
+        return None
+    if any(len(part) > _MAX_LABEL_LEN or not re.search(r"[A-Za-z0-9]", part) for part in parts):
+        return None
+    nodes = list(dict.fromkeys(parts))
+    if len(nodes) < 2:
+        return None
+    edges = [ExtractedEdge(source=parts[i], target=parts[i + 1], type="next") for i in range(len(parts) - 1)]
+    return ExtractedGraph(nodes=nodes, edges=edges)
+
+
 # Fixed, small vocabulary — chosen to avoid firing on ordinary prose that
 # happens to contain a common verb ("owns" also means something in casual
 # text; requiring a capitalised entity on both sides keeps false positives
@@ -115,6 +140,7 @@ _RELATION_VERBS = (
     "employs", "guarantees", "borrows from", "lends to", "depends on",
     "reports to", "is a subsidiary of", "is owned by", "contracts with", "licenses to",
     "supports", "is audited by", "is supported by", "is controlled by",
+    "reviews", "is reviewed by",
 )
 # Entity character class includes "-" — real identifiers are routinely
 # hyphenated ("Invoice-2024", "Auditor-Team-A", "Journal-Entry-88"); see
@@ -159,7 +185,12 @@ def extract_graph(query: str) -> ExtractedGraph | None:
     """Relation clauses take priority — they carry a real relationship type,
     which is strictly more informative than an arrow chain's generic "next"/
     "related_to". Falls back to an arrow chain when no typed clause is found."""
-    return extract_relation_clauses(query) or extract_arrow_statements(query) or extract_arrow_chain(query)
+    return (
+        extract_relation_clauses(query)
+        or extract_arrow_statements(query)
+        or extract_arrow_chain(query)
+        or extract_stage_list(query)
+    )
 
 
 # User-authored chart data is trusted only as quoted input, never inferred
