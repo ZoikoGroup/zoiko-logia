@@ -86,6 +86,10 @@ class EvidenceModel(BaseModel):
     composition_subject: str | None = None
     composition: list[Observation] = Field(default_factory=list)
     composition_caveat: str | None = None
+    # Companies House ownership bands are estimates; values explicitly
+    # supplied by the user are exact. The renderer carries this distinction
+    # on every donut slice instead of presenting exact input as estimated.
+    composition_is_estimated: bool = True
 
     # Real OHLC trading bars (Polygon/Alpha Vantage, via market_data.py's
     # fetch_market_sources()) — populated only when the resolved market-data

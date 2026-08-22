@@ -40,12 +40,12 @@ import {
   safeDownloadName,
   writeTextToClipboard,
 } from "@/lib/presentation";
-import { openSourcePopup } from "@/lib/source-popup";
 import { getFollowUpSuggestions } from "@/lib/follow-up-suggestions";
 import { ThinkingIndicator } from "@/components/ask-kriton/ThinkingIndicator";
 import { DesktopSidebar, MobileDrawer } from "@/components/ask-kriton/Sidebar";
 import { Composer, type AttachmentState } from "@/components/ask-kriton/Composer";
 import { ExploreFurther } from "@/components/ask-kriton/ExploreFurther";
+import { useAuth } from "@/hooks/useAuth";
 import {
   loadActiveConversationId,
   loadConversations,
@@ -167,19 +167,46 @@ function KritonPanel({
   );
 }
 
+function externalSourceUrl(rawUrl?: string | null): string | null {
+  if (!rawUrl) return null;
+  try {
+    const url = new URL(rawUrl);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 function SourceButton({ citation }: { citation: SourceCitation }) {
-  const label = citation.url ? new URL(citation.url).hostname.replace(/^www\./, "") : citation.title;
-  return (
-    <button
-      type="button"
-      onClick={() => openSourcePopup(citation)}
-      className="group flex w-full items-start gap-2 rounded-lg px-1 py-1 text-left text-xs leading-5 text-muted hover:bg-soft hover:text-brand"
-    >
+  const href = externalSourceUrl(citation.url);
+  const content = (
+    <>
       <BookOpen size={13} className="mt-0.5 shrink-0 text-brand" />
-      <span className="font-mono text-brand">[{citation.ref_id}]</span>
-      <span className="flex-1 truncate">{citation.title || label}</span>
-      <ExternalLink size={12} className="mt-0.5 shrink-0 opacity-0 group-hover:opacity-100" />
-    </button>
+      <span className="min-w-0 flex-1 truncate">{citation.title || "Untitled source"}</span>
+      {href && <ExternalLink size={12} className="mt-0.5 shrink-0 opacity-70 group-hover:opacity-100" />}
+    </>
+  );
+
+  if (!href) {
+    return (
+      <div
+        className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-xs leading-5 text-muted"
+        title="No external link is available for this source"
+      >
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-xs leading-5 text-muted hover:bg-soft hover:text-brand"
+    >
+      {content}
+    </a>
   );
 }
 
@@ -365,22 +392,24 @@ function ResponseActions({
             ) : (
               <Icon size={16} />
             )}
-            <span className={state === "done" ? "inline" : "sr-only"}>{state === "done" ? doneLabel : label}</span>
+            <span>{state === "done" ? doneLabel : label}</span>
           </button>
         );
       })}
       {result.answer && result.answer.citations.length > 0 && (
-        <details className="group/sources relative">
+        <details className="group/sources basis-full sm:basis-auto">
           <summary className="flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-muted transition hover:bg-soft hover:text-ink">
             <BookOpen size={15} />
             Sources
             <span className="rounded-full bg-soft px-1.5 py-0.5 text-[10px]">{result.answer.citations.length}</span>
             <ChevronDown size={13} className="transition-transform group-open/sources:rotate-180" />
           </summary>
-          <div className="mt-1 w-full min-w-[260px] rounded-xl border border-line bg-panel p-2 shadow-lg sm:absolute sm:left-0 sm:z-20 sm:w-[360px]">
-            {result.answer.citations.map((citation) => (
-              <SourceButton key={citation.ref_id} citation={citation} />
-            ))}
+          <div className="mt-1 w-full min-w-0 rounded-xl border border-line bg-panel p-2 shadow-lg sm:w-[420px]">
+            <div className="max-h-56 overscroll-contain overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+              {result.answer.citations.map((citation) => (
+                <SourceButton key={citation.ref_id} citation={citation} />
+              ))}
+            </div>
           </div>
         </details>
       )}
@@ -450,7 +479,13 @@ function ConversationTurn({
       : result?.visualization
         ? "Answered — structured from your input"
         : "Answered — no cited sources"
-    : ROUTE_LABELS[route ?? ""] ?? route;
+    : route === "CALCULATION"
+      ? result?.calculation?.status === "clarification_required"
+        ? "Clarification required — missing calculation input"
+        : result?.calculation?.status === "undefined"
+        ? "Calculation undefined — verified"
+        : "Answered — calculated and verified"
+      : ROUTE_LABELS[route ?? ""] ?? route;
 
   return (
     <>
@@ -563,6 +598,7 @@ function ConversationTurn({
 }
 
 export default function AskKritonPage() {
+  const { session, loading: authLoading } = useAuth();
   const [query, setQuery] = useState("");
   const [jurisdiction, setJurisdiction] = useState("");
   const [mode, setMode] = useState("Kriton's choice");
@@ -591,7 +627,8 @@ export default function AskKritonPage() {
   }
 
   useEffect(() => {
-    const token = getAuthToken();
+    if (authLoading) return;
+    const token = session?.access_token;
     if (!token) return;
     void listKritonAttachments(token).then((loadedDocuments) => {
       setDocuments(loadedDocuments);
@@ -603,9 +640,10 @@ export default function AskKritonPage() {
     }).catch(() => {
       // Upload remains available even when the saved-document library cannot load.
     });
-    // Initial hydration only; conversation changes are handled by selectConversation.
+    // Reload when Supabase restores or changes the authenticated session;
+    // conversation changes are handled by selectConversation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [authLoading, session?.access_token]);
 
   function setActiveId(id: string | null) {
     setActiveIdState(id);

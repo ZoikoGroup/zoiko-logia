@@ -8,7 +8,7 @@ import {
   FileText,
   Loader2,
   Mic,
-  Plus,
+  Paperclip,
   X,
 } from "lucide-react";
 import { getAuthToken, getKritonAttachment, uploadKritonAttachment, ApiError, type WorkspaceDocument } from "@/lib/api";
@@ -220,9 +220,23 @@ export function Composer({
                 onClick={() => fileInputRef.current?.click()}
                 disabled={attachment?.status === "uploading" || attachment?.status === "processing"}
                 aria-label="Attach a document"
-                className="flex h-9 w-9 items-center justify-center rounded-full text-muted transition hover:bg-soft disabled:opacity-50"
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-full bg-soft px-2.5 text-xs font-semibold text-ink transition hover:bg-line/60 disabled:cursor-not-allowed disabled:opacity-50 sm:px-3"
               >
-                {attachment?.status === "uploading" || attachment?.status === "processing" ? <Loader2 size={17} className="animate-spin" /> : <Plus size={19} />}
+                {attachment?.status === "uploading" || attachment?.status === "processing" ? (
+                  <>
+                    <Loader2 size={16} className="shrink-0 animate-spin" />
+                    <span className="hidden sm:inline">
+                      {attachment.status === "uploading"
+                        ? `Uploading ${Math.round(attachment.progress * 100)}%`
+                        : "Processing…"}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Paperclip size={16} className="shrink-0" />
+                    <span className="hidden sm:inline">Attach document</span>
+                  </>
+                )}
               </button>
               {documents.length > 0 && (
                 <select

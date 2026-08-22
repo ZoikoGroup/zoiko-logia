@@ -112,6 +112,26 @@ _DISTRIBUTION_HINTS = re.compile(
     re.I,
 )
 
+_COMPOSITION_VISUAL_HINTS = re.compile(
+    r"\b(donut chart|doughnut chart|ring chart|pie chart)\b", re.I,
+)
+
+_EXPLICIT_PERCENT_VALUE = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?\s*%")
+
+
+def _has_explicit_composition_values(query: str) -> bool:
+    """Recognize a user-supplied part-to-whole request without inventing it.
+
+    Naming a pie/donut is only a presentation preference; it becomes
+    composition intent here only when the same query supplies at least two
+    percentage values. extraction.py performs the stricter label, duplicate,
+    sign, count, and total validation before any evidence is constructed.
+    """
+    return bool(
+        _COMPOSITION_VISUAL_HINTS.search(query or "")
+        and len(_EXPLICIT_PERCENT_VALUE.findall(query or "")) >= 2
+    )
+
 # Deliberately narrower than _RELATIONSHIP_HINTS's "relationship between" —
 # "correlat*" wording only, so a statistical-correlation question (two real
 # numeric series) and an entity-relationship-graph question never collide on
@@ -194,7 +214,11 @@ def classify_intent(query: str) -> str:
     # unambiguous — the user is asking for this company's real, fetched
     # shareholding, not a graph they're about to supply themselves. See
     # _OWNERSHIP_STRUCTURE_CHART_HINT's own docstring in market_data.py.
-    if _OWNERSHIP_HINTS.search(q) or _OWNERSHIP_STRUCTURE_CHART_HINT.search(q):
+    if (
+        _OWNERSHIP_HINTS.search(q)
+        or _OWNERSHIP_STRUCTURE_CHART_HINT.search(q)
+        or _has_explicit_composition_values(q)
+    ):
         return COMPOSITION
     # "relationship between X and Y" is ambiguous between an entity-graph
     # request and a statistical-correlation request. When X/Y look like real

@@ -270,6 +270,25 @@ def test_bare_pie_chart_without_ownership_structure_does_not_trigger_composition
     assert classify_intent("Show quarterly revenue by region as a pie chart.") != COMPOSITION
 
 
+@pytest.mark.parametrize("query", [
+    "Show monthly expenses as a donut chart.",
+    "Show GDP growth as a pie chart.",
+    "Display revenue by department as a ring chart.",
+])
+def test_bare_composition_chart_style_does_not_override_query_meaning(query):
+    assert classify_intent(query) != COMPOSITION
+
+
+def test_explicit_user_percentages_with_pie_chart_are_composition():
+    assert classify_intent(
+        "Create a pie chart: Rent 40%, Payroll 35%, Utilities 25%."
+    ) == COMPOSITION
+
+
+def test_one_percentage_is_not_enough_to_establish_composition():
+    assert classify_intent("Show a pie chart for margin of 40%.") != COMPOSITION
+
+
 # ── data shape ────────────────────────────────────────────────────────────
 
 def test_composition_evidence_classified_as_part_to_whole():

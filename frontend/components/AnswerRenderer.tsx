@@ -12,7 +12,7 @@ import { GraphErrorBoundary, RelationshipTableFallback } from "@/components/visu
 import { ChartRenderer } from "@/components/visualization/charts/ChartRenderer";
 import { ANSWER_MATH_OPTIONS, hasDisplayMath, sanitizeAnswerMarkdown } from "@/lib/answer-markdown";
 import { ChartErrorBoundary } from "@/components/visualization/charts/ChartErrorBoundary";
-import { checkChartValidity } from "@/components/visualization/charts/chartValidity";
+import { checkChartValidity, normalizeVisualizationSpec } from "@/components/visualization/charts/chartValidity";
 import { familyFor } from "@/components/visualization/registry";
 
 /**
@@ -94,7 +94,8 @@ function TableViz({ viz }: { viz: VisualizationSpec }) {
   );
 }
 
-function VisualizationRenderer({ viz }: { viz: VisualizationSpec }) {
+function VisualizationRenderer({ viz: rawViz }: { viz: VisualizationSpec }) {
+  const viz = normalizeVisualizationSpec(rawViz);
   // Defensive re-check before any family-specific rendering: catches specs
   // whose shape has drifted from what this frontend build expects (e.g. an
   // old payload persisted to localStorage before a field existed). Only

@@ -8,7 +8,7 @@ import { RechartsChart } from "./RechartsAdapter";
 import { EChartsChart, type EChartsInstanceLike } from "./EChartsAdapter";
 import { ChartErrorBoundary } from "./ChartErrorBoundary";
 import { DataTableView } from "./DataTableView";
-import { checkChartValidity } from "./chartValidity";
+import { checkChartValidity, normalizeVisualizationSpec } from "./chartValidity";
 import { usePreferTable, useDefaultView } from "./useChartPreferences";
 import { ChartViewMenu } from "./ChartViewMenu";
 import { SummaryMetricCards, shouldShowSummaryMetrics } from "./SummaryMetricCards";
@@ -24,7 +24,8 @@ import { trackVisualizationInteraction } from "@/lib/telemetry";
  * telemetry) around it. Never re-derives or invents data — every branch
  * reads straight from the spec the backend already validated.
  */
-export function ChartRenderer({ viz: originalViz }: { viz: VisualizationSpec }) {
+export function ChartRenderer({ viz: rawViz }: { viz: VisualizationSpec }) {
+  const originalViz = normalizeVisualizationSpec(rawViz);
   const containerRef = useRef<HTMLDivElement>(null);
   const echartsInstanceRef = useRef<EChartsInstanceLike | null>(null);
 
