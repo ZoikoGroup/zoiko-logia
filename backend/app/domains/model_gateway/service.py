@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import os
 
@@ -11,6 +12,10 @@ from app.domains.model_gateway.providers.mock_adapter import MockProviderAdapter
 from app.domains.model_gateway.providers.groq_adapter import GroqAdapter
 from app.domains.model_gateway.providers.google_adapter import GeminiAdapter
 from app.domains.model_gateway.providers.openai_adapter import OpenAIAdapter
+from app.core.config import get_settings
+
+
+_provider_slots = asyncio.Semaphore(max(1, get_settings().MODEL_PROVIDER_CONCURRENCY))
 
 
 def _select_adapter():
@@ -22,9 +27,9 @@ def _select_adapter():
     row) — this is a flat "first configured provider wins" default until a
     real per-model routing decision is wired to run_test_prompt's caller.
 
-    Gemini is preferred for answering when configured (far more reliable at
-    emitting the ```chart / ```mermaid blocks than Llama), with Groq as the
-    fallback — see _complete_with_fallback.
+    Gemini is preferred for answering when configured (generally higher
+    answer quality than Llama), with Groq as the fallback — see
+    _complete_with_fallback.
     """
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
         return GeminiAdapter()
@@ -39,12 +44,23 @@ async def _try_complete(adapter, prompt: str, model: str | None) -> str:
     """Call an adapter's complete(), passing an optional per-call model
     override. Adapters whose complete() takes no `model` argument (the mock)
     raise TypeError — fall back to the no-arg form for them."""
-    if model:
-        try:
-            return await adapter.complete(prompt, model=model)
-        except TypeError:
-            return await adapter.complete(prompt)
-    return await adapter.complete(prompt)
+    async with _provider_slots:
+        if model:
+            try:
+                return await asyncio.wait_for(adapter.complete(prompt, model=model), timeout=40)
+            except TypeError:
+                return await asyncio.wait_for(adapter.complete(prompt), timeout=40)
+        return await asyncio.wait_for(adapter.complete(prompt), timeout=40)
+
+
+def _invalid_output(output: str | None) -> bool:
+    return not output or not output.strip() or output.lstrip().startswith("[Error")
+
+
+_PROVIDER_FAILURE_MESSAGE = (
+    "Kriton is temporarily unable to reach the language model provider. "
+    "Please try again in a moment."
+)
 
 
 async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
@@ -52,14 +68,29 @@ async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
     fails (network blip, quota, bad model id — adapters fail soft with an
     "[Error…]" string), transparently fall back to Groq so the user still gets
     an answer. The `model` override is a Groq-specific fast-model name, so it is
-    only forwarded when Groq is the one actually answering."""
+    only forwarded when Groq is the one actually answering.
+
+    If every attempted provider still failed (e.g. Groq itself hit a rate
+    limit with no further fallback configured), the raw "[Error…]" string —
+    which can include internal account/org identifiers and provider-internal
+    rate-limit detail — must never reach the composed answer. This is the one
+    choke point every caller goes through, so it's the one place that can
+    catch that and swap in a clean, generic message instead."""
     adapter = _select_adapter()
     is_gemini = isinstance(adapter, GeminiAdapter)
     # A Gemini answer must not receive a Groq model id — only pass `model`
     # through when the answering adapter is Groq.
-    output = await _try_complete(adapter, prompt, None if is_gemini else model)
-    if output.startswith("[Error") and is_gemini and os.environ.get("GROQ_API_KEY"):
-        output = await _try_complete(GroqAdapter(), prompt, model)
+    try:
+        output = await _try_complete(adapter, prompt, None if is_gemini else model)
+    except (TimeoutError, asyncio.TimeoutError):
+        output = ""
+    if _invalid_output(output) and is_gemini and os.environ.get("GROQ_API_KEY"):
+        try:
+            output = await _try_complete(GroqAdapter(), prompt, model)
+        except (TimeoutError, asyncio.TimeoutError):
+            output = ""
+    if _invalid_output(output):
+        return _PROVIDER_FAILURE_MESSAGE
     return output
 
 

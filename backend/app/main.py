@@ -16,7 +16,10 @@ from app.db.base import Base
 
 settings = get_settings()
 
-_TENANT_SCOPED_TABLES = ("sources", "source_versions")
+_TENANT_SCOPED_TABLES = (
+    "sources", "source_versions", "workspace_documents", "workspace_document_chunks", "workspace_artifacts",
+    "workspace_conversation_documents",
+)
 
 # RLS predicate per tenant-scoped table. Not a strict tenant_id equality:
 # massarius/license_gate.py's Checkpoint A already treats non-private
@@ -41,6 +44,23 @@ _TENANT_POLICY_USING = {
         f"({_HAS_TENANT_CONTEXT} AND ("
         "tenant_id = current_setting('app.tenant_id', true) "
         "OR source_id IN (SELECT id FROM sources WHERE NOT is_tenant_private)))"
+    ),
+    "workspace_documents": (
+        f"({_HAS_TENANT_CONTEXT} AND tenant_id = current_setting('app.tenant_id', true) "
+        "AND user_id = current_setting('app.user_id', true))"
+    ),
+    "workspace_document_chunks": (
+        f"({_HAS_TENANT_CONTEXT} AND tenant_id = current_setting('app.tenant_id', true) "
+        "AND document_id IN (SELECT id FROM workspace_documents "
+        "WHERE user_id = current_setting('app.user_id', true)))"
+    ),
+    "workspace_artifacts": (
+        f"({_HAS_TENANT_CONTEXT} AND tenant_id = current_setting('app.tenant_id', true) "
+        "AND user_id = current_setting('app.user_id', true))"
+    ),
+    "workspace_conversation_documents": (
+        f"({_HAS_TENANT_CONTEXT} AND tenant_id = current_setting('app.tenant_id', true) "
+        "AND user_id = current_setting('app.user_id', true))"
     ),
 }
 
@@ -384,6 +404,53 @@ async def _setup_source_rls():
             )
 
 
+async def _setup_document_search_index():
+    """Install PostgreSQL-native lexical search for targeted document Q&A."""
+    if settings.is_sqlite:
+        return
+    async with _ddl_conn() as conn:
+        await conn.execute(text(
+            "ALTER TABLE workspace_document_chunks "
+            "ADD COLUMN IF NOT EXISTS search_vector tsvector "
+            "GENERATED ALWAYS AS (to_tsvector('english'::regconfig, coalesce(text, ''))) STORED"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_workspace_document_chunks_search "
+            "ON workspace_document_chunks USING GIN (search_vector)"
+        ))
+
+
+async def _migrate_workspace_retention_columns():
+    """Upgrade existing databases and backfill deadlines for existing files."""
+    from sqlalchemy import inspect
+
+    async with _ddl_conn() as conn:
+        for table, days in (
+            ("workspace_documents", settings.DOCUMENT_RETENTION_DAYS),
+            ("workspace_artifacts", settings.ARTIFACT_RETENTION_DAYS),
+        ):
+            columns = await conn.run_sync(
+                lambda sync_conn, table=table: {
+                    column["name"] for column in inspect(sync_conn).get_columns(table)
+                }
+            )
+            if "expires_at" not in columns:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN expires_at TIMESTAMP"))
+            if settings.is_sqlite:
+                await conn.execute(text(
+                    f"UPDATE {table} SET expires_at = datetime(created_at, '+{days} days') "
+                    "WHERE expires_at IS NULL"
+                ))
+            else:
+                await conn.execute(text(
+                    f"UPDATE {table} SET expires_at = created_at + INTERVAL '{days} days' "
+                    "WHERE expires_at IS NULL"
+                ))
+            await conn.execute(text(
+                f"CREATE INDEX IF NOT EXISTS ix_{table}_expires_at ON {table} (expires_at)"
+            ))
+
+
 def _seed_defaults():
     """Seed default risk policy and refusal templates if tables are empty."""
     db = SessionLocal()
@@ -673,6 +740,7 @@ async def lifespan(app: FastAPI):
         ("migrate_orphan_tenant_id_not_null", _migrate_orphan_tenant_id_not_null),
         ("migrate_document_search_vector", _migrate_document_search_vector),
         ("setup_source_rls", _setup_source_rls),
+        ("setup_document_search_index", _setup_document_search_index),
         ("setup_user_rls", _setup_user_rls),
     ):
         try:

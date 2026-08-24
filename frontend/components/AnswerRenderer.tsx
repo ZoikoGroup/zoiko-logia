@@ -1,46 +1,37 @@
 "use client";
 
-import { useEffect, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
-import dynamic from "next/dynamic";
+import { type ComponentPropsWithoutRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { CheckCircle2, Copy, Download, Table2 } from "lucide-react";
-import { cssVar } from "@/lib/css-var";
-import {
-  canvasElementToPngBlob,
-  downloadBlob,
-  safeDownloadName,
-  svgElementToPngBlob,
-  tableElementToRows,
-  tableRowsToTsv,
-  writeImageToClipboard,
-  writeTextToClipboard,
-} from "@/lib/presentation";
-
-// echarts-for-react touches the DOM (canvas), so load it client-only.
-const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false });
+import type { VisualizationSpec } from "@/lib/api";
+import { GraphRendererAdapter } from "@/components/visualization/GraphRendererAdapter";
+import { FlowRendererAdapter } from "@/components/visualization/FlowRendererAdapter";
+import { GraphErrorBoundary, RelationshipTableFallback } from "@/components/visualization/GraphErrorBoundary";
+import { ChartRenderer } from "@/components/visualization/charts/ChartRenderer";
+import { ANSWER_MATH_OPTIONS, hasDisplayMath, sanitizeAnswerMarkdown } from "@/lib/answer-markdown";
+import { ChartErrorBoundary } from "@/components/visualization/charts/ChartErrorBoundary";
+import { checkChartValidity, normalizeVisualizationSpec } from "@/components/visualization/charts/chartValidity";
+import { familyFor } from "@/components/visualization/registry";
 
 /**
  * Renders a Kriton answer. Text is rendered as Markdown (so tables, bullet
- * lists, bold, and headings display properly, like ChatGPT). A fenced
- * ```mermaid block becomes a diagram (flowchart, org chart, mind map, …), and
- * a fenced ```chart block (JSON) becomes a real data chart (bar / line / pie /
- * sankey) via Apache ECharts. Citations, risk badge and everything else are
- * unchanged.
+ * lists, bold, and headings display properly, like ChatGPT). Charts/diagrams
+ * are no longer LLM-authored fenced blocks — see visualizationSpecToChartSpec
+ * below — this only renders the typed, server-decided `visualization` field.
+ * Citations, risk badge and everything else are unchanged.
  */
-
-type Segment =
-  | { type: "text"; content: string }
-  | { type: "mermaid"; content: string }
-  | { type: "chart"; content: string };
 
 /**
  * Safety net: strip any inline citation markers the model still slips into the
  * answer text (e.g. "[REF-1]", "[REF-2, REF-5]", "[1]"). Sources are shown in
  * the separate Sources panel, so the answer body should read cleanly. Also
- * tidies up the leftover spaces/punctuation the removal leaves behind.
+ * strips any stray ```mermaid/```chart fenced blocks a stale prompt/cached
+ * response might still contain, rather than dumping raw JSON/mermaid syntax
+ * as text — this renderer no longer knows how to draw them (see
+ * websearch.py's _FORMATTING_INSTRUCTIONS docstring for why). Also tidies up
+ * the leftover spaces/punctuation the removals leave behind.
  */
 function stripInlineRefs(text: string): string {
   return text
@@ -140,32 +131,22 @@ function FigureToolbar({ actions, children }: { actions: FigureAction[]; childre
     }
   }
 
+function KpiTile({ viz }: { viz: VisualizationSpec }) {
+  if (viz.value == null) return null;
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {actions.map((action) => {
-        const state = status[action.key] ?? "idle";
-        const Icon = action.icon;
-        return (
-          <button
-            key={action.key}
-            type="button"
-            onClick={() => void run(action)}
-            disabled={state === "busy"}
-            className={`inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px] font-semibold transition disabled:opacity-50 ${
-              state === "error"
-                ? "border-bad/40 text-bad"
-                : state === "done"
-                  ? "border-ok/40 text-ok"
-                  : "border-line text-muted hover:border-brand/40 hover:text-brand"
-            }`}
-          >
-            {state === "done" ? <CheckCircle2 size={11} /> : <Icon size={11} />}
-            {state === "done" ? action.doneLabel : state === "error" ? "Failed" : action.label}
-          </button>
-        );
-      })}
-      {children}
-    </div>
+    <section className="my-4 min-w-0 overflow-hidden rounded-2xl border border-line bg-panel shadow-sm">
+      <header className="flex items-center justify-between p-3 sm:p-4">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted">{viz.label ?? "Metric"}</p>
+        <span className="rounded-full bg-soft px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">KPI</span>
+      </header>
+      <div className="border-t border-line p-3 sm:p-4">
+      <p className="mt-1 text-2xl font-bold text-ink">
+        {viz.value.toLocaleString()}
+        {viz.unit && <span className="ml-1 text-base font-semibold text-muted">{viz.unit}</span>}
+      </p>
+      {viz.summary && <p className="mt-2 text-xs leading-5 text-muted">{viz.summary}</p>}
+      </div>
+    </section>
   );
 }
 
@@ -761,85 +742,82 @@ function ChartRenderer({ code }: { code: string }) {
                   ))}
                 </tr>
               ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      <figcaption className="mt-2 flex justify-end">
-        <FigureToolbar
-          actions={[
-            {
-              key: "copy-image",
-              label: "Copy image",
-              doneLabel: "Copied",
-              icon: Copy,
-              onClick: async () => writeImageToClipboard(await chartPng()),
-            },
-            {
-              key: "download",
-              label: "Download",
-              doneLabel: "Downloaded",
-              icon: Download,
-              onClick: async () => downloadBlob(await chartPng(), safeDownloadName(title, "png")),
-            },
-            {
-              key: "copy-table",
-              label: "Copy table",
-              doneLabel: "Copied",
-              icon: Table2,
-              // TSV, not CSV: spreadsheets split TSV into cells straight off the
-              // clipboard with no import dialog.
-              onClick: async () => writeTextToClipboard(tableRowsToTsv(rows)),
-            },
-          ]}
-        >
-          <button
-            type="button"
-            onClick={() => setShowTable((v) => !v)}
-            aria-expanded={showTable}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2 py-1 text-[11px] font-semibold text-muted transition hover:border-brand/40 hover:text-brand"
-          >
-            <Table2 size={11} />
-            {showTable ? "Hide table" : "View as table"}
-          </button>
-        </FigureToolbar>
-      </figcaption>
-    </figure>
+            </tr>
+          ))}
+        </tbody>
+      </table></div>
+      {viz.summary && <p className="truncate border-t border-line px-3 py-2 text-[11px] text-muted sm:px-4">{viz.summary}</p>}
+    </section>
   );
 }
 
-/** A table inside the answer prose — the rate/comparison tables Kriton writes
- * into its narrative, which are the ones a user most often wants in a
- * spreadsheet. Distinct from a chart's "Copy table", which reads the chart
- * spec; here the rendered DOM IS the source, so every column comes across
- * exactly as displayed. */
-function MarkdownTable(props: ComponentPropsWithoutRef<"table">) {
-  const ref = useRef<HTMLTableElement>(null);
+function VisualizationRenderer({ viz: rawViz }: { viz: VisualizationSpec }) {
+  const viz = normalizeVisualizationSpec(rawViz);
+  // Defensive re-check before any family-specific rendering: catches specs
+  // whose shape has drifted from what this frontend build expects (e.g. an
+  // old payload persisted to localStorage before a field existed). Only
+  // ChartRenderer used to consult this — KPI/TABLE/EVIDENCE_GRAPH/
+  // PROCESS_FLOW had no equivalent gate.
+  const validity = checkChartValidity(viz);
+  if (validity === "EMPTY") {
+    return <p className="my-4 text-xs text-muted">No data available for this visualization.</p>;
+  }
+  if (validity === "STRUCTURALLY_INVALID") {
+    const isGraphLike = viz.type === "EVIDENCE_GRAPH" || viz.type === "PROCESS_FLOW";
+    return (
+      <div className="my-4 min-w-0 overflow-hidden rounded-2xl border border-line bg-panel shadow-sm">
+        <div className="p-3 sm:p-4">
+          <p className="mb-2 text-xs leading-5 text-muted">
+            This visualization&apos;s saved data no longer matches what a {viz.type.toLowerCase().replace(/_/g, " ")} needs.
+          </p>
+          {isGraphLike && <RelationshipTableFallback nodes={viz.nodes} edges={viz.edges} />}
+        </div>
+      </div>
+    );
+  }
 
-  return (
-    <div className="my-3">
-      <div className="overflow-x-auto">
-        <table ref={ref} className="w-full border-collapse text-left text-xs" {...props} />
-      </div>
-      <div className="mt-1.5 flex justify-end">
-        <FigureToolbar
-          actions={[
-            {
-              key: "copy-table",
-              label: "Copy table",
-              doneLabel: "Copied",
-              icon: Table2,
-              onClick: async () => {
-                if (!ref.current) throw new Error("Table is not ready yet");
-                await writeTextToClipboard(tableRowsToTsv(tableElementToRows(ref.current)));
-              },
-            },
-          ]}
-        />
-      </div>
-    </div>
-  );
+  switch (familyFor(viz.type)) {
+    case "table":
+      return (
+        <ChartErrorBoundary viz={viz} renderer="TABLE_ADAPTER">
+          <TableViz viz={viz} />
+        </ChartErrorBoundary>
+      );
+    case "kpi":
+      return (
+        <ChartErrorBoundary viz={viz} renderer="KPI_TILE">
+          <KpiTile viz={viz} />
+        </ChartErrorBoundary>
+      );
+    case "chart":
+      return <ChartRenderer viz={viz} />;
+    case "graph":
+      return (
+        <div className="min-w-0">
+          <GraphRendererAdapter nodes={viz.nodes} edges={viz.edges} preferredEngine={viz.graph_engine} />
+          {viz.summary && <p className="mt-1 px-1 text-xs leading-5 text-muted">{viz.summary}</p>}
+        </div>
+      );
+    case "flow":
+      return (
+        <div className="min-w-0">
+          <GraphErrorBoundary
+            category="flow"
+            failedRenderer="flow"
+            fallbackRenderer="table"
+            fallback={<RelationshipTableFallback nodes={viz.nodes} edges={viz.edges} />}
+          >
+            <FlowRendererAdapter
+              nodes={viz.nodes}
+              edges={viz.edges}
+              interactive={viz.interactive}
+              preferredEngine={viz.flow_engine}
+            />
+          </GraphErrorBoundary>
+          {viz.summary && <p className="mt-1 px-1 text-xs leading-5 text-muted">{viz.summary}</p>}
+        </div>
+      );
+  }
 }
 
 // Markdown element styling — theme-tokenized so it stays legible in dark mode
@@ -854,7 +832,11 @@ const mdComponents = {
   a: (props: ComponentPropsWithoutRef<"a">) => (
     <a className="text-brand underline" target="_blank" rel="noreferrer" {...props} />
   ),
-  table: (props: ComponentPropsWithoutRef<"table">) => <MarkdownTable {...props} />,
+  table: (props: ComponentPropsWithoutRef<"table">) => (
+    <div className="my-3 overflow-x-auto">
+      <table className="w-full border-collapse text-left text-xs" {...props} />
+    </div>
+  ),
   thead: (props: ComponentPropsWithoutRef<"thead">) => <thead className="bg-soft" {...props} />,
   th: (props: ComponentPropsWithoutRef<"th">) => (
     <th className="border border-line px-3 py-2 font-semibold text-ink" {...props} />
@@ -870,8 +852,24 @@ const mdComponents = {
   h3: (props: ComponentPropsWithoutRef<"h3">) => <h4 className="mb-1 mt-2 text-sm font-semibold text-ink" {...props} />,
 };
 
-export function AnswerRenderer({ text, className }: { text: string; className?: string }) {
-  const segments = parseSegments(text);
+export function AnswerRenderer({
+  text,
+  visualization,
+  secondaryVisualizations,
+  className,
+}: {
+  text: string;
+  /** Deterministic, evidence-backed visual from the response's top-level
+   * `visualization` field. */
+  visualization?: VisualizationSpec | null;
+  /** Complementary visuals (spec §17) — a different lens on the SAME
+   * evidence as `visualization`, rendered after it. */
+  secondaryVisualizations?: VisualizationSpec[] | null;
+  className?: string;
+}) {
+  const sanitizedText = sanitizeAnswerMarkdown(text);
+  const renderMath = hasDisplayMath(sanitizedText);
+
   return (
     <div className={`min-w-0 text-sm leading-7 text-ink ${className ?? ""}`}>
       {segments.map((seg, i) =>

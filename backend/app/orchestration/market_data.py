@@ -26,12 +26,21 @@ cannot travel this path — see the market_data package docstring.
 """
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass, field
+
 from app.domains.market_data import registry, service
+from app.domains.market_data.http import make_client
+from app.domains.market_data.identity import company_name_hint, resolve_local
+from app.domains.market_data.providers.companies_house import CompaniesHouseProvider
 from app.domains.market_data.schemas import (
     CompanyProfile,
+    EntityRef,
     FilingRecord,
     FinancialMetric,
     OHLCVBar,
+    ProviderBadResponse,
+    ProviderError,
     StockQuote,
 )
 from app.orchestration.websearch import WebSource
@@ -182,24 +191,265 @@ def _profile_source(profile: CompanyProfile) -> WebSource:
     )
 
 
-async def fetch_market_sources(query: str) -> list[WebSource]:
-    """Return grounding sources for a market/company question, else []."""
+# ── Ownership (persons with significant control) ─────────────────────────
+# A dedicated, self-gating connector — same contract as dbnomics.py's
+# _find_best_series / frankfurter.py's _find_rate, NOT routed through
+# service.fetch_market_data()'s generic multi-provider dispatch above: PSC
+# data only exists at Companies House (no fallback-provider chain is
+# possible for it), so going through the shared dispatcher would buy nothing
+# and risks a second, wasted network fetch if a caller also calls
+# fetch_market_sources() for the same query. Fetched exactly once; that one
+# result builds BOTH the grounding WebSource and the composition evidence
+# fetch_live_data() populates (see evidence.py's "never two independent
+# fetches for the same fact" rule).
+_OWNERSHIP_HINTS = re.compile(
+    r"\b(persons? with significant control|significant control|\bpsc\b|"
+    r"shareholders?|shareholding|major shareholders?|cap table|who owns|"
+    r"ownership (breakdown|split|percentage|stake|composition)|beneficial owners?)\b",
+    re.I,
+)
+
+# "Ownership structure" alone is deliberately EXCLUDED from _OWNERSHIP_HINTS
+# above — it's owned by RELATIONSHIP's user-supplied-entity-graph reading
+# (intent_classifier.py's _RELATIONSHIP_HINTS). But when the user ALSO names
+# a pie/donut-chart rendering in the same request ("ownership structure ...
+# as a pie chart"), that combination unambiguously asks for this company's
+# REAL, fetched shareholding — not a graph the user is about to supply
+# themselves. Matched in EITHER order, bounded to a short same-clause window
+# (stops at . ; :) so a bare "ownership structure" or a bare "pie chart"
+# elsewhere in a longer, multi-clause query never satisfies this alone.
+# Deliberately a SEPARATE regex from _OWNERSHIP_HINTS (never widen that
+# pattern itself) — test_ownership_hints_match_shareholder_phrasing /
+# test_ownership_hints_do_not_match_unrelated_query assert its exact match
+# surface directly, and test_user_supplied_ownership_structure_stays_relationship
+# depends on a bare "ownership structure" (no chart word) staying RELATIONSHIP.
+_OWNERSHIP_STRUCTURE_CHART_HINT = re.compile(
+    r"\bownership structures?\b(?=(?:(?![.;:]).){0,80}\b(?:pie|donut) charts?\b)|"
+    r"\b(?:pie|donut) charts?\b(?=(?:(?![.;:]).){0,80}\bownership structures?\b)",
+    re.I,
+)
+# Stripper for the two trigger phrases above. Uses lookahead in the pattern
+# above (not literal span-consumption), so this is safe to apply
+# unconditionally — it only ever removes the two short phrases themselves,
+# never the company name (or anything else) sitting between them.
+_OWNERSHIP_STRUCTURE_CHART_PHRASES = re.compile(
+    r"\bownership structures?\b|\b(?:pie|donut) charts?\b", re.I,
+)
+
+
+@dataclass
+class OwnershipMatch:
+    company_name: str
+    company_number: str
+    # (holder label, percent) — percent is always a declared PSC BAND's
+    # midpoint, never an exact filed figure; the last slice, when present, is
+    # the synthesized "Other shareholders" gap (100% minus known midpoints) —
+    # a real arithmetic consequence of the known slices, not fabricated data.
+    slices: list[tuple[str, float]]
+    url: str
+    caveat: str
+
+
+def _best_company_match(term: str, candidates: list[EntityRef]) -> EntityRef | None:
+    """Companies House's free-text company search ranks by an internal
+    relevance signal that is NOT reliably a name-prefix match — searching
+    "HSBC" once ranked two unrelated companies (neither containing "HSBC"
+    anywhere in its name) above every real HSBC entity. Blindly trusting the
+    top result risks silently attaching a stranger's real PSC data to the
+    query, which is worse than finding nothing. Candidates must contain all
+    requested name tokens; active public/group parents are preferred and
+    shell-like corporate-director/nominee entities are penalized."""
+    needle = (term or "").strip().casefold()
+    if not needle:
+        return None
+    words = tuple(re.findall(r"[a-z0-9]+", needle))
+    if not words:
+        return None
+
+    shell_words = {"corporate", "director", "nominee", "nominees", "pension", "trustee", "services"}
+
+    def score(candidate: EntityRef) -> tuple[int, int]:
+        name = candidate.name.strip().casefold()
+        name_words = set(re.findall(r"[a-z0-9]+", name))
+        if not all(word in name_words for word in words):
+            return (-10_000, 0)
+        value = 20 * len(words)
+        if name.startswith(needle):
+            value += 20
+        if name_words & {"group", "holdings"}:
+            value += 12
+        value -= 12 * len(name_words & shell_words)
+        if candidate.company_status.casefold() == "active":
+            value += 8
+        if candidate.company_type.casefold() in {"plc", "public-limited-company"}:
+            value += 10
+        # Prefer the concise parent-like registered name when all other
+        # signals tie, rather than whichever search result arrived first.
+        return (value, -len(name_words))
+
+    ranked = sorted(candidates, key=score, reverse=True)
+    return ranked[0] if ranked and score(ranked[0])[0] > 0 else None
+
+
+async def _find_ownership(query: str) -> OwnershipMatch | None:
+    q = query or ""
+    if not (_OWNERSHIP_HINTS.search(q) or _OWNERSHIP_STRUCTURE_CHART_HINT.search(q)):
+        return None
+
+    provider = CompaniesHouseProvider()
+    if not provider.configured():
+        return None
+
+    ref = resolve_local(query)
+    # The ownership-trigger phrase itself ("persons with significant
+    # control", "shareholders", "PSC", "cap table", ...) must never reach
+    # Companies House's search endpoint as part of the company name — it
+    # isn't part of any real company's name and can coincidentally match an
+    # unrelated one whose actual registered name contains one of those words
+    # (e.g. "significant" matched a real company called "Life's Significant
+    # Moments With Anne Limited" instead of Barclays). A confirmed name from
+    # resolve_local()'s well-known-name table is preferred outright; failing
+    # that, the hint is derived from the query with the ownership phrase
+    # stripped out first, never from the raw query text.
+    hint = ref.name or company_name_hint(
+        _OWNERSHIP_STRUCTURE_CHART_PHRASES.sub(" ", _OWNERSHIP_HINTS.sub(" ", query))
+    )
+    if not ref.company_number and not hint:
+        return None
+
+    try:
+        async with make_client() as client:
+            if not ref.company_number:
+                candidates = await provider.search(client, hint, limit=10)
+                best = _best_company_match(hint, candidates)
+                if best is None or not best.company_number:
+                    return None
+                ref = best
+            try:
+                stakes = await provider.get_ownership(client, ref)
+            except ProviderBadResponse as exc:
+                if "no persons with significant control" not in str(exc).casefold():
+                    raise
+                return OwnershipMatch(
+                    company_name=ref.name or hint,
+                    company_number=ref.company_number,
+                    slices=[],
+                    url=(
+                        "https://find-and-update.company-information.service.gov.uk/company/"
+                        f"{ref.company_number}/persons-with-significant-control"
+                    ),
+                    caveat=(
+                        "Companies House returned no persons with significant control for this exact entity. "
+                        "PSC filings disclose statutory control (generally over 25%); they are not a complete "
+                        "shareholder register and commonly do not identify the owners of widely held listed companies."
+                    ),
+                )
+    except ProviderError:
+        return None
+    except Exception:  # noqa: BLE001 — connector boundary must fail soft
+        return None
+
+    # Only PSCs with a real ownership-of-shares band count toward a "share of
+    # the whole" figure — voting-rights-only/appointment-only/influence-only
+    # control is a real fact but not a percentage of shares (see
+    # companies_house.py's get_ownership docstring). Ceased PSCs are historic,
+    # not current ownership.
+    active = [s for s in stakes if not s.ceased and s.min_percent is not None and s.max_percent is not None]
+    if not active:
+        return OwnershipMatch(
+            company_name=ref.name or hint,
+            company_number=ref.company_number,
+            slices=[],
+            url=(
+                "https://find-and-update.company-information.service.gov.uk/company/"
+                f"{ref.company_number}/persons-with-significant-control"
+            ),
+            caveat=(
+                "Companies House returned no active PSC with an ownership-of-shares band for this exact entity. "
+                "PSC data records statutory control, not a complete shareholder register."
+            ),
+        )
+
+    slices: list[tuple[str, float]] = [(s.name, (s.min_percent + s.max_percent) / 2.0) for s in active]
+    known_total = sum(v for _, v in slices)
+    if known_total < 99.5:
+        slices.append(("Other shareholders (below statutory disclosure threshold)", 100.0 - known_total))
+
+    caveat = (
+        "Ownership bands as filed with Companies House (persons with significant control). "
+        "Values are the midpoint of each holder's declared band (e.g. \"25-50%\" → ~38%), not "
+        "an exact filed percentage, and only holders the register requires to be disclosed "
+        "(generally over 25% control) are listed."
+    )
+    return OwnershipMatch(
+        company_name=active[0].company_name, company_number=active[0].company_number,
+        slices=slices, url=active[0].source_url, caveat=caveat,
+    )
+
+
+def _build_ownership_source(match: OwnershipMatch) -> WebSource:
+    lines = "; ".join(
+        f"{label}: ~{value:.0f}%" for label, value in match.slices
+        if not label.startswith("Other shareholders")
+    )
+    if not match.slices:
+        return WebSource(
+            title=f"Companies House — {match.company_name} PSC register"[:200],
+            url=match.url,
+            snippet=(
+                f"Companies House lookup for {match.company_name} (company number {match.company_number}) "
+                f"found no reportable ownership-of-shares PSC entries. {match.caveat}"
+            ),
+            provider="companies_house",
+            freshness="filing",
+        )
+    return WebSource(
+        title=f"Companies House — {match.company_name} persons with significant control"[:200],
+        url=match.url,
+        snippet=(
+            f"{match.company_name} (company number {match.company_number}) persons with significant "
+            f"control, as filed with Companies House: {lines}. {match.caveat} Other, smaller "
+            "shareholders may exist and are not shown."
+        ),
+        provider="companies_house",
+        freshness="filing",
+    )
+
+
+@dataclass
+class MarketSourceResult:
+    sources: list[WebSource] = field(default_factory=list)
+    # Real OHLC bars — populated ONLY when the resolved intent is
+    # INTENT_HISTORY, else None. Every other market-data intent (quote,
+    # fundamentals, filings, profile, lookup) still returns sources only;
+    # this is additive, not a behavior change for them.
+    ohlc: list[OHLCVBar] | None = None
+    symbol: str = ""
+
+
+async def fetch_market_sources(query: str) -> MarketSourceResult:
+    """Return grounding sources (and, for a history-shaped question, the
+    real OHLC bars behind them) for a market/company question, else an
+    empty result. Fetched exactly once — the SAME result builds both the
+    WebSource citation and (for history) the chart-ready evidence, never two
+    independent fetches for the same fact (see evidence.py's docstring)."""
     outcome = await service.fetch_market_data(query)
     if outcome is None:
-        return []
+        return MarketSourceResult()
 
     result, _provider, intent = outcome
     try:
         if intent == registry.INTENT_QUOTE and isinstance(result, StockQuote):
-            return [_quote_source(result)]
+            return MarketSourceResult(sources=[_quote_source(result)])
         if intent == registry.INTENT_HISTORY and isinstance(result, list) and result:
-            return [_history_source(result)]  # type: ignore[arg-type]
+            bars: list[OHLCVBar] = result  # type: ignore[assignment]
+            return MarketSourceResult(sources=[_history_source(bars)], ohlc=bars, symbol=bars[-1].symbol)
         if intent == registry.INTENT_FUNDAMENTALS and isinstance(result, list) and result:
-            return [_fundamentals_source(result)]  # type: ignore[arg-type]
+            return MarketSourceResult(sources=[_fundamentals_source(result)])  # type: ignore[arg-type]
         if intent == registry.INTENT_FILINGS and isinstance(result, list) and result:
-            return [_filings_source(result)]  # type: ignore[arg-type]
+            return MarketSourceResult(sources=[_filings_source(result)])  # type: ignore[arg-type]
         if isinstance(result, CompanyProfile):
-            return [_profile_source(result)]
+            return MarketSourceResult(sources=[_profile_source(result)])
     except Exception:  # noqa: BLE001 — rendering must never break the request
-        return []
-    return []
+        return MarketSourceResult()
+    return MarketSourceResult()

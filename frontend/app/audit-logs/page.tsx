@@ -58,7 +58,9 @@ export default function AuditLogsPage() {
   }
 
   useEffect(() => {
-    load();
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+    // Initial load intentionally uses the initial empty filters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

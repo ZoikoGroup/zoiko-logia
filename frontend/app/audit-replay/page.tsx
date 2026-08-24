@@ -51,7 +51,9 @@ function AuditReplayContent() {
   }
 
   useEffect(() => {
-    if (initialId) loadManifest(initialId);
+    if (!initialId) return;
+    const timer = window.setTimeout(() => void loadManifest(initialId), 0);
+    return () => window.clearTimeout(timer);
   }, [initialId]);
 
   function handleSubmit(e: FormEvent) {

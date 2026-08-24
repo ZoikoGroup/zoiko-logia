@@ -2,20 +2,17 @@
 
 import { useState } from "react";
 import { PageHeader } from "@/components/governance/PageHeader";
-import { Card } from "@/components/governance/Card";
 import { Pill } from "@/components/governance/Pill";
 import {
   Shield,
   ShieldCheck,
   ShieldAlert,
   CheckCircle2,
-  XCircle,
   AlertTriangle,
   Loader2,
   Send,
   BookOpen,
   ListChecks,
-  Scale,
   Info,
 } from "lucide-react";
 import { validateOutput } from "@/lib/safety-api";
