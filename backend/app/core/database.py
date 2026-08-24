@@ -124,8 +124,24 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
     request, though, so every code path here — including "no valid token" —
     must explicitly set both (even to ''), never skip the call. Skipping it
     when they're falsy would leave whatever a *previous* request left on
-    that same pooled connection in effect for this one."""
-    async with RequestSessionLocal() as session:
+    that same pooled connection in effect for this one.
+
+    The session is bound to ONE checked-out connection for the whole request,
+    which is what makes the two settings above mean anything. They live on a
+    connection, not on a session: a session normally returns its connection to
+    the pool at every commit and checks one out again for the next statement,
+    and a request that commits part-way — every audit write does — can be
+    handed a different connection afterwards, one that never had set_config run
+    on it. Every RLS-protected statement after that point then sees nothing.
+
+    That failure is invisible on a quiet pool, because the connection just
+    released is usually the one handed back. Under any concurrency it appears:
+    a document upload inserted its row successfully, committed, and the very
+    next UPDATE on that same row matched zero rows — the row was real, the
+    policy was right, and the new connection simply had no identity on it.
+    Holding one connection for the request removes the possibility."""
+    async with request_engine.connect() as connection, \
+            RequestSessionLocal(bind=connection) as session:
         if not settings.is_sqlite:
             user_id, tenant_id = _identity_from_request(request)
             # set_config(..., false) accepts a bound parameter, unlike SET,
