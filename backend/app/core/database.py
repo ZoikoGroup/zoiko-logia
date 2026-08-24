@@ -10,20 +10,6 @@ from app.core.supabase_auth import verify_token
 
 settings = get_settings()
 
-# Supabase/pgbouncer can occasionally leave a TCP connection half-open long
-# enough for the operating-system timeout (~120s) to fire.  That is longer
-# than Ask Kriton's entire frontend deadline.  Bound connection acquisition,
-# pool checkout and individual commands so pool_pre_ping/reconnects fail fast
-# and SQLAlchemy can discard the bad connection.
-_ASYNC_POSTGRES_CONNECT_ARGS = {
-    "timeout": 10,
-    "command_timeout": 15,
-}
-_SYNC_POSTGRES_CONNECT_ARGS = {
-    "connect_timeout": 10,
-    "options": "-c statement_timeout=15000",
-}
-
 
 def _normalize_scheme(url: str) -> str:
     """postgres:// is a legacy alias for postgresql:// — normalize it first
@@ -62,11 +48,7 @@ def to_sync_url(url: str) -> str:
 
 # Sync DB support for Safety Domain
 sync_db_url = to_sync_url(settings.DATABASE_URL)
-connect_args = (
-    {"check_same_thread": False}
-    if sync_db_url.startswith("sqlite")
-    else _SYNC_POSTGRES_CONNECT_ARGS
-)
+connect_args = {"check_same_thread": False} if sync_db_url.startswith("sqlite") else {}
 
 engine = create_engine(sync_db_url, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -91,14 +73,7 @@ def get_sync_db() -> Generator[Session, None, None]:
 # "asyncpg ... connection is closed" (intermittent, since it only hits stale
 # ones). Mirrors the sync `engine` above, which already sets pool_pre_ping.
 async_engine = create_async_engine(
-    to_async_url(settings.DATABASE_URL),
-    echo=False,
-    pool_pre_ping=True,
-    pool_recycle=300,
-    pool_timeout=10,
-    connect_args=(
-        {} if settings.is_sqlite else _ASYNC_POSTGRES_CONNECT_ARGS
-    ),
+    to_async_url(settings.DATABASE_URL), echo=False, pool_pre_ping=True, pool_recycle=300
 )
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 
@@ -110,13 +85,7 @@ AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 # isn't set (SQLite, or a Postgres instance without the low-priv role).
 request_engine = create_async_engine(
     to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL),
-    echo=False,
-    pool_pre_ping=True,
-    pool_recycle=300,
-    pool_timeout=10,
-    connect_args=(
-        {} if settings.is_sqlite else _ASYNC_POSTGRES_CONNECT_ARGS
-    ),
+    echo=False, pool_pre_ping=True, pool_recycle=300,
 )
 RequestSessionLocal = async_sessionmaker(request_engine, expire_on_commit=False)
 
@@ -188,3 +157,4 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
                 text("SELECT set_config('app.user_id', :user_id, false)"), {"user_id": user_id}
             )
         yield session
+

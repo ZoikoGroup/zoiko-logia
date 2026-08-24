@@ -41,14 +41,13 @@ export default function IncidentResponsePage() {
       ]);
       setIncidents(resIncidents);
       setStats(resStats);
-    } catch {
+    } catch (err) {
       setError("Could not load incidents from the server.");
     }
   };
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void refreshData(), 0);
-    return () => window.clearTimeout(timer);
+    refreshData();
   }, []);
 
   const handleAction = async (action: string) => {
@@ -63,7 +62,7 @@ export default function IncidentResponsePage() {
       setSelectedIncident(null);
       setActionNote("");
       await refreshData();
-    } catch {
+    } catch (err) {
       alert("Failed to perform action");
     } finally {
       setLoading(false);

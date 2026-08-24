@@ -21,13 +21,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import logging
 import time
 import os
-import re
 from typing import Optional
 
-from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -42,13 +39,13 @@ from app.orchestration.routing_matrix import (
     map_safety_confidence,
     ROUTE_LLM, ROUTE_REFUSAL, ROUTE_CLARIFICATION,
     ROUTE_HUMAN_REVIEW, ROUTE_SECURITY_INCIDENT, ROUTE_REJECTED,
-    CONF_INSUFFICIENT, CONF_SUFFICIENT,
+    CONF_INSUFFICIENT,
 )
+from app.orchestration.composition_validator import build_validated_disclaimer
 from app.orchestration.persisted_objects import create_review_case, create_security_incident_sync
 from app.orchestration.schemas import (
     AskKritonRequest, AskKritonResponse,
     ComposedAnswer, SourceCitation, SafetyState, NextAction, AuditReference,
-    GeneratedArtifactPublic,
 )
 from app.orchestration.audit_events import (
     audit_query_received, audit_request_validated, audit_request_rejected,
@@ -61,9 +58,6 @@ from app.orchestration.audit_events import (
     audit_licence_prefilter_completed, audit_licence_denied,
     audit_bundle_built, audit_validation_completed,
     audit_redaction_applied,
-    audit_document_retrieval,
-    audit_artifact_generation_failed,
-    audit_calculation_completed,
 )
 from app.domains.risk_safety.schemas import ClassifyRequest
 from app.domains.model_gateway import service as model_gateway_service
@@ -77,15 +71,6 @@ from app.orchestration.websearch import (
 from app.domains.documents import service as documents_service
 from app.orchestration.live_data import fetch_live_data
 from app.orchestration.risk_llm import classify_risk, classify_risk_gemini
-from app.domains.kriton_workspace.documents import retrieve_document_sources, resolve_conversation_document_ids
-from app.domains.kriton_workspace.artifacts import create_generated_artifact
-from app.orchestration.document_pipeline import (
-    analyse_spreadsheet_sources,
-    build_document_generation_prompt,
-    plan_document_task,
-)
-from app.orchestration.calculations import calculate_from_query
-from app.orchestration.calculations.engine import calculation_markdown
 
 # Massarius™ retrieval and evidence subsystem — Phase 1 control modules
 # (ZL-ENG-03). These wrap/replace the inline licence filtering, bundle
@@ -98,289 +83,9 @@ from app.domains.massarius.answer_validator import validate_answer
 from app.domains.massarius.policy_matrix import resolve_policy
 
 
-logger = logging.getLogger("kriton.orchestration")
-
-
 def _hash_query(query: str) -> str:
     """Hash query text — raw query text is not stored in plaintext per §13 RG-04."""
     return hashlib.sha256(query.encode("utf-8")).hexdigest()[:32]
-
-
-_SAME_DATA_REFERENCE = re.compile(
-    r"\b(?:same|previous|above|that)\s+(?:data|series|figures?|values?|chart|graph|table)\b|"
-    r"\b(?:show|render|display|plot)\s+(?:it|them)\s+as\b|"
-    r"\bthe\s+(?:underlying|raw|source)\s+(?:data|table|figures?|values?|numbers?)\b|"
-    r"\bshow\s+(?:me\s+)?the\s+table\b",
-    re.I,
-)
-
-
-_ELLIPTICAL_FOLLOW_UP = re.compile(
-    r"^\s*(?:what|how)\s+about\b|"
-    r"^\s*(?:and|also|instead|then)\b|"
-    r"\bdo\s+the\s+same\b|"
-    r"\buse\s+(?:it|them|that)\b|"
-    r"\b(?:show|render|display|plot)\s+(?:this|that)\s+as\b",
-    re.I,
-)
-
-
-_UNDER_SPECIFIED_METRIC_FORMAT = re.compile(
-    r"\b(?:CPI|inflation|GDP|unemployment|interest rate|exchange rate)\b"
-    r".{0,80}\b(?:as|using)\s+(?:an?\s+)?(?:line|bar|area|step|spline|horizontal|vertical|"
-    r"grouped|stacked|scatter|table|chart|graph)",
-    re.I,
-)
-
-
-def _looks_like_contextual_follow_up(query: str) -> bool:
-    """Return True only for high-confidence references to an earlier turn.
-
-    A named country makes a metric/chart request self-contained. A bare
-    metric plus a presentation change (for example, "Show CPI as a bar
-    chart") remains contextual so an earlier jurisdiction is preserved.
-    """
-    text = query or ""
-    if _SAME_DATA_REFERENCE.search(text) or _ELLIPTICAL_FOLLOW_UP.search(text):
-        return True
-    return bool(_UNDER_SPECIFIED_METRIC_FORMAT.search(text) and not countries_in_query(text))
-
-
-def _with_previous_context(
-    query: str,
-    previous_query: str | None,
-    *,
-    clarification_cycle: int = 0,
-) -> str:
-    """Add the preceding request only when the current turn depends on it.
-
-    Current wording stays first so its requested output form wins. Relevant
-    combined text remains subject to the existing pre-screen before retrieval.
-    Clarification replies always retain context because short answers such as
-    a jurisdiction or year are intentionally incomplete on their own.
-    """
-    current = (query or "").strip()
-    previous = (previous_query or "").strip()
-    if not previous:
-        return current
-    if clarification_cycle <= 0 and not _looks_like_contextual_follow_up(current):
-        return current
-    return f"{current}\n\nPrevious user request for context: {previous}"
-
-
-def _should_reuse_previous_evidence(query: str) -> bool:
-    """Only explicit formatting follow-ups inherit the previous evidence."""
-    return bool(_SAME_DATA_REFERENCE.search(query or ""))
-
-
-_MODEL_DOMAIN_REFUSAL = "designed to answer questions related to Accounting"
-_MODEL_DOMAIN_REFUSAL_TEXT = (
-    "I'm designed to answer questions related to Accounting, Taxation, Payroll, "
-    "Finance, Auditing, Bookkeeping, Commerce, and Accounting Education across "
-    "global countries.\n\nPlease ask a question related to these topics."
-)
-_MODEL_PROVIDER_FAILURE = "Kriton is temporarily unable to reach the language model provider."
-
-# High-confidence, consumer/general-knowledge requests that are plainly
-# outside Kriton's governed accounting and finance scope. Keeping this gate
-# deliberately narrow makes the refusal deterministic (and independent of an
-# LLM outage) without trying to replace the richer model domain classifier.
-_DETERMINISTIC_OUT_OF_SCOPE = re.compile(
-    r"(?:\b(?:recommend|suggest|pick)\b.{0,40}\b(?:movie|film|tv show)\b|"
-    r"\b(?:tell|give)\s+(?:me\s+)?(?:a\s+)?joke\b|"
-    r"\b(?:plan|recommend|suggest)\b.{0,50}\b(?:holiday|vacation|tourist trip|travel itinerary)\b|"
-    r"\b(?:who won|what (?:was|is) the score|match result)\b.{0,50}"
-    r"\b(?:football|soccer|cricket|basketball|tennis|match|game)\b)",
-    re.I | re.DOTALL,
-)
-_DETERMINISTIC_DOMAIN_HINT = re.compile(
-    r"\b(?:account(?:ing|ant|s)?|audit(?:ing|or)?|tax(?:ation|able)?|payroll|"
-    r"bookkeep(?:ing|er)?|finance|financial|invoice|ledger|reconciliation|"
-    r"expense|revenue|profit|cash flow|balance sheet|holiday pay)\b",
-    re.I,
-)
-
-
-def _is_deterministically_out_of_scope(query: str) -> bool:
-    text = query or ""
-    return bool(
-        _DETERMINISTIC_OUT_OF_SCOPE.search(text)
-        and not _DETERMINISTIC_DOMAIN_HINT.search(text)
-    )
-# Deliberately NOT every verb in extraction.py's _RELATION_VERBS: verbs that
-# read as generic/technical regardless of the named entities ("depends_on",
-# "manages", "contracts_with", "licenses_to") must NOT prove domain by
-# themselves — "Module A depends on Module B" has to stay off-domain by
-# entity content alone (see _structured_visual_query_is_in_domain's
-# _TECHNICAL_ENTITY_HINTS check and the system prompt's own "judge what the
-# named entities actually ARE, not the sentence structure" rule). Only verbs
-# that are themselves unambiguously accounting/audit-specific belong here.
-# A hand-copied list here has twice drifted out of sync with a verb ADDED to
-# _RELATION_VERBS ("supports", then "reviews") — when adding a new verb
-# there, add it here too ONLY if it's unambiguous like the ones below, never
-# by blindly mirroring the whole tuple.
-_ACCOUNTING_RELATIONS = {
-    "owns", "controls", "invoices", "pays", "supplies", "audits", "reviews",
-    "guarantees", "borrows_from", "lends_to", "reports_to", "supports",
-    "is_a_subsidiary_of", "is_owned_by", "is_audited_by", "is_reviewed_by",
-    "is_supported_by", "is_controlled_by",
-}
-_ACCOUNTING_ENTITY_HINTS = re.compile(
-    r"\b(account|accounting|audit|auditor|evidence|working[- ]?paper|finding|"
-    r"invoice|payment|expense|journal|ledger|purchase order|supplier|customer|"
-    r"company|companies|corp|corporation|holdings?|subsidiar(y|ies)|parent|"
-    r"consolidation|tax|payroll|financial|finance|control|ownership|"
-    r"partner|sign[- ]?off|delivery note|goods receipt|requisition|"
-    r"bank|statement|reconcil(e|ed|ing|iation)|record|balance|transaction|"
-    r"deposit|withdrawal|cash|cheque|check|discrepanc(y|ies)|bookkeeping)\b",
-    re.I,
-)
-_TECHNICAL_ENTITY_HINTS = re.compile(
-    r"\b(api|database|frontend|backend|service|server|module|code|repository|"
-    r"microservice|deployment|container|kubernetes|function|class|package)\b",
-    re.I,
-)
-
-
-def _grounded_domain_fallback(query: str, evidence: EvidenceModel) -> str | None:
-    """Correct a model-only false off-domain decision when deterministic,
-    governed evidence proves the request is finance/accounting-related.
-
-    This does not broaden the product domain: generic module dependencies and
-    generic publishing flows remain off-domain. The fallback only covers live
-    financial statistics or explicitly supplied accounting relationships and
-    is subsequently processed by the normal validation/disclaimer pipeline.
-    """
-    intent = classify_intent(query)
-    # Naming ANY chart rendering this pipeline supports ("box plot", "step
-    # line chart", "column chart", ...) is itself proof the request is a
-    # statistical-data ask, independent of whether intent_classifier.py's
-    # trend/distribution wordlists also happen to match — those wordlists
-    # can't enumerate every current and future chart-variant phrase, so this
-    # checks the visualization layer's own request detectors directly rather
-    # than needing to keep two regex files in sync.
-    is_named_chart_request = (
-        detect_explicit_visual_request(query) or detect_requested_chart_variant(query) is not None
-    )
-    if evidence.observations and (
-        intent in {DISTRIBUTION, TREND, CURRENT_METRIC, PRECISE_DATA}
-        or is_named_chart_request or evidence.provider is not None
-    ):
-        subject = evidence.subject or "financial series"
-        if evidence.secondary_observations:
-            secondary = evidence.secondary_subject or "comparison series"
-            first_a, last_a = evidence.observations[0], evidence.observations[-1]
-            first_b, last_b = evidence.secondary_observations[0], evidence.secondary_observations[-1]
-            return (
-                f"Kriton compared {len(evidence.observations)} period-aligned observations for "
-                f"{subject} and {secondary}. In the latest shared period ({last_a.dimension}), "
-                f"the values were {last_a.value:g} and {last_b.value:g}, respectively. "
-                f"The comparison starts at {first_a.value:g} and {first_b.value:g} in "
-                f"{first_a.dimension}; every value in the table and visualization comes from "
-                "the same retrieved series."
-            )
-        first, latest = evidence.observations[0], evidence.observations[-1]
-        minimum = min(evidence.observations, key=lambda item: item.value)
-        maximum = max(evidence.observations, key=lambda item: item.value)
-        # A first-vs-last comparison alone can call a series "unchanged" or
-        # "increased" even when it swung wildly in between (e.g. GDP growth
-        # cratering in 2020 and rebounding back near its starting value) —
-        # technically true about the endpoints, materially misleading about
-        # the series. When the net endpoint move is small next to the full
-        # min/max swing, say so plainly instead of implying stability/a
-        # steady trend the data doesn't show.
-        value_range = maximum.value - minimum.value
-        net_change = latest.value - first.value
-        if value_range > 0 and abs(net_change) < 0.5 * value_range:
-            direction = "fluctuated"
-        else:
-            direction = (
-                "increased" if latest.value > first.value
-                else "decreased" if latest.value < first.value
-                else "was unchanged"
-            )
-        series_note = f" FRED series: {evidence.series_id}." if evidence.series_id else ""
-        coverage_note = ""
-        if not evidence.coverage_complete and evidence.warnings:
-            coverage_note = f" Coverage is partial: {evidence.warnings[0]}"
-        return (
-            f"Across {len(evidence.observations)} source-grounded observations, {subject} {direction} "
-            f"from {first.value:g} in {first.dimension} to {latest.value:g} in {latest.dimension}. "
-            f"The minimum was {minimum.value:g} in {minimum.dimension}, and the maximum was "
-            f"{maximum.value:g} in {maximum.dimension}. The visualization uses these same "
-            "source-grounded values without adding model-generated figures."
-            f"{series_note}{coverage_note}"
-        )
-
-    # Real, named PSC/shareholder holdings from Companies House
-    # (market_data.py's _find_ownership) — a real company's filed ownership
-    # is itself proof of scope regardless of which chart type the user named
-    # alongside it (a treemap/radar-chart request is no less in-domain than
-    # a donut-chart one; only the requested display format differs).
-    if evidence.composition and intent == COMPOSITION:
-        subject = evidence.composition_subject or "the company"
-        return (
-            f"Kriton found {len(evidence.composition)} real, named holders on file for {subject}. "
-            "The validated visualization below presents that filed ownership data without adding model-generated figures."
-        )
-    if intent == COMPOSITION and evidence.composition_subject and evidence.sources:
-        return (
-            f"Kriton checked the Companies House PSC register for {evidence.composition_subject}. "
-            "No reportable ownership-of-shares PSC entries were found for that exact entity. "
-            "PSC records cover statutory control (generally over 25%) and are not a complete "
-            "shareholder register, particularly for widely held listed companies."
-        )
-
-    graph = extract_graph(query)
-    # Accept either a known accounting relation verb OR an accounting-entity
-    # match — matching _structured_visual_query_is_in_domain's own, more
-    # permissive check. A hardcoded verb-only list here previously drifted
-    # out of sync with extraction.py's _RELATION_VERBS (e.g. "supports" was
-    # added there but never mirrored into _ACCOUNTING_RELATIONS), so a
-    # correctly-extracted, genuinely in-domain relationship like "Purchase
-    # Order supports Goods Receipt" fell through and kept a false refusal.
-    if graph and intent in GRAPH_INTENTS and (
-        any(edge.type in _ACCOUNTING_RELATIONS for edge in graph.edges)
-        or _ACCOUNTING_ENTITY_HINTS.search(query)
-    ):
-        relationships = "; ".join(
-            f"{edge.source} {edge.type.replace('_', ' ')} {edge.target}" for edge in graph.edges
-        )
-        return (
-            "Kriton mapped the accounting relationships exactly as supplied: "
-            f"{relationships}. The validated visualization below does not infer additional links."
-        )
-
-    # Same entity-hint check as _structured_visual_query_is_in_domain's own
-    # PROCESS branch — the previous separate, narrower keyword list here
-    # (invoice|payment|audit|journal|expense|purchase order) missed generic
-    # accounting-process phrasing like "tax filing process".
-    if graph and intent == PROCESS and _ACCOUNTING_ENTITY_HINTS.search(query):
-        return (
-            f"Kriton mapped the {len(graph.nodes)} supplied accounting-workflow stages in order. "
-            "The validated process visualization below does not add or remove stages."
-        )
-    return None
-
-
-def _structured_visual_query_is_in_domain(query: str) -> bool | None:
-    """Deterministically scope structured graph/flow prompts.
-
-    Returns None when the query is not a structured graph/flow request, so the
-    ordinary domain policy remains authoritative. For a recognized structured
-    request, True/False is a code-enforced decision rather than an LLM guess.
-    """
-    intent = classify_intent(query)
-    graph = extract_graph(query)
-    if graph is None or (intent not in GRAPH_INTENTS and intent != PROCESS):
-        return None
-    if _TECHNICAL_ENTITY_HINTS.search(query) and not _ACCOUNTING_ENTITY_HINTS.search(query):
-        return False
-    if intent == PROCESS:
-        return bool(_ACCOUNTING_ENTITY_HINTS.search(query))
-    if any(edge.type in _ACCOUNTING_RELATIONS for edge in graph.edges):
-        return True
-    return bool(_ACCOUNTING_ENTITY_HINTS.search(query))
 
 
 def _force_direct_answer() -> bool:
@@ -399,13 +104,6 @@ def _force_direct_answer() -> bool:
     return os.getenv("FORCE_DIRECT_ANSWER", "").lower() in {"1", "true", "yes"}
 
 
-def _query_classifier_shadow_mode_enabled() -> bool:
-    """Off by default — see the call site's comment. Enable with
-    QUERY_CLASSIFIER_SHADOW_MODE=1 only while actively evaluating
-    classify_query() against real traffic (migration Phase 4)."""
-    return os.getenv("QUERY_CLASSIFIER_SHADOW_MODE", "").lower() in {"1", "true", "yes"}
-
-
 async def ask_kriton(
     db: AsyncSession,
     sync_db: Session,
@@ -420,19 +118,10 @@ async def ask_kriton(
 ) -> AskKritonResponse:
 
     start_time = time.monotonic()
-    effective_query = _with_previous_context(
-        request.query,
-        request.previous_query,
-        clarification_cycle=clarification_cycle,
-    )
 
     # ── Idempotency check ─────────────────────────────────────────────────────
-    request_hash = hashlib.sha256(request.model_dump_json().encode("utf-8")).hexdigest()
     if idempotency_key:
-        try:
-            cached = await check_idempotency(db, idempotency_key, tenant_id, request_hash)
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        cached = check_idempotency(idempotency_key, tenant_id)
         if cached is not None:
             return AskKritonResponse(**cached)
 
@@ -440,7 +129,7 @@ async def ask_kriton(
     query_id = generate_query_id()
     correlation_id = generate_correlation_id()
     audit_chain_id = generate_audit_chain_id()
-    query_hash = _hash_query(effective_query)
+    query_hash = _hash_query(request.query)
 
     # Audit: query_received — first event, before any processing
     await audit_query_received(
@@ -464,7 +153,7 @@ async def ask_kriton(
     )
 
     # ── Step 3: Pre-screen safety BEFORE retrieval (§6, RG-01) ───────────────
-    prescreen = run_prescreen(effective_query)
+    prescreen = run_prescreen(request.query)
     await audit_prescreen_completed(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id,
@@ -496,86 +185,7 @@ async def ask_kriton(
             outcome=response.outcome, route=response.route, start_time=start_time,
         )
         if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
-        return response
-
-    # Self-contained, allow-listed calculations are executed after the hard
-    # safety pre-screen and before retrieval/model calls.  The matcher only
-    # accepts known accounting formula families with explicitly labelled
-    # inputs, so this path is deterministic and provider-independent.
-    calculation_result = calculate_from_query(request.query)
-    calculation_needs_evidence = bool(request.document_ids) or request.source_scope == "DOCUMENTS_ONLY"
-    if calculation_result.status == "clarification_required" and re.search(
-        r"\b(current|latest|today|uploaded|attached|document|workbook|spreadsheet|sheet)\b",
-        request.query,
-        re.IGNORECASE,
-    ):
-        calculation_needs_evidence = True
-    if calculation_result.matched and not calculation_needs_evidence:
-        risk_level = "LOW"
-        effective_confidence = CONF_SUFFICIENT
-        safety_state = SafetyState(
-            risk_level=risk_level,
-            policy_state="allowed",
-            disclaimer_required=False,
-        )
-        await audit_risk_classified(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, risk_level=risk_level,
-            confidence_state=effective_confidence,
-        )
-        await audit_route_selected(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, route="CALCULATION", risk_level=risk_level,
-            confidence_state=effective_confidence,
-        )
-        await audit_calculation_completed(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-            formula_ids=calculation_result.formula_ids,
-            status=calculation_result.status,
-            verification_status=calculation_result.verification_status,
-            input_names=[item.name for item in calculation_result.inputs],
-        )
-        if calculation_result.status == "clarification_required":
-            response = AskKritonResponse(
-                query_id=query_id, correlation_id=correlation_id,
-                outcome="clarification_required", route="CALCULATION",
-                safety=safety_state, confidence_state=effective_confidence,
-                next_action=NextAction(
-                    type="calculation_input_missing",
-                    message=calculation_result.message,
-                ),
-                audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-                calculation=calculation_result,
-            )
-        else:
-            text = calculation_markdown(calculation_result)
-            response = AskKritonResponse(
-                query_id=query_id, correlation_id=correlation_id,
-                outcome="answered", route="CALCULATION",
-                safety=safety_state, confidence_state=effective_confidence,
-                answer=ComposedAnswer(
-                    text=text, output_text=text, citations=[], limitations=[],
-                    prompt_id="deterministic-calculation-v1",
-                    prompt_name="Deterministic Calculation",
-                ),
-                audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-                calculation=calculation_result,
-            )
-        await _finalise_and_return(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, outcome=response.outcome,
-            route=response.route, start_time=start_time,
-        )
-        if idempotency_key:
-            await store_idempotency(
-                db, idempotency_key, tenant_id, request_hash,
-                response.model_dump(mode="json"),
-            )
+            store_idempotency(idempotency_key, tenant_id, response.model_dump())
         return response
 
     # ── Kick off the live web search NOW, concurrently ──────────────────────
@@ -587,15 +197,8 @@ async def ask_kriton(
     # answer actually needs the sources. This overlaps the long search with
     # the rest of the pipeline instead of paying for them one after another.
     # Fails soft exactly as before (returns [] on any error).
-    needs_web = request.source_scope != "DOCUMENTS_ONLY"
-    web_search_task = (
-        asyncio.create_task(
-            asyncio.wait_for(
-                web_search(effective_query, jurisdiction=request.jurisdiction, limit=5),
-                timeout=12.0,
-            )
-        )
-        if needs_web else None
+    web_search_task = asyncio.create_task(
+        web_search(request.query, jurisdiction=request.jurisdiction, limit=5)
     )
     # Live exact-figure sources (currency via Frankfurter, economic stats via
     # DBnomics). Self-gating + fail-soft: returns [] unless the question is
@@ -618,41 +221,6 @@ async def ask_kriton(
     await audit_retrieval_started(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
-    )
-    resolved_document_ids = await resolve_conversation_document_ids(
-        db,
-        conversation_id=request.conversation_id,
-        requested_ids=request.document_ids,
-        tenant_id=tenant_id,
-        user_id=actor_id,
-    )
-    document_plan = plan_document_task(request.query, has_documents=bool(resolved_document_ids))
-    document_retrieval_error: str | None = None
-    try:
-        # AsyncSession cannot safely execute two queries concurrently. Keep
-        # document and governed-library retrieval sequential; web/live API
-        # work still runs concurrently because it does not use this session.
-        document_sources = await retrieve_document_sources(
-            db,
-            query=request.query,
-            document_ids=resolved_document_ids,
-            tenant_id=tenant_id,
-            user_id=actor_id,
-            full_document=document_plan.retrieval_mode == "full_document",
-        )
-    except Exception as exc:
-        document_sources = []
-        document_retrieval_error = str(exc)[:1000]
-    await audit_document_retrieval(
-        db,
-        query_id=query_id,
-        correlation_id=correlation_id,
-        tenant_id=tenant_id,
-        audit_chain_id=audit_chain_id,
-        actor_id=actor_id,
-        document_ids=resolved_document_ids,
-        hit_count=len(document_sources),
-        error=document_retrieval_error,
     )
     try:
         preliminary_bundle = await build_source_bundle(
@@ -698,11 +266,6 @@ async def ask_kriton(
             index_version=source_bundle.index_version,
         )
     except Exception as exc:
-        # A database timeout/cancellation leaves SQLAlchemy's transaction in
-        # a failed state.  Reset it before recording the fail-soft audit event;
-        # otherwise the audit write itself raises PendingRollbackError and the
-        # request still never reaches composition.
-        await db.rollback()
         await audit_retrieval_failed(
             db, query_id=query_id, correlation_id=correlation_id,
             tenant_id=tenant_id, audit_chain_id=audit_chain_id,
@@ -716,15 +279,11 @@ async def ask_kriton(
     effective_confidence = (
         map_safety_confidence(request.source_confidence)
         if request.source_confidence
-        else (
-            CONF_SUFFICIENT
-            if document_sources
-            else (source_bundle.confidence_state if source_bundle else CONF_INSUFFICIENT)
-        )
+        else (source_bundle.confidence_state if source_bundle else CONF_INSUFFICIENT)
     )
 
     classify_request = ClassifyRequest(
-        query=effective_query,
+        query=request.query,
         user_id=actor_id,
         role=role,
         tenant_id=tenant_id,
@@ -749,38 +308,14 @@ async def ask_kriton(
     # more accurate ("What is a tax credit?" -> LOW, not MEDIUM). Fails soft:
     # keeps the ML result if the LLM is unavailable. Never downgrades a
     # pre-screen hard block — those RESTRICTED cases return before this point.
-    llm_risk = await classify_risk(effective_query)
+    llm_risk = await classify_risk(request.query)
     if not llm_risk:
         # Primary Groq classifier unavailable/failed — try Gemini as the
         # fallback LLM classifier (provider-level redundancy) before falling
         # back to the ML zero-shot result already in risk_level.
-        llm_risk = await classify_risk_gemini(effective_query)
+        llm_risk = await classify_risk_gemini(request.query)
     if llm_risk:
         risk_level = llm_risk
-    # A non-personal request to visualize a public economic statistic is an
-    # educational formatting task. Keep equivalent country/chart phrasings
-    # consistently LOW instead of letting model wording drift between ZERO,
-    # LOW and MEDIUM for the same operation.
-    if (
-        detect_explicit_visual_request(effective_query)
-        and re.search(r"\b(inflation|cpi|consumer prices?|gdp|unemployment|interest rate)\b", effective_query, re.I)
-        and not re.search(r"\b(my|our|client|should i|should we)\b", effective_query, re.I)
-    ):
-        risk_level = "LOW"
-    # A plain lookup of a real, named company's public data (SEC filings,
-    # stock quote/history, fundamentals, profile, ownership) is a factual
-    # retrieval task, not advice — but nothing in the risk rubric's HIGH
-    # criteria excludes it by name the way "my/our/should I" does, and both
-    # LLM classifiers have been observed calling "Show recent SEC filings for
-    # AAPL" HIGH despite matching none of the rubric's own HIGH signals. Same
-    # treatment as the economic-statistic override above: keep this category
-    # consistently LOW rather than at the mercy of classifier wording drift.
-    elif (
-        (detect_market_data_intent(effective_query) is not None
-         or _OWNERSHIP_HINTS.search(effective_query) or _OWNERSHIP_STRUCTURE_CHART_HINT.search(effective_query))
-        and not re.search(r"\b(my|our|client|should i|should we)\b", effective_query, re.I)
-    ):
-        risk_level = "LOW"
 
     await audit_risk_classified(
         db, query_id=query_id, correlation_id=correlation_id,
@@ -798,18 +333,6 @@ async def ask_kriton(
     route = route_decision.route
     force_direct = _force_direct_answer()
     if force_direct:
-        route = ROUTE_LLM
-    elif route == ROUTE_CLARIFICATION and _structured_visual_query_is_in_domain(request.query) is True:
-        # A structured graph/process-flow request answerable entirely from
-        # the user's OWN supplied text (extraction.py) never needed governed
-        # document sources — the deterministic composition path below
-        # (_grounded_domain_fallback) draws it straight from the query, with
-        # zero citation to source_library. Routing it into CLARIFICATION just
-        # because its keyword-inferred category (e.g. "audit") happens to
-        # have no eligible governed sources seeded is a false gate: that
-        # category classification is about DOCUMENT retrieval, which this
-        # answer path never uses. Scoped to CLARIFICATION only — a genuine
-        # RESTRICTED-risk REFUSAL or escalated HUMAN_REVIEW is left alone.
         route = ROUTE_LLM
 
     await audit_route_selected(
@@ -858,7 +381,7 @@ async def ask_kriton(
             outcome=response.outcome, route=ROUTE_CLARIFICATION, start_time=start_time,
         )
         if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
+            store_idempotency(idempotency_key, tenant_id, response.model_dump())
         return response
 
     if not force_direct and (not decision.allowed or route == ROUTE_REFUSAL):
@@ -887,7 +410,7 @@ async def ask_kriton(
             outcome=response.outcome, route=route, start_time=start_time,
         )
         if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
+            store_idempotency(idempotency_key, tenant_id, response.model_dump())
         return response
 
     if route == ROUTE_HUMAN_REVIEW:
@@ -928,7 +451,7 @@ async def ask_kriton(
             outcome=response.outcome, route=route, start_time=start_time,
         )
         if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
+            store_idempotency(idempotency_key, tenant_id, response.model_dump())
         return response
 
     if route == ROUTE_CLARIFICATION:
@@ -958,57 +481,12 @@ async def ask_kriton(
             outcome=response.outcome, route=route, start_time=start_time,
         )
         if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
+            store_idempotency(idempotency_key, tenant_id, response.model_dump())
         return response
 
     # ── LLM Route ─────────────────────────────────────────────────────────────
     # Model gateway executes ONLY when route == LLM (§9)
     assert route == ROUTE_LLM
-
-    # A document-only request must never fall through to an ungrounded model
-    # call. This also covers an attachment that was deleted, is not READY, or
-    # was hidden by an unexpected storage/database failure. Returning a
-    # clarification outcome keeps the UI from labelling the model's inability
-    # to read the workbook as an "Answered" response.
-    if request.source_scope == "DOCUMENTS_ONLY" and not document_sources:
-        pending_tasks = [task for task in (web_search_task, live_data_task) if task is not None]
-        for task in pending_tasks:
-            task.cancel()
-        if pending_tasks:
-            await asyncio.gather(*pending_tasks, return_exceptions=True)
-        await audit_refusal_returned(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, reason="No readable document evidence was retrieved",
-        )
-        response = AskKritonResponse(
-            query_id=query_id,
-            correlation_id=correlation_id,
-            outcome="clarification_required",
-            route=ROUTE_CLARIFICATION,
-            safety=safety_state,
-            confidence_state=CONF_INSUFFICIENT,
-            source_bundle=source_bundle,
-            answer=None,
-            next_action=NextAction(
-                type="document_retrieval_failed",
-                message=(
-                    "Kriton™ could not retrieve readable evidence from the attached "
-                    "document. Confirm that the attachment is ready, then attach it again "
-                    "or choose another document."
-                ),
-            ),
-            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
-        )
-        await _finalise_and_return(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, outcome=response.outcome,
-            route=ROUTE_CLARIFICATION, start_time=start_time,
-        )
-        if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
-        return response
 
     await audit_composition_started(
         db, query_id=query_id, correlation_id=correlation_id,
@@ -1024,14 +502,14 @@ async def ask_kriton(
     # Started as a background task back at Step 4 so it ran concurrently with
     # retrieval + risk classification — by now it is usually already done.
     try:
-        web_sources = await web_search_task if web_search_task is not None else []
+        web_sources = await web_search_task
     except Exception:
         web_sources = []
     # Merge in the exact-figure sources (currency / statistics), ranked FIRST so
     # the model grounds numeric answers in the precise value rather than a web
     # snippet. Fail-soft: no live data (or an error) just leaves web_sources as is.
     try:
-        live_result: LiveDataResult = await live_data_task if live_data_task is not None else LiveDataResult()
+        live_sources = await live_data_task
     except Exception:
         live_sources = []
     if live_sources:
@@ -1101,7 +579,7 @@ async def ask_kriton(
             ref_id="",
             source_id=s.url,
             title=s.title,
-            url=s.url or None,
+            url=s.url,
             # Genuine retrieved snippet, capped to a preview length — not a
             # fabricated summary.
             evidence_preview=(s.snippet[:240].strip() or None) if s.snippet else None,
@@ -1143,7 +621,7 @@ async def ask_kriton(
         redaction_categories=redaction_result.redaction_categories,
     )
 
-    composed_text: Optional[str] = deterministic_chart_text
+    composed_text: Optional[str] = None
     prompt_id = "inline"
     prompt_name = "Web-grounded Prompt"
 
@@ -1159,28 +637,20 @@ async def ask_kriton(
     answer_model: Optional[str] = None
     gemini_active = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
     if risk_level in ("ZERO", "LOW") and os.getenv("GROQ_API_KEY") and not gemini_active:
-        answer_model = os.getenv("GROQ_FAST_ANSWER_MODEL", "openai/gpt-oss-20b")
+        answer_model = os.getenv("GROQ_FAST_ANSWER_MODEL", "llama-3.1-8b-instant")
 
     try:
-        if deterministic_chart_text is None:
-            if prompt:
-                prompt_row, composed_text = await model_gateway_service.run_test_prompt(
-                    db, prompt.id, grounded_input, actor_id, tenant_id,
-                    correlation_id=query_id, model=answer_model,
-                )
-                prompt_id = prompt_row.id
-                prompt_name = prompt_row.name
-            else:
-                # No approved prompt template seeded — fall back to a direct
-                # provider completion so web-grounded answering still works.
-                composed_text = await model_gateway_service.run_grounded_completion(grounded_input)
-
-            # The model gateway deliberately sanitizes provider exceptions as
-            # user-safe text. At the orchestration boundary that text is still
-            # a failed composition, never an "answered — source grounded"
-            # result. Structured official-data paths above do not reach here.
-            if composed_text and _MODEL_PROVIDER_FAILURE in composed_text:
-                raise RuntimeError("model_provider_unavailable")
+        if prompt:
+            prompt_row, composed_text = await model_gateway_service.run_test_prompt(
+                db, prompt.id, grounded_input, actor_id, tenant_id,
+                correlation_id=query_id, model=answer_model,
+            )
+            prompt_id = prompt_row.id
+            prompt_name = prompt_row.name
+        else:
+            # No approved prompt template seeded — fall back to a direct
+            # provider completion so web-grounded answering still works.
+            composed_text = await model_gateway_service.run_grounded_completion(grounded_input)
 
     except Exception as exc:
         await audit_composition_failed(
@@ -1206,7 +676,7 @@ async def ask_kriton(
             outcome=response.outcome, route=ROUTE_REFUSAL, start_time=start_time,
         )
         if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
+            store_idempotency(idempotency_key, tenant_id, response.model_dump())
         return response
 
     if not composed_text:
@@ -1237,45 +707,6 @@ async def ask_kriton(
         )
         return response
 
-    # Provider models occasionally ignore the shared domain instructions and
-    # refuse clearly in-domain CPI/FX or corporate-relationship prompts. Use a
-    # deliberately narrow deterministic correction only when governed
-    # structured evidence independently proves the request is in scope. The
-    # replacement then continues through the same audit, answer validation,
-    # disclaimer and visualization gates as every other composed response.
-    # request.query, not effective_query — see fetch_live_data's comment
-    # above. This decides in-domain scope and narrates structured evidence;
-    # both must reflect only what THIS turn supplied, or a prior turn's
-    # relationships/entities can bleed into this answer's text.
-    structured_scope = _structured_visual_query_is_in_domain(request.query)
-    uses_user_supplied_structure = False
-    if structured_scope is False:
-        composed_text = _MODEL_DOMAIN_REFUSAL_TEXT
-    elif structured_scope is True:
-        # Structured graph/flow data comes directly from the user's query.
-        # Use the deterministic description whenever that governed structure
-        # is in scope, not only when the model happened to refuse it. This
-        # prevents provider prose from contradicting the visualization (for
-        # example claiming Kriton cannot draw the flow that is rendered below)
-        # or silently changing the meaning/order of a supplied stage.
-        structured_answer = _grounded_domain_fallback(request.query, live_evidence)
-        if structured_answer:
-            composed_text = structured_answer
-            uses_user_supplied_structure = True
-    elif _MODEL_DOMAIN_REFUSAL in composed_text or _MODEL_PROVIDER_FAILURE in composed_text:
-        grounded_fallback = _grounded_domain_fallback(request.query, live_evidence)
-        if grounded_fallback:
-            composed_text = grounded_fallback
-
-    # For structured statistical visuals, narrative and chart must come from
-    # one normalized evidence object.  Model prose can misread a direction or
-    # stop before the latest observation even when the plotted values are
-    # correct; deterministic narration eliminates that split-brain result.
-    if live_evidence.observations and detect_explicit_visual_request(request.query):
-        grounded_summary = _grounded_domain_fallback(request.query, live_evidence)
-        if grounded_summary:
-            composed_text = grounded_summary
-
     output_hash = hashlib.sha256(composed_text.encode()).hexdigest()[:32]
     await audit_composition_completed(
         db, query_id=query_id, correlation_id=correlation_id,
@@ -1285,8 +716,18 @@ async def ask_kriton(
 
     # ── Step 7: Post-composition validation — Massarius™ Checkpoint C
     # (§10, RG-03; ZL-ENG-03 §5.7) ────────────────────────────────────────────
-    # Validate the provider's composed text directly. Generic disclaimer copy
-    # is intentionally not appended to user-visible answers.
+    # Validated against composed_text (the model's own output), not the
+    # disclaimer-appended text: the mandatory disclaimer is fixed boilerplate
+    # we fully control, not model output, so content-safety checks (grounding,
+    # citation binding, prohibited-claim, authority ceiling, confidence
+    # support) shouldn't run against it — and in practice can't safely: the
+    # disclaimer's own required wording ("does not constitute professional
+    # ... tax, audit or legal advice") trips the prohibited-claim scanner,
+    # which matches "legal advice" regardless of a preceding negation. Passing
+    # disclaimer_required=False here skips checkpoint 6 (disclaimer presence)
+    # for the same reason — build_validated_disclaimer below appends it
+    # deterministically, so that check would only ever fail if this function
+    # itself were broken, not the model's answer.
     # external_source_count carries the live retrieval sources (SearXNG + the
     # exact-figure connectors) the answer was actually composed against — they
     # are the [REF-N] citations the reader gets, but they are not registered in
@@ -1301,24 +742,18 @@ async def ask_kriton(
         )
         if source_bundle else None
     )
-    final_text = composed_text
+    final_text = build_validated_disclaimer(
+        composed_text, risk_level,
+        route_decision.disclaimer_required,
+        effective_confidence,
+    )
     await audit_validation_completed(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
         passed=validation.passed if validation else False,
     )
 
-    # uses_user_supplied_structure answers are never LLM prose — they're a
-    # mechanical transcription of relationships/stages the user typed
-    # themselves (extraction.py), verified structurally before composition,
-    # with the visualization showing that SAME data back to them. The
-    # grounding check below exists to catch an LLM asserting substantive
-    # content with no source behind it; it doesn't apply here, and without
-    # this bypass a real, correctly-extracted structured request (e.g. one
-    # whose keyword-inferred SourceBundle category — "audit" — has no
-    # governed sources seeded) is wrongly escalated to human review for
-    # lacking citations it was never supposed to need.
-    if validation and not validation.passed and not force_direct and not uses_user_supplied_structure:
+    if validation and not validation.passed and not force_direct:
         await audit_composition_rejected(
             db, query_id=query_id, correlation_id=correlation_id,
             tenant_id=tenant_id, audit_chain_id=audit_chain_id,
@@ -1366,7 +801,7 @@ async def ask_kriton(
             outcome=response.outcome, route=response.route, start_time=start_time,
         )
         if idempotency_key:
-            await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
+            store_idempotency(idempotency_key, tenant_id, response.model_dump())
         return response
 
     # ── Step 8: Finalise response ─────────────────────────────────────────────
@@ -1383,30 +818,19 @@ async def ask_kriton(
             l for l in limitations
             if "CLASSIFICATION_UNCERTAIN" not in l and "clarification" not in l.lower()
         ]
-    # Do not duplicate generic disclaimer copy in the limitations panel.
+    if route_decision.disclaimer_required:
+        limitations.append(
+            "This response is for educational purposes only. Consult a qualified professional."
+        )
 
     # Off-domain refusal: when the domain gate declined the question (it is not
     # about accounting/tax/payroll/finance/audit/bookkeeping/commerce), the
     # web-search results are irrelevant to the reply — so return NO sources and
     # NO disclaimer. Sources are shown only for genuine in-domain answers.
-    is_offdomain_refusal = _MODEL_DOMAIN_REFUSAL in (composed_text or "")
+    is_offdomain_refusal = "designed to answer questions related to Accounting" in (composed_text or "")
     if is_offdomain_refusal:
-        # This is a scope notice, not accounting guidance. Do not attach the
-        # professional-advice disclaimer that may already have been added for
-        # the provisional LLM route before deterministic scope correction.
-        final_text = composed_text
         rag_citations = []
         limitations = []
-        await audit_refusal_returned(
-            db, query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-            actor_id=actor_id, reason="Structured visualization request is outside Kriton's supported domain",
-        )
-    elif uses_user_supplied_structure:
-        # The flow/graph is grounded solely in the user's supplied stages or
-        # relationships. Unrelated web-search hits must not make this appear
-        # externally source-grounded.
-        rag_citations = []
 
     answer = ComposedAnswer(
         text=final_text,
@@ -1417,154 +841,16 @@ async def ask_kriton(
         output_text=final_text,
     )
 
-    # ── Visualization pipeline (runs ONLY here — after safety, validation and
-    # disclaimer have all already approved the text answer above; it can
-    # never bypass or run ahead of that gate). Best-effort: any failure here
-    # must never affect the already-composed text answer (spec §19/§29
-    # DoD #15-16), so the whole block is wrapped and defaults to None.
-    visualization = None
-    secondary_visualizations: list = []
-    if not is_offdomain_refusal:
-        try:
-            # request.query, NOT effective_query, throughout this block:
-            # extract_graph() only promises to draw entities/relationships the
-            # user "explicitly supplied in their OWN query text" (see its own
-            # docstring) — effective_query also contains the PREVIOUS turn's
-            # text (see _with_previous_context above), so using it here let a
-            # prior turn's entities/relationships silently merge into (or
-            # replace) this turn's graph, and could drop a current-turn
-            # relationship whose verb wasn't recognized while keeping a
-            # stale, recognized one from the previous turn instead.
-            intent = classify_intent(request.query)
-
-            # Entities/relationships the user explicitly supplied in their OWN
-            # query text (extraction.py) — the only source EVIDENCE_GRAPH /
-            # PROCESS_FLOW are backed by; merged into the same EvidenceModel
-            # DBnomics/Frankfurter already populated, so a query can carry
-            # both a numeric figure AND a supplied relationship structure.
-            viz_evidence = live_evidence.model_copy(deep=True)
-            supplied_evidence = extract_user_visual_evidence(request.query, intent)
-            if supplied_evidence.observations and not viz_evidence.observations:
-                viz_evidence.observations = supplied_evidence.observations
-                viz_evidence.subject = supplied_evidence.subject
-                viz_evidence.dimensions = supplied_evidence.dimensions
-                viz_evidence.measures = supplied_evidence.measures
-                viz_evidence.units = supplied_evidence.units
-            if supplied_evidence.composition and not viz_evidence.composition:
-                viz_evidence.composition = supplied_evidence.composition
-                viz_evidence.composition_subject = supplied_evidence.composition_subject
-                viz_evidence.composition_caveat = supplied_evidence.composition_caveat
-                viz_evidence.composition_is_estimated = supplied_evidence.composition_is_estimated
-            graph = extract_graph(request.query)
-            if graph and (intent in GRAPH_INTENTS or intent == PROCESS):
-                viz_evidence.entities = [Entity(id=n, name=n) for n in graph.nodes]
-                viz_evidence.relationships = [
-                    Relationship(source_id=e.source, target_id=e.target, type=e.type)
-                    for e in graph.edges
-                ]
-                viz_evidence.subject = viz_evidence.subject or request.query[:80]
-
-            shape = classify_data_shape(viz_evidence, intent)
-            plan = plan_response(request.query, intent, shape)
-            result = VisualizationOrchestrator().decide(
-                viz_evidence, shape, plan, spec_id=f"viz-{query_id}", query=request.query,
-            )
-            validation_result = None
-            if result.spec is not None:
-                validation_result = VisualizationValidator().validate(result.spec)
-                if validation_result.passed:
-                    visualization = result.spec
-            # Each secondary is validated independently — a secondary that
-            # fails never blocks the primary or the text answer (spec §16).
-            if visualization is not None:
-                for secondary in result.secondary_specs:
-                    if VisualizationValidator().validate(secondary).passed:
-                        secondary_visualizations.append(secondary)
-            viz_telemetry.log_decision(
-                query_id=query_id, query=request.query, intent=intent, data_shape=shape,
-                response_mode=plan.response_mode, visual_required=plan.visual_required,
-                result=result, validation=validation_result, render_success=visualization is not None,
-            )
-        except Exception:
-            logger.exception("Visualization pipeline failed for query_id=%s", query_id)
-            visualization = None
-            secondary_visualizations = []
-
-        # Semantic-classifier shadow mode (migration Phase 4) — fire-and-
-        # forget, never awaited, so this can never add latency or fail a
-        # real request. Off by default: this makes one real Groq call per
-        # request, which shouldn't be spent silently. Enable only while
-        # actively comparing classify_query() against the existing
-        # pipeline; it does not affect routing either way.
-        if _query_classifier_shadow_mode_enabled():
-            log_shadow_comparison(
-                request.query, query_id=query_id, old_intent=intent,
-                old_wants_visualization=visualization is not None,
-            )
-
-    # Compute the terminal response state before the optional artifact branch.
-    # The response object is constructed below, so referencing `response.outcome`
-    # (or an undeclared `outcome`) here would crash every otherwise-successful
-    # request before it can be returned.
-    response_outcome, response_route = _terminal_response_state(is_offdomain_refusal)
-
-    generated_artifacts: list[GeneratedArtifactPublic] = []
-    artifact_error: str | None = None
-    if (
-        response_outcome == "answered"
-        and document_plan.response_mode == "chat_with_artifact"
-        and document_sources
-    ):
-        try:
-            artifact = await create_generated_artifact(
-                db,
-                title="Kriton Management Report",
-                narrative=final_text,
-                analysis=document_analysis,
-                format_name=document_plan.output_format,
-                tenant_id=tenant_id,
-                user_id=actor_id,
-                conversation_id=request.conversation_id,
-                query_id=query_id,
-                source_document_ids=resolved_document_ids,
-                request_text=request.query,
-            )
-            generated_artifacts.append(GeneratedArtifactPublic(
-                id=artifact.id,
-                filename=artifact.filename,
-                mime_type=artifact.mime_type,
-                download_url=f"/kriton-workspace/artifacts/{artifact.id}/download",
-                expires_at=artifact.expires_at.isoformat() if artifact.expires_at else None,
-            ))
-        except Exception as exc:
-            # Preserve the valid grounded answer, but make the additive file
-            # failure visible instead of silently degrading to Download .md.
-            generated_artifacts = []
-            artifact_error = (
-                f"The report content was generated, but the requested "
-                f"{document_plan.output_format.upper()} file could not be created."
-            )
-            await audit_artifact_generation_failed(
-                db, query_id=query_id, correlation_id=correlation_id,
-                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-                actor_id=actor_id, format_name=document_plan.output_format,
-                error_type=type(exc).__name__,
-            )
-
     response = AskKritonResponse(
         query_id=query_id,
         correlation_id=correlation_id,
-        outcome=response_outcome,
-        route=response_route,
+        outcome="answered",
+        route=ROUTE_LLM,
         safety=safety_state,
         confidence_state=effective_confidence,
         source_bundle=source_bundle,
-        visualization=visualization,
-        secondary_visualizations=secondary_visualizations,
         answer=answer,
         next_action=None,
-        artifacts=generated_artifacts,
-        artifact_error=artifact_error,
         audit_reference=AuditReference(audit_chain_id=audit_chain_id),
     )
 
@@ -1572,23 +858,16 @@ async def ask_kriton(
     await _finalise_and_return(
         db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
         audit_chain_id=audit_chain_id, actor_id=actor_id,
-        outcome=response.outcome, route=response.route, start_time=start_time,
+        outcome=response.outcome, route=route, start_time=start_time,
     )
 
     if idempotency_key:
-        await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
+        store_idempotency(idempotency_key, tenant_id, response.model_dump())
 
     return response
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
-
-def _terminal_response_state(is_offdomain_refusal: bool) -> tuple[str, str]:
-    """Return the single terminal state used by artifacts and the response."""
-    if is_offdomain_refusal:
-        return "refused", ROUTE_REFUSAL
-    return "answered", ROUTE_LLM
-
 
 async def _finalise_and_return(
     db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,

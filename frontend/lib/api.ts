@@ -535,14 +535,11 @@ export async function getReplayManifest(token: string, correlationId: string): P
 
 export type AskKritonRequest = {
   query: string;
-  document_ids?: string[];
-  source_scope?: "WEB_ONLY" | "DOCUMENTS_ONLY" | "DOCUMENTS_THEN_WEB" | "COMBINED";
-  /** Immediately preceding user query, used to resolve contextual follow-ups. */
-  previous_query?: string;
   jurisdiction?: string;
   mode?: string;
   clarification_cycle?: number;
-  /** Scopes audit correlation and follow-up context to one thread. */
+  /** Scopes chart-repetition/telemetry to one thread. Not yet read by the
+   * backend — accepted here so the frontend contract is forward-compatible. */
   conversation_id?: string;
   /** Documents attached to this turn. Ids of successfully indexed uploads
    * only; the backend re-verifies ownership and readiness, so sending an id
@@ -562,7 +559,6 @@ export type OutcomeType =
 
 export type RouteType =
   | "LLM"
-  | "CALCULATION"
   | "REFUSAL"
   | "CLARIFICATION"
   | "HUMAN_REVIEW"
@@ -766,137 +762,6 @@ export type ComposedAnswer = {
   output_text?: string;
 };
 
-/**
- * Deterministic, evidence-backed visualization decided server-side by
- * orchestration/visualization/orchestrator.py — never LLM-authored, never
- * executable code. Only ever set on "answered" outcomes. See that module's
- * docstring for current scope: LINE/BAR/KPI (statistical), EVIDENCE_GRAPH
- * (renderer=GRAPH_ADAPTER, resolves to Cytoscape or G6), PROCESS_FLOW
- * (renderer=FLOW_ADAPTER, resolves to X6 or Mermaid). Graph/flow specs are only ever
- * populated from entities/relationships the USER explicitly supplied in
- * their own query text (see backend/app/orchestration/extraction.py) —
- * never fabricated.
- */
-export type VisualizationEncodingField = {
-  field: string;
-  type: "temporal" | "quantitative" | "nominal" | "ordinal";
-  unit?: string | null;
-};
-
-export type VisualizationDataPoint = { x: string; y: number };
-
-export type VisualizationGraphNode = { id: string; label: string; type: string };
-export type VisualizationGraphEdge = { source: string; target: string; type: string; directed: boolean };
-export type VisualizationHeatmapCell = { x: string; y: string; value: number };
-export type VisualizationBoxSummary = {
-  label: string;
-  minimum: number;
-  q1: number;
-  median: number;
-  q3: number;
-  maximum: number;
-  outliers: number[];
-};
-export type VisualizationScatterPoint = { label: string; x: number; y: number };
-/** DONUT only — value is always a band midpoint (e.g. Companies House PSC
- * "25-50%" ownership), never an exact filed percentage; is_estimated flags
- * that per slice rather than spec-wide, so a future exact-percentage source
- * could mix in real slices without every slice appearing falsely precise. */
-export type VisualizationDonutSlice = { label: string; value: number; is_estimated: boolean };
-/** CANDLESTICK only — one real trading-period bar, never synthesized. */
-export type VisualizationOHLCBar = {
-  dimension: string; open: number; high: number; low: number; close: number; volume: number | null;
-};
-/** GROUPED_BAR only — one labeled series; `variant === "STACKED_BAR_CHART"`
- * flips the frontend to stacked rendering of the SAME series data. */
-export type VisualizationNamedSeries = { name: string; data: VisualizationDataPoint[] };
-
-export type VisualizationSpec = {
-  version: string;
-  id: string;
-  type:
-    | "LINE" | "BAR" | "HISTOGRAM" | "BOX" | "SCATTER" | "KPI" | "EVIDENCE_GRAPH" | "HEATMAP"
-    | "PROCESS_FLOW" | "TABLE" | "DONUT" | "CANDLESTICK" | "GROUPED_BAR";
-  family: string;
-  capability_id?: string | null;
-  canonical?: string | null;
-  variant?: string | null;
-  /** Same-family fallback types the backend would degrade to if this one
-   * failed — real, backend-declared alternatives for the "View" menu. */
-  fallback_order: string[];
-  domain_context?: {
-    domain: string;
-    subdomain: string;
-    intent?: string | null;
-  };
-  renderer: "RECHARTS" | "ECHARTS" | "KPI_TILE" | "GRAPH_ADAPTER" | "FLOW_ADAPTER" | "TABLE_ADAPTER";
-  title?: string | null;
-  summary?: string | null;
-  unit?: string | null;
-  encoding?: { x: VisualizationEncodingField; y: VisualizationEncodingField } | null;
-  data: VisualizationDataPoint[];
-  value?: number | null;
-  label?: string | null;
-  nodes: VisualizationGraphNode[];
-  edges: VisualizationGraphEdge[];
-  /** PROCESS_FLOW only — true routes to X6, false to Mermaid. Meaningless for other types. */
-  interactive: boolean;
-  /** Optional explicit graph/flow engine requested by the user. */
-  graph_engine?: "auto" | "cytoscape" | "g6" | null;
-  flow_engine?: "mermaid" | "x6" | null;
-  cells: VisualizationHeatmapCell[];
-  /** BOX only — real min/Q1/median/Q3/max computed from the same values HISTOGRAM bins. */
-  box?: VisualizationBoxSummary | null;
-  /** SCATTER only — real paired values from two independently-fetched, period-aligned series. */
-  scatter: VisualizationScatterPoint[];
-  correlation_coefficient?: number | null;
-  /** DONUT only — real, named holders and their percent share. */
-  donut: VisualizationDonutSlice[];
-  /** CANDLESTICK only — real OHLC trading bars. */
-  candlestick: VisualizationOHLCBar[];
-  /** GROUPED_BAR only — real, period-aligned series (reinterprets the same
-   * pair SCATTER uses when explicitly requested as a bar chart). */
-  series: VisualizationNamedSeries[];
-  /** TABLE only — real rows, column order given by `columns`. */
-  columns: string[];
-  rows: Record<string, string>[];
-  sources: string[];
-};
-
-export type GeneratedArtifact = {
-  id: string;
-  filename: string;
-  mime_type: string;
-  download_url: string;
-  expires_at?: string | null;
-};
-
-export type CalculationResult = {
-  matched: boolean;
-  status: "success" | "undefined" | "clarification_required" | "not_matched";
-  formula_ids: string[];
-  formula_version: string;
-  inputs: Array<{
-    name: string;
-    value: string;
-    display_value: string;
-    kind: "money" | "percentage" | "number" | "years" | "units";
-    currency?: string | null;
-    source_type: "user";
-    source_location: string;
-  }>;
-  outputs: Array<{
-    name: string;
-    value?: string | null;
-    display_value?: string | null;
-    kind: "money" | "percentage" | "ratio" | "number" | "units";
-  }>;
-  steps: string[];
-  verification_status: "passed" | "not_run";
-  error_code?: string | null;
-  message: string;
-};
-
 /** §12 Canonical response contract — frontend renders from route/outcome ONLY */
 export type AskKritonResponse = {
   query_id: string;
@@ -908,30 +773,9 @@ export type AskKritonResponse = {
   source_bundle: SourceBundle | null;
   answer: ComposedAnswer | null;
   next_action: NextAction | null;
-  artifacts: GeneratedArtifact[];
-  artifact_error?: string | null;
   /** Opaque — never expose audit_chain_id internals to UI rendering logic */
   audit_reference: AuditReference;
-  visualization?: VisualizationSpec | null;
-  /** Complementary visuals (spec §17) — a different lens on the SAME
-   * evidence as `visualization` (e.g. current-value KPI beside a trend
-   * line), never a redundant alternate chart type. */
-  secondary_visualizations?: VisualizationSpec[];
-  calculation?: CalculationResult | null;
 };
-
-export async function downloadKritonArtifact(token: string, artifact: GeneratedArtifact): Promise<void> {
-  const res = await authedFetch(artifact.download_url, token);
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = artifact.filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
-}
 
 export async function askKriton(
   token: string,
@@ -951,7 +795,7 @@ export async function askKriton(
     });
     return res.json();
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
+    if (error instanceof DOMException && error.name === "AbortError") {
       throw new ApiError(408, "Kriton took too long to respond. Please try again.");
     }
     throw error;

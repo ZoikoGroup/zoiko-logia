@@ -1,4 +1,4 @@
-import { ArrowRight, ChevronDown, Sparkles } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 
 export function ExploreFurther({
   questions,
@@ -10,23 +10,16 @@ export function ExploreFurther({
   if (questions.length === 0) return null;
 
   return (
-    <details className="group/explore mt-2 rounded-xl border border-line/80 bg-panel">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-ink transition hover:bg-soft">
-        <span className="flex items-center gap-2">
-          <Sparkles size={14} className="text-brand" />
-          Explore further
-          <span className="rounded-full bg-soft px-1.5 py-0.5 text-[10px] font-semibold text-muted">{questions.length}</span>
-        </span>
-        <ChevronDown size={15} className="text-muted transition-transform group-open/explore:rotate-180" />
-      </summary>
-      <div className="border-t border-line p-1.5">
+    <div className="mt-5 border-t border-line pt-4">
+      <p className="text-xs font-bold uppercase tracking-wider text-muted">Explore further</p>
+      <div className="mt-2.5 flex flex-wrap gap-2">
         {questions.map((question) =>
           onFollowUp ? (
             <button
               key={question}
               type="button"
               onClick={() => onFollowUp(question)}
-              className="group flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-ink transition hover:bg-soft"
+              className="group flex items-center gap-2 rounded-full border border-line bg-panel px-4 py-2 text-left text-sm text-ink transition hover:border-brand/40 hover:bg-brand/5"
             >
               <span>{question}</span>
               <ArrowRight size={14} className="shrink-0 text-brand" />
@@ -36,7 +29,7 @@ export function ExploreFurther({
             // stays visually present but inert, not hidden.
             <div
               key={question}
-              className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-sm text-ink"
+              className="flex items-center gap-2 rounded-full border border-line bg-panel px-4 py-2 text-sm text-ink"
             >
               <span>{question}</span>
               <ArrowRight size={14} className="shrink-0 text-brand" />
@@ -44,6 +37,6 @@ export function ExploreFurther({
           ),
         )}
       </div>
-    </details>
+    </div>
   );
 }

@@ -66,18 +66,6 @@ _WELL_KNOWN: dict[str, tuple[str, str]] = {
     "rolls royce": ("RYCEY", "GB"),
 }
 
-# Authoritative listed-parent identifiers for ownership/filing lookups. These
-# prevent a brand query from landing on a similarly named operating company,
-# corporate-director vehicle, or other subsidiary in Companies House search.
-_WELL_KNOWN_UK_PARENTS: dict[str, tuple[str, str]] = {
-    "marks and spencer": ("MARKS AND SPENCER GROUP P.L.C.", "04256886"),
-    "marks & spencer": ("MARKS AND SPENCER GROUP P.L.C.", "04256886"),
-    "m&s": ("MARKS AND SPENCER GROUP P.L.C.", "04256886"),
-    "sainsbury's": ("J SAINSBURY PLC", "00185647"),
-    "sainsburys": ("J SAINSBURY PLC", "00185647"),
-    "sainsbury": ("J SAINSBURY PLC", "00185647"),
-}
-
 
 def find_company_number(query: str) -> str:
     """An explicitly stated UK company number, or ""."""
@@ -131,12 +119,6 @@ def resolve_local(query: str) -> EntityRef:
     ticker = find_ticker(query)
     country = "GB" if company_number else ""
     name = ""
-
-    lowered = query.casefold()
-    for alias in sorted(_WELL_KNOWN_UK_PARENTS, key=len, reverse=True):
-        if re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", lowered):
-            parent_name, parent_number = _WELL_KNOWN_UK_PARENTS[alias]
-            return EntityRef(name=parent_name, company_number=parent_number, country="GB")
 
     if not ticker:
         ticker, known_country, name = known_ticker_for_name(query)

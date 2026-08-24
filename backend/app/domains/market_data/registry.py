@@ -68,7 +68,7 @@ _INTENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         INTENT_HISTORY,
         re.compile(
             r"\b(history|historical|over the (last|past)|price (chart|trend|history)|"
-            rf"ohlc|candles?|last (?:\d+|{SPELLED_NUMBER_PATTERN}) (day|days|week|weeks|month|months|year|years))\b",
+            r"ohlc|candles?|last \d+ (day|days|week|weeks|month|months|year|years))\b",
             re.I,
         ),
     ),
@@ -131,9 +131,7 @@ def detect_intent(query: str) -> Optional[str]:
 
 # ── Providers ────────────────────────────────────────────────────────────────
 
-# \d{1,3} OR a spelled-out number ("the last twenty days") in the count
-# group — see number_words.py's docstring for why this needed a shared fix.
-_SPAN = re.compile(rf"\b(?:last|past)\s+(\d{{1,3}}|{SPELLED_NUMBER_PATTERN})\s*(day|week|month|year)s?\b", re.I)
+_SPAN = re.compile(r"\b(?:last|past)\s+(\d{1,3})\s*(day|week|month|year)s?\b", re.I)
 _SPAN_MULTIPLIER = {"day": 1, "week": 5, "month": 21, "year": 252}  # trading days
 
 
@@ -148,10 +146,7 @@ def requested_bars(query: str, default: int = 30) -> int:
     match = _SPAN.search(query)
     if not match:
         return default
-    raw_count = match.group(1)
-    count = int(raw_count) if raw_count.isdigit() else find_first_spelled_number(raw_count)
-    if count is None:
-        return default
+    count = int(match.group(1))
     return max(1, min(count * _SPAN_MULTIPLIER.get(match.group(2).lower(), 1), 400))
 
 

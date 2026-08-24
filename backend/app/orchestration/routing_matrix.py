@@ -64,27 +64,10 @@ _MATRIX: dict[tuple[str, str], str] = {
     (RISK_ZERO, CONF_LIMITED):       ROUTE_LLM,
     (RISK_ZERO, CONF_INSUFFICIENT):  ROUTE_LLM,
 
-    # LOW risk. CONF_INSUFFICIENT here means the query's keyword-inferred
-    # governed-source category (retrieve.py's infer_category) has zero
-    # eligible rows in the source library — a retrieval-coverage gap, not a
-    # property of the query itself. It was previously routed to
-    # CLARIFICATION, which conflated "we have no governed documents for
-    # this category" with "the question is ambiguous and needs the user to
-    # clarify" — two genuinely different states that were never actually
-    # distinguished (confirmed: a clear question landing in an empty
-    # category got blocked, while a genuinely vague one landing in a
-    # populated category sailed straight through). Same fix already applied
-    # to RISK_ZERO above, for the identical reason, extended here — LOW risk
-    # has no regulated/personal stakes that would make an honest,
-    # unsourced, bounded-knowledge answer unsafe (see groq_adapter.py's
-    # system prompt: it already answers from general knowledge and hedges
-    # honestly when no sources are supplied). Real semantic ambiguity is
-    # handled elsewhere — the model's own conversational judgment, and
-    # risk_classifier.py's L1 "advice needs jurisdiction" rule for
-    # personal/contextual questions — neither of which this row ever was.
+    # LOW risk
     (RISK_LOW, CONF_SUFFICIENT):    ROUTE_LLM,
     (RISK_LOW, CONF_LIMITED):       ROUTE_LLM,            # with mandatory caveats
-    (RISK_LOW, CONF_INSUFFICIENT):  ROUTE_LLM,
+    (RISK_LOW, CONF_INSUFFICIENT):  ROUTE_CLARIFICATION,
 
     # MEDIUM risk
     (RISK_MEDIUM, CONF_SUFFICIENT):    ROUTE_LLM,          # disclaimer_required = True

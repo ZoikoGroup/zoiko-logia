@@ -15,7 +15,7 @@ import {
   FileText,
   Loader2,
   Mic,
-  Paperclip,
+  Plus,
   X,
 } from "lucide-react";
 import {
@@ -85,10 +85,6 @@ export function Composer({
   jurisdiction,
   onJurisdictionChange,
   onSubmit,
-  attachment,
-  onAttachmentChange,
-  documents,
-  onUploadComplete,
   submitting,
   error,
   attachments,
@@ -99,11 +95,7 @@ export function Composer({
   onQueryChange: (value: string) => void;
   jurisdiction: string;
   onJurisdictionChange: (value: string) => void;
-  onSubmit: (documentIds?: string[]) => void;
-  attachment: AttachmentState | null;
-  onAttachmentChange: Dispatch<SetStateAction<AttachmentState | null>>;
-  documents: WorkspaceDocument[];
-  onUploadComplete: () => void;
+  onSubmit: () => void;
   submitting: boolean;
   error: string | null;
   /** Attachment list, owned by the page.
@@ -137,8 +129,7 @@ export function Composer({
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (attachment?.status === "uploading" || attachment?.status === "processing") return;
-      onSubmit(attachment?.documentId ? [attachment.documentId] : []);
+      onSubmit();
     }
   }
 
@@ -294,11 +285,7 @@ export function Composer({
   return (
     <div>
       <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (attachment?.status === "uploading" || attachment?.status === "processing") return;
-          onSubmit(attachment?.documentId ? [attachment.documentId] : []);
-        }}
+        onSubmit={(e) => { e.preventDefault(); onSubmit(); }}
         className={variant === "sticky" ? "sticky bottom-5 mx-auto max-w-2xl" : "mt-8 w-full"}
       >
         <div className={`kriton-composer-surface ${cardRadius} border p-4 shadow-[0_18px_48px_rgba(18,34,32,0.08)]`}>
@@ -348,7 +335,7 @@ export function Composer({
           />
 
           <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
+            <div>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -371,30 +358,6 @@ export function Composer({
               >
                 {uploading ? <Loader2 size={17} className="animate-spin" /> : <Plus size={19} />}
               </button>
-              {documents.length > 0 && (
-                <select
-                  aria-label="Select an uploaded document"
-                  value={attachment?.documentId ?? ""}
-                  disabled={attachment?.status === "uploading" || attachment?.status === "processing"}
-                  onChange={(event) => {
-                    const document = documents.find((item) => item.id === event.target.value);
-                    onAttachmentChange(document ? {
-                      documentId: document.id,
-                      name: document.filename,
-                      status: document.status === "READY" ? "success" : "error",
-                      progress: 1,
-                      chunkCount: document.chunk_count,
-                      error: document.processing_error ?? undefined,
-                    } : null);
-                  }}
-                  className="h-9 max-w-48 rounded-full !border-transparent !bg-soft px-3 text-xs font-semibold text-ink outline-none"
-                >
-                  <option value="">Saved documents</option>
-                  {documents.filter((document) => document.status === "READY").map((document) => (
-                    <option key={document.id} value={document.id}>{document.filename}</option>
-                  ))}
-                </select>
-              )}
             </div>
 
             <div className="flex min-w-0 items-center justify-end gap-2">

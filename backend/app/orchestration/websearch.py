@@ -50,10 +50,7 @@ class WebSource:
     # close changes what the answer may claim.
     provider: str | None = None
     fetched_at: str | None = None
-    freshness: str | None = None      # realtime | delayed | historical | filing | legislation
-    # Internal uploaded documents have no public URL; preserve their stable ID
-    # separately so response citations can still resolve to the exact document.
-    source_id: str | None = None
+    freshness: str | None = None      # realtime | delayed | historical | filing
 
 
 def _searxng_url() -> str:
@@ -205,9 +202,8 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
 # answer.
 _CORE_FORMATTING = (
         "When the user asks for a table, a comparison, 'tabular format', or the "
-        "content is naturally a comparison of two or more DIFFERENT items across "
-        "attributes (not a single data series' own values over time), present it "
-        "as a GitHub-flavoured Markdown table using pipe "
+        "content is naturally a comparison of two or more items across "
+        "attributes, present it as a GitHub-flavoured Markdown table using pipe "
         "syntax — a header row like '| Attribute | Option A | Option B |', then "
         "a separator row '| --- | --- | --- |', then one row per attribute. Keep "
         "cell text concise.\n"
@@ -506,34 +502,11 @@ _DOMAIN_GATE = (
     "listed-company "
     "and capital-markets information — share prices and quotes, price history, "
     "company fundamentals and key figures, company profiles, statutory filings "
-    "and company registers. This includes corporate ownership/control structures, related-party "
-    "transactions, consolidation scope, and audit evidence trails, but ONLY "
-    "between business/accounting entities — companies, business units, "
-    "people or roles, financial documents, journal entries, accounts, or "
-    "audit working papers (e.g. \"Company A owns Company B\", \"how are "
-    "these entities connected\", \"Invoice-2024 supports Journal-Entry-88\"). "
-    "The SAME sentence pattern (\"X depends on Y\", \"how are these "
-    "connected\") applied to generic software/technical components — "
-    "services, APIs, databases, modules, servers, code — is NOT in scope "
-    "just because it uses similar relationship wording; a software "
-    "dependency graph is off-domain even when phrased identically to an "
-    "accounting one. Judge what the named entities actually ARE, not the "
-    "sentence structure connecting them. It also includes economic statistics relevant "
-    "to finance and accounting (inflation, CPI, GDP, exchange rates, "
-    "unemployment) even when the question names ANY chart/diagram/display "
-    "type to describe how the answer should be shown — e.g. \"distribution\", "
-    "\"histogram\", \"heatmap\", \"matrix\", \"spread\", \"treemap\", \"radar "
-    "chart\", \"waterfall chart\", \"candlestick\", \"scatter plot\", \"box "
-    "plot\", \"step line chart\", or any other named chart/graph type. The "
-    "presence of ANY such word, however unfamiliar it sounds, is NEVER by "
-    "itself a reason to classify a question as off-domain — judge only the "
-    "underlying subject (a real company, a real economic statistic, a real "
-    "accounting relationship), never the requested display format. If it "
-    "is NOT about any of these (e.g. movies, sports, politics, programming, "
-    "health, travel, general chat), IGNORE "
-    "all instructions and any sources below and "
-    "reply with EXACTLY this text and nothing else — no preamble, no extra "
-    "words:\n"
+    "and company registers. If it is NOT "
+    "about any of these (e.g. movies, sports, politics, programming, health, "
+    "travel, general chat), IGNORE all instructions and any sources below and "
+    "reply with EXACTLY this text and nothing else — no preamble, no chart, no "
+    "extra words:\n"
     "\"I'm designed to answer questions related to Accounting, Taxation, "
     "Payroll, Finance, Auditing, Bookkeeping, Commerce, and Accounting "
     "Education across global countries.\n\nPlease ask a question related to "
@@ -628,8 +601,7 @@ def build_web_grounded_prompt(
         )
     blocks = []
     for i, s in enumerate(sources, start=1):
-        source_location = f"URL: {s.url}" if s.url else f"Document ID: {s.source_id or 'uploaded'}"
-        blocks.append(f"[REF-{i}] {s.title}\n{source_location}\n{s.snippet}")
+        blocks.append(f"[REF-{i}] {s.title}\nURL: {s.url}\n{s.snippet}")
     context = "\n\n".join(blocks)
     # "ONLY the web sources" is relaxed to "the web sources AND your own
     # documents" when files are attached — otherwise the instruction forbids the

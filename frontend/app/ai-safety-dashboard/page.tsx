@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/governance/PageHeader";
+import { Card } from "@/components/governance/Card";
 import { Pill } from "@/components/governance/Pill";
 import {
   ShieldCheck,
@@ -38,7 +39,7 @@ const EVENT_TONES: Record<string, "ok" | "warn" | "bad" | "info"> = {
   safety_refusal_returned: "warn",
 };
 
-function computeStats(events: SafetyEvent[], escalations: Escalation[], now: number) {
+function computeStats(events: SafetyEvent[], escalations: Escalation[]) {
   const classified = events.filter((e) => e.event_type === "risk_classification_applied").length;
   const blocked = events.filter((e) => e.event_type === "restricted_topic_blocked").length;
   const uncertain = events.filter((e) => e.event_type === "risk_classification_uncertain").length;
@@ -48,7 +49,7 @@ function computeStats(events: SafetyEvent[], escalations: Escalation[], now: num
   ).length;
   const overSla = escalations.filter((e) => {
     if (!e.sla_deadline) return false;
-    return new Date(e.sla_deadline).getTime() < now && e.status !== "RESOLVED";
+    return new Date(e.sla_deadline).getTime() < Date.now() && e.status !== "RESOLVED";
   }).length;
 
   return { classified, blocked, uncertain, incidents, pendingReview, overSla };
@@ -58,7 +59,6 @@ export default function AiSafetyDashboardPage() {
   const [events, setEvents] = useState<SafetyEvent[]>([]);
   const [escalations, setEscalations] = useState<Escalation[]>([]);
   const [loading, setLoading] = useState(true);
-  const [renderedAt] = useState(() => Date.now());
 
   async function load() {
     setLoading(true);
@@ -69,11 +69,10 @@ export default function AiSafetyDashboardPage() {
   }
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
+    load();
   }, []);
 
-  const stats = computeStats(events, escalations, renderedAt);
+  const stats = computeStats(events, escalations);
 
   return (
     <main className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -266,7 +265,7 @@ export default function AiSafetyDashboardPage() {
                 {escalations
                   .filter((e) => e.status !== "RESOLVED" && e.status !== "REFUSED")
                   .map((esc) => {
-                    const overdue = esc.sla_deadline && new Date(esc.sla_deadline).getTime() < renderedAt;
+                    const overdue = esc.sla_deadline && new Date(esc.sla_deadline).getTime() < Date.now();
                     return (
                       <div
                         key={esc.id}

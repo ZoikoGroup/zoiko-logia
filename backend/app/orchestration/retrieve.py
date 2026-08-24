@@ -13,9 +13,6 @@ Application-level filtering alone is not sufficient (§7.1).
 """
 from __future__ import annotations
 
-import asyncio
-import os
-import re
 import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,16 +32,6 @@ _CATEGORY_KEYWORDS: dict[str, list[str]] = {
 }
 _DEFAULT_CATEGORY = "standards"
 
-# Word-boundary patterns, built from _CATEGORY_KEYWORDS above — plain substring
-# matching let "employment" match inside "unemployment", so e.g. "UK
-# unemployment" was miscategorized as payroll-compliance instead of falling
-# through to the general "standards" category, which could starve it of
-# eligible governed sources and wrongly force a clarification route.
-_CATEGORY_KEYWORD_PATTERNS: dict[str, list[re.Pattern[str]]] = {
-    category: [re.compile(rf"\b{re.escape(keyword)}\b") for keyword in keywords]
-    for category, keywords in _CATEGORY_KEYWORDS.items()
-}
-
 # Sources with these statuses are eligible for retrieval
 _ELIGIBLE_STATUSES = {"ACTIVE", "APPROVED"}
 
@@ -52,23 +39,10 @@ _ELIGIBLE_STATUSES = {"ACTIVE", "APPROVED"}
 _RESTRICTED_STATUSES = {"DRAFT", "DEPRECATED", "BLOCKED", "RESTRICTED"}
 
 
-def _retrieval_timeout_seconds() -> float:
-    """Bound remote governed-source reads below the frontend request limit.
-
-    Retrieval is useful grounding, but it already has a defined insufficient-
-    evidence fallback.  A slow database must therefore fail soft instead of
-    preventing an otherwise valid live-data/LLM answer from returning at all.
-    """
-    try:
-        return max(1.0, float(os.getenv("SOURCE_RETRIEVAL_TIMEOUT_SECONDS", "20")))
-    except ValueError:
-        return 20.0
-
-
 def infer_category(query: str) -> str:
     lowered = query.lower()
-    for category, patterns in _CATEGORY_KEYWORD_PATTERNS.items():
-        if any(pattern.search(lowered) for pattern in patterns):
+    for category, keywords in _CATEGORY_KEYWORDS.items():
+        if any(keyword in lowered for keyword in keywords):
             return category
     return _DEFAULT_CATEGORY
 
@@ -100,8 +74,7 @@ async def build_source_bundle(
     # vector match — or a chunk embedded outside the governance workflow —
     # could make a properly registered, ACTIVE source disappear from the
     # bundle with no error at all.
-    async with asyncio.timeout(_retrieval_timeout_seconds()):
-        candidates = await list_sources(db, category, tenant_id=tenant_id)
+    candidates = await list_sources(db, category, tenant_id=tenant_id)
     seen_ids = set()
     for c in candidates:
         version_status = c["latest_version"].status

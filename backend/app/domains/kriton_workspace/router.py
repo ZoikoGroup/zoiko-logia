@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -13,7 +12,6 @@ from app.domains.kriton_workspace.schemas import (
     DraftCreateRequest,
     DraftPublic,
     DraftUpdateRequest,
-    DocumentPublic,
     SavedAnswerCreateRequest,
     SavedAnswerPublic,
 )
@@ -25,15 +23,6 @@ from app.domains.kriton_workspace.service import (
     list_saved_answers,
     update_draft,
 )
-from app.domains.kriton_workspace.documents import (
-    create_document_upload,
-    delete_document,
-    get_document,
-    ingest_document,
-    list_documents,
-)
-from app.core.config import get_settings
-from app.domains.kriton_workspace.artifacts import artifact_absolute_path, artifact_bytes, get_generated_artifact
 
 router = APIRouter(prefix="/kriton-workspace", tags=["kriton_workspace"])
 

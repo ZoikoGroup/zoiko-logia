@@ -8,5 +8,3 @@ venv/
 data/sources/**/*
 !data/sources/**/
 !data/sources/**/.gitkeep
-data/workspace_documents/
-data/workspace_artifacts/

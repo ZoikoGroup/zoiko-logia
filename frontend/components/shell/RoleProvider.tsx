@@ -20,8 +20,7 @@ export function RoleProvider({ children }: { children: ReactNode }) {
   const [role, setRoleState] = useState<RoleCode>(DEFAULT_ROLE);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setRoleState(readRoleCookie()), 0);
-    return () => window.clearTimeout(timer);
+    setRoleState(readRoleCookie());
   }, []);
 
   function setRole(next: RoleCode) {

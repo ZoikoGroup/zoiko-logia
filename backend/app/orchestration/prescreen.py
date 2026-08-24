@@ -20,8 +20,7 @@ from typing import Optional
 # ── Pattern registry ──────────────────────────────────────────────────────────
 
 _PROMPT_INJECTION_PATTERNS = [
-    r"ignore\s+(?:(?:all|the)\s+)?(?:previous|prior|all|your)\s+instructions?\b",
-    r"disregard\s+(?:(?:all|the)\s+)?(?:previous|prior|your)\s+instructions?\b",
+    r"ignore\s+(previous|all|your)\s+instruction",
     r"override\s+(system|safety|governance|policy)",
     r"forget\s+(everything|your\s+rules|instructions)",
     r"you\s+are\s+now\s+(a\s+)?(?:different|unrestricted|jailbreak)",
@@ -32,11 +31,6 @@ _PROMPT_INJECTION_PATTERNS = [
     r"hypothetically\s+(speaking\s+)?if\s+you\s+(had\s+no|were\s+not)",
     r"jailbreak",
     r"DAN\s+mode",
-    # Quoted/source-text attacks often omit "previous" but still attempt to
-    # turn untrusted content into higher-priority instructions.
-    r"treat\s+(?:the\s+)?following\s+(?:source\s+)?text\s+as\s+instructions?",
-    r"pretend\s+(?:that\s+)?you\s+are\s+unrestricted",
-    r"answer\s+without\s+(?:recording|creating|writing)\s+(?:an?\s+)?audit(?:\s+event)?",
 ]
 
 _DATA_EXFILTRATION_PATTERNS = [
@@ -47,8 +41,6 @@ _DATA_EXFILTRATION_PATTERNS = [
     r"(read|access|open)\s+(system\s+)?(file|directory|database)",
     r"SELECT\s+.+\s+FROM",
     r"curl\s+|wget\s+|http(s)?://",
-    r"(?:disclose|reveal|provide|expose)\s+(?:the\s+)?(?:api\s+keys?|credentials?|secrets?|passwords?|tokens?)",
-    r"(?:disclose|reveal|provide|expose)\s+(?:confidential|private)\s+(?:tenant\s+)?data",
 ]
 
 _MALICIOUS_INSTRUCTION_PATTERNS = [
