@@ -26,17 +26,13 @@ from dataclasses import dataclass
 
 import httpx
 
-
-# Trusted, authoritative domains per jurisdiction. Results outside these are
-# dropped when an allowlist applies (see resolve). "GLOBAL" always applies.
-_TRUSTED_DOMAINS: dict[str, list[str]] = {
-    "GLOBAL": ["ifrs.org", "iasb.org", "ifac.org", "iaasb.org"],
-    "UK": ["gov.uk", "hmrc.gov.uk", "frc.org.uk", "icaew.com", "accaglobal.com", "legislation.gov.uk"],
-    "US": ["irs.gov", "fasb.org", "sec.gov", "pcaobus.org", "aicpa.org", "gao.gov"],
-    "EU": ["europa.eu", "efrag.org"],
-    "UAE": ["mof.gov.ae", "tax.gov.ae"],
-    "INDIA": ["incometax.gov.in", "icai.org", "mca.gov.in"],
-}
+from app.orchestration.source_taxonomy import (
+    allowed_domains,
+    detect_topics,
+    matches_allowlist,
+    organisation_key,
+    site_filter,
+)
 
 
 @dataclass
@@ -65,24 +61,55 @@ def _strict_allowlist() -> bool:
     return os.getenv("SEARXNG_STRICT_ALLOWLIST", "").lower() in {"1", "true", "yes"}
 
 
-def _allowed_domains(jurisdiction: str) -> list[str]:
-    key = (jurisdiction or "").upper().split("-")[0]  # "US-CA" -> "US"
-    domains = list(_TRUSTED_DOMAINS.get("GLOBAL", []))
-    if key in _TRUSTED_DOMAINS:
-        domains += _TRUSTED_DOMAINS[key]
-    return domains
+def _spread_across_organisations(
+    sources: list[WebSource], domains: list[str], limit: int
+) -> list[WebSource]:
+    """Pick `limit` sources spread across as many distinct BODIES as possible.
 
+    Search engines rank by relevance alone, so the top five hits for a UK tax
+    question are routinely five pages of the same HMRC manual. That reads as
+    five citations while carrying one organisation's view, and it hides the
+    standard-setter or the statute that would corroborate (or contradict) it.
 
-def _matches_allowlist(url: str, domains: list[str]) -> bool:
-    return any(d in url for d in domains)
+    Round-robin over organisations, in the order each first appeared, so the
+    engine's own relevance ranking still decides which page represents a body
+    and which body leads. Only once every organisation has contributed one
+    source does any of them contribute a second — so a five-source answer
+    drawn from five bodies stays five bodies, and one drawn from a single
+    body is still returned rather than truncated.
+    """
+    grouped: dict[str, list[WebSource]] = {}
+    for source in sources:
+        grouped.setdefault(organisation_key(source.url, domains), []).append(source)
+
+    spread: list[WebSource] = []
+    round_index = 0
+    while len(spread) < limit and any(len(v) > round_index for v in grouped.values()):
+        for bucket in grouped.values():
+            if len(bucket) > round_index:
+                spread.append(bucket[round_index])
+                if len(spread) == limit:
+                    return spread
+        round_index += 1
+    return spread
 
 
 async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list[WebSource]:
     """Query SearXNG and return up to `limit` sources, preferring trusted
-    domains for the jurisdiction. Returns [] on any failure (fail-soft)."""
+    domains for the jurisdiction and topic. Returns [] on any failure
+    (fail-soft)."""
     base = _searxng_url()
+    # Topic narrows the allowlist from "every body in this jurisdiction" to
+    # the ones with authority over THIS question (source_taxonomy.py). An
+    # off-taxonomy question detects no topics, which yields the full
+    # jurisdiction list — the behaviour before topics existed.
+    domains = allowed_domains(jurisdiction, detect_topics(query))
+    # Bias retrieval toward those bodies up front. Filtering alone only drops
+    # results after the fact, so a narrow question could return twenty blog
+    # posts, lose all of them, and fall through to untrusted general results.
+    sites = site_filter(domains)
     params = {
-        "q": query,
+        "q": f"{query} {sites}".strip() if sites else query,
         "format": "json",
         "safesearch": "1",
         "categories": "general",
@@ -111,16 +138,17 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
             )
         )
 
-    domains = _allowed_domains(jurisdiction)
-    trusted = [s for s in parsed if _matches_allowlist(s.url, domains)]
+    trusted = [s for s in parsed if matches_allowlist(s.url, domains)]
 
     if trusted:
-        return trusted[:limit]
+        return _spread_across_organisations(trusted, domains, limit)
     if _strict_allowlist():
         return []
     # Fallback: no trusted-domain hits — return the general top results so the
     # bot still answers (allowlist is advisory unless SEARXNG_STRICT_ALLOWLIST).
-    return parsed[:limit]
+    # Spread these too: organisation_key falls back to the bare hostname off
+    # the allowlist, so five pages of one blog still collapse to one voice.
+    return _spread_across_organisations(parsed, domains, limit)
 
 
 # The table/formula formatting rules apply whether or not web sources were

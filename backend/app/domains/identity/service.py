@@ -1,4 +1,6 @@
+from fastapi import HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import supabase_admin
@@ -72,7 +74,32 @@ async def provision_profile(db: AsyncSession, user_id: str, email: str, payload:
         is_active=True,
     )
     db.add(user)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # A users row already holds this email under a DIFFERENT id — the
+        # lookup above is by auth id, but the uniqueness constraint is on
+        # email. This is what a re-registration looks like: the Supabase auth
+        # user behind the original row was deleted, signing up again minted a
+        # fresh auth id, and the id lookup can no longer find the row that
+        # still owns the address.
+        #
+        # Deliberately NOT auto-adopting that row. Claiming it would hand the
+        # new sign-up whatever tenant and data the old one had, on the
+        # strength of a matching email — an account-linking policy, and one
+        # that cuts straight across the tenant isolation this service exists
+        # to enforce. Re-linking is an administrative act with a human behind
+        # it, so this reports the conflict and stops.
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "An account already exists for this email address under a "
+                "different sign-in identity. An administrator needs to re-link "
+                "or remove the existing profile before this address can be "
+                "registered again."
+            ),
+        ) from exc
     await db.refresh(user)
     supabase_admin.update_app_metadata(user.id, user.tenant_id, user.role)
     return user

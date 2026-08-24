@@ -118,18 +118,68 @@ _COMPOSITION_VISUAL_HINTS = re.compile(
 
 _EXPLICIT_PERCENT_VALUE = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?\s*%")
 
+# A part-to-whole breakdown is just as often stated in money as in percent
+# ("payroll $180,000, rent $55,000, ..."). Percent-only recognition sent
+# those to the no-verified-data fallback even though every value the chart
+# needs was already in the question.
+#
+# An explicit currency marker is required, and each amount must be attached
+# to its own label — a bare number is not enough. That keeps ordinary
+# questions that merely contain digits ("a pie chart of the top 5 filers in
+# 2024") from being reinterpreted as a dataset, which is the same boundary
+# the percent path draws. Converting these amounts to shares is arithmetic
+# on the user's own stated figures, not retrieval, so it stays inside
+# ZL-T0-04's data-honesty rule.
+_CURRENCY_MARKER = r"(?:[$£€¥₹]|\b(?:usd|gbp|eur|inr|jpy)\b\s*)"
+_AMOUNT_SCALES = {"k": 1e3, "thousand": 1e3, "m": 1e6, "million": 1e6,
+                  "b": 1e9, "bn": 1e9, "billion": 1e9}
+_EXPLICIT_AMOUNT_PAIR = re.compile(
+    r"(?:^|[,;.]|\band\b)\s*(?:and\s+)?"
+    r"(?P<label>[A-Za-z][\w &/().'’-]{0,59}?)"
+    r"\s*(?::|=|–|—|-)?\s*"
+    rf"{_CURRENCY_MARKER}\s*"
+    r"(?P<value>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+    r"\s*(?P<scale>k|bn|b|m|thousand|million|billion)?(?![\w])",
+    re.I,
+)
+
+
+def explicit_amount_pairs(text: str) -> list[tuple[str, float]]:
+    """Labelled currency amounts stated in the query, in the order given.
+
+    Shared with extraction.py, which applies the stricter duplicate/sign/
+    count/total validation before any evidence is built. Defined here rather
+    than there because extraction.py already imports this module, and the
+    reverse direction would be a cycle.
+    """
+    pairs: list[tuple[str, float]] = []
+    for m in _EXPLICIT_AMOUNT_PAIR.finditer(text or ""):
+        label = re.sub(r"^and\s+", "", m.group("label").strip(), flags=re.I).strip(" -–—:=")
+        if not label:
+            continue
+        value = float(m.group("value").replace(",", ""))
+        scale = m.group("scale")
+        if scale:
+            value *= _AMOUNT_SCALES[scale.lower()]
+        pairs.append((label, value))
+    return pairs
+
 
 def _has_explicit_composition_values(query: str) -> bool:
     """Recognize a user-supplied part-to-whole request without inventing it.
 
     Naming a pie/donut is only a presentation preference; it becomes
     composition intent here only when the same query supplies at least two
-    percentage values. extraction.py performs the stricter label, duplicate,
-    sign, count, and total validation before any evidence is constructed.
+    values — percentages, or labelled currency amounts. extraction.py
+    performs the stricter label, duplicate, sign, count, and total
+    validation before any evidence is constructed.
     """
-    return bool(
-        _COMPOSITION_VISUAL_HINTS.search(query or "")
-        and len(_EXPLICIT_PERCENT_VALUE.findall(query or "")) >= 2
+    query = query or ""
+    if not _COMPOSITION_VISUAL_HINTS.search(query):
+        return False
+    return (
+        len(_EXPLICIT_PERCENT_VALUE.findall(query)) >= 2
+        or len(explicit_amount_pairs(query)) >= 2
     )
 
 # Deliberately narrower than _RELATIONSHIP_HINTS's "relationship between" —

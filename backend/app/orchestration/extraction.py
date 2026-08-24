@@ -24,7 +24,12 @@ import re
 from dataclasses import dataclass, field
 
 from app.orchestration.evidence import EvidenceModel, Observation
-from app.orchestration.intent_classifier import COMPOSITION, DISTRIBUTION
+from app.orchestration.intent_classifier import (
+    COMPOSITION,
+    DISTRIBUTION,
+    _EXPLICIT_AMOUNT_PAIR,
+    explicit_amount_pairs,
+)
 
 _MAX_LABEL_LEN = 60
 _MAX_NODES = 40  # sanity cap — a query listing more than this is almost
@@ -216,16 +221,79 @@ def _payload_after_colon(query: str) -> tuple[str, str] | None:
     return prefix.strip(), payload.strip()
 
 
+def _prefix_before_first_amount(query: str) -> str:
+    """The descriptive text ahead of the first labelled amount — the subject
+    line the colon would otherwise have delimited."""
+    match = _EXPLICIT_AMOUNT_PAIR.search(query or "")
+    return (query or "")[: match.start()].strip() if match else ""
+
+
+def _composition_from_amounts(
+    prefix: str, pairs: list[tuple[str, float]]
+) -> EvidenceModel:
+    """Build composition evidence from labelled currency amounts by converting
+    them to shares of their own stated total.
+
+    Same validation the percent path applies — count, duplicate labels, sign —
+    minus the 100.5 ceiling, which is meaningless for money. The caveat states
+    that the shares were computed rather than supplied, so a reader is never
+    shown a derived percentage as if the user had typed it.
+    """
+    if not 2 <= len(pairs) <= _MAX_USER_POINTS:
+        return EvidenceModel()
+    labels = [label.casefold() for label, _ in pairs]
+    values = [value for _, value in pairs]
+    if len(labels) != len(set(labels)) or any(value < 0 for value in values):
+        return EvidenceModel()
+    total = sum(values)
+    if total <= 0:
+        return EvidenceModel()
+
+    subject = re.sub(
+        r"\b(create|creat|make|show|showing|display|draw|plot|a|an|the|as|of|"
+        r"donut|doughnut|ring|pie|chart|graph|for)\b",
+        " ", prefix, flags=re.I,
+    )
+    subject = re.sub(r"\s+", " ", subject).strip(" -.,:") or "Composition"
+    subject = subject[:1].upper() + subject[1:]
+
+    return EvidenceModel(
+        subject=subject,
+        composition_subject=subject,
+        composition=[
+            Observation(dimension=label, value=value / total * 100.0, measure="percent")
+            for label, value in pairs
+        ],
+        composition_caveat=(
+            "Amounts supplied directly by the user; shares computed from their "
+            f"stated total of {total:,.0f}."
+        ),
+        composition_is_estimated=False,
+        dimensions=["category"],
+        measures=["percent"],
+        units=["%"],
+    )
+
+
 def extract_user_visual_evidence(query: str, intent: str) -> EvidenceModel:
     """Extract explicitly supplied chart values from the user's query.
 
-    Supported general shapes are labelled percentages for composition charts
-    and an unlabelled numeric sample for distributions. Invalid/ambiguous
-    input returns empty evidence so the established text fallback remains in
-    control.
+    Supported general shapes are labelled percentages or labelled currency
+    amounts for composition charts, and an unlabelled numeric sample for
+    distributions. Invalid/ambiguous input returns empty evidence so the
+    established text fallback remains in control.
     """
     split = _payload_after_colon(query)
     if split is None:
+        # Labelled currency amounts carry their own delimiters, so they don't
+        # need the colon the percent path relies on to tell a payload from a
+        # question. "…operating expense composition. payroll $180,000, rent
+        # $55,000…" is unambiguous without one, and requiring a colon there
+        # dropped a fully-specified chart request.
+        if intent == COMPOSITION:
+            return _composition_from_amounts(
+                _prefix_before_first_amount(query), explicit_amount_pairs(query)
+            )
         return EvidenceModel()
     prefix, payload = split
 
@@ -235,7 +303,9 @@ def extract_user_visual_evidence(query: str, intent: str) -> EvidenceModel:
             for m in _PERCENT_PAIR.finditer(payload)
         ]
         if not 2 <= len(pairs) <= _MAX_USER_POINTS:
-            return EvidenceModel()
+            # A colon-delimited payload can still be stated in money rather
+            # than percent ("expense split: payroll $180,000, rent $55,000").
+            return _composition_from_amounts(prefix, explicit_amount_pairs(payload))
         labels = [label.casefold() for label, _ in pairs]
         values = [value for _, value in pairs]
         if len(labels) != len(set(labels)) or any(value < 0 for value in values):

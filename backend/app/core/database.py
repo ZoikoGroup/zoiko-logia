@@ -155,20 +155,39 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
     request, though, so every code path here — including "no valid token" —
     must explicitly set both (even to ''), never skip the call. Skipping it
     when they're falsy would leave whatever a *previous* request left on
-    that same pooled connection in effect for this one."""
-    async with RequestSessionLocal() as session:
-        if not settings.is_sqlite:
-            user_id, tenant_id = _identity_from_request(request)
-            # set_config(..., false) accepts a bound parameter, unlike SET,
-            # whose grammar takes a literal, not a placeholder — binding
-            # these directly into SET would require unsafe string
-            # formatting. Always called, even with "", so a connection
-            # reused from the pool never carries over a prior request's
-            # identity into a request that has none.
-            await session.execute(
-                text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id}
-            )
-            await session.execute(
-                text("SELECT set_config('app.user_id', :user_id, false)"), {"user_id": user_id}
-            )
-        yield session
+    that same pooled connection in effect for this one.
+
+    The session is bound to ONE explicitly checked-out connection for the
+    whole request, rather than letting it draw from the pool per
+    transaction. Session-scoped settings live on the CONNECTION, but a
+    session returns its connection to the pool on every commit and checks
+    out a fresh one for the next statement — so in an unbound session the
+    identity set here survives only until the request's first commit. After
+    that, statements land on an arbitrary pooled connection carrying
+    whatever identity some earlier request left on it: usually none, which
+    fails closed (`new row violates row-level security policy`), and
+    sometimes another tenant's, which would be far worse.
+
+    That made it look intermittent — a freshly-started process with a cold
+    pool almost always hands back the same connection and appears to work,
+    while a long-running one with several pooled connections fails often.
+    Requests here commit more than once (audit events, document ingestion),
+    so this affected every write that followed a commit.
+    """
+    async with request_engine.connect() as connection:
+        async with RequestSessionLocal(bind=connection) as session:
+            if not settings.is_sqlite:
+                user_id, tenant_id = _identity_from_request(request)
+                # set_config(..., false) accepts a bound parameter, unlike SET,
+                # whose grammar takes a literal, not a placeholder — binding
+                # these directly into SET would require unsafe string
+                # formatting. Always called, even with "", so a connection
+                # reused from the pool never carries over a prior request's
+                # identity into a request that has none.
+                await session.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id}
+                )
+                await session.execute(
+                    text("SELECT set_config('app.user_id', :user_id, false)"), {"user_id": user_id}
+                )
+            yield session
