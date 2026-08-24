@@ -216,6 +216,39 @@ async def _migrate_orphan_tenant_id_not_null():
             )
 
 
+async def _migrate_document_search_vector():
+    """Materialise the document-chunk tsvector and index it.
+
+    Retrieval ranked chunks with `to_tsvector('english', content)` computed
+    inline, which reparses every chunk of every document on every question —
+    tokenise, drop stopwords, stem, sort lexemes — and leaves an index nothing
+    to look up, because the value it would index does not exist until the query
+    computes it. A STORED generated column moves that work to write time, and a
+    GIN index over it turns a scan of the whole corpus into a lookup of just the
+    chunks containing the query's terms.
+
+    The two changes only pay off together: a GIN index over the inline
+    expression measured 11.98ms -> 11.88ms, because ts_rank_cd still has to
+    build a tsvector for every surviving row in order to score it. With the
+    column stored, the same corpus measured 0.77ms.
+
+    Postgres-only. SQLite has no tsvector, and the SQLite branch in
+    documents/service.py never reads this column — see _search_vector_available
+    there for what happens on a boot where this step was skipped.
+    """
+    if settings.is_sqlite:
+        return
+    async with _ddl_conn() as conn:
+        await conn.execute(text(
+            "ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS search_vector tsvector "
+            "GENERATED ALWAYS AS (to_tsvector('english'::regconfig, coalesce(content, ''))) STORED"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_document_chunks_search "
+            "ON document_chunks USING GIN (search_vector)"
+        ))
+
+
 async def _setup_user_rls():
     """Users can only read/insert/update their own row — except a tenant
     Admin, who can also see every user in their own tenant (the existing
@@ -638,6 +671,7 @@ async def lifespan(app: FastAPI):
         ("migrate_source_licence_columns", _migrate_source_licence_columns),
         ("migrate_user_profile_columns", _migrate_user_profile_columns),
         ("migrate_orphan_tenant_id_not_null", _migrate_orphan_tenant_id_not_null),
+        ("migrate_document_search_vector", _migrate_document_search_vector),
         ("setup_source_rls", _setup_source_rls),
         ("setup_user_rls", _setup_user_rls),
     ):

@@ -226,6 +226,64 @@ async def ingest_document(
     )
 
 
+#: The materialised tsvector added by app/main.py's
+#: _migrate_document_search_vector — parsed once at write time and covered by a
+#: GIN index, so ranking reads it instead of rebuilding it per row per query.
+STORED_VECTOR = "c.search_vector"
+#: The original expression, rebuilt for every chunk on every question. Still the
+#: path taken on a database where the migration has not run yet.
+INLINE_VECTOR = "to_tsvector('english', c.content)"
+
+_SEARCH_VECTOR_READY: bool | None = None
+"""Whether document_chunks.search_vector exists, decided once per process.
+
+None until the first search asks. The lifespan in app/main.py deliberately lets
+a startup migration be skipped with a warning when it cannot take the table lock
+in time (overlapping deploys), retrying on the next boot. Without this check
+every question for the rest of that boot would fail with UndefinedColumn, and a
+slower search is a far better outcome than a broken one.
+"""
+
+
+async def _search_vector_available(db: AsyncSession) -> bool:
+    global _SEARCH_VECTOR_READY
+    if _SEARCH_VECTOR_READY is None:
+        row = await db.execute(text(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'document_chunks' AND column_name = 'search_vector'"
+        ))
+        _SEARCH_VECTOR_READY = row.first() is not None
+    return _SEARCH_VECTOR_READY
+
+
+def _search_sql(vector: str) -> str:
+    """The ranking query, over either the stored tsvector or the inline one.
+
+    `vector` is interpolated rather than bound because a bound parameter is a
+    value and this is a SQL expression. It is never user input — the only two
+    values passed are the module constants above.
+    """
+    return f"""
+        SELECT c.document_id,
+               d.filename,
+               c.locator,
+               c.content,
+               ts_rank_cd(
+                   {vector},
+                   websearch_to_tsquery('english', :search_text)
+               ) AS score
+          FROM document_chunks c
+          JOIN user_documents d ON d.id = c.document_id
+         WHERE c.tenant_id = :tenant_id
+           AND c.user_id = :user_id
+           AND c.document_id = ANY(:document_ids)
+           AND {vector}
+               @@ websearch_to_tsquery('english', :search_text)
+         ORDER BY score DESC, c.ordinal ASC
+         LIMIT :limit
+        """
+
+
 async def _search_postgres(
     db: AsyncSession, *, query: str, document_ids: list[str], tenant_id: str,
     user_id: str, limit: int,
@@ -249,28 +307,8 @@ async def _search_postgres(
         return []
     search_text = " or ".join(terms)
 
-    sql = text(
-        """
-        SELECT c.document_id,
-               d.filename,
-               c.locator,
-               c.content,
-               ts_rank_cd(
-                   to_tsvector('english', c.content),
-                   websearch_to_tsquery('english', :search_text)
-               ) AS score
-          FROM document_chunks c
-          JOIN user_documents d ON d.id = c.document_id
-         WHERE c.tenant_id = :tenant_id
-           AND c.user_id = :user_id
-           AND c.document_id = ANY(:document_ids)
-           AND to_tsvector('english', c.content)
-               @@ websearch_to_tsquery('english', :search_text)
-         ORDER BY score DESC, c.ordinal ASC
-         LIMIT :limit
-        """
-    )
-    rows = await db.execute(sql, {
+    vector = STORED_VECTOR if await _search_vector_available(db) else INLINE_VECTOR
+    rows = await db.execute(text(_search_sql(vector)), {
         "search_text": search_text,
         "tenant_id": tenant_id,
         "user_id": user_id,
