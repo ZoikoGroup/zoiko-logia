@@ -311,17 +311,21 @@ def _grounded_domain_fallback(query: str, evidence: EvidenceModel) -> str | None
                 else "decreased" if latest.value < first.value
                 else "was unchanged"
             )
-        series_note = f" FRED series: {evidence.series_id}." if evidence.series_id else ""
         coverage_note = ""
         if not evidence.coverage_complete and evidence.warnings:
             coverage_note = f" Coverage is partial: {evidence.warnings[0]}"
+        unit = evidence.units[0].strip() if evidence.units else ""
+        unit_suffix = unit if unit in {"%"} else (f" {unit}" if unit else "")
+
+        def display_value(value: float) -> str:
+            return f"{value:g}{unit_suffix}"
+
         return (
-            f"Across {len(evidence.observations)} source-grounded observations, {subject} {direction} "
-            f"from {first.value:g} in {first.dimension} to {latest.value:g} in {latest.dimension}. "
-            f"The minimum was {minimum.value:g} in {minimum.dimension}, and the maximum was "
-            f"{maximum.value:g} in {maximum.dimension}. The visualization uses these same "
-            "source-grounded values without adding model-generated figures."
-            f"{series_note}{coverage_note}"
+            f"{subject} {direction} from {display_value(first.value)} in {first.dimension} "
+            f"to {display_value(latest.value)} in {latest.dimension}. "
+            f"During this period, the lowest recorded value was {display_value(minimum.value)} "
+            f"in {minimum.dimension}, and the highest was {display_value(maximum.value)} "
+            f"in {maximum.dimension}.{coverage_note}"
         )
 
     # Real, named PSC/shareholder holdings from Companies House

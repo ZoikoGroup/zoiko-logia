@@ -61,7 +61,8 @@ def test_live_chart_narrative_uses_latest_and_correct_direction():
     text = _grounded_domain_fallback("Show Canada inflation as a line chart", evidence)
     assert text is not None
     assert "decreased from 2.53 in 2024-07 to 1.859 in 2025-06" in text
-    assert "minimum was 1.83 in 2024-12" in text
+    assert "lowest recorded value was 1.83 in 2024-12" in text
+    assert "highest was 2.53 in 2024-07" in text
 
 
 def test_comparison_line_keeps_both_series_and_adds_requested_table():

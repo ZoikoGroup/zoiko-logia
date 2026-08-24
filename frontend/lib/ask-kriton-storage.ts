@@ -1,4 +1,4 @@
-import type { AskKritonResponse } from "@/lib/api";
+import type { AskKritonRequest, AskKritonResponse } from "@/lib/api";
 
 export type Turn = {
   id: string;
@@ -10,6 +10,10 @@ export type Turn = {
   error: string | null;
   result: AskKritonResponse | null;
   attachments?: Array<{ documentId: string; filename: string }>;
+  /** Exact request envelope and idempotency key used for safe retry. */
+  request?: AskKritonRequest;
+  idempotencyKey?: string;
+  errorStatus?: number;
 };
 
 export type Conversation = {

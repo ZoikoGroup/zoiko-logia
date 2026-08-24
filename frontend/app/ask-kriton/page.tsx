@@ -41,6 +41,7 @@ import {
   writeTextToClipboard,
 } from "@/lib/presentation";
 import { getFollowUpSuggestions } from "@/lib/follow-up-suggestions";
+import { isRetryableAskKritonStatus } from "@/lib/ask-kriton-errors";
 import { ThinkingIndicator } from "@/components/ask-kriton/ThinkingIndicator";
 import { DesktopSidebar, MobileDrawer } from "@/components/ask-kriton/Sidebar";
 import { Composer, type AttachmentState } from "@/components/ask-kriton/Composer";
@@ -458,10 +459,12 @@ function ConversationTurn({
   turn,
   onFollowUp,
   onReuse,
+  onRetry,
 }: {
   turn: Turn;
   onFollowUp?: (question: string, originalQuery: string) => void;
   onReuse?: (query: string) => void;
+  onRetry?: () => void;
 }) {
   const { submittedQuery, result, error, loading, attachments = [] } = turn;
   const followUps = useMemo(() => getFollowUpSuggestions(result, submittedQuery), [result, submittedQuery]);
@@ -509,9 +512,19 @@ function ConversationTurn({
 
       {!loading && error && (
         <div className="kriton-animate-msg-response min-w-0">
-          <div className="rounded-2xl rounded-tl-md border border-bad/30 bg-bad/5 px-5 py-4 shadow-sm">
+          <div className="rounded-2xl rounded-tl-md border border-bad/30 bg-bad/5 px-5 py-4 shadow-sm" role="alert">
             <p className="text-sm font-semibold text-bad">Kriton could not respond</p>
             <p className="mt-1 text-xs text-bad/80">{error}</p>
+            {onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-lg border border-bad/30 bg-panel px-3 text-xs font-semibold text-ink transition hover:bg-soft"
+              >
+                <RotateCcw size={13} />
+                Retry
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -728,10 +741,28 @@ export default function AskKritonPage() {
     }
 
     const turnId = genId("turn");
+    const idempotencyKey = genId("idem");
     const turnAttachments = documentIds.map((documentId) => ({
       documentId,
       filename: documents.find((document) => document.id === documentId)?.filename ?? "Uploaded document",
     }));
+    const isNew = activeId === null;
+    const convId = activeId ?? genId("conv");
+    const now = timestamp();
+    const priorConversation = conversations.find((c) => c.id === convId) ?? null;
+    const previousQuery = priorConversation?.turns.at(-1)?.submittedQuery.trim() || undefined;
+    const cycle = clarificationCycleFor(priorConversation);
+    const request = {
+      query: trimmed,
+      previous_query: previousQuery,
+      jurisdiction,
+      mode,
+      clarification_cycle: cycle,
+      conversation_id: convId,
+      document_ids: documentIds,
+      // An attached file defines the entity/source scope for this chat.
+      source_scope: documentIds.length ? "DOCUMENTS_ONLY" as const : "WEB_ONLY" as const,
+    };
     const newTurn: Turn = {
       id: turnId,
       query: trimmed,
@@ -740,14 +771,9 @@ export default function AskKritonPage() {
       error: null,
       loading: true,
       attachments: turnAttachments,
+      request,
+      idempotencyKey,
     };
-
-    const isNew = activeId === null;
-    const convId = activeId ?? genId("conv");
-    const now = timestamp();
-    const priorConversation = conversations.find((c) => c.id === convId) ?? null;
-    const previousQuery = priorConversation?.turns.at(-1)?.submittedQuery.trim() || undefined;
-    const cycle = clarificationCycleFor(priorConversation);
     setConversations((prev) => {
       const next = isNew
         ? [{ id: convId, title: trimmed.slice(0, 80), turns: [newTurn], createdAt: now, updatedAt: now, pinned: false, documentIds }, ...prev]
@@ -767,28 +793,39 @@ export default function AskKritonPage() {
     setSubmitError(null);
     setSubmitting(true);
     try {
-      const idempotencyKey = genId("idem");
-      const response = await askKriton(
-        token,
-        {
-          query: trimmed,
-          previous_query: previousQuery,
-          jurisdiction,
-          mode,
-          clarification_cycle: cycle,
-          conversation_id: convId,
-          document_ids: documentIds,
-          // An attached file defines the entity/source scope for this chat.
-          // Do not silently replace a document miss with same-name web results
-          // (for example, another company called "Apex").
-          source_scope: documentIds.length ? "DOCUMENTS_ONLY" : "WEB_ONLY",
-        },
-        idempotencyKey,
-      );
+      const response = await askKriton(token, request, idempotencyKey);
       patchTurn(convId, turnId, { result: response, loading: false });
     } catch (err) {
       patchTurn(convId, turnId, {
         error: err instanceof ApiError ? err.message : "Could not reach the orchestration service.",
+        errorStatus: err instanceof ApiError ? err.status : 0,
+        loading: false,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function retryTurn(convId: string, turnId: string) {
+    if (submitting) return;
+    const conversation = conversations.find((item) => item.id === convId);
+    const turn = conversation?.turns.find((item) => item.id === turnId);
+    if (!turn?.request) return;
+    const token = getAuthToken();
+    if (!token) {
+      patchTurn(convId, turnId, { error: "Please sign in before retrying this request.", errorStatus: 401 });
+      return;
+    }
+
+    patchTurn(convId, turnId, { error: null, errorStatus: undefined, loading: true });
+    setSubmitting(true);
+    try {
+      const response = await askKriton(token, turn.request, turn.idempotencyKey ?? genId("idem"));
+      patchTurn(convId, turnId, { result: response, error: null, errorStatus: undefined, loading: false });
+    } catch (err) {
+      patchTurn(convId, turnId, {
+        error: err instanceof ApiError ? err.message : "Could not reach the orchestration service.",
+        errorStatus: err instanceof ApiError ? err.status : 0,
         loading: false,
       });
     } finally {
@@ -952,7 +989,14 @@ export default function AskKritonPage() {
                 <div className="w-full min-w-0 max-w-3xl space-y-6 self-stretch md:translate-x-14 lg:translate-x-24">
                   {activeConversation?.turns.map((turn) => (
                     <div key={turn.id} className="min-w-0 space-y-6 border-b border-line/70 pb-7 last:border-b-0">
-                      <ConversationTurn turn={turn} onFollowUp={handleFollowUp} onReuse={setQuery} />
+                      <ConversationTurn
+                        turn={turn}
+                        onFollowUp={handleFollowUp}
+                        onReuse={setQuery}
+                        onRetry={isRetryableAskKritonStatus(turn.errorStatus)
+                          ? () => void retryTurn(activeConversation.id, turn.id)
+                          : undefined}
+                      />
                     </div>
                   ))}
 

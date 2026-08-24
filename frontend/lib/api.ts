@@ -1,5 +1,6 @@
 import { supabase } from "@/lib/supabase";
 import { getCurrentAccessToken } from "@/lib/session-token";
+import { classifyAskKritonFailure } from "@/lib/ask-kriton-errors";
 import type { GovernanceDashboardViewModel } from "@/lib/governance-dashboard-types";
 import type { CommandCenterViewModel } from "@/lib/command-center-types";
 
@@ -947,9 +948,8 @@ export async function askKriton(
     });
     return res.json();
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new ApiError(408, "Kriton took too long to respond. Please try again.");
-    }
+    const failure = classifyAskKritonFailure(error);
+    if (failure) throw new ApiError(failure.status, failure.message);
     throw error;
   } finally {
     window.clearTimeout(timeout);

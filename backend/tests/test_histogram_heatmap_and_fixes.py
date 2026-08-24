@@ -240,7 +240,10 @@ def test_grounded_domain_fallback_accepts_financial_statistics():
     evidence = _long_series_evidence(12)
     text = _grounded_domain_fallback("Show the spread of UK inflation figures as a histogram.", evidence)
     assert text is not None
-    assert "12 source-grounded observations" in text
+    assert "source-grounded observations" not in text
+    assert "model-generated figures" not in text
+    assert "During this period, the lowest recorded value was" in text
+    assert "and the highest was" in text
 
 
 def test_grounded_domain_fallback_accepts_accounting_relationships_only():
