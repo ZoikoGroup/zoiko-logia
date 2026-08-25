@@ -754,6 +754,13 @@ export type ComposedAnswer = {
   text: string;
   citations: SourceCitation[];
   limitations: string[];
+  answer_basis?:
+    | "SOURCE_GROUNDED"
+    | "DOCUMENT_GROUNDED"
+    | "STRUCTURED_DATA"
+    | "DETERMINISTIC_CALCULATION"
+    | "GENERAL_KNOWLEDGE"
+    | "USER_SUPPLIED_DATA";
   calculation_widget?: CalculationWidget | null;
   presentation?: AnswerPresentation | null;
   response_mode?: "concise" | "educational" | "analytical" | "calculation" | "workflow" | "compound";

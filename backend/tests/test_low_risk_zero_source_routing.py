@@ -54,6 +54,7 @@ from app.orchestration.routing_matrix import (
     resolve_route,
 )
 from app.orchestration.schemas import SourceBundle, SourceSummary
+from app.orchestration.service import _allow_general_knowledge_fallback
 
 _SUBSTANTIVE = (
     "Audit adjustments and total revenue are not mechanically linked; whether "
@@ -147,6 +148,28 @@ def test_low_risk_zero_governed_source_but_real_live_sources_grounds_fine():
     empty_bundle = SourceBundle(source_bundle_id="sb-empty", eligible_source_count=0, sources=[])
     result = validate_answer(_SUBSTANTIVE, empty_bundle, external_source_count=3)
     assert result.passed, result.failures
+
+
+def test_general_fallback_only_applies_after_zero_source_retrieval():
+    assert _allow_general_knowledge_fallback(
+        "What is GBP?", risk_level="ZERO", source_scope="WEB_ONLY",
+        has_documents=False, has_evidence=False,
+    )
+    assert not _allow_general_knowledge_fallback(
+        "What is GBP?", risk_level="ZERO", source_scope="WEB_ONLY",
+        has_documents=False, has_evidence=True,
+    )
+
+
+def test_general_fallback_stays_off_for_current_and_document_queries():
+    assert not _allow_general_knowledge_fallback(
+        "What is the current GBP/USD exchange rate?", risk_level="LOW",
+        source_scope="WEB_ONLY", has_documents=False, has_evidence=False,
+    )
+    assert not _allow_general_knowledge_fallback(
+        "Summarise the attached report", risk_level="LOW",
+        source_scope="DOCUMENTS_ONLY", has_documents=True, has_evidence=False,
+    )
 
 
 def test_governed_bundle_alone_still_grounds_a_low_risk_answer():

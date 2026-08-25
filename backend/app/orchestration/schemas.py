@@ -174,6 +174,14 @@ class ComposedAnswer(BaseModel):
     text: str
     citations: List[SourceCitation] = Field(default_factory=list)
     limitations: List[str] = Field(default_factory=list)
+    answer_basis: Literal[
+        "SOURCE_GROUNDED",
+        "DOCUMENT_GROUNDED",
+        "STRUCTURED_DATA",
+        "DETERMINISTIC_CALCULATION",
+        "GENERAL_KNOWLEDGE",
+        "USER_SUPPLIED_DATA",
+    ] = "SOURCE_GROUNDED"
     # Internal fields — kept for model_gateway wiring; never exposed to frontend
     prompt_id: str = "inline"
     prompt_name: str = "Inline RAG Prompt"

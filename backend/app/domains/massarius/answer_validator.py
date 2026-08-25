@@ -60,6 +60,21 @@ _CONFIDENCE_STATES_REQUIRING_HEDGING = {"limited", "insufficient", "conflicting_
 
 _REF_PATTERN = re.compile(r"\[REF-(\d+)\]")
 
+# A general-knowledge fallback is intentionally uncited. These patterns guard
+# the output boundary in case a provider ignores the prompt and invents
+# provenance or presents a time-sensitive figure as verified fact.
+_UNSOURCED_PROVENANCE = re.compile(
+    r"https?://|\bwww\.|\baccording to\b|\bofficial guidance\b|"
+    r"\bsource\s*:|\b(?:paragraph|section)\s+\d+[A-Za-z]?(?:\.\d+)*\b",
+    re.I,
+)
+_UNSOURCED_CURRENT_CLAIM = re.compile(
+    r"\b(?:current(?!\s+(?:ratio|assets?|liabilities)\b)|latest|today'?s?|"
+    r"right now|as of)\b.{0,120}\b(?:is|are|equals?|stands? at|rate|price|"
+    r"threshold|deadline|require(?:s|ment)?)\b",
+    re.I | re.DOTALL,
+)
+
 # ── 6. Disclaimer presence marker — matches the text
 # orchestration/composition_validator.py's build_validated_disclaimer appends ──
 _DISCLAIMER_MARKER = "Kriton™ Disclaimer"
@@ -71,6 +86,7 @@ def validate_answer_or_raise(
     *,
     disclaimer_required: bool = False,
     external_source_count: int = 0,
+    allow_general_knowledge: bool = False,
 ) -> None:
     """
     Run all seven Checkpoint C checks. Raises ValidationFailed listing every
@@ -89,7 +105,11 @@ def validate_answer_or_raise(
     # 1. Grounding — answer must not claim substantive content with no sources
     # of any kind behind it.
     total_sources = source_bundle.eligible_source_count + max(external_source_count, 0)
-    if total_sources == 0 and len(answer_text.strip()) > 50:
+    if (
+        total_sources == 0
+        and len(answer_text.strip()) > 50
+        and not allow_general_knowledge
+    ):
         failures.append(
             "Grounding check failed: answer contains substantive content "
             "but no eligible sources exist in the SourceBundle and no live "
@@ -111,6 +131,18 @@ def validate_answer_or_raise(
             f"Citation binding failed: answer references [REF-{','.join(sorted(unbound_refs))}] "
             f"which are not present in eligible_sources."
         )
+
+    if allow_general_knowledge:
+        if ref_ids_in_answer or _UNSOURCED_PROVENANCE.search(answer_text):
+            failures.append(
+                "General-knowledge output check failed: the uncited answer "
+                "contains unsupported provenance, a URL, or a reference marker."
+            )
+        if _UNSOURCED_CURRENT_CLAIM.search(answer_text):
+            failures.append(
+                "General-knowledge output check failed: the uncited answer "
+                "contains a current or time-sensitive factual claim."
+            )
 
     # 3. Prohibited-claim scan
     for pattern in _PROHIBITED:
@@ -177,6 +209,7 @@ def validate_answer(
     *,
     disclaimer_required: bool = False,
     external_source_count: int = 0,
+    allow_general_knowledge: bool = False,
 ) -> ValidationResult:
     """Call-site-friendly wrapper: same checks as validate_answer_or_raise(),
     but returns a ValidationResult instead of raising — matches the
@@ -187,6 +220,7 @@ def validate_answer(
             source_bundle,
             disclaimer_required=disclaimer_required,
             external_source_count=external_source_count,
+            allow_general_knowledge=allow_general_knowledge,
         )
     except ValidationFailed as exc:
         return ValidationResult(passed=False, failures=exc.failures, degraded_route=exc.degraded_route)

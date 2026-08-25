@@ -241,9 +241,32 @@ _DOMAIN_GATE = (
 )
 
 
-def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
+def build_web_grounded_prompt(
+    query: str,
+    sources: list[WebSource],
+    *,
+    allow_general_knowledge: bool = False,
+) -> str:
     """Assemble a grounded prompt from document, live-data, or web evidence."""
     if not sources:
+        if allow_general_knowledge:
+            return (
+                _DOMAIN_GATE
+                + "No external evidence was retrieved. For a stable, low-risk "
+                "educational definition, explanation, formula, or conceptual "
+                "comparison in Kriton's supported domains, answer directly using "
+                "established general knowledge. Do not mention retrieval, missing "
+                "sources, implementation problems, source scope, or document "
+                "attachments. Do not invent citations, URLs, quotations, reference "
+                "identifiers, standard paragraph numbers, or claims that sources "
+                "were consulted. If numerical inputs are missing, explain the "
+                "formula and request only those inputs; never invent values. Do not "
+                "supply current, time-sensitive, jurisdiction-specific, regulatory, "
+                "market, company-reported, or document-specific facts from memory. "
+                "Output only the user-facing answer.\n"
+                + _FORMATTING_INSTRUCTIONS
+                + f"\n=== User Question ===\n{query}"
+            )
         return (
             _DOMAIN_GATE
             + "No reliable document, live-data, or web evidence was retrieved. "

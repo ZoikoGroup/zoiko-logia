@@ -193,6 +193,35 @@ _MODEL_DOMAIN_REFUSAL_TEXT = (
 )
 _MODEL_PROVIDER_FAILURE = "Kriton is temporarily unable to reach the language model provider."
 
+# General-knowledge fallback is only available after retrieval returned no
+# usable evidence. These terms identify questions whose answer can change or
+# requires an authoritative source; they must continue to fail closed rather
+# than letting the model answer from memory.
+_GENERAL_KNOWLEDGE_FALLBACK_BLOCKED = re.compile(
+    r"\b(?:current|latest|today|right now|as of|exchange rate|share price|"
+    r"market price|tax rate|threshold|deadline|legislation|regulations?|"
+    r"statutory|filing requirements?|reported revenue|reported profit)\b",
+    re.I,
+)
+
+
+def _allow_general_knowledge_fallback(
+    query: str,
+    *,
+    risk_level: str,
+    source_scope: str,
+    has_documents: bool,
+    has_evidence: bool,
+) -> bool:
+    """Permit uncited model knowledge only for a narrow zero-source case."""
+    return bool(
+        not has_evidence
+        and risk_level in {"ZERO", "LOW"}
+        and source_scope != "DOCUMENTS_ONLY"
+        and not has_documents
+        and not _GENERAL_KNOWLEDGE_FALLBACK_BLOCKED.search(query or "")
+    )
+
 # High-confidence, consumer/general-knowledge requests that are plainly
 # outside Kriton's governed accounting and finance scope. Keeping this gate
 # deliberately narrow makes the refusal deterministic (and independent of an
@@ -575,6 +604,7 @@ async def ask_kriton(
                 safety=safety_state, confidence_state=effective_confidence,
                 answer=ComposedAnswer(
                     text=text, output_text=text, citations=[], limitations=[],
+                    answer_basis="DETERMINISTIC_CALCULATION",
                     prompt_id="deterministic-calculation-v1",
                     prompt_name="Deterministic Calculation",
                 ),
@@ -1123,6 +1153,13 @@ async def ask_kriton(
         evidence_sources = document_sources + web_sources
     else:  # DOCUMENTS_THEN_WEB
         evidence_sources = document_sources or web_sources
+    allow_general_knowledge = _allow_general_knowledge_fallback(
+        request.query,
+        risk_level=risk_level,
+        source_scope=request.source_scope,
+        has_documents=bool(request.document_ids),
+        has_evidence=bool(evidence_sources),
+    )
     rag_citations: list[SourceCitation] = [
         SourceCitation(
             ref_id=f"REF-{i + 1}",
@@ -1214,7 +1251,11 @@ async def ask_kriton(
                 "haven't invented values or produced a misleading visualization. "
                 "Please try again shortly or specify a source and date range."
             )
-        grounded_input = build_web_grounded_prompt(effective_query, evidence_sources)
+        grounded_input = build_web_grounded_prompt(
+            effective_query,
+            evidence_sources,
+            allow_general_knowledge=allow_general_knowledge,
+        )
 
     # External-provider exposure boundary (ZL-ENG-03 §5.8): redact before
     # grounded_input leaves the tenant trust boundary for the model gateway.
@@ -1384,6 +1425,7 @@ async def ask_kriton(
             source_bundle,
             disclaimer_required=False,
             external_source_count=len(rag_citations),
+            allow_general_knowledge=allow_general_knowledge,
         )
         if source_bundle else None
     )
@@ -1494,10 +1536,20 @@ async def ask_kriton(
         # externally source-grounded.
         rag_citations = []
 
+    if allow_general_knowledge:
+        answer_basis = "GENERAL_KNOWLEDGE"
+    elif uses_user_supplied_structure:
+        answer_basis = "USER_SUPPLIED_DATA"
+    elif rag_citations and all(c.provider == "uploaded_document" for c in rag_citations):
+        answer_basis = "DOCUMENT_GROUNDED"
+    else:
+        answer_basis = "SOURCE_GROUNDED"
+
     answer = ComposedAnswer(
         text=final_text,
         citations=rag_citations,
         limitations=limitations,
+        answer_basis=answer_basis,
         prompt_id=prompt_id,
         prompt_name=prompt_name,
         output_text=final_text,

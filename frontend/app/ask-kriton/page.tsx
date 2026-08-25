@@ -477,7 +477,13 @@ function ConversationTurn({
   ) ?? [];
   const citationCount = result?.answer?.citations.length ?? 0;
   const routeLabel = route === "LLM"
-    ? citationCount > 0
+    ? result?.answer?.answer_basis === "GENERAL_KNOWLEDGE"
+      ? "Answered — general explanation"
+      : result?.answer?.answer_basis === "DOCUMENT_GROUNDED"
+        ? "Answered — based on your document"
+        : result?.answer?.answer_basis === "USER_SUPPLIED_DATA"
+          ? "Answered — structured from your input"
+          : citationCount > 0
       ? "Answered — source grounded"
       : result?.visualization
         ? "Answered — structured from your input"

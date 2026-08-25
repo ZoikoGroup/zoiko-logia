@@ -84,6 +84,17 @@ def test_empty_evidence_prompt_fails_closed():
     assert "reliable evidence could not be retrieved" in prompt
 
 
+def test_empty_evidence_prompt_can_allow_general_knowledge_without_fake_sources():
+    prompt = build_web_grounded_prompt(
+        "What is GBP?", [], allow_general_knowledge=True,
+    )
+
+    assert "answer directly using established general knowledge" in prompt
+    assert "Do not invent citations" in prompt
+    assert "source scope" in prompt
+    assert "ask the user to attach" not in prompt
+
+
 def test_management_report_uses_full_document_retrieval():
     plan = plan_document_task(
         "Create a management report based only on this uploaded workbook.",

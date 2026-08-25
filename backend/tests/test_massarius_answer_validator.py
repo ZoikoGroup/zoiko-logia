@@ -37,6 +37,48 @@ def test_ungrounded_substantive_answer_fails():
     print("test_ungrounded_substantive_answer_fails: PASSED")
 
 
+def test_authorised_general_knowledge_answer_can_be_uncited():
+    empty_bundle = SourceBundle(source_bundle_id="sb-empty", eligible_source_count=0, sources=[])
+    result = validate_answer(
+        "GBP is the ISO currency code for pound sterling, the currency of the United Kingdom.",
+        empty_bundle,
+        allow_general_knowledge=True,
+    )
+    assert result.passed, result.failures
+
+
+def test_general_knowledge_answer_rejects_fabricated_provenance():
+    empty_bundle = SourceBundle(source_bundle_id="sb-empty", eligible_source_count=0, sources=[])
+    result = validate_answer(
+        "According to official guidance at https://fake.example, GBP is pound sterling.",
+        empty_bundle,
+        allow_general_knowledge=True,
+    )
+    assert not result.passed
+    assert any("unsupported provenance" in failure for failure in result.failures)
+
+
+def test_general_knowledge_answer_rejects_current_claim():
+    empty_bundle = SourceBundle(source_bundle_id="sb-empty", eligible_source_count=0, sources=[])
+    result = validate_answer(
+        "The latest GBP to USD exchange rate is 1.35 and is valid today.",
+        empty_bundle,
+        allow_general_knowledge=True,
+    )
+    assert not result.passed
+    assert any("time-sensitive" in failure for failure in result.failures)
+
+
+def test_general_knowledge_answer_allows_current_ratio_definition():
+    empty_bundle = SourceBundle(source_bundle_id="sb-empty", eligible_source_count=0, sources=[])
+    result = validate_answer(
+        "The current ratio is current assets divided by current liabilities and measures short-term liquidity.",
+        empty_bundle,
+        allow_general_knowledge=True,
+    )
+    assert result.passed, result.failures
+
+
 def test_unbound_citation_fails():
     result = validate_answer("See [REF-9] for details.", _BUNDLE)
     assert not result.passed
