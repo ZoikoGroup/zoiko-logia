@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import io
 import re
+import unicodedata
 from typing import Literal
 
 from PIL import Image, ImageDraw, ImageFont
@@ -55,6 +56,29 @@ class DocumentSpec(BaseModel):
 
 
 _TABLE_SEPARATOR = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
+_HORIZONTAL_RULE = re.compile(r"^\s*(?:-{3,}|_{3,}|\*{3,})\s*$")
+_REFERENCE_MARKER = re.compile(r"\[\s*REF(?:ERENCE)?\s*[-:#]?\s*\d+\s*\]", re.IGNORECASE)
+
+
+def normalize_document_text(text: str) -> str:
+    """Remove internal markers and normalize typography for every export format."""
+    normalized = unicodedata.normalize("NFC", str(text or ""))
+    normalized = normalized.translate(str.maketrans({
+        "\u00a0": " ",  # no-break space
+        "\u2007": " ",  # figure space
+        "\u202f": " ",  # narrow no-break space
+        "\u200b": "",   # zero-width space
+        "\ufeff": "",   # byte-order/zero-width no-break mark
+        "\u2010": "-",  # hyphen
+        "\u2011": "-",  # non-breaking hyphen
+        "\u2012": "-",  # figure dash
+        "\u2212": "-",  # minus sign
+    }))
+    normalized = _REFERENCE_MARKER.sub("", normalized)
+    normalized = re.sub(r"\(\s*\)", "", normalized)
+    normalized = re.sub(r"\s+([,.;:!?])", r"\1", normalized)
+    normalized = re.sub(r"[ \t]{2,}", " ", normalized)
+    return normalized.strip()
 
 
 def _cells(line: str) -> list[str]:
@@ -138,19 +162,26 @@ def build_document_spec(
             flush_text()
             index += 1
             continue
+        if _HORIZONTAL_RULE.fullmatch(stripped):
+            flush_text()
+            index += 1
+            continue
         if stripped.startswith("#"):
             flush_text()
             hashes = len(stripped) - len(stripped.lstrip("#"))
-            blocks.append(DocumentBlock(type="heading", level=min(max(hashes, 1), 3), text=stripped.lstrip("# ")))
+            blocks.append(DocumentBlock(
+                type="heading", level=min(max(hashes, 1), 3),
+                text=normalize_document_text(stripped.lstrip("# ")),
+            ))
             index += 1
             continue
         if index + 1 < len(lines) and "|" in stripped and _TABLE_SEPARATOR.match(lines[index + 1]):
             flush_text()
-            headers = _cells(stripped)
+            headers = [normalize_document_text(cell) for cell in _cells(stripped)]
             index += 2
             rows: list[list[str]] = []
             while index < len(lines) and "|" in lines[index] and lines[index].strip():
-                row = _cells(lines[index])
+                row = [normalize_document_text(cell) for cell in _cells(lines[index])]
                 if len(row) == len(headers):
                     rows.append(row)
                 index += 1
@@ -159,11 +190,11 @@ def build_document_spec(
         if stripped.startswith(("- ", "* ")):
             if paragraph:
                 flush_text()
-            bullets.append(stripped[2:].strip())
+            bullets.append(normalize_document_text(stripped[2:].strip()))
         else:
             if bullets:
                 flush_text()
-            paragraph.append(stripped)
+            paragraph.append(normalize_document_text(stripped))
         index += 1
     flush_text()
 
@@ -188,9 +219,13 @@ def build_document_spec(
             image_png=_flow_png("Report Evidence Flow", labels),
         ))
     return DocumentSpec(
-        title=title,
+        title=normalize_document_text(title),
         blocks=blocks,
-        source_locations=list(analysis.get("evidence_locations", [])),
+        source_locations=[
+            normalize_document_text(location)
+            for location in analysis.get("evidence_locations", [])
+            if normalize_document_text(location)
+        ],
     )
 
 

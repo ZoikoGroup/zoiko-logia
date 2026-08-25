@@ -311,6 +311,38 @@ def test_document_spec_rejects_unresolved_financial_placeholders():
         )
 
 
+def test_document_exports_normalize_unicode_and_remove_internal_markers():
+    narrative = (
+        "## Executive Summary\n"
+        "High\u2011value customers delivered 51\u202f% of revenue [REF\u20112].\n"
+        "---\n"
+        "## KPI Overview\n"
+        "| KPI | Value |\n| --- | ---: |\n| In\u2011Progress Deals | 4 |\n"
+        "Source: Summary sheet ([REF-2])."
+    )
+    spec = build_document_spec(
+        "Kriton\u00a0Management Report", narrative,
+        {"evidence_locations": ["sales.xlsx \u2014 Summary!1:2"]},
+    )
+
+    searchable = " ".join(
+        [spec.title]
+        + [block.text for block in spec.blocks]
+        + [cell for block in spec.blocks for row in block.rows for cell in row]
+    )
+    assert "Kriton Management Report" == spec.title
+    assert "High-value" in searchable
+    assert "In-Progress" in searchable
+    assert "REF" not in searchable
+    assert not any(block.type == "paragraph" and block.text == "---" for block in spec.blocks)
+
+    pdf_bytes, _, _ = _render("pdf", spec.title, narrative, {"evidence_locations": []})
+    pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(pdf_bytes)).pages)
+    assert "High-value" in pdf_text
+    assert "In-Progress" in pdf_text
+    assert "REF" not in pdf_text
+
+
 @pytest.mark.asyncio
 async def test_upload_to_conversation_retrieval_end_to_end(monkeypatch, tmp_path):
     """Exercise the real XLSX upload, extraction, DB indexing and retrieval path."""

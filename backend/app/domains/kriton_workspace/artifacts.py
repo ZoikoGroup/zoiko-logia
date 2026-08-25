@@ -15,7 +15,10 @@ from app.domains.kriton_workspace.models import GeneratedArtifact
 from app.core.config import get_settings
 from app.domains.kriton_workspace.storage import download_object, upload_object, uses_supabase
 from app.domains.kriton_workspace.retention import artifact_expiry
-from app.domains.kriton_workspace.document_spec import DocumentBlock, DocumentSpec, build_document_spec, visual_as_data_uri
+from app.domains.kriton_workspace.document_spec import (
+    DocumentBlock, DocumentSpec, build_document_spec, normalize_document_text,
+    visual_as_data_uri,
+)
 
 _ROOT = Path(__file__).resolve().parents[3] / "data" / "workspace_artifacts"
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -24,7 +27,8 @@ _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 def _plain(text: str) -> str:
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", "", text)
-    return re.sub(r"[*_`]", "", re.sub(r"\[([^]]+)]\([^)]+\)", r"\1", text)).strip()
+    text = re.sub(r"[*_`]", "", re.sub(r"\[([^]]+)]\([^)]+\)", r"\1", text))
+    return normalize_document_text(text)
 
 
 def _docx_bytes(spec: DocumentSpec) -> bytes:
@@ -138,7 +142,11 @@ def _pdf_bytes(spec: DocumentSpec) -> bytes:
     buffer = io.BytesIO()
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(name="KritonBody", parent=styles["BodyText"], leading=15, spaceAfter=8))
-    story = [Paragraph(spec.title, styles["Title"]), Spacer(1, 12)]
+    styles.add(ParagraphStyle(
+        name="KritonTableHeader", parent=styles["BodyText"],
+        textColor=colors.white, fontName="Helvetica-Bold", leading=12,
+    ))
+    story = [Paragraph(escape(_plain(spec.title)), styles["Title"]), Spacer(1, 12)]
     for block in spec.blocks:
         if block.type == "heading":
             story.append(Paragraph(escape(_plain(block.text)), styles["Heading1" if block.level <= 2 else "Heading2"]))
@@ -148,7 +156,7 @@ def _pdf_bytes(spec: DocumentSpec) -> bytes:
             for item in block.items:
                 story.append(Paragraph(f"• {escape(_plain(item))}", styles["KritonBody"]))
         elif block.type == "table":
-            data = [[Paragraph(escape(_plain(value)).replace("\n", "<br/>"), styles["BodyText"]) for value in block.headers]]
+            data = [[Paragraph(escape(_plain(value)).replace("\n", "<br/>"), styles["KritonTableHeader"]) for value in block.headers]]
             data.extend([[Paragraph(escape(_plain(value)).replace("\n", "<br/>"), styles["BodyText"]) for value in row] for row in block.rows])
             available = A4[0] - 72
             table = Table(data, repeatRows=1, colWidths=[available / len(block.headers)] * len(block.headers))
