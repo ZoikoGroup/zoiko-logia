@@ -48,7 +48,7 @@ def _is_transient_db_error(exc: BaseException) -> bool:
     error is NOT transient and must propagate."""
     if isinstance(exc, DBAPIError):
         return bool(exc.connection_invalidated)
-    return isinstance(exc, (OSError, TimeoutError))
+    return isinstance(exc, OSError)
 
 # A single ask_kriton() call emits ~15 audit events in strict sequence, and
 # each one previously re-queried "what was the last chain_hash?" from
@@ -115,7 +115,7 @@ async def _execute_reconnect(db: AsyncSession, stmt, params=None):
     for backoff in _DB_RETRY_BACKOFFS:
         try:
             return await db.execute(stmt, params)
-        except (DBAPIError, OSError, TimeoutError) as exc:
+        except (DBAPIError, OSError) as exc:
             if not _is_transient_db_error(exc):
                 raise
             try:
@@ -127,18 +127,7 @@ async def _execute_reconnect(db: AsyncSession, stmt, params=None):
     return await db.execute(stmt, params)
 
 
-async def record_event_async(
-    db: AsyncSession,
-    *,
-    tenant_id: str = "GLOBAL_CONTROL",
-    restore_tenant_context: bool = True,
-    **kwargs,
-) -> AuditEvent:
-    # For request-scoped events the actor is also the authenticated user whose
-    # id get_db() placed in app.user_id.  Keep it before commit so both RLS
-    # settings can be restored if SQLAlchemy checks out a different pooled
-    # connection afterwards.
-    rls_user_id = kwargs.get("actor_id") or ""
+async def record_event_async(db: AsyncSession, *, tenant_id: str = "GLOBAL_CONTROL", **kwargs) -> AuditEvent:
     previous_chain_hash = _cached_previous_chain_hash.get()
     if previous_chain_hash is None:
         # Only hit the DB for the first event of this request (task) — every
@@ -169,7 +158,7 @@ async def record_event_async(
         try:
             await db.commit()
             break
-        except (DBAPIError, OSError, TimeoutError) as exc:
+        except (DBAPIError, OSError) as exc:
             if not _is_transient_db_error(exc):
                 raise
             try:
@@ -188,20 +177,15 @@ async def record_event_async(
     # that had app.tenant_id set on it — under concurrent load this
     # intermittently makes RLS-protected queries later in the same request
     # see zero rows, since the new connection never had it set at all.
-    # Every orchestration call site already passes the request's real tenant
-    # and actor ids here. Re-assert both: workspace-document policies require
-    # app.user_id as well as app.tenant_id, so restoring only the tenant makes
-    # valid document chunks disappear without a query error.
-    if restore_tenant_context and not settings.is_sqlite:
+    # Every orchestration call site already passes the request's real
+    # tenant_id here, so re-asserting it right after commit is free
+    # insurance against exactly that race, regardless of which connection
+    # the pool hands back next.
+    if not settings.is_sqlite:
         await _execute_reconnect(
             db,
             text("SELECT set_config('app.tenant_id', :tenant_id, false)"),
             {"tenant_id": tenant_id},
-        )
-        await _execute_reconnect(
-            db,
-            text("SELECT set_config('app.user_id', :user_id, false)"),
-            {"user_id": rls_user_id},
         )
 
     return row

@@ -50,17 +50,6 @@ TOPIC_MAP_NODES = [
 ]
 
 # (category, title, source_class, status, note)
-#
-# Deliberately NOT "one eligible entry per infer_category() category" —
-# a prior version of this file added 5 placeholder-titled rows (no real
-# backing document/URL) specifically to make the audit/payroll-compliance/
-# internal-policies/education-content categories non-empty. Do not do that
-# again: a fake title sitting next to genuinely real sources (PolicyEngine-
-# US, SEC EDGAR, DBnomics, ...) weakens provenance even if it "works". The
-# real fix for a category having zero governed sources is orchestration
-# no longer treating "zero sources" as equivalent to "query is ambiguous"
-# (see routing_matrix.py's RISK_LOW/CONF_INSUFFICIENT row) — not fabricating
-# retrieval hits. Add real sources here only when they're real.
 SOURCES = [
     ("standards", "FASB ASC", "Professional standard-setter", "ACTIVE", "Citation + export allowed"),
     ("standards", "AICPA practice aid", "Licensed professional content", "PROPOSED", "Display limited"),
@@ -202,19 +191,12 @@ async def seed_learning_data(db) -> None:
 
 
 async def seed_source_data(db, user: User) -> None:
-    # Per-title, not "skip entirely if ANY source row exists" — the prior
-    # all-or-nothing guard meant SOURCES could never grow after the first
-    # seed run without a full DB reset, which is exactly how audit/payroll-
-    # compliance/internal-policies/education-content ended up with zero
-    # eligible sources even after being added to the list above.
-    existing_titles = set(
-        (await db.execute(select(Source.title))).scalars().all()
-    )
-    new_count = 0
+    existing = await db.execute(select(Source))
+    if existing.scalars().first() is not None:
+        print("Source library sample data already seeded, skipping.")
+        return
+
     for category, title, source_class, status, note in SOURCES:
-        if title in existing_titles:
-            continue
-        new_count += 1
         source = Source(category=category, title=title, source_class=source_class)
         db.add(source)
         await db.flush()
@@ -228,7 +210,7 @@ async def seed_source_data(db, user: User) -> None:
             )
         )
     await db.commit()
-    print(f"Seeded {new_count} new sources ({len(SOURCES) - new_count} already present, {len(SOURCES)} total defined).")
+    print(f"Seeded {len(SOURCES)} sources.")
 
 
 async def seed_model_gateway_data(db, user: User) -> None:

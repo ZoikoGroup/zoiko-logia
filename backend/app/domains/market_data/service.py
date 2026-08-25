@@ -16,7 +16,6 @@ behaves.
 from __future__ import annotations
 
 import logging
-import re
 
 import httpx
 
@@ -46,33 +45,6 @@ logger = logging.getLogger(__name__)
 _FALLBACK_ERRORS = (ProviderNotConfigured, CapabilityNotSupported)
 
 MarketResult = StockQuote | list[OHLCVBar] | list[FinancialMetric] | list[FilingRecord] | CompanyProfile
-
-_SEC_FILING_HINT = re.compile(r"\b(?:SEC|EDGAR|10-K|10-Q|8-K|20-F|6-K)\b", re.I)
-
-
-def _best_provider_search_match(term: str, candidates: list[EntityRef]) -> EntityRef | None:
-    """Return a candidate only when every requested identity token is present.
-
-    Provider search ordering is not an identity guarantee. In particular,
-    Companies House free-text results may rank a similarly named shell above
-    the entity the user meant. Failing closed is safer than attaching another
-    company's real filings to the answer.
-    """
-    words = tuple(re.findall(r"[a-z0-9]+", (term or "").casefold()))
-    if not words:
-        return None
-
-    def score(candidate: EntityRef) -> tuple[int, int, int]:
-        name = candidate.name.casefold().strip()
-        name_words = set(re.findall(r"[a-z0-9]+", name))
-        if not all(word in name_words for word in words):
-            return (-1, 0, 0)
-        exact = int(name == " ".join(words))
-        active = int(candidate.company_status.casefold() == "active")
-        return (exact, active, -len(name_words))
-
-    ranked = sorted(candidates, key=score, reverse=True)
-    return ranked[0] if ranked and score(ranked[0])[0] >= 0 else None
 
 
 # Which identifier each intent actually needs. A ticker is useless to
@@ -112,15 +84,13 @@ async def _resolve_entity(
         if not provider.supports(CAP_SEARCH):
             continue
         try:
-            matches = await provider.search(client, hint, limit=10)
+            matches = await provider.search(client, hint, limit=1)
         except ProviderError as exc:
             logger.info("market_data: search via %s failed: %s", provider.name, exc.message)
             continue
         if not matches:
             continue
-        found = _best_provider_search_match(hint, matches)
-        if found is None:
-            continue
+        found = matches[0]
         if not getattr(found, required, ""):
             # This provider found something, but not in the identifier space
             # this intent needs — keep looking rather than returning a ref the
@@ -175,13 +145,6 @@ async def fetch_market_data(query: str, *, limit: int = 10) -> tuple[MarketResul
     """
     intent = registry.detect_intent(query)
     if intent is None:
-        return None
-
-    # "SEC filings" is an explicit source/jurisdiction constraint. Companies
-    # House is authoritative only for UK entities, so allowing this request
-    # into its free-text search can silently return a similarly named UK
-    # company. The EDGAR connector owns explicit SEC filing requests.
-    if intent == registry.INTENT_FILINGS and _SEC_FILING_HINT.search(query):
         return None
 
     providers = registry.providers_for(intent)

@@ -13,16 +13,6 @@ import os
 import sys
 import uuid
 
-import pytest
-
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        os.getenv("RUN_DB_INTEGRATION_TESTS") != "1",
-        reason="set RUN_DB_INTEGRATION_TESTS=1 with an isolated Postgres database",
-    ),
-]
-
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from sqlalchemy import text

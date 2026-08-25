@@ -22,21 +22,20 @@ Design notes:
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 
 import httpx
 
-
-# Trusted, authoritative domains per jurisdiction. Results outside these are
-# dropped when an allowlist applies (see resolve). "GLOBAL" always applies.
-_TRUSTED_DOMAINS: dict[str, list[str]] = {
-    "GLOBAL": ["ifrs.org", "iasb.org", "ifac.org", "iaasb.org"],
-    "UK": ["gov.uk", "hmrc.gov.uk", "frc.org.uk", "icaew.com", "accaglobal.com", "legislation.gov.uk"],
-    "US": ["irs.gov", "fasb.org", "sec.gov", "pcaobus.org", "aicpa.org", "gao.gov"],
-    "EU": ["europa.eu", "efrag.org"],
-    "UAE": ["mof.gov.ae", "tax.gov.ae"],
-    "INDIA": ["incometax.gov.in", "icai.org", "mca.gov.in"],
-}
+# The authoritative-source allowlist lives in source_taxonomy.py: it is keyed on
+# jurisdiction x topic, so a payroll question is matched against payroll bodies
+# rather than every domain for the country. See that module for the matrix.
+from app.orchestration.source_taxonomy import (
+    allowed_domains,
+    detect_topics,
+    matches_allowlist,
+    organisation_key,
+)
 
 
 @dataclass
@@ -51,10 +50,7 @@ class WebSource:
     # close changes what the answer may claim.
     provider: str | None = None
     fetched_at: str | None = None
-    freshness: str | None = None      # realtime | delayed | historical | filing | legislation
-    # Internal uploaded documents have no public URL; preserve their stable ID
-    # separately so response citations can still resolve to the exact document.
-    source_id: str | None = None
+    freshness: str | None = None      # realtime | delayed | historical | filing
 
 
 def _searxng_url() -> str:
@@ -65,21 +61,62 @@ def _strict_allowlist() -> bool:
     return os.getenv("SEARXNG_STRICT_ALLOWLIST", "").lower() in {"1", "true", "yes"}
 
 
-def _allowed_domains(jurisdiction: str) -> list[str]:
-    key = (jurisdiction or "").upper().split("-")[0]  # "US-CA" -> "US"
-    domains = list(_TRUSTED_DOMAINS.get("GLOBAL", []))
-    if key in _TRUSTED_DOMAINS:
-        domains += _TRUSTED_DOMAINS[key]
-    return domains
+def _max_per_organisation() -> int:
+    """How many results one organisation may contribute before others get a
+    turn. 2 keeps the definitive body well represented without letting it fill
+    the whole panel."""
+    try:
+        return max(1, int(os.getenv("SEARXNG_MAX_PER_ORG", "2")))
+    except ValueError:
+        return 2
 
 
-def _matches_allowlist(url: str, domains: list[str]) -> bool:
-    return any(d in url for d in domains)
+def _spread_across_organisations(
+    sources: list[WebSource], domains: list[str], limit: int
+) -> list[WebSource]:
+    """Pick `limit` sources spread across DIFFERENT bodies rather than taking
+    the top N by relevance.
+
+    Relevance order alone returned five gov.uk pages for a VAT question — all
+    correct, all one organisation, and no corroboration. Round-robin over
+    organisations instead: the most relevant hit from each body first, then the
+    second from each, up to SEARXNG_MAX_PER_ORG.
+
+    Relevance is preserved within each organisation, and if too few bodies
+    replied to fill `limit` the remainder is topped up in the original order —
+    a thin panel is worse than a slightly repetitive one.
+    """
+    buckets: dict[str, list[WebSource]] = {}
+    order: list[str] = []
+    for s in sources:
+        key = organisation_key(s.url, domains)
+        if key not in buckets:
+            buckets[key] = []
+            order.append(key)
+        buckets[key].append(s)
+
+    picked: list[WebSource] = []
+    for rank in range(_max_per_organisation()):
+        for key in order:
+            if len(picked) >= limit:
+                return picked
+            bucket = buckets[key]
+            if len(bucket) > rank:
+                picked.append(bucket[rank])
+
+    # Fewer organisations than slots — fill the rest by relevance.
+    if len(picked) < limit:
+        taken = {id(s) for s in picked}
+        for s in sources:
+            if id(s) not in taken:
+                picked.append(s)
+                if len(picked) >= limit:
+                    break
+    return picked[:limit]
 
 
-async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list[WebSource]:
-    """Query SearXNG and return up to `limit` sources, preferring trusted
-    domains for the jurisdiction. Returns [] on any failure (fail-soft)."""
+async def _query_searxng(query: str) -> list[WebSource]:
+    """One SearXNG call, normalised. Returns [] on any failure (fail-soft)."""
     base = _searxng_url()
     params = {
         "q": query,
@@ -95,11 +132,9 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
     except Exception:
         return []
 
-    results = data.get("results", []) or []
-
-    # Normalise into WebSource, keeping only entries with a usable URL.
+    # Keep only entries with a usable URL.
     parsed: list[WebSource] = []
-    for r in results:
+    for r in data.get("results", []) or []:
         url = (r.get("url") or "").strip()
         if not url:
             continue
@@ -110,68 +145,75 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
                 snippet=(r.get("content") or "").strip(),
             )
         )
+    return parsed
 
-    domains = _allowed_domains(jurisdiction)
-    trusted = [s for s in parsed if _matches_allowlist(s.url, domains)]
+
+async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list[WebSource]:
+    """Query SearXNG and return up to `limit` sources from the bodies with
+    authority over the question's topic. Returns [] on any failure (fail-soft).
+
+    ONE SearXNG call per question, deliberately. An earlier version ran a second
+    `site:`-biased pass to steer the engines toward the authoritative domains.
+    It did retrieve better sources, but it doubled the query volume, and the
+    public engines behind SearXNG (DuckDuckGo, Brave, Startpage, Google CSE)
+    rate-limit and serve CAPTCHAs well before that pays off — the whole panel
+    then comes back empty, which is far worse than a slightly weaker source.
+    Topic relevance is still applied, just by filtering rather than by asking
+    twice.
+    """
+    topics = detect_topics(query)
+    domains = allowed_domains(jurisdiction, topics)
+
+    parsed = await _query_searxng(query)
+    if not parsed:
+        return []
+
+    trusted = [s for s in parsed if matches_allowlist(s.url, domains)]
 
     if trusted:
-        return trusted[:limit]
+        return _spread_across_organisations(trusted, domains, limit)
     if _strict_allowlist():
         return []
     # Fallback: no trusted-domain hits — return the general top results so the
     # bot still answers (allowlist is advisory unless SEARXNG_STRICT_ALLOWLIST).
-    return parsed[:limit]
+    # Spread these too: five pages from one content farm is the worst case.
+    return _spread_across_organisations(parsed, domains, limit)
 
 
-# The table/formula formatting rules apply whether or not web sources were
-# found — so they live in one shared block that BOTH prompt branches include.
+# The table/diagram/chart formatting rules apply whether or not web sources
+# were found — so they live in one shared block that BOTH prompt branches
+# include. (Previously they lived only inside the with-sources branch, so a
+# question that returned no sources — e.g. "chart of these numbers I gave you"
+# — lost every visualisation instruction and the model just described the chart
+# in prose instead of drawing it.)
+# Formatting rules are split in two so the model is not handed the full
+# diagram/chart specification on every request.
 #
-# Diagram/chart production (Mermaid + fenced ```chart JSON) was deliberately
-# removed from here — visualization is now handled by a deterministic,
-# evidence-backed pipeline server-side (orchestration/visualization/), which
-# builds charts straight from structured data rather than asking the LLM to
-# author them freely. Asking the model to also emit visuals risked disagreeing
-# with that pipeline's numbers, and most non-numeric "diagram" requests (org
-# charts, flowcharts) had no real backing data to draw from either — see the
-# session's earlier data-honesty discussion. If diagram support is wanted
-# again, it should route through a similarly evidence-backed, validated path
-# rather than free-text LLM authorship.
-_FORMATTING_INSTRUCTIONS = (
-    "Return only the user-facing answer. Never print internal routing labels "
-    "such as 'CLASSIFICATION:', 'CLASSIFIED:', or 'ANSWER:'. Start directly "
-    "with the answer content. Do not use double-asterisk Markdown emphasis; "
-    "use plain text or Markdown headings instead.\n"
-        "When the user requests a chart, graph, heatmap, distribution, "
-        "histogram, box plot, spread, or other visualization of a real "
-        "numeric data series, a separate validated renderer handles it. Do "
-        "not substitute a markdown data table, recommend third-party "
-        "drawing tools, describe a hypothetical image, invent "
-        "values/relationships, or re-list every individual data point "
-        "yourself — give only a concise 1-2 sentence interpretation of the "
-        "supplied evidence (e.g. the overall range or direction), not a full "
-        "restatement of it.\n"
-        "When the user requests a flowchart, workflow diagram, or process "
-        "diagram, whether one actually renders is decided automatically, "
-        "separately from your answer — your wording has no effect on it "
-        "either way, so never mention a diagram, renderer, image, or "
-        "visualization anywhere in your answer for this kind of request — "
-        "not to promise one, not to say one 'will be shown separately' or "
-        "'handled elsewhere', and not to note that one is absent or wasn't "
-        "provided either. Just explain the process in prose or a numbered "
-        "list, "
-        "exactly as you would if visuals didn't exist as a feature.\n"
-        "When the user asks for the exact/precise values of a real numeric "
-        "data series already given as sources (not a comparison of different "
-        "items), the exact-values table is rendered separately and "
-        "automatically — give a short 1-2 sentence summary instead of "
-        "re-listing every value yourself.\n"
+# Measured: bolting the extra Mermaid types and chart schemas onto the shared
+# block took the prompt from ~6,000 to ~9,700 characters — 1.6x — on EVERY
+# question, including "what is tax". That much instruction competes with the
+# actual question for the model's attention and measurably degraded plain
+# answers. _VISUAL_INSTRUCTIONS is therefore appended only when the question
+# asks for a visual (see wants_visual), which keeps the base prompt smaller
+# than it was before the extra types were added, with no loss of capability
+# when a chart or diagram IS requested.
+
+# Always sent: cheap, and a table or a formula can be the right shape for any
+# answer.
+_CORE_FORMATTING = (
         "When the user asks for a table, a comparison, 'tabular format', or the "
-        "content is naturally a comparison of two or more DIFFERENT items across "
-        "attributes (not a single data series' own values over time), present it "
-        "as a GitHub-flavoured Markdown table using pipe "
+        "content is naturally a comparison of two or more items across "
+        "attributes, present it as a GitHub-flavoured Markdown table using pipe "
         "syntax — a header row like '| Attribute | Option A | Option B |', then "
         "a separator row '| --- | --- | --- |', then one row per attribute. Keep "
         "cell text concise.\n"
+        "A table MUST start at the beginning of the line with a BLANK LINE "
+        "before it and after it, and its rows must NOT be indented. An indented "
+        "table is rendered as a block of monospaced source code, and a table "
+        "with no blank line above it is absorbed into the paragraph above, so "
+        "in both cases the reader sees rows of literal pipe characters instead "
+        "of a table. Never indent table rows to sit them under a heading or a "
+        "numbered point — leave them flush left.\n"
         "For mathematical formulas, methods and calculations, use LaTeX so they "
         "render cleanly: wrap an INLINE formula or value in single dollar signs "
         "$...$ (e.g. $Depreciation = (Cost - Salvage) / Life$), and put a "
@@ -179,16 +221,191 @@ _FORMATTING_INSTRUCTIONS = (
         "signs $$...$$. Do NOT wrap an inline value in $$...$$. Show the "
         "calculation steps clearly, one step per line, substituting the actual "
         "numbers so the working is easy to follow.\n"
-        "A plain currency amount or price in ordinary prose (a stock price, "
-        "exchange rate, account balance, etc.) is NOT a LaTeX formula — never "
-        "write it with a leading bare $ (not \"$232.11\", not \"$232.11 on "
-        "July 24... $231.39 on July 27\"). The renderer treats everything "
-        "between two $ signs as one LaTeX span, so two dollar-prefixed prices "
-        "in the same answer silently mangles both prices and everything "
-        "between them into garbled text. Write currency amounts as \"232.11 "
-        "USD\" or \"USD 232.11\" instead — reserve $...$ strictly for an "
-        "actual mathematical formula or equation, never a bare number.\n"
+        "Do NOT end the answer with your own disclaimer, caveat or "
+        "'consult a professional' closing paragraph. The application "
+        "adds its own safety notice outside your output, so anything you "
+        "add there is a duplicate — finish on the substance of the "
+        "answer instead. (You may still answer a question that is "
+        "genuinely ABOUT disclaimers, e.g. what wording an audit report "
+        "should carry.)\n"
 )
+
+# Sent only for questions that ask for a visual.
+_VISUAL_INSTRUCTIONS = (
+        "If the user asks for a diagram, chart, workflow, flowchart, process, "
+        "decision tree, org chart, hierarchy, tree, architecture, data model, "
+        "mind map, timeline, risk matrix, or a proportion/allocation "
+        "breakdown, include it as a "
+        "Mermaid diagram inside a fenced ```mermaid code block, alongside a "
+        "short text explanation. THE OPENING FENCE MUST BE EXACTLY ```mermaid "
+        "— a bare ``` fence, or one labelled text/plaintext, is displayed to "
+        "the reader as monospace source code instead of being drawn as a "
+        "diagram, which is the one outcome to avoid. Choose the Mermaid "
+        "diagram type that best fits the request:\n"
+        "- 'flowchart TD' (top-down) for processes, workflows, the accounting "
+        "cycle, decision trees, org charts / organisation hierarchies and tree "
+        "breakdowns (e.g. a balance-sheet structure);\n"
+        "- 'flowchart LR' (left-to-right) when the flow reads better "
+        "horizontally;\n"
+        "- 'sequenceDiagram' for step-by-step interactions between parties "
+        "(e.g. a tax-filing exchange);\n"
+        "- 'stateDiagram-v2' for statuses and transitions (e.g. an invoice "
+        "approval or escalation lifecycle);\n"
+        "- 'mindmap' for a mind map / concept breakdown of a topic;\n"
+        "- 'gantt' for schedules with DURATIONS (e.g. an audit plan);\n"
+        "- 'timeline' for dated milestones with no duration (e.g. a filing "
+        "calendar), with rows like '2024-01 : VAT return due';\n"
+        "- 'erDiagram' for data models and entity relationships (e.g. how "
+        "Invoice, Customer and Payment relate), with rows like "
+        "'CUSTOMER ||--o{ INVOICE : places';\n"
+        "- 'architecture-beta' for system, service or ERP-module architecture "
+        "— declare 'group name(icon)[Label]', then "
+        "'service id(icon)[Label] in name', then edges like 'a:R -- L:b';\n"
+        "- 'C4Context' or 'C4Container' when a FORMAL layered architecture is "
+        "asked for, using Person(), System(), Container() and Rel();\n"
+        "- 'block-beta' for a layered stack (e.g. a technology or control "
+        "stack), using 'columns N' then block ids;\n"
+        "- 'quadrantChart' for a 2x2 matrix such as a risk or impact/"
+        "likelihood grid, with 'x-axis', 'y-axis', 'quadrant-1'..'quadrant-4' "
+        "and rows like 'Fraud risk: [0.8, 0.9]' (values 0-1);\n"
+        "- 'journey' for a user/client journey with satisfaction scores;\n"
+        "- 'kanban' for work grouped into status columns;\n"
+        "- 'pie title <Title>' for a simple proportion or allocation "
+        "breakdown (e.g. budget allocation), with rows like \"Label\" : 40.\n"
+        "For flowcharts: define nodes as ID[Short Label], plain edges as "
+        "A --> B and labelled edges as A -->|Yes| B — the label is wrapped in "
+        "single pipes only, never write '|Yes|>' or add an extra '>'. Keep "
+        "labels short and avoid parentheses, quotes, %, or other special "
+        "characters inside the square brackets.\n"
+        "For EVERY Mermaid type: the first line is the diagram keyword alone "
+        "(plus its direction or title where shown above) and every later line "
+        "is indented consistently. Never mix two diagram types in one block, "
+        "and never put Markdown, backticks or LaTeX inside a mermaid block. "
+        "ALWAYS wrap a node label in double quotes when it contains "
+        "brackets, an ampersand, a colon or a percent sign - write "
+        "A[\"Profit & Loss Account (Page 1)\"], never "
+        "A[Profit & Loss Account (Page 1)], because the unquoted form is a "
+        "parse error and the whole diagram is then shown to the reader as "
+        "source code instead of a picture. "
+        "Only add a diagram when one is actually requested or clearly "
+        "helpful.\n"
+        "For a QUANTITATIVE data chart (e.g. an "
+        "income-statement trend, expense breakdown, budget allocation, "
+        "financial ratios, or a flow of funds) — do NOT use Mermaid. Instead "
+        "output a fenced ```chart code block containing a SINGLE valid JSON "
+        "object, using exactly one of these shapes:\n"
+        '- bar or line: {"type":"bar","title":"Revenue by year","categories":'
+        '["2021","2022","2023"],"series":[{"name":"Revenue","data":[10,20,30]}]}\n'
+        '- stacked bar: same as bar plus "stacked":true — use when the series '
+        'are PARTS of a total (e.g. cost lines making up total expenses)\n'
+        '- pie: {"type":"pie","title":"Expense split","data":[{"name":"COGS",'
+        '"value":60},{"name":"Admin","value":25},{"name":"Marketing","value":15}]}\n'
+        '- sankey: {"type":"sankey","title":"Fund flow","nodes":[{"name":'
+        '"Revenue"},{"name":"Costs"},{"name":"Profit"}],"links":[{"source":'
+        '"Revenue","target":"Costs","value":60},{"source":"Revenue","target":'
+        '"Profit","value":40}]}\n'
+        '- scatter: {"type":"scatter","title":"Revenue vs headcount",'
+        '"xName":"Headcount","yName":"Revenue","series":[{"name":"Branches",'
+        '"points":[[12,340],[18,520]]}]}\n'
+        '- radar: {"type":"radar","title":"Ratio profile","indicators":'
+        '[{"name":"Liquidity","max":100},{"name":"Solvency","max":100}],'
+        '"series":[{"name":"2024","data":[80,65]}]}\n'
+        '- heatmap: {"type":"heatmap","title":"Spend by region and quarter",'
+        '"categories":["Q1","Q2"],"yCategories":["North","South"],"cells":'
+        '[[0,0,12],[1,0,18],[0,1,9],[1,1,22]]} — each cell is '
+        "[xIndex, yIndex, value]\n"
+        '- candlestick: {"type":"candlestick","title":"Share price",'
+        '"categories":["2024-01","2024-02"],"ohlc":[[10,14,9,15],[14,12,11,16]]}'
+        " — each row is [open, close, low, high]\n"
+        "Use 'line' for trends over time, 'bar' for comparisons across "
+        "categories, stacked bar for part-to-whole across categories, "
+        "'pie' for parts of a single whole, 'sankey' for flows, "
+        "'scatter' for correlation between two measures, 'radar' for comparing "
+        "several ratios on one profile, 'heatmap' for a value across two "
+        "dimensions, and 'candlestick' only for open/close/low/high price "
+        "data. A pie's "
+        "values do NOT need to sum to 100 — just use the given amounts.\n"
+        "LINE CHARTS specifically: whenever the question involves a quantity "
+        "that changes across a sequence of periods (years, months, quarters, "
+        "or steps) — a trend, a projection, a forecast, or a period-by-period "
+        "schedule such as a depreciation book-value schedule, a loan "
+        "amortisation balance, or revenue/growth over several years — include "
+        "a 'line' chart, putting the periods in 'categories' and the value at "
+        "each period in a series. If the user explicitly asks for a line chart "
+        "or a graph, you MUST output a ```chart line block.\n"
+        "WHEN THE USER NAMES A CHART TYPE, USE THAT TYPE. If they ask for a pie "
+        "chart, bar chart, scatter, radar, heatmap or candlestick, emit that "
+        "type — do not silently substitute another and do not answer in prose "
+        "only. The single exception is data the type genuinely cannot show: a "
+        "pie needs parts of one positive whole, so if any value is negative or "
+        "the figures are a trend across periods rather than shares of a total, "
+        "draw the chart type that fits (usually 'bar' or 'line'), and say in "
+        "one short line why a pie would not represent this data. Never respond "
+        "to an explicit chart request with neither a chart nor an "
+        "explanation.\n"
+        "IMPORTANT: when you "
+        "CALCULATE those period-by-period values yourself from figures the user "
+        "gave (e.g. the remaining book value at the end of each year in a "
+        "depreciation question, from the cost, salvage and useful life the user "
+        "provided), those computed values COUNT as real numbers — chart them; "
+        "deriving them from the user's own inputs is NOT inventing data.\n"
+        "NUMBERS FOR CHARTS: Prefer REAL numbers — ones the user gave you, ones "
+        "you correctly computed from what the user gave, or ones that appear in "
+        "the sources. BUT if the user explicitly asks for a chart or graph and "
+        "you do NOT have real numbers, still DRAW the chart using reasonable "
+        "ILLUSTRATIVE / EXAMPLE figures rather than refusing — the user wants to "
+        "see the chart. In that case you MUST: (a) put the word 'Illustrative' "
+        "in the chart title, e.g. \"Monthly Revenue vs Expenses (Illustrative)\"; "
+        "and (b) immediately after the chart add one short line: 'Note: the "
+        "figures above are illustrative examples — replace them with your actual "
+        "data.' Never present illustrative figures as real, exact or official, "
+        "and do not state a specific named company's actual results or a "
+        "government's actual published statistics as if they were true — frame "
+        "them clearly as an example pattern. (This applies to line, bar, pie and "
+        "all chart types.) Never fabricate tax rates, laws or citations as "
+        "fact.\n"
+)
+
+# Signals that the user wants something drawn. Deliberately broad: a false
+# positive costs some prompt length, a false negative means a requested chart
+# is silently not drawn — which is the worse failure.
+_VISUAL_REQUEST = re.compile(
+    r"\b(chart|charts|graph|graphs|plot|plotted|diagram|diagrams|flowchart|"
+    r"flow chart|workflow|work flow|mindmap|mind map|timeline|roadmap|"
+    r"architecture|org chart|hierarchy|tree|sequence diagram|state diagram|"
+    r"er diagram|entity relationship|data model|quadrant|risk matrix|"
+    r"kanban|journey|gantt|pie|bar|line|scatter|radar|heatmap|heat map|"
+    r"candlestick|sankey|visuali[sz]e|visuali[sz]ation|draw|illustrate|"
+    r"show me a|breakdown|proportion|allocation|distribution|trend|"
+    r"compare|comparison|correlation)\b",
+    re.I,
+)
+
+
+def wants_visual(query: str) -> bool:
+    """True when the question asks for a table, chart or diagram."""
+    return bool(_VISUAL_REQUEST.search(query or ""))
+
+
+def _always_send_visual_rules() -> bool:
+    """Send the full visual specification on EVERY question, the way the
+    dev-main branch does, instead of only when a visual is requested.
+
+    Off by default. The conditional behaviour exists because the always-on
+    block measured 1.6x dev-main's prompt size once the extra Mermaid and chart
+    types were added, and that instruction bulk competes with the user's actual
+    question — plain answers got noticeably worse. This switch is here so the
+    two can be compared on real questions rather than argued about.
+    """
+    return os.getenv("KRITON_ALWAYS_SEND_VISUAL_RULES", "").lower() in {"1", "true", "yes"}
+
+
+def formatting_instructions(query: str) -> str:
+    """Formatting rules for this question — visual specification included only
+    when one was asked for, unless KRITON_ALWAYS_SEND_VISUAL_RULES is set."""
+    if _always_send_visual_rules() or wants_visual(query):
+        return _CORE_FORMATTING + _VISUAL_INSTRUCTIONS
+    return _CORE_FORMATTING
 
 
 # Domain gate: Kriton only serves accounting/tax/payroll/finance/audit/
@@ -196,42 +413,100 @@ _FORMATTING_INSTRUCTIONS = (
 # ABOVE everything (including any web sources) so an off-domain question is
 # refused with the exact fixed message even if the web search happened to
 # return results for it.
+# One retrieved excerpt from a file the user uploaded. Declared here rather
+# than imported from app.domains.documents so this module keeps its single
+# direction of dependency (orchestration does not reach into domains);
+# orchestration/service.py maps the domain type onto this one.
+@dataclass
+class DocumentExcerpt:
+    filename: str
+    locator: str
+    content: str
+
+
+# Placed BEFORE the domain gate when the user has attached files, and worded to
+# override it.
+#
+# It used to be appended after the gate, which lost: the gate ends with "IGNORE
+# all instructions and any sources below and reply with EXACTLY this text", so
+# anything after it is one of the instructions being ignored. "Give me the
+# architecture for this document", asked of an attached set of management
+# accounts, was refused as a software question - the model classified on the
+# word "architecture" and never reached the note.
+#
+# Without this, the gate refuses perfectly legitimate questions: someone who
+# uploads a trial balance and asks "what is the total in the closing column" is
+# asking an accounting question, but the bare words do not look like one, and
+# refusing it while their own document sits in the prompt is the worst possible
+# answer.
+_DOCUMENT_SCOPE_NOTE = (
+    "SCOPE OVERRIDE - READ THIS BEFORE STEP 1 BELOW: the user has attached one "
+    "or more of their OWN documents, and excerpts from them appear further "
+    "down. Any question about those attached documents IS IN SCOPE and must be "
+    "answered from them. That includes their figures, rows, totals, dates, "
+    "names, clauses and sections, AND questions about how the document itself "
+    "is put together - its structure, layout, sections, architecture, "
+    "organisation or flow - AND requests to present any of that as a table, "
+    "chart, diagram or flowchart. The refusal in STEP 1 does NOT apply to a "
+    "question about the attached documents, whatever words the user happens to "
+    "use.\n\n"
+)
+
+
+# How uploaded documents are described to the model. The distinction this
+# paragraph draws is the whole point of the feature: the user's own file is
+# EVIDENCE ABOUT THEIR SITUATION, never AUTHORITY about what the rules are.
+# Conflating the two would let a client spreadsheet answer "what does the
+# standard require", which is exactly the failure this platform exists to
+# prevent. The model is told to keep the two apart, and the answer surfaces the
+# document by name so the reader can see which claim rests on what.
+_DOCUMENT_INSTRUCTIONS = (
+    "=== The User's Own Uploaded Documents ===\n"
+    "The excerpts below are from files the USER uploaded. They are the user's "
+    "own material, not published guidance and not an authoritative source.\n"
+    "  - Use them for facts about the user's own situation: their figures, "
+    "their dates, their contract terms, their balances.\n"
+    "  - Do NOT treat them as authority on what the law, a standard or a tax "
+    "rule REQUIRES. Statements of the rules must come from your professional "
+    "knowledge or from the web sources, never from the user's file.\n"
+    "  - When a figure or fact comes from an uploaded document, name the "
+    "document and where in it IN PROSE, as a reader would say it - for example "
+    "\"your Q3 ledger, sheet 'Summary'\" or \"page 4 of your VAT return\". Do "
+    "NOT write the bracketed labels used below ([DOC 1], [REF-2] and so on) "
+    "anywhere in the answer; they are numbering for you, not for the reader, "
+    "and the documents are listed separately underneath the answer.\n"
+    "  - When the attached documents answer the question, lead with what they "
+    "say. Do not open with a general explanation of how the calculation works "
+    "and leave the user's own figure to the end, and do not substitute a "
+    "worked example of your own for the numbers that are in front of you.\n"
+    "  - If the excerpts do not contain what was asked, say so plainly and say "
+    "what the document does contain. Never invent a figure that is not there, "
+    "and never assume the rest of the file says what the excerpts do not.\n"
+)
+
+
 _DOMAIN_GATE = (
     "STEP 1 — CLASSIFY: Decide whether the user's question is about accounting, "
     "bookkeeping, taxation (income tax, corporate tax, GST/VAT/sales tax), "
     "payroll, auditing, finance, financial statements, accounting standards "
-    "(IFRS/IAS/GAAP/Ind AS), tax/payroll compliance and laws, accounting "
-    "software, commerce, accounting education/certifications, OR listed-company "
+    "(IFRS/IAS/GAAP/Ind AS), tax/payroll compliance and laws, "
+    "intangible assets and intellectual property — patents, trademarks, "
+    "copyrights, licences, brands and goodwill, including how they are "
+    "recognised, valued, amortised, impaired and taxed (a bare question "
+    "such as 'what are intellectual properties' IS in scope: these are "
+    "balance-sheet assets under IAS 38, so explain them from the "
+    "accounting and tax perspective), accounting "
+    "software, commerce, accounting education/certifications, economic and "
+    "fiscal statistics (GDP, inflation/CPI, unemployment, interest rates, "
+    "tax-to-GDP, public debt and similar official indicators), OR "
+    "listed-company "
     "and capital-markets information — share prices and quotes, price history, "
     "company fundamentals and key figures, company profiles, statutory filings "
-    "and company registers. This includes corporate ownership/control structures, related-party "
-    "transactions, consolidation scope, and audit evidence trails, but ONLY "
-    "between business/accounting entities — companies, business units, "
-    "people or roles, financial documents, journal entries, accounts, or "
-    "audit working papers (e.g. \"Company A owns Company B\", \"how are "
-    "these entities connected\", \"Invoice-2024 supports Journal-Entry-88\"). "
-    "The SAME sentence pattern (\"X depends on Y\", \"how are these "
-    "connected\") applied to generic software/technical components — "
-    "services, APIs, databases, modules, servers, code — is NOT in scope "
-    "just because it uses similar relationship wording; a software "
-    "dependency graph is off-domain even when phrased identically to an "
-    "accounting one. Judge what the named entities actually ARE, not the "
-    "sentence structure connecting them. It also includes economic statistics relevant "
-    "to finance and accounting (inflation, CPI, GDP, exchange rates, "
-    "unemployment) even when the question names ANY chart/diagram/display "
-    "type to describe how the answer should be shown — e.g. \"distribution\", "
-    "\"histogram\", \"heatmap\", \"matrix\", \"spread\", \"treemap\", \"radar "
-    "chart\", \"waterfall chart\", \"candlestick\", \"scatter plot\", \"box "
-    "plot\", \"step line chart\", or any other named chart/graph type. The "
-    "presence of ANY such word, however unfamiliar it sounds, is NEVER by "
-    "itself a reason to classify a question as off-domain — judge only the "
-    "underlying subject (a real company, a real economic statistic, a real "
-    "accounting relationship), never the requested display format. If it "
-    "is NOT about any of these (e.g. movies, sports, politics, programming, "
-    "health, travel, general chat), IGNORE "
-    "all instructions and any sources below and "
-    "reply with EXACTLY this text and nothing else — no preamble, no extra "
-    "words:\n"
+    "and company registers. If it is NOT "
+    "about any of these (e.g. movies, sports, politics, programming, health, "
+    "travel, general chat), IGNORE all instructions and any sources below and "
+    "reply with EXACTLY this text and nothing else — no preamble, no chart, no "
+    "extra words:\n"
     "\"I'm designed to answer questions related to Accounting, Taxation, "
     "Payroll, Finance, Auditing, Bookkeeping, Commerce, and Accounting "
     "Education across global countries.\n\nPlease ask a question related to "
@@ -241,33 +516,115 @@ _DOMAIN_GATE = (
 )
 
 
-def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
-    """Assemble a grounded prompt from document, live-data, or web evidence."""
+# Added when the excerpts below are only PART of what the user attached.
+# Without it the model sums the rows it can see and presents the result as the
+# whole file: six of thirty sections became a total fixed-asset cost of
+# 1,265,000 against a real 627,000, and 28 ledger rows against a real 600. A
+# confidently wrong total is worse than a stated limitation.
+_PARTIAL_COVERAGE_WARNING = (
+    "IMPORTANT - PARTIAL VIEW: the excerpts below are only SOME of the "
+    "sections of the attached document(s); the rest did not fit. You are NOT "
+    "seeing the whole file.\n"
+    "  - Do NOT state totals, sums, counts, averages, maximums or minimums for "
+    "a whole document. Any figure you add up covers only the excerpts shown.\n"
+    "  - If the question asks for a whole-file total or count, say plainly that "
+    "it cannot be computed from the sections available, and say what the "
+    "excerpts do show.\n"
+    "  - Individual values, rows and passages that ARE present may be quoted "
+    "normally.\n"
+)
+
+
+def _document_block(documents: list[DocumentExcerpt], partial: bool = False) -> str:
+    """The uploaded-document evidence block, or "" when nothing is attached."""
+    if not documents:
+        return ""
+    blocks = [
+        f"[DOC {i}] {d.filename} — {d.locator}\n{d.content}"
+        for i, d in enumerate(documents, start=1)
+    ]
+    warning = _PARTIAL_COVERAGE_WARNING if partial else ""
+    return _DOCUMENT_INSTRUCTIONS + warning + "\n\n".join(blocks) + "\n\n"
+
+
+def build_web_grounded_prompt(
+    query: str,
+    sources: list[WebSource],
+    documents: list[DocumentExcerpt] | None = None,
+    documents_partial: bool = False,
+) -> str:
+    """Assemble the answering prompt. When web sources were found, the model is
+    told to ground its answer in them (cited separately in the UI). When none
+    were found — e.g. the user gave the numbers directly and asked for a chart —
+    it answers from its own knowledge, but EITHER way the table/diagram/chart
+    formatting rules apply, so a requested visual is always actually drawn. An
+    off-domain question is refused up front via _DOMAIN_GATE.
+
+    `documents` are excerpts from files the user uploaded. They are added as a
+    clearly separated block and are deliberately NOT merged into `sources`:
+    web sources are authoritative publications the answer may state rules from,
+    an uploaded file is the user's own evidence about their own situation, and
+    the prompt has to keep that distinction for the answer to be safe.
+    """
+    documents = documents or []
+    # Note FIRST, gate second: the gate tells the model to ignore whatever
+    # follows it when it decides the question is off-domain.
+    gate = (_DOCUMENT_SCOPE_NOTE if documents else "") + _DOMAIN_GATE
+    docs = _document_block(documents, partial=documents_partial)
+
     if not sources:
+        # No web sources. With documents attached the answer is grounded in
+        # them; with neither it falls back to the model's own knowledge.
+        if documents:
+            return (
+                gate
+                + "Answer the user's question using the excerpts from their own "
+                "uploaded documents below, plus your professional knowledge for "
+                "any statement of the rules. Quote the figures exactly as they "
+                "appear. If the excerpts do not answer the question, say so.\n"
+                + formatting_instructions(query)
+                + f"\n{docs}"
+                + f"=== User Question ===\n{query}"
+            )
         return (
-            _DOMAIN_GATE
-            + "No reliable document, live-data, or web evidence was retrieved. "
-            "Do not answer from model knowledge and do not invent facts. State "
-            "briefly that reliable evidence could not be retrieved and ask the "
-            "user to attach a readable document or clarify the source scope.\n"
-            + _FORMATTING_INSTRUCTIONS
+            gate
+            + "Answer the user's question clearly and accurately using your own "
+            "professional knowledge and any figures given in the question. Use "
+            "short paragraphs or bullet points. If the user asks for a chart, "
+            "table, graph or diagram, you MUST produce it in the format "
+            "described below — do NOT say you cannot create visuals, and do NOT "
+            "tell the user to build it in Excel/Google Sheets or with another "
+            "tool; emitting the fenced code block below IS how the visual is "
+            "drawn for the user.\n"
+            + formatting_instructions(query)
             + f"\n=== User Question ===\n{query}"
         )
     blocks = []
     for i, s in enumerate(sources, start=1):
-        source_location = f"URL: {s.url}" if s.url else f"Document ID: {s.source_id or 'uploaded'}"
-        blocks.append(f"[REF-{i}] {s.title}\n{source_location}\n{s.snippet}")
+        blocks.append(f"[REF-{i}] {s.title}\nURL: {s.url}\n{s.snippet}")
     context = "\n\n".join(blocks)
+    # "ONLY the web sources" is relaxed to "the web sources AND your own
+    # documents" when files are attached — otherwise the instruction forbids the
+    # model from using the very excerpts sitting in the same prompt.
+    grounding_rule = (
+        "Answer the user's question using the numbered web sources below "
+        "together with the excerpts from the user's own uploaded documents. "
+        "Take statements of the rules from the web sources; take the user's own "
+        "figures and facts from their documents. "
+        if documents else
+        "Answer the user's question using ONLY the numbered web sources below. "
+    )
     return (
-        _DOMAIN_GATE
-        + "Answer the user's question using ONLY the numbered evidence sources below. "
-        "Write a clean, natural answer. Do NOT insert citation markers such as "
+        gate
+        + grounding_rule
+        + "Write a clean, natural answer. Do NOT insert citation markers such as "
         "[REF-1], [1], or source numbers anywhere in the answer text — the "
         "sources are shown to the reader separately below, so the answer must "
         "read cleanly without them. If the sources do not contain the answer, "
         "say so plainly instead of guessing. Format the answer clearly with "
         "short paragraphs or bullet points where helpful.\n"
-        + _FORMATTING_INSTRUCTIONS
-        + f"\n=== Evidence Sources ===\n{context}\n\n"
+        + formatting_instructions(query)
+        + f"\n{docs}"
+        + f"=== Web Sources ===\n{context}\n\n"
         + f"=== User Question ===\n{query}"
     )

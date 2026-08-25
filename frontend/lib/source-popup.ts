@@ -6,7 +6,10 @@ import type { SourceCitation } from "@/lib/api";
  * backend supplied one — never a fabricated excerpt.
  */
 export function openSourcePopup(citation: SourceCitation): void {
-  const popup = window.open("", "_blank", "width=440,height=360,noopener,noreferrer");
+  // No "noopener" in the feature string: passing it makes window.open()
+  // return null by design, so the guard below always fired and the popup
+  // was left blank. The rendered <a> carries rel="noopener noreferrer".
+  const popup = window.open("", "_blank", "width=440,height=360");
   if (!popup) return;
   const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const safeTitle = escape(citation.title);

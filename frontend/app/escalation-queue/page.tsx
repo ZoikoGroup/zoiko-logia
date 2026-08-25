@@ -108,8 +108,7 @@ export default function EscalationQueuePage() {
   }
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
+    load();
   }, []);
 
   async function handleAction(caseId: string, action: "approve" | "refuse" | "escalate" | "request_info") {
@@ -119,8 +118,8 @@ export default function EscalationQueuePage() {
       await actOnEscalation(caseId, action, reviewerId, actionReason);
       setActionReason("");
       await load();
-    } catch (err: unknown) {
-      setErrorMsg(err instanceof Error ? err.message : "Failed to resolve case. Maker-checker constraint violation.");
+    } catch (err: any) {
+      setErrorMsg(err.message || "Failed to resolve case. Maker-checker constraint violation.");
     } finally {
       setSubmittingId(null);
     }
@@ -136,8 +135,8 @@ export default function EscalationQueuePage() {
       });
       setShowOverrideForm(false);
       await load();
-    } catch (err: unknown) {
-      setErrorMsg(err instanceof Error ? err.message : "Failed to create safety override.");
+    } catch (err: any) {
+      setErrorMsg(err.message || "Failed to create safety override.");
     }
   }
 

@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState, type Dispatch, type KeyboardEvent, type SetStateAction } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type KeyboardEvent,
+  type SetStateAction,
+} from "react";
 import {
   AlertTriangle,
   ArrowUp,
@@ -11,26 +18,45 @@ import {
   Paperclip,
   X,
 } from "lucide-react";
-import { getAuthToken, getKritonAttachment, uploadKritonAttachment, ApiError, type WorkspaceDocument } from "@/lib/api";
+import {
+  getAuthToken,
+  uploadKritonAttachment,
+  deleteKritonAttachment,
+  ApiError,
+  type AttachmentSummary,
+  type AttachmentUploadResult,
+} from "@/lib/api";
 
 const JURISDICTIONS = ["", "UK", "US", "US-CA", "IFRS", "UAE", "India", "EU"];
-const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".xlsx", ".pptx"];
+const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".xlsx", ".pptx", ".csv", ".txt", ".md"];
 
-export type AttachmentState = { documentId?: string; name: string; status: "uploading" | "processing" | "success" | "error"; progress: number; chunkCount?: number; error?: string };
+/** Matches the backend's per-file cap (_MAX_ATTACHMENT_BYTES). Checked here as
+ *  well so a 60MB file is rejected instantly instead of after a long upload
+ *  that ends in a 413. */
+const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
-const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+/** How many files may back a single question. The limit is about the answer,
+ *  not the upload: eight retrieved chunks spread across more than five
+ *  documents gives each one too little room to be useful. */
+const MAX_FILES = 5;
 
-async function waitUntilReady(token: string, documentId: string): Promise<WorkspaceDocument> {
-  for (let attempt = 0; attempt < 120; attempt += 1) {
-    const document = await getKritonAttachment(token, documentId);
-    if (document.status === "READY") return document;
-    if (document.status === "FAILED") {
-      throw new ApiError(422, document.processing_error ?? "The document could not be processed.");
-    }
-    await wait(1000);
-  }
-  throw new ApiError(408, "Document processing is taking longer than expected. Select it again when it becomes ready.");
-}
+/** Owned by the PAGE, not by this component — see the note on the
+ *  `attachments` prop for why that matters. */
+export type Attachment = {
+  /** Stable key for React — the filename is not unique enough (two uploads of
+   *  the same name) and document_id does not exist until the upload returns. */
+  key: string;
+  name: string;
+  status: "uploading" | "success" | "error";
+  progress: number;
+  documentId?: string;
+  chunkCount?: number;
+  error?: string;
+  /** Attached from the saved-document library rather than uploaded here.
+   *  Removing one of these detaches it from the question; it must NOT delete
+   *  the stored document, which other conversations may still cite. */
+  fromLibrary?: boolean;
+};
 
 // Minimal ambient shape for the (non-standard) Web Speech API — no @types
 // package ships one, and most of its surface is unused here.
@@ -51,6 +77,12 @@ function getSpeechRecognition(): (new () => SpeechRecognitionLike) | null {
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
 }
 
+function formatSize(bytes: number) {
+  return bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
 export function Composer({
   variant,
   query,
@@ -58,28 +90,42 @@ export function Composer({
   jurisdiction,
   onJurisdictionChange,
   onSubmit,
-  attachment,
-  onAttachmentChange,
-  documents,
-  onUploadComplete,
   submitting,
   error,
+  attachments,
+  onAttachmentsChange,
+  savedDocuments = [],
 }: {
   variant: "hero" | "sticky";
   query: string;
   onQueryChange: (value: string) => void;
   jurisdiction: string;
   onJurisdictionChange: (value: string) => void;
-  onSubmit: (documentIds?: string[]) => void;
-  attachment: AttachmentState | null;
-  onAttachmentChange: Dispatch<SetStateAction<AttachmentState | null>>;
-  documents: WorkspaceDocument[];
-  onUploadComplete: () => void;
+  onSubmit: () => void;
   submitting: boolean;
   error: string | null;
+  /** Attachment list, owned by the page.
+   *
+   *  This deliberately does NOT live in local state. The page renders a "hero"
+   *  Composer before a conversation exists and a "sticky" one afterwards, so
+   *  asking the first question unmounts one instance and mounts the other. With
+   *  the list held locally, the file the user had just attached vanished at
+   *  exactly that moment — the chip disappeared and the ids never reached the
+   *  request, so the answer came back grounded only in web sources. Holding it
+   *  one level up makes the attachment outlive the swap, which is also what
+   *  lets the user ask several follow-up questions about the same document. */
+  attachments: Attachment[];
+  onAttachmentsChange: Dispatch<SetStateAction<Attachment[]>>;
+  /** Documents already uploaded in this workspace, for the "Add saved
+   *  document" picker. Fetched and owned by the page, since it also refreshes
+   *  the list after an upload. Defaults to empty so the picker simply does not
+   *  render when the caller has nothing to offer. */
+  savedDocuments?: AttachmentSummary[];
 }) {
+  const setAttachments = onAttachmentsChange;
   const [listening, setListening] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
@@ -94,37 +140,151 @@ export function Composer({
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (attachment?.status === "uploading" || attachment?.status === "processing") return;
-      onSubmit(attachment?.documentId ? [attachment.documentId] : []);
+      onSubmit();
     }
   }
 
-  async function handleFileSelected(file: File) {
-    const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
-    if (!ACCEPTED_EXTENSIONS.includes(ext)) {
-      onAttachmentChange({ name: file.name, status: "error", progress: 0, error: `Unsupported file type — allowed: ${ACCEPTED_EXTENSIONS.join(", ")}` });
+  function patchAttachment(key: string, patch: Partial<Attachment>) {
+    setAttachments((prev) => prev.map((a) => (a.key === key ? { ...a, ...patch } : a)));
+  }
+
+  /**
+   * Uploads the chosen files ONE AT A TIME, deliberately.
+   *
+   * Five 20MB files sent together would be a 100MB request body — past most
+   * reverse-proxy limits, and the server would have to hold the whole payload
+   * in memory while extracting text from all five, which takes long enough to
+   * exceed the request timeout. Sequential single-file requests give the user
+   * the same "attach five files" experience while each request stays small and
+   * fast, and one bad file fails on its own without taking the others with it.
+   */
+  async function handleFilesSelected(files: File[]) {
+    setUploadNotice(null);
+
+    const room = MAX_FILES - attachments.length;
+    if (room <= 0) {
+      setUploadNotice(`You can attach up to ${MAX_FILES} files to a question.`);
       return;
     }
+    if (files.length > room) {
+      setUploadNotice(
+        `Only the first ${room} of ${files.length} files were added — the limit is ${MAX_FILES} per question.`,
+      );
+      files = files.slice(0, room);
+    }
+
     const token = getAuthToken();
     if (!token) {
-      onAttachmentChange({ name: file.name, status: "error", progress: 0, error: "Please sign in before uploading." });
+      setUploadNotice("Please sign in before uploading.");
       return;
     }
-    onAttachmentChange({ name: file.name, status: "uploading", progress: 0 });
-    try {
-      const result = await uploadKritonAttachment(token, file, (fraction) => {
-        onAttachmentChange((previous) => previous?.name === file.name ? { ...previous, progress: fraction } : previous);
-      });
-      if (result.status === "READY") {
-        onAttachmentChange({ documentId: result.document_id, name: file.name, status: "success", progress: 1, chunkCount: result.chunk_count });
-      } else {
-        onAttachmentChange({ documentId: result.document_id, name: file.name, status: "processing", progress: 1, chunkCount: 0 });
-        const ready = await waitUntilReady(token, result.document_id);
-        onAttachmentChange({ documentId: ready.id, name: ready.filename, status: "success", progress: 1, chunkCount: ready.chunk_count });
+
+    for (const file of files) {
+      const key = `${file.name}-${file.size}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const ext = file.name.includes(".")
+        ? file.name.slice(file.name.lastIndexOf(".")).toLowerCase()
+        : "";
+
+      if (!ACCEPTED_EXTENSIONS.includes(ext)) {
+        setAttachments((prev) => [
+          ...prev,
+          { key, name: file.name, status: "error", progress: 0, error: `Unsupported type — allowed: ${ACCEPTED_EXTENSIONS.join(", ")}` },
+        ]);
+        continue;
       }
-      onUploadComplete();
-    } catch (err) {
-      onAttachmentChange({ name: file.name, status: "error", progress: 0, error: err instanceof ApiError ? err.message : "Upload failed." });
+      if (file.size === 0) {
+        setAttachments((prev) => [
+          ...prev,
+          { key, name: file.name, status: "error", progress: 0, error: "This file is empty" },
+        ]);
+        continue;
+      }
+      if (file.size > MAX_FILE_BYTES) {
+        setAttachments((prev) => [
+          ...prev,
+          { key, name: file.name, status: "error", progress: 0, error: `${formatSize(file.size)} — over the 20 MB limit` },
+        ]);
+        continue;
+      }
+
+      setAttachments((prev) => [...prev, { key, name: file.name, status: "uploading", progress: 0 }]);
+      try {
+        const result: AttachmentUploadResult = await uploadKritonAttachment(token, file, (fraction) => {
+          // Upload progress only reaches 100% when the bytes have arrived;
+          // extraction happens after that, so the bar is capped at 95% until
+          // the response lands. Showing 100% while the server is still parsing
+          // would read as "done" for several more seconds.
+          patchAttachment(key, { progress: Math.min(fraction, 0.95) });
+        });
+        if (result.status === "ready") {
+          patchAttachment(key, {
+            status: "success",
+            progress: 1,
+            documentId: result.document_id,
+            chunkCount: result.chunk_count,
+          });
+        } else {
+          // The upload succeeded but the file yielded no usable text. This is
+          // shown as an error because that is what it means for the user: the
+          // document will not contribute to any answer.
+          patchAttachment(key, {
+            status: "error",
+            progress: 0,
+            error: result.failure_reason ?? "No readable text found in this file",
+          });
+        }
+      } catch (err) {
+        patchAttachment(key, {
+          status: "error",
+          progress: 0,
+          error: err instanceof ApiError ? err.message : "Upload failed",
+        });
+      }
+    }
+  }
+
+  /** Attach a document already in the workspace library. No upload happens —
+   *  it is indexed already, so it goes straight in as a ready attachment. */
+  function addSavedDocument(document: AttachmentSummary) {
+    setUploadNotice(null);
+    if (attachments.length >= MAX_FILES) {
+      setUploadNotice(`You can attach up to ${MAX_FILES} files to a question.`);
+      return;
+    }
+    setAttachments((prev) => (
+      prev.some((a) => a.documentId === document.document_id)
+        ? prev
+        : [...prev, {
+            key: `saved-${document.document_id}`,
+            name: document.filename,
+            status: "success",
+            progress: 1,
+            documentId: document.document_id,
+            chunkCount: document.chunk_count,
+            fromLibrary: true,
+          }]
+    ));
+  }
+
+  async function removeAttachment(attachment: Attachment) {
+    setAttachments((prev) => prev.filter((a) => a.key !== attachment.key));
+    setUploadNotice(null);
+    // Also drop the indexed copy — leaving chunks behind for a document the
+    // user has visibly removed would keep influencing answers.
+    //
+    // Except for one attached FROM the library: there, removing it means "not
+    // for this question", not "delete it". Deleting would destroy a stored
+    // document the user never asked to lose, and take it out of every other
+    // conversation that cites it.
+    if (attachment.fromLibrary) return;
+    const token = getAuthToken();
+    if (token && attachment.documentId) {
+      try {
+        await deleteKritonAttachment(token, attachment.documentId);
+      } catch {
+        /* The row is orphaned but unreachable from the UI; not worth alarming
+           the user, who has already seen the attachment disappear. */
+      }
     }
   }
 
@@ -159,41 +319,59 @@ export function Composer({
   const cardRadius = variant === "hero" ? "rounded-[1.75rem]" : "rounded-[1.5rem]";
   const minHeight = variant === "hero" ? "min-h-20" : "min-h-14";
   const rows = variant === "hero" ? 2 : 2;
+  const uploading = attachments.some((a) => a.status === "uploading");
+  const atLimit = attachments.length >= MAX_FILES;
+  // Only documents that actually indexed are offerable, and only those not
+  // already on this question — otherwise the picker lists entries that either
+  // contribute nothing to an answer or are duplicates of a visible row.
+  const selectableSavedDocuments = savedDocuments.filter(
+    (d) => d.status === "ready" && !attachments.some((a) => a.documentId === d.document_id),
+  );
 
   return (
     <div>
       <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (attachment?.status === "uploading" || attachment?.status === "processing") return;
-          onSubmit(attachment?.documentId ? [attachment.documentId] : []);
-        }}
+        onSubmit={(e) => { e.preventDefault(); onSubmit(); }}
         className={variant === "sticky" ? "sticky bottom-5 mx-auto max-w-2xl" : "mt-8 w-full"}
       >
         <div className={`kriton-composer-surface ${cardRadius} border p-4 shadow-[0_18px_48px_rgba(18,34,32,0.08)]`}>
-          {attachment && (
-            <div className="mb-3 flex items-center gap-2 rounded-xl border border-line bg-soft/60 px-3 py-2 text-xs">
-              {attachment.status === "uploading" && <Loader2 size={14} className="shrink-0 animate-spin text-brand" />}
-              {attachment.status === "processing" && <Loader2 size={14} className="shrink-0 animate-spin text-brand" />}
-              {attachment.status === "success" && <CheckCircle2 size={14} className="shrink-0 text-ok" />}
-              {attachment.status === "error" && <AlertTriangle size={14} className="shrink-0 text-bad" />}
-              <FileText size={14} className="shrink-0 text-muted" />
-              <span className="min-w-0 flex-1 truncate font-medium text-ink">{attachment.name}</span>
-              {attachment.status === "success" && <span className="shrink-0 text-ok">Used in this chat</span>}
-              <span className="shrink-0 text-muted">
-                {attachment.status === "uploading" && `${Math.round(attachment.progress * 100)}%`}
-                {attachment.status === "processing" && "Processing…"}
-                {attachment.status === "success" && `${attachment.chunkCount} chunks`}
-                {attachment.status === "error" && attachment.error}
-              </span>
-              <button type="button" onClick={() => onAttachmentChange(null)} aria-label="Remove attachment" className="shrink-0 rounded p-0.5 text-muted hover:bg-soft">
-                <X size={13} />
-              </button>
+          {attachments.length > 0 && (
+            <div className="mb-3 space-y-1.5">
+              {attachments.map((attachment) => (
+                <div
+                  key={attachment.key}
+                  className="flex items-center gap-2 rounded-xl border border-line bg-soft/60 px-3 py-2 text-xs"
+                >
+                  {attachment.status === "uploading" && <Loader2 size={14} className="shrink-0 animate-spin text-brand" />}
+                  {attachment.status === "success" && <CheckCircle2 size={14} className="shrink-0 text-ok" />}
+                  {attachment.status === "error" && <AlertTriangle size={14} className="shrink-0 text-bad" />}
+                  <FileText size={14} className="shrink-0 text-muted" />
+                  <span className="min-w-0 flex-1 truncate font-medium text-ink">{attachment.name}</span>
+                  <span
+                    className={`shrink-0 ${attachment.status === "error" ? "max-w-[16rem] truncate text-bad" : "text-muted"}`}
+                    title={attachment.status === "error" ? attachment.error : undefined}
+                  >
+                    {attachment.status === "uploading" && `${Math.round(attachment.progress * 100)}%`}
+                    {attachment.status === "success" &&
+                      `${attachment.chunkCount} section${attachment.chunkCount === 1 ? "" : "s"} indexed`}
+                    {attachment.status === "error" && attachment.error}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => removeAttachment(attachment)}
+                    aria-label={`Remove ${attachment.name}`}
+                    className="shrink-0 rounded p-0.5 text-muted hover:bg-soft"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              ))}
             </div>
           )}
 
           <textarea
             ref={textareaRef}
+            data-kriton-composer=""
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -203,62 +381,55 @@ export function Composer({
           />
 
           <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               <input
                 ref={fileInputRef}
                 type="file"
+                multiple
                 accept={ACCEPTED_EXTENSIONS.join(",")}
                 className="hidden"
                 onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) handleFileSelected(file);
+                  const files = Array.from(e.target.files ?? []);
+                  if (files.length) handleFilesSelected(files);
                   e.target.value = "";
                 }}
               />
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={attachment?.status === "uploading" || attachment?.status === "processing"}
-                aria-label="Attach a document"
-                className="inline-flex h-9 items-center justify-center gap-2 rounded-full bg-soft px-2.5 text-xs font-semibold text-ink transition hover:bg-line/60 disabled:cursor-not-allowed disabled:opacity-50 sm:px-3"
+                disabled={uploading || atLimit}
+                aria-label="Attach documents"
+                title={atLimit ? `Up to ${MAX_FILES} files per question` : "Attach documents (PDF, Word, Excel, PowerPoint, CSV, text)"}
+                className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-full bg-soft px-2.5 text-xs font-semibold text-ink transition hover:bg-line/60 disabled:cursor-not-allowed disabled:opacity-50 sm:px-3"
               >
-                {attachment?.status === "uploading" || attachment?.status === "processing" ? (
-                  <>
-                    <Loader2 size={16} className="shrink-0 animate-spin" />
-                    <span className="hidden sm:inline">
-                      {attachment.status === "uploading"
-                        ? `Uploading ${Math.round(attachment.progress * 100)}%`
-                        : "Processing…"}
-                    </span>
-                  </>
+                {uploading ? (
+                  <Loader2 size={16} className="shrink-0 animate-spin" />
                 ) : (
-                  <>
-                    <Paperclip size={16} className="shrink-0" />
-                    <span className="hidden sm:inline">Attach document</span>
-                  </>
+                  <Paperclip size={16} className="shrink-0" />
                 )}
+                <span className="hidden sm:inline">Attach documents</span>
               </button>
-              {documents.length > 0 && (
+
+              {/* Files already uploaded in this workspace. Picking one ADDS it
+                  to the question rather than replacing the current selection,
+                  so the control stays a "+ add" action and never displays as
+                  current state — what is attached is shown by the rows above.
+                  Hidden entirely when the library is empty or every ready
+                  document is already attached, so it never opens onto nothing. */}
+              {selectableSavedDocuments.length > 0 && (
                 <select
-                  aria-label="Select an uploaded document"
-                  value={attachment?.documentId ?? ""}
-                  disabled={attachment?.status === "uploading" || attachment?.status === "processing"}
-                  onChange={(event) => {
-                    const document = documents.find((item) => item.id === event.target.value);
-                    onAttachmentChange(document ? {
-                      documentId: document.id,
-                      name: document.filename,
-                      status: document.status === "READY" ? "success" : "error",
-                      progress: 1,
-                      chunkCount: document.chunk_count,
-                      error: document.processing_error ?? undefined,
-                    } : null);
+                  aria-label="Add a saved document"
+                  value=""
+                  disabled={uploading || atLimit}
+                  onChange={(e) => {
+                    const picked = selectableSavedDocuments.find((d) => d.document_id === e.target.value);
+                    if (picked) addSavedDocument(picked);
                   }}
-                  className="h-9 max-w-48 rounded-full !border-transparent !bg-soft px-3 text-xs font-semibold text-ink outline-none"
+                  className="h-9 min-w-0 max-w-48 rounded-full !border-transparent !bg-soft px-3 text-xs font-semibold text-ink !shadow-none outline-none transition hover:bg-line/60 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <option value="">Saved documents</option>
-                  {documents.filter((document) => document.status === "READY").map((document) => (
-                    <option key={document.id} value={document.id}>{document.filename}</option>
+                  <option value="">Add saved document</option>
+                  {selectableSavedDocuments.map((d) => (
+                    <option key={d.document_id} value={d.document_id}>{d.filename}</option>
                   ))}
                 </select>
               )}
@@ -287,7 +458,7 @@ export function Composer({
               </button>
               <button
                 type="submit"
-                disabled={submitting || !query.trim() || attachment?.status === "uploading" || attachment?.status === "processing"}
+                disabled={submitting || uploading || !query.trim()}
                 className="flex h-9 w-9 items-center justify-center rounded-full bg-brand text-white transition hover:bg-brand-2 disabled:opacity-40"
                 aria-label={variant === "hero" ? "Ask Kriton" : "Ask follow-up"}
               >
@@ -298,6 +469,7 @@ export function Composer({
         </div>
       </form>
 
+      {uploadNotice && <p className="mt-2 text-center text-xs text-muted">{uploadNotice}</p>}
       {voiceError && <p className="mt-2 text-center text-xs text-muted">{voiceError}</p>}
       {error && (
         <div className="mt-3 rounded-xl border border-bad/30 bg-bad/5 px-4 py-2.5 text-sm text-bad" role="alert">

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import "katex/dist/katex.min.css";
 import { AppChrome } from "@/components/layout/AppChrome";
@@ -8,14 +9,17 @@ import { RoleProvider } from "@/components/shell/RoleProvider";
 import { ThemeProvider } from "@/components/shell/ThemeProvider";
 import { THEME_COOKIE } from "@/lib/theme";
 
-// Resolves the theme once before first paint (no flash-of-wrong-theme), and
-// on the very first visit — when no cookie exists yet — PERSISTS whatever it
-// resolved to a cookie. Without that, every future load with no cookie would
-// re-check prefers-color-scheme fresh each time; if that OS/browser signal
-// isn't perfectly stable between loads, the background flips unpredictably
-// on refresh even though nothing actually changed. Once resolved, the choice
-// is sticky until the user explicitly toggles it (ThemeProvider.applyTheme).
-const THEME_INIT_SCRIPT = `(function(){try{var m=document.cookie.match(/(?:^|; )${THEME_COOKIE}=([^;]*)/);var t=m?decodeURIComponent(m[1]):null;if(!t){t=window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.cookie='${THEME_COOKIE}='+t+'; path=/; max-age='+(60*60*24*365);}document.documentElement.setAttribute('data-theme',t);}catch(e){}})();`;
+const THEME_INIT_SCRIPT = `(function(){try{var m=document.cookie.match(/(?:^|; )${THEME_COOKIE}=([^;]*)/);var t=m?decodeURIComponent(m[1]):null;if(!t){t=window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}document.documentElement.setAttribute('data-theme',t);}catch(e){}})();`;
+
+const geistSans = Geist({
+  variable: "--font-geist-sans",
+  subsets: ["latin"],
+});
+
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
+  subsets: ["latin"],
+});
 
 export const metadata: Metadata = {
   title: "ZoikoLogia",
@@ -30,7 +34,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className="h-full antialiased"
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
       suppressHydrationWarning
     >
       <head>

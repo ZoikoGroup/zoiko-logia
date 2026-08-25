@@ -45,16 +45,3 @@ class DraftPublic(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
-
-
-class DocumentPublic(BaseModel):
-    id: str
-    filename: str
-    mime_type: str
-    status: str
-    processing_error: str | None
-    chunk_count: int = 0
-    created_at: datetime
-    expires_at: datetime | None = None
-
-    model_config = {"from_attributes": True}

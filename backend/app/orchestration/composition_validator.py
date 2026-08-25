@@ -92,16 +92,16 @@ def build_validated_disclaimer(
     disclaimer_required: bool,
     confidence_state: str,
 ) -> str:
-    """Append mandatory disclaimers for MEDIUM risk or limited confidence answers (§10)."""
-    if not disclaimer_required:
-        return answer_text
+    """Return the answer unchanged — the appended disclaimer block is disabled.
 
-    disclaimer = (
-        "\n\n---\n"
-        "⚠️ **Kriton™ Disclaimer**: This response is provided for educational and informational "
-        "purposes only under source-governed retrieval. It does not constitute professional "
-        "accounting, tax, audit or legal advice. Always consult a qualified professional "
-        "before acting on any guidance. Sources cited reflect available documentation at "
-        "the time of retrieval and may not represent the latest effective standards."
-    )
-    return answer_text + disclaimer
+    The long "Kriton™ Disclaimer" paragraph this used to append (§10) was
+    removed at the product owner's request. Nothing else on the policy path
+    changed: resolve_policy() still sets disclaimer_required, it is still
+    audited, and the reader still sees the short safety notice service.py adds
+    to `limitations` when the flag is set — that notice carried the same
+    message, so what is gone is the duplicate, not the signal.
+
+    The parameters stay so the call site and its audit trail are untouched;
+    restoring the paragraph means re-adding the append here and nothing else.
+    """
+    return answer_text

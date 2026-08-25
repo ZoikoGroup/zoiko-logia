@@ -1,16 +1,17 @@
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.domains.audit_ledger.event_envelope import record_event_async
+from app.domains.documents import service as documents_service
+from app.domains.documents.extract import SUPPORTED_EXTENSIONS
+from app.domains.documents.models import STATUS_READY
 from app.domains.identity.models import User
 from app.domains.identity.rbac import get_current_user
 from app.domains.kriton_workspace.schemas import (
     DraftCreateRequest,
     DraftPublic,
     DraftUpdateRequest,
-    DocumentPublic,
     SavedAnswerCreateRequest,
     SavedAnswerPublic,
 )
@@ -22,26 +23,24 @@ from app.domains.kriton_workspace.service import (
     list_saved_answers,
     update_draft,
 )
-from app.domains.kriton_workspace.documents import (
-    create_document_upload,
-    delete_document,
-    get_document,
-    ingest_document,
-    list_documents,
-)
-from app.core.config import get_settings
-from app.domains.kriton_workspace.artifacts import artifact_absolute_path, artifact_bytes, get_generated_artifact
 
 router = APIRouter(prefix="/kriton-workspace", tags=["kriton_workspace"])
 
-_ALLOWED_ATTACHMENT_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".pptx"}
-_MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024  # 20MB
-_ATTACHMENT_MIME_TYPES = {
-    ".pdf": "application/pdf",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-}
+_ALLOWED_ATTACHMENT_EXTENSIONS = SUPPORTED_EXTENSIONS
+_MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024  # 20MB per file
+
+# Lifetime cap per user. Not a licence tier - a backstop, so a stuck
+# automated uploader cannot fill the tenant storage before anyone notices.
+_MAX_DOCUMENTS_PER_USER = 200
+
+# Uploads are ONE FILE PER REQUEST by deliberate design, even though the UI
+# lets the user pick five at once (it sends them sequentially). Five 20MB
+# files in a single request would be a 100MB body: ~300-500MB of peak RSS
+# with the whole payload read into memory, plus 60-200s of extraction inside
+# one request, which exceeds every sane proxy timeout and would force the
+# work into a Celery worker. Sequential single-file requests get the same
+# result for the user, keep each request inside its timeout, and need no
+# broker at all.
 
 
 @router.post("/attachments")
@@ -50,11 +49,35 @@ async def upload_attachment(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """Persist, parse and index an attachment for grounded Ask Kriton turns."""
+    """Ingest one attachment for an Ask Kriton turn: extract its text, chunk it
+    and index it so the user can ask questions about it.
+
+    chunk_count is now the real number of indexed chunks, not a function of the
+    byte size. status is "ready" when the file is genuinely answerable and
+    "failed" when it is not, with failure_reason saying why — a scanned PDF
+    yields no text, and the uploader has to be told that rather than handed a
+    green tick and answers that quietly ignore their file.
+    """
     name = file.filename or "attachment"
     suffix = name[name.rfind(".") :].lower() if "." in name else ""
     if suffix not in _ALLOWED_ATTACHMENT_EXTENSIONS:
-        raise HTTPException(status_code=422, detail=f"Unsupported file type '{suffix or 'unknown'}' — allowed: .pdf, .docx, .xlsx, .pptx")
+        allowed = ", ".join(sorted(_ALLOWED_ATTACHMENT_EXTENSIONS))
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported file type {suffix or 'unknown'} — allowed: {allowed}",
+        )
+
+    existing = await documents_service.count_documents(
+        db, tenant_id=current_user.tenant_id, user_id=current_user.id
+    )
+    if existing >= _MAX_DOCUMENTS_PER_USER:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"You have reached the {_MAX_DOCUMENTS_PER_USER}-document limit. "
+                "Delete a document before uploading another."
+            ),
+        )
 
     content = await file.read()
     if len(content) == 0:
@@ -62,80 +85,70 @@ async def upload_attachment(
     if len(content) > _MAX_ATTACHMENT_BYTES:
         raise HTTPException(status_code=413, detail="File exceeds the 20MB upload limit")
 
-    if get_settings().ASYNC_DOCUMENT_INGESTION:
-        document = await create_document_upload(
-            db, filename=name, mime_type=_ATTACHMENT_MIME_TYPES[suffix],
-            content=content, tenant_id=current_user.tenant_id, user_id=current_user.id,
-        )
-        from app.jobs.ingestion_jobs import enqueue_document_ingestion
-        enqueue_document_ingestion(document.id)
-        chunk_count = 0
-    else:
-        document, chunk_count = await ingest_document(
-            db,
-            filename=name,
-            mime_type=_ATTACHMENT_MIME_TYPES[suffix],
-            content=content,
-            tenant_id=current_user.tenant_id,
-            user_id=current_user.id,
-        )
-    if document.status == "FAILED":
-        raise HTTPException(status_code=422, detail=f"The document could not be processed: {document.processing_error}")
+    result = await documents_service.ingest_document(
+        db,
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.id,
+        filename=name,
+        extension=suffix,
+        data=content,
+    )
 
+    # Audited with the real outcome. A failed extraction is recorded as failed
+    # rather than as an upload that happened to produce zero chunks.
     await record_event_async(
         db,
         tenant_id=current_user.tenant_id,
-        event_name="kriton_workspace.attachment_uploaded",
+        event_name=(
+            "kriton_workspace.attachment_indexed"
+            if result.status == STATUS_READY
+            else "kriton_workspace.attachment_rejected"
+        ),
         emitting_service="kriton_workspace",
         actor_id=current_user.id,
         subject_type="attachment",
-        subject_id=document.id,
-        payload={"filename": name, "size_bytes": len(content), "chunk_count": chunk_count, "status": document.status},
+        subject_id=result.document_id,
+        payload={
+            "filename": name,
+            "size_bytes": len(content),
+            "status": result.status,
+            "chunk_count": result.chunk_count,
+            "char_count": result.char_count,
+            "failure_reason": result.failure_reason,
+        },
     )
 
-    return {"document_id": document.id, "filename": name, "chunk_count": chunk_count, "status": document.status}
+    return {
+        "document_id": result.document_id,
+        "filename": result.filename,
+        "status": result.status,
+        "chunk_count": result.chunk_count,
+        "char_count": result.char_count,
+        "failure_reason": result.failure_reason,
+    }
 
 
-@router.get("/attachments", response_model=list[DocumentPublic])
-async def get_attachments(
+@router.get("/attachments")
+async def list_attachments(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[DocumentPublic]:
-    rows = await list_documents(db, tenant_id=current_user.tenant_id, user_id=current_user.id)
+) -> list[dict]:
+    """The caller own indexed documents, newest first."""
+    rows = await documents_service.list_documents(
+        db, tenant_id=current_user.tenant_id, user_id=current_user.id
+    )
     return [
-        DocumentPublic(
-            id=document.id,
-            filename=document.filename,
-            mime_type=document.mime_type,
-            status=document.status,
-            processing_error=document.processing_error,
-            chunk_count=chunk_count,
-            created_at=document.created_at,
-            expires_at=document.expires_at,
-        )
-        for document, chunk_count in rows
+        {
+            "document_id": d.id,
+            "filename": d.filename,
+            "status": d.status,
+            "chunk_count": d.chunk_count,
+            "size_bytes": d.size_bytes,
+            "failure_reason": d.failure_reason,
+            "created_at": d.created_at.isoformat() if d.created_at else None,
+        }
+        for d in rows
     ]
-
-
-@router.get("/attachments/{document_id}", response_model=DocumentPublic)
-async def get_attachment(
-    document_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> DocumentPublic:
-    row = await get_document(
-        db, document_id=document_id,
-        tenant_id=current_user.tenant_id, user_id=current_user.id,
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Document not found")
-    document, chunk_count = row
-    return DocumentPublic(
-        id=document.id, filename=document.filename, mime_type=document.mime_type,
-        status=document.status, processing_error=document.processing_error,
-        chunk_count=chunk_count, created_at=document.created_at,
-        expires_at=document.expires_at,
-    )
 
 
 @router.delete("/attachments/{document_id}")
@@ -144,8 +157,9 @@ async def delete_attachment(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    deleted = await delete_document(
-        db, document_id=document_id, tenant_id=current_user.tenant_id, user_id=current_user.id
+    deleted = await documents_service.delete_document(
+        db, document_id=document_id,
+        tenant_id=current_user.tenant_id, user_id=current_user.id,
     )
     if not deleted:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -157,33 +171,9 @@ async def delete_attachment(
         actor_id=current_user.id,
         subject_type="attachment",
         subject_id=document_id,
-        payload={},
+        payload={"document_id": document_id},
     )
     return {"deleted": True}
-
-
-@router.get("/artifacts/{artifact_id}/download")
-async def download_artifact(
-    artifact_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    artifact = await get_generated_artifact(
-        db, artifact_id=artifact_id, tenant_id=current_user.tenant_id, user_id=current_user.id
-    )
-    if artifact is None:
-        raise HTTPException(status_code=404, detail="Generated document not found")
-    if artifact.storage_provider == "supabase":
-        content = await artifact_bytes(artifact)
-        return Response(
-            content=content,
-            media_type=artifact.mime_type,
-            headers={"Content-Disposition": f'attachment; filename="{artifact.filename}"'},
-        )
-    path = artifact_absolute_path(artifact)
-    if not path.is_file():
-        raise HTTPException(status_code=410, detail="Generated document file is unavailable")
-    return FileResponse(path, media_type=artifact.mime_type, filename=artifact.filename)
 
 
 @router.get("/saved-answers", response_model=list[SavedAnswerPublic])

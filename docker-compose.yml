@@ -15,81 +15,39 @@ services:
       timeout: 5s
       retries: 10
 
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    command: redis-server --appendonly yes
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   backend:
     build: ./backend
-    # backend/.env supplies every provider credential (Supabase, Groq, Gemini,
-    # Companies House, Finnhub, Polygon, Alpha Vantage, SEC_USER_AGENT). Without
-    # this the container started with the empty defaults below and every
-    # keyed integration silently did nothing — a compose run behaved
-    # completely differently from a local one, for no visible reason.
-    #
-    # `required: false` so the stack still builds on a checkout with no .env;
-    # the values under `environment:` remain the fallback. Note the precedence:
-    # `environment:` WINS over env_file, so anything that must be overridable
-    # from .env is deliberately absent from the block below.
+    # API keys and provider config. Requires backend/.env — copy .env.example.
     env_file:
-      - path: ./backend/.env
-        required: false
+      - ./backend/.env
     environment:
+      # These four are container-specific and MUST stay under `environment:`,
+      # which Compose ranks above `env_file:` — otherwise the local .env's
+      # Supabase DATABASE_URL and localhost SEARXNG_URL would win and this
+      # stack would start postgres and searxng, then talk to production.
       DATABASE_URL: postgresql+asyncpg://zoiko:zoiko@postgres:5432/zoiko
       # Non-superuser role for request-time queries — provisioned automatically
       # by app/main.py's lifespan on startup. Needed for Postgres RLS
       # (sources/source_versions tenant isolation) to actually apply: RLS
       # always exempts superusers, and DATABASE_URL's "zoiko" role is one.
       APP_DATABASE_URL: postgresql+asyncpg://zoiko_app:zoiko_app@postgres:5432/zoiko
-      # Redis logical DB 0 carries queued jobs; DB 1 stores task results.
-      # Container services address Redis by its Compose service name, not localhost.
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/1
-      RATE_LIMIT_STORAGE_URI: redis://redis:6379/2
-      ASYNC_DOCUMENT_INGESTION: "true"
-      # Without this, risk_classifier.py's _get_classifier_pipeline() never
-      # loads the real zero-shot model — every query gets a fixed 0.5
-      # confidence, which is always below the 0.65 routing threshold, so
-      # every query falls back to "needs clarification" regardless of content.
-      ENABLE_ML_CLASSIFIER: "true"
-      CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001","http://localhost:3005"]'
-      # Container-network address, which MUST override whatever backend/.env
-      # says (that file points at localhost:8888 for local runs).
       SEARXNG_URL: http://searxng:8080
-      #
-      # Credentials are deliberately NOT listed here — SUPABASE_URL,
-      # SUPABASE_SERVICE_ROLE_KEY, GROQ_API_KEY, GEMINI_API_KEY,
-      # COMPANIES_HOUSE_API_KEY, FINNHUB_API_KEY, POLYGON_API_KEY,
-      # ALPHA_VANTAGE_API_KEY, SEC_USER_AGENT all arrive via env_file above.
-      # Declaring them here with empty defaults would silently win over the
-      # file, which is exactly the bug this change fixes.
+      CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001","http://localhost:3005"]'
+      # Do NOT add GROQ_*/SUPABASE_*/TWELVE_DATA_* here — an empty value would
+      # override env_file and blank the real key. GROQ_MODEL and
+      # GROQ_CLASSIFIER_MODEL must be set in backend/.env: groq_adapter.py's
+      # in-code default is a model Groq has retired, so falling through to it
+      # returns 404 "model_not_found" on every request.
     ports:
       - "8010:8010"
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
       searxng:
         condition: service_started
 
   searxng:
     image: searxng/searxng
-    # Upstream engines rate-limit and CAPTCHA a self-hosted instance, and an
-    # unhandled SearxEngineCaptchaException has taken this container down with
-    # exit 255 mid-session. Restarting keeps retrieval available; without it a
-    # single CAPTCHA silently ends web grounding until someone notices.
-    restart: unless-stopped
     environment:
       # Base URL SearXNG advertises; harmless for internal API use.
       SEARXNG_BASE_URL: http://localhost:8888/
@@ -99,16 +57,6 @@ services:
       - ./searxng:/etc/searxng
     ports:
       - "8888:8080"
-    healthcheck:
-      # Checks the JSON API the backend actually calls, not just the web UI —
-      # the format has to be enabled in settings.yml for retrieval to work at
-      # all, so probing the HTML page would report healthy while grounding was
-      # broken.
-      test: ["CMD-SHELL", "wget -qO- 'http://localhost:8080/search?q=test&format=json' >/dev/null || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
 
   seed:
     build: ./backend
@@ -124,41 +72,15 @@ services:
       sh -c "sleep 5 &&
       python scripts/seed_dev_user.py"
 
-  document-worker:
-    build: ./backend
-    env_file:
-      - path: ./backend/.env
-        required: false
-    environment:
-      DATABASE_URL: postgresql+asyncpg://zoiko:zoiko@postgres:5432/zoiko
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/1
-    command: celery -A app.jobs.celery_app:celery_app worker --loglevel=INFO --queues=documents,maintenance
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  retention-scheduler:
-    build: ./backend
-    env_file:
-      - path: ./backend/.env
-        required: false
-    environment:
-      DATABASE_URL: postgresql+asyncpg://zoiko:zoiko@postgres:5432/zoiko
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/1
-    command: celery -A app.jobs.celery_app:celery_app beat --loglevel=INFO
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
   frontend:
     build: ./frontend
+    # Supabase URL + anon key, read by lib/supabase.ts. Requires
+    # frontend/.env.local. Works at runtime because the image runs
+    # `npm run dev`; a production `next build` would need these as build args.
+    env_file:
+      - ./frontend/.env.local
     environment:
+      # Host-published port, not the service name — the browser fetches this.
       NEXT_PUBLIC_API_URL: http://localhost:8010/api/v1
     ports:
       - "3005:3000"
@@ -167,5 +89,3 @@ services:
 
 volumes:
   postgres_data:
-  redis_data:
-  

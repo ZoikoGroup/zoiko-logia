@@ -34,7 +34,6 @@ async def _emit(
     payload: dict[str, Any],
     classification: str = "INTERNAL",
     replay_relevance: str = "SUPPORTING",
-    restore_tenant_context: bool = True,
 ) -> None:
     """Internal helper — wraps record_event_async with canonical envelope fields."""
     await record_event_async(
@@ -48,7 +47,6 @@ async def _emit(
         correlation_id=correlation_id,
         classification=classification,
         replay_relevance=replay_relevance,
-        restore_tenant_context=restore_tenant_context,
         payload={
             "audit_chain_id": audit_chain_id,
             "classifier_version": CLASSIFIER_VERSION,
@@ -88,21 +86,6 @@ async def audit_retrieval_completed(db, *, query_id, correlation_id, tenant_id, 
 async def audit_retrieval_failed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id, error: str):
     await _emit(db, "retrieval_failed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"error": error}, replay_relevance="REQUIRED")
-
-async def audit_document_retrieval(db, *, query_id, correlation_id, tenant_id, audit_chain_id,
-                                   actor_id, document_ids: list[str], hit_count: int,
-                                   error: str | None = None):
-    await _emit(
-        db, "document_retrieval_completed", query_id, correlation_id, tenant_id,
-        audit_chain_id, actor_id,
-        {
-            "requested_document_ids": document_ids,
-            "requested_document_count": len(document_ids),
-            "hit_count": hit_count,
-            "error": error,
-        },
-        replay_relevance="REQUIRED" if error else "SUPPORTING",
-    )
 
 # ── Massarius™ Phase 1 control events — ZL-ENG-03 §12 ────────────────────────
 
@@ -152,23 +135,6 @@ async def audit_redaction_applied(db, *, query_id, correlation_id, tenant_id, au
 async def audit_composition_started(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id):
     await _emit(db, "composition_started", query_id, correlation_id, tenant_id, audit_chain_id, actor_id, {})
 
-async def audit_calculation_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id,
-                                      actor_id, formula_ids: list[str], status: str,
-                                      verification_status: str, input_names: list[str]):
-    await _emit(
-        db, "calculation_completed", query_id, correlation_id, tenant_id,
-        audit_chain_id, actor_id,
-        {
-            "formula_ids": formula_ids,
-            "formula_version": "1.0",
-            "status": status,
-            "verification_status": verification_status,
-            "input_names": input_names,
-            "input_source": "user_query",
-        },
-        replay_relevance="REQUIRED",
-    )
-
 async def audit_composition_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                        prompt_id: str, output_hash: str):
     await _emit(db, "composition_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
@@ -177,16 +143,6 @@ async def audit_composition_completed(db, *, query_id, correlation_id, tenant_id
 async def audit_composition_failed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id, error: str):
     await _emit(db, "composition_failed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"error": error}, replay_relevance="REQUIRED")
-
-async def audit_artifact_generation_failed(db, *, query_id, correlation_id, tenant_id,
-                                            audit_chain_id, actor_id, format_name: str,
-                                            error_type: str):
-    await _emit(
-        db, "artifact_generation_failed", query_id, correlation_id, tenant_id,
-        audit_chain_id, actor_id,
-        {"format": format_name, "error_type": error_type},
-        replay_relevance="REQUIRED",
-    )
 
 async def audit_composition_rejected(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                       failures: list[str], degraded_route: str):
@@ -220,11 +176,5 @@ async def audit_response_finalised(db, *, query_id, correlation_id, tenant_id, a
 
 async def audit_response_returned(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                    latency_ms: float):
-    # This is the terminal database write for the request.  Re-applying the
-    # session-scoped tenant setting after its commit would open a brand-new
-    # transaction that FastAPI must roll back during dependency teardown
-    # before it can deliver the HTTP response.  On a degraded Supabase link
-    # that unnecessary rollback has blocked for ~120s.  Earlier events still
-    # restore the context because more tenant-scoped work follows them.
     await _emit(db, "response_returned", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
-                {"latency_ms": round(latency_ms, 2)}, restore_tenant_context=False)
+                {"latency_ms": round(latency_ms, 2)})
