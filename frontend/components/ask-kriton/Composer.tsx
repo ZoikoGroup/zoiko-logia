@@ -15,7 +15,7 @@ import {
   FileText,
   Loader2,
   Mic,
-  Plus,
+  Paperclip,
   X,
 } from "lucide-react";
 import {
@@ -23,6 +23,7 @@ import {
   uploadKritonAttachment,
   deleteKritonAttachment,
   ApiError,
+  type AttachmentSummary,
   type AttachmentUploadResult,
 } from "@/lib/api";
 
@@ -51,6 +52,10 @@ export type Attachment = {
   documentId?: string;
   chunkCount?: number;
   error?: string;
+  /** Attached from the saved-document library rather than uploaded here.
+   *  Removing one of these detaches it from the question; it must NOT delete
+   *  the stored document, which other conversations may still cite. */
+  fromLibrary?: boolean;
 };
 
 // Minimal ambient shape for the (non-standard) Web Speech API — no @types
@@ -89,6 +94,7 @@ export function Composer({
   error,
   attachments,
   onAttachmentsChange,
+  savedDocuments = [],
 }: {
   variant: "hero" | "sticky";
   query: string;
@@ -110,6 +116,11 @@ export function Composer({
    *  lets the user ask several follow-up questions about the same document. */
   attachments: Attachment[];
   onAttachmentsChange: Dispatch<SetStateAction<Attachment[]>>;
+  /** Documents already uploaded in this workspace, for the "Add saved
+   *  document" picker. Fetched and owned by the page, since it also refreshes
+   *  the list after an upload. Defaults to empty so the picker simply does not
+   *  render when the caller has nothing to offer. */
+  savedDocuments?: AttachmentSummary[];
 }) {
   const setAttachments = onAttachmentsChange;
   const [listening, setListening] = useState(false);
@@ -232,11 +243,40 @@ export function Composer({
     }
   }
 
+  /** Attach a document already in the workspace library. No upload happens —
+   *  it is indexed already, so it goes straight in as a ready attachment. */
+  function addSavedDocument(document: AttachmentSummary) {
+    setUploadNotice(null);
+    if (attachments.length >= MAX_FILES) {
+      setUploadNotice(`You can attach up to ${MAX_FILES} files to a question.`);
+      return;
+    }
+    setAttachments((prev) => (
+      prev.some((a) => a.documentId === document.document_id)
+        ? prev
+        : [...prev, {
+            key: `saved-${document.document_id}`,
+            name: document.filename,
+            status: "success",
+            progress: 1,
+            documentId: document.document_id,
+            chunkCount: document.chunk_count,
+            fromLibrary: true,
+          }]
+    ));
+  }
+
   async function removeAttachment(attachment: Attachment) {
     setAttachments((prev) => prev.filter((a) => a.key !== attachment.key));
     setUploadNotice(null);
     // Also drop the indexed copy — leaving chunks behind for a document the
     // user has visibly removed would keep influencing answers.
+    //
+    // Except for one attached FROM the library: there, removing it means "not
+    // for this question", not "delete it". Deleting would destroy a stored
+    // document the user never asked to lose, and take it out of every other
+    // conversation that cites it.
+    if (attachment.fromLibrary) return;
     const token = getAuthToken();
     if (token && attachment.documentId) {
       try {
@@ -281,6 +321,12 @@ export function Composer({
   const rows = variant === "hero" ? 2 : 2;
   const uploading = attachments.some((a) => a.status === "uploading");
   const atLimit = attachments.length >= MAX_FILES;
+  // Only documents that actually indexed are offerable, and only those not
+  // already on this question — otherwise the picker lists entries that either
+  // contribute nothing to an answer or are duplicates of a visible row.
+  const selectableSavedDocuments = savedDocuments.filter(
+    (d) => d.status === "ready" && !attachments.some((a) => a.documentId === d.document_id),
+  );
 
   return (
     <div>
@@ -335,7 +381,7 @@ export function Composer({
           />
 
           <div className="flex items-center justify-between gap-3">
-            <div>
+            <div className="flex min-w-0 items-center gap-2">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -354,10 +400,39 @@ export function Composer({
                 disabled={uploading || atLimit}
                 aria-label="Attach documents"
                 title={atLimit ? `Up to ${MAX_FILES} files per question` : "Attach documents (PDF, Word, Excel, PowerPoint, CSV, text)"}
-                className="flex h-9 w-9 items-center justify-center rounded-full text-muted transition hover:bg-soft disabled:opacity-50"
+                className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-full bg-soft px-2.5 text-xs font-semibold text-ink transition hover:bg-line/60 disabled:cursor-not-allowed disabled:opacity-50 sm:px-3"
               >
-                {uploading ? <Loader2 size={17} className="animate-spin" /> : <Plus size={19} />}
+                {uploading ? (
+                  <Loader2 size={16} className="shrink-0 animate-spin" />
+                ) : (
+                  <Paperclip size={16} className="shrink-0" />
+                )}
+                <span className="hidden sm:inline">Attach documents</span>
               </button>
+
+              {/* Files already uploaded in this workspace. Picking one ADDS it
+                  to the question rather than replacing the current selection,
+                  so the control stays a "+ add" action and never displays as
+                  current state — what is attached is shown by the rows above.
+                  Hidden entirely when the library is empty or every ready
+                  document is already attached, so it never opens onto nothing. */}
+              {selectableSavedDocuments.length > 0 && (
+                <select
+                  aria-label="Add a saved document"
+                  value=""
+                  disabled={uploading || atLimit}
+                  onChange={(e) => {
+                    const picked = selectableSavedDocuments.find((d) => d.document_id === e.target.value);
+                    if (picked) addSavedDocument(picked);
+                  }}
+                  className="h-9 min-w-0 max-w-48 rounded-full !border-transparent !bg-soft px-3 text-xs font-semibold text-ink !shadow-none outline-none transition hover:bg-line/60 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <option value="">Add saved document</option>
+                  {selectableSavedDocuments.map((d) => (
+                    <option key={d.document_id} value={d.document_id}>{d.filename}</option>
+                  ))}
+                </select>
+              )}
             </div>
 
             <div className="flex min-w-0 items-center justify-end gap-2">

@@ -30,8 +30,10 @@ import {
   askKriton,
   createSavedAnswer,
   getAuthToken,
+  listKritonAttachments,
   ApiError,
   type AskKritonResponse,
+  type AttachmentSummary,
   type SourceCitation,
 } from "@/lib/api";
 import {
@@ -45,6 +47,7 @@ import { getFollowUpSuggestions } from "@/lib/follow-up-suggestions";
 import { ThinkingIndicator } from "@/components/ask-kriton/ThinkingIndicator";
 import { DesktopSidebar, MobileDrawer } from "@/components/ask-kriton/Sidebar";
 import { Composer, type Attachment } from "@/components/ask-kriton/Composer";
+import { useAuth } from "@/hooks/useAuth";
 import { ExploreFurther } from "@/components/ask-kriton/ExploreFurther";
 import {
   loadConversations,
@@ -258,6 +261,7 @@ function ResponseActions({
 }) {
   const [status, setStatus] = useState<Record<string, "idle" | "busy" | "done" | "error">>({});
   const [saveError, setSaveError] = useState("");
+  const [showSources, setShowSources] = useState(false);
 
   function flash(key: string, value: "done" | "error") {
     setStatus((prev) => ({ ...prev, [key]: value }));
@@ -313,7 +317,7 @@ function ResponseActions({
   }
 
   const actions = [
-    { key: "copy", label: "Copy", doneLabel: "Copied", icon: Copy, onClick: copyAnswer },
+    { key: "copy", label: "Copy answer", doneLabel: "Copied", icon: Copy, onClick: copyAnswer },
     { key: "download", label: "Download .md", doneLabel: "Downloaded", icon: Download, onClick: downloadAnswer },
     { key: "save", label: "Save", doneLabel: "Saved", icon: Bookmark, onClick: saveAnswer },
     ...(onReuse
@@ -321,9 +325,11 @@ function ResponseActions({
       : []),
   ];
 
+  const citations = result.answer?.citations ?? [];
+
   return (
     <div className="mt-4 border-t border-line pt-3">
-      <div className="flex flex-wrap items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
       {actions.map(({ key, label, doneLabel, icon: Icon, onClick }) => {
         const state = status[key] ?? "idle";
         return (
@@ -332,26 +338,60 @@ function ResponseActions({
             type="button"
             onClick={onClick}
             disabled={state === "busy"}
-            className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition disabled:opacity-50 ${
+            className={`inline-flex items-center gap-1.5 text-[13px] font-medium transition disabled:opacity-50 ${
               state === "error"
-                ? "border-bad/40 text-bad"
+                ? "text-bad"
                 : state === "done"
-                  ? "border-ok/40 text-ok"
-                  : "border-line text-muted hover:border-brand/40 hover:text-brand"
+                  ? "text-ok"
+                  : "text-muted hover:text-brand"
             }`}
           >
             {state === "busy" ? (
-              <Loader2 size={12} className="animate-spin" />
+              <Loader2 size={14} className="animate-spin" />
             ) : state === "done" ? (
-              <CheckCircle2 size={12} />
+              <CheckCircle2 size={14} />
             ) : (
-              <Icon size={12} />
+              <Icon size={14} />
             )}
             {state === "done" ? doneLabel : label}
           </button>
         );
       })}
+
+      {/* Sources sits in this row rather than in a block of its own above the
+          answer: it is one of the things you do WITH a finished answer, like
+          copying or saving it, and as a separate bordered section it split the
+          footer into two competing rows. Collapsed by default — the count says
+          what is behind it, so a long answer is not pushed down by its own
+          provenance. */}
+      {citations.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowSources((previous) => !previous)}
+          aria-expanded={showSources}
+          className={`inline-flex items-center gap-1.5 text-[13px] font-medium transition ${
+            showSources ? "text-brand" : "text-muted hover:text-brand"
+          }`}
+        >
+          <BookOpen size={14} />
+          Sources
+          <span className="rounded-full bg-soft px-1.5 py-0.5 text-[10px] font-semibold text-muted">
+            {citations.length}
+          </span>
+          <ChevronDown
+            size={14}
+            className={`shrink-0 transition-transform ${showSources ? "rotate-180" : ""}`}
+          />
+        </button>
+      )}
       </div>
+
+      {showSources && citations.length > 0 && (
+        <div className="mt-2.5 space-y-1 border-t border-line pt-2.5">
+          {citations.map((c) => <SourceButton key={c.ref_id} citation={c} />)}
+        </div>
+      )}
+
       {saveError && <p className="mt-1.5 text-[11px] font-medium text-bad">{saveError}</p>}
     </div>
   );
@@ -547,25 +587,8 @@ function ConversationTurn({
               {result.answer ? (
                 <>
                   <AnswerRenderer text={result.answer.text} />
-                  {result.answer.citations.length > 0 && (
-                    <details className="group/sources mt-5 border-t border-line pt-4">
-                      {/* Collapsed by default — the list only opens on click, so a
-                          long answer is not pushed down by its own provenance.
-                          Named group: SourceButton carries its own bare `group`,
-                          and an unnamed group here would fire its hover styles
-                          from anywhere in the panel. */}
-                      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs font-bold uppercase text-muted transition hover:text-ink">
-                        <ChevronDown size={13} className="shrink-0 transition-transform group-open/sources:rotate-180" />
-                        Sources
-                        <span className="rounded-full bg-soft px-1.5 py-0.5 text-[10px] font-semibold normal-case text-muted">
-                          {result.answer.citations.length}
-                        </span>
-                      </summary>
-                      <div className="mt-2 space-y-1">
-                        {result.answer.citations.map((c) => <SourceButton key={c.ref_id} citation={c} />)}
-                      </div>
-                    </details>
-                  )}
+                  {/* Citations render from the footer's "Sources" control (see
+                      ResponseActions), not from a separate block here. */}
                   {result.answer.limitations.length > 0 && (
                     <div className="mt-4 space-y-2 border-t border-line pt-4">
                       {result.answer.limitations.map((l, i) => (
@@ -625,6 +648,7 @@ function ConversationTurn({
 }
 
 export default function AskKritonPage() {
+  const { session } = useAuth();
   const [query, setQuery] = useState("");
   const [jurisdiction, setJurisdiction] = useState("");
   const [mode, setMode] = useState("Kriton's choice");
@@ -643,6 +667,12 @@ export default function AskKritonPage() {
     .filter((a) => a.status === "success" && a.documentId)
     .map((a) => ({ documentId: a.documentId as string, name: a.name, chunkCount: a.chunkCount }));
   const [submitting, setSubmitting] = useState(false);
+  // Documents already in this workspace, for the composer's "Add saved
+  // document" picker. Held here rather than in the Composer for the same
+  // reason `attachments` is: the hero and sticky variants swap on the first
+  // question, and a list owned by the component would be re-fetched on every
+  // swap.
+  const [savedDocuments, setSavedDocuments] = useState<AttachmentSummary[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>(() =>
     typeof window === "undefined" ? [] : loadConversations(),
   );
@@ -827,6 +857,33 @@ export default function AskKritonPage() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [turnCount, lastTurnLoading]);
 
+  // Load the saved-document library once signed in, and refresh it whenever an
+  // upload finishes so a file just attached is immediately offerable to the
+  // next question. Fails soft: uploading still works when the list cannot be
+  // fetched, the picker simply does not appear.
+  //
+  // Keyed on the session token, not only on uploads. getAuthToken() reads a
+  // module-level cache that AuthContext fills asynchronously after
+  // getSession() resolves, so on a fresh page load it is still "" during the
+  // first render — depending on uploads alone would leave the picker missing
+  // until the user happened to attach something, which is exactly when they
+  // no longer need it.
+  useEffect(() => {
+    const token = session?.access_token;
+    if (!token) return;
+    let cancelled = false;
+    listKritonAttachments(token)
+      .then((documents) => {
+        if (!cancelled) setSavedDocuments(documents);
+      })
+      .catch(() => {
+        /* Picker stays hidden; attaching a new file is unaffected. */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.access_token, readyAttachments.length]);
+
   const sidebarProps = {
     conversations: sorted,
     activeId,
@@ -885,6 +942,7 @@ export default function AskKritonPage() {
                       error={submitError}
                       attachments={attachments}
                       onAttachmentsChange={setAttachments}
+                      savedDocuments={savedDocuments}
                     />
                   </div>
 
@@ -949,6 +1007,7 @@ export default function AskKritonPage() {
                     error={submitError}
                     attachments={attachments}
                     onAttachmentsChange={setAttachments}
+                      savedDocuments={savedDocuments}
                   />
                 </div>
               )}
