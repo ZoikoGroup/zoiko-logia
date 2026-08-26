@@ -56,6 +56,7 @@ class EscalationOut(BaseModel):
     """Read-only representation of an escalation case for the frontend."""
     id: str
     query_id: str
+    correlation_id: Optional[str] = None
     query_text: str
     topic: str
     risk_level: str

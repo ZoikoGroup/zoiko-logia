@@ -18,7 +18,9 @@ settings = get_settings()
 
 _TENANT_SCOPED_TABLES = (
     "sources", "source_versions", "workspace_documents", "workspace_document_chunks", "workspace_artifacts",
-    "workspace_conversation_documents",
+    "workspace_conversation_documents", "agent_runs", "agent_steps",
+    "kriton_memory_items", "kriton_feedback_items", "kriton_learning_candidates",
+    "kriton_workflow_definitions", "kriton_source_update_reviews",
 )
 
 # RLS predicate per tenant-scoped table. Not a strict tenant_id equality:
@@ -62,6 +64,27 @@ _TENANT_POLICY_USING = {
         f"({_HAS_TENANT_CONTEXT} AND tenant_id = current_setting('app.tenant_id', true) "
         "AND user_id = current_setting('app.user_id', true))"
     ),
+    "agent_runs": (
+        f"({_HAS_TENANT_CONTEXT} AND tenant_id = current_setting('app.tenant_id', true) "
+        "AND user_id = current_setting('app.user_id', true))"
+    ),
+    "agent_steps": (
+        f"({_HAS_TENANT_CONTEXT} AND tenant_id = current_setting('app.tenant_id', true) "
+        "AND user_id = current_setting('app.user_id', true))"
+    ),
+    "kriton_memory_items": (
+        f"({_HAS_TENANT_CONTEXT} AND tenant_id = current_setting('app.tenant_id', true) "
+        "AND user_id = current_setting('app.user_id', true))"
+    ),
+    "kriton_feedback_items": (
+        f"({_HAS_TENANT_CONTEXT} AND tenant_id = current_setting('app.tenant_id', true) "
+        "AND user_id = current_setting('app.user_id', true))"
+    ),
+    "kriton_learning_candidates": f"({_HAS_TENANT_CONTEXT} AND tenant_id = current_setting('app.tenant_id', true))",
+    "kriton_workflow_definitions": (
+        f"({_HAS_TENANT_CONTEXT} AND (tenant_id = current_setting('app.tenant_id', true) OR tenant_id = 'GLOBAL_CONTROL'))"
+    ),
+    "kriton_source_update_reviews": f"({_HAS_TENANT_CONTEXT} AND tenant_id = current_setting('app.tenant_id', true))",
 }
 
 

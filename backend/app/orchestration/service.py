@@ -28,6 +28,7 @@ import re
 from typing import Optional
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -91,6 +92,7 @@ from app.orchestration.query_classifier_shadow import log_shadow_comparison
 from app.orchestration.risk_llm import classify_risk, classify_risk_gemini
 from app.domains.kriton_workspace.documents import retrieve_document_sources, resolve_conversation_document_ids
 from app.domains.kriton_workspace.artifacts import create_generated_artifact
+from app.domains.learning_system.models import MemoryItem
 from app.orchestration.document_pipeline import (
     analyse_spreadsheet_sources,
     build_document_generation_prompt,
@@ -947,7 +949,7 @@ async def ask_kriton(
         review_case = await create_review_case(
             db,
             query_id=query_id, correlation_id=correlation_id,
-            tenant_id=tenant_id, risk_level=risk_level,
+            tenant_id=tenant_id, query_text=request.query, risk_level=risk_level,
             confidence_state=effective_confidence,
             reason=f"Risk: {risk_level} | Confidence: {effective_confidence} | Mode: {request.mode}",
         )
@@ -1257,6 +1259,24 @@ async def ask_kriton(
             allow_general_knowledge=allow_general_knowledge,
         )
 
+    # Phase 1 governed memory: only user-confirmed items are injected, clearly
+    # separated from evidence so a preference can shape presentation but can
+    # never replace source facts or safety policy.
+    memory_rows = await db.execute(
+        select(MemoryItem).where(
+            MemoryItem.tenant_id == tenant_id,
+            MemoryItem.user_id == actor_id,
+            MemoryItem.confirmed.is_(True),
+        ).order_by(MemoryItem.updated_at.desc()).limit(20)
+    )
+    confirmed_memories = list(memory_rows.scalars())
+    if confirmed_memories:
+        memory_text = "\n".join(f"- {item.key}: {item.value}" for item in confirmed_memories)
+        grounded_input += (
+            "\n\nCONFIRMED USER PREFERENCES (apply only when relevant; never override evidence, calculations, or safety rules):\n"
+            + memory_text
+        )
+
     # External-provider exposure boundary (ZL-ENG-03 §5.8): redact before
     # grounded_input leaves the tenant trust boundary for the model gateway.
     # Deliberately after prescreen/retrieval, not at pipeline entry — those
@@ -1457,7 +1477,7 @@ async def ask_kriton(
         if validation.degraded_route == ROUTE_HUMAN_REVIEW:
             review_case = await create_review_case(
                 db, query_id=query_id, correlation_id=correlation_id,
-                tenant_id=tenant_id, risk_level=risk_level,
+                tenant_id=tenant_id, query_text=request.query, risk_level=risk_level,
                 confidence_state=effective_confidence,
                 reason=f"Composition rejected: {'; '.join(validation.failures[:2])}",
             )

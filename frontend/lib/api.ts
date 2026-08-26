@@ -963,6 +963,24 @@ export async function askKriton(
   }
 }
 
+export type KritonFeedbackRequest = {
+  query_id: string;
+  correlation_id?: string;
+  query_text: string;
+  feedback_type: "HELPFUL" | "NOT_HELPFUL";
+  reason_code: string;
+  correction?: string;
+  remember_correction?: boolean;
+};
+
+export async function submitKritonFeedback(token: string, payload: KritonFeedbackRequest): Promise<void> {
+  await authedFetch("/learning-system/feedback", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export type SavedAnswer = {
   id: string;
   query_id: string;

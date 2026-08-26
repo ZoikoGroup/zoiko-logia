@@ -20,6 +20,8 @@ import {
   PenLine,
   RotateCcw,
   Sparkles,
+  ThumbsDown,
+  ThumbsUp,
   X,
 } from "lucide-react";
 import { AnswerRenderer } from "@/components/AnswerRenderer";
@@ -33,6 +35,7 @@ import {
   type AskKritonResponse,
   type SourceCitation,
   type WorkspaceDocument,
+  submitKritonFeedback,
 } from "@/lib/api";
 import {
   answerBodyOnly,
@@ -286,6 +289,10 @@ function ResponseActions({
 }) {
   const [status, setStatus] = useState<Record<string, "idle" | "busy" | "done" | "error">>({});
   const [saveError, setSaveError] = useState("");
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackReason, setFeedbackReason] = useState("WRONG_DATA");
+  const [feedbackCorrection, setFeedbackCorrection] = useState("");
+  const [rememberCorrection, setRememberCorrection] = useState(false);
 
   function flash(key: string, value: "done" | "error") {
     setStatus((prev) => ({ ...prev, [key]: value }));
@@ -356,6 +363,35 @@ function ResponseActions({
     }
   }
 
+  async function sendFeedback(helpful: boolean) {
+    const token = getAuthToken();
+    if (!token) {
+      setSaveError("Sign in to send feedback.");
+      return;
+    }
+    if (!helpful && !feedbackOpen) {
+      setFeedbackOpen(true);
+      return;
+    }
+    setStatus((prev) => ({ ...prev, feedback: "busy" }));
+    try {
+      await submitKritonFeedback(token, {
+        query_id: result.query_id,
+        correlation_id: result.correlation_id,
+        query_text: question,
+        feedback_type: helpful ? "HELPFUL" : "NOT_HELPFUL",
+        reason_code: helpful ? "CORRECT" : feedbackReason,
+        correction: feedbackCorrection,
+        remember_correction: !helpful && rememberCorrection,
+      });
+      setFeedbackOpen(false);
+      flash("feedback", "done");
+    } catch (err) {
+      setSaveError(err instanceof ApiError ? err.message : "Could not send feedback.");
+      flash("feedback", "error");
+    }
+  }
+
   const actions = [
     { key: "copy", label: "Copy answer", doneLabel: "Copied", icon: Copy, onClick: copyAnswer, title: "Copy the answer text" },
     { key: "download", label: "Download .md", doneLabel: "Downloaded", icon: Download, onClick: downloadAnswer, title: "Download the complete response as Markdown" },
@@ -415,6 +451,25 @@ function ResponseActions({
         </details>
       )}
       </div>
+      <div className="mt-2 flex items-center gap-1 text-[11px] text-muted">
+        <span className="mr-1">Was this useful?</span>
+        <button type="button" onClick={() => void sendFeedback(true)} className="rounded-lg p-1.5 hover:bg-ok/10 hover:text-ok" aria-label="Helpful"><ThumbsUp size={15} /></button>
+        <button type="button" onClick={() => void sendFeedback(false)} className="rounded-lg p-1.5 hover:bg-bad/10 hover:text-bad" aria-label="Not helpful"><ThumbsDown size={15} /></button>
+        {status.feedback === "done" && <span className="text-ok">Feedback saved</span>}
+      </div>
+      {feedbackOpen && (
+        <div className="mt-2 max-w-xl space-y-2 rounded-xl border border-line bg-soft/40 p-3">
+          <select value={feedbackReason} onChange={(e) => setFeedbackReason(e.target.value)} className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-xs">
+            <option value="WRONG_DATA">Wrong data</option><option value="WRONG_WORKFLOW">Wrong workflow</option>
+            <option value="WRONG_CALCULATION">Wrong calculation</option><option value="BAD_FORMAT">Bad format</option>
+            <option value="UNNECESSARY_ESCALATION">Unnecessary escalation</option><option value="ARTIFACT_FAILURE">File was not generated</option>
+            <option value="MISSING_INFORMATION">Missing information</option><option value="UNSUPPORTED_CLAIM">Unsupported claim</option>
+          </select>
+          <textarea value={feedbackCorrection} onChange={(e) => setFeedbackCorrection(e.target.value)} placeholder="What should Kriton have done? (optional)" className="min-h-20 w-full rounded-lg border border-line bg-panel px-3 py-2 text-xs" />
+          <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={rememberCorrection} onChange={(e) => setRememberCorrection(e.target.checked)} disabled={!feedbackCorrection.trim()} /> Remember this correction as my confirmed preference</label>
+          <div className="flex gap-2"><button type="button" onClick={() => void sendFeedback(false)} className="rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white">Send feedback</button><button type="button" onClick={() => setFeedbackOpen(false)} className="rounded-lg px-3 py-1.5 text-xs">Cancel</button></div>
+        </div>
+      )}
       {(result.artifacts ?? []).length > 0 && (
         <div className="mt-3 space-y-2">
           {result.artifacts.map((artifact) => {

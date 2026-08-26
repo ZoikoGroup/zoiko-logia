@@ -9,6 +9,7 @@ import json
 import re
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from app.orchestration.websearch import WebSource
@@ -75,6 +76,25 @@ def _number(value: str) -> Decimal | None:
         return None
 
 
+def _month(value: str) -> str | None:
+    """Return YYYY-MM for ordinary spreadsheet date renderings."""
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    try:
+        parsed = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+        return f"{parsed.year:04d}-{parsed.month:02d}"
+    except ValueError:
+        pass
+    for pattern in ("%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%Y/%m/%d", "%b %Y", "%B %Y"):
+        try:
+            parsed = datetime.strptime(cleaned, pattern)
+            return f"{parsed.year:04d}-{parsed.month:02d}"
+        except ValueError:
+            continue
+    return None
+
+
 def analyse_spreadsheet_sources(sources: list[WebSource]) -> dict:
     """Compute common accounting KPIs from tab-delimited workbook evidence.
 
@@ -86,6 +106,7 @@ def analyse_spreadsheet_sources(sources: list[WebSource]) -> dict:
     products: dict[str, Decimal] = defaultdict(Decimal)
     rows_analysed = 0
     evidence: list[str] = []
+    monthly_highest: dict[str, dict] = {}
     for source in sources:
         lines = [line.split("\t") for line in source.snippet.splitlines() if "\t" in line]
         if len(lines) < 2:
@@ -100,7 +121,7 @@ def analyse_spreadsheet_sources(sources: list[WebSource]) -> dict:
         if customer_index is None:
             customer_index = next((i for i, h in enumerate(headers) if "customer" in h or "client" in h), None)
         product_index = next((i for i, h in enumerate(headers) if "product" in h or "service" in h), None)
-        date_index = next((i for i, h in enumerate(headers) if h == "date" or "period" in h), None)
+        date_index = next((i for i, h in enumerate(headers) if h == "date" or "date" in h or "period" in h), None)
         if customer_index is None and product_index is None and date_index is None:
             continue
         metric_indexes = {
@@ -108,7 +129,7 @@ def analyse_spreadsheet_sources(sources: list[WebSource]) -> dict:
             "total_cost": next((i for i, h in enumerate(headers) if h in {"cost", "costs", "total cost"} or h.startswith("cost ")), None),
             "gross_profit": next((i for i, h in enumerate(headers) if "gross profit" in h or h.startswith("profit ") or h == "profit"), None),
         }
-        for row in lines[1:]:
+        for row_offset, row in enumerate(lines[1:], start=2):
             revenue = _number(row[revenue_index]) if revenue_index < len(row) else None
             if revenue is None:
                 continue
@@ -122,6 +143,22 @@ def analyse_spreadsheet_sources(sources: list[WebSource]) -> dict:
                 customers[row[customer_index].strip()] += revenue
             if product_index is not None and product_index < len(row) and row[product_index].strip():
                 products[row[product_index].strip()] += revenue
+            month = _month(row[date_index]) if date_index is not None and date_index < len(row) else None
+            if month:
+                fields = {
+                    headers[index]: row[index].strip()
+                    for index in range(min(len(headers), len(row)))
+                    if row[index].strip()
+                }
+                candidate = {
+                    "month": month,
+                    "revenue": float(revenue),
+                    "fields": fields,
+                    "source_location": f"{source.title} (data row {row_offset})",
+                }
+                current = monthly_highest.get(month)
+                if current is None or Decimal(str(current["revenue"])) < revenue:
+                    monthly_highest[month] = candidate
         evidence.append(source.title)
     revenue = totals.get("total_revenue", Decimal(0))
     profit = totals.get("gross_profit", Decimal(0))
@@ -136,7 +173,11 @@ def analyse_spreadsheet_sources(sources: list[WebSource]) -> dict:
         "customer_revenue": {key: float(value) for key, value in sorted(customers.items(), key=lambda item: item[1], reverse=True)},
         "product_revenue": {key: float(value) for key, value in sorted(products.items(), key=lambda item: item[1], reverse=True)},
         "evidence_locations": evidence,
+        "monthly_highest_sales": [monthly_highest[key] for key in sorted(monthly_highest)],
     }
+    result["metrics"]["monthly_highest_sales_total"] = float(
+        sum((Decimal(str(row["revenue"])) for row in monthly_highest.values()), Decimal(0))
+    )
     if revenue:
         result["metrics"]["gross_margin_percent"] = float((profit / revenue) * 100)
     return result

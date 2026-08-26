@@ -77,10 +77,15 @@ def get_escalation_stats(db: Session = Depends(get_sync_db)):
 @router.get("/escalations", response_model=list[EscalationOut])
 def list_escalations(
     status: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
     db: Session = Depends(get_sync_db),
 ):
-    """List escalation cases, optionally filtered by status."""
-    cases = safety_service.get_escalations(db, status=status)
+    """List canonical review cases, newest first, with filtering and pagination."""
+    cases = safety_service.get_escalations(
+        db, status=status, search=search, limit=min(max(limit, 1), 500), offset=max(offset, 0)
+    )
     return cases
 
 

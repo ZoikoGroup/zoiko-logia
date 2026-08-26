@@ -11,6 +11,8 @@ from app.domains.evaluation.router import router as evaluation_router
 from app.orchestration.router import router as orchestration_router
 from app.domains.governance_dashboard.router import router as governance_dashboard_router
 from app.domains.command_center.router import router as command_center_router
+from app.domains.orchestration_state.router import router as agent_runtime_router
+from app.domains.learning_system.router import router as learning_system_router
 
 api_v1_router = APIRouter()
 api_v1_router.include_router(auth_router)
@@ -25,3 +27,5 @@ api_v1_router.include_router(orchestration_router)
 api_v1_router.include_router(kriton_workspace_router)
 api_v1_router.include_router(governance_dashboard_router)
 api_v1_router.include_router(command_center_router)
+api_v1_router.include_router(agent_runtime_router)
+api_v1_router.include_router(learning_system_router)

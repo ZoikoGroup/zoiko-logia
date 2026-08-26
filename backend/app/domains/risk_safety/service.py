@@ -20,6 +20,7 @@ from app.domains.risk_safety.models import (
     _new_id, _utcnow,
 )
 from app.domains.risk_safety.schemas import SafetyDecision, ClassifyRequest
+from app.orchestration.models import ReviewCase
 
 
 _SLA_HOURS = {
@@ -169,11 +170,43 @@ def validate_output(text: str, db: Optional[Session] = None, answer_id: str = "a
     return {"is_safe": is_safe, "violations": violation_dicts, "cleaned_text": cleaned}
 
 
-def get_escalations(db: Session, status: Optional[str] = None) -> list[EscalationCase]:
-    query = db.query(EscalationCase).order_by(EscalationCase.created_at.desc())
+_REVIEW_STATUS_TO_PUBLIC = {
+    "open": "PENDING", "information_requested": "UNDER_REVIEW",
+    "approved": "RESOLVED", "refused": "REFUSED", "escalated": "ESCALATED",
+}
+_PUBLIC_TO_REVIEW_STATUS = {value: key for key, value in _REVIEW_STATUS_TO_PUBLIC.items()}
+
+
+def _review_case_out(case: ReviewCase) -> dict:
+    return {
+        "id": case.id, "query_id": case.query_id, "correlation_id": case.correlation_id,
+        "query_text": case.query_text or "Query text was not retained for this older case.",
+        "topic": (case.query_text or case.reason)[:180], "risk_level": case.risk_level,
+        "restricted_sub_class": None, "jurisdiction": "GLOBAL", "owner": None,
+        "reviewer_role": case.assigned_queue,
+        "sla_deadline": case.created_at + timedelta(hours=24),
+        "status": _REVIEW_STATUS_TO_PUBLIC.get(case.status.lower(), case.status.upper()),
+        "route_reason": case.reason, "detail": case.reason, "evidence_refs": [],
+        "reviewer_decision": case.reviewer_decision, "reviewer_id": case.reviewer_id,
+        "created_at": case.created_at, "resolved_at": case.resolved_at,
+    }
+
+
+def get_escalations(
+    db: Session, status: Optional[str] = None, search: Optional[str] = None,
+    limit: int = 100, offset: int = 0,
+) -> list[dict]:
+    query = db.query(ReviewCase)
     if status:
-        query = query.filter(EscalationCase.status == status)
-    return query.all()
+        query = query.filter(ReviewCase.status == _PUBLIC_TO_REVIEW_STATUS.get(status.upper(), status.lower()))
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            ReviewCase.id.ilike(term) | ReviewCase.query_id.ilike(term)
+            | ReviewCase.correlation_id.ilike(term) | ReviewCase.query_text.ilike(term)
+        )
+    cases = query.order_by(ReviewCase.created_at.desc(), ReviewCase.id.desc()).offset(offset).limit(limit).all()
+    return [_review_case_out(case) for case in cases]
 
 
 def resolve_escalation(
@@ -182,41 +215,20 @@ def resolve_escalation(
     action: str,
     reviewer_id: str,
     reason: str = "",
-) -> Optional[EscalationCase]:
-    case = db.query(EscalationCase).filter(EscalationCase.id == case_id).first()
+) -> Optional[dict]:
+    case = db.query(ReviewCase).filter(ReviewCase.id == case_id).first()
     if not case:
         return None
 
-    # Maker-Checker (§10.2): reviewer cannot be the routing owner (owner == who created/owns the case)
-    # This enforces that the same person cannot both route and approve a review case.
-    if reviewer_id and case.owner and reviewer_id.strip().lower() == case.owner.strip().lower():
-        db.add(SafetyEvent(
-            event_type="maker_checker_violation_blocked",
-            payload={
-                "object_type": "escalation_case",
-                "object_id": case_id,
-                "actor_id": reviewer_id,
-                "workflow_context": "QUERY_REVIEW",
-                "payload_schema_version": "1.0"
-            }
-        ))
-        db.commit()
-        raise ValueError(
-            f"Maker-Checker violation: '{reviewer_id}' is the owner of this case and "
-            "cannot also be the reviewer (ZL-T0-04 §10.2)."
-        )
-
     status_map = {
-        "approve": EscalationStatus.RESOLVED,
-        "refuse": EscalationStatus.REFUSED,
-        "escalate": EscalationStatus.ESCALATED,
-        "request_info": EscalationStatus.UNDER_REVIEW,
+        "approve": "approved", "refuse": "refused",
+        "escalate": "escalated", "request_info": "information_requested",
     }
 
-    case.status = status_map.get(action, EscalationStatus.UNDER_REVIEW)
+    case.status = status_map.get(action, "information_requested")
     case.reviewer_decision = action
     case.reviewer_id = reviewer_id
-    case.detail = f"{case.detail or ''}\n\n[Reviewer {reviewer_id}]: {reason}" if reason else case.detail
+    case.review_note = reason
     case.resolved_at = _utcnow() if action in ("approve", "refuse") else None
 
     # Audit Ledger Event (Section 15)
@@ -234,19 +246,22 @@ def resolve_escalation(
 
     db.commit()
     db.refresh(case)
-    return case
+    return _review_case_out(case)
 
 
 def get_escalation_stats(db: Session) -> dict:
     """Summary counts for the escalation queue dashboard (ZL-T0-04 §10)."""
     from sqlalchemy import func
-    total = db.query(EscalationCase).count()
-    pending = db.query(EscalationCase).filter(EscalationCase.status == EscalationStatus.PENDING).count()
-    under_review = db.query(EscalationCase).filter(EscalationCase.status == EscalationStatus.UNDER_REVIEW).count()
-    resolved = db.query(EscalationCase).filter(EscalationCase.status == EscalationStatus.RESOLVED).count()
-    refused = db.query(EscalationCase).filter(EscalationCase.status == EscalationStatus.REFUSED).count()
-    escalated = db.query(EscalationCase).filter(EscalationCase.status == EscalationStatus.ESCALATED).count()
-    over_sla = len(get_sla_breached_cases(db))
+    total = db.query(ReviewCase).count()
+    pending = db.query(ReviewCase).filter(ReviewCase.status == "open").count()
+    under_review = db.query(ReviewCase).filter(ReviewCase.status == "information_requested").count()
+    resolved = db.query(ReviewCase).filter(ReviewCase.status == "approved").count()
+    refused = db.query(ReviewCase).filter(ReviewCase.status == "refused").count()
+    escalated = db.query(ReviewCase).filter(ReviewCase.status == "escalated").count()
+    over_sla = db.query(ReviewCase).filter(
+        ReviewCase.status.in_(["open", "information_requested"]),
+        ReviewCase.created_at < _utcnow() - timedelta(hours=24),
+    ).count()
     return {
         "total": total,
         "pending": pending,

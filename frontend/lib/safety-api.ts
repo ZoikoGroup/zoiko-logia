@@ -12,6 +12,7 @@ const BACKEND = `${API_URL}/safety`;
 export type Escalation = {
   id: string;
   query_id: string;
+  correlation_id: string | null;
   query_text: string;
   topic: string;
   risk_level: string;
@@ -73,8 +74,11 @@ export async function validateOutput(text: string): Promise<{
   return { is_safe: true, violations: [], cleaned_text: text };
 }
 
-export async function getEscalations(): Promise<Escalation[]> {
-  const remote = await tryBackend<Escalation[]>("/escalations");
+export async function getEscalations(search = "", status = ""): Promise<Escalation[]> {
+  const params = new URLSearchParams({ limit: "100", offset: "0" });
+  if (search.trim()) params.set("search", search.trim());
+  if (status) params.set("status", status);
+  const remote = await tryBackend<Escalation[]>(`/escalations?${params.toString()}`);
   return remote ?? [];
 }
 

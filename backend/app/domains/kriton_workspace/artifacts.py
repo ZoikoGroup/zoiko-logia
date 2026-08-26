@@ -103,6 +103,39 @@ def _xlsx_bytes(spec: DocumentSpec, analysis: dict) -> bytes:
             for _ in range(22 if block.type == "chart" else 13):
                 report.append([])
     report.column_dimensions["A"].width = 110
+    monthly_rows = analysis.get("monthly_highest_sales", [])
+    if monthly_rows:
+        monthly = workbook.create_sheet("Monthly Highest Sales")
+        preferred = ["month", "customer", "product category", "deal type", "revenue", "profit", "status"]
+        available_fields = {
+            key
+            for item in monthly_rows
+            for key in item.get("fields", {})
+        }
+        field_headers = []
+        for preferred_field in preferred[1:]:
+            if preferred_field == "revenue":
+                continue
+            match = next(
+                (field for field in available_fields if field == preferred_field or field.startswith(f"{preferred_field} ")),
+                None,
+            )
+            if match and match not in field_headers:
+                field_headers.append(match)
+        headers = ["Month", *[field.title() for field in field_headers], "Revenue", "Source Location"]
+        monthly.append(headers)
+        for cell in monthly[1]:
+            cell.font = Font(bold=True)
+        for item in monthly_rows:
+            fields = item.get("fields", {})
+            monthly.append([
+                item.get("month", ""),
+                *[fields.get(field, "") for field in field_headers],
+                item.get("revenue"),
+                item.get("source_location", ""),
+            ])
+        monthly.freeze_panes = "A2"
+        monthly.auto_filter.ref = monthly.dimensions
     kpis = workbook.create_sheet("Verified KPIs")
     kpis.append(["Metric", "Value"])
     for key, value in analysis.get("metrics", {}).items():
@@ -269,6 +302,8 @@ def _render(format_name: str, title: str, narrative: str, analysis: dict, reques
             required = {"Report", "Verified KPIs", "Customer Analysis", "Product Analysis", "Source References"}
             if not required.issubset(workbook.sheetnames):
                 raise ValueError("Generated XLSX failed sheet validation")
+            if analysis.get("monthly_highest_sales") and "Monthly Highest Sales" not in workbook.sheetnames:
+                raise ValueError("Generated XLSX is missing monthly highest-sales data")
         finally:
             workbook.close()
         return content, "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

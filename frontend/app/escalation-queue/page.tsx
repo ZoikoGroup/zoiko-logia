@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "@/components/governance/PageHeader";
 import { Pill } from "@/components/governance/Pill";
 import {
@@ -15,6 +15,7 @@ import {
   Zap,
   ChevronDown,
   ChevronUp,
+  Search,
 } from "lucide-react";
 import { 
   getEscalations, 
@@ -79,6 +80,8 @@ export default function EscalationQueuePage() {
   const [actionReason, setActionReason] = useState("");
   const [submittingId, setSubmittingId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
   
   // Override form state
   const [showOverrideForm, setShowOverrideForm] = useState(false);
@@ -90,27 +93,30 @@ export default function EscalationQueuePage() {
     duration_hours: 24
   });
 
-  async function load() {
+  const load = useCallback(async function load() {
     setLoading(true);
     try {
       const [escData, statsData, overrideData] = await Promise.all([
-        getEscalations(),
+        getEscalations(search, statusFilter),
         getEscalationStats(),
         getSafetyOverrides()
       ]);
-      setEscalations(escData);
+      setEscalations([...escData].sort((a, b) => {
+        const byCreated = new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime();
+        return byCreated || b.id.localeCompare(a.id);
+      }));
       setStats(statsData || null);
       setOverrides(overrideData);
     } catch (e) {
       console.error(e);
     }
     setLoading(false);
-  }
+  }, [search, statusFilter]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 0);
+    const timer = window.setTimeout(() => void load(), 300);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [load]);
 
   async function handleAction(caseId: string, action: "approve" | "refuse" | "escalate" | "request_info") {
     setErrorMsg(null);
@@ -145,7 +151,7 @@ export default function EscalationQueuePage() {
     <main className="flex-1 overflow-y-auto p-6 space-y-6">
       <PageHeader
         title="Escalation Queue & Governance"
-        subtitle="Manage routing cases, monitor SLAs, and apply safety overrides."
+        subtitle="Review AI escalations here, newest first. Open a case to approve, refuse, request information, or escalate it."
       />
 
       {/* ── Summary Metrics Grid ─────────────────────────────────────── */}
@@ -214,6 +220,23 @@ export default function EscalationQueuePage() {
                 <RefreshCw size={12} className={loading ? "animate-spin" : ""} /> Refresh
               </button>
             </div>
+          </div>
+
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <label className="flex flex-1 items-center gap-2 rounded-xl border border-line bg-panel px-3 py-2">
+              <Search size={15} className="text-muted" />
+              <input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search case ID, query ID, correlation ID, or query text"
+                className="w-full bg-transparent text-xs text-ink outline-none placeholder:text-muted"
+              />
+            </label>
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="rounded-xl border border-line bg-panel px-3 py-2 text-xs text-ink">
+              <option value="">All statuses</option><option value="PENDING">Pending</option>
+              <option value="UNDER_REVIEW">Information requested</option><option value="RESOLVED">Approved</option>
+              <option value="REFUSED">Refused</option><option value="ESCALATED">Escalated</option>
+            </select>
           </div>
 
           {loading ? (
@@ -298,6 +321,7 @@ export default function EscalationQueuePage() {
 
                         <div className="flex flex-wrap gap-1.5 border-t border-line/40 pt-4">
                           <Pill>Query ID: {esc.query_id}</Pill>
+                          {esc.correlation_id && <Pill>Correlation ID: {esc.correlation_id}</Pill>}
                           {esc.reviewer_role && <Pill tone="info">Required Role: {esc.reviewer_role}</Pill>}
                           {esc.reviewer_id && <Pill tone="ok">Reviewer ID: {esc.reviewer_id}</Pill>}
                           {esc.reviewer_decision && <Pill tone="ok">Decision: {esc.reviewer_decision}</Pill>}
