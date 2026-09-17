@@ -8,6 +8,13 @@
 .venv/
 implementation_plan.md
 
+# Python/test caches and local validation artifacts
+**/__pycache__/
+*.py[cod]
+**/.pytest_cache/
+/backend/.codex-*-tmp/
+/backend/data/pytest-integration-temp/
+
 # Local untracked markdown docs
 /DATA_SOURCES_REFERENCE.md
 /IMPLEMENTATION_ROADMAP.md

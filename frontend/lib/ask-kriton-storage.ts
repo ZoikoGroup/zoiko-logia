@@ -1,16 +1,5 @@
 import type { AskKritonResponse } from "@/lib/api";
 
-/** A document that was attached to one question. Recorded per turn, not per
- *  conversation: the composer is cleared once a question is sent, so each turn
- *  is a faithful record of what that particular answer could see. Persisted
- *  with the conversation so scrolling back still shows which file an answer
- *  was grounded in. */
-export type TurnAttachment = {
-  documentId: string;
-  name: string;
-  chunkCount?: number;
-};
-
 export type Turn = {
   id: string;
   /** Raw text as typed, before any quick-mode prefix or follow-up context tail. */
@@ -20,9 +9,7 @@ export type Turn = {
   loading: boolean;
   error: string | null;
   result: AskKritonResponse | null;
-  /** Documents sent with this question. Optional so conversations stored
-   *  before this existed still load. */
-  attachments?: TurnAttachment[];
+  attachments?: Array<{ documentId: string; filename: string }>;
 };
 
 export type Conversation = {
@@ -32,6 +19,7 @@ export type Conversation = {
   createdAt: number;
   updatedAt: number;
   pinned: boolean;
+  documentIds?: string[];
 };
 
 const CONVERSATIONS_KEY = "kriton_conversations_v3";
@@ -56,6 +44,7 @@ function migrateLegacy(raw: unknown): Conversation[] {
     createdAt: c.createdAt,
     updatedAt: c.createdAt,
     pinned: false,
+    documentIds: [],
     turns: (c.turns ?? []).map((t) =>
       isLegacyTurn(t)
         ? { id: t.id, query: t.question, submittedQuery: t.question, loading: t.loading, error: t.error, result: t.result }

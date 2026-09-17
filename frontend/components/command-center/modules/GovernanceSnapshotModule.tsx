@@ -13,7 +13,12 @@ export function GovernanceSnapshotModule() {
   const [disputedSources, setDisputedSources] = useState<number | null>(null);
 
   useEffect(() => {
-    getEscalationStats().then((stats) => setPendingEscalations(stats?.pending ?? 0));
+    // Falls back to 0 rather than rejecting — the tile shows "—" until it has
+    // a number, and an unhandled rejection here would surface as a dev overlay
+    // for a widget the user is not interacting with.
+    getEscalationStats()
+      .then((stats) => setPendingEscalations(stats?.pending ?? 0))
+      .catch(() => setPendingEscalations(0));
     listSources(getAuthToken())
       .then((sources) =>
         setDisputedSources(
