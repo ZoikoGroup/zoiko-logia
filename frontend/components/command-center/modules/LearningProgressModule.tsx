@@ -14,8 +14,18 @@ export function LearningProgressModule() {
 
   useEffect(() => {
     const token = getAuthToken();
-    getCPDSummary(token).then(setSummary);
-    listSyllabusPathways(token).then((rows) => setNextPathway(rows[0] ?? null));
+    // Both calls swallow their errors on purpose. This is a background widget
+    // on a dashboard: it already renders a "—" placeholder when it has no
+    // data, so a failed fetch should degrade to that. Unhandled, a rejection
+    // surfaces as a red overlay in dev — and any 401 also triggers the
+    // sign-out-and-redirect in lib/api.ts, so an expired token would boot the
+    // user out from a widget they were not even looking at.
+    getCPDSummary(token)
+      .then(setSummary)
+      .catch(() => setSummary(null));
+    listSyllabusPathways(token)
+      .then((rows) => setNextPathway(rows[0] ?? null))
+      .catch(() => setNextPathway(null));
   }, []);
 
   return (
