@@ -74,6 +74,7 @@ from app.orchestration.live_data import fetch_live_data, LiveDataResult
 from app.orchestration.dbnomics import countries_in_query
 from app.domains.market_data.registry import detect_intent as detect_market_data_intent
 from app.orchestration.market_data import _OWNERSHIP_HINTS, _OWNERSHIP_STRUCTURE_CHART_HINT
+from app.orchestration.document_evidence import build_document_evidence
 from app.orchestration.evidence import EvidenceModel, Entity, Relationship
 from app.orchestration.extraction import extract_graph, extract_user_visual_evidence
 from app.orchestration.intent_classifier import (
@@ -1101,6 +1102,21 @@ async def ask_kriton(
     if live_result.sources:
         web_sources = live_result.sources + web_sources
     live_evidence: EvidenceModel = live_result.evidence
+    # Charts are built from EvidenceModel.observations, and fetch_live_data()
+    # only ever sees the query string — it has no access to an attachment. So
+    # a question about an uploaded file retrieved and answered from the
+    # document's text, then reported that no verified data existed for the
+    # chart. True of the live feeds; wrong about the file in front of it.
+    #
+    # Read the document's own tables instead, but ONLY when the live
+    # connectors found nothing: a real IMF or market series stays
+    # authoritative over a figure lifted from a spreadsheet. Extraction fails
+    # closed — an unreadable or ambiguous table returns empty evidence, which
+    # lands on exactly the honest message shown today.
+    if not live_evidence.observations and document_sources:
+        document_evidence = build_document_evidence(request.query, document_sources)
+        if document_evidence.observations:
+            live_evidence = document_evidence
     if source_bundle and live_evidence.observations and not request.jurisdiction:
         query_countries = countries_in_query(request.query)
         if query_countries:
@@ -1159,7 +1175,21 @@ async def ask_kriton(
         deterministic_chart_text = live_result.deterministic_answer
         if _is_deterministically_out_of_scope(request.query):
             deterministic_chart_text = _MODEL_DOMAIN_REFUSAL_TEXT
-        elif live_evidence.observations and (explicit_visual_request or live_evidence.provider):
+        elif (
+            live_evidence.observations
+            and (explicit_visual_request or live_evidence.provider)
+            # Document evidence is excluded. This branch exists so a LIVE
+            # series (FRED, DBnomics, market data) is narrated straight from
+            # the retrieved numbers rather than re-described by the model,
+            # which could drift from them. An uploaded document is different:
+            # its full text is already in the grounded prompt, so the model
+            # can answer it properly, and _grounded_domain_fallback's
+            # time-series phrasing is wrong for it anyway — "decreased from
+            # Inventory to Deferred tax liability" is not a sentence about
+            # balance-sheet categories. The extracted figures still drive the
+            # chart; only the prose comes from the model.
+            and live_evidence.provider != "uploaded_document"
+        ):
             deterministic_chart_text = _grounded_domain_fallback(request.query, live_evidence)
         elif live_evidence.composition_subject:
             # Real, named PSC/shareholder data (or a confirmed no-PSC-on-record

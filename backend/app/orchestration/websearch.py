@@ -272,12 +272,35 @@ _DOMAIN_GATE = (
 def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
     """Assemble a grounded prompt from document, live-data, or web evidence."""
     if not sources:
+        # Retrieval came back empty. Answer from professional knowledge rather
+        # than refusing: retrieval fails soft (an unreachable SearXNG returns
+        # nothing silently), so a refusal here reads to the user as "Kriton
+        # cannot answer this" when the real cause is a search engine being
+        # down. _DOMAIN_GATE above still decides scope, so an off-topic
+        # question is refused on subject, not on whether a source happened to
+        # be retrieved.
+        #
+        # The honesty requirement moves rather than disappearing: with no
+        # sources there are no citations, so the answer must not present
+        # itself as source-backed, and anything that cannot be stated from
+        # settled professional knowledge — a current rate, threshold,
+        # deadline, filing requirement or market figure — still has to be
+        # declined, because those are exactly the values that change and that
+        # a reader would otherwise take on trust. The UI already captions
+        # these turns "no cited sources".
         return (
             _DOMAIN_GATE
-            + "No reliable document, live-data, or web evidence was retrieved. "
-            "Do not answer from model knowledge and do not invent facts. State "
-            "briefly that reliable evidence could not be retrieved and ask the "
-            "user to attach a readable document or clarify the source scope.\n"
+            + "No document, live-data or web evidence was retrieved for this "
+            "question. If it is in scope per STEP 1, answer it from your own "
+            "settled professional knowledge — definitions, concepts, standard "
+            "treatments, worked explanations and general principles. Write the "
+            "answer plainly and do not claim it is sourced, cited or verified, "
+            "and do not invent a source, citation, URL or reference.\n"
+            "Do NOT state a specific current figure from memory — a tax rate, "
+            "threshold, allowance, filing deadline, statutory limit, share "
+            "price or other market value. For those, say the current figure "
+            "needs to be confirmed against the relevant authority or an "
+            "attached document, and explain the underlying rule instead.\n"
             + _FORMATTING_INSTRUCTIONS
             + f"\n=== User Question ===\n{query}"
         )
@@ -292,9 +315,30 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
         "Write a clean, natural answer. Do NOT insert citation markers such as "
         "[REF-1], [1], or source numbers anywhere in the answer text — the "
         "sources are shown to the reader separately below, so the answer must "
-        "read cleanly without them. If the sources do not contain the answer, "
-        "say so plainly instead of guessing. Format the answer clearly with "
-        "short paragraphs or bullet points where helpful.\n"
+        "read cleanly without them. Format the answer clearly with short "
+        "paragraphs or bullet points where helpful.\n"
+        # Retrieval returns whatever ranked highest, which is not the same as
+        # material that answers the question. Refusing outright whenever the
+        # top hits missed the point left in-scope questions unanswered while
+        # five unrelated sources sat underneath — the user sees "Sources 5"
+        # and a refusal, which reads as broken rather than careful.
+        #
+        # The evidence still leads: it is used wherever it covers the
+        # question. Only the uncovered part falls back to professional
+        # knowledge, and it must be visibly marked as such so a reader is
+        # never left guessing which half was sourced.
+        "If the sources only partly cover the question, use them for the part "
+        "they do cover and answer the rest from your own settled professional "
+        "knowledge — say briefly that the sources did not address that part. "
+        "If they do not cover it at all, answer from professional knowledge "
+        "and say plainly that the retrieved sources did not address the "
+        "question. Never present unsourced material as though it came from "
+        "the evidence, and never invent a source, citation or reference.\n"
+        "Do NOT state a specific current figure from memory — a tax rate, "
+        "threshold, allowance, filing deadline, statutory limit, share price "
+        "or other market value — unless it appears in the evidence above. For "
+        "those, say the figure needs confirming against the relevant "
+        "authority and explain the underlying rule instead.\n"
         + _FORMATTING_INSTRUCTIONS
         + f"\n=== Evidence Sources ===\n{context}\n\n"
         + f"=== User Question ===\n{query}"
