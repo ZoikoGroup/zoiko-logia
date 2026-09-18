@@ -77,11 +77,38 @@ def test_document_evidence_prompt_is_grounded_and_has_no_public_url():
     assert "Revenue\t125000" in prompt
 
 
-def test_empty_evidence_prompt_fails_closed():
+def test_empty_evidence_prompt_answers_in_scope_from_knowledge():
+    """With no evidence, an in-scope question is answered from professional
+    knowledge rather than refused. Retrieval fails soft — an unreachable
+    SearXNG returns nothing silently — so refusing here told the user Kriton
+    could not answer when the real cause was a search engine being down."""
     prompt = build_web_grounded_prompt("What is revenue?", [])
 
-    assert "Do not answer from model knowledge" in prompt
-    assert "reliable evidence could not be retrieved" in prompt
+    assert "answer it from your own settled professional knowledge" in prompt
+    # Scope is still decided by the domain gate, not by whether a source
+    # happened to be retrieved.
+    assert "STEP 1 — CLASSIFY" in prompt
+
+
+def test_empty_evidence_prompt_must_not_claim_to_be_sourced():
+    """The honesty requirement moves rather than disappearing: an unsourced
+    answer carries no citations, so it must not present itself as verified,
+    and must not manufacture a reference to look as though it is."""
+    prompt = build_web_grounded_prompt("What is revenue?", [])
+
+    assert "do not claim it is sourced, cited or verified" in prompt
+    assert "do not invent a source, citation, URL or reference" in prompt
+
+
+def test_empty_evidence_prompt_still_withholds_current_figures():
+    """Definitions are stable; rates, thresholds and market values are not.
+    Those are exactly the numbers a reader would take on trust, so they stay
+    behind the evidence requirement even when the concept is explained."""
+    prompt = build_web_grounded_prompt("What is the VAT threshold?", [])
+
+    assert "Do NOT state a specific current figure from memory" in prompt
+    for value in ("tax rate", "threshold", "filing deadline", "share "):
+        assert value in prompt
 
 
 def test_management_report_uses_full_document_retrieval():

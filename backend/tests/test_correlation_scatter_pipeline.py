@@ -54,6 +54,47 @@ def test_non_correlation_query_does_not_split():
     assert _split_correlation_subjects("Show India CPI over the last 10 years") is None
 
 
+def test_trailing_presentation_clause_is_stripped_from_subjects():
+    # The clauses stating the time window and the chart type sit after the
+    # second subject, so they were captured as part of it — the phrase
+    # "unemployment over the last 5 years and display the result" resolves to
+    # no series, which dropped the whole pair and returned the
+    # no-verified-data message for an answerable question.
+    assert _split_correlation_subjects(
+        "Compare US inflation and unemployment over the last 5 years "
+        "and display the result as a scatter plot."
+    ) == ("US inflation", "United States unemployment")
+
+
+def test_country_propagates_to_the_subject_that_omits_it():
+    # "Compare US inflation and unemployment" states the country once but
+    # means it for both sides. Without propagation the second lookup has no
+    # country, and the per-country finders bail out — leaving the generic
+    # full-text fallback to resolve a bare "unemployment" to an unrelated
+    # Argentina demographics series.
+    a, b = _split_correlation_subjects(
+        "Show the correlation between US inflation and unemployment"
+    )
+    assert a == "US inflation"
+    assert b == "United States unemployment"
+
+
+def test_explicit_country_on_both_sides_is_never_overridden():
+    # A genuine cross-country comparison must keep both countries.
+    assert _split_correlation_subjects(
+        "What is the correlation between India CPI and UK inflation?"
+    ) == ("India CPI", "UK inflation")
+
+
+def test_chart_words_excluded_from_dbnomics_keywords():
+    # DBnomics full-text search ANDs its terms, so a chart-type word that
+    # appears in no series name zeroes the result set outright.
+    from app.orchestration.dbnomics import _keywords
+
+    assert _keywords("compare last 10 years gdp rate in india in line chart") == ["gdp", "india"]
+    assert "scatter" not in _keywords("scatter plot of India CPI")
+
+
 # ── intent classification: CORRELATION vs RELATIONSHIP disjointness ─────
 
 def test_correlation_phrasing_classified_as_correlation():

@@ -26,17 +26,13 @@ from dataclasses import dataclass
 
 import httpx
 
-
-# Trusted, authoritative domains per jurisdiction. Results outside these are
-# dropped when an allowlist applies (see resolve). "GLOBAL" always applies.
-_TRUSTED_DOMAINS: dict[str, list[str]] = {
-    "GLOBAL": ["ifrs.org", "iasb.org", "ifac.org", "iaasb.org"],
-    "UK": ["gov.uk", "hmrc.gov.uk", "frc.org.uk", "icaew.com", "accaglobal.com", "legislation.gov.uk"],
-    "US": ["irs.gov", "fasb.org", "sec.gov", "pcaobus.org", "aicpa.org", "gao.gov"],
-    "EU": ["europa.eu", "efrag.org"],
-    "UAE": ["mof.gov.ae", "tax.gov.ae"],
-    "INDIA": ["incometax.gov.in", "icai.org", "mca.gov.in"],
-}
+from app.orchestration.source_taxonomy import (
+    allowed_domains,
+    detect_topics,
+    matches_allowlist,
+    organisation_key,
+    site_filter,
+)
 
 
 @dataclass
@@ -65,24 +61,55 @@ def _strict_allowlist() -> bool:
     return os.getenv("SEARXNG_STRICT_ALLOWLIST", "").lower() in {"1", "true", "yes"}
 
 
-def _allowed_domains(jurisdiction: str) -> list[str]:
-    key = (jurisdiction or "").upper().split("-")[0]  # "US-CA" -> "US"
-    domains = list(_TRUSTED_DOMAINS.get("GLOBAL", []))
-    if key in _TRUSTED_DOMAINS:
-        domains += _TRUSTED_DOMAINS[key]
-    return domains
+def _spread_across_organisations(
+    sources: list[WebSource], domains: list[str], limit: int
+) -> list[WebSource]:
+    """Pick `limit` sources spread across as many distinct BODIES as possible.
 
+    Search engines rank by relevance alone, so the top five hits for a UK tax
+    question are routinely five pages of the same HMRC manual. That reads as
+    five citations while carrying one organisation's view, and it hides the
+    standard-setter or the statute that would corroborate (or contradict) it.
 
-def _matches_allowlist(url: str, domains: list[str]) -> bool:
-    return any(d in url for d in domains)
+    Round-robin over organisations, in the order each first appeared, so the
+    engine's own relevance ranking still decides which page represents a body
+    and which body leads. Only once every organisation has contributed one
+    source does any of them contribute a second — so a five-source answer
+    drawn from five bodies stays five bodies, and one drawn from a single
+    body is still returned rather than truncated.
+    """
+    grouped: dict[str, list[WebSource]] = {}
+    for source in sources:
+        grouped.setdefault(organisation_key(source.url, domains), []).append(source)
+
+    spread: list[WebSource] = []
+    round_index = 0
+    while len(spread) < limit and any(len(v) > round_index for v in grouped.values()):
+        for bucket in grouped.values():
+            if len(bucket) > round_index:
+                spread.append(bucket[round_index])
+                if len(spread) == limit:
+                    return spread
+        round_index += 1
+    return spread
 
 
 async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list[WebSource]:
     """Query SearXNG and return up to `limit` sources, preferring trusted
-    domains for the jurisdiction. Returns [] on any failure (fail-soft)."""
+    domains for the jurisdiction and topic. Returns [] on any failure
+    (fail-soft)."""
     base = _searxng_url()
+    # Topic narrows the allowlist from "every body in this jurisdiction" to
+    # the ones with authority over THIS question (source_taxonomy.py). An
+    # off-taxonomy question detects no topics, which yields the full
+    # jurisdiction list — the behaviour before topics existed.
+    domains = allowed_domains(jurisdiction, detect_topics(query))
+    # Bias retrieval toward those bodies up front. Filtering alone only drops
+    # results after the fact, so a narrow question could return twenty blog
+    # posts, lose all of them, and fall through to untrusted general results.
+    sites = site_filter(domains)
     params = {
-        "q": query,
+        "q": f"{query} {sites}".strip() if sites else query,
         "format": "json",
         "safesearch": "1",
         "categories": "general",
@@ -111,16 +138,17 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
             )
         )
 
-    domains = _allowed_domains(jurisdiction)
-    trusted = [s for s in parsed if _matches_allowlist(s.url, domains)]
+    trusted = [s for s in parsed if matches_allowlist(s.url, domains)]
 
     if trusted:
-        return trusted[:limit]
+        return _spread_across_organisations(trusted, domains, limit)
     if _strict_allowlist():
         return []
     # Fallback: no trusted-domain hits — return the general top results so the
     # bot still answers (allowlist is advisory unless SEARXNG_STRICT_ALLOWLIST).
-    return parsed[:limit]
+    # Spread these too: organisation_key falls back to the bare hostname off
+    # the allowlist, so five pages of one blog still collapse to one voice.
+    return _spread_across_organisations(parsed, domains, limit)
 
 
 # The table/formula formatting rules apply whether or not web sources were
@@ -244,12 +272,35 @@ _DOMAIN_GATE = (
 def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
     """Assemble a grounded prompt from document, live-data, or web evidence."""
     if not sources:
+        # Retrieval came back empty. Answer from professional knowledge rather
+        # than refusing: retrieval fails soft (an unreachable SearXNG returns
+        # nothing silently), so a refusal here reads to the user as "Kriton
+        # cannot answer this" when the real cause is a search engine being
+        # down. _DOMAIN_GATE above still decides scope, so an off-topic
+        # question is refused on subject, not on whether a source happened to
+        # be retrieved.
+        #
+        # The honesty requirement moves rather than disappearing: with no
+        # sources there are no citations, so the answer must not present
+        # itself as source-backed, and anything that cannot be stated from
+        # settled professional knowledge — a current rate, threshold,
+        # deadline, filing requirement or market figure — still has to be
+        # declined, because those are exactly the values that change and that
+        # a reader would otherwise take on trust. The UI already captions
+        # these turns "no cited sources".
         return (
             _DOMAIN_GATE
-            + "No reliable document, live-data, or web evidence was retrieved. "
-            "Do not answer from model knowledge and do not invent facts. State "
-            "briefly that reliable evidence could not be retrieved and ask the "
-            "user to attach a readable document or clarify the source scope.\n"
+            + "No document, live-data or web evidence was retrieved for this "
+            "question. If it is in scope per STEP 1, answer it from your own "
+            "settled professional knowledge — definitions, concepts, standard "
+            "treatments, worked explanations and general principles. Write the "
+            "answer plainly and do not claim it is sourced, cited or verified, "
+            "and do not invent a source, citation, URL or reference.\n"
+            "Do NOT state a specific current figure from memory — a tax rate, "
+            "threshold, allowance, filing deadline, statutory limit, share "
+            "price or other market value. For those, say the current figure "
+            "needs to be confirmed against the relevant authority or an "
+            "attached document, and explain the underlying rule instead.\n"
             + _FORMATTING_INSTRUCTIONS
             + f"\n=== User Question ===\n{query}"
         )
@@ -264,9 +315,30 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
         "Write a clean, natural answer. Do NOT insert citation markers such as "
         "[REF-1], [1], or source numbers anywhere in the answer text — the "
         "sources are shown to the reader separately below, so the answer must "
-        "read cleanly without them. If the sources do not contain the answer, "
-        "say so plainly instead of guessing. Format the answer clearly with "
-        "short paragraphs or bullet points where helpful.\n"
+        "read cleanly without them. Format the answer clearly with short "
+        "paragraphs or bullet points where helpful.\n"
+        # Retrieval returns whatever ranked highest, which is not the same as
+        # material that answers the question. Refusing outright whenever the
+        # top hits missed the point left in-scope questions unanswered while
+        # five unrelated sources sat underneath — the user sees "Sources 5"
+        # and a refusal, which reads as broken rather than careful.
+        #
+        # The evidence still leads: it is used wherever it covers the
+        # question. Only the uncovered part falls back to professional
+        # knowledge, and it must be visibly marked as such so a reader is
+        # never left guessing which half was sourced.
+        "If the sources only partly cover the question, use them for the part "
+        "they do cover and answer the rest from your own settled professional "
+        "knowledge — say briefly that the sources did not address that part. "
+        "If they do not cover it at all, answer from professional knowledge "
+        "and say plainly that the retrieved sources did not address the "
+        "question. Never present unsourced material as though it came from "
+        "the evidence, and never invent a source, citation or reference.\n"
+        "Do NOT state a specific current figure from memory — a tax rate, "
+        "threshold, allowance, filing deadline, statutory limit, share price "
+        "or other market value — unless it appears in the evidence above. For "
+        "those, say the figure needs confirming against the relevant "
+        "authority and explain the underlying rule instead.\n"
         + _FORMATTING_INSTRUCTIONS
         + f"\n=== Evidence Sources ===\n{context}\n\n"
         + f"=== User Question ===\n{query}"

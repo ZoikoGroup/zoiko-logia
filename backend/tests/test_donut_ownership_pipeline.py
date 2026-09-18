@@ -289,6 +289,66 @@ def test_one_percentage_is_not_enough_to_establish_composition():
     assert classify_intent("Show a pie chart for margin of 40%.") != COMPOSITION
 
 
+# ── user-supplied composition stated in money rather than percent ────────
+
+_AMOUNT_DONUT_QUERY = (
+    "Create a donut chart showing operating expense composition. "
+    "payroll $180000, rent $55,000, technology $42,000 and travel $23,000"
+)
+
+
+def test_labelled_currency_amounts_with_donut_chart_are_composition():
+    assert classify_intent(_AMOUNT_DONUT_QUERY) == COMPOSITION
+
+
+def test_currency_amounts_need_no_colon_delimiter():
+    from app.orchestration.extraction import extract_user_visual_evidence
+
+    evidence = extract_user_visual_evidence(_AMOUNT_DONUT_QUERY, COMPOSITION)
+    assert [o.dimension for o in evidence.composition] == [
+        "payroll", "rent", "technology", "travel",
+    ]
+
+
+def test_currency_amounts_are_converted_to_shares_of_their_own_total():
+    from app.orchestration.extraction import extract_user_visual_evidence
+
+    evidence = extract_user_visual_evidence(_AMOUNT_DONUT_QUERY, COMPOSITION)
+    values = {o.dimension: o.value for o in evidence.composition}
+    assert values["payroll"] == pytest.approx(60.0)      # 180000 / 300000
+    assert values["travel"] == pytest.approx(23000 / 300000 * 100)
+    assert sum(values.values()) == pytest.approx(100.0)
+    # The reader must never see a derived share presented as a supplied one.
+    assert "computed" in evidence.composition_caveat
+
+
+def test_scale_suffixes_on_amounts_are_expanded():
+    from app.orchestration.extraction import extract_user_visual_evidence
+
+    evidence = extract_user_visual_evidence(
+        "expense split as a pie chart: payroll $1.2m, rent $400k, technology $300k",
+        COMPOSITION,
+    )
+    values = {o.dimension: o.value for o in evidence.composition}
+    assert values["payroll"] == pytest.approx(1_200_000 / 1_900_000 * 100)
+
+
+def test_bare_numbers_without_currency_are_not_treated_as_a_dataset():
+    # Digits alone must not turn an ordinary question into a chart payload —
+    # the same boundary the percent path draws.
+    assert classify_intent("Show me a pie chart of the top 5 filers in 2024") != COMPOSITION
+
+
+def test_percentage_path_is_unchanged_by_the_amount_path():
+    from app.orchestration.extraction import extract_user_visual_evidence
+
+    evidence = extract_user_visual_evidence(
+        "Create a pie chart: Rent 40%, Payroll 35%, Utilities 25%.", COMPOSITION,
+    )
+    assert [o.value for o in evidence.composition] == [40.0, 35.0, 25.0]
+    assert evidence.composition_caveat == "Percentages supplied directly by the user."
+
+
 # ── data shape ────────────────────────────────────────────────────────────
 
 def test_composition_evidence_classified_as_part_to_whole():

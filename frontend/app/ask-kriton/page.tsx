@@ -43,7 +43,7 @@ import {
 import { getFollowUpSuggestions } from "@/lib/follow-up-suggestions";
 import { ThinkingIndicator } from "@/components/ask-kriton/ThinkingIndicator";
 import { DesktopSidebar, MobileDrawer } from "@/components/ask-kriton/Sidebar";
-import { Composer, type AttachmentState } from "@/components/ask-kriton/Composer";
+import { Composer, attachmentFromDocument, type AttachmentState } from "@/components/ask-kriton/Composer";
 import { ExploreFurther } from "@/components/ask-kriton/ExploreFurther";
 import { useAuth } from "@/hooks/useAuth";
 import {
@@ -602,7 +602,7 @@ export default function AskKritonPage() {
   const [query, setQuery] = useState("");
   const [jurisdiction, setJurisdiction] = useState("");
   const [mode, setMode] = useState("Kriton's choice");
-  const [attachment, setAttachment] = useState<AttachmentState | null>(null);
+  const [attachments, setAttachments] = useState<AttachmentState[]>([]);
   const [documents, setDocuments] = useState<WorkspaceDocument[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>(() =>
@@ -632,10 +632,13 @@ export default function AskKritonPage() {
     if (!token) return;
     void listKritonAttachments(token).then((loadedDocuments) => {
       setDocuments(loadedDocuments);
-      const selectedId = conversations.find((item) => item.id === activeId)?.documentIds?.[0];
-      const document = loadedDocuments.find((item) => item.id === selectedId && item.status === "READY");
-      if (document) {
-        setAttachment({ documentId: document.id, name: document.filename, status: "success", progress: 1, chunkCount: document.chunk_count });
+      const selectedIds = conversations.find((item) => item.id === activeId)?.documentIds ?? [];
+      const restored = selectedIds
+        .map((id) => loadedDocuments.find((item) => item.id === id && item.status === "READY"))
+        .filter((item): item is WorkspaceDocument => Boolean(item))
+        .map(attachmentFromDocument);
+      if (restored.length > 0) {
+        setAttachments(restored);
       }
     }).catch(() => {
       // Upload remains available even when the saved-document library cannot load.
@@ -668,7 +671,7 @@ export default function AskKritonPage() {
   function startNewChat() {
     setActiveId(null);
     setQuery("");
-    setAttachment(null);
+    setAttachments([]);
   }
 
   /** Seeds the composer with the suggestion + the just-answered turn's own
@@ -681,14 +684,12 @@ export default function AskKritonPage() {
     setActiveId(id);
     setQuery("");
     const conversation = conversations.find((item) => item.id === id);
-    const document = documents.find((item) => item.id === conversation?.documentIds?.[0]);
-    setAttachment(document && document.status === "READY" ? {
-      documentId: document.id,
-      name: document.filename,
-      status: "success",
-      progress: 1,
-      chunkCount: document.chunk_count,
-    } : null);
+    setAttachments(
+      (conversation?.documentIds ?? [])
+        .map((documentId) => documents.find((item) => item.id === documentId))
+        .filter((item): item is WorkspaceDocument => Boolean(item) && item!.status === "READY")
+        .map(attachmentFromDocument),
+    );
   }
 
   function pinConversation(id: string) {
@@ -760,10 +761,10 @@ export default function AskKritonPage() {
     }
 
     setQuery("");
-    // The submitted attachment is captured on the turn above. Clear only the
-    // composer selection so the sent query and file no longer remain in the
+    // The submitted attachments are captured on the turn above. Clear only the
+    // composer selection so the sent query and files no longer remain in the
     // input box while the response is loading.
-    setAttachment(null);
+    setAttachments([]);
     setSubmitError(null);
     setSubmitting(true);
     try {
@@ -922,8 +923,8 @@ export default function AskKritonPage() {
                       jurisdiction={jurisdiction}
                       onJurisdictionChange={setJurisdiction}
                       onSubmit={handleSubmit}
-                      attachment={attachment}
-                      onAttachmentChange={setAttachment}
+                      attachments={attachments}
+                      onAttachmentsChange={setAttachments}
                       documents={documents}
                       onUploadComplete={refreshDocuments}
                       submitting={submitting}
@@ -963,8 +964,8 @@ export default function AskKritonPage() {
                     jurisdiction={jurisdiction}
                     onJurisdictionChange={setJurisdiction}
                     onSubmit={handleSubmit}
-                    attachment={attachment}
-                    onAttachmentChange={setAttachment}
+                    attachments={attachments}
+                    onAttachmentsChange={setAttachments}
                     documents={documents}
                     onUploadComplete={refreshDocuments}
                     submitting={submitting}

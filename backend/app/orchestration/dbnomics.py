@@ -45,15 +45,18 @@ _STOPWORDS = {
     "the", "and", "for", "with", "what", "show", "give", "rate", "data",
     "value", "values", "latest", "current", "chart", "graph", "over", "years", "year",
     "distribution", "spread", "histogram", "figures", "last", "past", "few", "quarters",
-    # Instruction verbs and display nouns. DBnomics' full-text search ANDs its
-    # terms, so any word that cannot appear in a series name makes the whole
-    # search return nothing: "compare gdp in india" found no series while
-    # "gdp in india" resolved fine, purely because "compare" survived into the
-    # query. Anything the user says ABOUT the request rather than the statistic
-    # belongs here.
-    "compare", "compares", "compared", "comparison", "versus",
-    "plot", "line", "trend", "trends", "draw", "display", "create", "make",
-    "please", "about", "between", "using", "would", "like", "want", "need",
+    # Chart-type words, comparison verbs and anything else the user says ABOUT
+    # the request rather than about the statistic. DBnomics' full-text search
+    # ANDs its terms, so a single presentation word that appears in no series
+    # name zeroes the whole result set: "compare gdp india line" returned 0
+    # datasets where "gdp india" returned 3, and "compare gdp in india" found
+    # no series while "gdp in india" resolved fine. "chart"/"graph" were
+    # already above; the words that actually name the chart were not.
+    "line", "bar", "pie", "donut", "doughnut", "scatter", "plot", "area",
+    "trend", "trends", "table", "visualize", "visualise", "display",
+    "compare", "compares", "compared", "comparison", "versus", "against",
+    "between", "across", "using", "draw", "create", "make", "please",
+    "about", "would", "like", "want", "need",
 }
 
 # Also the general country-name detector (_country_in_query/countries_in_query
@@ -100,6 +103,29 @@ _UNEMPLOYMENT_COUNTRY_CODES = {
 }
 
 _UNEMPLOYMENT_HINTS = re.compile(r"\b(unemployment|jobless(?:ness)?|labou?r force)\b", re.I)
+
+# IMF WEO is country-keyed by ISO3 and, unlike OECD/MEI, covers India — so
+# this is a third code map rather than a reuse of either existing one.
+_GDP_COUNTRY_CODES = {
+    "India": "IND",
+    "United States": "USA",
+    "United Kingdom": "GBR",
+    "Germany": "DEU",
+    "France": "FRA",
+    "Canada": "CAN",
+    "Japan": "JPN",
+}
+
+_GDP_HINTS = re.compile(r"\b(gdp|gross domestic product|economic growth)\b", re.I)
+_GDP_GROWTH_HINTS = re.compile(r"\b(growth|rate|percent(?:age)?\s+change|expansion)\b", re.I)
+
+# WEO is published as dated release datasets (WEO:2024-10, WEO:2025-04, …)
+# rather than one rolling series, so the release has to be resolved at call
+# time. Pinning one would silently go stale the way the retired Groq model
+# ids in .env.example did; this falls back to a known-good release only if
+# discovery fails outright.
+_WEO_FALLBACK_RELEASE = "WEO:2025-04"
+_weo_release_cache: str | None = None
 
 
 def _dbnomics_base() -> str:
@@ -289,6 +315,105 @@ async def _find_unemployment_series(query: str, window: int = 12) -> SeriesMatch
     )
 
 
+async def _latest_weo_release(client: httpx.AsyncClient) -> str:
+    """Newest IMF WEO release code on DBnomics, cached per process."""
+    global _weo_release_cache
+    if _weo_release_cache is not None:
+        return _weo_release_cache
+    try:
+        codes: list[str] = []
+        offset = 0
+        while True:
+            response = await client.get(
+                f"{_dbnomics_base()}/datasets/IMF",
+                params={"offset": offset, "limit": 100},
+            )
+            response.raise_for_status()
+            payload = response.json().get("datasets", {})
+            docs = payload.get("docs", [])
+            if not docs:
+                break
+            codes += [str(d.get("code") or "") for d in docs]
+            offset += len(docs)
+            if offset >= payload.get("num_found", 0):
+                break
+        releases = sorted(c for c in codes if c.startswith("WEO:"))
+        _weo_release_cache = releases[-1] if releases else _WEO_FALLBACK_RELEASE
+    except Exception:
+        _weo_release_cache = _WEO_FALLBACK_RELEASE
+    return _weo_release_cache
+
+
+async def _find_gdp_series(query: str, window: int = 12) -> SeriesMatch | None:
+    """Resolve GDP prompts against IMF WEO's explicit national-accounts
+    indicators instead of trusting full-text dataset ranking — the same
+    rationale as _find_cpi_series and _find_unemployment_series. Generic
+    ranking for "gdp india" matched CEPII's *trade balance as a share of
+    GDP*, a completely different statistic that happens to carry "GDP" in
+    its name.
+
+    WEO carries IMF PROJECTIONS as well as outturns — the 2025-04 release
+    runs to 2030 — and DBnomics exposes no observation-status flag to tell
+    them apart. Charting a forecast as though it were history is precisely
+    the kind of unverifiable claim this pipeline refuses to make elsewhere,
+    so everything from the current year onward is dropped: WEO's own
+    current-year figure is an estimate too, not an outturn.
+    """
+    country = _country_in_query(query)
+    if not country or not _GDP_HINTS.search(query):
+        return None
+    country_code = _GDP_COUNTRY_CODES.get(country)
+    if not country_code:
+        return None
+
+    # NGDP_RPCH is real GDP growth (percent change); NGDPD is GDP at current
+    # prices in USD. "GDP rate"/"GDP growth" means the former, a bare "GDP"
+    # the latter.
+    wants_growth = bool(_GDP_GROWTH_HINTS.search(query))
+    indicator = "NGDP_RPCH" if wants_growth else "NGDPD"
+
+    base = _dbnomics_base()
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            release = await _latest_weo_release(client)
+            response = await client.get(
+                f"{base}/series/IMF/{release}/{country_code}.{indicator}",
+                params={"observations": "1"},
+            )
+            response.raise_for_status()
+            candidates = response.json().get("series", {}).get("docs", [])
+    except Exception:
+        return None
+
+    if not candidates:
+        return None
+    best = candidates[0]
+    # Cut against the RELEASE year, not the calendar year. WEO:2025-04 was
+    # published in April 2025, so its 2025 value is a projection even though
+    # 2025 is now in the past — using the calendar year would have let one
+    # forecast through while the series was still labelled "outturns only".
+    # Whichever of the two is earlier is the last year that can be an outturn.
+    release_year = int(release.split(":", 1)[-1][:4]) if release.split(":", 1)[-1][:4].isdigit() else 0
+    cutoff = min(datetime.now(timezone.utc).year, release_year or 9999)
+    points = [
+        (period, value)
+        for period, value in _real_points(best)
+        if period[:4].isdigit() and int(period[:4]) < cutoff
+    ]
+    if not points:
+        return None
+
+    series_name = str(best.get("series_name") or "series").replace("�", "·").strip()
+    series_code = best.get("series_code", "")
+    return SeriesMatch(
+        series_name=series_name,
+        points=points[-window:],
+        url=f"{base}/series/IMF/{release}/{series_code}",
+        provider_name="International Monetary Fund",
+        dataset_name=f"World Economic Outlook ({release.split(':', 1)[-1]} release), outturns only",
+    )
+
+
 async def _find_best_series(query: str) -> SeriesMatch | None:
     """One HTTP round-trip to DBnomics, returning the best-matching series (or
     None). The sole source of truth both fetch_stats() and the structured
@@ -312,6 +437,10 @@ async def _find_best_series(query: str) -> SeriesMatch | None:
     # replaces.
     if _country_in_query(query) and _UNEMPLOYMENT_HINTS.search(query):
         return await _find_unemployment_series(query)
+    # And for GDP — generic ranking resolved "gdp india" to CEPII's trade
+    # balance/GDP ratio. See _find_gdp_series' docstring.
+    if _country_in_query(query) and _GDP_HINTS.search(query):
+        return await _find_gdp_series(query)
     return await _find_generic_series(query)
 
 
@@ -422,6 +551,55 @@ _CORRELATION_SPLIT_PATTERNS = (
 )
 
 
+# A subject phrase captured by the split patterns above can still carry the
+# query's time window and its presentation instruction, because those clauses
+# sit AFTER the second subject and the patterns' optional trailing group only
+# recognises a `using|as|with|in ...` tail. "Compare US inflation and
+# unemployment over the last 5 years and display the result as a scatter plot"
+# splits into "US inflation" / "unemployment over the last 5 years and display
+# the result" — the second phrase resolves to nothing, so the whole pair is
+# dropped and an answerable question returns the no-verified-data message.
+# Neither clause narrows WHICH series is meant (the window is applied later,
+# by _find_two_series' own intersection), so both are noise here.
+_SUBJECT_NOISE_TAIL = re.compile(
+    r"\s+(?:"
+    r"(?:over|in|for|during|across)\s+the\s+(?:last|past|previous|next)\b"
+    r"|(?:over|in|for)\s+the\s+(?:coming|recent)\b"
+    r"|(?:and\s+)?(?:display|show|plot|render|draw|visuali[sz]e|present|graph|chart)\b"
+    r"|as\s+(?:an?\s+)?[\w\s-]*?\b(?:chart|plot|graph|diagram|visuali[sz]ation|table)\b"
+    r"|using\s+(?:an?\s+)?[\w\s-]*?\b(?:chart|plot|graph|diagram)\b"
+    r"|\b(?:last|past|previous)\s+\d+\s+(?:years?|months?|quarters?|decades?)\b"
+    r"|since\s+\d{4}\b"
+    r").*$",
+    re.I,
+)
+
+
+def _strip_subject_noise(phrase: str) -> str:
+    """Drop a trailing time-window/presentation clause from one captured
+    subject phrase. Returns the phrase unchanged when it carries neither, so
+    a genuinely two-word subject ("India CPI") is never truncated."""
+    return _SUBJECT_NOISE_TAIL.sub("", phrase).strip(" ,.;:-")
+
+
+def _propagate_country(a: str, b: str) -> tuple[str, str]:
+    """Carry an explicit country from whichever subject names it onto the one
+    that doesn't. "Compare US inflation and unemployment" states the country
+    once but means it for both sides, and the targeted per-country lookups
+    (_find_cpi_series, _find_unemployment_series) both bail out entirely when
+    no country is present. Worse than bailing, the generic full-text fallback
+    then resolves a bare "unemployment" to an unrelated Argentina
+    demographics series — so this is a correctness fix, not just a
+    match-rate one. Only fills a gap; never overrides a country the phrase
+    already names (a genuine cross-country comparison keeps both)."""
+    country_a, country_b = _country_in_query(a), _country_in_query(b)
+    if country_a and not country_b:
+        return a, f"{country_a} {b}"
+    if country_b and not country_a:
+        return f"{country_b} {a}", b
+    return a, b
+
+
 def _split_correlation_subjects(query: str) -> tuple[str, str] | None:
     """Split a correlation-shaped query into its two named subject phrases
     (e.g. "India CPI" / "UK inflation"), or None if the query doesn't name
@@ -429,7 +607,8 @@ def _split_correlation_subjects(query: str) -> tuple[str, str] | None:
     for pattern in _CORRELATION_SPLIT_PATTERNS:
         m = pattern.search(query)
         if m:
-            a, b = m.group("a").strip(), m.group("b").strip()
+            a = _strip_subject_noise(m.group("a").strip())
+            b = _strip_subject_noise(m.group("b").strip())
             if a and b:
                 # Comparison prompts often state the measure only once:
                 # "compare Germany and France inflation". Inherit that
@@ -443,7 +622,7 @@ def _split_correlation_subjects(query: str) -> tuple[str, str] | None:
                         a = f"{a} {metric}"
                     if not _STAT_HINTS.search(b):
                         b = f"{b} {metric}"
-                return a, b
+                return _propagate_country(a, b)
     return None
 
 
@@ -456,6 +635,8 @@ async def _find_series_for_phrase(phrase: str, window: int = 12) -> SeriesMatch 
         return await _find_cpi_series(phrase, window=window)
     if _country_in_query(phrase) and _UNEMPLOYMENT_HINTS.search(phrase):
         return await _find_unemployment_series(phrase, window=window)
+    if _country_in_query(phrase) and _GDP_HINTS.search(phrase):
+        return await _find_gdp_series(phrase, window=window)
     return await _find_generic_series(phrase)
 
 
