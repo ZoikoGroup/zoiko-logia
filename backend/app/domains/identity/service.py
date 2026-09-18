@@ -55,6 +55,16 @@ async def provision_profile(db: AsyncSession, user_id: str, email: str, payload:
     Supabase auth user."""
     existing = await get_user_by_id(db, user_id)
     if existing is not None:
+        # Re-stamp app_metadata every time, not only when the row is created.
+        # Supabase embeds app_metadata into every access token it issues, and
+        # RLS reads app.tenant_id from that token while every row is written
+        # with the tenant on THIS row. If the two ever drift — a user moved to
+        # another tenant, a row seeded before its auth user was provisioned —
+        # the token keeps asserting the old tenant and every RLS-protected
+        # INSERT is refused ("new row violates row-level security policy"),
+        # with no way to recover: signing out and back in just reissues the
+        # same stale claim. Re-stamping here makes a fresh sign-in the fix.
+        supabase_admin.update_app_metadata(existing.id, existing.tenant_id, existing.role)
         return existing
 
     tenant = Tenant(name=payload.company_name or "")
