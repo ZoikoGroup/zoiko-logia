@@ -45,6 +45,15 @@ _STOPWORDS = {
     "the", "and", "for", "with", "what", "show", "give", "rate", "data",
     "value", "values", "latest", "current", "chart", "graph", "over", "years", "year",
     "distribution", "spread", "histogram", "figures", "last", "past", "few", "quarters",
+    # Instruction verbs and display nouns. DBnomics' full-text search ANDs its
+    # terms, so any word that cannot appear in a series name makes the whole
+    # search return nothing: "compare gdp in india" found no series while
+    # "gdp in india" resolved fine, purely because "compare" survived into the
+    # query. Anything the user says ABOUT the request rather than the statistic
+    # belongs here.
+    "compare", "compares", "compared", "comparison", "versus",
+    "plot", "line", "trend", "trends", "draw", "display", "create", "make",
+    "please", "about", "between", "using", "would", "like", "want", "need",
 }
 
 # Also the general country-name detector (_country_in_query/countries_in_query
