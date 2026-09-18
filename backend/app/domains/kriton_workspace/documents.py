@@ -378,7 +378,7 @@ async def retrieve_document_sources(
             "query": search_query, "document_ids": document_ids,
             "tenant_id": tenant_id, "user_id": user_id, "limit": limit,
         })
-        return [
+        sources = [
             WebSource(
                 title=f"{row.filename} — {row.location}", url="", snippet=row.text,
                 provider="uploaded_document", freshness="uploaded",
@@ -386,6 +386,22 @@ async def retrieve_document_sources(
             )
             for row in result
         ]
+        if sources:
+            return sources
+        # No chunk matched any query term — which is NOT the same as "these
+        # documents have nothing to say". The user attached them deliberately,
+        # and a question can easily name none of their content: "compare these
+        # in tabular format" reduces to compare/these/tabular/format, none of
+        # which appear in a fixed-asset register, so the whole request failed
+        # with DOCUMENT_RETRIEVAL_FAILED while five READY documents sat there.
+        # A typo ("compatre") does the same. Falling through to the Python
+        # scorer would not help: it scores on the same terms and would also
+        # return nothing. When the targeted search comes back empty, read the
+        # documents whole and let the model decide what is relevant.
+        return await retrieve_document_sources(
+            db, query=query, document_ids=document_ids, tenant_id=tenant_id,
+            user_id=user_id, limit=limit, full_document=True,
+        )
     result = await db.execute(
         select(DocumentChunk, Document)
         .join(Document, Document.id == DocumentChunk.document_id)

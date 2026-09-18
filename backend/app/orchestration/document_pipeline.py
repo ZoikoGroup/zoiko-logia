@@ -18,7 +18,18 @@ _GENERATION = re.compile(
     r"\b(generate|create|prepare|draft|produce|write|export)\b.*\b(report|summary|analysis|document|workbook|presentation|slides?|statement|working paper|reconciliation|schedule|profit.?and.?loss|p\s*&\s*l)\b",
     re.IGNORECASE,
 )
-_SUMMARY = re.compile(r"\b(summarize|summarise|overview|management report|executive summary)\b", re.IGNORECASE)
+_SUMMARY = re.compile(
+    # Comparison and tabulation belong here alongside summarising: all of them
+    # treat the attachments as the subject rather than asking about something
+    # inside them, so they need every chunk, not a keyword-ranked top-k. They
+    # also tend to name no document content at all — "compare these in tabular
+    # format" has no term that could match a fixed-asset register — so routing
+    # them through targeted retrieval returns nothing at all.
+    r"\b(summarize|summarise|overview|management report|executive summary|"
+    r"compare|compares|comparison|contrast|tabulate|tabular|side[- ]by[- ]side|"
+    r"these (?:documents?|files?|attachments?))\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
