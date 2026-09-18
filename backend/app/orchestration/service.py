@@ -916,6 +916,7 @@ async def ask_kriton(
             tenant_id=tenant_id, risk_level=risk_level,
             confidence_state=effective_confidence,
             reason=f"Risk: {risk_level} | Confidence: {effective_confidence} | Mode: {request.mode}",
+            query_text=effective_query,
         )
         await audit_human_review_created(
             db, query_id=query_id, correlation_id=correlation_id,

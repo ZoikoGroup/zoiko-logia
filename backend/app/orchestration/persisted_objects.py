@@ -34,6 +34,7 @@ async def create_review_case(
     confidence_state: str,
     reason: str,
     assigned_queue: str = "accounting_review",
+    query_text: str = "",
 ) -> ReviewCase:
     """
     Persist a review case for HUMAN_REVIEW route — §11.1.
@@ -43,6 +44,7 @@ async def create_review_case(
         query_id=query_id,
         correlation_id=correlation_id,
         tenant_id=tenant_id,
+        query_text=query_text or "",
         risk_level=risk_level,
         confidence_state=confidence_state,
         reason=reason,
