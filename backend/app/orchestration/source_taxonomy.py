@@ -202,18 +202,69 @@ def _jurisdiction_key(jurisdiction: str) -> str:
     return (jurisdiction or "").upper().split("-")[0]  # "US-CA" -> "US"
 
 
-def allowed_domains(jurisdiction: str, topics: set[str] | None = None) -> list[str]:
-    """Authoritative domains for this jurisdiction, narrowed to `topics` when
-    any were detected. GLOBAL is always included.
+# Aliases a question actually uses for each jurisdiction. Longest-first at match
+# time so "united states" wins over "us", and "\b" anchors so the "us" in
+# "business" or the "in" in "india" never match.
+_JURISDICTION_ALIASES: dict[str, tuple[str, ...]] = {
+    "US": ("united states", "u.s.a.", "u.s.", "usa", "us", "america", "american", "federal"),
+    "UK": ("united kingdom", "great britain", "britain", "british", "england", "uk"),
+    "INDIA": ("india", "indian", "bharat"),
+    "EU": ("european union", "eurozone", "euro area", "eu"),
+    "UAE": ("united arab emirates", "uae", "dubai", "abu dhabi", "emirates"),
+}
+
+
+def detect_jurisdictions(query: str) -> list[str]:
+    """Jurisdiction keys a question names, in the order they appear.
+
+    The selector in the composer is one value and defaults to "Any", which
+    resolved to GLOBAL alone — so "How is federal income tax calculated in the
+    US?" was allowed oecd.org and nothing else, and answered with no citation
+    while irs.gov sat in the table below, ineligible. The country was right
+    there in the question. A comparison names several ("India, US and UK"), and
+    one selector value cannot express that either, so this returns a LIST and
+    the caller unions them.
+    """
+    if not query:
+        return []
+    lowered = query.lower()
+    hits: list[tuple[int, str]] = []
+    for key, aliases in _JURISDICTION_ALIASES.items():
+        best: int | None = None
+        for alias in sorted(aliases, key=len, reverse=True):
+            m = re.search(rf"\b{re.escape(alias)}\b", lowered)
+            if m and (best is None or m.start() < best):
+                best = m.start()
+        if best is not None:
+            hits.append((best, key))
+    return [key for _, key in sorted(hits)]
+
+
+def allowed_domains(
+    jurisdiction: str, topics: set[str] | None = None, query: str = ""
+) -> list[str]:
+    """Authoritative domains for this question, narrowed to `topics` when any
+    were detected. GLOBAL is always included.
+
+    Jurisdictions come from BOTH the selector and the question text, unioned.
+    The selector holds one value and defaults to "Any"; questions routinely
+    name their own country ("...in the US") or several ("compare India, US and
+    UK"), and neither case survives a single selector value. Reading the
+    question as well means the common path — Any, with the country stated —
+    reaches that country's authorities instead of only the global bodies, and a
+    comparison reaches every authority it names rather than at most one.
 
     With no topics — an off-taxonomy question, or a caller that does not detect
-    them — this returns every domain for the jurisdiction, which is the
+    them — this returns every domain for those jurisdictions, which is the
     behaviour the jurisdiction-only allowlist had before topics existed.
     """
     keys = ["GLOBAL"]
     jkey = _jurisdiction_key(jurisdiction)
     if jkey in _TRUSTED_DOMAINS and jkey != "GLOBAL":
         keys.append(jkey)
+    for detected in detect_jurisdictions(query):
+        if detected in _TRUSTED_DOMAINS and detected not in keys:
+            keys.append(detected)
 
     wanted = topics or set(ALL_TOPICS)
     domains: list[str] = []

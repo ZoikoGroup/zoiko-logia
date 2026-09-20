@@ -103,7 +103,7 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
     # the ones with authority over THIS question (source_taxonomy.py). An
     # off-taxonomy question detects no topics, which yields the full
     # jurisdiction list — the behaviour before topics existed.
-    domains = allowed_domains(jurisdiction, detect_topics(query))
+    domains = allowed_domains(jurisdiction, detect_topics(query), query)
     # Bias retrieval toward those bodies up front. Filtering alone only drops
     # results after the fact, so a narrow question could return twenty blog
     # posts, lose all of them, and fall through to untrusted general results.
