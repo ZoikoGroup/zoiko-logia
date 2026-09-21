@@ -27,14 +27,17 @@ import {
 } from "lucide-react";
 import { AnswerRenderer } from "@/components/AnswerRenderer";
 import {
-  askKriton,
+  askKritonStream,
   createSavedAnswer,
   getAuthToken,
   listKritonAttachments,
+  listEngagements,
   ApiError,
   type AskKritonResponse,
   type AttachmentSummary,
   type SourceCitation,
+  type TaskType,
+  type Engagement,
 } from "@/lib/api";
 import {
   answerBodyOnly,
@@ -69,6 +72,97 @@ const QUICK_MODES = [
   { label: "Workflow", icon: BriefcaseBusiness, prompt: "Turn this into a practical accounting workflow: " },
   { label: "Kriton's choice", icon: Sparkles, prompt: "" },
 ];
+
+const TASK_TYPES: Array<{ value: TaskType; label: string }> = [
+  { value: "general_question", label: "General question" },
+  { value: "policy_research", label: "Policy research" },
+  { value: "document_evidence_extraction", label: "Document extraction" },
+  { value: "reconciliation", label: "Reconciliation" },
+];
+
+function TaskContextControls({
+  taskType,
+  onTaskTypeChange,
+  framework,
+  onFrameworkChange,
+  periodStart,
+  onPeriodStartChange,
+  periodEnd,
+  onPeriodEndChange,
+  currency,
+  onCurrencyChange,
+  engagements,
+  engagementId,
+  onEngagementChange,
+}: {
+  taskType: TaskType;
+  onTaskTypeChange: (value: TaskType) => void;
+  framework: string;
+  onFrameworkChange: (value: string) => void;
+  periodStart: string;
+  onPeriodStartChange: (value: string) => void;
+  periodEnd: string;
+  onPeriodEndChange: (value: string) => void;
+  currency: string;
+  onCurrencyChange: (value: string) => void;
+  engagements: Engagement[];
+  engagementId: string;
+  onEngagementChange: (value: string) => void;
+}) {
+  const professional = taskType !== "general_question";
+  return (
+    <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl border border-line bg-panel/80 p-2 text-xs">
+      <label className="flex items-center gap-2">
+        <span className="font-semibold text-muted">Workflow</span>
+        <select
+          value={taskType}
+          onChange={(event) => onTaskTypeChange(event.target.value as TaskType)}
+          className="h-8 rounded-lg border border-line bg-soft px-2 font-semibold text-ink"
+        >
+          {TASK_TYPES.map((task) => <option key={task.value} value={task.value}>{task.label}</option>)}
+        </select>
+      </label>
+      {taskType === "policy_research" && (
+        <label className="flex items-center gap-2">
+          <span className="font-semibold text-muted">Framework</span>
+          <select value={framework} onChange={(event) => onFrameworkChange(event.target.value)} className="h-8 rounded-lg border border-line bg-soft px-2 text-ink">
+            <option value="">Select</option>
+            <option value="IFRS">IFRS</option>
+            <option value="UK_GAAP">UK GAAP / FRS 102</option>
+          </select>
+        </label>
+      )}
+      {professional && (
+        <label className="flex items-center gap-2">
+          <span className="font-semibold text-muted">Engagement</span>
+          <select value={engagementId} onChange={(event) => onEngagementChange(event.target.value)} className="h-8 rounded-lg border border-line bg-soft px-2 text-ink">
+            <option value="">Select</option>
+            {engagements.map((engagement) => <option key={engagement.id} value={engagement.id}>{engagement.name}</option>)}
+          </select>
+        </label>
+      )}
+      {taskType === "reconciliation" && (
+        <label className="flex items-center gap-2">
+          <span className="font-semibold text-muted">From</span>
+          <input type="date" value={periodStart} onChange={(event) => onPeriodStartChange(event.target.value)} className="h-8 rounded-lg border border-line bg-soft px-2 text-ink" />
+        </label>
+      )}
+      {(taskType === "policy_research" || taskType === "reconciliation") && (
+        <label className="flex items-center gap-2">
+          <span className="font-semibold text-muted">{taskType === "reconciliation" ? "To" : "Period end"}</span>
+          <input type="date" value={periodEnd} onChange={(event) => onPeriodEndChange(event.target.value)} className="h-8 rounded-lg border border-line bg-soft px-2 text-ink" />
+        </label>
+      )}
+      {taskType === "reconciliation" && (
+        <label className="flex items-center gap-2">
+          <span className="font-semibold text-muted">Currency</span>
+          <input value={currency} onChange={(event) => onCurrencyChange(event.target.value.toUpperCase())} maxLength={3} className="h-8 w-16 rounded-lg border border-line bg-soft px-2 uppercase text-ink" />
+        </label>
+      )}
+      {professional && <span className="text-muted">Professional workflows are checked before retrieval.</span>}
+    </div>
+  );
+}
 
 const RISK_STYLES: Record<RiskLevel, { badge: string; icon: typeof ShieldCheck; label: string }> = {
   ZERO: { badge: "border-line bg-soft text-muted", icon: ShieldCheck, label: "Zero risk" },
@@ -547,7 +641,7 @@ function ConversationTurn({
         />
       </div>
 
-      {loading && <ThinkingIndicator />}
+      {loading && <ThinkingIndicator message={turn.progressMessage} />}
 
       {!loading && error && (
         <div className="kriton-animate-msg-response">
@@ -582,6 +676,19 @@ function ConversationTurn({
                 </Link>
               </div>
             </div>
+
+            {result.effective_context && (
+              <div className="mb-4 flex flex-wrap gap-x-3 gap-y-1 rounded-xl border border-line bg-soft/60 px-3 py-2 text-[11px] text-muted">
+                <span className="font-bold text-ink">
+                  {TASK_TYPES.find((task) => task.value === result.effective_context?.task_type)?.label ?? result.effective_context.task_type}
+                </span>
+                {result.effective_context.jurisdiction && <span>{result.effective_context.jurisdiction}</span>}
+                {result.effective_context.framework && <span>{result.effective_context.framework.replaceAll("_", " ")}</span>}
+                {result.effective_context.period_end && <span>Period end {result.effective_context.period_end}</span>}
+                {result.effective_context.currency && <span>{result.effective_context.currency}</span>}
+                <span>Context {result.context_decision?.status ?? "resolved"}</span>
+              </div>
+            )}
 
             <div className="kriton-animate-answer-reveal">
               {result.answer ? (
@@ -652,6 +759,13 @@ export default function AskKritonPage() {
   const [query, setQuery] = useState("");
   const [jurisdiction, setJurisdiction] = useState("");
   const [mode, setMode] = useState("Kriton's choice");
+  const [taskType, setTaskType] = useState<TaskType>("general_question");
+  const [framework, setFramework] = useState("");
+  const [periodStart, setPeriodStart] = useState("");
+  const [periodEnd, setPeriodEnd] = useState("");
+  const [currency, setCurrency] = useState("GBP");
+  const [engagements, setEngagements] = useState<Engagement[]>([]);
+  const [engagementId, setEngagementId] = useState("");
   // Attachments live HERE, not in the Composer. The page renders a "hero"
   // Composer until a conversation exists and a "sticky" one afterwards, so
   // asking the first question unmounts one and mounts the other. While this
@@ -822,7 +936,7 @@ export default function AskKritonPage() {
     setSubmitting(true);
     try {
       const idempotencyKey = genId("idem");
-      const response = await askKriton(
+      const response = await askKritonStream(
         token,
         {
           query: trimmed,
@@ -831,8 +945,22 @@ export default function AskKritonPage() {
           clarification_cycle: cycle,
           conversation_id: convId,
           document_ids: turnAttachments.map((a) => a.documentId),
+          task_context: {
+            task_type: taskType,
+            engagement_id: engagementId || null,
+            jurisdiction: jurisdiction || null,
+            framework: framework || null,
+            period_start: periodStart || null,
+            period_end: periodEnd || null,
+            currency: currency || null,
+            language: "en",
+            intended_use: taskType === "general_question" || taskType === "policy_research"
+              ? "research"
+              : "draft_workpaper",
+          },
         },
         idempotencyKey,
+        ({ message }) => patchTurn(convId, turnId, { progressMessage: message }),
       );
       patchTurn(convId, turnId, { result: response, loading: false });
     } catch (err) {
@@ -872,7 +1000,7 @@ export default function AskKritonPage() {
     const token = session?.access_token;
     if (!token) return;
     let cancelled = false;
-    listKritonAttachments(token)
+    listKritonAttachments(token, engagementId || undefined)
       .then((documents) => {
         if (!cancelled) setSavedDocuments(documents);
       })
@@ -882,7 +1010,21 @@ export default function AskKritonPage() {
     return () => {
       cancelled = true;
     };
-  }, [session?.access_token, readyAttachments.length]);
+  }, [session?.access_token, readyAttachments.length, engagementId]);
+
+  useEffect(() => {
+    const token = session?.access_token;
+    if (!token) return;
+    let cancelled = false;
+    listEngagements(token)
+      .then((items) => {
+        if (!cancelled) setEngagements(items);
+      })
+      .catch(() => {
+        if (!cancelled) setEngagements([]);
+      });
+    return () => { cancelled = true; };
+  }, [session?.access_token]);
 
   const sidebarProps = {
     conversations: sorted,
@@ -931,6 +1073,21 @@ export default function AskKritonPage() {
                   </div>
 
                   <div className="mt-8 w-full">
+                    <TaskContextControls
+                      taskType={taskType}
+                      onTaskTypeChange={setTaskType}
+                      framework={framework}
+                      onFrameworkChange={setFramework}
+                      periodStart={periodStart}
+                      onPeriodStartChange={setPeriodStart}
+                      periodEnd={periodEnd}
+                      onPeriodEndChange={setPeriodEnd}
+                      currency={currency}
+                      onCurrencyChange={setCurrency}
+                      engagements={engagements}
+                      engagementId={engagementId}
+                      onEngagementChange={setEngagementId}
+                    />
                     <Composer
                       variant="hero"
                       query={query}
@@ -943,6 +1100,7 @@ export default function AskKritonPage() {
                       attachments={attachments}
                       onAttachmentsChange={setAttachments}
                       savedDocuments={savedDocuments}
+                      engagementId={engagementId}
                     />
                   </div>
 
@@ -996,19 +1154,37 @@ export default function AskKritonPage() {
                     </div>
                   ))}
 
-                  <Composer
-                    variant="sticky"
-                    query={query}
-                    onQueryChange={setQuery}
-                    jurisdiction={jurisdiction}
-                    onJurisdictionChange={setJurisdiction}
-                    onSubmit={handleSubmit}
-                    submitting={submitting}
-                    error={submitError}
-                    attachments={attachments}
-                    onAttachmentsChange={setAttachments}
+                  <div className="sticky bottom-5">
+                    <TaskContextControls
+                      taskType={taskType}
+                      onTaskTypeChange={setTaskType}
+                      framework={framework}
+                      onFrameworkChange={setFramework}
+                      periodStart={periodStart}
+                      onPeriodStartChange={setPeriodStart}
+                      periodEnd={periodEnd}
+                      onPeriodEndChange={setPeriodEnd}
+                      currency={currency}
+                      onCurrencyChange={setCurrency}
+                      engagements={engagements}
+                      engagementId={engagementId}
+                      onEngagementChange={setEngagementId}
+                    />
+                    <Composer
+                      variant="sticky"
+                      query={query}
+                      onQueryChange={setQuery}
+                      jurisdiction={jurisdiction}
+                      onJurisdictionChange={setJurisdiction}
+                      onSubmit={handleSubmit}
+                      submitting={submitting}
+                      error={submitError}
+                      attachments={attachments}
+                      onAttachmentsChange={setAttachments}
                       savedDocuments={savedDocuments}
-                  />
+                      engagementId={engagementId}
+                    />
+                  </div>
                 </div>
               )}
             </div>

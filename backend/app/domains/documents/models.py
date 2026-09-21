@@ -50,6 +50,7 @@ class UserDocument(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    engagement_id: Mapped[str | None] = mapped_column(ForeignKey("engagements.id"), nullable=True, index=True)
 
     filename: Mapped[str] = mapped_column(String, nullable=False)
     extension: Mapped[str] = mapped_column(String, nullable=False)
@@ -88,6 +89,7 @@ class DocumentChunk(Base):
     # stand on its own rather than depending on the parent row being visible.
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    engagement_id: Mapped[str | None] = mapped_column(ForeignKey("engagements.id"), nullable=True, index=True)
 
     # Ordinal within the document, 0-based — used to present retrieved chunks
     # in document order rather than in score order.

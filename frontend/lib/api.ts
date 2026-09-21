@@ -545,6 +545,68 @@ export type AskKritonRequest = {
    * only; the backend re-verifies ownership and readiness, so sending an id
    * the caller does not own simply retrieves nothing. */
   document_ids?: string[];
+  task_context?: TaskContextSelection;
+};
+
+export type TaskType =
+  | "general_question"
+  | "policy_research"
+  | "document_evidence_extraction"
+  | "reconciliation";
+
+export type Engagement = {
+  id: string;
+  name: string;
+  status: string;
+  rights_version: string;
+};
+
+export async function listEngagements(token: string): Promise<Engagement[]> {
+  const res = await authedFetch("/engagements", token);
+  return res.json();
+}
+
+export type TaskContextSelection = {
+  task_type: TaskType;
+  engagement_id?: string | null;
+  purpose?: string | null;
+  jurisdiction?: string | null;
+  framework?: string | null;
+  entity?: string | null;
+  period_start?: string | null;
+  period_end?: string | null;
+  currency?: string | null;
+  language?: string;
+  intended_use?: "research" | "draft_workpaper" | "internal_review";
+};
+
+export type TaskContext = {
+  schema_version: "1.0";
+  task_type: TaskType;
+  task_spec_version: string;
+  actor_id: string;
+  tenant_id: string;
+  actor_role: string;
+  engagement_id: string | null;
+  purpose: string;
+  jurisdiction: string | null;
+  framework: string | null;
+  entity: string | null;
+  period_start: string | null;
+  period_end: string | null;
+  currency: string | null;
+  language: string;
+  data_classification: "PUBLIC" | "INTERNAL" | "CONFIDENTIAL" | "RESTRICTED";
+  intended_use: "research" | "draft_workpaper" | "internal_review";
+};
+
+export type ContextDecision = {
+  status: "complete" | "clarification_required" | "unsupported" | "unauthorized";
+  missing_fields: string[];
+  invalid_fields: string[];
+  reason_codes: string[];
+  clarification_questions: string[];
+  resolved_context: TaskContext | null;
 };
 
 // ---- Top-level response ----
@@ -773,6 +835,8 @@ export type AskKritonResponse = {
   source_bundle: SourceBundle | null;
   answer: ComposedAnswer | null;
   next_action: NextAction | null;
+  effective_context?: TaskContext | null;
+  context_decision?: ContextDecision | null;
   /** Opaque — never expose audit_chain_id internals to UI rendering logic */
   audit_reference: AuditReference;
 };
@@ -796,7 +860,72 @@ export async function askKriton(
     return res.json();
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new ApiError(408, "Kriton took too long to respond. Please try again.");
+      throw new ApiError(408, "Kriton did not finish within two minutes. Please try again.");
+    }
+    if (error instanceof TypeError) {
+      throw new ApiError(0, "Could not connect to Kriton. Please check that the backend is running and try again.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+export type KritonProgress = { stage: string; message: string };
+
+export async function askKritonStream(
+  token: string,
+  payload: AskKritonRequest,
+  idempotencyKey: string | undefined,
+  onProgress: (progress: KritonProgress) => void,
+): Promise<AskKritonResponse> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/x-ndjson",
+  };
+  if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
+
+  const controller = new AbortController();
+  // The backend owns the processing deadline. This longer timer only protects
+  // against a connection that stops delivering even heartbeats.
+  const timeout = window.setTimeout(() => controller.abort(), 120_000);
+  try {
+    const res = await authedFetch("/orchestration/ask/stream", token, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!res.body) throw new ApiError(502, "Kriton returned an empty response stream.");
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line) as
+          | { type: "progress"; stage: string; message: string }
+          | { type: "heartbeat" }
+          | { type: "result"; data: AskKritonResponse }
+          | { type: "error"; status: number; message: string };
+        if (event.type === "progress") onProgress(event);
+        if (event.type === "result") return event.data;
+        if (event.type === "error") throw new ApiError(event.status, event.message);
+      }
+      if (done) break;
+    }
+    throw new ApiError(502, "Kriton's response stream ended before completion.");
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new ApiError(408, "Kriton's response connection timed out. Please try again.");
+    }
+    if (error instanceof TypeError) {
+      throw new ApiError(0, "Could not connect to Kriton. Please check that the backend is running and try again.");
     }
     throw error;
   } finally {
@@ -847,6 +976,7 @@ export function uploadKritonAttachment(
   token: string,
   file: File,
   onProgress?: (fraction: number) => void,
+  engagementId?: string,
 ): Promise<AttachmentUploadResult> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -875,17 +1005,20 @@ export function uploadKritonAttachment(
     xhr.onerror = () => reject(new ApiError(0, "Could not reach the attachment service."));
     const form = new FormData();
     form.append("file", file);
+    if (engagementId) form.append("engagement_id", engagementId);
     xhr.send(form);
   });
 }
 
-export async function listKritonAttachments(token: string): Promise<AttachmentSummary[]> {
-  const res = await authedFetch("/kriton-workspace/attachments", token);
+export async function listKritonAttachments(token: string, engagementId?: string): Promise<AttachmentSummary[]> {
+  const query = engagementId ? `?engagement_id=${encodeURIComponent(engagementId)}` : "";
+  const res = await authedFetch(`/kriton-workspace/attachments${query}`, token);
   return res.json();
 }
 
-export async function deleteKritonAttachment(token: string, documentId: string): Promise<void> {
-  await authedFetch(`/kriton-workspace/attachments/${encodeURIComponent(documentId)}`, token, {
+export async function deleteKritonAttachment(token: string, documentId: string, engagementId?: string): Promise<void> {
+  const query = engagementId ? `?engagement_id=${encodeURIComponent(engagementId)}` : "";
+  await authedFetch(`/kriton-workspace/attachments/${encodeURIComponent(documentId)}${query}`, token, {
     method: "DELETE",
   });
 }

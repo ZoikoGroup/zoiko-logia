@@ -66,6 +66,21 @@ async def audit_query_received(db, *, query_id, correlation_id, tenant_id, audit
 async def audit_request_validated(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id):
     await _emit(db, "request_validated", query_id, correlation_id, tenant_id, audit_chain_id, actor_id, {})
 
+async def audit_context_resolved(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                 status: str, task_type: str, task_spec_version: str,
+                                 reason_codes: list[str], effective_context: dict | None):
+    await _emit(
+        db, "task_context_resolved", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+        {
+            "status": status,
+            "task_type": task_type,
+            "task_spec_version": task_spec_version,
+            "reason_codes": reason_codes,
+            "effective_context": effective_context,
+        },
+        replay_relevance="REQUIRED",
+    )
+
 async def audit_request_rejected(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id, reason: str):
     await _emit(db, "request_rejected", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"reason": reason}, replay_relevance="REQUIRED")
@@ -175,6 +190,6 @@ async def audit_response_finalised(db, *, query_id, correlation_id, tenant_id, a
                 {"outcome": outcome, "route": route})
 
 async def audit_response_returned(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
-                                   latency_ms: float):
+                                   latency_ms: float, stage_metrics: dict | None = None):
     await _emit(db, "response_returned", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
-                {"latency_ms": round(latency_ms, 2)})
+                {"latency_ms": round(latency_ms, 2), "stage_metrics": stage_metrics or {}})

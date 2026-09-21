@@ -29,6 +29,9 @@ from app.domains.audit_ledger.schemas import (
 )
 from app.domains.identity.models import User
 from app.domains.identity.rbac import get_current_user, require_admin
+from app.domains.identity.authorization import AUDIT_REPLAY, authorize
+from app.domains.audit_ledger.models import AuditEvent
+from sqlalchemy import select
 
 router = APIRouter(prefix="/audit", tags=["audit_ledger"])
 
@@ -76,6 +79,26 @@ async def get_replay_manifest(
     sync_db: Session = Depends(get_sync_db),
     current_user: User = Depends(get_current_user),
 ) -> ReplayManifest:
+    context_event = (
+        await db.execute(
+            select(AuditEvent).where(
+                AuditEvent.correlation_id == correlation_id,
+                AuditEvent.tenant_id == current_user.tenant_id,
+                AuditEvent.event_name == "task_context_resolved",
+            )
+        )
+    ).scalars().first()
+    engagement_id = (
+        ((context_event.payload or {}).get("effective_context") or {}).get("engagement_id")
+        if context_event else None
+    )
+    if engagement_id:
+        decision = await authorize(
+            db, actor_id=current_user.id, tenant_id=current_user.tenant_id,
+            engagement_id=engagement_id, operation=AUDIT_REPLAY,
+        )
+        if not decision.allowed:
+            raise HTTPException(status_code=403, detail=decision.reason_code)
     manifest = await audit_service.get_replay_manifest(db, sync_db, correlation_id)
     return ReplayManifest.model_validate(manifest)
 
