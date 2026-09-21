@@ -22,6 +22,8 @@ Design notes:
 from __future__ import annotations
 
 import os
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 
 import httpx
@@ -61,6 +63,85 @@ def _strict_allowlist() -> bool:
     return os.getenv("SEARXNG_STRICT_ALLOWLIST", "").lower() in {"1", "true", "yes"}
 
 
+# ── Result cache ────────────────────────────────────────────────────────────
+# SearXNG holds no index of its own: it forwards every query to Google and
+# DuckDuckGo, both of which rate-limit or CAPTCHA a self-hosted instance that
+# asks repeatedly from one address. Development put the same few questions
+# through this path dozens of times — "How is federal income tax calculated in
+# the US?" went out five times inside twenty minutes — and the instance ended
+# up suspended by Google and CAPTCHA'd by DuckDuckGo. Both then answer HTTP 200
+# with an empty result list, so every reply silently lost its citations while
+# the authorities sat one allowlist away, perfectly reachable.
+#
+# Caching the repeats is what holds the request rate under whatever trips that.
+# Latency is a side benefit: the search is the slowest single step in
+# ask_kriton (see its background-task comment) and a hit removes it outright.
+_CACHE_MAX_ENTRIES = 512
+
+
+def _cache_ttl() -> float:
+    """Seconds a cached result stays usable. 0 or less disables the cache.
+
+    An hour by default: an authority's guidance page reads the same at 11:02 as
+    at 11:22, so nothing is lost. Live figures never come through here —
+    exchange rates, statistics, filings and market data have their own keyed
+    connectors (frankfurter.py, dbnomics.py, fred.py, market_data.py), which
+    are not subject to this blocking and must not be served stale.
+    """
+    try:
+        return float(os.getenv("SEARXNG_CACHE_TTL_SECONDS", "3600"))
+    except ValueError:
+        return 3600.0
+
+
+# key -> (expires_at, results), ordered most-recently-used last so the first
+# key is always the coldest when the cap is reached. Per-process and in-memory:
+# a --reload restart empties it, which is fine, because the repeats worth
+# absorbing happen within a session. monotonic() not time() — a clock
+# adjustment must not make an entry immortal or expire the lot at once.
+_search_cache: OrderedDict[str, tuple[float, list[WebSource]]] = OrderedDict()
+
+
+def _cache_key(query: str, jurisdiction: str, limit: int) -> str:
+    # Jurisdiction and limit belong in the key because both change the result:
+    # the allowlist differs per jurisdiction, and limit decides how many
+    # sources survive _spread_across_organisations. Whitespace and case are
+    # normalised so "Federal  income tax" and "federal income tax" share an
+    # entry rather than each making its own trip.
+    return f"{(jurisdiction or '').strip().upper()}|{limit}|{' '.join(query.lower().split())}"
+
+
+def _cache_get(key: str) -> list[WebSource] | None:
+    entry = _search_cache.get(key)
+    if entry is None:
+        return None
+    expires_at, results = entry
+    if time.monotonic() >= expires_at:
+        del _search_cache[key]
+        return None
+    _search_cache.move_to_end(key)      # hot entries survive eviction
+    return list(results)                # a copy — callers must not mutate the cache
+
+
+def _cache_put(key: str, results: list[WebSource]) -> None:
+    # Deliberately NOT caching an empty result. Empty means either a genuine
+    # no-match or a blocked/timed-out engine, and the two are indistinguishable
+    # at this layer — SearXNG answers 200 with "results": [] for both. Storing
+    # one would pin "no sources" in place for the whole TTL and keep serving it
+    # after the block lifted, turning a twenty-minute outage into an hour of
+    # uncited answers. Negative caching is the wrong call here even though it
+    # is usually the right one.
+    if not results:
+        return
+    ttl = _cache_ttl()
+    if ttl <= 0:
+        return
+    _search_cache[key] = (time.monotonic() + ttl, list(results))
+    _search_cache.move_to_end(key)
+    while len(_search_cache) > _CACHE_MAX_ENTRIES:
+        _search_cache.popitem(last=False)   # evict least recently used
+
+
 def _spread_across_organisations(
     sources: list[WebSource], domains: list[str], limit: int
 ) -> list[WebSource]:
@@ -97,7 +178,17 @@ def _spread_across_organisations(
 async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list[WebSource]:
     """Query SearXNG and return up to `limit` sources, preferring trusted
     domains for the jurisdiction and topic. Returns [] on any failure
-    (fail-soft)."""
+    (fail-soft).
+
+    Successful results are cached for SEARXNG_CACHE_TTL_SECONDS so a repeated
+    question does not make a second trip to the upstream engines — see the
+    cache block above for why that matters more than the latency it saves.
+    """
+    cache_key = _cache_key(query, jurisdiction, limit)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     base = _searxng_url()
     # Topic narrows the allowlist from "every body in this jurisdiction" to
     # the ones with authority over THIS question (source_taxonomy.py). An
@@ -141,14 +232,23 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
     trusted = [s for s in parsed if matches_allowlist(s.url, domains)]
 
     if trusted:
-        return _spread_across_organisations(trusted, domains, limit)
-    if _strict_allowlist():
-        return []
-    # Fallback: no trusted-domain hits — return the general top results so the
-    # bot still answers (allowlist is advisory unless SEARXNG_STRICT_ALLOWLIST).
-    # Spread these too: organisation_key falls back to the bare hostname off
-    # the allowlist, so five pages of one blog still collapse to one voice.
-    return _spread_across_organisations(parsed, domains, limit)
+        selected = _spread_across_organisations(trusted, domains, limit)
+    elif _strict_allowlist():
+        selected = []
+    else:
+        # Fallback: no trusted-domain hits — return the general top results so
+        # the bot still answers (allowlist is advisory unless
+        # SEARXNG_STRICT_ALLOWLIST). Spread these too: organisation_key falls
+        # back to the bare hostname off the allowlist, so five pages of one
+        # blog still collapse to one voice.
+        selected = _spread_across_organisations(parsed, domains, limit)
+
+    # Cached AFTER filtering and spreading, so the stored value is what a
+    # caller would have received. Caching the raw engine response instead would
+    # freeze today's allowlist into every future hit, and a taxonomy change
+    # would not take effect until the entries aged out.
+    _cache_put(cache_key, selected)
+    return selected
 
 
 # The table/formula formatting rules apply whether or not web sources were
