@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     # testing while still catching genuinely vague input.
     CLASSIFIER_CONFIDENCE_THRESHOLD: float = 0.35
     SAFETY_OVERRIDE_MAX_HOURS: int = 72
+    # Hard ceiling for the complete Ask Kriton pipeline. Keep this below the
+    # browser's transport timeout so the API can return a controlled 504 (or a
+    # terminal stream error) instead of letting the browser sever the socket.
+    ASK_KRITON_TIMEOUT_SECONDS: float = 105.0
+    # One ceiling for the combined FX/statistics/market-data fan-out. Individual
+    # provider retry policies must not add up beyond this request-level budget.
+    LIVE_DATA_TIMEOUT_SECONDS: float = 12.0
 
     @property
     def is_sqlite(self) -> bool:
