@@ -107,6 +107,20 @@ def _detect_country(query: str) -> str | None:
     return None
 
 
+def _detect_countries(query: str) -> list[str]:
+    """Return every named country once, in the order mentioned."""
+    matches: list[tuple[int, str]] = []
+    for alias, canonical in _COUNTRY_ALIASES.items():
+        match = re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", query, re.I)
+        if match:
+            matches.append((match.start(), canonical))
+    countries: list[str] = []
+    for _, country in sorted(matches):
+        if country not in countries:
+            countries.append(country)
+    return countries
+
+
 # ── Deterministic headline-indicator lookup ─────────────────────────────────
 # DBnomics full-text search does not find headline macro indicators. Asking it
 # for "india gdp" returns a CHELEM trade dataset, an OECD education-expenditure
@@ -157,6 +171,31 @@ async def _fetch_wdi(client: httpx.AsyncClient, indicator: str, iso3: str) -> di
         return None
 
 
+async def _fetch_world_bank(
+    client: httpx.AsyncClient, indicator: str, iso3: str
+) -> list[tuple[str, float]]:
+    """Fetch current WDI observations from the publisher before its mirrors."""
+    try:
+        response = await client.get(
+            f"https://api.worldbank.org/v2/country/{iso3}/indicator/{indicator}",
+            params={"format": "json", "per_page": 100},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list) or len(payload) < 2 or not isinstance(payload[1], list):
+            return []
+        return sorted(
+            (str(row["date"]), float(row["value"]))
+            for row in payload[1]
+            if isinstance(row, dict)
+            and re.fullmatch(r"\d{4}", str(row.get("date", "")))
+            and isinstance(row.get("value"), (int, float))
+            and not isinstance(row.get("value"), bool)
+        )
+    except (httpx.HTTPError, ValueError, TypeError, KeyError):
+        return []
+
+
 def _wdi_match(query: str) -> tuple[str, str] | None:
     """(indicator_code, human_label) for the first headline indicator the
     question names. Order matters: the more specific patterns come first, so
@@ -191,7 +230,7 @@ def _real_points(series: dict) -> list[tuple[str, float]]:
 
 
 async def fetch_stats(query: str) -> list[WebSource]:
-    """Return one WebSource with a matching economic series' recent values when
+    """Return WebSources with matching economic series' recent values when
     the question is a statistics query and a confident match is found; else []."""
     if not _STAT_HINTS.search(query):
         return []
@@ -202,34 +241,43 @@ async def fetch_stats(query: str) -> list[WebSource]:
     # Deterministic path first: a named indicator + a named country resolves to
     # an exact World Bank series, which is both correct and cheap. Only when
     # that misses do we fall back to the keyword search below.
-    country = _detect_country(query)
+    countries = _detect_countries(query)
+    country = countries[0] if countries else None
     indicator = _wdi_match(query)
     iso3 = _ISO3.get(country or "", "")
     if indicator and iso3:
         code, label = indicator
         async with httpx.AsyncClient(timeout=8.0) as client:
-            doc = await _fetch_wdi(client, code, iso3)
-        if doc:
-            points = _real_points(doc)
-            if points:
-                # Enough history for a "last 10 years" style request. Six was too few:
-                # the model could only see 2018-2023 and correctly reported
-                # that a ten-year comparison was not possible.
+            async def source_for(named_country: str) -> WebSource | None:
+                country_iso3 = _ISO3[named_country]
+                points = await _fetch_world_bank(client, code, country_iso3)
+                if points:
+                    provider = "World Bank (WDI)"
+                    url = f"https://data.worldbank.org/indicator/{code}?locations={country_iso3}"
+                else:
+                    doc = await _fetch_wdi(client, code, country_iso3)
+                    points = _real_points(doc) if doc else []
+                    provider = "World Bank (WDI) via DBnomics"
+                    url = f"{_dbnomics_base()}/series/WB/WDI/A-{code}-{country_iso3}"
+                if not points:
+                    return None
                 tail = points[-_MAX_POINTS:]
                 values_txt = ", ".join(f"{p}: {v:g}" for p, v in tail)
-                name = str(doc.get("series_name") or label).replace("�", "·").strip()
-                return [
-                    WebSource(
-                        title=f"DBnomics — {name}"[:200],
-                        url=f"{_dbnomics_base()}/series/WB/WDI/A-{code}-{iso3}",
-                        snippet=(
-                            f"Official data via DBnomics (World Bank — World Development "
-                            f"Indicators). Series: {name}. Recent values — {values_txt}."
-                        ),
-                        provider="World Bank (WDI) via DBnomics",
-                        freshness="historical",
-                    )
-                ]
+                return WebSource(
+                    title=f"{label} — {named_country.title()}",
+                    url=url,
+                    snippet=(f"{provider}. {label} for {named_country.title()}. "
+                             f"Latest available year: {tail[-1][0]}. Values — {values_txt}."),
+                    provider=provider,
+                    freshness="historical",
+                )
+
+            sources = await asyncio.gather(*(source_for(c) for c in countries))
+        # A comparison with one missing country must not masquerade as complete.
+        if all(sources):
+            return [source for source in sources if source is not None]
+        if len(countries) > 1:
+            return []
     # DBnomics full-text search does an AND over the query terms, so natural-
     # language filler ("over the years", "what is…") makes it return nothing.
     # Search with just the extracted keywords instead.

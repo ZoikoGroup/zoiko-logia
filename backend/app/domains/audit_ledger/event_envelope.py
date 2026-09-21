@@ -61,6 +61,70 @@ def _is_transient_db_error(exc: BaseException) -> bool:
 _cached_previous_chain_hash: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "audit_previous_chain_hash", default=None
 )
+_audit_batch: contextvars.ContextVar[Optional[list[AuditEvent]]] = contextvars.ContextVar(
+    "audit_event_batch", default=None
+)
+
+
+def begin_audit_batch() -> contextvars.Token:
+    """Buffer audit rows in this task until commit_audit_batch()."""
+    _cached_previous_chain_hash.set(None)
+    return _audit_batch.set([])
+
+
+def discard_audit_batch(token: contextvars.Token) -> None:
+    _audit_batch.reset(token)
+    _cached_previous_chain_hash.set(None)
+
+
+async def commit_audit_batch(db: AsyncSession, token: contextvars.Token) -> None:
+    """Persist buffered events in one ordered transaction.
+
+    The tenant advisory lock serialises concurrent chain writers. Hashes are
+    rebuilt after taking that lock, against the latest committed event.
+    """
+    rows = list(_audit_batch.get() or [])
+    try:
+        if not rows:
+            return
+        tenant_id = rows[0].tenant_id
+
+        async def stage_against_latest_chain() -> None:
+            if db.get_bind().dialect.name != "sqlite":
+                await db.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext(:tenant_id))"),
+                    {"tenant_id": tenant_id},
+                )
+            result = await db.execute(
+                select(AuditEvent.chain_hash)
+                .where(AuditEvent.tenant_id == tenant_id)
+                .order_by(AuditEvent.ingested_at.desc())
+                .limit(1)
+            )
+            previous = result.scalar_one_or_none()
+            for row in rows:
+                row.previous_chain_hash = previous
+                row.chain_hash = compute_chain_hash(
+                    row.id, row.event_name, row.payload_hash, previous
+                )
+                previous = row.chain_hash
+            db.add_all(rows)
+
+        for backoff in _DB_RETRY_BACKOFFS:
+            try:
+                await stage_against_latest_chain()
+                await db.commit()
+                break
+            except (DBAPIError, OSError) as exc:
+                if not _is_transient_db_error(exc):
+                    raise
+                await db.rollback()
+                await asyncio.sleep(backoff)
+        else:
+            await stage_against_latest_chain()
+            await db.commit()
+    finally:
+        discard_audit_batch(token)
 
 
 def _build_row(
@@ -128,6 +192,14 @@ async def _execute_reconnect(db: AsyncSession, stmt, params=None):
 
 
 async def record_event_async(db: AsyncSession, *, tenant_id: str = "GLOBAL_CONTROL", **kwargs) -> AuditEvent:
+    batch = _audit_batch.get()
+    if batch is not None:
+        previous = batch[-1].chain_hash if batch else None
+        row = _build_row(tenant_id=tenant_id, previous_chain_hash=previous, **kwargs)
+        batch.append(row)
+        _cached_previous_chain_hash.set(row.chain_hash)
+        return row
+
     previous_chain_hash = _cached_previous_chain_hash.get()
     if previous_chain_hash is None:
         # Only hit the DB for the first event of this request (task) — every

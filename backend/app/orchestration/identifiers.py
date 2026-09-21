@@ -11,9 +11,15 @@ MVP concession per §5: query_id is reused as correlation_id where documented.
 """
 from __future__ import annotations
 
-import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.domains.orchestration_state.models import IdempotencyRecord
 
 
 def _new_id(prefix: str) -> str:
@@ -36,29 +42,75 @@ def generate_audit_chain_id() -> str:
     return _new_id("aud")
 
 
-# ── In-memory Idempotency Store ───────────────────────────────────────────────
-# MVP: in-memory dict. Production requires a Redis/DB-backed store.
-
-_idempotency_cache: dict[str, dict] = {}
 _IDEMPOTENCY_TTL_SECONDS = 86_400  # 24 hours
+_RUNNING = "__running__"
 
 
-def check_idempotency(key: str, tenant_id: str) -> Optional[dict]:
+def scope_idempotency_key(key: str, engagement_id: str | None) -> str:
+    """Prevent a tenant-wide key collision from crossing engagement scope."""
+    return f"{engagement_id or '_personal'}:{key}"
+
+
+async def check_idempotency(db: AsyncSession, key: str, tenant_id: str) -> Optional[dict]:
     """
     Returns the cached terminal response if the idempotency key was already used
     for this tenant within the TTL window. Returns None if this is a fresh request.
     """
-    cache_key = f"{tenant_id}:{key}"
-    entry = _idempotency_cache.get(cache_key)
-    if entry and (time.monotonic() - entry["stored_at"]) < _IDEMPOTENCY_TTL_SECONDS:
-        return entry["response"]
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=_IDEMPOTENCY_TTL_SECONDS)
+    result = await db.execute(select(IdempotencyRecord).where(
+        IdempotencyRecord.tenant_id == tenant_id,
+        IdempotencyRecord.idempotency_key == key,
+        IdempotencyRecord.created_at > cutoff,
+    ))
+    row = result.scalar_one_or_none()
+    if row and row.response_json.get("status") != _RUNNING:
+        return row.response_json
     return None
 
 
-def store_idempotency(key: str, tenant_id: str, response: dict) -> None:
-    """Persist the terminal response for an idempotency key."""
-    cache_key = f"{tenant_id}:{key}"
-    _idempotency_cache[cache_key] = {
-        "response": response,
-        "stored_at": time.monotonic(),
-    }
+async def claim_idempotency(db: AsyncSession, key: str, tenant_id: str) -> bool:
+    """Atomically reserve a key across processes and workers."""
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=_IDEMPOTENCY_TTL_SECONDS)
+    await db.execute(delete(IdempotencyRecord).where(
+        IdempotencyRecord.tenant_id == tenant_id,
+        IdempotencyRecord.idempotency_key == key,
+        IdempotencyRecord.created_at <= cutoff,
+    ))
+    try:
+        async with db.begin_nested():
+            db.add(IdempotencyRecord(
+                tenant_id=tenant_id,
+                idempotency_key=key,
+                response_json={"status": _RUNNING},
+            ))
+            await db.flush()
+        # Reservation must be visible before expensive work begins.
+        await db.commit()
+        return True
+    except IntegrityError:
+        await db.rollback()
+        return False
+
+
+async def store_idempotency(
+    db: AsyncSession, key: str, tenant_id: str, response: dict
+) -> None:
+    """Stage a terminal response for the final audit transaction."""
+    result = await db.execute(select(IdempotencyRecord).where(
+        IdempotencyRecord.tenant_id == tenant_id,
+        IdempotencyRecord.idempotency_key == key,
+    ))
+    row = result.scalar_one()
+    row.response_json = response
+
+
+async def abandon_idempotency(db: AsyncSession, key: str, tenant_id: str) -> None:
+    """Release a failed/timed-out reservation so a retry can execute."""
+    result = await db.execute(select(IdempotencyRecord).where(
+        IdempotencyRecord.tenant_id == tenant_id,
+        IdempotencyRecord.idempotency_key == key,
+    ))
+    row = result.scalar_one_or_none()
+    if row and row.response_json.get("status") == _RUNNING:
+        await db.delete(row)
+        await db.commit()

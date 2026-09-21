@@ -14,6 +14,7 @@ import asyncio
 import io
 import os
 import sys
+import threading
 import uuid
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -255,6 +256,24 @@ async def test_ingest_indexes_a_real_document_and_reports_real_counts():
         assert result.chunk_count >= 1
         assert result.char_count > 0
         assert result.failure_reason is None
+
+
+async def test_ingest_parsing_runs_off_the_event_loop(monkeypatch):
+    event_loop_thread = threading.get_ident()
+    parser_thread = None
+    real_extract = documents_service.extract
+
+    def observed_extract(data, extension):
+        nonlocal parser_thread
+        parser_thread = threading.get_ident()
+        return real_extract(data, extension)
+
+    monkeypatch.setattr(documents_service, "extract", observed_extract)
+    async with _Fixture() as fx:
+        result = await fx.ingest("note.txt", ".txt", b"Accrual accounting note")
+
+    assert result.status == "ready"
+    assert parser_thread != event_loop_thread
 
 
 async def test_failed_extraction_is_recorded_not_discarded():

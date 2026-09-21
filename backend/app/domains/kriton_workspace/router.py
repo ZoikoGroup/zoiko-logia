@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -8,6 +8,7 @@ from app.domains.documents.extract import SUPPORTED_EXTENSIONS
 from app.domains.documents.models import STATUS_READY
 from app.domains.identity.models import User
 from app.domains.identity.rbac import get_current_user
+from app.domains.identity.authorization import DOCUMENT_READ, DOCUMENT_WRITE, authorize
 from app.domains.kriton_workspace.schemas import (
     DraftCreateRequest,
     DraftPublic,
@@ -46,6 +47,7 @@ _MAX_DOCUMENTS_PER_USER = 200
 @router.post("/attachments")
 async def upload_attachment(
     file: UploadFile = File(...),
+    engagement_id: str | None = Form(default=None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
@@ -89,6 +91,7 @@ async def upload_attachment(
         db,
         tenant_id=current_user.tenant_id,
         user_id=current_user.id,
+        engagement_id=engagement_id,
         filename=name,
         extension=suffix,
         data=content,
@@ -130,12 +133,21 @@ async def upload_attachment(
 
 @router.get("/attachments")
 async def list_attachments(
+    engagement_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[dict]:
     """The caller own indexed documents, newest first."""
+    if engagement_id:
+        decision = await authorize(
+            db, actor_id=current_user.id, tenant_id=current_user.tenant_id,
+            engagement_id=engagement_id, operation=DOCUMENT_READ,
+        )
+        if not decision.allowed:
+            raise HTTPException(status_code=403, detail=decision.reason_code)
     rows = await documents_service.list_documents(
-        db, tenant_id=current_user.tenant_id, user_id=current_user.id
+        db, tenant_id=current_user.tenant_id, user_id=current_user.id,
+        engagement_id=engagement_id,
     )
     return [
         {
@@ -154,12 +166,21 @@ async def list_attachments(
 @router.delete("/attachments/{document_id}")
 async def delete_attachment(
     document_id: str,
+    engagement_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
+    if engagement_id:
+        decision = await authorize(
+            db, tenant_id=current_user.tenant_id, actor_id=current_user.id,
+            engagement_id=engagement_id, operation=DOCUMENT_WRITE,
+        )
+        if not decision.allowed:
+            raise HTTPException(status_code=403, detail=decision.reason_code)
     deleted = await documents_service.delete_document(
         db, document_id=document_id,
         tenant_id=current_user.tenant_id, user_id=current_user.id,
+        engagement_id=engagement_id,
     )
     if not deleted:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -171,7 +192,7 @@ async def delete_attachment(
         actor_id=current_user.id,
         subject_type="attachment",
         subject_id=document_id,
-        payload={"document_id": document_id},
+        payload={"document_id": document_id, "engagement_id": engagement_id},
     )
     return {"deleted": True}
 

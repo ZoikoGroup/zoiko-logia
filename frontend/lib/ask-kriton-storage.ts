@@ -20,6 +20,8 @@ export type Turn = {
   loading: boolean;
   error: string | null;
   result: AskKritonResponse | null;
+  /** Latest server-reported orchestration stage while this turn is running. */
+  progressMessage?: string;
   /** Documents sent with this question. Optional so conversations stored
    *  before this existed still load. */
   attachments?: TurnAttachment[];

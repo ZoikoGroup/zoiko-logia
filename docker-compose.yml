@@ -40,6 +40,12 @@ services:
       # returns 404 "model_not_found" on every request.
     ports:
       - "8010:8010"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health/ready', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
     depends_on:
       postgres:
         condition: service_healthy
@@ -66,7 +72,7 @@ services:
       postgres:
         condition: service_healthy
       backend:
-        condition: service_started
+        condition: service_healthy
     restart: "no"
     command: >
       sh -c "sleep 5 &&
@@ -75,17 +81,18 @@ services:
   frontend:
     build: ./frontend
     # Supabase URL + anon key, read by lib/supabase.ts. Requires
-    # frontend/.env.local. Works at runtime because the image runs
+    # frontend/.env. Works at runtime because the image runs
     # `npm run dev`; a production `next build` would need these as build args.
     env_file:
-      - ./frontend/.env.local
+      - ./frontend/.env
     environment:
       # Host-published port, not the service name — the browser fetches this.
       NEXT_PUBLIC_API_URL: http://localhost:8010/api/v1
     ports:
       - "3005:3000"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   postgres_data:

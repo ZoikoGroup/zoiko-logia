@@ -6,6 +6,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
+import type { Root } from "mdast";
 import { CheckCircle2, Copy, Download, Table2 } from "lucide-react";
 import { cssVar } from "@/lib/css-var";
 import {
@@ -47,6 +48,20 @@ function stripInlineRefs(text: string): string {
     .replace(/\s*\[\s*(?:REF-)?\d+(?:\s*,\s*(?:REF-)?\d+)*\s*\]/gi, "")
     .replace(/[ \t]+([.,;:])/g, "$1")
     .replace(/[ \t]{2,}/g, " ");
+}
+
+/** KaTeX cannot render some typography the model inserts inside math. */
+function normaliseMathUnicode() {
+  return (tree: Root) => {
+    type MathNode = { type: string; value?: string; children?: MathNode[] };
+    const visit = (node: MathNode) => {
+      if ((node.type === "inlineMath" || node.type === "math") && node.value) {
+        node.value = node.value.replace(/[\u00a0\u202f]/g, " ").replace(/[\u2013\u2014]/g, "-");
+      }
+      node.children?.forEach(visit);
+    };
+    visit(tree as MathNode);
+  };
 }
 
 /** A pipe-delimited table row: `| a | b |`, with optional leading spaces. */
@@ -456,6 +471,9 @@ function buildChartOption(spec: ChartSpec): Record<string, unknown> {
       // another, so neither side is a category list.
       xAxis: {
         type: "value",
+        // Keep close numeric X values (such as 2021–2025) readable.
+        // ECharts otherwise includes zero and compresses the points.
+        scale: true,
         name: spec.xName,
         nameLocation: "middle",
         nameGap: 30,
@@ -882,7 +900,7 @@ export function AnswerRenderer({ text, className }: { text: string; className?: 
         ) : (
           <ReactMarkdown
             key={i}
-            remarkPlugins={[remarkGfm, remarkMath]}
+            remarkPlugins={[remarkGfm, remarkMath, normaliseMathUnicode]}
             rehypePlugins={[rehypeKatex]}
             components={mdComponents}
           >

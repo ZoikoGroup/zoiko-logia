@@ -64,7 +64,7 @@ async def classify_risk(query: str) -> Optional[str]:
     model = os.getenv("GROQ_CLASSIFIER_MODEL", "llama-3.1-8b-instant")
     try:
         client = AsyncGroq(api_key=api_key)
-        resp = await client.chat.completions.create(
+        resp = await asyncio.wait_for(client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": _SYSTEM},
@@ -72,7 +72,7 @@ async def classify_risk(query: str) -> Optional[str]:
             ],
             temperature=0.0,
             max_tokens=4,
-        )
+        ), timeout=8)
         raw = (resp.choices[0].message.content or "").strip().upper()
     except Exception:
         return None
@@ -121,7 +121,7 @@ async def classify_risk_gemini(query: str) -> Optional[str]:
 
         # google-genai's call is synchronous — run it off the event loop so it
         # doesn't block other concurrent requests while awaiting the model.
-        raw = await asyncio.to_thread(_call)
+        raw = await asyncio.wait_for(asyncio.to_thread(_call), timeout=8)
     except Exception:
         return None
 

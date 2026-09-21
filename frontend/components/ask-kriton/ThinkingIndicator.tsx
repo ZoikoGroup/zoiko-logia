@@ -12,7 +12,7 @@ const STATUS_STEPS = [
 
 const STEP_DURATION_MS = 1800;
 
-export function ThinkingIndicator() {
+export function ThinkingIndicator({ message }: { message?: string }) {
   const [step, setStep] = useState(0);
 
   useEffect(() => {
@@ -33,7 +33,7 @@ export function ThinkingIndicator() {
       </div>
       <div className="min-w-0 flex-1">
         <p key={step} className="kriton-animate-status text-sm font-semibold text-ink">
-          {STATUS_STEPS[step]}
+          {message || STATUS_STEPS[step]}
         </p>
         <div className="mt-2.5 flex items-center gap-1.5" aria-hidden="true">
           {STATUS_STEPS.map((_, i) => (
@@ -42,7 +42,7 @@ export function ThinkingIndicator() {
         </div>
       </div>
       <span className="sr-only" role="status" aria-live="polite">
-        {STATUS_STEPS[step]}
+        {message || STATUS_STEPS[step]}
       </span>
     </div>
   );

@@ -1,7 +1,8 @@
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -80,7 +81,12 @@ _HAS_USER_CONTEXT = (
 )
 _DOCUMENT_TABLES = ("user_documents", "document_chunks")
 _DOCUMENT_POLICY_USING = (
-    f"({_HAS_USER_CONTEXT} AND user_id = current_setting('app.user_id', true))"
+    f"({_HAS_USER_CONTEXT} AND ("
+    "(engagement_id IS NULL AND user_id = current_setting('app.user_id', true)) OR "
+    "engagement_id IN (SELECT engagement_id FROM engagement_memberships "
+    "WHERE user_id = current_setting('app.user_id', true) "
+    "AND status = 'active' AND revoked_at IS NULL)"
+    "))"
 )
 
 
@@ -708,6 +714,22 @@ def create_app() -> FastAPI:
 
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    @app.get("/health/live", tags=["Health"])
+    async def health_live() -> dict[str, str]:
+        return {"status": "alive"}
+
+    @app.get("/health/ready", tags=["Health"])
+    async def health_ready() -> dict[str, str]:
+        async def check_database() -> None:
+            async with async_engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+
+        try:
+            await asyncio.wait_for(check_database(), timeout=3)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Database unavailable") from exc
+        return {"status": "ready"}
 
     # Core API endpoints from main branch
     app.include_router(api_v1_router, prefix="/api/v1")

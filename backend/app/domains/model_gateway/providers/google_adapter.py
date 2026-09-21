@@ -1,5 +1,8 @@
 # Provider adapter - Google Gemini
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 # Reuse the exact same answering system prompt as the Groq adapter, so
 # switching providers changes only *who* answers, not *how* it is asked to
@@ -58,4 +61,10 @@ class GeminiAdapter:
             )
             return response.text or ""
         except Exception as e:
+            logger.warning(
+                "Gemini request failed: error_type=%s status=%s model=%s",
+                type(e).__name__,
+                getattr(e, "code", None) or getattr(e, "status_code", None),
+                model,
+            )
             return f"[Error connecting to Gemini API: {str(e)}]"

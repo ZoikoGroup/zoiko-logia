@@ -1,4 +1,6 @@
+import asyncio
 import hashlib
+import logging
 import os
 
 from fastapi import HTTPException, status
@@ -11,6 +13,9 @@ from app.domains.model_gateway.providers.mock_adapter import MockProviderAdapter
 from app.domains.model_gateway.providers.groq_adapter import GroqAdapter
 from app.domains.model_gateway.providers.google_adapter import GeminiAdapter
 from app.domains.model_gateway.providers.openai_adapter import OpenAIAdapter
+
+logger = logging.getLogger(__name__)
+_PROVIDER_TIMEOUT_SECONDS = 30
 
 
 def _select_adapter():
@@ -57,10 +62,26 @@ async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
     is_gemini = isinstance(adapter, GeminiAdapter)
     # A Gemini answer must not receive a Groq model id — only pass `model`
     # through when the answering adapter is Groq.
-    output = await _try_complete(adapter, prompt, None if is_gemini else model)
-    if output.startswith("[Error") and is_gemini and os.environ.get("GROQ_API_KEY"):
-        output = await _try_complete(GroqAdapter(), prompt, model)
-    return output
+    async def bounded_complete(provider, selected_model: str | None) -> str:
+        try:
+            output = await asyncio.wait_for(
+                _try_complete(provider, prompt, selected_model),
+                timeout=_PROVIDER_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            logger.warning("%s answer generation timed out after %ss", type(provider).__name__, _PROVIDER_TIMEOUT_SECONDS)
+            raise RuntimeError(f"{type(provider).__name__} timed out") from exc
+        if not output or output.startswith("[Error"):
+            raise RuntimeError(f"{type(provider).__name__} failed to generate an answer")
+        return output
+
+    try:
+        return await bounded_complete(adapter, None if is_gemini else model)
+    except RuntimeError:
+        if not (is_gemini and os.environ.get("GROQ_API_KEY")):
+            raise
+        logger.warning("Gemini answer generation failed; trying Groq")
+        return await bounded_complete(GroqAdapter(), model)
 
 
 async def list_models(db: AsyncSession) -> list[ModelDefinition]:
@@ -116,8 +137,8 @@ async def run_grounded_completion(input_text: str, model: str | None = None) -> 
     """Direct provider completion with no approved-prompt-template row —
     the fallback used by orchestration when no PromptTemplate is seeded yet,
     so web-grounded answering still works out of the box. Returns the model
-    output text (adapters fail soft, returning an error string rather than
-    raising). Uses the preferred provider with Groq fallback."""
+    output text. Provider failures raise after the bounded Groq fallback,
+    allowing orchestration to return its composition-failed outcome."""
     return await _complete_with_fallback(input_text, model)
 
 

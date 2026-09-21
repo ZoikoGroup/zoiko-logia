@@ -95,6 +95,7 @@ export function Composer({
   attachments,
   onAttachmentsChange,
   savedDocuments = [],
+  engagementId,
 }: {
   variant: "hero" | "sticky";
   query: string;
@@ -121,6 +122,7 @@ export function Composer({
    *  the list after an upload. Defaults to empty so the picker simply does not
    *  render when the caller has nothing to offer. */
   savedDocuments?: AttachmentSummary[];
+  engagementId?: string;
 }) {
   const setAttachments = onAttachmentsChange;
   const [listening, setListening] = useState(false);
@@ -215,7 +217,7 @@ export function Composer({
           // the response lands. Showing 100% while the server is still parsing
           // would read as "done" for several more seconds.
           patchAttachment(key, { progress: Math.min(fraction, 0.95) });
-        });
+        }, engagementId);
         if (result.status === "ready") {
           patchAttachment(key, {
             status: "success",
@@ -280,7 +282,7 @@ export function Composer({
     const token = getAuthToken();
     if (token && attachment.documentId) {
       try {
-        await deleteKritonAttachment(token, attachment.documentId);
+        await deleteKritonAttachment(token, attachment.documentId, engagementId);
       } catch {
         /* The row is orphaned but unreachable from the UI; not worth alarming
            the user, who has already seen the attachment disappear. */

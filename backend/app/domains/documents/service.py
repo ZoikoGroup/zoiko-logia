@@ -23,6 +23,8 @@ path a real deployment takes.
 """
 from __future__ import annotations
 
+import asyncio
+
 import hashlib
 import re
 from dataclasses import dataclass
@@ -137,6 +139,7 @@ async def ingest_document(
     *,
     tenant_id: str,
     user_id: str,
+    engagement_id: str | None = None,
     filename: str,
     extension: str,
     data: bytes,
@@ -151,6 +154,7 @@ async def ingest_document(
     document = UserDocument(
         tenant_id=tenant_id,
         user_id=user_id,
+        engagement_id=engagement_id,
         filename=filename,
         extension=extension,
         size_bytes=len(data),
@@ -160,8 +164,12 @@ async def ingest_document(
     await db.flush()          # assigns document.id before it is used below
 
     try:
-        segments = extract(data, extension)
-        chunks = chunk_segments(segments)
+        # PDF/Office parsing and chunk construction are synchronous CPU/file
+        # work. Run both in a worker thread so a large upload cannot freeze the
+        # FastAPI event loop and delay unrelated answer streams.
+        chunks = await asyncio.to_thread(
+            lambda: chunk_segments(extract(data, extension))
+        )
     except ExtractionError as exc:
         document.status = STATUS_FAILED
         document.failure_reason = str(exc)
@@ -199,6 +207,7 @@ async def ingest_document(
             document_id=document.id,
             tenant_id=tenant_id,
             user_id=user_id,
+            engagement_id=engagement_id,
             ordinal=chunk.ordinal,
             content=chunk.content,
             locator=chunk.locator,
@@ -502,6 +511,7 @@ async def retrieve_context(
     document_ids: list[str],
     tenant_id: str,
     user_id: str,
+    engagement_id: str | None = None,
     limit: int = MAX_CHUNKS_PER_ANSWER,
 ) -> RetrievedContext:
     """The best chunks from the named documents for this question.
@@ -517,11 +527,16 @@ async def retrieve_context(
     # Only documents this caller owns, and only ones that actually indexed.
     # Done as its own query rather than trusted from the request body: the
     # client sends document ids, and a client is not an authority on ownership.
+    scope_filters = (
+        [UserDocument.engagement_id == engagement_id]
+        if engagement_id
+        else [UserDocument.engagement_id.is_(None), UserDocument.user_id == user_id]
+    )
     owned = await db.execute(
         select(UserDocument.id).where(
             UserDocument.id.in_(document_ids),
             UserDocument.tenant_id == tenant_id,
-            UserDocument.user_id == user_id,
+            *scope_filters,
             UserDocument.status == STATUS_READY,
         )
     )
@@ -583,11 +598,16 @@ async def retrieve_context(
 
 
 async def list_documents(
-    db: AsyncSession, *, tenant_id: str, user_id: str, limit: int = 50
+    db: AsyncSession, *, tenant_id: str, user_id: str,
+    engagement_id: str | None = None, limit: int = 50
 ) -> list[UserDocument]:
     result = await db.execute(
         select(UserDocument)
-        .where(UserDocument.tenant_id == tenant_id, UserDocument.user_id == user_id)
+        .where(UserDocument.tenant_id == tenant_id, *(
+            [UserDocument.engagement_id == engagement_id]
+            if engagement_id
+            else [UserDocument.engagement_id.is_(None), UserDocument.user_id == user_id]
+        ))
         .order_by(UserDocument.created_at.desc())
         .limit(limit)
     )
@@ -604,17 +624,24 @@ async def count_documents(db: AsyncSession, *, tenant_id: str, user_id: str) -> 
 
 
 async def delete_document(
-    db: AsyncSession, *, document_id: str, tenant_id: str, user_id: str
+    db: AsyncSession, *, document_id: str, tenant_id: str, user_id: str,
+    engagement_id: str | None = None,
 ) -> bool:
     """Remove a document, its chunks and its stored original. Ownership is
     re-checked here rather than assumed from the caller's route."""
-    result = await db.execute(
-        select(UserDocument).where(
-            UserDocument.id == document_id,
-            UserDocument.tenant_id == tenant_id,
-            UserDocument.user_id == user_id,
-        )
+    scope_predicate = (
+        UserDocument.engagement_id == engagement_id
+        if engagement_id
+        else UserDocument.engagement_id.is_(None)
     )
+    predicates = [
+        UserDocument.id == document_id,
+        UserDocument.tenant_id == tenant_id,
+        scope_predicate,
+    ]
+    if engagement_id is None:
+        predicates.append(UserDocument.user_id == user_id)
+    result = await db.execute(select(UserDocument).where(*predicates))
     document = result.scalars().first()
     if document is None:
         return False

@@ -6,11 +6,16 @@ settings = get_settings()
 
 
 def _headers() -> dict:
-    return {
+    headers = {
         "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
         "Content-Type": "application/json",
     }
+    # Supabase's sb_secret_* API keys are opaque keys, not JWTs. Sending one
+    # as a Bearer token makes the gateway reject the Admin API request.
+    # Keep the Bearer header for older JWT-based service_role keys.
+    if not settings.SUPABASE_SERVICE_ROLE_KEY.startswith("sb_secret_"):
+        headers["Authorization"] = f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}"
+    return headers
 
 
 def is_configured() -> bool:

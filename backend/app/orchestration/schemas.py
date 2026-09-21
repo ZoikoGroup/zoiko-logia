@@ -7,13 +7,86 @@ Gate 1) — massarius/schemas.py re-exports these types rather than redefining t
 since this file already anchors the live AskKritonResponse contract.
 """
 from __future__ import annotations
+from datetime import date
 from typing import Literal, Optional, List
 from pydantic import BaseModel, ConfigDict, Field
+
+
+# ── F0 task context ─────────────────────────────────────────────────────────
+
+TaskType = Literal[
+    "general_question",
+    "policy_research",
+    "document_evidence_extraction",
+    "reconciliation",
+]
+
+
+class TaskContextSelection(BaseModel):
+    """User selections only. Trusted identity/scope is never accepted here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_type: TaskType = "general_question"
+    engagement_id: Optional[str] = None
+    purpose: Optional[str] = None
+    jurisdiction: Optional[str] = None
+    framework: Optional[str] = None
+    entity: Optional[str] = None
+    period_start: Optional[date] = None
+    period_end: Optional[date] = None
+    currency: Optional[str] = None
+    language: str = "en"
+    intended_use: Literal["research", "draft_workpaper", "internal_review"] = "research"
+
+
+class TaskContext(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: Literal["1.0"] = "1.0"
+    task_type: TaskType
+    task_spec_version: str
+    actor_id: str
+    tenant_id: str
+    actor_role: str
+    engagement_id: Optional[str] = None
+    purpose: str
+    jurisdiction: Optional[str] = None
+    framework: Optional[str] = None
+    entity: Optional[str] = None
+    period_start: Optional[date] = None
+    period_end: Optional[date] = None
+    currency: Optional[str] = None
+    language: str
+    data_classification: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    intended_use: Literal["research", "draft_workpaper", "internal_review"]
+
+
+class TaskSpec(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    task_type: TaskType
+    version: str
+    required_fields: List[str]
+    allowed_outputs: List[str]
+    prohibited_actions: List[str]
+    review_role: Optional[str] = None
+
+
+class ContextDecision(BaseModel):
+    status: Literal["complete", "clarification_required", "unsupported", "unauthorized"]
+    missing_fields: List[str] = Field(default_factory=list)
+    invalid_fields: List[str] = Field(default_factory=list)
+    reason_codes: List[str] = Field(default_factory=list)
+    clarification_questions: List[str] = Field(default_factory=list)
+    resolved_context: Optional[TaskContext] = None
 
 
 # ── Request ──────────────────────────────────────────────────────────────────
 
 class AskKritonRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     query: str
     jurisdiction: str = ""
     mode: str = "Workflow"
@@ -32,6 +105,9 @@ class AskKritonRequest(BaseModel):
     source_confidence: Optional[str] = None
     pre_bundle_state: Optional[str] = None
     privacy_class: Optional[str] = None
+    # Additive F0 contract. Omitted by legacy clients, which remain on the
+    # general-question workflow until they deliberately select a pilot task.
+    task_context: Optional[TaskContextSelection] = None
 
 
 # ── Retrieval Plan — ZL-ENG-03 §5.1 ──────────────────────────────────────────
@@ -167,10 +243,43 @@ class SourceCitation(BaseModel):
     freshness: Optional[str] = None   # realtime | delayed | historical | filing
 
 
+class WidgetInput(BaseModel):
+    name: str
+    label: str
+    value: str
+    unit: str
+    min: str
+    max: str
+    step: str
+
+
+class ChartPoint(BaseModel):
+    x: str
+    y: str
+
+
+class CalculationWidget(BaseModel):
+    formula_id: str
+    formula_name: str
+    formula_display: str
+    methodology_reference: str
+    inputs: List[WidgetInput] = Field(default_factory=list)
+    output_label: str
+    output_value: str
+    output_unit: str
+    chart_type: Literal["line", "bar", "donut", "gauge", "waterfall", "stacked_bar", "bullet", "treemap", "sankey", "kpi"]
+    chart_label: str
+    chart_x_label: str
+    chart_y_label: str
+    chart_points: List[ChartPoint] = Field(default_factory=list)
+    calculation_id: str
+
+
 class ComposedAnswer(BaseModel):
     text: str
     citations: List[SourceCitation] = Field(default_factory=list)
     limitations: List[str] = Field(default_factory=list)
+    calculation_widget: Optional[CalculationWidget] = None
     # Internal fields — kept for model_gateway wiring; never exposed to frontend
     prompt_id: str = "inline"
     prompt_name: str = "Inline RAG Prompt"
@@ -210,4 +319,6 @@ class AskKritonResponse(BaseModel):
     source_bundle: Optional[SourceBundle] = None
     answer: Optional[ComposedAnswer] = None
     next_action: Optional[NextAction] = None
+    effective_context: Optional[TaskContext] = None
+    context_decision: Optional[ContextDecision] = None
     audit_reference: AuditReference

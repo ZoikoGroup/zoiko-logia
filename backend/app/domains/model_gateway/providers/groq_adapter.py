@@ -1,5 +1,8 @@
+import logging
 import os
 from groq import AsyncGroq
+
+logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
     "You are Kriton™, a professional AI assistant specialised ONLY in these "
@@ -76,4 +79,10 @@ class GroqAdapter:
             )
             return response.choices[0].message.content or ""
         except Exception as e:
+            logger.warning(
+                "Groq request failed: error_type=%s status=%s model=%s",
+                type(e).__name__,
+                getattr(e, "status_code", None),
+                model,
+            )
             return f"[Error connecting to Groq API: {str(e)}]"
