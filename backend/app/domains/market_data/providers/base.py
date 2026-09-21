@@ -32,6 +32,7 @@ from app.domains.market_data.schemas import (
     FilingRecord,
     FinancialMetric,
     OHLCVBar,
+    OwnershipStake,
     ProviderHealth,
     ProviderNotConfigured,
     StockQuote,
@@ -45,6 +46,7 @@ CAP_PROFILE = "profile"
 CAP_FUNDAMENTALS = "fundamentals"
 CAP_FILINGS = "filings"
 CAP_SEARCH = "search"
+CAP_OWNERSHIP = "ownership"
 
 
 class BaseStockProvider:
@@ -108,6 +110,9 @@ class BaseStockProvider:
 
     async def get_filings(self, client: httpx.AsyncClient, ref: EntityRef, *, limit: int = 10) -> list[FilingRecord]:
         raise CapabilityNotSupported(self.name, "filings are not available from this provider")
+
+    async def get_ownership(self, client: httpx.AsyncClient, ref: EntityRef) -> list[OwnershipStake]:
+        raise CapabilityNotSupported(self.name, "ownership/PSC data is not available from this provider")
 
     async def search(self, client: httpx.AsyncClient, query: str, *, limit: int = 5) -> list[EntityRef]:
         raise CapabilityNotSupported(self.name, "search is not available from this provider")
