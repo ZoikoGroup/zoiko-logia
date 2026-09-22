@@ -27,7 +27,7 @@ import {
   type AttachmentUploadResult,
 } from "@/lib/api";
 
-const JURISDICTIONS = ["", "UK", "US", "US-CA", "IFRS", "UAE", "India", "EU"];
+const JURISDICTIONS = ["", "UK", "US", "US-CA", "UAE", "India", "EU"];
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".xlsx", ".pptx", ".csv", ".txt", ".md"];
 
 /** Matches the backend's per-file cap (_MAX_ATTACHMENT_BYTES). Checked here as
@@ -87,8 +87,6 @@ export function Composer({
   variant,
   query,
   onQueryChange,
-  jurisdiction,
-  onJurisdictionChange,
   onSubmit,
   submitting,
   error,
@@ -96,12 +94,12 @@ export function Composer({
   onAttachmentsChange,
   savedDocuments = [],
   engagementId,
+  jurisdiction,
+  onJurisdictionChange,
 }: {
   variant: "hero" | "sticky";
   query: string;
   onQueryChange: (value: string) => void;
-  jurisdiction: string;
-  onJurisdictionChange: (value: string) => void;
   onSubmit: () => void;
   submitting: boolean;
   error: string | null;
@@ -123,6 +121,8 @@ export function Composer({
    *  render when the caller has nothing to offer. */
   savedDocuments?: AttachmentSummary[];
   engagementId?: string;
+  jurisdiction: string;
+  onJurisdictionChange: (value: string) => void;
 }) {
   const setAttachments = onAttachmentsChange;
   const [listening, setListening] = useState(false);
@@ -439,12 +439,13 @@ export function Composer({
 
             <div className="flex min-w-0 items-center justify-end gap-2">
               <select
+                aria-label="Jurisdiction"
                 value={jurisdiction}
-                onChange={(e) => onJurisdictionChange(e.target.value)}
+                onChange={(event) => onJurisdictionChange(event.target.value)}
                 className="hidden h-9 rounded-full !border-transparent !bg-soft px-3 text-xs font-semibold text-ink !shadow-none outline-none hover:bg-line/40 sm:block"
               >
-                {JURISDICTIONS.map((j) => (
-                  <option key={j} value={j}>{j || "Any"}</option>
+                {JURISDICTIONS.map((value) => (
+                  <option key={value || "any"} value={value}>{value || "Any jurisdiction"}</option>
                 ))}
               </select>
               <button

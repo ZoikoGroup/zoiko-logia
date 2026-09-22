@@ -28,6 +28,8 @@ from app.domains.identity.rbac import get_current_user
 from app.orchestration.schemas import AskKritonRequest, AskKritonResponse, TaskSpec
 from app.orchestration.service import ask_kriton
 from app.orchestration.task_context import TASK_SPECS
+from app.orchestration.workflow_planner import plan_workflow
+from app.domains.identity.authorization import ASK, list_authorized_engagements
 from app.core.config import get_settings
 from app.domains.audit_ledger.event_envelope import (
     begin_audit_batch,
@@ -54,7 +56,18 @@ async def _run_with_deadline(**kwargs) -> AskKritonResponse:
         request = kwargs.get("request")
         selection = request.task_context if request is not None else None
         engagement_id = selection.engagement_id if selection else None
-        kwargs["idempotency_key"] = scope_idempotency_key(kwargs["idempotency_key"], engagement_id)
+        if request is not None and engagement_id is None:
+            plan = plan_workflow(request)
+            if plan.task_type != "general_question":
+                candidates = await list_authorized_engagements(
+                    kwargs["db"], actor_id=kwargs["actor_id"],
+                    tenant_id=kwargs["tenant_id"], operation=ASK,
+                )
+                if len(candidates) == 1:
+                    engagement_id = candidates[0].id
+        kwargs["idempotency_key"] = scope_idempotency_key(
+            kwargs["idempotency_key"], engagement_id, kwargs.get("actor_id")
+        )
     token = begin_audit_batch()
     try:
         async with asyncio.timeout(settings.ASK_KRITON_TIMEOUT_SECONDS):

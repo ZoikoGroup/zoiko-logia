@@ -40,10 +40,9 @@ TASK_SPECS: dict[str, TaskSpec] = {
 
 _JURISDICTIONS = {"UK": "GB", "GB": "GB", "UNITED KINGDOM": "GB"}
 _FRAMEWORKS = {"IFRS": "IFRS", "UK GAAP": "UK_GAAP", "UK_GAAP": "UK_GAAP", "FRS 102": "UK_GAAP"}
-_SUPPORTED_POLICY_CONTEXTS = {("GB", "IFRS"), ("GB", "UK_GAAP")}
 _QUESTIONS = {
     "jurisdiction": "Which jurisdiction applies to this task?",
-    "framework": "Which reporting framework applies (for example, IFRS or UK GAAP)?",
+    "framework": "Which reporting or professional framework applies to this task?",
     "period_start": "What is the start date of the reconciliation period?",
     "period_end": "What reporting or transaction period end date should be used?",
     "currency": "Which currency should be used?",
@@ -73,6 +72,13 @@ def resolve_task_context(
     authorized_engagement_id: str | None = None,
 ) -> ContextDecision:
     selection = request.task_context or TaskContextSelection()
+    if selection.task_type is None:
+        # Keep direct callers and older clients safe: planning is normally done
+        # by the service, but resolution never silently assumes a workflow.
+        from app.orchestration.workflow_planner import apply_plan, plan_workflow
+        request = apply_plan(request, plan_workflow(request))
+        selection = request.task_context or TaskContextSelection()
+    assert selection.task_type is not None
     spec = TASK_SPECS[selection.task_type]
     jurisdiction = _normalise(selection.jurisdiction or request.jurisdiction, _JURISDICTIONS)
     framework = _normalise(selection.framework, _FRAMEWORKS)
@@ -126,11 +132,6 @@ def resolve_task_context(
         return ContextDecision(
             status="unsupported", invalid_fields=["period_start", "period_end"],
             reason_codes=["INVALID_PERIOD_RANGE"], resolved_context=context,
-        )
-    if selection.task_type == "policy_research" and (jurisdiction, framework) not in _SUPPORTED_POLICY_CONTEXTS:
-        return ContextDecision(
-            status="unsupported", invalid_fields=["jurisdiction", "framework"],
-            reason_codes=["UNSUPPORTED_JURISDICTION_FRAMEWORK"], resolved_context=context,
         )
     return ContextDecision(status="complete", resolved_context=context)
 

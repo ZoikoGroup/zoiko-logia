@@ -567,7 +567,8 @@ export async function listEngagements(token: string): Promise<Engagement[]> {
 }
 
 export type TaskContextSelection = {
-  task_type: TaskType;
+  /** Omit for automatic capability-based detection. */
+  task_type?: TaskType;
   engagement_id?: string | null;
   purpose?: string | null;
   jurisdiction?: string | null;
@@ -607,6 +608,22 @@ export type ContextDecision = {
   reason_codes: string[];
   clarification_questions: string[];
   resolved_context: TaskContext | null;
+};
+
+export type CapabilityStep = {
+  capability: "document.retrieve" | "document.extract" | "source.research" |
+    "policy.lookup" | "numeric.calculate" | "numeric.compare" |
+    "evidence.cite" | "chart.generate" | "response.compose";
+  reason: string;
+};
+
+export type WorkflowPlan = {
+  version: "1.0";
+  task_type: TaskType;
+  detection: "automatic" | "explicit_override";
+  confidence: number;
+  reason_codes: string[];
+  steps: CapabilityStep[];
 };
 
 // ---- Top-level response ----
@@ -837,6 +854,7 @@ export type AskKritonResponse = {
   next_action: NextAction | null;
   effective_context?: TaskContext | null;
   context_decision?: ContextDecision | null;
+  workflow_plan?: WorkflowPlan | null;
   /** Opaque — never expose audit_chain_id internals to UI rendering logic */
   audit_reference: AuditReference;
 };

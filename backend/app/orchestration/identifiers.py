@@ -46,9 +46,12 @@ _IDEMPOTENCY_TTL_SECONDS = 86_400  # 24 hours
 _RUNNING = "__running__"
 
 
-def scope_idempotency_key(key: str, engagement_id: str | None) -> str:
-    """Prevent a tenant-wide key collision from crossing engagement scope."""
-    return f"{engagement_id or '_personal'}:{key}"
+def scope_idempotency_key(
+    key: str, engagement_id: str | None, actor_id: str | None = None,
+) -> str:
+    """Prevent tenant-wide collisions across engagement or personal scope."""
+    scope = f"engagement:{engagement_id}" if engagement_id else f"actor:{actor_id or '_unknown'}"
+    return f"{scope}:{key}"
 
 
 async def check_idempotency(db: AsyncSession, key: str, tenant_id: str) -> Optional[dict]:

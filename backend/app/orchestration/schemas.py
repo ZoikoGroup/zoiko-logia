@@ -27,7 +27,9 @@ class TaskContextSelection(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    task_type: TaskType = "general_question"
+    # None means automatic detection. Clients may still provide an explicit
+    # override, but the normal path requires no workflow label.
+    task_type: Optional[TaskType] = None
     engagement_id: Optional[str] = None
     purpose: Optional[str] = None
     jurisdiction: Optional[str] = None
@@ -80,6 +82,37 @@ class ContextDecision(BaseModel):
     reason_codes: List[str] = Field(default_factory=list)
     clarification_questions: List[str] = Field(default_factory=list)
     resolved_context: Optional[TaskContext] = None
+
+
+CapabilityId = Literal[
+    "document.retrieve",
+    "document.extract",
+    "source.research",
+    "policy.lookup",
+    "numeric.calculate",
+    "numeric.compare",
+    "evidence.cite",
+    "chart.generate",
+    "response.compose",
+]
+
+
+class CapabilityStep(BaseModel):
+    capability: CapabilityId
+    reason: str
+
+
+class WorkflowPlan(BaseModel):
+    """A bounded, auditable plan. It can select registered capabilities only."""
+
+    model_config = ConfigDict(frozen=True)
+
+    version: Literal["1.0"] = "1.0"
+    task_type: TaskType
+    detection: Literal["automatic", "explicit_override"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    reason_codes: List[str] = Field(default_factory=list)
+    steps: List[CapabilityStep] = Field(default_factory=list)
 
 
 # ── Request ──────────────────────────────────────────────────────────────────
@@ -321,4 +354,5 @@ class AskKritonResponse(BaseModel):
     next_action: Optional[NextAction] = None
     effective_context: Optional[TaskContext] = None
     context_decision: Optional[ContextDecision] = None
+    workflow_plan: Optional[WorkflowPlan] = None
     audit_reference: AuditReference

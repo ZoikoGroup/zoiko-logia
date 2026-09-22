@@ -7,8 +7,10 @@
 **Status:** engineering baseline; professional scope still requires named owner approval.
 
 The live contract is published by authenticated `GET /api/v1/orchestration/task-specs`.
-The browser supplies only `task_context` selections. `actor_id`, `tenant_id`,
-`actor_role`, and data classification are resolved by the backend.
+The browser may supply optional context, but does not need to select a workflow.
+The backend detects intent, produces a bounded capability plan, and selects the
+matching task contract. `actor_id`, `tenant_id`, `actor_role`, and data
+classification are always resolved by the backend.
 
 ## Workflows
 
@@ -23,16 +25,12 @@ All workflows prohibit autonomous posting, filing, fund movement, or issuance of
 an assurance opinion. Customer documents are evidence about the customer and
 must not be represented as governing authority.
 
-## Initial supported professional context
+## Jurisdiction and framework handling
 
-The F0 engineering baseline permits English policy research for:
-
-- United Kingdom (`GB`) with `IFRS`
-- United Kingdom (`GB`) with `UK_GAAP` / FRS 102
-
-This allowlist is intentionally narrow and must be replaced or expanded only
-after Product and domain assurance approve the pilot scope. General educational
-questions retain the legacy compatibility behavior.
+Task contracts are jurisdiction-neutral. Jurisdiction and framework are context
+values rather than workflow identifiers, and are not restricted by a country
+allowlist. Source retrieval must still prove that suitable authoritative material
+exists for the resolved jurisdiction, framework, and reporting date.
 
 Engagement IDs are accepted only after F1 verifies an active membership and
 explicit operation grants. The backend never treats a client-provided
@@ -45,7 +43,6 @@ engagement ID as authorized context.
   "query": "How should this lease modification be accounted for?",
   "jurisdiction": "UK",
   "task_context": {
-    "task_type": "policy_research",
     "jurisdiction": "UK",
     "framework": "IFRS",
     "period_end": "2026-12-31",
@@ -54,6 +51,10 @@ engagement ID as authorized context.
   }
 }
 ```
+
+The response includes an auditable `workflow_plan` containing the detected task
+family, confidence, reason codes, and registered capabilities. An explicit
+`task_type` remains accepted as a compatibility override, but is not required.
 
 ## Clarification example
 
