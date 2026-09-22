@@ -91,7 +91,7 @@ The sections below are in dependency order. Each feature states **what exists**,
 
 **What exists:** `backend/app/orchestration/schemas.py` defines ask, route, source-bundle, citation, and response shapes. `orchestration/service.py` runs the ask workflow. The current request does not carry a complete, trusted professional task context; its `conversation_id` is not server-side conversation memory.
 
-**Implement:** a versioned `TaskContext`, three `TaskSpec` records, and a context-completeness decision. Define required framework, period, entity, currency, source type, tool, and review role for each workflow. Record unsupported jurisdictions, languages, and task variants. Publish JSON examples, an architecture decision register, and a mapping from ZL-ENG-05/06 source-precedence and information-quality rules to machine checks, domain review, owners, and failure routes.
+**Implement:** a versioned `TaskContext`, three +`TaskSpec` records, and a context-completeness decision. Define required framework, period, entity, currency, source type, tool, and review role for each workflow. Record unsupported jurisdictions, languages, and task variants. Publish JSON examples, an architecture decision register, and a mapping from ZL-ENG-05/06 source-precedence and information-quality rules to machine checks, domain review, owners, and failure routes.
 
 **Approach:**
 

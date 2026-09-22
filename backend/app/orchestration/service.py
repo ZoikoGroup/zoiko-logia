@@ -80,7 +80,10 @@ from app.orchestration.task_context import (
     prompt_context as build_task_prompt_context,
     resolve_task_context,
 )
-from app.domains.identity.authorization import ASK, DOCUMENT_READ, MODEL_TRANSMIT, authorize
+from app.orchestration.workflow_planner import apply_plan, plan_workflow
+from app.domains.identity.authorization import (
+    ASK, DOCUMENT_READ, MODEL_TRANSMIT, authorize, list_authorized_engagements,
+)
 
 # Massarius™ retrieval and evidence subsystem — Phase 1 control modules
 # (ZL-ENG-03). These wrap/replace the inline licence filtering, bundle
@@ -152,7 +155,28 @@ async def ask_kriton(
         if progress is not None:
             await progress(stage, message)
 
+    workflow_plan = metrics.run_sync("workflow.plan", lambda: plan_workflow(request))
+    request = apply_plan(request, workflow_plan)
+    await report("workflow_planned", f"Detected {workflow_plan.task_type.replace('_', ' ')}")
+
     requested_engagement_id = request.task_context.engagement_id if request.task_context else None
+    # A sole authorized engagement is unambiguous and can be selected without
+    # a workflow form. Multiple engagements are never guessed; the task
+    # contract will request the missing engagement instead.
+    if workflow_plan.task_type != "general_question" and not requested_engagement_id:
+        candidates = await metrics.run(
+            "authorization.engagement_candidates",
+            list_authorized_engagements(
+                db, actor_id=actor_id, tenant_id=tenant_id, operation=ASK,
+            ),
+        )
+        if len(candidates) == 1:
+            requested_engagement_id = candidates[0].id
+            request = request.model_copy(update={
+                "task_context": request.task_context.model_copy(
+                    update={"engagement_id": requested_engagement_id}
+                )
+            })
     authorized_engagement_id: str | None = None
     if requested_engagement_id:
         required_operations = [ASK, MODEL_TRANSMIT]
@@ -227,6 +251,7 @@ async def ask_kriton(
         return response.model_copy(update={
             "effective_context": effective_context,
             "context_decision": context_decision,
+            "workflow_plan": workflow_plan,
         })
 
     await audit_context_resolved(

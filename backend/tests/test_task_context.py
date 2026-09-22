@@ -53,7 +53,7 @@ def test_supported_policy_context_is_normalized() -> None:
     assert decision.resolved_context.framework == "UK_GAAP"
 
 
-def test_unsupported_policy_context_fails_closed() -> None:
+def test_policy_context_is_not_country_hardcoded() -> None:
     decision = resolve_task_context(
         _request(
             task_type="policy_research", engagement_id="eng-1", jurisdiction="US", framework="US GAAP",
@@ -63,8 +63,10 @@ def test_unsupported_policy_context_fails_closed() -> None:
         authorized_engagement_id="eng-1",
     )
 
-    assert decision.status == "unsupported"
-    assert decision.reason_codes == ["UNSUPPORTED_JURISDICTION_FRAMEWORK"]
+    assert decision.status == "complete"
+    assert decision.resolved_context is not None
+    assert decision.resolved_context.jurisdiction == "US"
+    assert decision.resolved_context.framework == "US GAAP"
 
 
 def test_reconciliation_requires_documents_period_and_currency() -> None:
@@ -118,6 +120,7 @@ async def test_incomplete_context_returns_before_safety_retrieval_or_providers(m
     monkeypatch.setattr(service, "run_prescreen", prescreen)
     monkeypatch.setattr(service, "build_source_bundle", retrieval)
     monkeypatch.setattr(service, "classify_risk", provider)
+    monkeypatch.setattr(service, "list_authorized_engagements", AsyncMock(return_value=[]))
 
     response = await service.ask_kriton(
         db=object(),
