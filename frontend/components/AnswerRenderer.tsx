@@ -8,6 +8,7 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import type { Root } from "mdast";
 import { CheckCircle2, Copy, Download, Table2 } from "lucide-react";
+import type { CalculationResult, VerifiedChartSpec } from "@/lib/api";
 import { cssVar } from "@/lib/css-var";
 import {
   canvasElementToPngBlob,
@@ -888,7 +889,45 @@ const mdComponents = {
   h3: (props: ComponentPropsWithoutRef<"h3">) => <h4 className="mb-1 mt-2 text-sm font-semibold text-ink" {...props} />,
 };
 
-export function AnswerRenderer({ text, className }: { text: string; className?: string }) {
+function VerifiedCalculation({ result }: { result: CalculationResult }) {
+  return (
+    <section className="my-4 rounded-xl border border-brand/25 bg-brand/5 p-4">
+      <div className="flex items-center gap-2 text-xs font-semibold text-brand">
+        <CheckCircle2 size={14} /> Verified calculation
+      </div>
+      <div className="mt-2 text-xl font-bold text-ink">
+        {result.output_value} <span className="text-sm font-medium text-muted">{result.output_unit}</span>
+      </div>
+      <div className="mt-1 text-[11px] text-muted">
+        {result.rule_version} · {result.rounding_mode} · {result.calculation_id}
+      </div>
+    </section>
+  );
+}
+
+function verifiedChartCode(chart: VerifiedChartSpec): string {
+  return JSON.stringify({
+    type: chart.type === "kpi" ? "bar" : chart.type,
+    title: chart.title,
+    categories: chart.categories,
+    series: chart.series.map((series) => ({
+      name: series.name,
+      data: series.values.map((value) => Number(value)),
+    })),
+  });
+}
+
+export function AnswerRenderer({
+  text,
+  className,
+  calculationResult,
+  verifiedCharts = [],
+}: {
+  text: string;
+  className?: string;
+  calculationResult?: CalculationResult | null;
+  verifiedCharts?: VerifiedChartSpec[];
+}) {
   const segments = parseSegments(text);
   return (
     <div className={`min-w-0 text-sm leading-7 text-ink ${className ?? ""}`}>
@@ -908,6 +947,13 @@ export function AnswerRenderer({ text, className }: { text: string; className?: 
           </ReactMarkdown>
         ),
       )}
+      {calculationResult && <VerifiedCalculation result={calculationResult} />}
+      {verifiedCharts.map((chart) => (
+        <div key={chart.chart_id}>
+          <div className="mb-[-0.5rem] text-[11px] font-semibold text-brand">Verified data</div>
+          <ChartRenderer code={verifiedChartCode(chart)} />
+        </div>
+      ))}
     </div>
   );
 }

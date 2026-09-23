@@ -38,4 +38,4 @@ blocks later replay access without rewriting the historical audit record.
 - `POST /api/v1/engagements/{id}/members` adds a member and explicit grants.
 - `DELETE /api/v1/engagements/{id}/members/{user_id}` revokes membership.
 
-Schema changes are owned by Alembic revision `c3d4e5f6a7b8`.
+Schema changes are owned by Alembic revision `l1f2g3h4i5j6`.

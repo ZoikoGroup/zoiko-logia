@@ -16,4 +16,4 @@ from app.domains.kriton_workspace import models as kriton_workspace_models  # no
 from app.domains.documents import models as documents_models  # noqa: E402,F401
 from app.domains.orchestration_state import models as orchestration_state_models  # noqa: E402,F401
 from app.orchestration import models as orchestration_models  # noqa: E402,F401
-
+from app.domains.calculations import models as calculation_models  # noqa: E402,F401

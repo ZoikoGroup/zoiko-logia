@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     # Falls back to DATABASE_URL when unset (SQLite, or a Postgres setup
     # that hasn't provisioned the low-privilege role).
     APP_DATABASE_URL: str | None = None
+    # Bound both establishing a database connection and waiting for one from
+    # the pool. A remote pooler/DNS incident must fail quickly enough for the
+    # API to return a controlled 503 instead of consuming the complete Ask
+    # Kriton request deadline.
+    DB_CONNECT_TIMEOUT_SECONDS: int = 10
+    DB_POOL_TIMEOUT_SECONDS: float = 10.0
 
     # ── CORS ─────────────────────────────────────────────────────────────
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001"]

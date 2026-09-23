@@ -608,7 +608,11 @@ function ConversationTurn({
             <div className="kriton-animate-answer-reveal">
               {result.answer ? (
                 <>
-                  <AnswerRenderer text={result.answer.text} />
+                  <AnswerRenderer
+                    text={result.answer.text}
+                    calculationResult={result.answer.calculation_result}
+                    verifiedCharts={result.answer.verified_charts}
+                  />
                   {/* Citations render from the footer's "Sources" control (see
                       ResponseActions), not from a separate block here. */}
                   {result.answer.limitations.length > 0 && (
@@ -685,8 +689,9 @@ export default function AskKritonPage() {
   // list was local to the Composer, that swap silently discarded the file the
   // user had just attached: the chip vanished and no document_ids reached the
   // request, so the answer came back grounded in web sources only. Owning it
-  // one level up also means an attachment survives follow-up questions, which
-  // is what lets someone interrogate the same document several times.
+  // one level up lets the selection survive that component swap. The list is
+  // cleared after every submit, so documents remain explicitly scoped to one
+  // question rather than silently carrying into later questions.
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   // Only successfully indexed uploads are sent. A failed extraction has no
   // chunks behind it, so passing its id would add nothing but noise.
@@ -748,6 +753,9 @@ export default function AskKritonPage() {
   function selectConversation(id: string) {
     setActiveId(id);
     setQuery("");
+    // An unsent selection belongs to the composer it was selected in. Never
+    // leak it into a different conversation when the user changes threads.
+    setAttachments([]);
   }
 
   function pinConversation(id: string) {
@@ -774,6 +782,8 @@ export default function AskKritonPage() {
     persist(conversations.filter((c) => c.id !== id));
     if (activeId === id) {
       setActiveId(null);
+      // The active composer's pending selection no longer has a conversation.
+      setAttachments([]);
     }
   }
 
@@ -793,36 +803,14 @@ export default function AskKritonPage() {
     const priorConversation = conversations.find((c) => c.id === convId) ?? null;
     const cycle = clarificationCycleFor(priorConversation);
 
-    // Documents stay in scope for the whole conversation, not just the question
-    // they arrived with. "Summarise this" followed by "what are total
-    // non-current assets?" is one line of enquiry about one file, and making
-    // the user re-attach it between the two would be absurd — the second
-    // question came back saying the figure could not be determined, because by
-    // then nothing was attached.
-    //
-    // The composer is still cleared on submit (below), so nothing is repeated
-    // there; what carries forward is the conversation's context, and each
-    // question shows which documents answered it. `startNewChat` clears it.
-    // A newly attached file REPLACES what was in scope rather than joining it.
-    // Attaching a second document is how someone moves on to a different one,
-    // so accumulating them left the first file still feeding every later
-    // question and still listed above it.
-    //
-    // Carry-forward therefore reads the MOST RECENT turn that had documents,
-    // not every turn: earlier turns keep their own record for display, and
-    // flattening all of them would resurrect a document that had already been
-    // replaced.
-    const previouslyInScope =
-      [...(priorConversation?.turns ?? [])].reverse().find((t) => t.attachments?.length)
-        ?.attachments ?? [];
-
-    const turnAttachments: TurnAttachment[] = [];
-    const seenDocumentIds = new Set<string>();
-    for (const attachment of readyAttachments.length ? readyAttachments : previouslyInScope) {
-      if (seenDocumentIds.has(attachment.documentId)) continue;
-      seenDocumentIds.add(attachment.documentId);
-      turnAttachments.push(attachment);
-    }
+    // Snapshot only the documents currently visible in the composer. Previous
+    // turns retain their attachment metadata for display and audit, but must
+    // never repopulate a later request implicitly. De-duplicate defensively in
+    // case the same document entered through both upload and library selection.
+    const turnAttachments: TurnAttachment[] = readyAttachments.filter(
+      (attachment, index, selected) =>
+        selected.findIndex((candidate) => candidate.documentId === attachment.documentId) === index,
+    );
 
     const newTurn: Turn = {
       id: turnId, query: trimmed, submittedQuery: trimmed,

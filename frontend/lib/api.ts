@@ -765,6 +765,47 @@ export type CalculationWidget = {
   calculation_id: string;
 };
 
+export type NumericInput = {
+  name: string;
+  value: string;
+  unit: string;
+  currency?: string | null;
+  period?: string | null;
+  evidence_id?: string | null;
+};
+
+export type CalculationResult = {
+  calculation_id: string;
+  operation: "arithmetic" | "sum" | "difference" | "percentage" | "percentage_change" | "variance" | "straight_line_depreciation";
+  rule_version: string;
+  inputs: NumericInput[];
+  output_value: string;
+  output_unit: string;
+  rounding_mode: "ROUND_HALF_UP";
+  scale: number;
+};
+
+export type VerifiedChartSpec = {
+  chart_id: string;
+  type: "bar" | "line" | "kpi";
+  title: string;
+  categories: string[];
+  series: Array<{ name: string; values: string[]; unit: string; source_ids: string[] }>;
+  calculation_id: string;
+  verified: true;
+};
+
+export type LiveObservation = {
+  observation_id: string;
+  indicator: string;
+  value: string;
+  unit: string;
+  period: string;
+  provider: string;
+  source_url: string;
+  freshness: string;
+};
+
 // ---- Presentation / visualization payload ----
 
 export type PresentationChartType =
@@ -833,6 +874,9 @@ export type ComposedAnswer = {
   citations: SourceCitation[];
   limitations: string[];
   calculation_widget?: CalculationWidget | null;
+  calculation_result?: CalculationResult | null;
+  verified_charts?: VerifiedChartSpec[];
+  observations?: LiveObservation[];
   presentation?: AnswerPresentation | null;
   response_mode?: "concise" | "educational" | "analytical" | "calculation" | "workflow" | "compound";
   /** Preferred, ordered rendering path — not yet returned by the backend. */

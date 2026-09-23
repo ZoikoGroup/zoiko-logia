@@ -23,10 +23,12 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import uuid
 
 import httpx
 
 from app.orchestration.websearch import WebSource
+from app.domains.calculations.schemas import LiveObservation
 
 # Only fire on questions that actually look like an economic statistic — avoids
 # firing on definitional/how-to questions SearXNG should answer instead.
@@ -270,6 +272,13 @@ async def fetch_stats(query: str) -> list[WebSource]:
                              f"Latest available year: {tail[-1][0]}. Values — {values_txt}."),
                     provider=provider,
                     freshness="historical",
+                    observation=LiveObservation(
+                        observation_id=f"obs_{uuid.uuid4().hex}", indicator=label,
+                        value=str(tail[-1][1]),
+                        unit="percent" if "%" in label else "provider-defined",
+                        period=str(tail[-1][0]), provider=provider, source_url=url,
+                        freshness="historical",
+                    ),
                 )
 
             sources = await asyncio.gather(*(source_for(c) for c in countries))
@@ -396,5 +405,13 @@ async def fetch_stats(query: str) -> list[WebSource]:
             title=f"DBnomics — {series_name}"[:200],
             url=url,
             snippet=snippet,
+            provider=str(provider_name),
+            freshness="historical",
+            observation=LiveObservation(
+                observation_id=f"obs_{uuid.uuid4().hex}", indicator=series_name,
+                value=str(tail[-1][1]), unit="provider-defined",
+                period=str(tail[-1][0]), provider=str(provider_name),
+                source_url=url, freshness="historical",
+            ),
         )
     ]
