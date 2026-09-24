@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from app.domains.calculations.schemas import LiveObservation
 
 import httpx
 
@@ -51,6 +52,7 @@ class WebSource:
     provider: str | None = None
     fetched_at: str | None = None
     freshness: str | None = None      # realtime | delayed | historical | filing
+    observation: LiveObservation | None = None
 
 
 def _searxng_url() -> str:

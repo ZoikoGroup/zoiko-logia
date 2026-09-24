@@ -1,50 +1,88 @@
-"""
-Massarius™ source retrieval layer — ZL-ENG-02 §7.
+"""Rights-filtered lexical passage retrieval and evidence planning.
 
-MVP: category-keyword source selection. Pre-RAG.
-DO NOT label this as RAG in code comments, docs or external materials until §7 criteria are met:
-  embeddings, chunking, semantic retrieval, ranking, re-ranking, citation binding,
-  retrieval evaluation, hallucination checks and source freshness handling.
-
-retrieval_method = "keyword_mvp" in all SourceBundle responses.
-
-Tenant isolation: every source_library query carries tenant_id at the data-access layer.
-Application-level filtering alone is not sufficient (§7.1).
+Source/version eligibility is resolved before passage content is loaded. Denied
+text therefore never enters ranking or model context.
 """
 from __future__ import annotations
 
+import re
 import uuid
+from datetime import date
+
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domains.source_library.service import list_sources
-from app.orchestration.schemas import SourceBundle, SourceSummary
+from app.domains.source_library.licensing import SourceUseContext, can_use
+from app.domains.source_library.models import Source, SourcePassage, SourceRelationship, SourceVersion
+from app.orchestration.schemas import (
+    EvidencePassage, ExcludedEvidence, RetrievalPlan, SourceBundle, SourceSummary,
+)
 from app.orchestration.routing_matrix import (
-    CONF_SUFFICIENT, CONF_LIMITED, CONF_INSUFFICIENT,
-    CONF_CONFLICTING, CONF_STALE, CONF_RESTRICTED,
+    CONF_CONFLICTING, CONF_INSUFFICIENT, CONF_LIMITED, CONF_RESTRICTED, CONF_SUFFICIENT,
 )
 
-_CATEGORY_KEYWORDS: dict[str, list[str]] = {
-    "tax": ["tax"],
-    "audit": ["audit", "going concern"],
-    "payroll-compliance": ["payroll", "employment"],
-    "internal-policies": ["internal policy", "firm policy"],
-    "education-content": ["exam", "study", "cpd", "syllabus"],
-}
-_DEFAULT_CATEGORY = "standards"
-
-# Sources with these statuses are eligible for retrieval
+INDEX_VERSION = "source-passages-lexical-v1"
 _ELIGIBLE_STATUSES = {"ACTIVE", "APPROVED"}
+_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_-]+", re.I)
+_STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
+    "how", "in", "is", "it", "of", "on", "or", "the", "this", "to",
+    "what", "when", "which", "with",
+}
 
-# Sources with these statuses are excluded as restricted
-_RESTRICTED_STATUSES = {"DRAFT", "DEPRECATED", "BLOCKED", "RESTRICTED"}
+
+def _tokens(value: str) -> set[str]:
+    return {
+        token.casefold() for token in _TOKEN_RE.findall(value)
+        if token.casefold() not in _STOP_WORDS
+    }
 
 
-def infer_category(query: str) -> str:
-    lowered = query.lower()
-    for category, keywords in _CATEGORY_KEYWORDS.items():
-        if any(keyword in lowered for keyword in keywords):
-            return category
-    return _DEFAULT_CATEGORY
+def _lexical_score(query_tokens: set[str], content: str) -> float:
+    if not query_tokens:
+        return 0.0
+    content_tokens = _tokens(content)
+    overlap = query_tokens & content_tokens
+    if not overlap:
+        return 0.0
+    coverage = len(overlap) / len(query_tokens)
+    density = len(overlap) / max(len(content_tokens), 1)
+    return round((coverage * 0.85) + (min(density * 5, 1.0) * 0.15), 6)
+
+
+def build_retrieval_plan(*, jurisdiction: str, framework: str, top_k: int = 8) -> RetrievalPlan:
+    return RetrievalPlan(
+        retrieval_plan_id=f"rp-{uuid.uuid4().hex[:12]}",
+        strategy="rights_filtered_lexical_passages",
+        methods=["keyword"],
+        jurisdiction=jurisdiction,
+        framework=framework,
+        requires_current_sources=True,
+        top_k=top_k,
+        index_version=INDEX_VERSION,
+        risk_notes=[
+            "Semantic retrieval is disabled until an evaluated embedding index is configured."
+        ],
+    )
+
+
+async def _candidate_versions(
+    db: AsyncSession, *, tenant_id: str,
+) -> list[tuple[Source, SourceVersion]]:
+    """Load candidate metadata only, choosing the newest approved version."""
+    result = await db.execute(
+        select(Source, SourceVersion)
+        .join(SourceVersion, SourceVersion.source_id == Source.id)
+        .where(
+            SourceVersion.status.in_(_ELIGIBLE_STATUSES),
+            or_(Source.is_tenant_private.is_(False), Source.tenant_id == tenant_id),
+        )
+        .order_by(Source.id, SourceVersion.created_at.desc())
+    )
+    latest: dict[str, tuple[Source, SourceVersion]] = {}
+    for source, version in result.all():
+        latest.setdefault(source.id, (source, version))
+    return list(latest.values())
 
 
 async def build_source_bundle(
@@ -53,82 +91,128 @@ async def build_source_bundle(
     query: str,
     jurisdiction: str,
     tenant_id: str,
+    framework: str = "",
+    effective_date: date | None = None,
+    top_k: int = 8,
 ) -> SourceBundle:
-    """
-    Build a SourceBundle via keyword-based category retrieval.
-    tenant_id is enforced at the data-access layer via list_sources.
-    Returns confidence_state per §7.2 six-state vocabulary.
-    """
-    category = infer_category(query)
+    """Execute a bounded, context-aware lexical passage search."""
+    plan = build_retrieval_plan(jurisdiction=jurisdiction, framework=framework, top_k=top_k)
+    context = SourceUseContext(
+        tenant_id=tenant_id, jurisdiction=jurisdiction,
+        framework=framework, effective_date=effective_date,
+    )
 
-    eligible = []
-    excluded = []
-    exclusion_reasons = []
-    has_restricted = False
-    has_conflict = False
-
-    # Always resolve the governed keyword_mvp candidates first — vector hits
-    # below are additive evidence, never a replacement for this. Previously,
-    # any non-empty vector result short-circuited this list entirely (an
-    # `if vector_sources: ... else: ...` branch), so a single unrelated
-    # vector match — or a chunk embedded outside the governance workflow —
-    # could make a properly registered, ACTIVE source disappear from the
-    # bundle with no error at all.
-    candidates = await list_sources(db, category, tenant_id=tenant_id)
-    seen_ids = set()
-    for c in candidates:
-        version_status = c["latest_version"].status
-        jur_ok = (not jurisdiction) or c["jurisdiction_scope"] in ("Global", jurisdiction)
-
-        if version_status in _RESTRICTED_STATUSES:
-            excluded.append(c)
-            exclusion_reasons.append(f"Source '{c['title']}' has restricted status: {version_status}")
-            has_restricted = True
-        elif version_status not in _ELIGIBLE_STATUSES:
-            excluded.append(c)
-            exclusion_reasons.append(f"Source '{c['title']}' has ineligible status: {version_status}")
-        elif not jur_ok:
-            excluded.append(c)
-            exclusion_reasons.append(f"Source '{c['title']}' outside jurisdiction scope")
+    eligible_rows: list[tuple[Source, SourceVersion]] = []
+    excluded: list[ExcludedEvidence] = []
+    for source, version in await _candidate_versions(db, tenant_id=tenant_id):
+        decision = await can_use(db, version.id, context, "retrieval")
+        if decision.allowed:
+            eligible_rows.append((source, version))
         else:
-            eligible.append(c)
-        seen_ids.add(c["id"])
+            excluded.append(ExcludedEvidence(
+                source_id=source.id, source_version_id=version.id,
+                reason_code=decision.reason_code,
+            ))
 
-    # Determine confidence_state per §7.2
-    if has_restricted and len(eligible) == 0:
-        confidence_state = CONF_RESTRICTED
-    elif len(eligible) == 0:
-        confidence_state = CONF_INSUFFICIENT
-    elif len(eligible) == 1:
-        confidence_state = CONF_LIMITED
-    elif has_conflict:
-        confidence_state = CONF_CONFLICTING
+    # Only now is source text loaded: every version in this query has already
+    # passed tenant, status, date, framework, jurisdiction and retrieval-right checks.
+    version_ids = [version.id for _, version in eligible_rows]
+    passages: list[SourcePassage] = []
+    if version_ids:
+        result = await db.execute(
+            select(SourcePassage)
+            .where(SourcePassage.source_version_id.in_(version_ids))
+            .order_by(SourcePassage.source_version_id, SourcePassage.sequence)
+        )
+        passages = list(result.scalars().all())
+
+    version_to_source = {version.id: source for source, version in eligible_rows}
+    query_tokens = _tokens(query)
+    ranked: list[tuple[float, SourcePassage]] = []
+    for passage in passages:
+        score = _lexical_score(query_tokens, passage.content)
+        if score > 0:
+            ranked.append((score, passage))
+        else:
+            source = version_to_source[passage.source_version_id]
+            excluded.append(ExcludedEvidence(
+                source_id=source.id, source_version_id=passage.source_version_id,
+                passage_id=passage.id, reason_code="NO_LEXICAL_MATCH",
+            ))
+    ranked.sort(key=lambda item: (-item[0], item[1].sequence, item[1].id))
+    ranked = ranked[:plan.top_k]
+
+    selected_passages = [
+        EvidencePassage(
+            passage_id=passage.id,
+            source_id=version_to_source[passage.source_version_id].id,
+            source_version_id=passage.source_version_id,
+            locator=passage.locator,
+            content_hash=passage.content_hash,
+            score=score,
+            rank=rank,
+            method="keyword",
+        )
+        for rank, (score, passage) in enumerate(ranked, start=1)
+    ]
+    selected_version_ids = {item.source_version_id for item in selected_passages}
+    selected_sources = [
+        SourceSummary(
+            id=source.id, version_id=version.id, title=source.title,
+            category=source.category, jurisdiction_scope=source.jurisdiction_scope,
+            version_label=version.version_label, status=version.status,
+        )
+        for source, version in eligible_rows if version.id in selected_version_ids
+    ]
+
+    conflict_version_ids: set[str] = set()
+    if selected_version_ids:
+        result = await db.execute(
+            select(SourceRelationship).where(
+                SourceRelationship.relationship_type == "conflicts",
+                SourceRelationship.from_version_id.in_(selected_version_ids),
+                SourceRelationship.to_version_id.in_(selected_version_ids),
+            )
+        )
+        for relationship in result.scalars().all():
+            conflict_version_ids.update((relationship.from_version_id, relationship.to_version_id))
+
+    if conflict_version_ids:
+        confidence = CONF_CONFLICTING
+    elif not selected_passages:
+        confidence = CONF_RESTRICTED if excluded and not eligible_rows else CONF_INSUFFICIENT
+    elif len(selected_passages) < 2:
+        confidence = CONF_LIMITED
     else:
-        confidence_state = CONF_SUFFICIENT
+        confidence = CONF_SUFFICIENT
 
-    # Determine authority_level from category
-    authority_level = "primary" if category in ("audit", "tax") else "secondary"
-
+    authority_levels = {
+        source.authority_level for source, version in eligible_rows
+        if version.id in selected_version_ids
+    }
+    authority_level = (
+        "primary" if "primary" in authority_levels
+        else "internal" if authority_levels == {"internal"}
+        else "secondary"
+    )
     return SourceBundle(
         source_bundle_id=f"sb-{uuid.uuid4().hex[:12]}",
-        retrieval_method="keyword_mvp",  # §7: do not label as RAG
-        eligible_source_count=len(eligible),
+        retrieval_method="lexical_passages_v1",
+        eligible_source_count=len(selected_sources),
         excluded_source_count=len(excluded),
-        sources=[
-            SourceSummary(
-                id=c["id"],
-                title=c["title"],
-                category=c["category"],
-                jurisdiction_scope=c["jurisdiction_scope"],
-                version_label=c["latest_version"].version_label,
-                status=c["latest_version"].status,
-            )
-            for c in eligible
+        sources=selected_sources,
+        exclusion_reasons=[
+            f"{item.source_id}:{item.passage_id or item.source_version_id or ''}:{item.reason_code}"
+            for item in excluded
         ],
-        exclusion_reasons=exclusion_reasons,
         jurisdiction=jurisdiction,
         authority_level=authority_level,
-        freshness_state="unknown",   # TODO: implement freshness check in full RAG phase
-        licence_state="permitted",   # MVP assumption; enforce per-source in production
-        confidence_state=confidence_state,
+        freshness_state="current" if selected_passages else "unknown",
+        licence_state="permitted" if selected_passages else "unknown",
+        confidence_state=confidence,
+        index_version=INDEX_VERSION,
+        retrieval_plan=plan,
+        passages=selected_passages,
+        excluded_evidence=excluded,
+        conflict_version_ids=sorted(conflict_version_ids),
     )

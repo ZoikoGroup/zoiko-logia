@@ -1,14 +1,21 @@
-# dependencies (root convenience tooling only — frontend/ and backend/ have their own)
-/node_modules
+# Dependencies (root convenience tooling only; app folders have their own rules)
+/node_modules/
 
-# misc
+# Local secrets and virtual environments
+.env
+.env.*
+!**/.env.example
+!**/.env.template
+.venv/
+venv/
+
+# OS files and local credentials
 .DS_Store
 *.pem
-.env
-.venv/
-implementation_plan.md
 
-# Python test, coverage, and analysis caches
+# Python bytecode, test, coverage, and analysis caches
+**/__pycache__/
+*.py[cod]
 **/.pytest_cache/
 **/.mypy_cache/
 **/.ruff_cache/
@@ -17,10 +24,12 @@ implementation_plan.md
 **/coverage.xml
 **/htmlcov/
 
-# Local runtime output
+# Local runtime output and generated uploads
 *.log
+/backend/data/workspace_documents/
+/backend/data/uploads/
 
-# Local untracked markdown docs
+# Local untracked markdown documents
 /DATA_SOURCES_REFERENCE.md
 /IMPLEMENTATION_ROADMAP.md
 /KRITON_DEVELOPMENT_GUIDE.md

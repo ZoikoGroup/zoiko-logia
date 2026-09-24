@@ -111,8 +111,8 @@ export function Composer({
    *  the list held locally, the file the user had just attached vanished at
    *  exactly that moment — the chip disappeared and the ids never reached the
    *  request, so the answer came back grounded only in web sources. Holding it
-   *  one level up makes the attachment outlive the swap, which is also what
-   *  lets the user ask several follow-up questions about the same document. */
+   *  one level up lets the selection survive that swap; the page clears it as
+   *  soon as the current question is submitted. */
   attachments: Attachment[];
   onAttachmentsChange: Dispatch<SetStateAction<Attachment[]>>;
   /** Documents already uploaded in this workspace, for the "Add saved

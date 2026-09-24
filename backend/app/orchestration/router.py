@@ -12,6 +12,7 @@ Controls:
 from __future__ import annotations
 import asyncio
 import json
+import logging
 from contextlib import suppress
 
 from typing import Optional
@@ -40,6 +41,7 @@ from app.orchestration.identifiers import abandon_idempotency, scope_idempotency
 
 router = APIRouter(prefix="/orchestration", tags=["Ask Kriton™ Orchestration"])
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 @router.get("/task-specs", response_model=list[TaskSpec])
@@ -190,6 +192,7 @@ async def post_ask_stream(
         except asyncio.CancelledError:
             raise
         except Exception:
+            logger.exception("Unhandled Ask Kriton stream failure")
             await queue.put({"type": "error", "status": 500, "message": "Kriton could not complete this request."})
 
     task = asyncio.create_task(execute())

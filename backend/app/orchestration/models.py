@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, String, DateTime
+from sqlalchemy import CheckConstraint, Float, ForeignKey, Integer, JSON, String, DateTime, UniqueConstraint, event
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -43,3 +43,55 @@ class ReviewCase(Base):
     policy_version: Mapped[str] = mapped_column(String, nullable=False, default="pm_1.0")
     classifier_version: Mapped[str] = mapped_column(String, nullable=False, default="rc_1.0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class EvidenceBundleManifest(Base):
+    """Immutable replay record for one released retrieval decision."""
+
+    __tablename__ = "evidence_bundle_manifests"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    query_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    retrieval_plan: Mapped[dict] = mapped_column(JSON, nullable=False)
+    manifest: Mapped[dict] = mapped_column(JSON, nullable=False)
+    index_version: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class EvidenceBundleEntry(Base):
+    __tablename__ = "evidence_bundle_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "bundle_id", "source_version_id", "passage_id", "disposition",
+            name="uq_evidence_bundle_entry",
+        ),
+        CheckConstraint(
+            "disposition IN ('selected','excluded')",
+            name="ck_evidence_bundle_entry_disposition",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    bundle_id: Mapped[str] = mapped_column(
+        ForeignKey("evidence_bundle_manifests.id"), nullable=False, index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    source_id: Mapped[str] = mapped_column(String, nullable=False)
+    source_version_id: Mapped[str] = mapped_column(String, nullable=False)
+    passage_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    disposition: Mapped[str] = mapped_column(String, nullable=False)
+    reason_code: Mapped[str] = mapped_column(String, nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    retrieval_method: Mapped[str] = mapped_column(String, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False, default="")
+
+
+def _prevent_bundle_mutation(_mapper, _connection, _target) -> None:
+    raise ValueError("Evidence bundle manifests and entries are append-only")
+
+
+for _bundle_model in (EvidenceBundleManifest, EvidenceBundleEntry):
+    event.listen(_bundle_model, "before_update", _prevent_bundle_mutation)
+    event.listen(_bundle_model, "before_delete", _prevent_bundle_mutation)

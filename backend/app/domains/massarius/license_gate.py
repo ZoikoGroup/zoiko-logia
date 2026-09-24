@@ -11,23 +11,10 @@ Checkpoint B (display resolution): for sources that pass Checkpoint A,
 resolves each one's SourceDisplayState ("show" | "summarise" |
 "internal_reasoning_only") based on the same licence/authority data.
 
-Flagged deviation from the spec's literal ordering (ZL-ENG-03 §4, §6): the
-spec wants Checkpoint A to run *before* retrieval, filtering what
-`retrieval.py` is even allowed to look at. The live keyword_mvp retrieval
-(app/orchestration/retrieve.py) is out of scope to modify, and it already
-does its own DB query and status filtering internally before this module
-ever sees anything. So Checkpoint A here runs immediately *after* retrieval
-returns, screening its output — genuinely eligibility-filtering, but not
-literally pre-query. True pre-retrieval filtering would require retrieve.py
-itself to call into this module before running its query.
-
-Also flagged: retrieve.py's returned SourceBundle.sources is a SourceSummary
-list (id/title/category/jurisdiction_scope/version_label/status only) — it
-does not carry licence_state/authority_level/is_tenant_private, so those
-fields can't be read off the bundle retrieve.py already built. This module
-re-queries app.domains.source_library.models.Source directly by id to get
-them — a small extra read, but it means zero changes to retrieve.py or
-source_library's existing service functions.
+Retrieval rights, tenant scope and applicability are enforced before passage
+content is loaded in orchestration/retrieve.py. This module is the independent
+second boundary: it rechecks model-transmission rights and resolves what may be
+displayed or summarised before model context and response construction.
 
 Must NOT: perform retrieval itself, do risk classification, or construct the
 final SourceBundle (bundle_builder.py's job) — only decide what's eligible
@@ -41,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domains.massarius.errors import LicenceDenied
+from app.domains.source_library.licensing import SourceUseContext, can_use
 from app.domains.source_library.models import Source
 from app.orchestration.schemas import SourceDisplayState, SourceSummary
 
@@ -66,6 +54,9 @@ async def check_eligibility(
     *,
     tenant_id: str,
     allow_tenant_private: bool = True,
+    jurisdiction: str = "",
+    framework: str = "",
+    effective_date=None,
 ) -> LicenceCheckResult:
     """
     Checkpoint A + B combined: filters ineligible sources and resolves
@@ -105,8 +96,38 @@ async def check_eligibility(
             exclusion_reasons[source.id] = "tenant_private_not_permitted_for_mode"
             continue
 
+        if not source.version_id:
+            # Transitional compatibility for callers that still construct a
+            # legacy summary directly. Governed retrieval always supplies a
+            # version_id and therefore always uses the operation-level matrix.
+            # A legacy "permitted" value is explicit; unknown remains denied.
+            if record.licence_state != "permitted":
+                excluded.append(source)
+                exclusion_reasons[source.id] = "source_version_not_identified"
+                continue
+            eligible.append(source)
+            display_states[source.id] = _resolve_display_state(record)
+            continue
+
+        context = SourceUseContext(
+            tenant_id=tenant_id,
+            jurisdiction=jurisdiction,
+            framework=framework,
+            effective_date=effective_date,
+        )
+        transmission = await can_use(db, source.version_id, context, "model_transmission")
+        if not transmission.allowed:
+            excluded.append(source)
+            exclusion_reasons[source.id] = transmission.reason_code.lower()
+            continue
+
         eligible.append(source)
-        display_states[source.id] = _resolve_display_state(record)
+        display = await can_use(db, source.version_id, context, "display")
+        if display.allowed:
+            display_states[source.id] = _resolve_display_state(record)
+        else:
+            summary = await can_use(db, source.version_id, context, "summary")
+            display_states[source.id] = "summarise" if summary.allowed else "internal_reasoning_only"
 
     return LicenceCheckResult(
         eligible=eligible,

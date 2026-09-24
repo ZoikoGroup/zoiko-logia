@@ -5,7 +5,7 @@ Canonical flow:
   1. Generate identifiers
   2. Validate request
   3. Pre-screen safety (BEFORE retrieval) — Release Gate RG-01
-  4. Retrieve SourceBundle (Massarius™ keyword_mvp retrieval layer)
+  4. Retrieve a rights-filtered passage bundle and persist its replay manifest
   5. Classify risk + resolve route from versioned policy matrix
   6. Execute deterministic route
   7. Post-composition validation — Release Gate RG-03
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import time
 import os
 from collections.abc import Awaitable, Callable
@@ -69,11 +70,16 @@ from app.orchestration.websearch import (
     DocumentExcerpt,
     build_web_grounded_prompt,
     web_search,
+    wants_visual,
 )
 from app.domains.documents import service as documents_service
+from app.domains.source_library.service import record_source_usages
 from app.orchestration.live_data import fetch_live_data
 from app.orchestration.risk_llm import classify_risk, classify_risk_gemini
-from app.orchestration.calculation_service import build_calculation, validate_answer_calculations
+from app.orchestration.calculation_service import (
+    build_calculation, build_observation_chart, validate_answer_calculations,
+)
+from app.domains.calculations.service import persist_run as persist_calculation_run
 from app.orchestration.telemetry import StageMetrics, current_stage_metrics
 from app.orchestration.task_context import (
     ResolutionInput,
@@ -84,6 +90,8 @@ from app.orchestration.workflow_planner import apply_plan, plan_workflow
 from app.domains.identity.authorization import (
     ASK, DOCUMENT_READ, MODEL_TRANSMIT, authorize, list_authorized_engagements,
 )
+
+logger = logging.getLogger(__name__)
 
 # Massarius™ retrieval and evidence subsystem — Phase 1 control modules
 # (ZL-ENG-03). These wrap/replace the inline licence filtering, bundle
@@ -392,7 +400,7 @@ async def ask_kriton(
     # answer. It runs inline at the point of use instead — a keyword query over
     # a few hundred rows, so there was nothing to gain by overlapping it.
 
-    # ── Step 4: Retrieve SourceBundle (Massarius™ keyword_mvp layer) (§7) ────
+    # ── Step 4: Plan and retrieve rights-filtered evidence passages (§7) ────
     await audit_retrieval_started(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
@@ -400,7 +408,14 @@ async def ask_kriton(
     try:
         preliminary_bundle = await metrics.run(
             "retrieval.governed_sources",
-            build_source_bundle(db, query=request.query, jurisdiction=request.jurisdiction, tenant_id=tenant_id),
+            build_source_bundle(
+                db,
+                query=request.query,
+                jurisdiction=request.jurisdiction,
+                tenant_id=tenant_id,
+                framework=effective_context.framework if effective_context else "",
+                effective_date=effective_context.period_end if effective_context else None,
+            ),
         )
         await audit_retrieval_completed(
             db, query_id=query_id, correlation_id=correlation_id,
@@ -411,14 +426,21 @@ async def ask_kriton(
         )
 
         # ── Massarius™ Checkpoint A/B + bundle_builder (ZL-ENG-03 §5) ────────
-        # retrieve.py's own bundle is treated as preliminary/keyword_mvp
-        # output; license_gate.py re-verifies eligibility of what it
+        # retrieve.py's bundle is the preliminary lexical ranking output;
+        # license_gate.py re-verifies model eligibility of what it
         # returned and resolves per-source display states, and
         # bundle_builder.py is the sole producer of the final, frozen
         # SourceBundle everything downstream actually uses.
         licence_result = await metrics.run(
             "retrieval.licence_gate",
-            license_gate.check_eligibility(db, preliminary_bundle.sources, tenant_id=tenant_id),
+            license_gate.check_eligibility(
+                db,
+                preliminary_bundle.sources,
+                tenant_id=tenant_id,
+                jurisdiction=request.jurisdiction,
+                framework=effective_context.framework if effective_context else "",
+                effective_date=effective_context.period_end if effective_context else None,
+            ),
         )
         await audit_licence_prefilter_completed(
             db, query_id=query_id, correlation_id=correlation_id,
@@ -435,6 +457,17 @@ async def ask_kriton(
             )
 
         source_bundle = bundle_builder.build_bundle(preliminary_bundle, licence_result)
+        await bundle_builder.persist_bundle(
+            db, bundle=source_bundle, tenant_id=tenant_id, query_id=query_id,
+        )
+        await record_source_usages(
+            db,
+            sources=source_bundle.sources,
+            tenant_id=tenant_id,
+            artifact_type="source_bundle",
+            artifact_id=source_bundle.source_bundle_id,
+            operation="model_transmission",
+        )
         await audit_bundle_built(
             db, query_id=query_id, correlation_id=correlation_id,
             tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
@@ -444,11 +477,18 @@ async def ask_kriton(
         )
         await report("sources_ready", "Eligible sources checked")
     except Exception as exc:
+        # PostgreSQL leaves a transaction unusable after any statement error
+        # (for example, a deployment/schema mismatch). Roll back before the
+        # durable failure audit; otherwise that audit raises
+        # InFailedSQLTransaction and turns a controlled retrieval degradation
+        # into a generic request failure.
+        await db.rollback()
         await audit_retrieval_failed(
             db, query_id=query_id, correlation_id=correlation_id,
             tenant_id=tenant_id, audit_chain_id=audit_chain_id,
             actor_id=actor_id, error=str(exc),
         )
+        logger.exception("Governed source retrieval failed; continuing without a source bundle")
         source_bundle = None
 
     # ── Step 5: Classify risk (after bundle_builder.py, ZL-ENG-03 §5.6) +
@@ -694,6 +734,20 @@ async def ask_kriton(
         live_sources = []
     if live_sources:
         web_sources = live_sources + web_sources
+    live_observations = [
+        source.observation for source in live_sources if source.observation is not None
+    ]
+    observation_chart = (
+        build_observation_chart(live_observations) if wants_visual(request.query) else None
+    )
+
+    governed_passages = (
+        await metrics.run(
+            "retrieval.bundle_replay",
+            bundle_builder.load_bundle_passage_text(db, source_bundle),
+        )
+        if source_bundle else []
+    )
 
     # Uploaded-document excerpts. Kept in their OWN list rather than merged
     # into web_sources: a web source is an authoritative publication the answer
@@ -755,6 +809,26 @@ async def ask_kriton(
             )
         )
 
+    source_by_id = {source.id: source for source in source_bundle.sources} if source_bundle else {}
+    selection_by_passage = {
+        passage.passage_id: passage for passage in source_bundle.passages
+    } if source_bundle else {}
+    governed_citations: list[SourceCitation] = []
+    for passage_id, locator, content in governed_passages:
+        selection = selection_by_passage[passage_id]
+        source = source_by_id[selection.source_id]
+        display_state = source_bundle.source_display_states.get(source.id, "internal_reasoning_only")
+        if display_state == "internal_reasoning_only":
+            continue
+        governed_citations.append(SourceCitation(
+            ref_id="",
+            source_id=passage_id,
+            title=f"{source.title} — {locator}",
+            evidence_preview=content[:240].strip() if display_state == "show" else None,
+            provider="Governed source register",
+            freshness="registered_version",
+        ))
+
     web_citations: list[SourceCitation] = [
         SourceCitation(
             ref_id="",
@@ -778,7 +852,7 @@ async def ask_kriton(
     # row the reader sees.
     rag_citations: list[SourceCitation] = [
         c.model_copy(update={"ref_id": f"REF-{i + 1}"})
-        for i, c in enumerate(document_citations + web_citations)
+        for i, c in enumerate(document_citations + governed_citations + web_citations)
     ]
 
     # Build grounded prompt input from the web sources.
@@ -788,12 +862,30 @@ async def ask_kriton(
         documents=document_excerpts,
         documents_partial=documents_partial,
     )
+    if governed_passages:
+        authority_context = "\n\n".join(
+            f"[GOV-{index}] {locator} (passage_id={passage_id})\n{content}"
+            for index, (passage_id, locator, content) in enumerate(governed_passages, start=1)
+        )
+        grounded_input += (
+            "\n\n=== Governed registered evidence ===\n"
+            "Use these approved passages for material professional claims. "
+            "If they conflict or do not support the requested conclusion, say so.\n"
+            f"{authority_context}"
+        )
     if effective_context:
         grounded_input += build_task_prompt_context(effective_context)
     deterministic_calculation = metrics.run_sync(
         "calculation.extract", lambda: build_calculation(request.query)
     )
     if deterministic_calculation:
+        await persist_calculation_run(
+            db,
+            tenant_id=tenant_id,
+            query_id=query_id,
+            result=deterministic_calculation.record,
+            chart=deterministic_calculation.chart,
+        )
         grounded_input += deterministic_calculation.prompt_context()
 
     # External-provider exposure boundary (ZL-ENG-03 §5.8): redact before
@@ -1043,6 +1135,12 @@ async def ask_kriton(
         citations=rag_citations,
         limitations=limitations,
         calculation_widget=deterministic_calculation.widget if deterministic_calculation else None,
+        calculation_result=deterministic_calculation.record if deterministic_calculation else None,
+        verified_charts=[
+            *([deterministic_calculation.chart] if deterministic_calculation else []),
+            *([observation_chart] if observation_chart else []),
+        ],
+        observations=live_observations,
         prompt_id=prompt_id,
         prompt_name=prompt_name,
         output_text=final_text,
@@ -1061,6 +1159,15 @@ async def ask_kriton(
         audit_reference=AuditReference(audit_chain_id=audit_chain_id),
     )
 
+    # Retrieval is intentionally fail-soft so live/web-grounded answers can
+    # still complete during a governed-source outage. In that degraded path
+    # there is no governed bundle to dereference or record. The old unconditional
+    # access raised AttributeError here and discarded an otherwise completed
+    # response.
+    await _record_answer_source_usages(
+        db, source_bundle=source_bundle, tenant_id=tenant_id, query_id=query_id,
+    )
+
     # Audit BEFORE response is returned (§13, RG-04)
     await _finalise_and_return(
         db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
@@ -1073,6 +1180,20 @@ async def ask_kriton(
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+async def _record_answer_source_usages(
+    db, *, source_bundle, tenant_id: str, query_id: str,
+) -> None:
+    if source_bundle is None:
+        return
+    await record_source_usages(
+        db,
+        sources=source_bundle.sources,
+        tenant_id=tenant_id,
+        artifact_type="answer",
+        artifact_id=query_id,
+        operation="model_transmission",
+    )
 
 async def _finalise_and_return(
     db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,

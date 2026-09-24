@@ -119,6 +119,8 @@ The sections below are in dependency order. Each feature states **what exists**,
 
 ### F2 — Source register, licences, and provenance
 
+**Engineering status (22 September 2026):** the F2 registry, migration, operation-level rights decision, immutable provenance records, approval controls, lifecycle actions, impact lookup, retrieval/model/display enforcement, contract, and focused tests are implemented on this branch. Deployment still requires applying the migration and registering an owner-approved source corpus with explicit rights; code completion is not source-rights approval.
+
 **What exists:** `source_library/models.py` stores sources and versions, `massarius/license_gate.py` screens some use rights, and source approval routes exist. Uploaded customer files live separately in `documents/`, which is the right authority distinction.
 
 **Implement:** publisher/owner, authority class, framework/language, effective dates, supersession links, content hash, publication/retrieval times, passage IDs, approval and quality state, and versioned rights for ingestion, indexing, model transmission, display, summary, export, retention, and training. Unknown rights deny that use. Preserve original-language source text and identify translations as derived evidence.
@@ -133,6 +135,8 @@ The sections below are in dependency order. Each feature states **what exists**,
 **Done when:** a source is traceable from original bytes to approved passage and citation; a full rights matrix, unknown-rights denial, and revocation tests pass.
 
 ### F3 — Hybrid retrieval and evidence bundles
+
+**Engineering status (23 September 2026):** the rights-filtered lexical passage baseline, typed retrieval plan, bounded ranking, applicability filtering, explicit exclusion/conflict records, immutable evidence-bundle manifest, hash-verified replay, governed model context, migration, and focused tests are implemented on this branch. Semantic/vector candidates remain disabled until an evaluated embedding index and rollout threshold are approved; the implementation does not simulate semantic retrieval. Production completion still requires an owner-approved corpus and retrieval evaluation against the F0 thresholds.
 
 **What exists:** `orchestration/retrieve.py` explicitly calls its governed source method `keyword_mvp`; `massarius/bundle_builder.py` creates a frozen bundle shape. Uploaded documents have separate search. Live SearXNG and statistics connectors currently enter answer composition outside the registered source bundle.
 
@@ -165,6 +169,8 @@ The sections below are in dependency order. Each feature states **what exists**,
 **Done when:** fabricated citation, irrelevant span, altered number, revoked source, conflict, and audit-outage cases cannot produce a released substantive answer.
 
 ### F5 — Deterministic calculations, statistics, and charts
+
+**Engineering status (23 September 2026):** the first additive F5 slice is implemented on this branch without changing F4 validation: versioned Decimal operations, percentage change, variance, straight-line depreciation and explicit arithmetic; immutable tenant-scoped calculation runs; typed live observations for Frankfurter and DBnomics/World Bank results; backend-owned verified chart specifications; API compatibility fields; frontend verified-result/chart rendering; migration and focused tests. Reconciliation/matching, complete evidence-cell binding, additional official-statistics adapters and an expert numeric evaluation remain release work.
 
 **What exists:** `orchestration/live_data.py` calls exchange-rate, statistics, and market connectors. `AnswerRenderer.tsx` renders chart JSON generated in answer text. There is no general recorded accounting-calculation service; model-authored chart values remain a risk.
 

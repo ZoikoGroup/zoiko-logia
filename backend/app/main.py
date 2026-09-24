@@ -1,13 +1,16 @@
 import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.v1.router import api_v1_router
 from app.core.config import get_settings
@@ -16,6 +19,7 @@ from app.core.rate_limit import limiter
 from app.db.base import Base
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 _TENANT_SCOPED_TABLES = ("sources", "source_versions")
 
@@ -714,6 +718,20 @@ def create_app() -> FastAPI:
 
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    @app.exception_handler(SQLAlchemyError)
+    async def database_error_handler(_request, exc: SQLAlchemyError) -> JSONResponse:
+        # Keep connection strings and driver details out of the client while
+        # retaining the complete exception in backend logs for diagnosis.
+        logger.error(
+            "Database operation failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Kriton's database is temporarily unavailable. Please try again shortly."},
+            headers={"Retry-After": "5"},
+        )
 
     @app.get("/health/live", tags=["Health"])
     async def health_live() -> dict[str, str]:

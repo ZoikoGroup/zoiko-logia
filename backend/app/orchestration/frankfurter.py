@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import os
 import re
+import uuid
 
 import httpx
 
 from app.orchestration.websearch import WebSource
+from app.domains.calculations.schemas import LiveObservation
 
 # Common ISO-4217 currency codes we recognise in a question. Advisory only —
 # Frankfurter itself validates; anything it rejects just yields no rate.
@@ -89,5 +91,14 @@ async def fetch_fx(query: str) -> list[WebSource]:
             title=f"Frankfurter — {base_cur}/{quote_cur} exchange rate ({date})",
             url=url,
             snippet=snippet,
+            provider="Frankfurter (ECB reference rates)",
+            freshness="daily",
+            observation=LiveObservation(
+                observation_id=f"obs_{uuid.uuid4().hex}",
+                indicator=f"{base_cur}/{quote_cur} exchange rate",
+                value=str(rate), unit=f"{quote_cur} per {base_cur}", period=str(date),
+                provider="Frankfurter (ECB reference rates)", source_url=url,
+                freshness="daily",
+            ),
         )
     ]

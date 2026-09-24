@@ -12,6 +12,9 @@ from dataclasses import dataclass
 from decimal import Decimal, DivisionByZero, InvalidOperation
 
 from app.orchestration.schemas import CalculationWidget, ChartPoint, WidgetInput
+from app.domains.calculations.schemas import (
+    CalculationResult, LiveObservation, NumericInput, VerifiedChartSeries, VerifiedChartSpec,
+)
 
 _NUMBER = r"(?:[$£€]\s*)?([0-9][0-9,]*(?:\.[0-9]+)?)"
 _EXPLICIT = re.compile(
@@ -28,6 +31,8 @@ class DeterministicCalculation:
     expression: str
     result: Decimal
     widget: CalculationWidget
+    record: CalculationResult
+    chart: VerifiedChartSpec
 
     def prompt_context(self) -> str:
         return (
@@ -82,13 +87,38 @@ def build_calculation(query: str) -> DeterministicCalculation | None:
     expression: str | None = None
     formula_name = "Arithmetic calculation"
     inputs: list[WidgetInput] = []
+    operation = "arithmetic"
 
     cost = _number_for_label(query, r"cost|purchase\s+price")
     residual = _number_for_label(query, r"residual(?:\s+value)?|salvage(?:\s+value)?")
     life = _number_for_label(query, r"useful\s+life|life")
-    if cost is not None and residual is not None and life is not None and re.search(r"depreciat", query, re.I):
+    change = re.search(rf"\bfrom\s+{_NUMBER}\s+to\s+{_NUMBER}", query, re.I)
+    actual = _number_for_label(query, r"actual")
+    budget = _number_for_label(query, r"budget")
+    if change and re.search(r"percent|percentage|change|growth", query, re.I):
+        old = Decimal(change.group(1).replace(",", ""))
+        new = Decimal(change.group(2).replace(",", ""))
+        if old == 0:
+            return None
+        expression = f"({new} - {old}) / {old} * 100"
+        formula_name = "Percentage change"
+        operation = "percentage_change"
+        inputs = [
+            _widget_input("prior", "Prior value", old, "number"),
+            _widget_input("current", "Current value", new, "number"),
+        ]
+    elif actual is not None and budget is not None and re.search(r"variance", query, re.I):
+        expression = f"{actual} - {budget}"
+        formula_name = "Variance"
+        operation = "variance"
+        inputs = [
+            _widget_input("actual", "Actual", actual, "currency"),
+            _widget_input("budget", "Budget", budget, "currency"),
+        ]
+    elif cost is not None and residual is not None and life is not None and re.search(r"depreciat", query, re.I):
         expression = f"({cost} - {residual}) / {life}"
         formula_name = "Straight-line depreciation"
+        operation = "straight_line_depreciation"
         inputs = [
             _widget_input("cost", "Cost", cost, "currency"),
             _widget_input("residual", "Residual value", residual, "currency"),
@@ -106,6 +136,7 @@ def build_calculation(query: str) -> DeterministicCalculation | None:
         return None
 
     rendered = _format_decimal(result)
+    calculation_id = f"calc_{uuid.uuid4().hex}"
     widget = CalculationWidget(
         formula_id="straight_line_depreciation" if formula_name.startswith("Straight") else "arithmetic",
         formula_name=formula_name,
@@ -120,9 +151,39 @@ def build_calculation(query: str) -> DeterministicCalculation | None:
         chart_x_label="",
         chart_y_label="",
         chart_points=[ChartPoint(x="result", y=rendered)],
-        calculation_id=f"calc_{uuid.uuid4().hex}",
+        calculation_id=calculation_id,
     )
-    return DeterministicCalculation(expression=expression, result=result, widget=widget)
+    numeric_inputs = [
+        NumericInput(name=item.name, value=item.value, unit=item.unit)
+        for item in inputs
+    ] or [
+        NumericInput(name=f"operand_{index}", value=value.replace(",", ""), unit="number")
+        for index, value in enumerate(re.findall(r"(?<![A-Za-z])\d[\d,]*(?:\.\d+)?", expression), start=1)
+    ]
+    record = CalculationResult(
+        calculation_id=calculation_id,
+        operation=operation,
+        rule_version=f"{operation}:v1",
+        inputs=numeric_inputs,
+        output_value=rendered,
+        output_unit=widget.output_unit,
+    )
+    chart = VerifiedChartSpec(
+        chart_id=f"chart_{uuid.uuid4().hex}",
+        type="kpi",
+        title=formula_name,
+        categories=[widget.output_label],
+        series=[VerifiedChartSeries(
+            name=widget.output_label,
+            values=[rendered],
+            unit=widget.output_unit,
+            source_ids=[calculation_id],
+        )],
+        calculation_id=calculation_id,
+    )
+    return DeterministicCalculation(
+        expression=expression, result=result, widget=widget, record=record, chart=chart,
+    )
 
 
 def _widget_input(name: str, label: str, value: Decimal, unit: str) -> WidgetInput:
@@ -154,3 +215,24 @@ def validate_answer_calculations(answer_text: str) -> list[str]:
                 f"not {_format_decimal(stated)}."
             )
     return failures
+
+
+def build_observation_chart(observations: list[LiveObservation]) -> VerifiedChartSpec | None:
+    if not observations:
+        return None
+    unit = observations[0].unit
+    compatible = [item for item in observations if item.unit == unit]
+    try:
+        values = [_format_decimal(Decimal(item.value)) for item in compatible]
+    except InvalidOperation:
+        return None
+    return VerifiedChartSpec(
+        chart_id=f"chart_{uuid.uuid4().hex}", type="line",
+        title=compatible[0].indicator,
+        categories=[item.period for item in compatible],
+        series=[VerifiedChartSeries(
+            name=compatible[0].indicator, values=values, unit=unit,
+            source_ids=[item.observation_id for item in compatible],
+        )],
+        calculation_id="live_observations",
+    )

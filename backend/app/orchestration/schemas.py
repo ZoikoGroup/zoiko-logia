@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal, Optional, List
 from pydantic import BaseModel, ConfigDict, Field
+from app.domains.calculations.schemas import CalculationResult, LiveObservation, VerifiedChartSpec
 
 
 # ── F0 task context ─────────────────────────────────────────────────────────
@@ -144,29 +145,31 @@ class AskKritonRequest(BaseModel):
 
 
 # ── Retrieval Plan — ZL-ENG-03 §5.1 ──────────────────────────────────────────
-# Produced ahead of retrieval to declare strategy/intent; the live keyword_mvp
-# retrieval layer (orchestration/retrieve.py) doesn't consume this yet — it's
-# the typed shape license_gate.py's Checkpoint A reasons about today, and what
-# a future planner module would populate.
+# Produced and consumed by orchestration/retrieve.py before passage retrieval;
+# it fixes the strategy, context, top-k and index version for replay.
 
 RetrievalMethod = Literal["keyword", "vector", "ontology", "citation_anchor", "tenant_private", "hybrid"]
 
 
 class RetrievalPlan(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     retrieval_plan_id: str
+    version: Literal["1.0"] = "1.0"
     strategy: str
     methods: List[RetrievalMethod] = Field(default_factory=list)
     jurisdiction: str = ""
     framework: str = ""
     requires_tenant_private_sources: bool = False
     requires_current_sources: bool = False
+    top_k: int = Field(default=8, ge=1, le=50)
+    index_version: str = "source-passages-lexical-v1"
     risk_notes: List[str] = Field(default_factory=list)
 
 
 # ── Source Candidate — ZL-ENG-03 §5.2 ────────────────────────────────────────
-# One retrieval hit, pre-bundle. keyword_mvp retrieval today produces
-# SourceSummary directly; SourceCandidate is the richer shape license_gate.py
-# and bundle_builder.py operate on once a candidate needs passage/score detail.
+# One retrieval hit, pre-bundle. EvidencePassage below is the immutable selected
+# form recorded in the final bundle.
 
 class SourceCandidate(BaseModel):
     source_id: str
@@ -174,6 +177,30 @@ class SourceCandidate(BaseModel):
     score: float = 0.0
     method: RetrievalMethod = "keyword"
     index_version: str = "v1"
+
+
+class EvidencePassage(BaseModel):
+    """Safe passage identity included in an API response; content stays server-side."""
+
+    model_config = ConfigDict(frozen=True)
+
+    passage_id: str
+    source_id: str
+    source_version_id: str
+    locator: str
+    content_hash: str
+    score: float = 0.0
+    rank: int = 0
+    method: RetrievalMethod = "keyword"
+
+
+class ExcludedEvidence(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    source_id: str
+    source_version_id: Optional[str] = None
+    passage_id: Optional[str] = None
+    reason_code: str
 
 
 # ── Source Bundle — ZL-ENG-02 §7.2, ZL-ENG-03 §5.5 ───────────────────────────
@@ -184,6 +211,7 @@ class SourceCandidate(BaseModel):
 
 class SourceSummary(BaseModel):
     id: str
+    version_id: str = ""
     title: str
     category: str
     jurisdiction_scope: str
@@ -213,6 +241,11 @@ class SourceBundle(BaseModel):
     # the retrieval index version this bundle was built against.
     source_display_states: dict[str, SourceDisplayState] = Field(default_factory=dict)
     index_version: str = "v1"
+    retrieval_plan: Optional[RetrievalPlan] = None
+    passages: List[EvidencePassage] = Field(default_factory=list)
+    excluded_evidence: List[ExcludedEvidence] = Field(default_factory=list)
+    conflict_version_ids: List[str] = Field(default_factory=list)
+    manifest_version: Literal["1.0"] = "1.0"
 
 
 # ── Citation Map — ZL-ENG-03 §5.4 ────────────────────────────────────────────
@@ -313,6 +346,9 @@ class ComposedAnswer(BaseModel):
     citations: List[SourceCitation] = Field(default_factory=list)
     limitations: List[str] = Field(default_factory=list)
     calculation_widget: Optional[CalculationWidget] = None
+    calculation_result: Optional[CalculationResult] = None
+    verified_charts: List[VerifiedChartSpec] = Field(default_factory=list)
+    observations: List[LiveObservation] = Field(default_factory=list)
     # Internal fields — kept for model_gateway wiring; never exposed to frontend
     prompt_id: str = "inline"
     prompt_name: str = "Inline RAG Prompt"
