@@ -4,7 +4,8 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_sync_db
 from app.domains.identity.models import User
-from app.domains.identity.rbac import require_admin
+from app.domains.identity.permissions import SUPPORT_MANAGE, SUPPORT_READ
+from app.domains.identity.rbac import require_permission
 from app.domains.support_incident.schemas import (
     SecurityIncidentOut,
     TicketCreateRequest,
@@ -31,9 +32,9 @@ router = APIRouter(prefix="/support", tags=["support"])
 @router.get("/tickets", response_model=list[TicketPublic])
 def get_tickets(
     db: Session = Depends(get_sync_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SUPPORT_READ)),
 ):
-    tickets = list_tickets(db, admin.tenant_id)
+    tickets = list_tickets(db, actor.tenant_id)
     return tickets
 
 
@@ -41,9 +42,9 @@ def get_tickets(
 def post_ticket(
     payload: TicketCreateRequest,
     db: Session = Depends(get_sync_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SUPPORT_MANAGE)),
 ):
-    ticket = create_ticket(db, admin.tenant_id, admin.id, payload)
+    ticket = create_ticket(db, actor.tenant_id, actor.id, payload)
     return ticket
 
 
@@ -52,9 +53,9 @@ def patch_ticket(
     ticket_id: str,
     payload: TicketStatusUpdateRequest,
     db: Session = Depends(get_sync_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SUPPORT_MANAGE)),
 ):
-    ticket = update_ticket_status(db, admin.tenant_id, ticket_id, payload.status)
+    ticket = update_ticket_status(db, actor.tenant_id, ticket_id, payload.status)
     if ticket is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
     return ticket
@@ -66,27 +67,27 @@ def patch_ticket(
 def get_security_incidents(
     status: Optional[str] = None,
     db: Session = Depends(get_sync_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SUPPORT_READ)),
 ):
-    incidents = list_incidents(db, admin.tenant_id, status=status)
+    incidents = list_incidents(db, actor.tenant_id, status=status)
     return incidents
 
 
 @router.get("/incidents/stats", response_model=IncidentStatsOut)
 def get_security_incident_stats(
     db: Session = Depends(get_sync_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SUPPORT_READ)),
 ):
-    return get_incident_stats(db, admin.tenant_id)
+    return get_incident_stats(db, actor.tenant_id)
 
 
 @router.get("/incidents/{incident_id}", response_model=SecurityIncidentOut)
 def get_security_incident(
     incident_id: str,
     db: Session = Depends(get_sync_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SUPPORT_READ)),
 ):
-    incident = get_incident(db, admin.tenant_id, incident_id)
+    incident = get_incident(db, actor.tenant_id, incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
     return incident
@@ -97,9 +98,9 @@ def post_incident_action(
     incident_id: str,
     payload: IncidentActionRequest,
     db: Session = Depends(get_sync_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SUPPORT_MANAGE)),
 ):
-    incident = update_incident(db, admin.tenant_id, incident_id, payload.action, payload.actor, payload.note)
+    incident = update_incident(db, actor.tenant_id, incident_id, payload.action, payload.actor, payload.note)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
     return incident
@@ -110,9 +111,9 @@ def post_incident_close(
     incident_id: str,
     payload: IncidentCloseRequest,
     db: Session = Depends(get_sync_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SUPPORT_MANAGE)),
 ):
-    incident = close_incident(db, admin.tenant_id, incident_id, payload.resolver, payload.resolution_note)
+    incident = close_incident(db, actor.tenant_id, incident_id, payload.resolver, payload.resolution_note)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
     return incident

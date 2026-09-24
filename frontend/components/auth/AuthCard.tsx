@@ -164,7 +164,7 @@ function SignInPanel({ active, onSwitchToSignup }: { active: boolean; onSwitchTo
             <label className="text-xs font-semibold uppercase tracking-wide text-muted">Password</label>
             <button
               type="button"
-              title="Coming soon"
+              onClick={() => router.push("/auth/forgot-password")}
               tabIndex={active ? 0 : -1}
               className="text-xs font-semibold text-brand hover:underline"
             >

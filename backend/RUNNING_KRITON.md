@@ -28,9 +28,17 @@ ENABLE_ML_CLASSIFIER=true
 FORCE_DIRECT_ANSWER=true
 
 # Supabase Auth — Project Settings → API. Service role key is secret,
-# server-side only.
+# server-side only. This block is REQUIRED for auth: without it, token
+# verification fails closed (every authenticated endpoint 401s) and
+# default-user seeding (admin@zoiko.com / kriton@zoiko.com) is skipped with a
+# startup warning. SUPABASE_URL must match the frontend's
+# NEXT_PUBLIC_SUPABASE_URL (frontend/.env) — different projects on each side
+# is the same 401 wall. Both legacy JWT and sb_secret_* keys work.
 SUPABASE_URL=https://<project-ref>.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+# Staging/prod: set true to make a missing Supabase block a HARD startup
+# failure instead of silent 401s later. Local/dev leave false.
+REQUIRE_SUPABASE_CONFIG=false
 
 # console.groq.com
 GROQ_API_KEY=<gsk_...>

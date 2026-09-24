@@ -113,3 +113,23 @@ export async function provisionAndRefresh(accessToken: string, metadata: Record<
 export async function signOut(): Promise<void> {
   await supabase.auth.signOut();
 }
+
+/** Password reset is owned entirely by Supabase's SDK: this sends the reset
+ * email (user clicks the link, lands on /auth/reset-password), and
+ * updatePassword() below finalizes it with the session the link created.
+ * No backend endpoint — the backend has nothing to add to a flow Supabase
+ * already verifies end-to-end against its own token. */
+export async function resetPassword(email: string): Promise<void> {
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${window.location.origin}/auth/reset-password`,
+  });
+  if (error) throw new AuthError("Could not send a reset link. Please try again.");
+}
+
+export async function updatePassword(newPassword: string): Promise<void> {
+  if (!PASSWORD_RE.test(newPassword)) {
+    throw new AuthError("Password must be at least 8 characters with an uppercase letter, a lowercase letter, and a number.");
+  }
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) throw new AuthError("Could not update your password. Please try again.");
+}

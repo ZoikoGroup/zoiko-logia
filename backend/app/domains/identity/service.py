@@ -87,3 +87,25 @@ async def set_user_active(db: AsyncSession, user_id: str, tenant_id: str, is_act
     await db.commit()
     await db.refresh(user)
     return user
+
+
+async def update_own_profile(
+    db: AsyncSession, user_id: str, first_name: str | None, last_name: str | None,
+) -> User | None:
+    """Self-service edit of the user's own profile row. Scope stays on the
+    caller's row — there is no tenant_id parameter here, so PATCH /auth/me
+    can never touch another user's record. A None field means "not in this
+    request": omitted fields are preserved, and full_name is rebuilt from
+    the existing values plus whatever was actually provided — a partial
+    PATCH must never blank out a field the client didn't send."""
+    existing = await get_user_by_id(db, user_id)
+    if existing is None:
+        return None
+    if first_name is not None:
+        existing.first_name = first_name
+    if last_name is not None:
+        existing.last_name = last_name
+    existing.full_name = f"{existing.first_name} {existing.last_name}".strip()
+    await db.commit()
+    await db.refresh(existing)
+    return existing

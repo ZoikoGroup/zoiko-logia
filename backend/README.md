@@ -19,7 +19,7 @@ See `requirements.txt` (names only, unpinned) and `.env.example` (variable names
 ```
 app/
   main.py                  FastAPI entrypoint
-  core/                    config, security (OIDC/JWT/RBAC+ABAC), db session, event bus
+  core/                    config, security (JWT/RBAC+ABAC, Supabase auth), db session, event bus
   db/                      SQLAlchemy base + Alembic migrations folder
   api/v1/                  aggregates every domain router under /api/v1
   events/                  canonical event catalog + event envelope schema

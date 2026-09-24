@@ -9,7 +9,13 @@ export function AppChrome({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
-  if (pathname === "/login" || pathname === "/signup" || pathname === "/ask-kriton") {
+  if (
+    pathname === "/login" ||
+    pathname === "/signup" ||
+    pathname === "/ask-kriton" ||
+    pathname === "/auth/forgot-password" ||
+    pathname === "/auth/reset-password"
+  ) {
     return <>{children}</>;
   }
 
