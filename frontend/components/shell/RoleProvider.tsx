@@ -1,7 +1,8 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { RoleCode, DEFAULT_ROLE, ROLE_COOKIE } from "@/lib/roles";
+import { RoleCode, DEFAULT_ROLE, ROLE_COOKIE, resolveEffectiveRole } from "@/lib/roles";
+import { useAuth } from "@/hooks/useAuth";
 
 type RoleContextValue = {
   role: RoleCode;
@@ -17,15 +18,23 @@ function readRoleCookie(): RoleCode {
 }
 
 export function RoleProvider({ children }: { children: ReactNode }) {
-  const [role, setRoleState] = useState<RoleCode>(DEFAULT_ROLE);
+  const { profile } = useAuth();
+  const [demoRole, setDemoRole] = useState<RoleCode>(DEFAULT_ROLE);
 
   useEffect(() => {
-    setRoleState(readRoleCookie());
+    setDemoRole(readRoleCookie());
   }, []);
+
+  // The provisioned profile's role (AuthContext → getMe) is what the app
+  // gates on. The zoiko_role cookie stays exactly as it was — a demo-mode
+  // switcher for previews without a real profile — but it never overrides a
+  // real role: a "Source Admin" profile keeps gating as Source Admin no
+  // matter what the cookie says.
+  const role = resolveEffectiveRole(profile?.role, demoRole);
 
   function setRole(next: RoleCode) {
     document.cookie = `${ROLE_COOKIE}=${encodeURIComponent(next)}; path=/; max-age=${60 * 60 * 24 * 7}`;
-    setRoleState(next);
+    setDemoRole(next);
   }
 
   return <RoleContext.Provider value={{ role, setRole }}>{children}</RoleContext.Provider>;

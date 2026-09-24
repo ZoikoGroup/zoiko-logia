@@ -56,9 +56,12 @@ def _is_transient_db_error(exc: BaseException) -> bool:
 # process already knows its own immediately-previous write (it just made
 # it). Cached here per async task (i.e. per request — FastAPI/Starlette
 # gives each request its own context, so this never leaks between
-# concurrent requests), and only falls back to a real DB lookup for the
-# first event of a request, when no prior write in this task is known yet.
-_cached_previous_chain_hash: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+# concurrent requests), keyed by tenant_id — the chain is tenant-scoped, so
+# even an unusual multi-tenant task must never hand tenant B the previous
+# hash it read for tenant A, or the B ledger would point at A's chain row.
+# Only falls back to a real DB lookup for the first event of a request for
+# a given tenant, when no prior write in this task is known for it yet.
+_cached_previous_chain_hash: contextvars.ContextVar[Optional[dict[str, str]]] = contextvars.ContextVar(
     "audit_previous_chain_hash", default=None
 )
 _audit_batch: contextvars.ContextVar[Optional[list[AuditEvent]]] = contextvars.ContextVar(
@@ -197,10 +200,15 @@ async def record_event_async(db: AsyncSession, *, tenant_id: str = "GLOBAL_CONTR
         previous = batch[-1].chain_hash if batch else None
         row = _build_row(tenant_id=tenant_id, previous_chain_hash=previous, **kwargs)
         batch.append(row)
-        _cached_previous_chain_hash.set(row.chain_hash)
+        cache = _cached_previous_chain_hash.get()
+        if cache is None:
+            cache = {}
+            _cached_previous_chain_hash.set(cache)
+        cache[tenant_id] = row.chain_hash
         return row
 
-    previous_chain_hash = _cached_previous_chain_hash.get()
+    cache = _cached_previous_chain_hash.get()
+    previous_chain_hash = cache.get(tenant_id) if cache else None
     if previous_chain_hash is None:
         # Only hit the DB for the first event of this request (task) — every
         # subsequent event in the same request already knows its own
@@ -241,7 +249,10 @@ async def record_event_async(db: AsyncSession, *, tenant_id: str = "GLOBAL_CONTR
             await asyncio.sleep(backoff)
     else:
         await db.commit()  # final attempt — propagate if still failing
-    _cached_previous_chain_hash.set(new_chain_hash)
+    if cache is None:
+        cache = {}
+    cache[tenant_id] = new_chain_hash
+    _cached_previous_chain_hash.set(cache)
 
     # This commit just ended the transaction get_db() originally scoped to
     # this tenant (app/core/database.py). SQLAlchemy's connection pool may

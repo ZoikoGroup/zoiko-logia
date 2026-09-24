@@ -28,7 +28,8 @@ from app.domains.audit_ledger.schemas import (
     ReplayManifest,
 )
 from app.domains.identity.models import User
-from app.domains.identity.rbac import get_current_user, require_admin
+from app.domains.identity.permissions import AUDIT_CORRECT
+from app.domains.identity.rbac import get_current_user, require_permission
 from app.domains.identity.authorization import AUDIT_REPLAY, authorize
 from app.domains.audit_ledger.models import AuditEvent
 from sqlalchemy import select
@@ -127,10 +128,10 @@ async def post_compensate_event(
     event_id: str,
     payload: CompensatingEventCreate,
     db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(AUDIT_CORRECT)),
 ) -> CompensatingEventPublic:
     try:
-        row = await audit_service.issue_compensating_event(db, event_id, admin.id, payload)
+        row = await audit_service.issue_compensating_event(db, event_id, actor.id, payload)
     except CompensatingEventError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     return CompensatingEventPublic.model_validate(row)

@@ -585,6 +585,29 @@ def _seed_incidents():
         db.close()
 
 
+def _require_supabase_config():
+    """Regression guard for missing/misconfigured Supabase auth.
+
+    The failure mode this exists for: with SUPABASE_URL and/or
+    SUPABASE_SERVICE_ROLE_KEY unset, token verification fails closed (no JWKS
+    client), so every authenticated endpoint 401s and default-user seeding is
+    silently skipped — which reads as "auth is broken" far from the real,
+    config-level cause. Local/demo runs legitimately skip Supabase (plain
+    SQLite dev, frontend-only work), so this gate is opt-in: staging/prod set
+    REQUIRE_SUPABASE_CONFIG=true and a missing key aborts startup loudly at
+    the gateway instead of later surfacing as a wall of 401s. When unset, the
+    existing soft warning behavior is untouched."""
+    from app.core import supabase_admin
+
+    if settings.REQUIRE_SUPABASE_CONFIG and not supabase_admin.is_configured():
+        raise RuntimeError(
+            "REQUIRE_SUPABASE_CONFIG=true but SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY "
+            "are not configured — refusing to start so the gap is a loud deploy "
+            "failure instead of silent 401s. Set both in backend/.env (or the "
+            "environment) or unset REQUIRE_SUPABASE_CONFIG for local dev."
+        )
+
+
 def _seed_users():
     """Seed a default tenant and admin user on first startup. Since
     Supabase now owns credentials, this needs a Supabase auth user created
@@ -694,6 +717,7 @@ async def lifespan(app: FastAPI):
     _seed_evaluation()
     _seed_escalation_rules()
     _seed_incidents()
+    _require_supabase_config()
     _seed_users()
     await _warm_up_ml_models()
     yield

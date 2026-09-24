@@ -6,7 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.domains.identity.models import User
-from app.domains.identity.rbac import require_admin
+from app.domains.identity.permissions import SOURCE_MANAGE, SOURCE_READ
+from app.domains.identity.rbac import require_permission
 from app.domains.source_library.schemas import (
     ExpiringSourceOut,
     JurisdictionSummaryOut,
@@ -42,16 +43,16 @@ router = APIRouter(prefix="/sources", tags=["source_library"])
 async def get_sources(
     category: str | None = None,
     db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SOURCE_READ)),
 ) -> list[SourcePublic]:
-    sources = await list_sources(db, category, tenant_id=admin.tenant_id)
+    sources = await list_sources(db, category, tenant_id=actor.tenant_id)
     return [SourcePublic.model_validate(s) for s in sources]
 
 
 @router.get("/expiring", response_model=ExpiringSourceOut | None)
 async def get_expiring_source(
     db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SOURCE_READ)),
 ) -> ExpiringSourceOut | None:
     expiring = await get_soonest_expiring(db)
     return ExpiringSourceOut.model_validate(expiring) if expiring else None
@@ -60,7 +61,7 @@ async def get_expiring_source(
 @router.get("/jurisdiction-summary", response_model=list[JurisdictionSummaryOut])
 async def get_jurisdiction_summary_endpoint(
     db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SOURCE_READ)),
 ) -> list[JurisdictionSummaryOut]:
     summaries = await get_jurisdiction_summary(db)
     return [JurisdictionSummaryOut.model_validate(s) for s in summaries]
@@ -86,7 +87,7 @@ async def post_source(
     terms_reference: str = Form(""),
     file: UploadFile | None = File(None),
     db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SOURCE_MANAGE)),
 ) -> SourcePublic:
     try:
         rights = json.loads(rights_json)
@@ -101,7 +102,7 @@ async def post_source(
                 status_code=409,
                 detail=f"File registration requires explicit allow rights for: {', '.join(missing)}",
             )
-    file_path = await save_uploaded_file(file, admin.tenant_id) if file is not None else None
+    file_path = await save_uploaded_file(file, actor.tenant_id) if file is not None else None
     payload = SourceCreateRequest(
         category=category,
         title=title,
@@ -121,7 +122,7 @@ async def post_source(
         rights=rights,
         terms_reference=terms_reference,
     )
-    source = await create_source(db, admin.id, payload, tenant_id=admin.tenant_id)
+    source = await create_source(db, actor.id, payload, tenant_id=actor.tenant_id)
     return SourcePublic.model_validate(source)
 
 
@@ -130,9 +131,9 @@ async def post_approve(
     source_id: str,
     version_id: str,
     db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SOURCE_MANAGE)),
 ) -> SourcePublic:
-    source = await approve_source_version(db, admin.id, source_id, version_id, tenant_id=admin.tenant_id)
+    source = await approve_source_version(db, actor.id, source_id, version_id, tenant_id=actor.tenant_id)
     return SourcePublic.model_validate(source)
 
 
@@ -141,11 +142,11 @@ async def post_source_right(
     version_id: str,
     payload: SourceRightGrantRequest,
     db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SOURCE_MANAGE)),
 ) -> SourceRightPublic:
     right = await grant_source_right(
-        db, version_id=version_id, tenant_id=admin.tenant_id,
-        actor_id=admin.id, grant=payload,
+        db, version_id=version_id, tenant_id=actor.tenant_id,
+        actor_id=actor.id, grant=payload,
     )
     return SourceRightPublic.model_validate(right)
 
@@ -154,9 +155,9 @@ async def post_source_right(
 async def get_source_passages(
     version_id: str,
     db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SOURCE_READ)),
 ) -> list[SourcePassagePublic]:
-    passages = await list_passages(db, version_id=version_id, tenant_id=admin.tenant_id)
+    passages = await list_passages(db, version_id=version_id, tenant_id=actor.tenant_id)
     return [SourcePassagePublic.model_validate(passage) for passage in passages]
 
 
@@ -165,15 +166,15 @@ async def post_source_relationship(
     version_id: str,
     payload: SourceRelationshipRequest,
     db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SOURCE_MANAGE)),
 ) -> dict:
     relationship = await add_relationship(
         db,
         from_version_id=version_id,
         to_version_id=payload.to_version_id,
         relationship_type=payload.relationship_type,
-        tenant_id=admin.tenant_id,
-        actor_id=admin.id,
+        tenant_id=actor.tenant_id,
+        actor_id=actor.id,
     )
     return {"id": relationship.id, "relationship_type": relationship.relationship_type}
 
@@ -183,10 +184,10 @@ async def post_revoke_source_version(
     version_id: str,
     payload: SourceRevocationRequest,
     db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SOURCE_MANAGE)),
 ) -> SourceVersionPublic:
     version = await revoke_source_version(
-        db, version_id=version_id, tenant_id=admin.tenant_id, reason=payload.reason,
+        db, version_id=version_id, tenant_id=actor.tenant_id, reason=payload.reason,
     )
     return SourceVersionPublic.model_validate(version)
 
@@ -195,15 +196,15 @@ async def post_revoke_source_version(
 async def get_source_impacts(
     version_id: str,
     db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SOURCE_READ)),
 ) -> list[SourceUsagePublic]:
-    usages = await find_impacted_usages(db, version_id=version_id, tenant_id=admin.tenant_id)
+    usages = await find_impacted_usages(db, version_id=version_id, tenant_id=actor.tenant_id)
     return [SourceUsagePublic.model_validate(usage) for usage in usages]
 
 
 @router.post("/lifecycle/expire")
 async def post_expire_sources(
     db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(SOURCE_MANAGE)),
 ) -> dict:
     return {"expired_count": await expire_source_versions(db)}

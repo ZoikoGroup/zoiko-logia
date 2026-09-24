@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, model_validator
 
 
 class UserPublic(BaseModel):
@@ -21,6 +21,19 @@ class ProvisionRequest(BaseModel):
     first_name: str = ""
     last_name: str = ""
     company_name: str = ""
+
+
+class ProfileUpdateRequest(BaseModel):
+    """Body for PATCH /auth/me — self-service profile edit. At least one
+    name field must be provided; both update the derived full_name."""
+    first_name: str = ""
+    last_name: str = ""
+
+    @model_validator(mode="after")
+    def _require_some_name(self) -> "ProfileUpdateRequest":
+        if not self.first_name and not self.last_name:
+            raise ValueError("Provide a first name, last name, or both")
+        return self
 
 
 class RolePublic(BaseModel):

@@ -87,3 +87,18 @@ async def set_user_active(db: AsyncSession, user_id: str, tenant_id: str, is_act
     await db.commit()
     await db.refresh(user)
     return user
+
+
+async def update_own_profile(db: AsyncSession, user_id: str, first_name: str, last_name: str) -> User | None:
+    """Self-service edit of the user's own profile row. Scope stays on the
+    caller's row — there is no tenant_id parameter here, so PATCH /auth/me
+    can never touch another user's record."""
+    existing = await get_user_by_id(db, user_id)
+    if existing is None:
+        return None
+    existing.first_name = first_name
+    existing.last_name = last_name
+    existing.full_name = f"{first_name} {last_name}".strip()
+    await db.commit()
+    await db.refresh(existing)
+    return existing
