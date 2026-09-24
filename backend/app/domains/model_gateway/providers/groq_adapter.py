@@ -2,6 +2,8 @@ import logging
 import os
 from groq import AsyncGroq
 
+from app.domains.model_gateway.tools.chart_tool import CHART_TOOL_SCHEMA, TOOL_NAME, ChartToolError, build_chart_fence
+
 logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
@@ -13,7 +15,13 @@ _SYSTEM_PROMPT = (
     "and payroll compliance and laws, accounting software, commerce, and "
     "accounting education/certifications — and any topic directly related to "
     "these.\n"
-    "CLASSIFY every question first. If it is NOT about the domains above (e.g. "
+    "CLASSIFY every question first, by the SUBJECT MATTER being asked about, "
+    "never by the presentation format requested — a request to chart, diagram "
+    "or visualise revenue, profit, expenses, cash flow, portfolio allocation "
+    "or any other figure from the domains above IS in scope even when it "
+    "leads with a chart/diagram type word (sankey, treemap, waterfall, "
+    "flowchart, heatmap, etc.) that sounds generic on its own. If it is NOT "
+    "about the domains above (e.g. "
     "movies, sports, politics, programming, health, travel, general chat), do "
     "NOT answer and do NOT add anything — reply with EXACTLY this text and "
     "nothing else:\n"
@@ -32,7 +40,11 @@ _SYSTEM_PROMPT = (
     "never say you lack documents or mention retrieval.\n"
     "When the user asks for a chart, table, graph or diagram, PRODUCE it in the "
     "format instructed in the prompt rather than describing how to make it or "
-    "saying a spreadsheet/tool is needed. Use tables for comparisons, examples "
+    "saying a spreadsheet/tool is needed. For a data chart specifically, call "
+    "the render_chart tool with the real figures rather than writing the "
+    "chart's JSON yourself in the answer text — pick whichever of its "
+    "supported types actually matches the data (never force a type it "
+    "doesn't fit). Use tables for comparisons, examples "
     "where useful, step-by-step workings for calculations, clear journal "
     "entries for accounting entries, stated assumptions for taxation, and "
     "formulas for payroll.\n"
@@ -68,16 +80,23 @@ class GroqAdapter:
         if not self.client:
             return "[Error: GROQ_API_KEY not found in environment. Please add it to backend/.env]"
 
+        messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
         try:
             response = await self.client.chat.completions.create(
                 model=model,
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
+                messages=messages,
+                tools=[CHART_TOOL_SCHEMA],
+                tool_choice="auto",
                 temperature=0.0,  # Deterministic routing/answering per governance
             )
-            return response.choices[0].message.content or ""
+            message = response.choices[0].message
+            tool_calls = message.tool_calls or []
+            if not tool_calls:
+                return message.content or ""
+            return await self._resolve_chart_tool_calls(model, messages, message, tool_calls)
         except Exception as e:
             logger.warning(
                 "Groq request failed: error_type=%s status=%s model=%s",
@@ -86,3 +105,61 @@ class GroqAdapter:
                 model,
             )
             return f"[Error connecting to Groq API: {str(e)}]"
+
+    async def _resolve_chart_tool_calls(self, model: str, messages: list, message, tool_calls) -> str:
+        """Validate each render_chart call the model made, tell it the
+        outcome, and let it write the final prose now that it knows whether
+        the chart actually rendered — the standard function-calling round
+        trip. The fenced ```chart block returned to the caller is always
+        built from the validated arguments, never from the model's own
+        retelling of them, so a chart the frontend renders can never
+        disagree with the type/data the model actually requested."""
+        fences: list[str] = []
+        # A minimal, hand-built assistant message — not message.model_dump().
+        # The full dump carries extra response-only fields (e.g. `annotations`)
+        # that some Groq models reject outright when echoed back as request
+        # input ("property 'annotations' is unsupported"), so only the fields
+        # a request message actually accepts are forwarded.
+        assistant_message = {
+            "role": "assistant",
+            "content": message.content,
+            "tool_calls": [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {"name": call.function.name, "arguments": call.function.arguments},
+                }
+                for call in tool_calls
+            ],
+        }
+        follow_up = messages + [assistant_message]
+        for call in tool_calls:
+            if call.function.name != TOOL_NAME:
+                tool_result = f"Unknown tool '{call.function.name}'."
+            else:
+                try:
+                    fence = build_chart_fence(call.function.arguments)
+                    fences.append(fence)
+                    tool_result = "Chart rendered successfully. Do not restate its JSON — it will be attached automatically."
+                except ChartToolError as exc:
+                    logger.warning("render_chart arguments failed validation: %s", exc)
+                    tool_result = (
+                        f"The chart could not be rendered ({exc}). Explain what data is "
+                        "missing instead of describing a chart that was not created."
+                    )
+            follow_up.append({"role": "tool", "tool_call_id": call.id, "content": tool_result})
+
+        # tool_choice="none" must be explicit here, not just omitting `tools` —
+        # a model that keeps chasing an invalid type (e.g. "gauge") after a
+        # validation failure will try to call render_chart again on this turn
+        # too, and Groq hard-rejects that against an implicit "none" with
+        # "Tool choice is none, but model called a tool" instead of silently
+        # ignoring it. Declaring the tool but forbidding its use is what
+        # actually stops that.
+        final = await self.client.chat.completions.create(
+            model=model, messages=follow_up, tools=[CHART_TOOL_SCHEMA], tool_choice="none", temperature=0.0,
+        )
+        final_text = final.choices[0].message.content or ""
+        if not fences:
+            return final_text
+        return final_text.rstrip() + "\n\n" + "\n\n".join(fences)

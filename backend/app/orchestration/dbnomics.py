@@ -81,6 +81,7 @@ _COUNTRY_ALIASES: dict[str, str] = {
     "italy": "italy", "spain": "spain", "mexico": "mexico",
     "indonesia": "indonesia", "nigeria": "nigeria", "pakistan": "pakistan",
     "bangladesh": "bangladesh", "russia": "russia", "korea": "korea",
+    "greece": "greece", "greek": "greece",
 }
 
 # ISO-3 codes, because many DBnomics series carry the country only in the code
@@ -91,7 +92,7 @@ _ISO3: dict[str, str] = {
     "canada": "CAN", "australia": "AUS", "united arab emirates": "ARE",
     "singapore": "SGP", "brazil": "BRA", "italy": "ITA", "spain": "ESP",
     "mexico": "MEX", "indonesia": "IDN", "nigeria": "NGA", "pakistan": "PAK",
-    "bangladesh": "BGD", "russia": "RUS", "korea": "KOR",
+    "bangladesh": "BGD", "russia": "RUS", "korea": "KOR", "greece": "GRC",
 }
 
 
@@ -141,14 +142,18 @@ _WDI_INDICATORS: tuple[tuple[re.Pattern[str], str, str], ...] = (
      "NY.GDP.PCAP.CD", "GDP per capita (current US$)"),
     (re.compile(r"\btax[- ]to[- ]gdp|tax revenue\b", re.I),
      "GC.TAX.TOTL.GD.ZS", "Tax revenue (% of GDP)"),
+    # Must come before the generic "gdp" rule below: "government debt as a
+    # percentage of GDP" contains the literal word "gdp", so with the generic
+    # rule first it always won (returning GDP growth data for a debt
+    # question) and this specific pattern was dead code — never reachable.
+    (re.compile(r"\b(government debt|public debt|central government debt)\b", re.I),
+     "GC.DOD.TOTL.GD.ZS", "Central government debt, total (% of GDP)"),
     (re.compile(r"\b(gdp|gross domestic product)\b", re.I),
      "NY.GDP.MKTP.KD.ZG", "GDP growth (annual %)"),
     (re.compile(r"\b(inflation|cpi|consumer price)\b", re.I),
      "FP.CPI.TOTL.ZG", "Inflation, consumer prices (annual %)"),
     (re.compile(r"\bunemploy\w*\b", re.I),
      "SL.UEM.TOTL.ZS", "Unemployment, total (% of labour force)"),
-    (re.compile(r"\b(government debt|public debt|central government debt)\b", re.I),
-     "GC.DOD.TOTL.GD.ZS", "Central government debt, total (% of GDP)"),
     (re.compile(r"\b(population)\b", re.I),
      "SP.POP.TOTL", "Population, total"),
     (re.compile(r"\b(real interest rate)\b", re.I),
@@ -279,6 +284,7 @@ async def fetch_stats(query: str) -> list[WebSource]:
                         period=str(tail[-1][0]), provider=provider, source_url=url,
                         freshness="historical",
                     ),
+                    series=tail,
                 )
 
             sources = await asyncio.gather(*(source_for(c) for c in countries))
@@ -413,5 +419,6 @@ async def fetch_stats(query: str) -> list[WebSource]:
                 period=str(tail[-1][0]), provider=str(provider_name),
                 source_url=url, freshness="historical",
             ),
+            series=tail,
         )
     ]

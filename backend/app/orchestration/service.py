@@ -74,7 +74,7 @@ from app.orchestration.websearch import (
 )
 from app.domains.documents import service as documents_service
 from app.domains.source_library.service import record_source_usages
-from app.orchestration.live_data import fetch_live_data
+from app.orchestration.live_data import build_forced_chart, fetch_live_data
 from app.orchestration.risk_llm import classify_risk, classify_risk_gemini
 from app.orchestration.calculation_service import (
     build_calculation, build_observation_chart, validate_answer_calculations,
@@ -990,6 +990,15 @@ async def ask_kriton(
             outcome=response.outcome, route=ROUTE_CLARIFICATION, start_time=start_time,
         )
         return contextualize(response)
+
+    # Force a chart from the connector's own fetched numeric series when the
+    # question wanted one and the model didn't already produce it (via prose
+    # or the render_chart tool) — see live_data.build_forced_chart. Runs
+    # before validation so the forced chart is checked like any other content.
+    if "```chart" not in composed_text:
+        forced_chart = build_forced_chart(request.query, live_sources)
+        if forced_chart:
+            composed_text = composed_text.rstrip() + "\n\n" + forced_chart
 
     output_hash = hashlib.sha256(composed_text.encode()).hexdigest()[:32]
     await audit_composition_completed(

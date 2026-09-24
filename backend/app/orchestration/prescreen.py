@@ -20,14 +20,23 @@ from typing import Optional
 # ── Pattern registry ──────────────────────────────────────────────────────────
 
 _PROMPT_INJECTION_PATTERNS = [
-    r"ignore\s+(previous|all|your)\s+instruction",
-    r"override\s+(system|safety|governance|policy)",
-    r"forget\s+(everything|your\s+rules|instructions)",
+    # Qualifiers before "instruction(s)" and "prompt" are optional and
+    # stack in real attacks ("ignore YOUR PREVIOUS instructions", "reveal
+    # YOUR SYSTEM prompt") — each was previously a single fixed alternative,
+    # so a real query naming two qualifiers together (as most natural
+    # phrasing does) matched neither and slipped through. The two qualifier
+    # groups below use distinct, non-overlapping literal words (no character
+    # class shared between them), so — unlike the catastrophic-backtracking
+    # regex fixed in calculation_service.py — there is exactly one way to
+    # parse a run of them: no ambiguity, no exponential blowup.
+    r"ignore\s+(?:the\s+|all\s+|your\s+|any\s+)*(?:previous\s+|prior\s+|above\s+)*instructions?\b",
+    r"override\s+(?:the\s+|your\s+)?(system|safety|governance|policy)",
+    r"forget\s+(?:the\s+|your\s+|all\s+)*(everything|rules|instructions)",
     r"you\s+are\s+now\s+(a\s+)?(?:different|unrestricted|jailbreak)",
-    r"reveal\s+(system\s+prompt|internal|your\s+prompt|configuration)",
-    r"print\s+your\s+(system\s+)?prompt",
+    r"reveal\s+(?:the\s+|your\s+)*(system\s+prompt|internal|prompt|configuration)",
+    r"print\s+(?:the\s+|your\s+)*(system\s+)?prompt",
     r"act\s+as\s+(if\s+you\s+have\s+no\s+|without\s+)?(restriction|limit|filter)",
-    r"disregard\s+(safety|governance|the\s+rule)",
+    r"disregard\s+(?:the\s+|your\s+|all\s+|any\s+|previous\s+|prior\s+)*(safety|governance|rules?|instructions?)",
     r"hypothetically\s+(speaking\s+)?if\s+you\s+(had\s+no|were\s+not)",
     r"jailbreak",
     r"DAN\s+mode",
