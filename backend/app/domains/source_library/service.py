@@ -277,15 +277,21 @@ async def create_source(
     return {**source.__dict__, "latest_version": version}
 
 
-async def get_soonest_expiring(db: AsyncSession) -> dict | None:
+async def get_soonest_expiring(db: AsyncSession, tenant_id: str) -> dict | None:
     """The single approved/active source version with the nearest
     effective_to date, for the license-expiry countdown. Returns None if
     nothing has an expiry date on file — an honest "nothing expiring" state
-    rather than fabricating one."""
+    rather than fabricating one.
+
+    Scoped to the tenant's boundary like list_sources: non-private (shared)
+    sources are visible to every tenant by design (Checkpoint A — e.g.
+    regulatory standards); only rows marked is_tenant_private=True are
+    restricted to their owning tenant."""
     result = await db.execute(
         select(SourceVersion, Source)
         .join(Source, Source.id == SourceVersion.source_id)
         .where(
+            (Source.is_tenant_private.is_(False)) | (Source.tenant_id == tenant_id),
             SourceVersion.status.in_(_ELIGIBLE_STATUSES),
             SourceVersion.effective_to.is_not(None),
         )
@@ -309,11 +315,19 @@ async def get_soonest_expiring(db: AsyncSession) -> dict | None:
     }
 
 
-async def get_jurisdiction_summary(db: AsyncSession) -> list[dict]:
+async def get_jurisdiction_summary(db: AsyncSession, tenant_id: str) -> list[dict]:
     """Real rollout readiness computed from the actual source register — how
     many approved/pending sources exist per jurisdiction and category. No
-    fabricated launch-gate checklist; readiness is derived from real counts."""
-    result = await db.execute(select(Source, SourceVersion).join(SourceVersion, SourceVersion.source_id == Source.id))
+    fabricated launch-gate checklist; readiness is derived from real counts.
+
+    Scoped to the tenant's boundary like list_sources: non-private (shared)
+    sources count for every tenant; only is_tenant_private=True rows are
+    restricted to their owning tenant."""
+    result = await db.execute(
+        select(Source, SourceVersion)
+        .join(SourceVersion, SourceVersion.source_id == Source.id)
+        .where((Source.is_tenant_private.is_(False)) | (Source.tenant_id == tenant_id))
+    )
     rows = result.all()
 
     by_jurisdiction: dict[str, dict[str, dict[str, int]]] = {}
@@ -576,10 +590,22 @@ async def record_source_usages(
     await db.commit()
 
 
-async def expire_source_versions(db: AsyncSession, *, today: date | None = None) -> int:
-    cutoff = today or date.today()
+async def expire_source_versions(db: AsyncSession, *, tenant_id: str, today: date | None = None) -> int:
+    """Flip every eligible source version whose effective_to has passed to
+    EXPIRED. The mutation is ORM attribute updates on the rows this SELECT
+    returns, so scoping the SELECT here scopes the write: only sources inside
+    the caller tenant's boundary (own private rows, or shared non-private
+    rows) are ever expired — never a private row owned by another tenant.
+
+    The cutoff is computed against UTC (datetime.now(timezone.utc).date()),
+    never the host's local time: an expiry "today" that differs between a
+    dev laptop and a UTC container would silently drift by a day."""
+    cutoff = today or datetime.now(timezone.utc).date()
     result = await db.execute(
-        select(SourceVersion).where(
+        select(SourceVersion)
+        .join(Source, Source.id == SourceVersion.source_id)
+        .where(
+            (Source.is_tenant_private.is_(False)) | (Source.tenant_id == tenant_id),
             SourceVersion.status.in_(_ELIGIBLE_STATUSES),
             SourceVersion.effective_to.is_not(None),
             SourceVersion.effective_to < cutoff,

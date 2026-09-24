@@ -24,14 +24,16 @@ class ProvisionRequest(BaseModel):
 
 
 class ProfileUpdateRequest(BaseModel):
-    """Body for PATCH /auth/me — self-service profile edit. At least one
-    name field must be provided; both update the derived full_name."""
-    first_name: str = ""
-    last_name: str = ""
+    """Body for PATCH /auth/me — self-service profile edit. Partial-update
+    semantics: only the fields present in the body are changed; omitted
+    fields (None) are left exactly as they are, and full_name is rebuilt
+    from whatever survives the merge. At least one field must be provided."""
+    first_name: str | None = None
+    last_name: str | None = None
 
     @model_validator(mode="after")
     def _require_some_name(self) -> "ProfileUpdateRequest":
-        if not self.first_name and not self.last_name:
+        if not (self.first_name or self.last_name):
             raise ValueError("Provide a first name, last name, or both")
         return self
 

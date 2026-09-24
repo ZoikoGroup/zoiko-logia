@@ -18,7 +18,7 @@ function readRoleCookie(): RoleCode {
 }
 
 export function RoleProvider({ children }: { children: ReactNode }) {
-  const { profile } = useAuth();
+  const { profile, session, loading } = useAuth();
   const [demoRole, setDemoRole] = useState<RoleCode>(DEFAULT_ROLE);
 
   useEffect(() => {
@@ -30,7 +30,13 @@ export function RoleProvider({ children }: { children: ReactNode }) {
   // switcher for previews without a real profile — but it never overrides a
   // real role: a "Source Admin" profile keeps gating as Source Admin no
   // matter what the cookie says.
-  const role = resolveEffectiveRole(profile?.role, demoRole);
+  //
+  // Fail closed once a real session exists: if the user is signed in but
+  // /auth/me failed or hasn't produced a known role, the effective role
+  // degrades to UNVERIFIED_ROLE rather than falling back to the cookie
+  // demo default (Admin). Only the genuinely session-less preview keeps the
+  // cookie role.
+  const role = resolveEffectiveRole(profile?.role, demoRole, Boolean(session && !loading));
 
   function setRole(next: RoleCode) {
     document.cookie = `${ROLE_COOKIE}=${encodeURIComponent(next)}; path=/; max-age=${60 * 60 * 24 * 7}`;

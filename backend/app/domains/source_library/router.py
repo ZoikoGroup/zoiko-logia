@@ -54,7 +54,7 @@ async def get_expiring_source(
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(require_permission(SOURCE_READ)),
 ) -> ExpiringSourceOut | None:
-    expiring = await get_soonest_expiring(db)
+    expiring = await get_soonest_expiring(db, actor.tenant_id)
     return ExpiringSourceOut.model_validate(expiring) if expiring else None
 
 
@@ -63,7 +63,7 @@ async def get_jurisdiction_summary_endpoint(
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(require_permission(SOURCE_READ)),
 ) -> list[JurisdictionSummaryOut]:
-    summaries = await get_jurisdiction_summary(db)
+    summaries = await get_jurisdiction_summary(db, actor.tenant_id)
     return [JurisdictionSummaryOut.model_validate(s) for s in summaries]
 
 
@@ -207,4 +207,4 @@ async def post_expire_sources(
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(require_permission(SOURCE_MANAGE)),
 ) -> dict:
-    return {"expired_count": await expire_source_versions(db)}
+    return {"expired_count": await expire_source_versions(db, tenant_id=actor.tenant_id)}

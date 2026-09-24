@@ -119,9 +119,25 @@ async def sign_out_all_sessions(
 ) -> Response:
     """Revoke every session the user holds, server-side, via the Supabase
     Admin API. Works even for a stolen/lost session on a device that never
-    signs out on its own."""
-    if supabase_admin.is_configured():
-        supabase_admin.revoke_all_sessions(current_user.id)
+    signs out on its own.
+
+    Fails closed when the Admin API is unconfigured (503, like provision):
+    a 204 that never revoked anything would be a false success, and the
+    auth.sessions_revoked audit event is written only once revocation is
+    actually confirmed."""
+    try:
+        revoked = supabase_admin.revoke_all_sessions(current_user.id)
+    except supabase_admin.SupabaseNotConfiguredError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Supabase admin API not configured — set SUPABASE_URL / "
+            "SUPABASE_SERVICE_ROLE_KEY in backend/.env to revoke sessions.",
+        )
+    if not revoked:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Supabase did not confirm session revocation (expected 204).",
+        )
     await record_event_async(
         db,
         tenant_id=current_user.tenant_id,

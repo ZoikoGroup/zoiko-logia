@@ -150,18 +150,23 @@ async def test_sign_out_all_calls_admin_revocation(lifecycle_db, monkeypatch) ->
     assert revoked == ["user-1"]
 
 
-async def test_sign_out_all_still_204_when_not_configured(lifecycle_db, monkeypatch) -> None:
+async def test_sign_out_all_unconfigured_fails_closed_503(lifecycle_db, monkeypatch) -> None:
+    """Unconfigured Admin API must not silently skip revocation and still
+    return 204 — that is a false success. Match provision/post_user: 503,
+    and no auth.sessions_revoked event (nothing was actually revoked)."""
     db = lifecycle_db
+    from app.core import supabase_admin
 
-    def fail_if_called(uid):
-        raise AssertionError("revoke_all_sessions must not be called when Supabase is unconfigured")
-
-    monkeypatch.setattr("app.core.supabase_admin.is_configured", lambda: False)
-    monkeypatch.setattr("app.core.supabase_admin.revoke_all_sessions", fail_if_called)
+    monkeypatch.setattr(
+        "app.core.supabase_admin.revoke_all_sessions",
+        lambda uid: (_ for _ in ()).throw(supabase_admin.SupabaseNotConfiguredError("not configured")),
+    )
     current = await get_user_by_id(db, "user-1")
 
-    resp = await sign_out_all_sessions(db, current)
-    assert resp.status_code == 204
+    with pytest.raises(HTTPException) as exc:
+        await sign_out_all_sessions(db, current)
+    assert exc.value.status_code == 503
+    assert await _count_events(db, "auth.sessions_revoked") == 0
 
 
 async def test_sign_out_all_emits_sessions_revoked_event(lifecycle_db, monkeypatch) -> None:

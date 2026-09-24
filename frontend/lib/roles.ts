@@ -49,6 +49,12 @@ export const BACKEND_ROLES: readonly string[] = [
 
 export const DEFAULT_ROLE: RoleCode = "Admin";
 
+/** Least-privileged fallback for a signed-in user whose backend role cannot
+ * be verified. Never Admin: if /auth/me failed or hasn't returned a known
+ * role yet, the app degrades to the least privileged demo role instead of
+ * silently running the session as its most privileged one. */
+export const UNVERIFIED_ROLE: RoleCode = "Learner";
+
 export const ROLE_COOKIE = "zoiko_role";
 
 const KNOWN_ROLES: ReadonlySet<string> = new Set([...ROLES, ...BACKEND_ROLES]);
@@ -59,13 +65,22 @@ export function isKnownRole(role: string | null | undefined): role is RoleCode {
 
 /** The role the app actually gates on: the provisioned profile's role when a
  * real one exists, otherwise the demo-mode cookie role (so unauthenticated /
- * not-yet-provisioned previews keep working exactly as before). */
+ * not-yet-provisioned previews keep working exactly as before).
+ *
+ * failClosedWhenSignedIn: once a real session exists, an unverifiable role
+ * must degrade to UNVERIFIED_ROLE, never to the demo default. Only the
+ * no-session preview path is allowed to keep the cookie role — a signed-in
+ * user whose /auth/me call failed must not escalate to Admin. */
 export function resolveEffectiveRole(
   profileRole: string | null | undefined,
   demoRole: RoleCode = DEFAULT_ROLE,
+  failClosedWhenSignedIn: boolean = false,
 ): RoleCode {
   if (typeof profileRole === "string" && KNOWN_ROLES.has(profileRole)) {
     return profileRole as RoleCode;
+  }
+  if (failClosedWhenSignedIn) {
+    return UNVERIFIED_ROLE;
   }
   return demoRole;
 }
