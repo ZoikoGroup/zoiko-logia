@@ -51,6 +51,7 @@ function AuditReplayContent() {
   }
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- load on correlationId change: the setStates run after the awaited call, not synchronously
     if (initialId) loadManifest(initialId);
   }, [initialId]);
 

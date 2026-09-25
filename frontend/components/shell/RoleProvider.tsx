@@ -22,6 +22,7 @@ export function RoleProvider({ children }: { children: ReactNode }) {
   const [demoRole, setDemoRole] = useState<RoleCode>(DEFAULT_ROLE);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- document is unavailable during SSR prerender; the cookie is read once on mount, after hydration
     setDemoRole(readRoleCookie());
   }, []);
 

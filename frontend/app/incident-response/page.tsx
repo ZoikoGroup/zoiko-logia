@@ -41,12 +41,13 @@ export default function IncidentResponsePage() {
       ]);
       setIncidents(resIncidents);
       setStats(resStats);
-    } catch (err) {
+    } catch {
       setError("Could not load incidents from the server.");
     }
   };
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount: the page starts in its loading snapshot and every later setState happens after an awaited network call
     refreshData();
   }, []);
 
@@ -62,7 +63,7 @@ export default function IncidentResponsePage() {
       setSelectedIncident(null);
       setActionNote("");
       await refreshData();
-    } catch (err) {
+    } catch {
       alert("Failed to perform action");
     } finally {
       setLoading(false);
