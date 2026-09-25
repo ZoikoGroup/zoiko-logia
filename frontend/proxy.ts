@@ -2,7 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const PUBLIC_PATHS = ["/login", "/signup", "/auth/callback"];
+const PUBLIC_PATHS = ["/login", "/signup", "/auth/callback", "/auth/forgot-password", "/auth/reset-password"];
 const REDIRECT_IF_AUTHED_PATHS = ["/login", "/signup"];
 
 export async function proxy(request: NextRequest) {

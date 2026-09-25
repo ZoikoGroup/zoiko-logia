@@ -3,7 +3,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.domains.identity.models import User
-from app.domains.identity.rbac import require_admin
+from app.domains.identity.permissions import MODEL_MANAGE
+from app.domains.identity.rbac import require_permission
 from app.domains.model_gateway.schemas import (
     ModelDefinitionPublic,
     PromptTemplatePublic,
@@ -18,7 +19,7 @@ router = APIRouter(tags=["model_gateway"])
 @router.get("/models", response_model=list[ModelDefinitionPublic])
 async def get_models(
     db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(MODEL_MANAGE)),
 ) -> list[ModelDefinitionPublic]:
     models = await list_models(db)
     return [ModelDefinitionPublic.model_validate(m) for m in models]
@@ -27,7 +28,7 @@ async def get_models(
 @router.get("/prompts", response_model=list[PromptTemplatePublic])
 async def get_prompts(
     db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(MODEL_MANAGE)),
 ) -> list[PromptTemplatePublic]:
     prompts = await list_prompts(db)
     return [PromptTemplatePublic.model_validate(p) for p in prompts]
@@ -37,9 +38,9 @@ async def get_prompts(
 async def post_approve_prompt(
     prompt_id: str,
     db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(MODEL_MANAGE)),
 ) -> PromptTemplatePublic:
-    prompt = await approve_prompt(db, admin.id, prompt_id, tenant_id=admin.tenant_id)
+    prompt = await approve_prompt(db, actor.id, prompt_id, tenant_id=actor.tenant_id)
     return PromptTemplatePublic.model_validate(prompt)
 
 
@@ -47,7 +48,7 @@ async def post_approve_prompt(
 async def post_test_run(
     payload: TestRunRequest,
     db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_permission(MODEL_MANAGE)),
 ) -> TestRunResponse:
-    prompt, output = await run_test_prompt(db, payload.prompt_id, payload.input_text, admin.id, tenant_id=admin.tenant_id)
+    prompt, output = await run_test_prompt(db, payload.prompt_id, payload.input_text, actor.id, tenant_id=actor.tenant_id)
     return TestRunResponse(prompt_id=prompt.id, prompt_name=prompt.name, output_text=output)

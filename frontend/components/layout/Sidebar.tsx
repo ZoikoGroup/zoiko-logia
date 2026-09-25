@@ -18,7 +18,16 @@ export function Sidebar({
   const pathname = usePathname();
   const router = useRouter();
   const { role } = useRole();
-  const { signOut, user } = useAuth();
+  const { signOut, user, profile } = useAuth();
+  // Prefer the provisioned profile's name (the real DB row) over Supabase's
+  // user_metadata, which is only what the signup form stashed and can drift
+  // once a tenant admin edits the profile.
+  const displayName = profile?.full_name || user?.user_metadata?.full_name || user?.email || "User";
+  const initials = (profile?.full_name || user?.user_metadata?.full_name || user?.email || "U")
+    .split(/\s|@/)
+    .slice(0, 2)
+    .map((part: string) => part[0]?.toUpperCase())
+    .join("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set(["overview"]));
   const [identityOpen, setIdentityOpen] = useState(false);
 
@@ -119,8 +128,8 @@ export function Sidebar({
           <button onClick={handleLogout} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-bad hover:bg-bad/10"><LogOut size={15} /> Log out</button>
         </div>}
         <button onClick={() => setIdentityOpen((value) => !value)} aria-expanded={identityOpen} className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-line px-3 text-left hover:bg-soft">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand/10 text-xs font-bold text-brand">{(user?.user_metadata?.full_name || user?.email || "U").split(/\s|@/).slice(0, 2).map((part: string) => part[0]?.toUpperCase()).join("")}</span>
-          <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-ink">{user?.user_metadata?.full_name || user?.email || "User"}</span><span className="block truncate text-xs text-muted">{role}</span></span>
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand/10 text-xs font-bold text-brand">{initials}</span>
+          <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-ink">{displayName}</span><span className="block truncate text-xs text-muted">{role}</span></span>
           <span aria-hidden="true">›</span>
         </button>
       </div>

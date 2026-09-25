@@ -37,17 +37,21 @@ class Settings(BaseSettings):
     # ── CORS ─────────────────────────────────────────────────────────────
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001"]
 
-    # ── OIDC (Safety Auth Integration) ──────────────────────────────────
-    OIDC_ISSUER_URL: str = ""
-    OIDC_CLIENT_ID: str = ""
-    OIDC_CLIENT_SECRET: str = ""
-
     # ── Supabase Auth ────────────────────────────────────────────────────
     # Backend verifies Supabase-issued access tokens (JWKS) and, for the
     # service-role-only Admin API calls (creating auth users, writing
     # app_metadata), never exposed to the frontend.
     SUPABASE_URL: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""
+
+    # When true, startup hard-fails (RuntimeError) if Supabase auth isn't
+    # configured (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY unset or empty).
+    # Staging/prod should set this so a missing service-role key fails the
+    # deploy loudly at the gateway instead of surfacing later as a cascade of
+    # 401s plus silently-skipped user seeding. Local/dev leave unset — the
+    # soft warning + skip-seeding behavior is intentional for plain-SQLite /
+    # frontend-only work.
+    REQUIRE_SUPABASE_CONFIG: bool = False
 
     # ── LLM Providers ───────────────────────────────────────────────────
     OPENAI_API_KEY: str = ""
