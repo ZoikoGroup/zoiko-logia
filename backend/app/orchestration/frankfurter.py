@@ -56,8 +56,16 @@ def _find_amount(query: str) -> float:
 
 
 async def fetch_fx(query: str) -> list[WebSource]:
-    """Return a single WebSource with the live exchange rate when the question
-    is an FX/currency query with two recognised currencies; otherwise []."""
+    """Return one WebSource per base/target currency pair — the first
+    recognised code is the base, every other recognised code is a target
+    rate against it — when the question names two or more currencies;
+    otherwise [].
+
+    A query naming three-plus codes ("compare USD to EUR and USD to GBP")
+    previously only ever looked at codes[0]/codes[1] and silently dropped
+    every other pair, e.g. losing GBP from that exact question. Frankfurter's
+    /latest endpoint accepts a comma-separated symbols list, so every target
+    is still fetched in a single request, not one per pair."""
     codes = _find_currencies(query)
     # Need two currencies (from -> to). Require either two codes, or one code
     # plus an explicit FX hint (still need a second to convert, so two codes).
@@ -66,39 +74,47 @@ async def fetch_fx(query: str) -> list[WebSource]:
     if not (_FX_HINTS.search(query) or len(codes) >= 2):
         return []
 
-    base_cur, quote_cur = codes[0], codes[1]
+    base_cur, quote_curs = codes[0], codes[1:]
     amount = _find_amount(query)
     base = _frankfurter_base()
-    url = f"{base}/latest?base={base_cur}&symbols={quote_cur}"
+    url = f"{base}/latest?base={base_cur}&symbols={','.join(quote_curs)}"
     try:
         async with httpx.AsyncClient(timeout=6.0) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             data = resp.json()
-        rate = float((data.get("rates") or {}).get(quote_cur))
+        rates = data.get("rates") or {}
         date = data.get("date", "")
     except Exception:
         return []
 
-    converted = amount * rate
-    snippet = (
-        f"Live ECB reference rate (Frankfurter), {date}: "
-        f"1 {base_cur} = {rate:g} {quote_cur}. "
-        f"{amount:g} {base_cur} = {converted:g} {quote_cur}."
-    )
-    return [
-        WebSource(
-            title=f"Frankfurter — {base_cur}/{quote_cur} exchange rate ({date})",
-            url=url,
-            snippet=snippet,
-            provider="Frankfurter (ECB reference rates)",
-            freshness="daily",
-            observation=LiveObservation(
-                observation_id=f"obs_{uuid.uuid4().hex}",
-                indicator=f"{base_cur}/{quote_cur} exchange rate",
-                value=str(rate), unit=f"{quote_cur} per {base_cur}", period=str(date),
-                provider="Frankfurter (ECB reference rates)", source_url=url,
-                freshness="daily",
-            ),
+    sources: list[WebSource] = []
+    for quote_cur in quote_curs:
+        raw_rate = rates.get(quote_cur)
+        if raw_rate is None:
+            continue
+        rate = float(raw_rate)
+        converted = amount * rate
+        snippet = (
+            f"Live ECB reference rate (Frankfurter), {date}: "
+            f"1 {base_cur} = {rate:g} {quote_cur}. "
+            f"{amount:g} {base_cur} = {converted:g} {quote_cur}."
         )
-    ]
+        pair_url = f"{base}/latest?base={base_cur}&symbols={quote_cur}"
+        sources.append(
+            WebSource(
+                title=f"Frankfurter — {base_cur}/{quote_cur} exchange rate ({date})",
+                url=pair_url,
+                snippet=snippet,
+                provider="Frankfurter (ECB reference rates)",
+                freshness="daily",
+                observation=LiveObservation(
+                    observation_id=f"obs_{uuid.uuid4().hex}",
+                    indicator=f"{base_cur}/{quote_cur} exchange rate",
+                    value=str(rate), unit=f"{quote_cur} per {base_cur}", period=str(date),
+                    provider="Frankfurter (ECB reference rates)", source_url=pair_url,
+                    freshness="daily",
+                ),
+            )
+        )
+    return sources

@@ -21,7 +21,18 @@ _EXPLICIT = re.compile(
     r"(?:calculate|compute|evaluate|what\s+is)\s+([0-9$£€,\.\s()+\-*/x×÷]+)", re.IGNORECASE
 )
 _EQUATION = re.compile(
-    r"(?P<expression>\(?\s*-?[0-9][0-9,.]*(?:\s*[+\-*/×÷]\s*-?[0-9][0-9,.]*|[0-9,.()\s+\-*/×÷])*\)?)"
+    # The repeated alternation is wrapped in an atomic group `(?>...)`: its two
+    # branches both match plain digit/operator characters, so on any answer
+    # text that never reaches a trailing `= result` (e.g. a chart's raw data
+    # array of many numbers, some negative), an unbounded backtracking engine
+    # explores every way of re-partitioning that run between the branches —
+    # catastrophic (exponential-time) backtracking, confirmed hanging
+    # multi-minute+ on a real 20-point GDP series with no `=` in it. Atomic
+    # grouping commits to the first (greedy) partition and never backtracks
+    # into it, which is a no-op for genuine `expr = result` matches (greedy
+    # matching already stops at the right boundary with nothing to backtrack)
+    # but turns the no-match case into an immediate, linear-time failure.
+    r"(?P<expression>\(?\s*-?[0-9][0-9,.]*(?>(?:\s*[+\-*/×÷]\s*-?[0-9][0-9,.]*|[0-9,.()\s+\-*/×÷])*)\)?)"
     r"\s*=\s*[$£€]?\s*(?P<result>-?[0-9][0-9,]*(?:\.[0-9]+)?)"
 )
 

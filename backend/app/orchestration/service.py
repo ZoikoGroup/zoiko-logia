@@ -74,7 +74,7 @@ from app.orchestration.websearch import (
 )
 from app.domains.documents import service as documents_service
 from app.domains.source_library.service import record_source_usages
-from app.orchestration.live_data import fetch_live_data
+from app.orchestration.live_data import build_forced_chart, fetch_live_data
 from app.orchestration.risk_llm import classify_risk, classify_risk_gemini
 from app.orchestration.calculation_service import (
     build_calculation, build_observation_chart, validate_answer_calculations,
@@ -413,7 +413,7 @@ async def ask_kriton(
                 query=request.query,
                 jurisdiction=request.jurisdiction,
                 tenant_id=tenant_id,
-                framework=effective_context.framework if effective_context else "",
+                framework=(effective_context.framework or "") if effective_context else "",
                 effective_date=effective_context.period_end if effective_context else None,
             ),
         )
@@ -438,7 +438,7 @@ async def ask_kriton(
                 preliminary_bundle.sources,
                 tenant_id=tenant_id,
                 jurisdiction=request.jurisdiction,
-                framework=effective_context.framework if effective_context else "",
+                framework=(effective_context.framework or "") if effective_context else "",
                 effective_date=effective_context.period_end if effective_context else None,
             ),
         )
@@ -644,6 +644,7 @@ async def ask_kriton(
             tenant_id=tenant_id, risk_level=risk_level,
             confidence_state=effective_confidence,
             reason=f"Risk: {risk_level} | Confidence: {effective_confidence} | Mode: {request.mode}",
+            query_text=request.query,
         )
         await audit_human_review_created(
             db, query_id=query_id, correlation_id=correlation_id,
@@ -991,6 +992,15 @@ async def ask_kriton(
         )
         return contextualize(response)
 
+    # Force a chart from the connector's own fetched numeric series when the
+    # question wanted one and the model didn't already produce it (via prose
+    # or the render_chart tool) — see live_data.build_forced_chart. Runs
+    # before validation so the forced chart is checked like any other content.
+    if "```chart" not in composed_text:
+        forced_chart = build_forced_chart(request.query, live_sources)
+        if forced_chart:
+            composed_text = composed_text.rstrip() + "\n\n" + forced_chart
+
     output_hash = hashlib.sha256(composed_text.encode()).hexdigest()[:32]
     await audit_composition_completed(
         db, query_id=query_id, correlation_id=correlation_id,
@@ -1067,6 +1077,7 @@ async def ask_kriton(
                 tenant_id=tenant_id, risk_level=risk_level,
                 confidence_state=effective_confidence,
                 reason=f"Composition rejected: {'; '.join(validation.failures[:2])}",
+                query_text=request.query,
             )
             await audit_human_review_created(
                 db, query_id=query_id, correlation_id=correlation_id,

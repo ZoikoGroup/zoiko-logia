@@ -15,7 +15,13 @@ from app.domains.model_gateway.providers.google_adapter import GeminiAdapter
 from app.domains.model_gateway.providers.openai_adapter import OpenAIAdapter
 
 logger = logging.getLogger(__name__)
-_PROVIDER_TIMEOUT_SECONDS = 30
+# A chart request now costs two Groq round trips instead of one (propose the
+# render_chart call, then get the final prose once the backend has validated
+# it — see GroqAdapter._resolve_chart_tool_calls), and a heavier prompt (more
+# countries/data) pushes that past 30s in practice: a live 5-country GDP
+# comparison measured 37.4s end to end. 60s keeps comfortable headroom under
+# router.py's overall ASK_KRITON_TIMEOUT_SECONDS request deadline (105s).
+_PROVIDER_TIMEOUT_SECONDS = 60
 
 
 def _select_adapter():

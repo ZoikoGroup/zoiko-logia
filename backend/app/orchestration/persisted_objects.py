@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.orchestration.models import ReviewCase
+from app.orchestration.redaction import redact_for_external_exposure
 from app.orchestration.routing_matrix import CLASSIFIER_VERSION, POLICY_VERSION
 
 
@@ -33,13 +34,16 @@ async def create_review_case(
     risk_level: str,
     confidence_state: str,
     reason: str,
+    query_text: str = "",
     assigned_queue: str = "accounting_review",
 ) -> ReviewCase:
     """
     Persist a review case for HUMAN_REVIEW route — §11.1.
-    Must be written before response is returned.
+    Must be written before response is returned. The reviewer sees the
+    question with PII (cards, IDs, emails, …) redacted, never the raw text.
     """
     case = ReviewCase(
+        query_text=redact_for_external_exposure(query_text).redacted_text if query_text else "",
         query_id=query_id,
         correlation_id=correlation_id,
         tenant_id=tenant_id,

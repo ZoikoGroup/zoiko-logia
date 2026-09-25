@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 _FALLBACK_ERRORS = (ProviderNotConfigured, CapabilityNotSupported)
 
 MarketResult = StockQuote | list[OHLCVBar] | list[FinancialMetric] | list[FilingRecord] | CompanyProfile
+MarketResultForCompany = tuple[MarketResult, str, str, str]  # result, provider_name, intent, company_label
 
 
 # Which identifier each intent actually needs. A ticker is useless to
@@ -172,6 +173,55 @@ async def fetch_market_data(query: str, *, limit: int = 10) -> tuple[MarketResul
     except Exception as exc:  # noqa: BLE001 — connector boundary must fail soft
         logger.warning("market_data: unexpected failure: %s", type(exc).__name__)
         return None
+
+
+async def fetch_market_data_for_companies(
+    query: str, companies: list[tuple[str, str, str]], *, limit: int = 10
+) -> list[MarketResultForCompany]:
+    """(result, provider_name, intent, company_label) for each of `companies`
+    (ticker, country, name) — see identity.find_all_known_names(), which the
+    caller uses to detect a comparison question up front.
+
+    fetch_market_data() above only ever resolves and answers for a single
+    company: "Compare Apple and Microsoft stock price performance" resolved
+    to whichever one _resolve_entity() happened to match first, so the other
+    company's data was never fetched at all, not just dropped from the
+    answer. Each company here is resolved directly from its already-known
+    identifiers (no text re-parsing needed, since the caller already pinned
+    them) and fetched independently; one company having no data must not
+    drop the rest of the comparison, so a per-company failure is skipped
+    rather than raised — the answer includes whichever companies actually
+    had usable data, same fail-soft contract as fetch_market_data()."""
+    intent = registry.detect_intent(query)
+    if intent is None:
+        return []
+
+    providers = registry.providers_for(intent)
+    if not providers:
+        return []
+
+    effective_limit = registry.requested_bars(query) if intent == registry.INTENT_HISTORY else limit
+
+    results: list[MarketResultForCompany] = []
+    try:
+        async with make_client() as client:
+            for ticker, country, name in companies:
+                ref = EntityRef(ticker=ticker, country=country, name=name)
+                try:
+                    outcome = await fetch_for_intent(client, intent, ref, limit=effective_limit)
+                except Exception as exc:  # noqa: BLE001 — one company's failure must not drop the rest
+                    logger.warning(
+                        "market_data: comparison fetch failed for %s: %s", name, type(exc).__name__
+                    )
+                    continue
+                if outcome is None:
+                    continue
+                result, provider_name = outcome
+                results.append((result, provider_name, intent, name))
+    except Exception as exc:  # noqa: BLE001 — connector boundary must fail soft
+        logger.warning("market_data: unexpected failure building comparison client: %s", type(exc).__name__)
+        return results
+    return results
 
 
 async def health() -> list[ProviderHealth]:

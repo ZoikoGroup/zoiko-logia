@@ -108,6 +108,37 @@ def known_ticker_for_name(query: str) -> tuple[str, str, str]:
     return best
 
 
+def find_all_known_names(query: str) -> list[tuple[str, str, str]]:
+    """Every well-known company named in the question, as (ticker, country,
+    matched_name), in the order first mentioned, one entry per distinct
+    ticker.
+
+    known_ticker_for_name() deliberately keeps only its single best (longest)
+    match, which is right for pinning a query to one company — but a
+    comparison question ("Compare Apple and Microsoft...") names more than
+    one on purpose, and that best-match logic would silently discard every
+    company but one before the caller ever sees them. "amazon" and
+    "alphabet"/"google" resolve to distinct tickers; "shell" would also match
+    inside a longer alias if one existed, which is why matches are still
+    ranked longest-first per position rather than taken in dict order.
+    """
+    lowered = f" {query.lower()} "
+    matches: list[tuple[int, str, str, str]] = []  # (position, ticker, country, name)
+    for name, (ticker, country) in _WELL_KNOWN.items():
+        match = re.search(rf"(?<![a-z0-9]){re.escape(name)}(?:['’]s)?(?![a-z0-9])", lowered)
+        if match:
+            matches.append((match.start(), ticker, country, name.title()))
+    matches.sort()
+    seen_tickers: set[str] = set()
+    ordered: list[tuple[str, str, str]] = []
+    for _, ticker, country, name in matches:
+        if ticker in seen_tickers:
+            continue
+        seen_tickers.add(ticker)
+        ordered.append((ticker, country, name))
+    return ordered
+
+
 def resolve_local(query: str) -> EntityRef:
     """Best-effort resolution using only the text of the question.
 
