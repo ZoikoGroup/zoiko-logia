@@ -202,6 +202,8 @@ The sections below are in dependency order. Each feature states **what exists**,
 
 ### F7 — Policy-driven model gateway
 
+**Engineering status (25 September 2026):** the policy-driven deployment registry, maker-checker approval, task/data-class/region/tool eligibility, fail-closed selection, independently qualified fallback, typed failure reasons, provider and total deadlines, bounded calls, cancellation propagation, privacy-minimised durable run manifests, orchestration integration, migration, feature flag, contract and focused tests are implemented on this branch. Production enablement still requires approved provider due diligence, seeded deployment records, evaluation manifests, region/retention confirmation and an outage qualification run.
+
 **What exists:** `model_gateway/` has several provider adapters and model/prompt rows. `service.py` largely chooses the first configured provider and can fall back from Gemini to Groq without a full per-task data-class/region/rights policy decision.
 
 **Implement:** approved deployment registry and due-diligence record, eligible model selection, typed provider errors, tool allowlists, bounded workflow states and budgets, qualified fallback, and a release manifest with exact model, prompt, policy, retriever, reranker, corpus, tool, and calculation-rule versions.

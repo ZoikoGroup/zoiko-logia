@@ -59,6 +59,18 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: str = ""
     AZURE_OPENAI_API_KEY: str = ""
 
+    # ── Policy-driven model gateway ─────────────────────────────────────
+    # Off preserves the compatibility selector while deployment records are
+    # reviewed and seeded. When enabled, no provider is called unless an
+    # Approved ModelDefinition explicitly permits the task, data class,
+    # processing region, and complete requested tool set.
+    MODEL_GATEWAY_POLICY_ENABLED: bool = False
+    MODEL_GATEWAY_POLICY_VERSION: str = "f7.1"
+    MODEL_GATEWAY_PROCESSING_REGION: str = ""
+    MODEL_GATEWAY_TIMEOUT_SECONDS: float = 30.0
+    MODEL_GATEWAY_TOTAL_TIMEOUT_SECONDS: float = 60.0
+    MODEL_GATEWAY_MAX_PROVIDER_CALLS: int = 2
+
     # ── Infrastructure ──────────────────────────────────────────────────
     OBJECT_STORAGE_URL: str = ""
     CELERY_BROKER_URL: str = ""

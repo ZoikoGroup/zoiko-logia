@@ -64,6 +64,8 @@ from app.orchestration.audit_events import (
 )
 from app.domains.risk_safety.schemas import ClassifyRequest, SafetyDecision
 from app.domains.model_gateway import service as model_gateway_service
+from app.domains.model_gateway.schemas import GatewayContext
+from app.core.config import get_settings
 from app.orchestration.compose import select_prompt
 from app.orchestration.redaction import redact_for_external_exposure
 from app.orchestration.websearch import (
@@ -92,6 +94,7 @@ from app.domains.identity.authorization import (
 )
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 # Massarius™ retrieval and evidence subsystem — Phase 1 control modules
 # (ZL-ENG-03). These wrap/replace the inline licence filtering, bundle
@@ -920,6 +923,24 @@ async def ask_kriton(
     if risk_level in ("ZERO", "LOW") and os.getenv("GROQ_API_KEY") and not gemini_active:
         answer_model = os.getenv("GROQ_FAST_ANSWER_MODEL", "llama-3.1-8b-instant")
 
+    gateway_context = GatewayContext(
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        correlation_id=query_id,
+        task_type=workflow_plan.task_type,
+        data_classification=effective_context.data_classification,
+        processing_region=settings.MODEL_GATEWAY_PROCESSING_REGION,
+        jurisdiction=effective_context.jurisdiction,
+        # No provider-native tool calls are currently exposed. Retrieval,
+        # calculations and charts execute in backend services before this
+        # boundary; when provider tools are added they must be named here and
+        # explicitly allowed by the selected deployment.
+        requested_tools=[],
+        model_transmission_allowed=True,
+        retrieval_version=source_bundle.index_version if source_bundle else None,
+        tool_versions={"calculation": "f5.1"} if deterministic_calculation else {},
+    )
+
     try:
         if prompt:
             prompt_row, composed_text = await metrics.run(
@@ -927,6 +948,7 @@ async def ask_kriton(
                 model_gateway_service.run_test_prompt(
                     db, prompt.id, grounded_input, actor_id, tenant_id,
                     correlation_id=query_id, model=answer_model,
+                    gateway_context=gateway_context,
                 ),
             )
             prompt_id = prompt_row.id
@@ -935,7 +957,9 @@ async def ask_kriton(
             # No approved prompt template seeded — fall back to a direct
             # provider completion so web-grounded answering still works.
             composed_text = await metrics.run(
-                "composition.model", model_gateway_service.run_grounded_completion(grounded_input)
+                "composition.model", model_gateway_service.run_grounded_completion(
+                    grounded_input, db=db, gateway_context=gateway_context,
+                )
             )
 
     except Exception as exc:
