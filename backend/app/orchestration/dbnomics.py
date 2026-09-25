@@ -110,6 +110,25 @@ def _detect_country(query: str) -> str | None:
     return None
 
 
+def canonical_country(name: str) -> str | None:
+    """Canonical country (a key of _ISO3) for a name, alias or ISO-3 code the
+    caller already isolated — e.g. a tool argument — or None if unsupported."""
+    value = name.strip().lower()
+    if value in _ISO3:
+        return value
+    alias = _COUNTRY_ALIASES.get(value)
+    if alias in _ISO3:
+        return alias
+    for country, iso3 in _ISO3.items():
+        if iso3 == value.upper():
+            return country
+    return None
+
+
+def supported_countries() -> list[str]:
+    return sorted(_ISO3)
+
+
 def _detect_countries(query: str) -> list[str]:
     """Return every named country once, in the order mentioned."""
     matches: list[tuple[int, str]] = []
@@ -213,6 +232,52 @@ def _wdi_match(query: str) -> tuple[str, str] | None:
     return None
 
 
+async def _indicator_source(
+    client: httpx.AsyncClient, code: str, label: str, country: str
+) -> WebSource | None:
+    """One World Bank WDI indicator for one canonical country (a key of
+    _ISO3): the publisher first, the DBnomics mirror as fallback, else None."""
+    country_iso3 = _ISO3[country]
+    points = await _fetch_world_bank(client, code, country_iso3)
+    if points:
+        provider = "World Bank (WDI)"
+        url = f"https://data.worldbank.org/indicator/{code}?locations={country_iso3}"
+    else:
+        doc = await _fetch_wdi(client, code, country_iso3)
+        points = _real_points(doc) if doc else []
+        provider = "World Bank (WDI) via DBnomics"
+        url = f"{_dbnomics_base()}/series/WB/WDI/A-{code}-{country_iso3}"
+    if not points:
+        return None
+    tail = points[-_MAX_POINTS:]
+    values_txt = ", ".join(f"{p}: {v:g}" for p, v in tail)
+    return WebSource(
+        title=f"{label} — {country.title()}",
+        url=url,
+        snippet=(f"{provider}. {label} for {country.title()}. "
+                 f"Latest available year: {tail[-1][0]}. Values — {values_txt}."),
+        provider=provider,
+        freshness="historical",
+        observation=LiveObservation(
+            observation_id=f"obs_{uuid.uuid4().hex}", indicator=label,
+            value=str(tail[-1][1]),
+            unit="percent" if "%" in label else "provider-defined",
+            period=str(tail[-1][0]), provider=provider, source_url=url,
+            freshness="historical",
+        ),
+        series=tail,
+    )
+
+
+async def fetch_indicator_sources(code: str, label: str, countries: list[str]) -> list[WebSource | None]:
+    """Structured entry point: one slot per country, in order (None where that
+    country has no data) — what the get_economic_indicator tool calls with the
+    model's typed arguments, and what fetch_stats() calls after parsing the
+    question. Every country must be a key of _ISO3."""
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        return list(await asyncio.gather(*(_indicator_source(client, code, label, c) for c in countries)))
+
+
 def _dbnomics_base() -> str:
     return os.getenv("DBNOMICS_API_BASE_URL", "https://api.db.nomics.world/v22").rstrip("/")
 
@@ -254,40 +319,7 @@ async def fetch_stats(query: str) -> list[WebSource]:
     iso3 = _ISO3.get(country or "", "")
     if indicator and iso3:
         code, label = indicator
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            async def source_for(named_country: str) -> WebSource | None:
-                country_iso3 = _ISO3[named_country]
-                points = await _fetch_world_bank(client, code, country_iso3)
-                if points:
-                    provider = "World Bank (WDI)"
-                    url = f"https://data.worldbank.org/indicator/{code}?locations={country_iso3}"
-                else:
-                    doc = await _fetch_wdi(client, code, country_iso3)
-                    points = _real_points(doc) if doc else []
-                    provider = "World Bank (WDI) via DBnomics"
-                    url = f"{_dbnomics_base()}/series/WB/WDI/A-{code}-{country_iso3}"
-                if not points:
-                    return None
-                tail = points[-_MAX_POINTS:]
-                values_txt = ", ".join(f"{p}: {v:g}" for p, v in tail)
-                return WebSource(
-                    title=f"{label} — {named_country.title()}",
-                    url=url,
-                    snippet=(f"{provider}. {label} for {named_country.title()}. "
-                             f"Latest available year: {tail[-1][0]}. Values — {values_txt}."),
-                    provider=provider,
-                    freshness="historical",
-                    observation=LiveObservation(
-                        observation_id=f"obs_{uuid.uuid4().hex}", indicator=label,
-                        value=str(tail[-1][1]),
-                        unit="percent" if "%" in label else "provider-defined",
-                        period=str(tail[-1][0]), provider=provider, source_url=url,
-                        freshness="historical",
-                    ),
-                    series=tail,
-                )
-
-            sources = await asyncio.gather(*(source_for(c) for c in countries))
+        sources = await fetch_indicator_sources(code, label, countries)
         # A comparison with one missing country must not masquerade as complete.
         if all(sources):
             return [source for source in sources if source is not None]

@@ -74,8 +74,16 @@ async def fetch_fx(query: str) -> list[WebSource]:
     if not (_FX_HINTS.search(query) or len(codes) >= 2):
         return []
 
-    base_cur, quote_curs = codes[0], codes[1:]
-    amount = _find_amount(query)
+    return await fetch_fx_rates(codes[0], codes[1:], _find_amount(query))
+
+
+async def fetch_fx_rates(base_cur: str, quote_curs: list[str], amount: float = 1.0) -> list[WebSource]:
+    """Structured entry point: one WebSource per quote currency, from already
+    known ISO codes — what the get_exchange_rate tool calls with the model's
+    typed arguments, and what fetch_fx() calls after parsing the question.
+    Fails soft to [] like fetch_fx()."""
+    if not quote_curs:
+        return []
     base = _frankfurter_base()
     url = f"{base}/latest?base={base_cur}&symbols={','.join(quote_curs)}"
     try:
