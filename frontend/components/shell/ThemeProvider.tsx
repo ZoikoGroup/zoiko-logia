@@ -1,7 +1,8 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { createContext, useContext, useSyncExternalStore, ReactNode } from "react";
 import { Theme, THEME_COOKIE } from "@/lib/theme";
+import { readCookie, subscribeCookies, writeCookie } from "@/lib/cookie-store";
 
 type ThemeContextValue = {
   theme: Theme;
@@ -11,9 +12,7 @@ type ThemeContextValue = {
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 function readThemeCookie(): Theme | null {
-  if (typeof document === "undefined") return null;
-  const match = document.cookie.match(new RegExp(`(?:^|; )${THEME_COOKIE}=([^;]*)`));
-  return (match ? decodeURIComponent(match[1]) : null) as Theme | null;
+  return readCookie(THEME_COOKIE) as Theme | null;
 }
 
 function systemPrefersDark(): boolean {
@@ -21,17 +20,23 @@ function systemPrefersDark(): boolean {
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
 }
 
-export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>("light");
+function currentTheme(): Theme {
+  return readThemeCookie() ?? (systemPrefersDark() ? "dark" : "light");
+}
 
-  useEffect(() => {
-    setThemeState(readThemeCookie() ?? (systemPrefersDark() ? "dark" : "light"));
-  }, []);
+function serverTheme(): Theme {
+  return "light";
+}
+
+export function ThemeProvider({ children }: { children: ReactNode }) {
+  // "light" during SSR/hydration, then the saved cookie (or the system
+  // preference) — read as an external store rather than copied into state
+  // from an effect.
+  const theme = useSyncExternalStore(subscribeCookies, currentTheme, serverTheme);
 
   function applyTheme(next: Theme) {
     document.documentElement.setAttribute("data-theme", next);
-    document.cookie = `${THEME_COOKIE}=${next}; path=/; max-age=${60 * 60 * 24 * 365}`;
-    setThemeState(next);
+    writeCookie(THEME_COOKIE, next, 60 * 60 * 24 * 365);
   }
 
   function toggleTheme() {

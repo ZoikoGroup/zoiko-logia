@@ -1,11 +1,10 @@
 import uuid
 import time
 import re
-from datetime import datetime
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Tuple, List, Dict, Any
+from typing import List
 
 from app.domains.evaluation.models import (
     EvaluationDataset,
@@ -119,7 +118,7 @@ async def execute_evaluation_run(
     config_hash: str
 ) -> tuple[EvaluationRun, ResultPack]:
     # 1. Fetch dependencies
-    dataset = await get_dataset(db, dataset_id)
+    await get_dataset(db, dataset_id)  # 404s on an unknown dataset
     ts = await get_threshold_set(db, threshold_set_id)
 
     # 2. Query actual cases from the database
@@ -203,6 +202,13 @@ async def execute_evaluation_run(
             "pii_leak": round(pii_leak_rate, 2),
             "secrets_leak": round(secrets_leak_rate, 2),
             "cross_tenant_leak": 0.0,
+            # Both were computed but never reported, so a threshold set
+            # gating on them (restricted_block_rate is the documented
+            # zero-tolerance example) always failed as "metric missing".
+            # Deliberately absent from the simulated fallback below: with no
+            # real cases, a missing safety metric must keep failing closed.
+            "restricted_block_rate": round(restricted_block_rate, 2),
+            "boundary_pass_rate": round(boundary_pass_rate, 2),
         }
     else:
         # Fallback simulation metrics if no cases are registered in DB

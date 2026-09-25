@@ -1,7 +1,6 @@
 import hashlib
 import os
 import sys
-import uuid
 
 import pytest
 from sqlalchemy import select

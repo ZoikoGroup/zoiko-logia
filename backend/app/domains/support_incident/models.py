@@ -31,7 +31,6 @@ class SupportTicket(Base):
 
 
 from sqlalchemy import JSON, Text
-from typing import Optional
 
 class SecurityIncident(Base):
     __tablename__ = "security_incidents"

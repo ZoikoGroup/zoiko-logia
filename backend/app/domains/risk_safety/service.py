@@ -6,7 +6,7 @@ and exact event payloads per ZL-T0-04 Section 15.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -135,7 +135,6 @@ def validate_output(text: str, db: Optional[Session] = None, answer_id: str = "a
 
     violation_dicts = [{"phrase": v.phrase_matched, "category": v.category, "severity": v.severity} for v in violations]
     has_soft = any(v.severity == "soft" for v in violations)
-    has_hard = any(v.severity == "hard" for v in violations)
 
     if is_safe and has_soft:
         cleaned = professional_boundary.append_boundary_notice(text)
@@ -239,7 +238,6 @@ def resolve_escalation(
 
 def get_escalation_stats(db: Session) -> dict:
     """Summary counts for the escalation queue dashboard (ZL-T0-04 §10)."""
-    from sqlalchemy import func
     total = db.query(EscalationCase).count()
     pending = db.query(EscalationCase).filter(EscalationCase.status == EscalationStatus.PENDING).count()
     under_review = db.query(EscalationCase).filter(EscalationCase.status == EscalationStatus.UNDER_REVIEW).count()
@@ -273,7 +271,6 @@ def get_sla_breached_cases(db: Session) -> list[EscalationCase]:
 
 def create_safety_override(db: Session, payload) -> SafetyOverride:
     """Create a narrowing-only time-bounded override (max 72h, ZL-T0-04 §10.1)."""
-    from app.domains.risk_safety.schemas import OverrideRequest
     duration = min(payload.duration_hours, 72)  # Hard cap at spec maximum
     now = _utcnow()
     override = SafetyOverride(

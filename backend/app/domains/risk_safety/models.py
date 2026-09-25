@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Column, String, DateTime, Float, Text, JSON, Boolean, Enum, Integer,
+    Column, String, DateTime, Text, JSON, Boolean, Enum, Integer,
 )
 from app.db.base import Base
 

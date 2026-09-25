@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import inspect
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, rsa

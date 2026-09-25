@@ -20,11 +20,9 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
 from app.domains.audit_ledger.chain_integrity import compute_chain_hash, compute_payload_hash
 from app.domains.audit_ledger.models import AuditEvent, _event_id, _now
 
-settings = get_settings()
 
 # A transient DB fault mid-request has two flavours, and both are recoverable:
 #   1. Supabase's pooler reaps the pooled connection while it sits idle during
@@ -264,7 +262,10 @@ async def record_event_async(db: AsyncSession, *, tenant_id: str = "GLOBAL_CONTR
     # tenant_id here, so re-asserting it right after commit is free
     # insurance against exactly that race, regardless of which connection
     # the pool hands back next.
-    if not settings.is_sqlite:
+    # Decided by the session's own dialect, not settings.DATABASE_URL: a
+    # session bound elsewhere (the SQLite test databases, while .env points
+    # at Postgres) has no set_config() — and no RLS to re-assert.
+    if db.sync_session.get_bind().dialect.name == "postgresql":
         await _execute_reconnect(
             db,
             text("SELECT set_config('app.tenant_id', :tenant_id, false)"),

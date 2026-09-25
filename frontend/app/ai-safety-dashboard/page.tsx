@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/governance/PageHeader";
-import { Card } from "@/components/governance/Card";
 import { Pill } from "@/components/governance/Pill";
 import {
   ShieldCheck,
@@ -39,7 +38,7 @@ const EVENT_TONES: Record<string, "ok" | "warn" | "bad" | "info"> = {
   safety_refusal_returned: "warn",
 };
 
-function computeStats(events: SafetyEvent[], escalations: Escalation[]) {
+function computeStats(events: SafetyEvent[], escalations: Escalation[], now: number) {
   const classified = events.filter((e) => e.event_type === "risk_classification_applied").length;
   const blocked = events.filter((e) => e.event_type === "restricted_topic_blocked").length;
   const uncertain = events.filter((e) => e.event_type === "risk_classification_uncertain").length;
@@ -49,30 +48,41 @@ function computeStats(events: SafetyEvent[], escalations: Escalation[]) {
   ).length;
   const overSla = escalations.filter((e) => {
     if (!e.sla_deadline) return false;
-    return new Date(e.sla_deadline).getTime() < Date.now() && e.status !== "RESOLVED";
+    return new Date(e.sla_deadline).getTime() < now && e.status !== "RESOLVED";
   }).length;
 
   return { classified, blocked, uncertain, incidents, pendingReview, overSla };
+}
+
+function fetchSafetyData(): Promise<[SafetyEvent[], Escalation[]]> {
+  return Promise.all([getSafetyEvents(), getEscalations()]);
 }
 
 export default function AiSafetyDashboardPage() {
   const [events, setEvents] = useState<SafetyEvent[]>([]);
   const [escalations, setEscalations] = useState<Escalation[]>([]);
   const [loading, setLoading] = useState(true);
+  // When the data was fetched — SLA "overdue" is judged against this rather
+  // than Date.now() during render, which would make rendering impure.
+  const [loadedAt, setLoadedAt] = useState(0);
 
-  async function load() {
-    setLoading(true);
-    const [evts, escs] = await Promise.all([getSafetyEvents(), getEscalations()]);
+  function applyData([evts, escs]: [SafetyEvent[], Escalation[]]) {
     setEvents(evts);
     setEscalations(escs);
+    setLoadedAt(Date.now());
     setLoading(false);
   }
 
+  function refresh() {
+    setLoading(true);
+    void fetchSafetyData().then(applyData);
+  }
+
   useEffect(() => {
-    load();
+    void fetchSafetyData().then(applyData);
   }, []);
 
-  const stats = computeStats(events, escalations);
+  const stats = computeStats(events, escalations, loadedAt);
 
   return (
     <main className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -167,7 +177,7 @@ export default function AiSafetyDashboardPage() {
                 </div>
               </div>
               <button
-                onClick={load}
+                onClick={refresh}
                 className="flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-semibold text-ink hover:bg-soft transition-all duration-200 cursor-pointer shadow-sm"
               >
                 <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
@@ -265,7 +275,7 @@ export default function AiSafetyDashboardPage() {
                 {escalations
                   .filter((e) => e.status !== "RESOLVED" && e.status !== "REFUSED")
                   .map((esc) => {
-                    const overdue = esc.sla_deadline && new Date(esc.sla_deadline).getTime() < Date.now();
+                    const overdue = esc.sla_deadline && new Date(esc.sla_deadline).getTime() < loadedAt;
                     return (
                       <div
                         key={esc.id}
