@@ -18,8 +18,17 @@ def _headers() -> dict:
     return headers
 
 
+def _looks_masked(key: str) -> bool:
+    # The Supabase dashboard displays secret keys shortened with an ellipsis
+    # (sb_secret_abcd…wxyz). Copying that display value gives a key that can
+    # never authenticate — and whose "…" crashes header encoding as a raw
+    # UnicodeEncodeError 500 instead of a clear configuration error.
+    return "…" in key or "..." in key
+
+
 def is_configured() -> bool:
-    return bool(settings.SUPABASE_URL and settings.SUPABASE_SERVICE_ROLE_KEY)
+    key = settings.SUPABASE_SERVICE_ROLE_KEY
+    return bool(settings.SUPABASE_URL and key and not _looks_masked(key))
 
 
 class SupabaseNotConfiguredError(RuntimeError):
@@ -31,6 +40,12 @@ class SupabaseNotConfiguredError(RuntimeError):
 
 
 def _require_configured() -> None:
+    if settings.SUPABASE_SERVICE_ROLE_KEY and _looks_masked(settings.SUPABASE_SERVICE_ROLE_KEY):
+        raise SupabaseNotConfiguredError(
+            "SUPABASE_SERVICE_ROLE_KEY in backend/.env is the dashboard's masked display "
+            "value (contains '…'). Copy the full secret key from Supabase → Project "
+            "Settings → API Keys."
+        )
     if not is_configured():
         raise SupabaseNotConfiguredError(
             "Supabase admin API not configured — set SUPABASE_URL and "

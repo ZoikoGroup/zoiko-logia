@@ -1,9 +1,13 @@
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import supabase_admin
 from app.domains.identity.models import Role, Tenant, User
 from app.domains.identity.schemas import ProvisionRequest, UserCreateRequest
+
+logger = logging.getLogger(__name__)
 
 
 async def get_user_by_id(db: AsyncSession, user_id: str) -> User | None:
@@ -46,15 +50,39 @@ async def create_user(db: AsyncSession, tenant_id: str, payload: UserCreateReque
     return user
 
 
-async def provision_profile(db: AsyncSession, user_id: str, email: str, payload: ProvisionRequest) -> User:
+async def provision_profile(
+    db: AsyncSession,
+    user_id: str,
+    email: str,
+    payload: ProvisionRequest,
+    *,
+    token_tenant_id: str = "",
+    token_role: str = "",
+) -> User:
     """Idempotent upsert called by the frontend right after a Supabase
     sign-up/first OAuth login. First call creates the Tenant (from
     company_name) + User row and stamps tenant_id/role into the Supabase
-    user's app_metadata. Later calls just return the existing row —
+    user's app_metadata. Later calls return the existing row —
     provisioning must never create a second Tenant/User for the same
-    Supabase auth user."""
+    Supabase auth user.
+
+    Later calls also repair the stamp when the caller's token disagrees with
+    the profile (token_tenant_id/token_role are the verified token's claims).
+    The first call commits the User row BEFORE stamping app_metadata, so a
+    failed stamp (Admin API down, bad service-role key) used to leave the
+    account permanently without a tenant in its tokens — and every
+    tenant-scoped RLS write then failed for that user. A repair failure is
+    logged, never raised: an existing user must still be able to sign in."""
     existing = await get_user_by_id(db, user_id)
     if existing is not None:
+        if (token_tenant_id, token_role) != (existing.tenant_id, existing.role):
+            try:
+                supabase_admin.update_app_metadata(existing.id, existing.tenant_id, existing.role)
+            except Exception as exc:  # noqa: BLE001 — sign-in must not depend on the repair
+                logger.warning(
+                    "Could not repair app_metadata for user %s (%s); tenant-scoped writes "
+                    "will fail until it is stamped", existing.id, type(exc).__name__,
+                )
         return existing
 
     tenant = Tenant(name=payload.company_name or "")

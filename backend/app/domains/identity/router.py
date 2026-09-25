@@ -54,7 +54,10 @@ async def provision(
 
     was_first_provision = (await get_user_by_id(db, claims.sub)) is None
     try:
-        user = await provision_profile(db, claims.sub, claims.email, payload)
+        user = await provision_profile(
+            db, claims.sub, claims.email, payload,
+            token_tenant_id=claims.tenant_id, token_role=claims.role,
+        )
     except supabase_admin.SupabaseNotConfiguredError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
