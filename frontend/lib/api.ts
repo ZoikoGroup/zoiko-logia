@@ -51,6 +51,9 @@ export async function provisionProfile(accessToken: string, payload: ProvisionRe
 export async function getMe(token: string): Promise<UserPublic> {
   const res = await fetch(`${API_URL}/auth/me`, {
     headers: { Authorization: `Bearer ${token}` },
+    // Bounded so an unreachable backend can't hold the role-gated nav on its
+    // loading state indefinitely; a timeout falls back like any other failure.
+    signal: AbortSignal.timeout(8000),
   });
 
   if (!res.ok) {

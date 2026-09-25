@@ -413,7 +413,7 @@ async def ask_kriton(
                 query=request.query,
                 jurisdiction=request.jurisdiction,
                 tenant_id=tenant_id,
-                framework=effective_context.framework if effective_context else "",
+                framework=(effective_context.framework or "") if effective_context else "",
                 effective_date=effective_context.period_end if effective_context else None,
             ),
         )
@@ -438,7 +438,7 @@ async def ask_kriton(
                 preliminary_bundle.sources,
                 tenant_id=tenant_id,
                 jurisdiction=request.jurisdiction,
-                framework=effective_context.framework if effective_context else "",
+                framework=(effective_context.framework or "") if effective_context else "",
                 effective_date=effective_context.period_end if effective_context else None,
             ),
         )
@@ -644,6 +644,7 @@ async def ask_kriton(
             tenant_id=tenant_id, risk_level=risk_level,
             confidence_state=effective_confidence,
             reason=f"Risk: {risk_level} | Confidence: {effective_confidence} | Mode: {request.mode}",
+            query_text=request.query,
         )
         await audit_human_review_created(
             db, query_id=query_id, correlation_id=correlation_id,
@@ -1076,6 +1077,7 @@ async def ask_kriton(
                 tenant_id=tenant_id, risk_level=risk_level,
                 confidence_state=effective_confidence,
                 reason=f"Composition rejected: {'; '.join(validation.failures[:2])}",
+                query_text=request.query,
             )
             await audit_human_review_created(
                 db, query_id=query_id, correlation_id=correlation_id,
