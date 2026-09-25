@@ -1221,9 +1221,16 @@ async def ask_kriton(
             "This response is for educational purposes only. Consult a qualified professional."
         )
     if effective_confidence == CONF_INSUFFICIENT:
+        # Must say what the answer actually rests on: with no citations at
+        # all (e.g. web search unreachable) it is the model's own knowledge,
+        # which can be outdated — the reader needs to know that.
         limitations.append(
             "No matching source was found in your governed source library; this answer is "
             "based on live data and web sources. Verify figures against the official source."
+            if rag_citations else
+            "No sources could be retrieved for this answer; it is based on the model's general "
+            "knowledge and may be outdated or incorrect. Verify against the official source "
+            "before relying on it."
         )
 
     # Off-domain refusal: when the domain gate declined the question (it is not

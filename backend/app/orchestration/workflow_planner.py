@@ -25,7 +25,14 @@ _POLICY = re.compile(
 _CALCULATE = re.compile(r"\b(calculate|compute|percentage|ratio|growth|margin|total)\w*\b", re.I)
 _CHART = re.compile(r"\b(chart|graph|plot|visuali[sz]e|trend)\w*\b", re.I)
 _EXECUTION = re.compile(r"\b(reconcile|compare|extract|calculate|compute|review|test)\w*\b", re.I)
-_EDUCATIONAL = re.compile(r"^\s*(what is|what are|explain|define|how does|why does)\b", re.I)
+# "How is goodwill impairment tested under IAS 36?" is a learning question,
+# but "how is" was missing here, so it was treated as professional policy
+# research and asked for an engagement, jurisdiction and period end date.
+_EDUCATIONAL = re.compile(
+    r"^\s*(what is|what are|what does|explain|define|describe|"
+    r"how does|how do|how is|how are|how to|why does|why is|why are|when is|when does)\b",
+    re.I,
+)
 
 
 def _step(capability: str, reason: str) -> CapabilityStep:

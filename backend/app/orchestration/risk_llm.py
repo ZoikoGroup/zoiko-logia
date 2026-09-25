@@ -51,6 +51,19 @@ _SYSTEM = (
 )
 
 
+def _token_budget(model: str) -> dict:
+    """Completion limits for a one-word answer. Reasoning models (gpt-oss,
+    qwen3, deepseek-r1) spend completion tokens thinking before they answer:
+    with the old max_tokens=4 openai/gpt-oss-20b returned empty content
+    (finish_reason=length) on EVERY question, so classification silently fell
+    back to the local ML model and everything came out LOW. They get low
+    reasoning effort and room to finish; other models keep the tight cap
+    (and are never sent reasoning_effort, which they reject)."""
+    if any(marker in model.lower() for marker in ("gpt-oss", "qwen3", "deepseek-r1")):
+        return {"max_tokens": 256, "reasoning_effort": "low"}
+    return {"max_tokens": 4}
+
+
 async def classify_risk(query: str) -> Optional[str]:
     """Return 'ZERO' | 'LOW' | 'MEDIUM' | 'HIGH' for the question, or None if
     the LLM is unavailable/errors (caller then keeps the ML classifier result)."""
@@ -71,7 +84,7 @@ async def classify_risk(query: str) -> Optional[str]:
                 {"role": "user", "content": query},
             ],
             temperature=0.0,
-            max_tokens=4,
+            **_token_budget(model),
         ), timeout=8)
         raw = (resp.choices[0].message.content or "").strip().upper()
     except Exception:
