@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 CLASSIFIER_VERSION = "rc_1.0"
-POLICY_VERSION = "pm_1.0"
+POLICY_VERSION = "pm_1.1"  # pm_1.1: LOW + insufficient answers with caveat
 
 # Route constants
 ROUTE_LLM = "LLM"
@@ -67,7 +67,13 @@ _MATRIX: dict[tuple[str, str], str] = {
     # LOW risk
     (RISK_LOW, CONF_SUFFICIENT):    ROUTE_LLM,
     (RISK_LOW, CONF_LIMITED):       ROUTE_LLM,            # with mandatory caveats
-    (RISK_LOW, CONF_INSUFFICIENT):  ROUTE_CLARIFICATION,
+    # pm_1.1 (product decision 2026-09-25): answered with a caveat instead of
+    # a clarification. LOW risk is non-advisory by definition, and answers are
+    # grounded in live data and web sources the governed library does not
+    # hold (economic statistics, exchange rates, market data); asking for a
+    # jurisdiction/framework could never supply what was missing. MEDIUM and
+    # HIGH with insufficient evidence still go to human review.
+    (RISK_LOW, CONF_INSUFFICIENT):  ROUTE_LLM,            # with mandatory caveats
 
     # MEDIUM risk
     (RISK_MEDIUM, CONF_SUFFICIENT):    ROUTE_LLM,          # disclaimer_required = True
@@ -139,7 +145,7 @@ def resolve_route(
 
     disclaimer_required = (
         risk_level == RISK_MEDIUM
-        or confidence_state == CONF_LIMITED
+        or confidence_state in (CONF_LIMITED, CONF_INSUFFICIENT)
     )
 
     clarification_message: Optional[str] = None

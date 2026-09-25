@@ -1220,6 +1220,11 @@ async def ask_kriton(
         limitations.append(
             "This response is for educational purposes only. Consult a qualified professional."
         )
+    if effective_confidence == CONF_INSUFFICIENT:
+        limitations.append(
+            "No matching source was found in your governed source library; this answer is "
+            "based on live data and web sources. Verify figures against the official source."
+        )
 
     # Off-domain refusal: when the domain gate declined the question (it is not
     # about accounting/tax/payroll/finance/audit/bookkeeping/commerce), the

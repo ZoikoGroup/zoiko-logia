@@ -30,7 +30,7 @@ async def retrieval_db():
 
 async def _source(
     db, *, title: str, text: str, tenant_id: str = "tenant-a",
-    retrieval: bool = True, transmission: bool = True,
+    retrieval: bool = True, transmission: bool = True, rights: bool = True,
 ):
     source = Source(
         tenant_id=tenant_id, category="standards", title=title,
@@ -53,7 +53,7 @@ async def _source(
         content_hash=hashlib.sha256(text.encode()).hexdigest(), language="en",
     )
     db.add(passage)
-    for operation, allowed in (
+    for operation, allowed in () if not rights else (
         ("retrieval", retrieval), ("model_transmission", transmission),
         ("display", True), ("summary", True),
     ):
@@ -160,3 +160,45 @@ async def test_conflicting_selected_versions_are_explicit(retrieval_db):
 
     assert bundle.confidence_state == "conflicting_sources"
     assert set(bundle.conflict_version_ids) == {first_version.id, second_version.id}
+
+
+
+# ── Restricted vs insufficient (a library with no usable sources) ────────────
+
+async def test_library_with_unrecorded_rights_is_insufficient_not_restricted(retrieval_db):
+    """Every source excluded as RIGHT_UNKNOWN used to mark EVERY question
+    restricted_sources — routed to refusal whatever the topic."""
+    await _source(retrieval_db, title="VAT validation", text="VAT numbers.", rights=False)
+    await _source(retrieval_db, title="Exchange rates", text="Treasury rates.", rights=False)
+
+    bundle = await build_source_bundle(
+        retrieval_db, query="India unemployment rate", jurisdiction="GB",
+        framework="IFRS", tenant_id="tenant-a",
+    )
+    assert bundle.eligible_source_count == 0
+    assert {item.reason_code for item in bundle.excluded_evidence} == {"RIGHT_UNKNOWN"}
+    assert bundle.confidence_state == "insufficient"
+
+
+async def test_explicitly_denied_relevant_source_is_restricted(retrieval_db):
+    await _source(
+        retrieval_db, title="Revenue recognition commentary",
+        text="Revenue commentary.", retrieval=False,
+    )
+    bundle = await build_source_bundle(
+        retrieval_db, query="revenue recognition", jurisdiction="GB",
+        framework="IFRS", tenant_id="tenant-a",
+    )
+    assert bundle.confidence_state == "restricted_sources"
+
+
+async def test_explicitly_denied_unrelated_source_does_not_restrict(retrieval_db):
+    await _source(
+        retrieval_db, title="Revenue recognition commentary",
+        text="Revenue commentary.", retrieval=False,
+    )
+    bundle = await build_source_bundle(
+        retrieval_db, query="India unemployment rate", jurisdiction="GB",
+        framework="IFRS", tenant_id="tenant-a",
+    )
+    assert bundle.confidence_state == "insufficient"
