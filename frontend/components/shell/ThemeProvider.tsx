@@ -25,6 +25,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>("light");
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- document is unavailable during SSR prerender; the cookie is read once on mount, after hydration
     setThemeState(readThemeCookie() ?? (systemPrefersDark() ? "dark" : "light"));
   }, []);
 

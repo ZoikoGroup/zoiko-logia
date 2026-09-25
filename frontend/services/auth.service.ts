@@ -1,5 +1,5 @@
-import { supabase } from "@/lib/supabase";
-import { provisionProfile } from "@/lib/api";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import { ApiError, provisionProfile } from "@/lib/api";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // >=8 chars, at least one uppercase, one lowercase, one digit.
@@ -48,6 +48,12 @@ export class AuthError extends Error {}
  * user_metadata via signUp's `options.data` so they survive to the first
  * real sign-in, where they get handed to the backend's /auth/provision. */
 export async function signUp(fields: SignUpFields): Promise<void> {
+  if (!isSupabaseConfigured()) {
+    throw new AuthError(
+      "Signup is unavailable — Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL " +
+        "and NEXT_PUBLIC_SUPABASE_ANON_KEY in frontend/.env and restart the dev server."
+    );
+  }
   const { error } = await supabase.auth.signUp({
     email: fields.email,
     password: fields.password,
@@ -60,10 +66,21 @@ export async function signUp(fields: SignUpFields): Promise<void> {
     },
   });
   if (error) {
-    if (error.message.toLowerCase().includes("already registered") || error.message.toLowerCase().includes("already exists")) {
+    const code = error.code?.toLowerCase() ?? "";
+    const message = error.message ?? "";
+    if (
+      code.includes("already") ||
+      code.includes("exists") ||
+      message.toLowerCase().includes("already registered") ||
+      message.toLowerCase().includes("already exists")
+    ) {
       throw new AuthError("An account with this email already exists.");
     }
-    throw new AuthError("Could not create your account. Please try again.");
+    // Surface the real Supabase error (verification is handled separately
+    // above) — a "network request failed" here means the Supabase URL/key is
+    // wrong or the project is unreachable, and masking that behind a generic
+    // message is exactly what made this failure look like a signup bug.
+    throw new AuthError(`Signup failed: ${message}`);
   }
 }
 
@@ -72,6 +89,12 @@ export async function signUp(fields: SignUpFields): Promise<void> {
  * next backend call carries the tenant_id/role /auth/provision just wrote
  * into app_metadata. */
 export async function signInWithPassword(email: string, password: string): Promise<void> {
+  if (!isSupabaseConfigured()) {
+    throw new AuthError(
+      "Sign-in is unavailable — Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL " +
+        "and NEXT_PUBLIC_SUPABASE_ANON_KEY in frontend/.env and restart the dev server."
+    );
+  }
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
   if (error) {
@@ -83,16 +106,63 @@ export async function signInWithPassword(email: string, password: string): Promi
     throw new AuthError("Please verify your email before signing in.");
   }
 
-  await provisionAndRefresh(data.session.access_token, data.user.user_metadata ?? {});
+  if (!data.session) {
+    throw new AuthError("Sign-in did not create a session. Please try again.");
+  }
+
+  try {
+    await provisionAndRefresh(data.session.access_token, data.user.user_metadata ?? {});
+  } catch (err) {
+    // Provisioning fails for two very different reasons, and the UI must not
+    // squash them into one:
+    //   - transport/5xx     → the backend itself is unreachable (was down,
+    //                         wrong port, restarting) — say so explicitly.
+    //   - 401/403 from the  → the claiming token was rejected (session
+    //     backend              invalid/expired, or the project's Supabase
+    //                         signing keys changed mid-session).
+    // ApiError keeps the HTTP status; a raw TypeError means fetch never got a
+    // response at all. Everything maps to an AuthError so the caller surfaces
+    // the true cause instead of its "could not reach the server" fallback.
+    if (err instanceof ApiError) {
+      if (err.status === 0 || err.status >= 500) {
+        throw new AuthError(
+          "The ZoikoLogia backend could not be reached. Make sure it is running on port 8010, then sign in again.",
+        );
+      }
+      throw new AuthError(
+        err.status === 401 || err.status === 403
+          ? "Your session could not be validated by the server. Please sign in again."
+          : "Sign-in could not be completed on the server. Please try again later.",
+      );
+    }
+    if (err instanceof TypeError) {
+      throw new AuthError(
+        "The ZoikoLogia backend could not be reached. Make sure it is running on port 8010, then sign in again.",
+      );
+    }
+    throw err;
+  }
 }
 
 export async function signInWithGoogle(): Promise<void> {
-  const { error } = await supabase.auth.signInWithOAuth({
+  if (!isSupabaseConfigured()) {
+    throw new AuthError(
+      "Google sign-in is unavailable — Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL " +
+        "and NEXT_PUBLIC_SUPABASE_ANON_KEY in frontend/.env and restart the dev server."
+    );
+  }
+  const { error, data } = await supabase.auth.signInWithOAuth({
     provider: "google",
     options: { redirectTo: `${window.location.origin}/auth/callback` },
   });
   if (error) {
-    throw new AuthError("Could not start Google sign-in. Please try again.");
+    throw new AuthError(`Could not start Google sign-in: ${error.message}`);
+  }
+  // When signInWithOAuth finishes without navigating (e.g. the SDK falls back
+  // to returning a URL), hand the URL to the browser explicitly so the OAuth
+  // redirect actually starts instead of leaving the button on "Redirecting...".
+  if (!error && data?.url) {
+    window.location.assign(data.url);
   }
 }
 
