@@ -2,10 +2,13 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.config import get_settings
 from app.domains.audit_ledger.event_envelope import record_event_async
 from app.domains.documents import service as documents_service
+from app.domains.documents import storage as document_storage
 from app.domains.documents.extract import SUPPORTED_EXTENSIONS
 from app.domains.documents.models import STATUS_READY
+from app.domains.documents.schemas import DocumentReviewRequest
 from app.domains.identity.models import User
 from app.domains.identity.rbac import get_current_user
 from app.domains.identity.authorization import DOCUMENT_READ, DOCUMENT_WRITE, authorize
@@ -26,6 +29,7 @@ from app.domains.kriton_workspace.service import (
 )
 
 router = APIRouter(prefix="/kriton-workspace", tags=["kriton_workspace"])
+settings = get_settings()
 
 _ALLOWED_ATTACHMENT_EXTENSIONS = SUPPORTED_EXTENSIONS
 _MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024  # 20MB per file
@@ -87,15 +91,38 @@ async def upload_attachment(
     if len(content) > _MAX_ATTACHMENT_BYTES:
         raise HTTPException(status_code=413, detail="File exceeds the 20MB upload limit")
 
-    result = await documents_service.ingest_document(
-        db,
-        tenant_id=current_user.tenant_id,
-        user_id=current_user.id,
-        engagement_id=engagement_id,
-        filename=name,
-        extension=suffix,
-        data=content,
-    )
+    if settings.DOCUMENT_ASYNC_INGESTION and document_storage.is_configured():
+        staged = False
+        try:
+            result = await documents_service.stage_document(
+                db, tenant_id=current_user.tenant_id, user_id=current_user.id,
+                engagement_id=engagement_id, filename=name, extension=suffix, data=content,
+            )
+            staged = True
+        except RuntimeError:
+            result = await documents_service.ingest_document(
+                db, tenant_id=current_user.tenant_id, user_id=current_user.id,
+                engagement_id=engagement_id, filename=name, extension=suffix, data=content,
+            )
+        if staged:
+            try:
+                from app.jobs.celery_app import celery_app
+                celery_app.send_task(
+                    "documents.process",
+                    args=[result.document_id, current_user.tenant_id, current_user.id],
+                    task_id=result.job_id,
+                )
+            except Exception:
+                # Broker outage must not strand an upload in pending forever.
+                result = await documents_service.process_staged_document(
+                    db, document_id=result.document_id,
+                    tenant_id=current_user.tenant_id, user_id=current_user.id,
+                )
+    else:
+        result = await documents_service.ingest_document(
+            db, tenant_id=current_user.tenant_id, user_id=current_user.id,
+            engagement_id=engagement_id, filename=name, extension=suffix, data=content,
+        )
 
     # Audited with the real outcome. A failed extraction is recorded as failed
     # rather than as an upload that happened to produce zero chunks.
@@ -105,6 +132,10 @@ async def upload_attachment(
         event_name=(
             "kriton_workspace.attachment_indexed"
             if result.status == STATUS_READY
+            else "kriton_workspace.attachment_queued"
+            if result.status == "pending"
+            else "kriton_workspace.attachment_review_required"
+            if result.status == "needs_review"
             else "kriton_workspace.attachment_rejected"
         ),
         emitting_service="kriton_workspace",
@@ -128,6 +159,10 @@ async def upload_attachment(
         "chunk_count": result.chunk_count,
         "char_count": result.char_count,
         "failure_reason": result.failure_reason,
+        "job_id": result.job_id,
+        "extraction_method": result.extraction_method,
+        "coverage_ratio": result.coverage_ratio,
+        "extraction_confidence": result.extraction_confidence,
     }
 
 
@@ -157,10 +192,63 @@ async def list_attachments(
             "chunk_count": d.chunk_count,
             "size_bytes": d.size_bytes,
             "failure_reason": d.failure_reason,
+            "job_id": d.ingestion_job_id,
+            "extraction_method": d.extraction_method,
+            "coverage_ratio": d.coverage_ratio,
+            "extraction_confidence": d.extraction_confidence,
+            "review_reason": d.review_reason,
             "created_at": d.created_at.isoformat() if d.created_at else None,
         }
         for d in rows
     ]
+
+
+@router.get("/attachments/{document_id}/review")
+async def get_attachment_review(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    chunks = await documents_service.list_review_chunks(
+        db, document_id=document_id, tenant_id=current_user.tenant_id,
+        user_id=current_user.id,
+    )
+    if not chunks:
+        raise HTTPException(status_code=404, detail="Reviewable document not found")
+    return [{
+        "chunk_id": chunk.id, "ordinal": chunk.ordinal,
+        "locator": chunk.locator, "location": chunk.location,
+        "original_content": chunk.content,
+        "corrected_content": chunk.corrected_content,
+        "confidence": chunk.extraction_confidence,
+    } for chunk in chunks]
+
+
+@router.post("/attachments/{document_id}/review")
+async def review_attachment(
+    document_id: str,
+    payload: DocumentReviewRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    try:
+        result = await documents_service.review_document(
+            db, document_id=document_id, tenant_id=current_user.tenant_id,
+            user_id=current_user.id, reviewer_id=current_user.id,
+            approve=payload.approve, reason=payload.reason,
+            corrections=[item.model_dump() for item in payload.corrections],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await record_event_async(
+        db, tenant_id=current_user.tenant_id,
+        event_name="kriton_workspace.attachment_reviewed",
+        emitting_service="kriton_workspace", actor_id=current_user.id,
+        subject_type="attachment", subject_id=document_id,
+        payload={"approved": payload.approve, "correction_count": len(payload.corrections)},
+    )
+    return {"document_id": document_id, "status": result.status,
+            "chunk_count": result.chunk_count, "review_reason": payload.reason}
 
 
 @router.delete("/attachments/{document_id}")

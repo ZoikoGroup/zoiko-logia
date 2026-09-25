@@ -48,3 +48,7 @@ slowapi
 # under pytest as well as standalone via their own main().
 pytest
 pytest-asyncio
+
+# Durable background document ingestion (F6)
+celery[redis]
+redis

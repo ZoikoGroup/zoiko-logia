@@ -28,6 +28,7 @@ import asyncio
 import hashlib
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from sqlalchemy import delete as sa_delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,8 +37,12 @@ from app.core.config import get_settings
 from app.domains.documents import storage
 from app.domains.documents.chunker import chunk_segments
 from app.domains.documents.extract import ExtractionError, extract
+from app.domains.documents.ingestion_agent import PARSER_VERSION, execute_plan
 from app.domains.documents.models import (
+    STATUS_EXTRACTING,
     STATUS_FAILED,
+    STATUS_NEEDS_REVIEW,
+    STATUS_PENDING,
     STATUS_READY,
     DocumentChunk,
     UserDocument,
@@ -115,6 +120,10 @@ class IngestResult:
     chunk_count: int
     char_count: int
     failure_reason: str | None = None
+    job_id: str | None = None
+    extraction_method: str = "pending"
+    coverage_ratio: float = 0.0
+    extraction_confidence: float = 0.0
 
 
 def _query_terms(query: str) -> list[str]:
@@ -143,6 +152,7 @@ async def ingest_document(
     filename: str,
     extension: str,
     data: bytes,
+    document_id: str | None = None,
 ) -> IngestResult:
     """Extract, chunk and store one uploaded file.
 
@@ -151,25 +161,38 @@ async def ingest_document(
     PDF yielded no text, because the alternative is an answer that quietly
     ignores the document they just attached.
     """
-    document = UserDocument(
-        tenant_id=tenant_id,
-        user_id=user_id,
-        engagement_id=engagement_id,
-        filename=filename,
-        extension=extension,
-        size_bytes=len(data),
-        content_sha256=hashlib.sha256(data).hexdigest(),
-    )
-    db.add(document)
-    await db.flush()          # assigns document.id before it is used below
+    if document_id:
+        row = await db.execute(select(UserDocument).where(
+            UserDocument.id == document_id,
+            UserDocument.tenant_id == tenant_id,
+            UserDocument.user_id == user_id,
+        ))
+        document = row.scalar_one_or_none()
+        if document is None:
+            raise ValueError("Staged document not found")
+        await db.execute(sa_delete(DocumentChunk).where(DocumentChunk.document_id == document.id))
+    else:
+        document = UserDocument(
+            tenant_id=tenant_id, user_id=user_id, engagement_id=engagement_id,
+            filename=filename, extension=extension, size_bytes=len(data),
+            content_sha256=hashlib.sha256(data).hexdigest(),
+        )
+        db.add(document)
+        await db.flush()
+    document.status = STATUS_EXTRACTING
+    document.parser_version = PARSER_VERSION
 
     try:
         # PDF/Office parsing and chunk construction are synchronous CPU/file
         # work. Run both in a worker thread so a large upload cannot freeze the
         # FastAPI event loop and delay unrelated answer streams.
-        chunks = await asyncio.to_thread(
-            lambda: chunk_segments(extract(data, extension))
-        )
+        outcome = await asyncio.to_thread(execute_plan, data, extension)
+        chunks = chunk_segments(outcome.segments)
+        document.processing_plan = outcome.plan_json()
+        document.extraction_method = outcome.method
+        document.coverage_ratio = outcome.coverage_ratio
+        document.extraction_confidence = outcome.confidence
+        document.review_reason = outcome.review_reason
     except ExtractionError as exc:
         document.status = STATUS_FAILED
         document.failure_reason = str(exc)
@@ -187,6 +210,29 @@ async def ingest_document(
         return IngestResult(
             document_id=document.id, filename=filename, status=STATUS_FAILED,
             chunk_count=0, char_count=0, failure_reason=document.failure_reason,
+        )
+
+    if outcome.status == STATUS_NEEDS_REVIEW:
+        for chunk in chunks[:MAX_CHUNKS_PER_DOCUMENT]:
+            db.add(DocumentChunk(
+                document_id=document.id, tenant_id=tenant_id, user_id=user_id,
+                engagement_id=engagement_id, ordinal=chunk.ordinal,
+                content=chunk.content, locator=chunk.locator,
+                location={"locator": chunk.locator},
+                extraction_confidence=outcome.confidence,
+            ))
+        document.status = STATUS_NEEDS_REVIEW
+        document.failure_reason = outcome.review_reason
+        document.chunk_count = min(len(chunks), MAX_CHUNKS_PER_DOCUMENT)
+        document.char_count = sum(len(c.content) for c in chunks[:MAX_CHUNKS_PER_DOCUMENT])
+        document.processed_at = datetime.now(timezone.utc)
+        await db.commit()
+        return IngestResult(
+            document_id=document.id, filename=filename, status=STATUS_NEEDS_REVIEW,
+            chunk_count=document.chunk_count, char_count=document.char_count,
+            failure_reason=outcome.review_reason,
+            job_id=document.ingestion_job_id, extraction_method=outcome.method,
+            coverage_ratio=outcome.coverage_ratio, extraction_confidence=outcome.confidence,
         )
 
     if not chunks:
@@ -211,9 +257,12 @@ async def ingest_document(
             ordinal=chunk.ordinal,
             content=chunk.content,
             locator=chunk.locator,
+            location={"locator": chunk.locator},
+            extraction_confidence=outcome.confidence,
         ))
 
     document.status = STATUS_READY
+    document.processed_at = datetime.now(timezone.utc)
     document.chunk_count = len(chunks)
     document.char_count = sum(len(c.content) for c in chunks)
     if truncated:
@@ -232,7 +281,115 @@ async def ingest_document(
         document_id=document.id, filename=filename, status=STATUS_READY,
         chunk_count=document.chunk_count, char_count=document.char_count,
         failure_reason=document.failure_reason,
+        job_id=document.ingestion_job_id, extraction_method=document.extraction_method,
+        coverage_ratio=document.coverage_ratio,
+        extraction_confidence=document.extraction_confidence,
     )
+
+
+async def stage_document(
+    db: AsyncSession, *, tenant_id: str, user_id: str, engagement_id: str | None,
+    filename: str, extension: str, data: bytes,
+) -> IngestResult:
+    """Persist original bytes before queueing. Broker messages carry IDs only."""
+    document = UserDocument(
+        tenant_id=tenant_id, user_id=user_id, engagement_id=engagement_id,
+        filename=filename, extension=extension, size_bytes=len(data),
+        content_sha256=hashlib.sha256(data).hexdigest(), status=STATUS_PENDING,
+        extraction_method="queued",
+    )
+    db.add(document)
+    await db.flush()
+    document.storage_path = await storage.upload(tenant_id, document.id, extension, data)
+    if not document.storage_path:
+        await db.delete(document)
+        await db.flush()
+        raise RuntimeError("Durable object storage is required for asynchronous ingestion")
+    await db.commit()
+    return IngestResult(
+        document_id=document.id, filename=filename, status=STATUS_PENDING,
+        chunk_count=0, char_count=0, job_id=document.ingestion_job_id,
+        extraction_method="queued",
+    )
+
+
+async def process_staged_document(
+    db: AsyncSession, *, document_id: str, tenant_id: str, user_id: str,
+) -> IngestResult:
+    row = await db.execute(select(UserDocument).where(
+        UserDocument.id == document_id,
+        UserDocument.tenant_id == tenant_id,
+        UserDocument.user_id == user_id,
+    ))
+    document = row.scalar_one_or_none()
+    if document is None:
+        raise ValueError("Staged document not found")
+    data = await storage.download(document.storage_path)
+    if data is None:
+        document.status = STATUS_FAILED
+        document.failure_reason = "The staged original could not be loaded for processing."
+        await db.commit()
+        return IngestResult(document.id, document.filename, STATUS_FAILED, 0, 0, document.failure_reason)
+    return await ingest_document(
+        db, tenant_id=tenant_id, user_id=user_id,
+        engagement_id=document.engagement_id, filename=document.filename,
+        extension=document.extension, data=data, document_id=document.id,
+    )
+
+
+async def review_document(
+    db: AsyncSession, *, document_id: str, tenant_id: str, user_id: str,
+    reviewer_id: str, approve: bool, reason: str, corrections: list[dict],
+) -> IngestResult:
+    row = await db.execute(select(UserDocument).where(
+        UserDocument.id == document_id,
+        UserDocument.tenant_id == tenant_id,
+        UserDocument.user_id == user_id,
+        UserDocument.status == STATUS_NEEDS_REVIEW,
+    ))
+    document = row.scalar_one_or_none()
+    if document is None:
+        raise ValueError("Reviewable document not found")
+    chunks_result = await db.execute(select(DocumentChunk).where(
+        DocumentChunk.document_id == document_id,
+        DocumentChunk.tenant_id == tenant_id,
+        DocumentChunk.user_id == user_id,
+    ))
+    chunks = {chunk.id: chunk for chunk in chunks_result.scalars().all()}
+    now = datetime.now(timezone.utc)
+    for correction in corrections:
+        chunk = chunks.get(correction["chunk_id"])
+        if chunk is None:
+            raise ValueError("Correction references an unknown document chunk")
+        chunk.corrected_content = correction["corrected_content"].strip()
+        chunk.correction_reason = correction["reason"].strip()
+        chunk.corrected_by = reviewer_id
+        chunk.corrected_at = now
+    document.status = STATUS_READY if approve else STATUS_FAILED
+    document.review_reason = reason
+    document.failure_reason = None if approve else reason
+    document.processed_at = now
+    await db.commit()
+    return IngestResult(
+        document.id, document.filename, document.status,
+        document.chunk_count, document.char_count, document.failure_reason,
+        document.ingestion_job_id, document.extraction_method,
+        document.coverage_ratio, document.extraction_confidence,
+    )
+
+
+async def list_review_chunks(
+    db: AsyncSession, *, document_id: str, tenant_id: str, user_id: str,
+) -> list[DocumentChunk]:
+    result = await db.execute(
+        select(DocumentChunk).join(UserDocument, UserDocument.id == DocumentChunk.document_id).where(
+            UserDocument.id == document_id,
+            UserDocument.tenant_id == tenant_id,
+            UserDocument.user_id == user_id,
+            UserDocument.status == STATUS_NEEDS_REVIEW,
+        ).order_by(DocumentChunk.ordinal)
+    )
+    return list(result.scalars().all())
 
 
 #: The materialised tsvector added by app/main.py's
@@ -276,7 +433,7 @@ def _search_sql(vector: str) -> str:
         SELECT c.document_id,
                d.filename,
                c.locator,
-               c.content,
+               COALESCE(c.corrected_content, c.content) AS content,
                ts_rank_cd(
                    {vector},
                    websearch_to_tsquery('english', :search_text)
@@ -361,12 +518,13 @@ async def _search_fallback(
 
     scored: list[DocumentPassage] = []
     for chunk, filename in result.all():
-        lowered = chunk.content.lower()
+        effective_content = chunk.corrected_content or chunk.content
+        lowered = effective_content.lower()
         score = sum(len(t) for t in terms if t in lowered)
         if score:
             scored.append(DocumentPassage(
                 document_id=chunk.document_id, filename=filename,
-                locator=chunk.locator, content=chunk.content, score=float(score),
+                locator=chunk.locator, content=effective_content, score=float(score),
             ))
     scored.sort(key=lambda p: -p.score)
     return scored[:limit]
@@ -411,7 +569,9 @@ async def _all_chunks(
         buckets[chunk.document_id].append(
             DocumentPassage(
                 document_id=chunk.document_id, filename=filename,
-                locator=chunk.locator, content=chunk.content, score=1.0,
+                locator=chunk.locator,
+                content=chunk.corrected_content or chunk.content,
+                score=1.0,
             )
         )
 

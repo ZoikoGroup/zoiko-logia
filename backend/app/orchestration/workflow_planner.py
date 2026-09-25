@@ -59,6 +59,9 @@ def plan_workflow(request: AskKritonRequest) -> WorkflowPlan:
             task_type, confidence = "policy_research", 0.88
             reasons = ["POLICY_APPLICABILITY_INTENT"]
         else:
+
+
+            
             task_type, confidence = "general_question", 0.92
             reasons = ["GENERAL_INFORMATION_INTENT"]
         detection = "automatic"

@@ -276,11 +276,13 @@ async def test_ingest_parsing_runs_off_the_event_loop(monkeypatch):
     assert parser_thread != event_loop_thread
 
 
-async def test_failed_extraction_is_recorded_not_discarded():
+async def test_scanned_document_is_review_gated_when_ocr_is_unconfigured():
     async with _Fixture() as fx:
         result = await fx.ingest("scan.pdf", ".pdf", _scanned_pdf_bytes())
-        assert result.status == "failed"
-        assert result.failure_reason, "a failed document must carry a reason for the uploader"
+        assert result.status == "needs_review"
+        assert "OCR" in (result.failure_reason or "")
+        assert result.extraction_method == "ocr_required"
+        assert result.job_id
         assert result.chunk_count == 0
         # And it must never contribute evidence to an answer.
         assert await fx.retrieve("VAT return", [result.document_id]) == []

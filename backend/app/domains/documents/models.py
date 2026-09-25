@@ -21,7 +21,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -40,6 +40,9 @@ def _now() -> datetime:
 # reason attached rather than disappearing, so the user learns that their
 # scanned PDF produced no text instead of silently getting ungrounded answers.
 STATUS_PENDING = "pending"
+STATUS_SCANNING = "scanning"
+STATUS_EXTRACTING = "extracting"
+STATUS_NEEDS_REVIEW = "needs_review"
 STATUS_READY = "ready"
 STATUS_FAILED = "failed"
 
@@ -71,6 +74,14 @@ class UserDocument(Base):
 
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     char_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ingestion_job_id: Mapped[str] = mapped_column(String, nullable=False, default=_uuid)
+    parser_version: Mapped[str] = mapped_column(String, nullable=False, default="f6.1")
+    extraction_method: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    coverage_ratio: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    extraction_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    processing_plan: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
@@ -100,6 +111,12 @@ class DocumentChunk(Base):
     # 120-148". This is what makes a citation point INTO the file instead of at
     # it, so the reader can verify the claim.
     locator: Mapped[str] = mapped_column(String, nullable=False, default="")
+    location: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    extraction_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    corrected_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    correction_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    corrected_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    corrected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 

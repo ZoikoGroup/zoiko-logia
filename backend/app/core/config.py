@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # ── Infrastructure ──────────────────────────────────────────────────
     OBJECT_STORAGE_URL: str = ""
     CELERY_BROKER_URL: str = ""
+    CELERY_RESULT_BACKEND: str = ""
+    DOCUMENT_ASYNC_INGESTION: bool = False
+    DOCUMENT_TASK_TIMEOUT_SECONDS: int = 300
+    DOCUMENT_TASK_MAX_RETRIES: int = 2
 
     # ── Safety Service Tuning ───────────────────────────────────────────
     # cross-encoder/nli-distilroberta-base's actual score distribution runs

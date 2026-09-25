@@ -32,6 +32,9 @@ services:
       # always exempts superusers, and DATABASE_URL's "zoiko" role is one.
       APP_DATABASE_URL: postgresql+asyncpg://zoiko_app:zoiko_app@postgres:5432/zoiko
       SEARXNG_URL: http://searxng:8080
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      DOCUMENT_ASYNC_INGESTION: "true"
       CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001","http://localhost:3005"]'
       # Do NOT add GROQ_*/SUPABASE_*/TWELVE_DATA_* here — an empty value would
       # override env_file and blank the real key. GROQ_MODEL and
@@ -51,6 +54,35 @@ services:
         condition: service_healthy
       searxng:
         condition: service_started
+      redis:
+        condition: service_healthy
+
+  document-worker:
+    build: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://zoiko:zoiko@postgres:5432/zoiko
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      DOCUMENT_ASYNC_INGESTION: "true"
+    command: celery -A app.jobs.celery_app:celery_app worker --loglevel=INFO --concurrency=2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   searxng:
     image: searxng/searxng
@@ -96,3 +128,4 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
