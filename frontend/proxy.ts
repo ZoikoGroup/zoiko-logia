@@ -8,12 +8,18 @@ const REDIRECT_IF_AUTHED_PATHS = ["/login", "/signup"];
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
 
+  // Same placeholder fallback as lib/supabase.ts — createServerClient throws
+  // synchronously on empty or malformed ("<...>") URLs, which would otherwise
+  // crash every request before frontend/.env is configured. Unless BOTH
+  // values are usable real values, fall back to both placeholders.
+  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const rawKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const usable = (v: string | undefined): v is string =>
+    Boolean(v && !v.includes("<") && !v.includes(">"));
+  const configured = usable(rawUrl) && usable(rawKey);
   const supabase = createServerClient(
-    // Same placeholder fallback as lib/supabase.ts — createServerClient
-    // throws synchronously on empty strings, which would otherwise crash
-    // every request before frontend/.env.local is configured.
-    process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co",
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key",
+    configured ? rawUrl : "https://placeholder.supabase.co",
+    configured ? rawKey : "placeholder-anon-key",
     {
       cookies: {
         getAll() {

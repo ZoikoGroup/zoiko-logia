@@ -4,14 +4,15 @@ Root cause this pins: with SUPABASE_SERVICE_ROLE_KEY empty, _headers() built
 "Bearer " (trailing space, no token) and httpx rejected it at the transport
 layer with httpx.LocalProtocolError, surfacing as an unhandled 500 from
 /auth/provision with no actionable signal. Every admin-API function must now
-raise SupabaseNotConfiguredError BEFORE assembling a request, and the
-provision handler must turn that into a clean 503.
+raise SupabaseNotConfiguredError BEFORE assembling a request. Provisioning is
+the one exception by design: the local profile row commits first and the
+app_metadata stamp is best-effort, so a missing service-role key must not
+brick first login.
 """
 from __future__ import annotations
 
 import httpx
 import pytest
-from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core import supabase_admin
@@ -107,7 +108,11 @@ def test_update_app_metadata_performs_request_when_configured(monkeypatch) -> No
     assert sent["json"] == {"app_metadata": {"tenant_id": "tenant-1", "role": "Accountant"}}
 
 
-# ── /auth/provision: 503, not a leaked transport exception ───────────────────
+# ── /auth/provision: succeeds without the service-role key ───────────────────
+# The app_metadata stamp is best-effort by design (the local profile row is the
+# source of truth). Provisioning must NOT 503 when SUPABASE_SERVICE_ROLE_KEY is
+# absent — that exact failure is what previously made every login error out on
+# the FIRST sign-in even though the token verified cleanly.
 
 @pytest.fixture
 async def fresh_db():
@@ -120,29 +125,34 @@ async def fresh_db():
     await engine.dispose()
 
 
-async def test_provision_returns_503_when_admin_not_configured(fresh_db, monkeypatch) -> None:
+async def test_provision_succeeds_when_admin_not_configured(fresh_db, monkeypatch) -> None:
     _unconfigured(monkeypatch)
     _no_transport(monkeypatch)
     claims = SupabaseClaims(sub="user-abc123", email="ada@example.com")
     monkeypatch.setattr("app.domains.identity.router.verify_token", lambda token: claims)
 
-    with pytest.raises(HTTPException) as exc:
-        await provision(
-            ProvisionRequest(first_name="Ada", last_name="Lovelace", company_name="ACME"),
-            fresh_db,
-            "token-xyz",
-        )
-    assert exc.value.status_code == 503
-    assert "not configured" in exc.value.detail
+    user = await provision(
+        ProvisionRequest(first_name="Ada", last_name="Lovelace", company_name="ACME"),
+        fresh_db,
+        "token-xyz",
+    )
+    assert user.id == "user-abc123"
+    assert user.email == "ada@example.com"
+    assert user.role == "Admin"
 
 
-async def test_provision_profile_raises_typed_error_when_unconfigured(fresh_db, monkeypatch) -> None:
+async def test_provision_profile_commits_row_when_admin_not_configured(fresh_db, monkeypatch) -> None:
     _unconfigured(monkeypatch)
     _no_transport(monkeypatch)
-    with pytest.raises(supabase_admin.SupabaseNotConfiguredError):
-        await provision_profile(
-            fresh_db,
-            "user-abc123",
-            "ada@example.com",
-            ProvisionRequest(first_name="Ada", last_name="Lovelace", company_name="ACME"),
-        )
+    user = await provision_profile(
+        fresh_db,
+        "user-abc123",
+        "ada@example.com",
+        ProvisionRequest(first_name="Ada", last_name="Lovelace", company_name="ACME"),
+    )
+    assert user.id == "user-abc123"
+
+    from app.domains.identity.service import get_user_by_id
+    persisted = await get_user_by_id(fresh_db, "user-abc123")
+    assert persisted is not None
+    assert persisted.role == "Admin"
