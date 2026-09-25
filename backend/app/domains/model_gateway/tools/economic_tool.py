@@ -50,7 +50,10 @@ class EconomicIndicatorArgs(BaseModel):
     )
     years: int | None = Field(
         default=None, ge=1, le=20,
-        description="Only the most recent N years, when the user asked for e.g. 'last 5 years'.",
+        description=(
+            "A single whole number N: return only the most recent N years (e.g. 3 for "
+            "'last 3 years'). Not a list of years. Omit for all available years."
+        ),
     )
 
     @field_validator("countries")

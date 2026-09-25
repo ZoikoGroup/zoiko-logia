@@ -97,9 +97,11 @@ async def test_oversized_result_is_truncated() -> None:
     assert len(result.content) < MAX_RESULT_CHARS + 50 and result.content.endswith("[truncated]")
 
 
-def test_default_registry_exposes_both_tools_to_every_caller() -> None:
+def test_default_registry_exposes_every_tool_to_every_caller() -> None:
     registry = build_default_registry()
-    assert registry.names() == ["get_economic_indicator", "get_exchange_rate"]
+    assert registry.names() == [
+        "calculate", "get_economic_indicator", "get_exchange_rate", "get_market_data", "render_chart",
+    ]
     schemas = registry.function_schemas(NO_PERMISSIONS)
     assert {s["function"]["name"] for s in schemas} == set(registry.names())
     for schema in schemas:
@@ -210,3 +212,61 @@ async def test_economic_tool_rejects_bad_arguments(args) -> None:
         result = await registry.execute("get_economic_indicator", args, granted_permissions=NO_PERMISSIONS)
     assert result.error_code == "invalid_arguments"
     fake.assert_not_called()
+
+
+# ── calculate ────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("expression, expected", [
+    ("(500000 - 425000) / 500000 * 100", "= 15 "),
+    ("(20000 - 2000) / 5", "= 3600 "),
+    ("1000 * 1.05 * 1.05", "= 1102.5 "),
+    ("1 / 3", "= 0.333333 "),
+])
+async def test_calculate_is_exact(expression, expected) -> None:
+    result = await build_default_registry().execute(
+        "calculate", {"expression": expression}, granted_permissions=NO_PERMISSIONS,
+    )
+    assert result.ok and expected in result.content
+
+
+@pytest.mark.parametrize("expression", ["__import__('os').system('x')", "2 ** 10", "10 / 0", "abs(-1)"])
+async def test_calculate_rejects_anything_but_plain_arithmetic(expression) -> None:
+    result = await build_default_registry().execute(
+        "calculate", {"expression": expression}, granted_permissions=NO_PERMISSIONS,
+    )
+    assert result.error_code == "invalid_arguments"
+
+
+# ── get_market_data ──────────────────────────────────────────────────────────
+
+async def test_market_tool_fetches_each_company_and_names_gaps() -> None:
+    from app.domains.market_data.schemas import StockQuote
+
+    quote = StockQuote(
+        symbol="AAPL", price=190.5, provider="twelvedata", freshness="delayed",
+        fetched_at="2026-09-25T10:00:00Z", currency="USD", company_name="Apple Inc.",
+    )
+
+    async def fake_fetch(company, intent, *, limit):
+        assert intent == "stock_quote"
+        return (quote, "twelvedata", "Apple") if company == "Apple" else None
+
+    with patch("app.domains.market_data.service.fetch_for_company", fake_fetch):
+        result = await build_default_registry().execute(
+            "get_market_data", {"data_type": "quote", "companies": ["Apple", "Nonexistent Co"]},
+            granted_permissions=NO_PERMISSIONS,
+        )
+    assert result.ok and len(result.sources) == 1
+    assert "AAPL" in result.content and "No data available for: Nonexistent Co" in result.content
+
+
+async def test_market_tool_no_data_at_all() -> None:
+    async def nothing(company, intent, *, limit):
+        return None
+
+    with patch("app.domains.market_data.service.fetch_for_company", nothing):
+        result = await build_default_registry().execute(
+            "get_market_data", {"data_type": "fundamentals", "companies": ["Apple"]},
+            granted_permissions=NO_PERMISSIONS,
+        )
+    assert result.error_code == "no_data"

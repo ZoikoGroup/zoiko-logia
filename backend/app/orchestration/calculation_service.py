@@ -84,6 +84,13 @@ def _evaluate(expression: str) -> Decimal:
         raise ValueError("invalid arithmetic expression") from exc
 
 
+def evaluate_expression(expression: str) -> Decimal:
+    """Public entry point for the calculate tool — the same AST-whitelisted
+    evaluator (numbers, + - * /, parentheses; no names, calls or powers) the
+    question-parsing path uses. Raises ValueError on anything else."""
+    return _evaluate(expression)
+
+
 def _format_decimal(value: Decimal) -> str:
     rendered = format(value.quantize(Decimal("0.01")), "f")
     return rendered.rstrip("0").rstrip(".") if "." in rendered else rendered

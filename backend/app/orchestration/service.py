@@ -61,9 +61,12 @@ from app.orchestration.audit_events import (
     audit_bundle_built, audit_validation_completed,
     audit_redaction_applied,
     audit_context_resolved,
+    audit_agent_tool_called, audit_agent_completed,
 )
+from app.domains.identity.permissions import permissions_for_role
 from app.domains.risk_safety.schemas import ClassifyRequest, SafetyDecision
 from app.domains.model_gateway import service as model_gateway_service
+from app.domains.model_gateway.agent import with_agent_instructions
 from app.orchestration.compose import select_prompt
 from app.orchestration.redaction import redact_for_external_exposure
 from app.orchestration.websearch import (
@@ -102,6 +105,37 @@ from app.domains.massarius import bundle_builder, license_gate
 from app.domains.massarius import risk_safety as massarius_risk_safety
 from app.domains.massarius.answer_validator import validate_answer
 from app.domains.massarius.policy_matrix import resolve_policy
+
+
+async def _no_live_data() -> list:
+    return []
+
+
+def _web_citation(source) -> SourceCitation:
+    return SourceCitation(
+        ref_id="",
+        source_id=source.url,
+        title=source.title,
+        url=source.url,
+        # Genuine retrieved snippet, capped to a preview length — not a
+        # fabricated summary.
+        evidence_preview=(source.snippet[:240].strip() or None) if source.snippet else None,
+        # Carried through so the reader can see whether a figure is
+        # real-time, delayed, end-of-day or as-filed. Only market/company
+        # connectors set these; a plain web hit leaves them None.
+        provider=source.provider,
+        fetched_at=source.fetched_at,
+        freshness=source.freshness,
+    )
+
+
+_TOOL_PROGRESS = {
+    "get_exchange_rate": "Fetching live exchange rates",
+    "get_economic_indicator": "Fetching official economic statistics",
+    "get_market_data": "Fetching market data",
+    "calculate": "Calculating",
+    "render_chart": "Building chart",
+}
 
 
 def _hash_query(query: str) -> str:
@@ -378,7 +412,13 @@ async def ask_kriton(
     # web search, and its results are merged into web_sources at composition —
     # so figures flow through the exact same grounding pipeline as SearXNG hits,
     # with no change to the prompt, citations, or answer format.
-    live_data_task = asyncio.create_task(metrics.run("retrieval.live_data", fetch_live_data(request.query)))
+    # In agent mode the model fetches exactly the figures it needs through
+    # registered tools during composition, so nothing is pre-fetched here.
+    agent_mode = model_gateway_service.agent_mode_active()
+    live_data_task = asyncio.create_task(
+        _no_live_data() if agent_mode
+        else metrics.run("retrieval.live_data", fetch_live_data(request.query))
+    )
     # These are speculative child tasks. Tie their lifetime to this request so
     # an early refusal, client disconnect, or end-to-end timeout cannot leave
     # provider calls running after the parent orchestration has finished.
@@ -830,24 +870,7 @@ async def ask_kriton(
             freshness="registered_version",
         ))
 
-    web_citations: list[SourceCitation] = [
-        SourceCitation(
-            ref_id="",
-            source_id=s.url,
-            title=s.title,
-            url=s.url,
-            # Genuine retrieved snippet, capped to a preview length — not a
-            # fabricated summary.
-            evidence_preview=(s.snippet[:240].strip() or None) if s.snippet else None,
-            # Carried through so the reader can see whether a figure is
-            # real-time, delayed, end-of-day or as-filed. Only market/company
-            # connectors set these; a plain web hit leaves them None.
-            provider=s.provider,
-            fetched_at=s.fetched_at,
-            freshness=s.freshness,
-        )
-        for s in web_sources
-    ]
+    web_citations: list[SourceCitation] = [_web_citation(s) for s in web_sources]
 
     # One ordered evidence list, numbered after ordering so REF-1 is the first
     # row the reader sees.
@@ -921,8 +944,57 @@ async def ask_kriton(
     if risk_level in ("ZERO", "LOW") and os.getenv("GROQ_API_KEY") and not gemini_active:
         answer_model = os.getenv("GROQ_FAST_ANSWER_MODEL", "llama-3.1-8b-instant")
 
+    # ── Agent mode: governed tool-calling loop ─────────────────────────────
+    # The model fetches figures through registered tools (permission-checked,
+    # validated, time-boxed) and every call is audited. Any failure falls
+    # through to the standard composition below, so agent mode can only add
+    # evidence to an answer — never lose one.
+    agent_outcome = None
+    if agent_mode:
+        async def on_tool_start(tool: str) -> None:
+            await report("tool_call", _TOOL_PROGRESS.get(tool, "Gathering evidence"))
+
+        async def on_tool_done(record) -> None:
+            await audit_agent_tool_called(
+                db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+                audit_chain_id=audit_chain_id, actor_id=actor_id,
+                step=record.step, tool=record.tool, arguments_hash=record.arguments_hash,
+                ok=record.ok, error_code=record.error_code,
+                duration_ms=record.duration_ms, source_count=record.source_count,
+            )
+
+        try:
+            agent_outcome = await metrics.run(
+                "composition.agent",
+                model_gateway_service.run_agentic_completion(
+                    with_agent_instructions(grounded_input),
+                    granted_permissions=permissions_for_role(role),
+                    model=answer_model,
+                    on_tool_start=on_tool_start,
+                    on_tool_done=on_tool_done,
+                ),
+            )
+            composed_text = agent_outcome.text
+            prompt_id, prompt_name = "agent", "Agent (governed tool calling)"
+            await audit_agent_completed(
+                db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+                audit_chain_id=audit_chain_id, actor_id=actor_id,
+                steps=agent_outcome.steps, stop_reason=agent_outcome.stop_reason,
+                tool_call_count=len(agent_outcome.tool_calls), fell_back=False,
+            )
+        except Exception as exc:
+            logger.warning("Agent composition failed (%s); using standard composition", type(exc).__name__)
+            agent_outcome = None
+            await audit_agent_completed(
+                db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+                audit_chain_id=audit_chain_id, actor_id=actor_id,
+                steps=0, stop_reason="error", tool_call_count=0, fell_back=True, error=type(exc).__name__,
+            )
+
     try:
-        if prompt:
+        if agent_outcome is not None:
+            pass
+        elif prompt:
             prompt_row, composed_text = await metrics.run(
                 "composition.model",
                 model_gateway_service.run_test_prompt(
@@ -991,6 +1063,23 @@ async def ask_kriton(
             outcome=response.outcome, route=ROUTE_CLARIFICATION, start_time=start_time,
         )
         return contextualize(response)
+
+    if agent_outcome is not None:
+        # Tool evidence joins the answer exactly like pre-fetched live data
+        # would have: cited after the existing sources, observations and the
+        # verified chart built from it, and validated charts attached as-is
+        # (built from checked tool arguments, never retyped by the model).
+        live_sources = list(agent_outcome.sources)
+        live_observations = [s.observation for s in live_sources if s.observation is not None]
+        observation_chart = (
+            build_observation_chart(live_observations) if wants_visual(request.query) else None
+        )
+        rag_citations = [
+            c.model_copy(update={"ref_id": f"REF-{i + 1}"})
+            for i, c in enumerate(rag_citations + [_web_citation(s) for s in live_sources])
+        ]
+        if agent_outcome.artifacts:
+            composed_text = composed_text.rstrip() + "\n\n" + "\n\n".join(agent_outcome.artifacts)
 
     # Force a chart from the connector's own fetched numeric series when the
     # question wanted one and the model didn't already produce it (via prose

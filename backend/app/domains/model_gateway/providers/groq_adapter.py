@@ -12,9 +12,12 @@ _SYSTEM_PROMPT = (
     "corporate, cost), bookkeeping, taxation (income tax, corporate tax, "
     "GST/VAT/sales tax), payroll, auditing, finance and business finance, "
     "financial statements, accounting standards (IFRS, IAS, GAAP, Ind AS), tax "
-    "and payroll compliance and laws, accounting software, commerce, and "
-    "accounting education/certifications — and any topic directly related to "
-    "these.\n"
+    "and payroll compliance and laws, accounting software, commerce, "
+    "accounting education/certifications, economic and fiscal statistics "
+    "(GDP, inflation, unemployment, interest rates, tax-to-GDP, public debt), "
+    "currency exchange rates, and listed-company / capital-markets information "
+    "(share prices, fundamentals, company profiles and filings) — and any topic "
+    "directly related to these.\n"
     "CLASSIFY every question first, by the SUBJECT MATTER being asked about, "
     "never by the presentation format requested — a request to chart, diagram "
     "or visualise revenue, profit, expenses, cash flow, portfolio allocation "
@@ -55,6 +58,10 @@ _SYSTEM_PROMPT = (
     "legal advice — explain the general position and note when a qualified "
     "professional should be consulted."
 )
+
+# Shared with the agent loop (model_gateway/agent.py), which answers under
+# the same domain gate and rules.
+KRITON_SYSTEM_PROMPT = _SYSTEM_PROMPT
 
 # Default Groq model. Override with GROQ_MODEL in the environment. Note: Groq
 # periodically retires models — if you get a "model_decommissioned" error,

@@ -39,6 +39,8 @@ MAX_RESULT_CHARS = 4000
 RiskLevel = Literal["low", "medium", "high"]
 ErrorCode = Literal[
     "unknown_tool", "permission_denied", "invalid_arguments", "timeout", "no_data", "tool_error",
+    # Set by the agent loop, not by execute():
+    "duplicate_call", "budget_exhausted",
 ]
 
 
@@ -50,6 +52,9 @@ class ToolResult:
     # Evidence for citations — the same WebSource shape the grounded answer
     # pipeline already cites from.
     sources: tuple[WebSource, ...] = ()
+    # Deterministically built output blocks appended to the answer as-is
+    # (e.g. a validated ```chart fence) — never retyped by the model.
+    artifacts: tuple[str, ...] = ()
     error_code: ErrorCode | None = None
 
     @classmethod
@@ -72,10 +77,13 @@ class ToolSpec:
     timeout_seconds: float
     # None = available to every authenticated caller (e.g. public statistics).
     required_permission: str | None = None
+    # Hand-written JSON schema, for a tool whose accepted shapes are clearer
+    # declared directly than generated (render_chart's per-type union).
+    parameters_schema: dict | None = None
 
     def function_schema(self) -> dict:
         """OpenAI/Groq-style function declaration for this tool."""
-        parameters = self.args_model.model_json_schema()
+        parameters = dict(self.parameters_schema) if self.parameters_schema else self.args_model.model_json_schema()
         parameters.pop("title", None)
         return {
             "type": "function",
@@ -139,7 +147,7 @@ class ToolRegistry:
         if len(result.content) > MAX_RESULT_CHARS:
             result = ToolResult(
                 ok=result.ok, content=result.content[:MAX_RESULT_CHARS] + " …[truncated]",
-                sources=result.sources, error_code=result.error_code,
+                sources=result.sources, artifacts=result.artifacts, error_code=result.error_code,
             )
         return result
 
@@ -156,10 +164,13 @@ def _short_error(exc: Exception) -> str:
 def build_default_registry() -> ToolRegistry:
     """The production tool set. Imported lazily so the registry module itself
     stays free of connector imports (and their network clients)."""
+    from app.domains.model_gateway.tools.calc_tool import CALCULATE_TOOL
+    from app.domains.model_gateway.tools.chart_tool import RENDER_CHART_TOOL
     from app.domains.model_gateway.tools.economic_tool import ECONOMIC_INDICATOR_TOOL
     from app.domains.model_gateway.tools.fx_tool import EXCHANGE_RATE_TOOL
+    from app.domains.model_gateway.tools.market_tool import MARKET_DATA_TOOL
 
     registry = ToolRegistry()
-    registry.register(EXCHANGE_RATE_TOOL)
-    registry.register(ECONOMIC_INDICATOR_TOOL)
+    for spec in (EXCHANGE_RATE_TOOL, ECONOMIC_INDICATOR_TOOL, MARKET_DATA_TOOL, CALCULATE_TOOL, RENDER_CHART_TOOL):
+        registry.register(spec)
     return registry

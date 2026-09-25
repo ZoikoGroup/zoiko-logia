@@ -262,3 +262,48 @@ def build_chart_fence(raw_arguments: str) -> str:
     if spec.get("type") != "bar":
         spec.pop("stacked", None)
     return "```chart\n" + json.dumps(spec) + "\n```"
+
+
+# ── Registry entry ───────────────────────────────────────────────────────────
+# The same render_chart tool, declared through the agent tool registry. The
+# model-facing schema is CHART_TOOL_SCHEMA's hand-written parameters; the
+# args model only accepts the object, and build_chart_fence() remains the
+# real validation, so a chart can reach the answer only via validated data.
+from pydantic import ConfigDict  # noqa: E402
+
+from app.domains.model_gateway.tool_registry import ToolResult, ToolSpec  # noqa: E402
+
+
+class _ChartToolArgs(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+async def _handle_render_chart(args: _ChartToolArgs) -> ToolResult:
+    try:
+        fence = build_chart_fence(json.dumps(args.model_dump()))
+    except ChartToolError as exc:
+        return ToolResult.failure(
+            "invalid_arguments",
+            f"The chart could not be rendered ({str(exc)[:300]}). Fix the arguments or explain the data in text.",
+        )
+    return ToolResult(
+        ok=True,
+        content=(
+            "Chart rendered successfully. It is attached automatically BELOW your answer — "
+            "refer to it as 'the chart below' if at all, and do not restate its JSON."
+        ),
+        artifacts=(fence,),
+    )
+
+
+RENDER_CHART_TOOL = ToolSpec(
+    name=TOOL_NAME,
+    version="1.0",
+    description=CHART_TOOL_SCHEMA["function"]["description"],
+    args_model=_ChartToolArgs,
+    handler=_handle_render_chart,
+    data_source="figures already in the conversation or returned by other tools",
+    risk_level="low",
+    timeout_seconds=2.0,
+    parameters_schema=CHART_TOOL_SCHEMA["function"]["parameters"],
+)

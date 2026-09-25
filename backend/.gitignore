@@ -8,3 +8,6 @@ venv/
 data/sources/**/*
 !data/sources/**/
 !data/sources/**/.gitkeep
+
+# Agent evaluation run output (scripts/run_agent_eval.py)
+evals/reports/

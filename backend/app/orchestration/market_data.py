@@ -182,7 +182,7 @@ def _profile_source(profile: CompanyProfile) -> WebSource:
     )
 
 
-def _source_for(intent: str, result) -> WebSource | None:
+def source_for_result(intent: str, result) -> WebSource | None:
     try:
         if intent == registry.INTENT_QUOTE and isinstance(result, StockQuote):
             return _quote_source(result)
@@ -210,12 +210,12 @@ async def fetch_market_sources(query: str) -> list[WebSource]:
     companies = identity.find_all_known_names(query)
     if len(companies) >= 2:
         results = await service.fetch_market_data_for_companies(query, companies)
-        sources = [_source_for(intent, result) for result, _provider, intent, _label in results]
+        sources = [source_for_result(intent, result) for result, _provider, intent, _label in results]
         return [s for s in sources if s is not None]
 
     outcome = await service.fetch_market_data(query)
     if outcome is None:
         return []
     result, _provider, intent = outcome
-    source = _source_for(intent, result)
+    source = source_for_result(intent, result)
     return [source] if source is not None else []
