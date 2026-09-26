@@ -6,7 +6,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { normaliseLatexDelimiters } from "@/lib/math-delimiters";
+import { cleanMathText, normaliseLatexDelimiters } from "@/lib/math-delimiters";
 import type { Root } from "mdast";
 import { CheckCircle2, Copy, Download, Table2 } from "lucide-react";
 import type { CalculationResult, VerifiedChartSpec } from "@/lib/api";
@@ -50,12 +50,6 @@ function stripInlineRefs(text: string): string {
     .replace(/\s*\[\s*(?:REF-)?\d+(?:\s*,\s*(?:REF-)?\d+)*\s*\]/gi, "")
     .replace(/[ \t]+([.,;:])/g, "$1")
     .replace(/[ \t]{2,}/g, " ");
-}
-
-/** KaTeX cannot render some typography the model inserts inside math
- * (no-break/narrow spaces as thousands separators, en/em dashes as minus). */
-function cleanMathText(value: string): string {
-  return value.replace(/[\u00a0\u2007\u2009\u202f]/g, " ").replace(/[\u2012-\u2015\u2212]/g, "-");
 }
 
 function normaliseMathUnicode() {
