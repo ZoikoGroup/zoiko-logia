@@ -1,6 +1,6 @@
-"""Routing policy pm_1.1 — LOW risk with no governed evidence answers with a
-caveat instead of asking an unanswerable clarification; everything riskier
-keeps its safeguard."""
+"""Routing policy pm_1.2 — LOW (pm_1.1) and MEDIUM (pm_1.2) questions with no or
+limited governed evidence answer with a caveat instead of an unanswerable
+clarification or a reviewer queue; HIGH and restricted keep their safeguards."""
 from app.orchestration.routing_matrix import (
     CONF_INSUFFICIENT, CONF_LIMITED, CONF_RESTRICTED, CONF_SUFFICIENT, POLICY_VERSION,
     RISK_HIGH, RISK_LOW, RISK_MEDIUM, RISK_RESTRICTED,
@@ -9,7 +9,7 @@ from app.orchestration.routing_matrix import (
 
 
 def test_policy_version_recorded_for_the_change() -> None:
-    assert POLICY_VERSION == "pm_1.1"
+    assert POLICY_VERSION == "pm_1.2"
 
 
 def test_low_risk_without_governed_evidence_answers_with_caveat() -> None:
@@ -23,9 +23,15 @@ def test_low_risk_is_not_escalated_on_later_cycles() -> None:
     assert resolve_route(RISK_LOW, CONF_INSUFFICIENT, clarification_cycle=5).route == ROUTE_LLM
 
 
+def test_medium_general_method_questions_answer_with_disclaimer() -> None:
+    for confidence in (CONF_LIMITED, CONF_INSUFFICIENT):
+        decision = resolve_route(RISK_MEDIUM, confidence)
+        assert decision.route == ROUTE_LLM and decision.disclaimer_required is True
+
+
 def test_riskier_or_restricted_cases_keep_their_safeguards() -> None:
-    assert resolve_route(RISK_MEDIUM, CONF_INSUFFICIENT).route == ROUTE_HUMAN_REVIEW
     assert resolve_route(RISK_HIGH, CONF_INSUFFICIENT).route == ROUTE_HUMAN_REVIEW
+    assert resolve_route(RISK_HIGH, CONF_SUFFICIENT).route == ROUTE_HUMAN_REVIEW
     assert resolve_route(RISK_LOW, CONF_RESTRICTED).route == ROUTE_REFUSAL
     assert resolve_route(RISK_RESTRICTED, CONF_SUFFICIENT).route == ROUTE_REFUSAL
 

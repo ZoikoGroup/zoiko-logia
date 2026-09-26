@@ -1123,6 +1123,7 @@ async def ask_kriton(
             source_bundle,
             disclaimer_required=False,
             external_source_count=len(rag_citations),
+            ungrounded_answer_allowed=effective_confidence == CONF_INSUFFICIENT,
         )
         if source_bundle else None
     )

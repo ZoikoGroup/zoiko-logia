@@ -116,3 +116,33 @@ if __name__ == "__main__":
     test_internal_reasoning_only_source_never_exposed()
     test_validate_answer_or_raise_raises_typed_exception()
     print("All tests passed successfully!")
+
+
+_EMPTY_BUNDLE = SourceBundle(
+    source_bundle_id="sb-empty",
+    eligible_source_count=0,
+    sources=[],
+    authority_level="secondary",
+    confidence_state="insufficient",
+)
+_LONG_ANSWER = "Deferred revenue is presented as a contract liability until the performance obligation is satisfied."
+
+
+def test_ungrounded_answer_still_fails_by_default():
+    result = validate_answer(_LONG_ANSWER, _EMPTY_BUNDLE)
+    assert not result.passed and result.degraded_route == "HUMAN_REVIEW"
+    assert any("Grounding check failed" in f for f in result.failures)
+
+
+def test_caveated_answer_without_evidence_passes_grounding():
+    """Routing chose to answer with the no-evidence caveat (pm_1.1/pm_1.2);
+    the grounding check must not escalate that same answer."""
+    result = validate_answer(_LONG_ANSWER, _EMPTY_BUNDLE, ungrounded_answer_allowed=True)
+    assert result.passed
+
+
+def test_other_checks_still_apply_to_caveated_answers():
+    result = validate_answer(
+        "You must pay the tax by Friday. This is tax advice.", _EMPTY_BUNDLE, ungrounded_answer_allowed=True,
+    )
+    assert not result.passed and result.degraded_route == "REFUSAL"

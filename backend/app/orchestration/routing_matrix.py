@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 CLASSIFIER_VERSION = "rc_1.0"
-POLICY_VERSION = "pm_1.1"  # pm_1.1: LOW + insufficient answers with caveat
+POLICY_VERSION = "pm_1.2"  # pm_1.1: LOW + insufficient answers with caveat; pm_1.2: MEDIUM likewise
 
 # Route constants
 ROUTE_LLM = "LLM"
@@ -77,8 +77,12 @@ _MATRIX: dict[tuple[str, str], str] = {
 
     # MEDIUM risk
     (RISK_MEDIUM, CONF_SUFFICIENT):    ROUTE_LLM,          # disclaimer_required = True
-    (RISK_MEDIUM, CONF_LIMITED):       ROUTE_HUMAN_REVIEW,
-    (RISK_MEDIUM, CONF_INSUFFICIENT):  ROUTE_HUMAN_REVIEW,
+    # pm_1.2 (product decision 2026-09-26): MEDIUM is a general method /
+    # procedure question, never the asker's own case (that is HIGH), so it
+    # answers with the disclaimer and evidence caveat instead of waiting on a
+    # reviewer while the governed library cannot cover it.
+    (RISK_MEDIUM, CONF_LIMITED):       ROUTE_LLM,          # disclaimer + caveat
+    (RISK_MEDIUM, CONF_INSUFFICIENT):  ROUTE_LLM,          # disclaimer + caveat
 
     # HIGH risk — any confidence → HUMAN_REVIEW
     (RISK_HIGH, CONF_SUFFICIENT):    ROUTE_HUMAN_REVIEW,
