@@ -70,12 +70,17 @@ async def fetch_live_data(query: str) -> list[WebSource]:
 # question actually asked for. dbnomics.py's connector always returns up to its
 # own MAX_POINTS (20) regardless of what was asked, so without this a "last 3
 # years" request silently charts two decades of data instead.
-_REQUESTED_PERIOD_COUNT = re.compile(r"\b(?:last|past|previous)\s+(\d+)\s*(?:years?|yrs?|quarters?)\b", re.I)
+_REQUESTED_PERIOD_COUNT = re.compile(r"\b(?:last|past|previous|latest|most recent)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:available\s+)?(?:years?|yrs?|quarters?)\b", re.I)
 
 
 def _requested_period_count(query: str) -> int | None:
     match = _REQUESTED_PERIOD_COUNT.search(query)
-    return int(match.group(1)) if match else None
+    if not match:
+        return None
+    value = match.group(1).lower()
+    words = {word: index for index, word in enumerate(
+        ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"), start=1)}
+    return int(value) if value.isdigit() else words[value]
 
 
 def build_forced_chart(query: str, sources: list[WebSource]) -> str | None:

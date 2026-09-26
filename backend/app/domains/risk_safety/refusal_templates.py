@@ -88,6 +88,28 @@ _TEMPLATES: dict[str, RefusalTemplate] = {
         restricted_sub_class=RestrictedSubClass.CONTROL_BYPASS.value,
     ),
 
+    # Fraud / concealment requests (LLM classifier RESTRICTED): refuse, but
+    # point to the legitimate treatment rather than a dead end.
+    "ACCOUNTING_INTEGRITY": RefusalTemplate(
+        template_id="tpl-integrity-001",
+        title="Unable to help with concealment",
+        body=(
+            "I can't help conceal transactions, falsify or backdate records, or mislead "
+            "an auditor or a tax authority."
+        ),
+        safe_alternative=(
+            "I can help you handle it correctly instead:\n\n"
+            "- Identify which items are personal rather than business expenses\n"
+            "- Reclassify them appropriately (for example as director drawings, a loan "
+            "to the director or a distribution, depending on the rules that apply)\n"
+            "- Prepare the correcting journal entries\n"
+            "- Document the correction for your auditor\n"
+            "- Check whether any tax or disclosure adjustments are needed\n\n"
+            "Share the transaction details and your jurisdiction, and I'll help with the "
+            "compliant treatment."
+        ),
+    ),
+
     # Generic HIGH-risk limitation notice
     "HIGH_RISK_LIMITATION": RefusalTemplate(
         template_id="tpl-high-risk-limit-001",

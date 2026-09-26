@@ -20,6 +20,7 @@ import {
   tableRowsToTsv,
   writeImageToClipboard,
   writeTextToClipboard,
+  REF_MARKER,
 } from "@/lib/presentation";
 
 // echarts-for-react touches the DOM (canvas), so load it client-only.
@@ -47,7 +48,7 @@ type Segment =
  */
 function stripInlineRefs(text: string): string {
   return text
-    .replace(/\s*\[\s*(?:REF-)?\d+(?:\s*,\s*(?:REF-)?\d+)*\s*\]/gi, "")
+    .replace(REF_MARKER, "")
     .replace(/[ \t]+([.,;:])/g, "$1")
     .replace(/[ \t]{2,}/g, " ");
 }
@@ -854,7 +855,7 @@ function MarkdownTable(props: ComponentPropsWithoutRef<"table">) {
   return (
     <div className="my-3">
       <div className="overflow-x-auto">
-        <table ref={ref} className="w-full border-collapse text-left text-xs" {...props} />
+        <table ref={ref} className="w-full border-collapse text-left text-sm leading-6" {...props} />
       </div>
       <div className="mt-1.5 flex justify-end">
         <FigureToolbar
@@ -880,28 +881,51 @@ function MarkdownTable(props: ComponentPropsWithoutRef<"table">) {
 // (the container it sits in, e.g. Ask Kriton's response card, is theme-aware
 // and goes dark — hardcoded dark-mode-unaware text here used to render
 // dark-on-dark).
+// Typography follows the ChatGPT / Claude reading scale: 16px body on a 28px
+// line, headings stepping 22/20/18/16px with more space above than below,
+// muted list markers, tables ruled horizontally only, and code at 0.875em so
+// it sits in the text rather than shrinking below it.
 const mdComponents = {
-  p: (props: ComponentPropsWithoutRef<"p">) => <p className="mb-3 last:mb-0" {...props} />,
-  ul: (props: ComponentPropsWithoutRef<"ul">) => <ul className="mb-3 list-disc space-y-1 pl-5" {...props} />,
-  ol: (props: ComponentPropsWithoutRef<"ol">) => <ol className="mb-3 list-decimal space-y-1 pl-5" {...props} />,
+  p: (props: ComponentPropsWithoutRef<"p">) => <p className="mb-4 last:mb-0" {...props} />,
+  ul: (props: ComponentPropsWithoutRef<"ul">) => (
+    <ul className="mb-4 list-disc space-y-1.5 pl-6 marker:text-muted last:mb-0" {...props} />
+  ),
+  ol: (props: ComponentPropsWithoutRef<"ol">) => (
+    <ol className="mb-4 list-decimal space-y-1.5 pl-6 marker:text-muted last:mb-0" {...props} />
+  ),
+  // Nested lists sit tight under their parent item instead of adding a gap.
+  li: (props: ComponentPropsWithoutRef<"li">) => (
+    <li className="pl-1 [&>ol]:mb-0 [&>ol]:mt-1.5 [&>p]:mb-2 [&>ul]:mb-0 [&>ul]:mt-1.5" {...props} />
+  ),
   strong: (props: ComponentPropsWithoutRef<"strong">) => <strong className="font-semibold text-ink" {...props} />,
   a: (props: ComponentPropsWithoutRef<"a">) => (
-    <a className="text-brand underline" target="_blank" rel="noreferrer" {...props} />
+    <a className="text-brand underline underline-offset-2" target="_blank" rel="noreferrer" {...props} />
   ),
+  blockquote: (props: ComponentPropsWithoutRef<"blockquote">) => (
+    <blockquote className="my-4 border-l-4 border-line pl-4 text-muted [&>p]:mb-2" {...props} />
+  ),
+  hr: (props: ComponentPropsWithoutRef<"hr">) => <hr className="my-6 border-line" {...props} />,
   table: (props: ComponentPropsWithoutRef<"table">) => <MarkdownTable {...props} />,
-  thead: (props: ComponentPropsWithoutRef<"thead">) => <thead className="bg-soft" {...props} />,
+  thead: (props: ComponentPropsWithoutRef<"thead">) => <thead {...props} />,
   th: (props: ComponentPropsWithoutRef<"th">) => (
-    <th className="border border-line px-3 py-2 font-semibold text-ink" {...props} />
+    <th className="border-b-2 border-line px-3 py-2 text-left font-semibold text-ink" {...props} />
   ),
   td: (props: ComponentPropsWithoutRef<"td">) => (
-    <td className="border border-line px-3 py-2 align-top text-ink" {...props} />
+    <td className="border-b border-line px-3 py-2 align-top text-ink" {...props} />
+  ),
+  pre: (props: ComponentPropsWithoutRef<"pre">) => (
+    <pre
+      className="my-4 overflow-x-auto rounded-xl bg-soft p-4 text-[13px] leading-6 [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-[13px]"
+      {...props}
+    />
   ),
   code: (props: ComponentPropsWithoutRef<"code">) => (
-    <code className="rounded bg-soft px-1 py-0.5 text-[12px] text-ink" {...props} />
+    <code className="rounded bg-soft px-1.5 py-0.5 font-mono text-[0.875em] text-ink" {...props} />
   ),
-  h1: (props: ComponentPropsWithoutRef<"h1">) => <h3 className="mb-2 mt-3 text-base font-bold text-ink" {...props} />,
-  h2: (props: ComponentPropsWithoutRef<"h2">) => <h3 className="mb-2 mt-3 text-sm font-bold text-ink" {...props} />,
-  h3: (props: ComponentPropsWithoutRef<"h3">) => <h4 className="mb-1 mt-2 text-sm font-semibold text-ink" {...props} />,
+  h1: (props: ComponentPropsWithoutRef<"h1">) => <h2 className="mb-3 mt-8 text-[22px] leading-8 font-semibold text-ink first:mt-0" {...props} />,
+  h2: (props: ComponentPropsWithoutRef<"h2">) => <h3 className="mb-3 mt-7 text-xl leading-7 font-semibold text-ink first:mt-0" {...props} />,
+  h3: (props: ComponentPropsWithoutRef<"h3">) => <h4 className="mb-2 mt-6 text-lg leading-7 font-semibold text-ink first:mt-0" {...props} />,
+  h4: (props: ComponentPropsWithoutRef<"h4">) => <h5 className="mb-2 mt-5 text-base leading-7 font-semibold text-ink first:mt-0" {...props} />,
 };
 
 function VerifiedCalculation({ result }: { result: CalculationResult }) {
@@ -945,7 +969,7 @@ export function AnswerRenderer({
 }) {
   const segments = parseSegments(text);
   return (
-    <div className={`min-w-0 text-sm leading-7 text-ink ${className ?? ""}`}>
+    <div className={`kriton-answer min-w-0 text-base leading-7 text-ink [overflow-wrap:anywhere] ${className ?? ""}`}>
       {segments.map((seg, i) =>
         seg.type === "mermaid" ? (
           <MermaidDiagram key={i} code={seg.content} />
@@ -963,7 +987,8 @@ export function AnswerRenderer({
         ),
       )}
       {calculationResult && <VerifiedCalculation result={calculationResult} />}
-      {verifiedCharts.map((chart) => (
+      {verifiedCharts.filter((chart) => chart.type !== "kpi" &&
+        !(chart.calculation_id === "live_observations" && segments.some((segment) => segment.type === "chart"))).map((chart) => (
         <div key={chart.chart_id}>
           <div className="mb-[-0.5rem] text-[11px] font-semibold text-brand">Verified data</div>
           <ChartRenderer code={verifiedChartCode(chart)} />

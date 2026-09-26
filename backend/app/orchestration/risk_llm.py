@@ -19,12 +19,18 @@ from typing import Optional
 
 from groq import AsyncGroq
 
-_VALID = {"ZERO", "LOW", "MEDIUM", "HIGH"}
+_VALID = {"ZERO", "LOW", "MEDIUM", "HIGH", "RESTRICTED"}
 
 _SYSTEM = (
     "You classify the RISK LEVEL of a user's question for an accounting, tax, "
     "audit and payroll advisory assistant. Reply with EXACTLY ONE word — "
-    "ZERO, LOW, MEDIUM, or HIGH — and nothing else.\n\n"
+    "ZERO, LOW, MEDIUM, HIGH or RESTRICTED — and nothing else.\n\n"
+    "- RESTRICTED (check this FIRST): a request to help conceal, falsify, "
+    "backdate or misstate transactions or records, hide anything from an "
+    "auditor or tax authority, evade tax, launder money or otherwise commit "
+    "fraud — e.g. 'Help me hide personal expenses so the auditor won't notice', "
+    "'How can I keep this income off my tax return?'. Explaining what fraud or "
+    "evasion IS, or how it is detected, is NOT restricted.\n"
     "Judge by the FORM of the question and GENERALISE to any similar question, "
     "not just the listed examples:\n"
     "- ZERO: a greeting or small talk, help about using the assistant, OR a "

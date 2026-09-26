@@ -541,9 +541,9 @@ export type AskKritonRequest = {
   jurisdiction?: string;
   mode?: string;
   clarification_cycle?: number;
-  /** Scopes chart-repetition/telemetry to one thread. Not yet read by the
-   * backend — accepted here so the frontend contract is forward-compatible. */
+  /** Correlates requests in the same chat; never grants access. */
   conversation_id?: string;
+  conversation_history?: { role: "user" | "assistant"; content: string }[];
   /** Documents attached to this turn. Ids of successfully indexed uploads
    * only; the backend re-verifies ownership and readiness, so sending an id
    * the caller does not own simply retrieves nothing. */

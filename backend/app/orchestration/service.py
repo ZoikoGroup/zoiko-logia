@@ -36,6 +36,7 @@ from app.orchestration.identifiers import (
     check_idempotency, claim_idempotency,
 )
 from app.orchestration.prescreen import run_prescreen
+from app.orchestration.conversation import conversation_prompt, screened_history
 from app.orchestration.retrieve import build_source_bundle
 from app.orchestration.routing_matrix import (
     map_safety_confidence,
@@ -65,6 +66,7 @@ from app.orchestration.audit_events import (
 )
 from app.domains.identity.permissions import permissions_for_role
 from app.domains.risk_safety.schemas import ClassifyRequest, SafetyDecision
+from app.domains.risk_safety.refusal_templates import get_template as get_refusal_template
 from app.domains.model_gateway import service as model_gateway_service
 from app.domains.model_gateway.agent import with_agent_instructions
 from app.orchestration.compose import select_prompt
@@ -652,6 +654,10 @@ async def ask_kriton(
     if not force_direct and (not classification_allowed or route == ROUTE_REFUSAL):
         # REFUSAL path
         refusal_reason = decision.refusal_text or "Query blocked by risk classification policy."
+        if llm_risk == "RESTRICTED":
+            # Fraud/concealment: refuse with the legitimate alternative, not a dead end.
+            integrity = get_refusal_template("ACCOUNTING_INTEGRITY")
+            refusal_reason = f"{integrity.body}\n\n{integrity.safe_alternative}"
         await audit_refusal_returned(
             db, query_id=query_id, correlation_id=correlation_id,
             tenant_id=tenant_id, audit_chain_id=audit_chain_id,
@@ -897,10 +903,11 @@ async def ask_kriton(
             "If they conflict or do not support the requested conclusion, say so.\n"
             f"{authority_context}"
         )
+    grounded_input += conversation_prompt(request.conversation_history)
     if effective_context:
         grounded_input += build_task_prompt_context(effective_context)
     deterministic_calculation = metrics.run_sync(
-        "calculation.extract", lambda: build_calculation(request.query)
+        "calculation.extract", lambda: build_calculation(request.query, screened_history(request.conversation_history))
     )
     if deterministic_calculation:
         await persist_calculation_run(

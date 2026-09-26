@@ -1,5 +1,16 @@
 @import "tailwindcss";
 
+.kriton-answer .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-block: 0.35rem;
+  max-width: 100%;
+}
+
+.kriton-answer .katex {
+  font-size: 1.05em;
+}
+
 /* Zoiko brand palette — light governance-surface theme */
 :root {
   --bg: #f7f8fa;

@@ -96,16 +96,38 @@ def _format_decimal(value: Decimal) -> str:
     return rendered.rstrip("0").rstrip(".") if "." in rendered else rendered
 
 
+# "sales" alone means revenue, but not inside "cost of sales" — otherwise
+# "Cost of sales is 160,000 and revenue is 250,000" read 160,000 as revenue.
+_REVENUE_LABEL = r"revenue|(?<!of )sales"
+
+
 def _number_for_label(query: str, labels: str) -> Decimal | None:
     match = re.search(rf"(?:{labels})(?:\s+(?:is|of))?\s*[:=]?\s*{_NUMBER}", query, re.IGNORECASE)
     return Decimal(match.group(1).replace(",", "")) if match else None
 
 
-def build_calculation(query: str) -> DeterministicCalculation | None:
+def build_calculation(query: str, history=()) -> DeterministicCalculation | None:
     expression: str | None = None
     formula_name = "Arithmetic calculation"
     inputs: list[WidgetInput] = []
     operation = "arithmetic"
+    output_unit = "number"
+
+    revenue = _number_for_label(query, _REVENUE_LABEL)
+    sales_cost = _number_for_label(query, r"cost of sales|cost of goods sold|cogs")
+    increase = re.search(r"cost of sales\s+increased?\s+by\s+(\d+(?:\.\d+)?)\s*%", query, re.I)
+    if increase and re.search(r"revenue\s+(?:stayed|stays|remains?)\s+unchanged", query, re.I):
+        for message in reversed(history):
+            if message.role != "user":
+                continue
+            previous_revenue = _number_for_label(message.content, _REVENUE_LABEL)
+            previous_cost = _number_for_label(message.content, r"cost of sales|cost of goods sold|cogs")
+            if previous_revenue is not None and previous_cost is not None:
+                revenue = revenue if revenue is not None else previous_revenue
+                sales_cost = sales_cost if sales_cost is not None else previous_cost
+                break
+        if sales_cost is not None:
+            sales_cost *= 1 + Decimal(increase.group(1)) / 100
 
     cost = _number_for_label(query, r"cost|purchase\s+price")
     residual = _number_for_label(query, r"residual(?:\s+value)?|salvage(?:\s+value)?")
@@ -113,7 +135,17 @@ def build_calculation(query: str) -> DeterministicCalculation | None:
     change = re.search(rf"\bfrom\s+{_NUMBER}\s+to\s+{_NUMBER}", query, re.I)
     actual = _number_for_label(query, r"actual")
     budget = _number_for_label(query, r"budget")
-    if change and re.search(r"percent|percentage|change|growth", query, re.I):
+    if revenue is not None and sales_cost is not None and re.search(r"\b(?:gross profit|margin)\b", query, re.I):
+        if revenue == 0:
+            return None
+        margin = bool(re.search(r"\bmargin\b", query, re.I))
+        expression = f"({revenue} - {sales_cost}) / {revenue} * 100" if margin else f"{revenue} - {sales_cost}"
+        formula_name = "Gross profit margin" if margin else "Gross profit"
+        operation = "percentage" if margin else "difference"
+        output_unit = "percent" if margin else "currency"
+        inputs = [_widget_input("revenue", "Revenue", revenue, "currency"),
+                  _widget_input("cost_of_sales", "Cost of sales", sales_cost, "currency")]
+    elif change and re.search(r"percent|percentage|change|growth", query, re.I):
         old = Decimal(change.group(1).replace(",", ""))
         new = Decimal(change.group(2).replace(",", ""))
         if old == 0:
@@ -163,7 +195,7 @@ def build_calculation(query: str) -> DeterministicCalculation | None:
         inputs=inputs,
         output_label="Annual depreciation" if formula_name.startswith("Straight") else "Result",
         output_value=rendered,
-        output_unit="currency/year" if formula_name.startswith("Straight") else "number",
+        output_unit="currency/year" if formula_name.startswith("Straight") else output_unit,
         chart_type="kpi",
         chart_label=formula_name,
         chart_x_label="",

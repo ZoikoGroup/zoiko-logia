@@ -209,6 +209,13 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
 # Always sent: cheap, and a table or a formula can be the right shape for any
 # answer.
 _CORE_FORMATTING = (
+        "Lead with the direct answer or result. Use concise paragraphs, and only add "
+        "## headings when the answer needs sections. Never print internal subject-matter "
+        "classification labels. Keep short definitions short; use a worked example when "
+        "requested. Use plain text for simple arithmetic and currency amounts; reserve "
+        "display LaTeX for equations that need it. Preserve relevant prior user figures. "
+        "Separate framework-specific rules and exceptions; do not invent thresholds or "
+        "present optional practices as mandatory standards.\n"
         "When the user asks for a table, a comparison, 'tabular format', or the "
         "content is naturally a comparison of two or more items across "
         "attributes, present it as a GitHub-flavoured Markdown table using pipe "
@@ -222,7 +229,7 @@ _CORE_FORMATTING = (
         "in both cases the reader sees rows of literal pipe characters instead "
         "of a table. Never indent table rows to sit them under a heading or a "
         "numbered point — leave them flush left.\n"
-        "For mathematical formulas, methods and calculations, use LaTeX so they "
+        "For complex mathematical formulas, use LaTeX so they "
         "render cleanly: wrap an INLINE formula or value in single dollar signs "
         "$...$ (e.g. $Depreciation = (Cost - Salvage) / Life$), and put a "
         "standalone/display equation on its own line wrapped in double dollar "
@@ -598,7 +605,10 @@ def build_web_grounded_prompt(
             )
         return (
             gate
-            + "Answer the user's question clearly and accurately using your own "
+            + "Do not state a current/latest rate, statistic, price or dated fact from "
+            "memory. Retrieve it with an available tool, or say it could not be verified. "
+            "Do not invent a missing report or its page references. "
+            "Answer the user's question clearly and accurately using your own "
             "professional knowledge and any figures given in the question. Use "
             "short paragraphs or bullet points. If the user asks for a chart, "
             "table, graph or diagram and provides the required figures, produce "

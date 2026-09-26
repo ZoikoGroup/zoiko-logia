@@ -29,9 +29,13 @@ _EXECUTION = re.compile(r"\b(reconcile|compare|extract|calculate|compute|review|
 # but "how is" was missing here, so it was treated as professional policy
 # research and asked for an engagement, jurisdiction and period end date.
 _EDUCATIONAL = re.compile(
-    r"^\s*(what is|what are|what does|explain|define|describe|"
+    r"^[\s\"\u201c\u201d']*(what is|what are|what does|explain|define|describe|compare|list|"
     r"how does|how do|how is|how are|how to|why does|why is|why are|when is|when does)\b",
     re.I,
+)
+_CLIENT_SPECIFIC = re.compile(
+    r"\b(my|our|this|these|the client's)\s+(company|client|entity|transaction|contract|"
+    r"acquisition|business|financial statements|accounting policy)\b", re.I,
 )
 
 
@@ -62,7 +66,7 @@ def plan_workflow(request: AskKritonRequest) -> WorkflowPlan:
         elif document_count and (extract or execution):
             task_type, confidence = "document_evidence_extraction", 0.94
             reasons = ["DOCUMENTS_ATTACHED", "EVIDENCE_INTENT"]
-        elif policy and not (educational and not selection.engagement_id):
+        elif policy and not (educational and not _CLIENT_SPECIFIC.search(query)):
             task_type, confidence = "policy_research", 0.88
             reasons = ["POLICY_APPLICABILITY_INTENT"]
         else:
@@ -76,7 +80,7 @@ def plan_workflow(request: AskKritonRequest) -> WorkflowPlan:
             _step("document.retrieve", "Selected documents are required as evidence."),
             _step("document.extract", "Relevant facts must be extracted from authorized documents."),
         ])
-    if task_type == "policy_research":
+    if task_type == "policy_research" or _POLICY.search(request.query):
         steps.extend([
             _step("source.research", "Current authoritative sources are required."),
             _step("policy.lookup", "The request asks for applicable requirements."),

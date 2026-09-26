@@ -118,6 +118,12 @@ class WorkflowPlan(BaseModel):
 
 # ── Request ──────────────────────────────────────────────────────────────────
 
+class ConversationMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=4000)
+
+
 class AskKritonRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -128,9 +134,9 @@ class AskKritonRequest(BaseModel):
     # resolve_policy() can escalate instead of looping forever on a query that
     # keeps coming back "needs clarification".
     clarification_cycle: int = 0
-    # Client-generated — scopes audit correlation to one chat thread. Not yet
-    # used for any server-side conversation memory.
+    # Client-generated correlation identifier, never an authorization grant.
     conversation_id: Optional[str] = None
+    conversation_history: List[ConversationMessage] = Field(default_factory=list, max_length=12)
     # Documents the user attached to this turn (app/domains/documents). Ids
     # only: ownership and readiness are re-verified server-side against the
     # caller's identity, because the client is not an authority on either.
