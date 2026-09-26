@@ -52,13 +52,33 @@ function stripInlineRefs(text: string): string {
     .replace(/[ \t]{2,}/g, " ");
 }
 
-/** KaTeX cannot render some typography the model inserts inside math. */
+/** KaTeX cannot render some typography the model inserts inside math
+ * (no-break/narrow spaces as thousands separators, en/em dashes as minus). */
+function cleanMathText(value: string): string {
+  return value.replace(/[\u00a0\u2007\u2009\u202f]/g, " ").replace(/[\u2012-\u2015\u2212]/g, "-");
+}
+
 function normaliseMathUnicode() {
   return (tree: Root) => {
-    type MathNode = { type: string; value?: string; children?: MathNode[] };
+    type MathNode = {
+      type: string;
+      value?: string;
+      children?: MathNode[];
+      data?: { hChildren?: HastNode[] };
+    };
+    type HastNode = { type: string; value?: string; children?: HastNode[] };
+    const cleanHast = (node: HastNode) => {
+      if (node.type === "text" && node.value) node.value = cleanMathText(node.value);
+      node.children?.forEach(cleanHast);
+    };
     const visit = (node: MathNode) => {
       if ((node.type === "inlineMath" || node.type === "math") && node.value) {
-        node.value = node.value.replace(/[\u00a0\u202f]/g, " ").replace(/[\u2013\u2014]/g, "-");
+        node.value = cleanMathText(node.value);
+        // mdast-util-math copies the formula into data.hChildren while
+        // parsing (display maths nests it as pre > code > text), and
+        // rehype-katex renders THAT copy — cleaning only node.value left
+        // KaTeX warning on every render.
+        node.data?.hChildren?.forEach(cleanHast);
       }
       node.children?.forEach(visit);
     };
