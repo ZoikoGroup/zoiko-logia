@@ -25,6 +25,8 @@ SUPPORT_READ = "support.read"        # list tickets, list/get incidents + stats
 SUPPORT_MANAGE = "support.manage"    # create/update tickets, incident action + close
 MODEL_MANAGE = "model.manage"        # model & prompt registry: list, approve, test-run
 AUDIT_CORRECT = "audit.correct"      # issue compensating events (ledger corrections)
+SAFETY_READ = "safety.read"
+SAFETY_MANAGE = "safety.manage"
 
 ALL_PERMISSIONS = frozenset({
     SOURCE_READ,
@@ -33,6 +35,7 @@ ALL_PERMISSIONS = frozenset({
     SUPPORT_MANAGE,
     MODEL_MANAGE,
     AUDIT_CORRECT,
+    SAFETY_READ, SAFETY_MANAGE,
 })
 
 # ── Role → permission matrix (approved product mapping) ─────────────────────
@@ -46,6 +49,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
         SOURCE_READ, SOURCE_MANAGE,
         SUPPORT_READ, SUPPORT_MANAGE,
         MODEL_MANAGE, AUDIT_CORRECT,
+        SAFETY_READ, SAFETY_MANAGE,
     }),
     # "Source licensing" (seed description).
     "Source Admin": frozenset({SOURCE_READ, SOURCE_MANAGE}),
@@ -54,9 +58,9 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     # "Jurisdiction rollout" — needs the jurisdiction/source readiness views.
     "Jurisdiction Lead": frozenset({SOURCE_READ}),
     # "Risk policy, Evaluation gates, Model & prompt registry".
-    "Risk Admin": frozenset({MODEL_MANAGE}),
+    "Risk Admin": frozenset({MODEL_MANAGE, SAFETY_READ, SAFETY_MANAGE}),
     # "Read-only access for audit purposes" — reads, never writes.
-    "System Auditor": frozenset({SOURCE_READ, SUPPORT_READ}),
+    "System Auditor": frozenset({SOURCE_READ, SUPPORT_READ, SAFETY_READ}),
 }
 
 
