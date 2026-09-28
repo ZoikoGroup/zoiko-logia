@@ -209,6 +209,12 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
 # Always sent: cheap, and a table or a formula can be the right shape for any
 # answer.
 _CORE_FORMATTING = (
+        "If the message contains several questions or tasks, answer EVERY one, in "
+        "order, each under its own short heading — including any chart or table it "
+        "asks for; never answer only the first or skip one. If the user supplies "
+        "their own answer (e.g. '… → 36%'), work the question out independently, "
+        "show the working, and say whether their answer is correct — never reply "
+        "with a bare 'correct'.\n"
         "Lead with the direct answer or result. Use concise paragraphs, and only add "
         "## headings when the answer needs sections. Never print internal subject-matter "
         "classification labels. Keep short definitions short; use a worked example when "
