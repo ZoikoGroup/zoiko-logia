@@ -1,7 +1,9 @@
 import logging
+import re
 import os
 from groq import AsyncGroq
 
+from app.domains.model_gateway.agent import rejected_tool_call
 from app.domains.model_gateway.tools.chart_tool import CHART_TOOL_SCHEMA, TOOL_NAME, ChartToolError, build_chart_fence
 
 logger = logging.getLogger(__name__)
@@ -94,13 +96,7 @@ class GroqAdapter:
             {"role": "user", "content": prompt},
         ]
         try:
-            response = await self.client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=[CHART_TOOL_SCHEMA],
-                tool_choice="auto",
-                temperature=0.0,  # Deterministic routing/answering per governance
-            )
+            response = await self._create_with_tool_recovery(model, messages)
             message = response.choices[0].message
             tool_calls = message.tool_calls or []
             if not tool_calls:
@@ -114,6 +110,35 @@ class GroqAdapter:
                 model,
             )
             return f"[Error connecting to Groq API: {str(e)}]"
+
+    async def _create_with_tool_recovery(self, model: str, messages: list):
+        """Groq validates a proposed render_chart call against the schema
+        itself and rejects the whole request (400 tool_use_failed) when the
+        arguments don't fit — which failed the entire answer ("Kriton could not
+        compose a response"), e.g. for a radar chart. Tell the model what was
+        wrong and retry once; if that also fails, answer with tools disabled
+        (the prompt's own chart-block instructions still produce a chart)."""
+        attempt_messages = list(messages)
+        for tool_choice in ("auto", "auto", "none"):
+            try:
+                return await self.client.chat.completions.create(
+                    model=model,
+                    messages=attempt_messages,
+                    tools=[CHART_TOOL_SCHEMA],
+                    tool_choice=tool_choice,
+                    temperature=0.0,  # Deterministic routing/answering per governance
+                )
+            except Exception as exc:
+                rejection = rejected_tool_call(exc)
+                if rejection is None or tool_choice == "none":
+                    raise
+                logger.info("render_chart call rejected by provider; retrying: %s", rejection[1][:200])
+                attempt_messages = attempt_messages + [{
+                    "role": "user",
+                    "content": f"Your render_chart call was rejected as invalid: {rejection[1]} "
+                               "Correct the arguments to match the tool's schema.",
+                }]
+        raise RuntimeError("unreachable")
 
     async def _resolve_chart_tool_calls(self, model: str, messages: list, message, tool_calls) -> str:
         """Validate each render_chart call the model made, tell it the
@@ -171,4 +196,8 @@ class GroqAdapter:
         final_text = final.choices[0].message.content or ""
         if not fences:
             return final_text
-        return final_text.rstrip() + "\n\n" + "\n\n".join(fences)
+        # The validated tool chart is the one that renders: drop any chart the
+        # model also typed into its prose (two copies of the same chart were
+        # shown) and any identical duplicate tool calls.
+        final_text = re.sub(r"```chart[\s\S]*?```", "", final_text).rstrip()
+        return final_text + "\n\n" + "\n\n".join(dict.fromkeys(fences))

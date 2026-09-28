@@ -26,7 +26,7 @@ INDICATORS: dict[str, tuple[str, str]] = {
     "inflation": ("FP.CPI.TOTL.ZG", "Inflation, consumer prices (annual %)"),
     "unemployment": ("SL.UEM.TOTL.ZS", "Unemployment, total (% of labour force)"),
     "population": ("SP.POP.TOTL", "Population, total"),
-    "tax_revenue_pct_gdp": ("GC.TAX.TOTL.GD.ZS", "Tax revenue (% of GDP)"),
+    "tax_revenue_pct_gdp": ("GC.TAX.TOTL.GD.ZS", "Tax revenue, central government only (% of GDP)"),
     "government_debt_pct_gdp": ("GC.DOD.TOTL.GD.ZS", "Central government debt, total (% of GDP)"),
     "real_interest_rate": ("FR.INR.RINR", "Real interest rate (%)"),
     "exports_pct_gdp": ("NE.EXP.GNFS.ZS", "Exports of goods and services (% of GDP)"),

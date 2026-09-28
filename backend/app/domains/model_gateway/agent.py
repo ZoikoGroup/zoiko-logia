@@ -99,7 +99,7 @@ def _canonical_arguments(raw: str | None) -> str:
         return raw or ""
 
 
-def _rejected_tool_call(exc: Exception) -> tuple[str, str] | None:
+def rejected_tool_call(exc: Exception) -> tuple[str, str] | None:
     """(tool name, reason) when a provider refused a proposed tool call for
     not matching the declared schema (Groq: HTTP 400, code tool_use_failed),
     else None. Duck-typed on the error body so no provider SDK is imported."""
@@ -227,7 +227,7 @@ async def run_agent(
         try:
             response = await create("auto", remaining)
         except Exception as exc:
-            rejection = _rejected_tool_call(exc)
+            rejection = rejected_tool_call(exc)
             if rejection is None:
                 raise
             # The provider validated the proposed call against the tool's

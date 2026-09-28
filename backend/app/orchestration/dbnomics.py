@@ -235,7 +235,7 @@ _WDI_INDICATORS: tuple[tuple[re.Pattern[str], str, str], ...] = (
     (re.compile(r"\bgdp per capita|per capita income\b", re.I),
      "NY.GDP.PCAP.CD", "GDP per capita (current US$)"),
     (re.compile(r"\btax[- ]to[- ]gdp|tax revenue\b", re.I),
-     "GC.TAX.TOTL.GD.ZS", "Tax revenue (% of GDP)"),
+     "GC.TAX.TOTL.GD.ZS", "Tax revenue, central government only (% of GDP)"),
     # Must come before the generic "gdp" rule below: "government debt as a
     # percentage of GDP" contains the literal word "gdp", so with the generic
     # rule first it always won (returning GDP growth data for a debt

@@ -195,7 +195,10 @@ function SourceButton({ citation }: { citation: SourceCitation }) {
  * grounded on the strength of the route alone — retrieval fails soft, so an
  * unreachable SearXNG produces a confident-looking answer with no provenance
  * behind it at all. */
-function routeLabel(route: string | null, citationCount: number) {
+function routeLabel(route: string | null, citationCount: number, nextActionType?: string) {
+  // A provider/composition failure travels the refusal route, but it is not a
+  // policy decision — saying "policy blocked" sent users looking for a rule.
+  if (nextActionType === "composition_failed") return "Not answered — please try again";
   if (route !== "LLM") return ROUTE_LABELS[route ?? ""] ?? route;
   if (citationCount === 0) return "Answered — model knowledge, no sources retrieved";
   return `Answered — grounded in ${citationCount} source${citationCount === 1 ? "" : "s"}`;
@@ -579,7 +582,7 @@ function ConversationTurn({
                   {outcomeStyle && <span className={`text-xs font-semibold ${outcomeStyle.text}`}>{outcomeStyle.label}</span>}
                 </div>
                 <p className="mt-0.5 text-xs text-muted">
-                  {routeLabel(route, result.answer?.citations.length ?? 0)}
+                  {routeLabel(route, result.answer?.citations.length ?? 0, result.next_action?.type)}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -658,13 +661,18 @@ function ConversationTurn({
               />
             </div>
 
-            {bundle && (
+            {/* Governed-evidence details only mean something when governed
+                sources were used; "0 eligible · 63 excluded · unknown sources"
+                under every answer read as an error. The risk level stays. */}
+            {bundle && bundle.eligible_source_count > 0 ? (
               <p className="mt-4 border-t border-line pt-3 text-[11px] text-muted">
                 {bundle.eligible_source_count} eligible
                 {bundle.excluded_source_count > 0 ? ` · ${bundle.excluded_source_count} excluded` : ""} · {result.confidence_state.replaceAll("_", " ")} confidence
                 {bundle.jurisdiction ? ` · ${bundle.jurisdiction}` : " · Any jurisdiction"} · {bundle.freshness_state} sources · {style?.label ?? "Unknown risk"}
               </p>
-            )}
+            ) : style ? (
+              <p className="mt-4 border-t border-line pt-3 text-[11px] text-muted">{style.label}</p>
+            ) : null}
           </article>
         </div>
       )}

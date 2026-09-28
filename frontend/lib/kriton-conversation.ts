@@ -5,12 +5,27 @@ import type { Turn } from "@/lib/ask-kriton-storage";
 
 export type ConversationMessage = { role: "user" | "assistant"; content: string };
 
+/** Backend limit (AskKritonRequest.conversation_history max_length). */
+const MAX_HISTORY_MESSAGES = 12;
+/** Earlier answers replayed so "show the same data as a line chart" has the
+ * data: live figures live in the answer, not in the question that asked. */
+const ANSWERS_REPLAYED = 2;
+const ANSWER_CHARS = 1500;
+
 export function conversationHistory(turns: Turn[]): ConversationMessage[] {
   // Document-derived answers are not replayed as evidence on a later turn.
   // A document must be selected and authorized again before being consulted.
-  return turns.filter((turn) => turn.result && !turn.attachments?.length)
-    .slice(-12)
-    .map((turn) => ({ role: "user", content: turn.submittedQuery.slice(0, 4000) }));
+  const recent = turns.filter((turn) => turn.result && !turn.attachments?.length)
+    .slice(-(MAX_HISTORY_MESSAGES - ANSWERS_REPLAYED));
+  const messages: ConversationMessage[] = [];
+  recent.forEach((turn, index) => {
+    messages.push({ role: "user", content: turn.submittedQuery.slice(0, 4000) });
+    const answer = turn.result?.answer?.text?.trim();
+    if (answer && index >= recent.length - ANSWERS_REPLAYED) {
+      messages.push({ role: "assistant", content: answer.slice(0, ANSWER_CHARS) });
+    }
+  });
+  return messages;
 }
 
 export function splitQuestions(text: string): string[] {
