@@ -245,10 +245,19 @@ def _widget_input(name: str, label: str, value: Decimal, unit: str) -> WidgetInp
     )
 
 
+def _normalise_arithmetic(text: str) -> str:
+    """Make money-formatted working checkable. "£74,000 ÷ £250,000 × 100 =
+    29.6%" was read as "250,000 × 100" (the £ split the expression) and a
+    correct answer was escalated as a calculation mismatch."""
+    text = re.sub(r"(?:[£$€₹]|\bRs\.?|\bINR|\bUSD|\bGBP|\bEUR)\s*(?=\d)", "", text)
+    text = re.sub(r"[\u2010-\u2015\u2212]", "-", text)          # unicode dashes / minus sign
+    return re.sub(r"(\d(?:[\d,]*\d)?(?:\.\d+)?)\s*%(?=\s*[*×/÷)])", r"(\1/100)", text)  # "10% ×" -> (10/100)
+
+
 def validate_answer_calculations(answer_text: str) -> list[str]:
     """Return failures only for simple equations we can verify with certainty."""
     failures: list[str] = []
-    normalized = answer_text.replace("\\times", "*").replace("\\div", "/")
+    normalized = _normalise_arithmetic(answer_text.replace("\\times", "*").replace("\\div", "/"))
     for match in _EQUATION.finditer(normalized):
         expression = match.group("expression").strip()
         if not any(operator in expression for operator in "+-*/×÷"):

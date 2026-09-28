@@ -70,3 +70,27 @@ def test_statistics_cover_more_countries(query, expected) -> None:
 def test_country_codes_and_aliases_resolve() -> None:
     assert canonical_country("Czechia") == "czech republic"
     assert canonical_country("NZL") == "new zealand"
+
+
+# ── 2026-09-28 review: correct answers escalated as "calculation mismatch" ───
+
+from app.orchestration.calculation_service import validate_answer_calculations  # noqa: E402
+
+
+@pytest.mark.parametrize("line", [
+    "£74,000 ÷ £250,000 × 100 = 29.6%",          # was read as "250,000 × 100" and escalated
+    "£250,000 − £176,000 = £74,000",       # unicode minus sign
+    "Rs. 1,00,000 × 8% = Rs. 8,000",             # rupees and a percentage operand
+    "(74,000 / 250,000) × 100 = 29.6%",
+])
+def test_money_formatted_working_is_not_a_false_mismatch(line) -> None:
+    assert validate_answer_calculations(line) == []
+
+
+@pytest.mark.parametrize("line", [
+    "£250,000 − £176,000 = £84,000",
+    "£74,000 ÷ £250,000 × 100 = 32%",
+    "2 + 2 = 5",
+])
+def test_wrong_arithmetic_is_still_caught(line) -> None:
+    assert validate_answer_calculations(line)
