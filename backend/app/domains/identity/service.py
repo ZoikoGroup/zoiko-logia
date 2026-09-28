@@ -4,6 +4,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import supabase_admin
 from app.domains.identity.models import Role, Tenant, User
 from app.domains.identity.schemas import ProvisionRequest, UserCreateRequest
+import logging
+
+log = logging.getLogger("uvicorn.error")
+
+
+def _sync_app_metadata_best_effort(user_id: str, tenant_id: str, role: str) -> None:
+    """Best-effort stamp of tenant_id/role into the Supabase user's
+    app_metadata so future-issued tokens carry it (see database.py's
+    _identity_from_request). The local DB row is the source of truth for
+    get_current_user, so a missing/misconfigured service-role key must not
+    brick provisioning — without this, login 503s right after the profile
+    row is committed whenever SUPABASE_SERVICE_ROLE_KEY is absent."""
+    try:
+        supabase_admin.update_app_metadata(user_id, tenant_id, role)
+    except supabase_admin.SupabaseNotConfiguredError:
+        log.warning(
+            "app_metadata sync skipped: SUPABASE_SERVICE_ROLE_KEY unset. "
+            "Provisioning proceeded; tokens will not carry tenant_id/role "
+            "until the service-role key is configured."
+        )
+    except Exception:
+        log.warning(
+            "app_metadata sync skipped for user %s: admin API call failed.", user_id,
+        )
 
 
 async def get_user_by_id(db: AsyncSession, user_id: str) -> User | None:
@@ -42,7 +66,7 @@ async def create_user(db: AsyncSession, tenant_id: str, payload: UserCreateReque
     db.add(user)
     await db.commit()
     await db.refresh(user)
-    supabase_admin.update_app_metadata(user.id, tenant_id, payload.role)
+    _sync_app_metadata_best_effort(user.id, tenant_id, payload.role)
     return user
 
 
@@ -74,7 +98,7 @@ async def provision_profile(db: AsyncSession, user_id: str, email: str, payload:
     db.add(user)
     await db.commit()
     await db.refresh(user)
-    supabase_admin.update_app_metadata(user.id, user.tenant_id, user.role)
+    _sync_app_metadata_best_effort(user.id, user.tenant_id, user.role)
     return user
 
 

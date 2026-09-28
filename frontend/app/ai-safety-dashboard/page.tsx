@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/governance/PageHeader";
-import { Card } from "@/components/governance/Card";
 import { Pill } from "@/components/governance/Pill";
 import {
   ShieldCheck,
@@ -59,6 +58,7 @@ export default function AiSafetyDashboardPage() {
   const [events, setEvents] = useState<SafetyEvent[]>([]);
   const [escalations, setEscalations] = useState<Escalation[]>([]);
   const [loading, setLoading] = useState(true);
+  const [now] = useState(() => Date.now());
 
   async function load() {
     setLoading(true);
@@ -69,6 +69,7 @@ export default function AiSafetyDashboardPage() {
   }
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount: the page starts in its loading snapshot and every later setState happens after an awaited network call
     load();
   }, []);
 
@@ -265,7 +266,7 @@ export default function AiSafetyDashboardPage() {
                 {escalations
                   .filter((e) => e.status !== "RESOLVED" && e.status !== "REFUSED")
                   .map((esc) => {
-                    const overdue = esc.sla_deadline && new Date(esc.sla_deadline).getTime() < Date.now();
+                    const overdue = esc.sla_deadline && new Date(esc.sla_deadline).getTime() < now;
                     return (
                       <div
                         key={esc.id}
