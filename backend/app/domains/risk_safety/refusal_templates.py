@@ -98,15 +98,15 @@ _TEMPLATES: dict[str, RefusalTemplate] = {
             "an auditor or a tax authority."
         ),
         safe_alternative=(
-            "I can help you handle it correctly instead:\n\n"
-            "- Identify which items are personal rather than business expenses\n"
-            "- Reclassify them appropriately (for example as director drawings, a loan "
-            "to the director or a distribution, depending on the rules that apply)\n"
-            "- Prepare the correcting journal entries\n"
-            "- Document the correction for your auditor\n"
-            "- Check whether any tax or disclosure adjustments are needed\n\n"
-            "Share the transaction details and your jurisdiction, and I'll help with the "
-            "compliant treatment."
+            "I can help you with the legitimate side instead:\n\n"
+            "- Identify the expenses and deductions you are genuinely entitled to claim\n"
+            "- Record and classify transactions correctly, with supporting evidence\n"
+            "- Prepare correcting journal entries for anything already misstated\n"
+            "- Explain how to disclose and correct past errors, including voluntary "
+            "disclosure where it applies\n"
+            "- Document the position for your auditor or tax adviser\n\n"
+            "Share the details and your jurisdiction, and I'll help with the compliant "
+            "treatment."
         ),
     ),
 

@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { cleanMathText, normaliseLatexDelimiters } from "@/lib/math-delimiters";
+import { indianiseRupeeAmounts } from "@/lib/number-format";
 import type { Root } from "mdast";
 import { CheckCircle2, Copy, Download, Table2 } from "lucide-react";
 import type { CalculationResult, VerifiedChartSpec } from "@/lib/api";
@@ -984,7 +985,7 @@ export function AnswerRenderer({
             rehypePlugins={[rehypeKatex]}
             components={mdComponents}
           >
-            {normaliseMarkdownTables(stripInlineRefs(normaliseLatexDelimiters(seg.content)))}
+            {normaliseMarkdownTables(stripInlineRefs(normaliseLatexDelimiters(indianiseRupeeAmounts(seg.content))))}
           </ReactMarkdown>
         ),
       )}
