@@ -92,6 +92,26 @@ async def test_retrieval_selects_exact_authorized_passage_and_records_denial(ret
     assert bundle.retrieval_plan.strategy == "rights_filtered_lexical_passages"
 
 
+async def test_retrieval_accepts_undetected_optional_framework(retrieval_db):
+    source, _, passage = await _source(
+        retrieval_db,
+        title="IFRS glossary",
+        text="Audit evidence supports the auditor's conclusion.",
+    )
+
+    bundle = await build_source_bundle(
+        retrieval_db,
+        query="audit evidence conclusion",
+        jurisdiction="GB",
+        framework=None,
+        tenant_id="tenant-a",
+    )
+
+    assert bundle.retrieval_plan.framework == ""
+    assert bundle.sources[0].id == source.id
+    assert bundle.passages[0].passage_id == passage.id
+
+
 async def test_model_transmission_gate_removes_retrieved_passage(retrieval_db):
     source, _, _ = await _source(
         retrieval_db, title="Internal standard",

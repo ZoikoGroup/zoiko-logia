@@ -50,13 +50,24 @@ def _lexical_score(query_tokens: set[str], content: str) -> float:
     return round((coverage * 0.85) + (min(density * 5, 1.0) * 0.15), 6)
 
 
-def build_retrieval_plan(*, jurisdiction: str, framework: str, top_k: int = 8) -> RetrievalPlan:
+def build_retrieval_plan(
+    *, jurisdiction: str | None, framework: str | None, top_k: int = 8,
+) -> RetrievalPlan:
+    """Build a replayable plan from optional automatically detected scope.
+
+    An empty value means that retrieval must not apply that scope filter. The
+    canonical plan schema intentionally stores strings, so normalize optional
+    task-context values at this boundary instead of allowing ``None`` to reach
+    Pydantic or the licensing layer.
+    """
+    normalized_jurisdiction = jurisdiction or ""
+    normalized_framework = framework or ""
     return RetrievalPlan(
         retrieval_plan_id=f"rp-{uuid.uuid4().hex[:12]}",
         strategy="rights_filtered_lexical_passages",
         methods=["keyword"],
-        jurisdiction=jurisdiction,
-        framework=framework,
+        jurisdiction=normalized_jurisdiction,
+        framework=normalized_framework,
         requires_current_sources=True,
         top_k=top_k,
         index_version=INDEX_VERSION,
@@ -89,17 +100,19 @@ async def build_source_bundle(
     db: AsyncSession,
     *,
     query: str,
-    jurisdiction: str,
+    jurisdiction: str | None,
     tenant_id: str,
-    framework: str = "",
+    framework: str | None = "",
     effective_date: date | None = None,
     top_k: int = 8,
 ) -> SourceBundle:
     """Execute a bounded, context-aware lexical passage search."""
-    plan = build_retrieval_plan(jurisdiction=jurisdiction, framework=framework, top_k=top_k)
+    plan = build_retrieval_plan(
+        jurisdiction=jurisdiction, framework=framework, top_k=top_k,
+    )
     context = SourceUseContext(
-        tenant_id=tenant_id, jurisdiction=jurisdiction,
-        framework=framework, effective_date=effective_date,
+        tenant_id=tenant_id, jurisdiction=plan.jurisdiction,
+        framework=plan.framework, effective_date=effective_date,
     )
 
     eligible_rows: list[tuple[Source, SourceVersion]] = []
@@ -205,7 +218,7 @@ async def build_source_bundle(
             f"{item.source_id}:{item.passage_id or item.source_version_id or ''}:{item.reason_code}"
             for item in excluded
         ],
-        jurisdiction=jurisdiction,
+        jurisdiction=plan.jurisdiction,
         authority_level=authority_level,
         freshness_state="current" if selected_passages else "unknown",
         licence_state="permitted" if selected_passages else "unknown",

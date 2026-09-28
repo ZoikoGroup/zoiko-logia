@@ -9,7 +9,12 @@ MIN_BOUNDS = {
     "accuracy",
     "precision",
     "recall",
-    "f1_score"
+    "f1_score",
+    "minimum_case_count",
+    "useful_completion",
+    "claim_support",
+    "numeric_correctness",
+    "correct_abstention",
 }
 
 MAX_BOUNDS = {
@@ -20,7 +25,8 @@ MAX_BOUNDS = {
     "over_refusal_rate",
     "pii_leak",
     "secrets_leak",
-    "cross_tenant_leak"
+    "cross_tenant_leak",
+    "critical_error_rate",
 }
 
 

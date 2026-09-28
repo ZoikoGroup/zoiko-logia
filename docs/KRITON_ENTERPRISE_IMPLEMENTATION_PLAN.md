@@ -219,6 +219,8 @@ The sections below are in dependency order. Each feature states **what exists**,
 
 ### F8 — Real evaluation and release qualification
 
+**Engineering status (25 September 2026):** real candidate execution, tenant-owned versioned datasets, frozen development/release splits, deterministic contamination fingerprints, candidate-manifest verification, case-level traces, reviewer judgments and adjudication, observed aggregate and slice metrics, fail-closed empty/incomplete runs, mandatory critical-error and minimum-corpus gates, authenticated promotion authorization, migration, contract and focused tests are implemented on this branch. Production qualification still requires the owner-approved 300+ case corpus, qualified reviewers, a frozen holdout, executed provider/outage suites and named release-authority approval.
+
 **What exists:** `evaluation/service.py` and evaluation models/routes exist. The service currently derives some metrics from safety checks on gold answers and supplies fixed/simulated metrics for others, including an empty dataset. Those values cannot approve a release.
 
 **Implement:** versioned expert corpus, frozen development/release holdouts, actual candidate execution, per-case traces, reviewer judgments, observed metrics, slice scorecards, and a promotion gate that rejects incomplete runs.
