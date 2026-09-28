@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import CheckConstraint, Float, ForeignKey, Integer, JSON, String, DateTime, UniqueConstraint, event
+from sqlalchemy import CheckConstraint, Float, ForeignKey, Integer, JSON, String, Text, DateTime, UniqueConstraint, event
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -43,6 +43,13 @@ class ReviewCase(Base):
     policy_version: Mapped[str] = mapped_column(String, nullable=False, default="pm_1.0")
     classifier_version: Mapped[str] = mapped_column(String, nullable=False, default="rc_1.0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # Reviewer-facing columns added by migration k0e1f2g3h4i5 (query_text and
+    # review_note are NOT NULL there). Mapped here so every insert supplies them.
+    query_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    reviewer_decision: Mapped[str | None] = mapped_column(String, nullable=True)
+    reviewer_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    review_note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class EvidenceBundleManifest(Base):

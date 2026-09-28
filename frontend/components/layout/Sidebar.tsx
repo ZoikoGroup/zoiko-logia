@@ -17,7 +17,7 @@ export function Sidebar({
 }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { role } = useRole();
+  const { role, roleReady } = useRole();
   const { signOut, user, profile } = useAuth();
   // Prefer the provisioned profile's name (the real DB row) over Supabase's
   // user_metadata, which is only what the signup form stashed and can drift
@@ -73,8 +73,15 @@ export function Sidebar({
         </div>
       </div>
 
-      <nav className="flex-1 overflow-y-auto py-4 space-y-1">
-        {visibleSections.map((section) => {
+      <nav className="flex-1 overflow-y-auto py-4 space-y-1" aria-busy={!roleReady}>
+        {!roleReady && (
+          <div className="space-y-2 px-3" aria-label="Loading menu">
+            {[0, 1, 2, 3].map((i) => (
+              <div key={i} className="h-8 rounded-lg bg-soft animate-pulse" />
+            ))}
+          </div>
+        )}
+        {roleReady && visibleSections.map((section) => {
           const isOpen = expanded.has(section.id) || section.items.some((item) => navHref(item.slug) === pathname);
           return (
             <div key={section.id}>

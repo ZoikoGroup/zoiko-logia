@@ -6,6 +6,9 @@ import { useAuth } from "@/hooks/useAuth";
 
 type RoleContextValue = {
   role: RoleCode;
+  /** False while a signed-in user's real role is still being fetched —
+   * role-gated UI should wait rather than render the fail-closed fallback. */
+  roleReady: boolean;
   setRole: (role: RoleCode) => void;
 };
 
@@ -18,7 +21,7 @@ function readRoleCookie(): RoleCode {
 }
 
 export function RoleProvider({ children }: { children: ReactNode }) {
-  const { profile, session, loading } = useAuth();
+  const { profile, session, loading, profileLoading } = useAuth();
   const [demoRole, setDemoRole] = useState<RoleCode>(DEFAULT_ROLE);
 
   useEffect(() => {
@@ -35,15 +38,20 @@ export function RoleProvider({ children }: { children: ReactNode }) {
   // /auth/me failed or hasn't produced a known role, the effective role
   // degrades to UNVERIFIED_ROLE rather than falling back to the cookie
   // demo default (Admin). Only the genuinely session-less preview keeps the
-  // cookie role.
-  const role = resolveEffectiveRole(profile?.role, demoRole, Boolean(session && !loading));
+  // cookie role. While the profile is still loading the role is not yet
+  // known: stay fail-closed (never the Admin demo default) and report
+  // roleReady=false so the nav waits instead of flashing the Learner menu.
+  const role = resolveEffectiveRole(profile?.role, demoRole, Boolean(session));
+  // Only the first fetch blocks: a background re-fetch (e.g. on the hourly
+  // TOKEN_REFRESHED) keeps showing the profile already loaded.
+  const roleReady = !loading && !(session && profileLoading && !profile);
 
   function setRole(next: RoleCode) {
     document.cookie = `${ROLE_COOKIE}=${encodeURIComponent(next)}; path=/; max-age=${60 * 60 * 24 * 7}`;
     setDemoRole(next);
   }
 
-  return <RoleContext.Provider value={{ role, setRole }}>{children}</RoleContext.Provider>;
+  return <RoleContext.Provider value={{ role, roleReady, setRole }}>{children}</RoleContext.Provider>;
 }
 
 export function useRole(): RoleContextValue {

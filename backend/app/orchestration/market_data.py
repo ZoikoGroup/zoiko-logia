@@ -26,7 +26,7 @@ cannot travel this path — see the market_data package docstring.
 """
 from __future__ import annotations
 
-from app.domains.market_data import registry, service
+from app.domains.market_data import identity, registry, service
 from app.domains.market_data.schemas import (
     CompanyProfile,
     FilingRecord,
@@ -182,24 +182,40 @@ def _profile_source(profile: CompanyProfile) -> WebSource:
     )
 
 
+def _source_for(intent: str, result) -> WebSource | None:
+    try:
+        if intent == registry.INTENT_QUOTE and isinstance(result, StockQuote):
+            return _quote_source(result)
+        if intent == registry.INTENT_HISTORY and isinstance(result, list) and result:
+            return _history_source(result)
+        if intent == registry.INTENT_FUNDAMENTALS and isinstance(result, list) and result:
+            return _fundamentals_source(result)
+        if intent == registry.INTENT_FILINGS and isinstance(result, list) and result:
+            return _filings_source(result)
+        if isinstance(result, CompanyProfile):
+            return _profile_source(result)
+    except Exception:  # noqa: BLE001 — rendering must never break the request
+        return None
+    return None
+
+
 async def fetch_market_sources(query: str) -> list[WebSource]:
-    """Return grounding sources for a market/company question, else []."""
+    """Return grounding sources for a market/company question, else [].
+
+    A question naming two or more well-known companies ("Compare Apple and
+    Microsoft...") is a comparison, not a single-entity lookup — routed to
+    fetch_market_data_for_companies() so both get fetched and grounded,
+    rather than resolving to whichever one company the single-entity path
+    happened to match first and silently dropping the rest."""
+    companies = identity.find_all_known_names(query)
+    if len(companies) >= 2:
+        results = await service.fetch_market_data_for_companies(query, companies)
+        sources = [_source_for(intent, result) for result, _provider, intent, _label in results]
+        return [s for s in sources if s is not None]
+
     outcome = await service.fetch_market_data(query)
     if outcome is None:
         return []
-
     result, _provider, intent = outcome
-    try:
-        if intent == registry.INTENT_QUOTE and isinstance(result, StockQuote):
-            return [_quote_source(result)]
-        if intent == registry.INTENT_HISTORY and isinstance(result, list) and result:
-            return [_history_source(result)]  # type: ignore[arg-type]
-        if intent == registry.INTENT_FUNDAMENTALS and isinstance(result, list) and result:
-            return [_fundamentals_source(result)]  # type: ignore[arg-type]
-        if intent == registry.INTENT_FILINGS and isinstance(result, list) and result:
-            return [_filings_source(result)]  # type: ignore[arg-type]
-        if isinstance(result, CompanyProfile):
-            return [_profile_source(result)]
-    except Exception:  # noqa: BLE001 — rendering must never break the request
-        return []
-    return []
+    source = _source_for(intent, result)
+    return [source] if source is not None else []

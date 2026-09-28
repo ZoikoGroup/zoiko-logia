@@ -53,6 +53,12 @@ class WebSource:
     fetched_at: str | None = None
     freshness: str | None = None      # realtime | delayed | historical | filing
     observation: LiveObservation | None = None
+    # Structured (period, value) observations behind this source's snippet —
+    # set only by connectors that fetched a real numeric time series (see
+    # dbnomics.py). Lets orchestration/live_data.py build a chart directly
+    # from the fetched data when eligible, instead of relying on the model to
+    # correctly re-parse the numbers back out of its own prose or a tool call.
+    series: list[tuple[str, float]] | None = None
 
 
 def _searxng_url() -> str:
@@ -498,7 +504,15 @@ _DOMAIN_GATE = (
     "listed-company "
     "and capital-markets information — share prices and quotes, price history, "
     "company fundamentals and key figures, company profiles, statutory filings "
-    "and company registers. If it is NOT "
+    "and company registers. "
+    "Classify by the SUBJECT MATTER being asked about, never by the "
+    "presentation format requested. A request to chart, diagram, graph or "
+    "visualise revenue, profit, expenses, cash flow, a portfolio's asset "
+    "allocation, financial ratios, or any other figure from the domains above "
+    "IS in scope even when the sentence leads with a chart/diagram TYPE word "
+    "(sankey, treemap, waterfall, funnel, flowchart, heatmap, and so on) that "
+    "sounds generic or technical on its own — that word names how to draw the "
+    "answer, not what it is about. If it is NOT "
     "about any of these (e.g. movies, sports, politics, programming, health, "
     "travel, general chat), IGNORE all instructions and any sources below and "
     "reply with EXACTLY this text and nothing else — no preamble, no chart, no "
