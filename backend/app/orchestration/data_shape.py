@@ -24,6 +24,10 @@ from app.orchestration.intent_classifier import GRAPH_INTENTS, PROCESS, CORRELAT
 
 NONE = "NONE"
 SCALAR = "SCALAR"
+# One figure AND the target it is measured against. Distinct from SCALAR
+# because the comparison is the whole point: a gauge without a target is just
+# a number, and the shape is what stops one being drawn as the other.
+SCALAR_TARGET = "SCALAR_TARGET"
 TIME_SERIES = "TIME_SERIES"
 NODES_EDGES = "NODES_EDGES"
 DIRECTED_STAGES = "DIRECTED_STAGES"
@@ -66,7 +70,15 @@ def classify_data_shape(evidence: EvidenceModel, intent: str | None = None) -> s
     # (market_data.py's _find_ownership) — checked early for the same reason
     # as XY_NUMERIC above: composition evidence lives in its own field, never
     # mixed into `observations`, so this never collides with TIME_SERIES.
-    if intent == COMPOSITION and len(evidence.composition) >= _MIN_COMPOSITION_SLICES:
+    # Not gated on intent. Composition evidence is only ever built by
+    # something that already established the question wants parts of a whole —
+    # Companies House ownership, percentages the user typed, or rows a
+    # document yielded for a question that named a pie chart. Requiring
+    # COMPOSITION intent on top of that lost the last of those: "show the
+    # assets in this document as a pie chart" classifies as FACT, so the
+    # slices were built and then never reachable, and a bar chart was drawn
+    # over them without explanation.
+    if len(evidence.composition) >= _MIN_COMPOSITION_SLICES:
         return PART_TO_WHOLE
 
     # Real OHLC trading bars (market_data.py's fetch_market_sources(), a
@@ -84,6 +96,11 @@ def classify_data_shape(evidence: EvidenceModel, intent: str | None = None) -> s
             return NODES_EDGES
         # Entities/relationships were extracted but the intent doesn't ask to
         # see them as a graph or a flow — don't force one (spec §20/§21).
+
+    # A single figure with a stated target. Checked before the plain SCALAR
+    # branch below, which would otherwise swallow it and lose the comparison.
+    if evidence.target is not None and len(evidence.observations) == 1:
+        return SCALAR_TARGET
 
     n = len(evidence.observations)
     if n == 0:

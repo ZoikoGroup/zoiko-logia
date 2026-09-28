@@ -16,6 +16,7 @@ VISUALIZATION_REGISTRY: dict[str, dict[str, str]] = {
     "BOX": {"renderer": "ECHARTS"},
     "SCATTER": {"renderer": "ECHARTS"},
     "KPI": {"renderer": "KPI_TILE"},
+    "GAUGE": {"renderer": "ECHARTS"},
     "EVIDENCE_GRAPH": {"renderer": "GRAPH_ADAPTER"},
     "HEATMAP": {"renderer": "ECHARTS"},
     "PROCESS_FLOW": {"renderer": "FLOW_ADAPTER"},
@@ -27,7 +28,7 @@ VISUALIZATION_REGISTRY: dict[str, dict[str, str]] = {
 
 RENDERER_CAPABILITIES: dict[str, frozenset[str]] = {
     "RECHARTS": frozenset({"LINE", "BAR", "HISTOGRAM", "GROUPED_BAR"}),
-    "ECHARTS": frozenset({"HEATMAP", "BOX", "SCATTER", "DONUT", "CANDLESTICK"}),
+    "ECHARTS": frozenset({"HEATMAP", "BOX", "SCATTER", "DONUT", "CANDLESTICK", "GAUGE"}),
     "KPI_TILE": frozenset({"KPI"}),
     "GRAPH_ADAPTER": frozenset({"EVIDENCE_GRAPH"}),
     "FLOW_ADAPTER": frozenset({"PROCESS_FLOW"}),
@@ -44,6 +45,9 @@ FALLBACKS: dict[str, list[str]] = {
     "EVIDENCE_GRAPH": ["TABLE", "TEXT"],
     "PROCESS_FLOW": ["TEXT"],
     "KPI": ["TEXT"],
+    # KPI first: if the gauge itself cannot be built, the figure is still
+    # worth showing — just without the ratio the gauge existed to express.
+    "GAUGE": ["KPI", "TABLE", "TEXT"],
     "TABLE": ["TEXT"],
     "DONUT": ["TABLE", "TEXT"],
     "CANDLESTICK": ["TABLE", "TEXT"],

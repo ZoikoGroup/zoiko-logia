@@ -10,7 +10,8 @@ orchestrator.py's module docstring for why nothing here needs one yet.
 from __future__ import annotations
 
 from app.orchestration.data_shape import (
-    DIRECTED_STAGES, NODES_EDGES, OHLC, PART_TO_WHOLE, SCALAR, TIME_SERIES, XY_NUMERIC,
+    DIRECTED_STAGES, NODES_EDGES, OHLC, PART_TO_WHOLE, SCALAR, SCALAR_TARGET,
+    TIME_SERIES, XY_NUMERIC,
 )
 from app.orchestration.intent_classifier import COMPOSITION, CORRELATION, DISTRIBUTION, PRECISE_DATA
 from app.orchestration.visualization import ava_advisor
@@ -42,7 +43,12 @@ def score_candidates(
     def add_score(viz_type: str, s: float) -> None:
         scores[viz_type] = max(scores.get(viz_type, 0.0), s)
 
-    if data_shape == TIME_SERIES and observation_count >= _MIN_LINE_POINTS:
+    # OHLC counts as a series here too. Its points are the per-bar closes
+    # (orchestrator.py's _plot_points), so a LINE or BAR over trading data is
+    # the same deterministic drawing of values already in evidence — without
+    # this, an explicitly routed bar chart of a stock reached scoring and
+    # found no candidate to justify itself, and the visual was dropped.
+    if data_shape in (TIME_SERIES, OHLC) and observation_count >= _MIN_LINE_POINTS:
         add_score("LINE", 0.70)
         # BAR is only ever reachable via the router's "bar_chart" capability,
         # which itself requires an explicit "bar chart"/"column chart"
@@ -91,6 +97,14 @@ def score_candidates(
     if data_shape == SCALAR:
         add_score("KPI", 0.75)
 
+    # GAUGE is only reachable when a target was actually stated — SCALAR_TARGET
+    # cannot be produced without one (data_shape.py) — so an unconditional
+    # score here is safe on the same basis as CANDLESTICK's below. KPI scores
+    # too, as the fallback when the gauge spec fails to build.
+    if data_shape == SCALAR_TARGET:
+        add_score("GAUGE", 0.90)
+        add_score("KPI", 0.75)
+
     # CANDLESTICK is only ever reachable when real OHLC bars were actually
     # fetched (market_data.py's fetch_market_sources()) — an unconditional
     # score here is safe on the same basis as SCATTER's above.
@@ -101,7 +115,13 @@ def score_candidates(
     # shape (real, named PSC shareholders — market_data.py's _find_ownership)
     # — an unconditional score here is safe on the same basis as SCATTER's
     # above: neither can occur for a query that isn't already that shape.
-    if data_shape == PART_TO_WHOLE and intent == COMPOSITION and composition_count >= _MIN_DONUT_SLICES:
+    # Gated on the shape and the slice count, not on intent. PART_TO_WHOLE is
+    # only produced when real slices already exist (data_shape.py), so the
+    # intent check added nothing except a way to lose them: a document
+    # question naming a pie chart classifies as FACT, the slices were built,
+    # the router chose pie_chart — and scoring returned no candidate, so the
+    # chart was dropped after everything upstream had agreed on it.
+    if data_shape == PART_TO_WHOLE and composition_count >= _MIN_DONUT_SLICES:
         add_score("DONUT", 0.85)
 
     if data_shape == NODES_EDGES and entity_count >= 2 and edge_count >= 1:

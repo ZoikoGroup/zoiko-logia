@@ -23,8 +23,9 @@ import statistics
 
 from pydantic import BaseModel, Field
 
-from app.orchestration.evidence import EvidenceModel
+from app.orchestration.evidence import EvidenceModel, Observation
 from app.orchestration.response_planner import ResponsePlan
+from app.orchestration.visualization.capabilities import ROUTABLE_CAPABILITIES
 from app.orchestration.visualization.registry import fallbacks_for, renderer_for, renderer_supports
 from app.orchestration.visualization.rules import score_candidates
 from app.orchestration.visualization.router import choose_visual_route
@@ -68,8 +69,38 @@ class OrchestratorResult(BaseModel):
     secondary_specs: list[VisualizationSpec] = Field(default_factory=list)
 
 
+def _plot_points(evidence: EvidenceModel) -> list[Observation]:
+    """The points a LINE or BAR should draw.
+
+    Normally evidence.observations. For a market-history question those are
+    empty — the real series arrives as evidence.ohlc, one trading bar per
+    period — so a line or bar is drawn from each bar's CLOSE.
+
+    Close rather than open, high or low because it is the figure the answer
+    text quotes ("MSFT 1d closes, 400 bars from...") and the one a reader
+    means by the price on a given day; picking another would let the chart
+    and the prose disagree. Nothing is invented: these are values already in
+    the evidence the candlestick would otherwise have drawn.
+    """
+    if evidence.observations:
+        return list(evidence.observations)
+    return [
+        Observation(dimension=bar.dimension, value=bar.close, measure="close")
+        for bar in evidence.ohlc
+    ]
+
+
+def _series_name(evidence: EvidenceModel) -> str:
+    return (
+        evidence.subject
+        or (evidence.measures[0] if evidence.measures else "")
+        or evidence.ohlc_subject
+        or "value"
+    )
+
+
 def _build_line_spec(evidence: EvidenceModel, spec_id: str) -> VisualizationSpec:
-    measure_name = evidence.subject or (evidence.measures[0] if evidence.measures else "value")
+    measure_name = _series_name(evidence)
     unit = evidence.units[0] if evidence.units else None
     series: list[NamedSeries] = []
     title = measure_name
@@ -103,14 +134,14 @@ def _build_line_spec(evidence: EvidenceModel, spec_id: str) -> VisualizationSpec
             x=EncodingField(field="period", type="temporal"),
             y=EncodingField(field="value", type="quantitative", unit=unit),
         ),
-        data=[VisualizationDataPoint(x=o.dimension, y=o.value) for o in evidence.observations],
+        data=[VisualizationDataPoint(x=o.dimension, y=o.value) for o in _plot_points(evidence)],
         series=series,
         sources=evidence.sources,
     )
 
 
 def _build_bar_spec(evidence: EvidenceModel, spec_id: str) -> VisualizationSpec:
-    measure_name = evidence.subject or (evidence.measures[0] if evidence.measures else "value")
+    measure_name = _series_name(evidence)
     unit = evidence.units[0] if evidence.units else None
     return VisualizationSpec(
         id=spec_id,
@@ -124,7 +155,7 @@ def _build_bar_spec(evidence: EvidenceModel, spec_id: str) -> VisualizationSpec:
             x=EncodingField(field="period", type="nominal"),
             y=EncodingField(field="value", type="quantitative", unit=unit),
         ),
-        data=[VisualizationDataPoint(x=o.dimension, y=o.value) for o in evidence.observations],
+        data=[VisualizationDataPoint(x=o.dimension, y=o.value) for o in _plot_points(evidence)],
         sources=evidence.sources,
     )
 
@@ -291,6 +322,46 @@ def _build_kpi_spec(evidence: EvidenceModel, spec_id: str) -> VisualizationSpec:
     )
 
 
+def _build_gauge_spec(evidence: EvidenceModel, spec_id: str) -> VisualizationSpec:
+    """A stated figure against the stated target it is measured by.
+
+    Both numbers come from the user's own sentence
+    (intent_classifier.explicit_target_pair); neither is retrieved, derived
+    from a benchmark, or filled in. The percentage in the caption is
+    arithmetic on those two figures, which is why it can be stated as fact.
+    """
+    latest = evidence.observations[-1]
+    measure_name = evidence.subject or (evidence.measures[0] if evidence.measures else "value")
+    unit = evidence.units[0] if evidence.units else None
+    target = evidence.target
+    suffix = unit if unit == "%" else ((" " + unit) if unit else "")
+    achieved = (latest.value / target * 100) if target else 0.0
+
+    def _money(value: float) -> str:
+        # Not "%g": it renders 8_200_000 as "8.2e+06", which is unreadable in
+        # a sentence an accountant is meant to check at a glance.
+        return f"{value:,.0f}" if abs(value) >= 1000 else f"{value:g}"
+
+    return VisualizationSpec(
+        id=spec_id,
+        type="GAUGE",
+        family="KPI",
+        renderer="ECHARTS",
+        title=measure_name,
+        label=measure_name,
+        value=latest.value,
+        target=target,
+        target_label=evidence.target_label or "Target",
+        unit=unit,
+        summary=(
+            f"{measure_name}: {_money(latest.value)}{suffix} against a target of "
+            f"{_money(target)}{suffix} — {achieved:.1f}% of target. "
+            "Both figures were supplied in the question."
+        ),
+        sources=evidence.sources,
+    )
+
+
 def _build_donut_spec(evidence: EvidenceModel, spec_id: str) -> VisualizationSpec:
     """Real, named shareholders and their declared ownership BAND
     (market_data.py's _find_ownership, Companies House persons-with-
@@ -370,7 +441,7 @@ def _build_grouped_bar_spec(evidence: EvidenceModel, spec_id: str) -> Visualizat
 
 
 def _summarize_series(name: str, evidence: EvidenceModel, unit: str | None) -> str:
-    obs = evidence.observations
+    obs = _plot_points(evidence)
     if len(obs) < 2:
         return f"{name}: {obs[0].value:g}{(' ' + unit) if unit else ''}." if obs else ""
     first, last = obs[0], obs[-1]
@@ -487,11 +558,69 @@ def _build_process_flow_spec(
 # Every rule below is an *explicit*-ask trigger, never inferred from the
 # primary type alone, and produces at most one companion (the `elif`-style
 # early-return chain makes that true by construction, not convention).
-_TABLE_COMPANION_TRIGGER = re.compile(r"\btable\b", re.I)
+# "One named chart means one chart" — but only for chart types the user did
+# not ask for. A bare \btable\b fired on any sentence containing the word,
+# so "a bar graph of the tax table" produced a second, unrequested visual,
+# while "using a table and line chart" must still produce both because the
+# user asked for both. The alternatives below are deliberate asks for a
+# table; "the tax table" and "this rate table shows" are not.
+_TABLE_COMPANION_TRIGGER = re.compile(
+    r"\b(?:and|with|plus|also)\s+(?:the\s+|a\s+|an\s+)?"
+    r"(?:underlying\s+|raw\s+|source\s+|data\s+|full\s+)?tables?\b"
+    r"|\b(?:as|in)\s+(?:a\s+)?table\b"
+    r"|\busing\s+(?:a\s+)?table\b"
+    r"|\bshow\s+(?:the\s+|me\s+)?(?:underlying\s+|raw\s+|source\s+)?table\b"
+    r"|\btables?\s+and\s+(?:a\s+|an\s+)?[\w-]+\s*(?:chart|graph|plot)\b",
+    re.I,
+)
 _KPI_COMPANION_TRIGGER = re.compile(
     r"\b(kpi|latest value|current value|headline (?:number|figure)|single (?:number|figure))\b", re.I,
 )
 _GRAPH_COMPANION_TRIGGER = re.compile(r"\b(graph|network|node-link|relationship diagram)\b", re.I)
+
+
+# Readable names for the chart the user asked for and the one actually drawn.
+# Variants are unique per capability, so that half is derived; selected_type is
+# shared by many capabilities (every line variant selects "LINE"), so a derived
+# lookup would name it after whichever entry happened to come last — "Waterfall
+# Chart" for a plain BAR. Spelled out instead.
+_VARIANT_LABELS: dict[str, str] = {c.variant: c.name for c in ROUTABLE_CAPABILITIES}
+# Chart names response_planner.py records but no capability can serve. Derived
+# from the variant key they would otherwise read as "a parallel coordinates",
+# so the few that do not become a natural noun phrase are spelled out.
+_VARIANT_LABELS.update({
+    "PARALLEL_COORDINATES": "parallel-coordinates chart",
+    "CALENDAR_HEATMAP": "calendar heatmap",
+    "CHOROPLETH_MAP": "choropleth map",
+    "CHORD_DIAGRAM": "chord diagram",
+    "WORD_CLOUD": "word cloud",
+    "STREAMGRAPH": "streamgraph",
+    "VIOLIN_PLOT": "violin plot",
+})
+_TYPE_LABELS: dict[str, str] = {
+    "LINE": "line chart", "BAR": "bar chart", "HISTOGRAM": "histogram",
+    "BOX": "box plot", "SCATTER": "scatter plot", "KPI": "KPI card",
+    "TABLE": "table", "DONUT": "donut chart", "CANDLESTICK": "candlestick chart",
+    "GROUPED_BAR": "grouped bar chart", "HEATMAP": "heatmap",
+    "EVIDENCE_GRAPH": "evidence graph", "PROCESS_FLOW": "process flow",
+}
+
+
+def _note_substitution(spec: VisualizationSpec, requested_variant: str, delivered_type: str) -> None:
+    """Say, on the chart itself, that a different type was drawn.
+
+    Written into `summary` rather than a new field because that is the caption
+    strip the frontend already renders beneath every chart — the note needs no
+    frontend change and stays attached to the visual it explains instead of
+    floating loose in the prose, where a reader scanning the picture would
+    never see it.
+    """
+    asked = _VARIANT_LABELS.get(requested_variant, requested_variant.replace("_", " ")).lower()
+    drawn = _TYPE_LABELS.get(delivered_type, delivered_type.replace("_", " ").lower())
+    if asked == drawn:
+        return
+    note = f"A {asked} isn't available for this data; showing a {drawn} instead."
+    spec.summary = f"{note} {spec.summary}" if spec.summary else note
 
 
 def _build_complementary_specs(
@@ -535,6 +664,8 @@ def _build_spec_for_type(
             return _build_table_spec(evidence, spec_id)
         elif selected_type == "KPI":
             return _build_kpi_spec(evidence, spec_id)
+        elif selected_type == "GAUGE":
+            return _build_gauge_spec(evidence, spec_id)
         elif selected_type == "EVIDENCE_GRAPH":
             return _build_evidence_graph_spec(evidence, spec_id, plan.preferred_graph_engine)
         elif selected_type == "HEATMAP":
@@ -565,10 +696,16 @@ class VisualizationOrchestrator:
         if not plan.visual_required or evidence.is_empty():
             return OrchestratorResult(visual_required=False)
 
+        # Count the points that would actually be DRAWN, not just
+        # evidence.observations. Market history carries zero observations and
+        # all its values in evidence.ohlc, so the raw count was 0 and every
+        # capability with a minimum (bar_chart needs 3) was filtered out on a
+        # series of 400 real bars.
+        plot_point_count = len(_plot_points(evidence))
         route = choose_visual_route(
             data_shape=data_shape,
             plan=plan,
-            observation_count=len(evidence.observations),
+            observation_count=plot_point_count,
             entity_count=len(evidence.entities),
             query=query,
         )
@@ -577,7 +714,7 @@ class VisualizationOrchestrator:
 
         ranked = score_candidates(
             data_shape,
-            len(evidence.observations),
+            plot_point_count,
             plan.explicit_visual_request,
             entity_count=len(evidence.entities),
             edge_count=len(evidence.relationships),
@@ -660,6 +797,27 @@ class VisualizationOrchestrator:
             built_spec.domain_context = DomainContext(
                 domain=plan.domain, subdomain=plan.subdomain, intent=plan.intent,
             )
+            # A named chart type that cannot be produced is still answered with
+            # the nearest valid one — but silently swapping it is what made the
+            # pipeline look broken ("I asked for a bar chart and got a line").
+            # Degrade, never silently: the same rule the rest of the system
+            # follows.
+            #
+            # Both ways of losing the request are caught here. The rarer one is
+            # the validation cascade above. The common one happens earlier, in
+            # the router: a variant whose capability needs a data shape this
+            # question did not produce (a scatter plot wants XY_NUMERIC, a
+            # stacked bar wants two series) never becomes a candidate at all,
+            # and the shape's default capability wins uncontested — so
+            # selected_type equals requested_type and only the VARIANT reveals
+            # that the user's request was dropped.
+            # base_variant, not variant: domain_variant() renames the latter
+            # per domain (STANDARD_LINE becomes TAX_METRIC_TREND on a tax
+            # question), which would report a substitution on a request that
+            # was honoured exactly.
+            delivered_variant = route.base_variant if selected_type == requested_type else None
+            if plan.requested_chart_variant and delivered_variant != plan.requested_chart_variant:
+                _note_substitution(built_spec, plan.requested_chart_variant, selected_type)
 
         secondary_specs = _build_complementary_specs(selected_type, evidence, spec_id, query) if built_spec else []
 

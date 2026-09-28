@@ -388,12 +388,29 @@ def test_donut_scored_for_part_to_whole_composition():
     assert "DONUT" in ranked
 
 
-def test_donut_not_scored_without_composition_intent():
+def test_donut_scored_on_real_slices_whatever_the_intent():
+    """The guard moved rather than disappearing.
+
+    This previously asserted the opposite: no COMPOSITION intent, no DONUT.
+    That held while composition evidence could only come from a
+    COMPOSITION-classified question, and it stopped being true once a document
+    question could build slices — "show the assets in this document as a pie
+    chart" classifies as FACT. With the old rule the slices were built, the
+    shape was PART_TO_WHOLE, the router chose pie_chart, and scoring then
+    returned no candidate, so the chart was dropped after every other stage
+    had agreed on it.
+
+    What keeps a donut from appearing unasked is now upstream, where it
+    belongs: composition evidence is only ever populated deliberately — real
+    filed ownership, percentages the user typed, or a document question that
+    NAMED a composition chart — and PART_TO_WHOLE requires those slices to
+    exist. Scoring trusts that rather than re-deciding it.
+    """
     ranked = dict(score_candidates(
         PART_TO_WHOLE, observation_count=0, explicit_visual_request=False,
         intent=None, composition_count=2,
     ))
-    assert "DONUT" not in ranked
+    assert "DONUT" in ranked
 
 
 def test_donut_not_scored_with_too_few_slices():

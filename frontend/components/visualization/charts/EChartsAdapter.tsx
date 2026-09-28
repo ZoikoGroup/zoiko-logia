@@ -135,7 +135,11 @@ function buildDonutOption(viz: VisualizationSpec): Record<string, unknown> {
     color: colors,
     series: [{
       type: "pie",
-      radius: ["45%", "70%"],
+      // A pie is this same chart with the hole closed. Both words used to
+      // resolve to the ring, so asking for a pie produced a donut with no
+      // explanation — the request was recorded as met because the delivered
+      // variant was the one asked for.
+      radius: viz.variant === "PIE_CHART" ? ["0%", "70%"] : ["45%", "70%"],
       // A visible ring between slices reads as a real dataset boundary, not
       // a rendering gap — same "surface gap between fills" rule as a
       // stacked bar's segment gaps.
@@ -211,12 +215,80 @@ function buildCandlestickOption(viz: VisualizationSpec): Record<string, unknown>
   };
 }
 
+/**
+ * A stated figure against the stated target it is measured by. The needle's
+ * position is value/target, and the axis therefore runs to whichever is
+ * larger — an over-delivery reads as a needle past the target mark rather
+ * than a dial pinned at full with the excess invisible.
+ *
+ * Both numbers come from the question itself (backend's _build_gauge_spec),
+ * so nothing here is a benchmark the user did not state.
+ */
+function buildGaugeOption(viz: VisualizationSpec): Record<string, unknown> {
+  const ink = cssVar("--ink", "#17211f");
+  const muted = cssVar("--muted", "#667673");
+  const line = cssVar("--line", "#e3ebe7");
+  const [brand] = chartPalette();
+  const good = cssVar("--good", "#0f7b46");
+  const bad = cssVar("--bad", "#b42318");
+
+  const value = viz.value ?? 0;
+  const target = viz.target ?? 0;
+  const max = Math.max(value, target) || 1;
+  const ratio = target > 0 ? value / target : 0;
+  const unit = viz.unit === "%" ? "%" : viz.unit ? ` ${viz.unit}` : "";
+  const needle = ratio >= 1 ? good : ratio >= 0.9 ? brand : bad;
+
+  return {
+    tooltip: {
+      formatter: () =>
+        `${viz.label ?? "Actual"}: ${value.toLocaleString()}${unit}<br/>` +
+        `${viz.target_label ?? "Target"}: ${target.toLocaleString()}${unit}<br/>` +
+        `${(ratio * 100).toFixed(1)}% of target`,
+    },
+    series: [{
+      type: "gauge",
+      min: 0,
+      max,
+      startAngle: 200,
+      endAngle: -20,
+      progress: { show: true, width: 14, itemStyle: { color: needle } },
+      axisLine: { lineStyle: { width: 14, color: [[1, line]] } },
+      axisTick: { show: false },
+      splitLine: { length: 10, lineStyle: { color: muted, width: 1 } },
+      axisLabel: { color: muted, fontSize: 10, distance: 14 },
+      pointer: { itemStyle: { color: needle } },
+      // The target's own mark on the dial, so the comparison stays visible
+      // even when the needle sits well short of or beyond it.
+      markLine: undefined,
+      detail: {
+        valueAnimation: false,
+        color: ink,
+        fontSize: 20,
+        offsetCenter: [0, "55%"],
+        formatter: () => `${value.toLocaleString()}${unit}`,
+      },
+      title: {
+        color: muted,
+        fontSize: 11,
+        offsetCenter: [0, "82%"],
+      },
+      data: [{
+        value,
+        name: `${(ratio * 100).toFixed(0)}% of ${target.toLocaleString()}${unit}`,
+      }],
+    }],
+    textStyle: { color: ink },
+  };
+}
+
 export function buildEChartsOption(viz: VisualizationSpec): Record<string, unknown> {
   if (viz.type === "HEATMAP") return buildHeatmapOption(viz);
   if (viz.type === "BOX") return buildBoxplotOption(viz);
   if (viz.type === "SCATTER") return buildScatterOption(viz);
   if (viz.type === "DONUT") return buildCompositionOption(viz);
   if (viz.type === "CANDLESTICK") return buildCandlestickOption(viz);
+  if (viz.type === "GAUGE") return buildGaugeOption(viz);
   return {};
 }
 

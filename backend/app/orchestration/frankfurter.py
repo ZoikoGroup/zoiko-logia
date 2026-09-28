@@ -36,19 +36,149 @@ _CURRENCY_CODES = {
 }
 
 
+# How people actually write these currencies. _CURRENCY_CODES above remains
+# the sole authority on what Frankfurter can ANSWER for; this table only
+# widens how a user may SPELL one of those same currencies. "convert 1100
+# dollars to indian rupees" previously found no currency at all and fell
+# through to a plain web search, which had no live rate — a question the
+# connector could answer perfectly, refused on spelling.
+#
+# Deliberately absent: bare "peso", "krone", "krona", "won" and "real".
+# Each names several different currencies (or, for "won" and "real", is an
+# ordinary English word), so only the qualified forms below are matched. A
+# guess between Mexican and Philippine pesos is not worth making.
+_CURRENCY_ALIASES: dict[str, tuple[str, ...]] = {
+    "USD": ("united states dollar", "us dollar", "u.s. dollar", "american dollar",
+            "us dollars", "usd", "dollar", "dollars", "$", "us$"),
+    "EUR": ("euro", "euros", "eur", "€"),
+    "GBP": ("pound sterling", "pounds sterling", "british pound", "british pounds",
+            "sterling", "gbp", "quid", "pound", "pounds", "£"),
+    "INR": ("indian rupee", "indian rupees", "inr", "rupee", "rupees", "₹"),
+    "JPY": ("japanese yen", "jpy", "yen", "¥"),
+    "AUD": ("australian dollar", "australian dollars", "aussie dollar", "aud", "a$"),
+    "CAD": ("canadian dollar", "canadian dollars", "cad", "c$"),
+    "CHF": ("swiss franc", "swiss francs", "chf", "franc", "francs"),
+    "CNY": ("chinese yuan", "renminbi", "yuan", "rmb", "cny"),
+    "HKD": ("hong kong dollar", "hong kong dollars", "hkd", "hk$"),
+    "SGD": ("singapore dollar", "singaporean dollar", "sgd", "s$"),
+    "NZD": ("new zealand dollar", "kiwi dollar", "nzd", "nz$"),
+    "SEK": ("swedish krona", "swedish kronor", "sek"),
+    "NOK": ("norwegian krone", "norwegian kroner", "nok"),
+    "DKK": ("danish krone", "danish kroner", "dkk"),
+    "ZAR": ("south african rand", "rand", "zar"),
+    "BRL": ("brazilian real", "brazilian reais", "reais", "brl", "r$"),
+    "MXN": ("mexican peso", "mexican pesos", "mxn"),
+    "KRW": ("south korean won", "korean won", "krw", "₩"),
+    "TRY": ("turkish lira", "lira", "₺"),
+    "PLN": ("polish zloty", "zloty", "pln", "zł"),
+    "THB": ("thai baht", "baht", "thb", "฿"),
+    "IDR": ("indonesian rupiah", "rupiah", "idr"),
+    "MYR": ("malaysian ringgit", "ringgit", "myr"),
+    "PHP": ("philippine peso", "philippine pesos", "filipino peso"),
+    "CZK": ("czech koruna", "koruna", "czk"),
+    "HUF": ("hungarian forint", "forint", "huf"),
+    "ILS": ("israeli shekel", "israeli shekels", "shekel", "shekels", "ils", "₪"),
+    "RON": ("romanian leu", "romanian lei"),
+    "BGN": ("bulgarian lev", "lev", "bgn"),
+    "ISK": ("icelandic krona", "icelandic króna", "isk"),
+}
+
+# Currencies the ECB does not publish, recognised ONLY so the answer can say
+# that outright. This is the other half of the fabrication fix described above
+# _CURRENCY_CODES: silently finding nothing is what let the model supply a
+# rate from its training data. Naming the gap closes that door. Every entry
+# here must stay OUT of _CURRENCY_CODES.
+_UNSUPPORTED_ALIASES: dict[str, tuple[str, ...]] = {
+    "AED": ("uae dirham", "emirati dirham", "dirham", "dirhams", "aed"),
+    "SAR": ("saudi riyal", "saudi riyals", "riyal", "riyals", "sar"),
+    "RUB": ("russian ruble", "russian rouble", "ruble", "rouble", "rub", "₽"),
+    "PKR": ("pakistani rupee", "pakistani rupees", "pkr"),
+    "LKR": ("sri lankan rupee", "sri lankan rupees", "lkr"),
+    "NPR": ("nepalese rupee", "nepali rupee", "npr"),
+    "BDT": ("bangladeshi taka", "taka", "bdt"),
+    "NGN": ("nigerian naira", "naira", "ngn"),
+    "EGP": ("egyptian pound", "egyptian pounds", "egp"),
+    "VND": ("vietnamese dong", "dong", "vnd"),
+    "KES": ("kenyan shilling", "kes"),
+    "ARS": ("argentine peso", "argentinian peso", "ars"),
+    "CLP": ("chilean peso", "clp"),
+    "COP": ("colombian peso", "cop"),
+    "QAR": ("qatari riyal", "qar"),
+    "KWD": ("kuwaiti dinar", "kwd"),
+    "TWD": ("taiwan dollar", "taiwanese dollar", "twd"),
+}
+
+# Three-letter codes that are also ordinary English words. Matched only when
+# written in capitals, so "try converting 10 GBP" does not resolve to the
+# Turkish lira and "php script" does not become a Philippine peso.
+_CASE_SENSITIVE_CODES = {"TRY", "RON", "PHP"}
+
+_ALIAS_TO_CODE: dict[str, str] = {}
+_SUPPORTED_ALIASES: set[str] = set()
+for _table, _is_supported in ((_CURRENCY_ALIASES, True), (_UNSUPPORTED_ALIASES, False)):
+    for _code, _aliases in _table.items():
+        for _alias in (*_aliases, _code.lower()):
+            _ALIAS_TO_CODE[_alias] = _code
+            if _is_supported:
+                _SUPPORTED_ALIASES.add(_alias)
+
+# Longest first so "canadian dollar" wins over "dollar", and "egyptian pound"
+# over "pound" — re alternation takes the first listed alternative that
+# matches at a position, so ordering here IS the disambiguation.
+_WORD_ALIASES = sorted(
+    (a for a in _ALIAS_TO_CODE if a[0].isalnum()), key=len, reverse=True,
+)
+_SYMBOL_ALIASES = sorted(
+    (a for a in _ALIAS_TO_CODE if not a[0].isalnum()), key=len, reverse=True,
+)
+# Trailing "s" is optional on every word form, so the table lists each
+# currency once instead of once per plural — "russian rubles" and "shekels"
+# resolve without "ruble"/"shekel" needing a twin entry. The lookup strips it
+# back off again below.
+_CURRENCY_MENTION = re.compile(
+    r"\b(?:"
+    + "|".join(re.escape(a) + ("" if a.endswith("s") else "s?") for a in _WORD_ALIASES)
+    + r")\b"
+    r"|(?:" + "|".join(re.escape(a) for a in _SYMBOL_ALIASES) + r")",
+    re.I,
+)
+
+
 def _frankfurter_base() -> str:
     return os.getenv("FRANKFURTER_API_BASE_URL", "https://api.frankfurter.dev/v1").rstrip("/")
 
 
-def _find_currencies(query: str) -> list[str]:
-    # Match standalone 3-letter tokens, uppercased, that are known codes —
-    # preserve order, drop duplicates.
-    seen: list[str] = []
-    for tok in re.findall(r"\b[A-Za-z]{3}\b", query):
-        code = tok.upper()
-        if code in _CURRENCY_CODES and code not in seen:
-            seen.append(code)
+def _find_currency_mentions(query: str) -> list[tuple[str, bool]]:
+    """(code, is_supported) for every currency named, in the order written.
+
+    Order matters: the first is the base and the second the quote, so
+    "1100 dollars to indian rupees" must yield USD before INR.
+    """
+    seen: list[tuple[str, bool]] = []
+    for match in _CURRENCY_MENTION.finditer(query or ""):
+        text = match.group(0)
+        alias = text.lower()
+        code = _ALIAS_TO_CODE.get(alias)
+        if code is None and alias.endswith("s"):
+            # The optional plural "s" the pattern allowed; the table holds
+            # the singular.
+            alias = alias[:-1]
+            code = _ALIAS_TO_CODE.get(alias)
+        if code is None:
+            continue
+        # An ambiguous code spelled in lower case is the English word, not
+        # the currency.
+        if code in _CASE_SENSITIVE_CODES and alias == code.lower() and text != code:
+            continue
+        entry = (code, alias in _SUPPORTED_ALIASES)
+        if entry not in seen and all(c != code for c, _ in seen):
+            seen.append(entry)
     return seen
+
+
+def _find_currencies(query: str) -> list[str]:
+    """Supported currency codes named in the question, in order."""
+    return [code for code, supported in _find_currency_mentions(query) if supported]
 
 
 def _find_amount(query: str) -> float:
@@ -119,8 +249,47 @@ def _build_source(match: RateMatch) -> WebSource:
     )
 
 
+def unsupported_currency_note(query: str) -> WebSource | None:
+    """A source stating that a named currency has no ECB reference rate.
+
+    Returning nothing for these is what produced the fabrication bug recorded
+    above _CURRENCY_CODES: with no source either way, the model supplied a
+    rate from its training data and it looked as grounded as a real one.
+    Saying "Frankfurter does not publish this" is itself a fact worth
+    grounding on, so it goes into the source panel like any other.
+
+    Only speaks when the question is clearly about a currency pair — two
+    currencies named, at least one of them unserviceable — so it stays silent
+    on text that merely mentions a currency in passing.
+    """
+    mentions = _find_currency_mentions(query)
+    if len(mentions) < 2:
+        return None
+    missing = [code for code, supported in mentions if not supported]
+    if not missing:
+        return None
+    named = ", ".join(missing)
+    plural = "these currencies" if len(missing) > 1 else "this currency"
+    return WebSource(
+        title=f"Frankfurter — no ECB reference rate for {named}",
+        url="https://frankfurter.dev",
+        snippet=(
+            f"Frankfurter serves the European Central Bank's daily reference "
+            f"rates, which do not include {named}. No live rate is available "
+            f"for {plural} from this source, and none should be stated. "
+            f"The currencies covered are: {', '.join(sorted(_CURRENCY_CODES))}."
+        ),
+        provider="frankfurter",
+        freshness="realtime",
+    )
+
+
 async def fetch_fx(query: str) -> list[WebSource]:
     """Return a single WebSource with the live exchange rate when the question
-    is an FX/currency query with two recognised currencies; otherwise []."""
+    is an FX/currency query with two recognised currencies; otherwise the
+    explicit "not published" note, or []."""
     match = await _find_rate(query)
-    return [_build_source(match)] if match else []
+    if match:
+        return [_build_source(match)]
+    note = unsupported_currency_note(query)
+    return [note] if note else []

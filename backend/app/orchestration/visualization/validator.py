@@ -43,6 +43,8 @@ class VisualizationValidator:
             failures.extend(self._table(spec))
         elif spec.type == "KPI":
             failures.extend(self._kpi(spec))
+        elif spec.type == "GAUGE":
+            failures.extend(self._gauge(spec))
         elif spec.type == "EVIDENCE_GRAPH":
             failures.extend(self._graph(spec))
         elif spec.type == "HEATMAP":
@@ -153,6 +155,26 @@ class VisualizationValidator:
             failures.append("KPI requires a value")
         elif not isinstance(spec.value, (int, float)):
             failures.append("KPI value must be numeric")
+        return failures
+
+    def _gauge(self, spec: VisualizationSpec) -> list[str]:
+        """A gauge is a ratio, so both halves of it must be real.
+
+        A missing or non-positive target is rejected rather than defaulted:
+        the fallback chain degrades to a KPI tile, which shows the figure
+        honestly without implying a benchmark nobody stated.
+        """
+        failures: list[str] = []
+        if spec.value is None:
+            failures.append("GAUGE requires a value")
+        elif not isinstance(spec.value, (int, float)):
+            failures.append("GAUGE value must be numeric")
+        if spec.target is None:
+            failures.append("GAUGE requires a target")
+        elif not isinstance(spec.target, (int, float)):
+            failures.append("GAUGE target must be numeric")
+        elif spec.target <= 0:
+            failures.append("GAUGE target must be positive")
         return failures
 
     def _graph(self, spec: VisualizationSpec) -> list[str]:

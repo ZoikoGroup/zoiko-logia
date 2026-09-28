@@ -97,6 +97,23 @@ class EvidenceModel(BaseModel):
     ohlc_subject: str | None = None
     ohlc: list[OHLCBar] = Field(default_factory=list)
 
+    # A figure and the target it is measured against, both stated by the user
+    # (intent_classifier.explicit_target_pair). A gauge is nothing but the
+    # ratio between them, so both must be real: `target` is None whenever no
+    # target was stated, and no chart that needs one can then be selected.
+    # Kept out of `observations` deliberately — the actual is one point, not a
+    # one-point series, and mixing them would let a SCALAR question be read as
+    # a target comparison that was never made.
+    target: float | None = None
+    target_label: str | None = None
+
+    # True when every figure here was typed into the question rather than
+    # retrieved from a source (extraction.py). Narration must say so: calling
+    # a user's own numbers "source-grounded observations" claims a provenance
+    # they do not have, which is the same misstatement in the opposite
+    # direction as presenting a model's guess as retrieved data.
+    user_supplied: bool = False
+
     entities: list[Entity] = Field(default_factory=list)
     relationships: list[Relationship] = Field(default_factory=list)
     events: list[str] = Field(default_factory=list)

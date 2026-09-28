@@ -35,6 +35,7 @@ export const VISUALIZATION_TYPE_REGISTRY: Record<VisualizationSpec["type"], Visu
   SCATTER: { family: "chart", backendRenderer: "ECHARTS" },
   DONUT: { family: "chart", backendRenderer: "ECHARTS" },
   CANDLESTICK: { family: "chart", backendRenderer: "ECHARTS" },
+  GAUGE: { family: "chart", backendRenderer: "ECHARTS" },
   KPI: { family: "kpi", backendRenderer: "KPI_TILE" },
   TABLE: { family: "table", backendRenderer: "TABLE_ADAPTER" },
   EVIDENCE_GRAPH: { family: "graph", backendRenderer: "GRAPH_ADAPTER" },

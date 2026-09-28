@@ -122,6 +122,32 @@ export function DataTableView({ viz }: { viz: VisualizationSpec }) {
     );
   }
 
+  if (viz.type === "GAUGE") {
+    const value = viz.value ?? 0;
+    const target = viz.target ?? 0;
+    return (
+      <Table>
+        <thead>
+          <tr><th className={th}>Measure</th><th className={th}>Value</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td className={td}>{viz.label ?? "Actual"}</td>
+            <td className={td}>{value.toLocaleString()}</td>
+          </tr>
+          <tr>
+            <td className={td}>{viz.target_label ?? "Target"}</td>
+            <td className={td}>{target.toLocaleString()}</td>
+          </tr>
+          <tr>
+            <td className={td}>Percent of target</td>
+            <td className={td}>{target > 0 ? `${((value / target) * 100).toFixed(1)}%` : ""}</td>
+          </tr>
+        </tbody>
+      </Table>
+    );
+  }
+
   if (viz.type === "CANDLESTICK") {
     return (
       <Table>

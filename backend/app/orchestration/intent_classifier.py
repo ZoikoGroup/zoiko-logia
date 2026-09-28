@@ -165,6 +165,68 @@ def explicit_amount_pairs(text: str) -> list[tuple[str, float]]:
     return pairs
 
 
+# An actual-versus-target pair, e.g. "revenue 8.2m against a target of 10m".
+# The literal word "target" (or "budget"/"goal") is the whole guard: two bare
+# numbers in a sentence are ordinary prose, and a gauge drawn from them would
+# be inventing the comparison. Requiring the word keeps "we processed 1200
+# invoices in 30 days" from becoming a progress dial.
+#
+# The currency marker is optional here, unlike _EXPLICIT_AMOUNT_PAIR above:
+# targets are routinely stated bare ("revenue 8.2m against a target of 10m"),
+# and the target keyword already supplies the specificity the marker provides
+# there.
+_PLAIN_NUMBER = r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?"
+_SCALE_SUFFIX = r"k|bn|b|m|thousand|million|billion"
+_TARGET_PAIR = re.compile(
+    rf"(?P<label>[A-Za-z][\w &/().'’-]{{0,59}}?)\s*(?::|=|–|—|-|of|was|is|at)?\s*"
+    rf"{_CURRENCY_MARKER}?\s*"
+    rf"(?P<actual>{_PLAIN_NUMBER})\s*(?P<actual_scale>{_SCALE_SUFFIX})?\s*(?P<actual_pct>%)?"
+    r"[^0-9%]{0,40}?"
+    r"\b(?:target|targeted|budget|budgeted|goal|plan)\b\s*(?:of|is|was|:|=|at)?\s*"
+    rf"{_CURRENCY_MARKER}?\s*"
+    rf"(?P<target>{_PLAIN_NUMBER})\s*(?P<target_scale>{_SCALE_SUFFIX})?\s*(?P<target_pct>%)?",
+    re.I,
+)
+
+
+def explicit_target_pair(text: str) -> tuple[str, float, float, str] | None:
+    """(label, actual, target, unit) stated in the query, or None.
+
+    Shared with extraction.py for the same reason explicit_amount_pairs is —
+    that module already imports this one, so defining it there and importing
+    back would be a cycle.
+
+    Both figures are the user's own; scaling "8.2m" to 8_200_000 is arithmetic
+    on what they typed, not retrieval, so it stays inside ZL-T0-04.
+    """
+    match = _TARGET_PAIR.search(text or "")
+    if match is None:
+        return None
+
+    def _value(raw: str, scale: str | None) -> float:
+        value = float(raw.replace(",", ""))
+        if not scale:
+            return value
+        # round(): 8.2 * 1e6 is 8199999.999999999 in binary floating point,
+        # and that figure is shown to the user verbatim. Six decimal places
+        # keeps any genuine fraction while removing the artefact.
+        return round(value * _AMOUNT_SCALES[scale.lower()], 6)
+
+    actual = _value(match.group("actual"), match.group("actual_scale"))
+    target = _value(match.group("target"), match.group("target_scale"))
+    # A zero or negative target has no meaningful "portion of" reading, and a
+    # gauge is nothing but that ratio.
+    if target <= 0 or actual < 0:
+        return None
+    label = re.sub(
+        r"^(?:show|display|draw|plot|give|me|the|a|an|our|its|his|her|their|is|was|of|"
+        r"gauge|speedometer|dial|progress|bullet|chart|as|for)\b\s*",
+        "", match.group("label").strip(), flags=re.I,
+    ).strip(" -–—:=")
+    unit = "%" if (match.group("actual_pct") or match.group("target_pct")) else ""
+    return (label or "Actual", actual, target, unit)
+
+
 def _has_explicit_composition_values(query: str) -> bool:
     """Recognize a user-supplied part-to-whole request without inventing it.
 

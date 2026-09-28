@@ -94,15 +94,22 @@ def _quote_source(quote: StockQuote) -> WebSource:
     )
 
 
+# Raw interval keys are the providers' wire values ("1mo"), not words a reader
+# should have to decode in an answer that is otherwise plain English.
+_INTERVAL_WORDS = {"1d": "daily", "1w": "weekly", "1mo": "monthly",
+                   "1h": "hourly", "5m": "5-minute"}
+
+
 def _history_source(bars: list[OHLCVBar]) -> WebSource:
     first, last = bars[0], bars[-1]
     tail = bars[-8:]
     series = ", ".join(f"{b.timestamp[:10]}: {b.close:,.2f}" for b in tail)
+    cadence = _INTERVAL_WORDS.get(last.interval or "1d", last.interval or "daily")
     return WebSource(
         title=f"{last.provider} — {last.symbol} price history ({first.timestamp[:10]} to {last.timestamp[:10]})"[:200],
         url=f"https://www.google.com/finance/quote/{last.symbol}",
         snippet=(
-            f"{last.symbol} {last.interval or 'daily'} closes, {len(bars)} bars from "
+            f"{last.symbol} {cadence} closes, {len(bars)} bars from "
             f"{first.timestamp[:10]} to {last.timestamp[:10]}. Most recent — {series}. "
             f"Historical end-of-day data from {last.provider}; not real-time."
         ),

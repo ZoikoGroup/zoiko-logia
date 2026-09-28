@@ -812,7 +812,7 @@ export type VisualizationSpec = {
   id: string;
   type:
     | "LINE" | "BAR" | "HISTOGRAM" | "BOX" | "SCATTER" | "KPI" | "EVIDENCE_GRAPH" | "HEATMAP"
-    | "PROCESS_FLOW" | "TABLE" | "DONUT" | "CANDLESTICK" | "GROUPED_BAR";
+    | "PROCESS_FLOW" | "TABLE" | "DONUT" | "CANDLESTICK" | "GROUPED_BAR" | "GAUGE";
   family: string;
   capability_id?: string | null;
   canonical?: string | null;
@@ -833,6 +833,10 @@ export type VisualizationSpec = {
   data: VisualizationDataPoint[];
   value?: number | null;
   label?: string | null;
+  /** GAUGE only — the target `value` is measured against, and its label.
+   * Both are stated in the question; the dial never invents a benchmark. */
+  target?: number | null;
+  target_label?: string | null;
   nodes: VisualizationGraphNode[];
   edges: VisualizationGraphEdge[];
   /** PROCESS_FLOW only — true routes to X6, false to Mermaid. Meaningless for other types. */

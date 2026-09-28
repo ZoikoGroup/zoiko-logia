@@ -144,14 +144,12 @@ _SPAN = re.compile(rf"\b(?:last|past)\s+(\d{{1,3}}|{SPELLED_NUMBER_PATTERN})\s*(
 _SPAN_MULTIPLIER = {"day": 1, "week": 5, "month": 21, "year": 252}  # trading days
 
 
-def requested_bars(query: str, default: int = 30) -> int:
-    """How many bars a question is asking for.
+_MAX_BARS = 400
+_TRADING_DAYS_PER = {"week": 5, "month": 21}   # for converting a daily count
 
-    "the last 30 days" means 30 calendar days, which is about 21 trading bars —
-    but over-fetching slightly and showing the caller everything is better than
-    silently truncating a month to ten points, which is what a fixed default
-    did. Capped so a stray "last 999 years" cannot ask a provider for a decade.
-    """
+
+def _requested_trading_days(query: str, default: int) -> int:
+    """The span in trading days, uncapped. 0 means "no span was stated"."""
     match = _SPAN.search(query)
     if not match:
         return default
@@ -159,7 +157,45 @@ def requested_bars(query: str, default: int = 30) -> int:
     count = int(raw_count) if raw_count.isdigit() else find_first_spelled_number(raw_count)
     if count is None:
         return default
-    return max(1, min(count * _SPAN_MULTIPLIER.get(match.group(2).lower(), 1), 400))
+    return max(1, count * _SPAN_MULTIPLIER.get(match.group(2).lower(), 1))
+
+
+def requested_bars(query: str, default: int = 30) -> int:
+    """How many DAILY bars a question is asking for.
+
+    "the last 30 days" means 30 calendar days, which is about 21 trading bars —
+    but over-fetching slightly and showing the caller everything is better than
+    silently truncating a month to ten points, which is what a fixed default
+    did. Capped so a stray "last 999 years" cannot ask a provider for a decade.
+
+    Prefer requested_history_window() for history requests: this function can
+    only answer in daily bars, so anything past the cap comes back truncated.
+    """
+    return min(_requested_trading_days(query, default), _MAX_BARS)
+
+
+def requested_history_window(query: str, default: int = 30) -> tuple[str, int]:
+    """(interval, bars) covering the WHOLE span the question asked for.
+
+    Daily bars cannot express a long span: ten years is ~2,520 trading days,
+    and clamping that to the 400-bar ceiling quietly returned about eighteen
+    months while the answer text still said "10 years" — the truncation was
+    invisible to the reader and the chart was simply wrong about its own
+    period. Coarsening the interval fixes it honestly: ten years is 120
+    monthly bars, comfortably inside the cap and genuinely ten years.
+
+    Daily is kept wherever it fits, so short spans are unchanged. Providers
+    already accept these interval keys (polygon.py's _INTERVAL_TO_AGG,
+    alpha_vantage.py's _SERIES_FUNCTION); nothing new is requested of them.
+    """
+    trading_days = _requested_trading_days(query, default)
+    if trading_days <= _MAX_BARS:
+        return "1d", trading_days
+    weeks = -(-trading_days // _TRADING_DAYS_PER["week"])      # ceil
+    if weeks <= _MAX_BARS:
+        return "1w", weeks
+    months = -(-trading_days // _TRADING_DAYS_PER["month"])
+    return "1mo", min(months, _MAX_BARS)
 
 
 def all_providers() -> list[BaseStockProvider]:

@@ -41,79 +41,89 @@ ALL_DOMAINS = (
 )
 
 
+# Why the line and bar capabilities below accept "OHLC" as well as
+# "TIME_SERIES": a stock-history question produces OHLC-shaped evidence, and
+# with TIME_SERIES alone every one of them was filtered out before priorities
+# were even compared. The candlestick capability was then the only survivor,
+# so "compare Microsoft's last 10 years in a bar chart" could not produce a
+# bar chart — not because it lost, but because it was never a candidate.
+# Drawing one needs no new data: orchestrator.py's _plot_points() takes each
+# bar's close, which is the figure the answer text already quotes. Candlestick
+# stays the DEFAULT for OHLC (it outranks these on priority); these win only
+# when the user named them, via router.py's asked-for ordering.
 ROUTABLE_CAPABILITIES: tuple[VisualizationCapability, ...] = (
     VisualizationCapability(
         "bar_chart", "Bar Chart", "COMPARISON", "BAR", "BAR_CHART", "BAR",
-        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES", "OHLC"), "ECHARTS",
         minimum_observations=3, priority=0.98, requested_variant="BAR_CHART",
         fallbacks=("LINE", "TABLE", "TEXT"),
     ),
     VisualizationCapability(
         "horizontal_bar", "Horizontal Bar", "COMPARISON", "BAR", "HORIZONTAL_BAR", "BAR",
-        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES", "OHLC"), "ECHARTS",
         minimum_observations=3, priority=0.98, requested_variant="HORIZONTAL_BAR",
         fallbacks=("BAR", "TABLE", "TEXT"),
     ),
     VisualizationCapability(
         "diverging_bar", "Diverging Bar", "COMPARISON", "BAR", "DIVERGING_BAR", "BAR",
-        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES", "OHLC"), "ECHARTS",
         minimum_observations=3, priority=0.98, requested_variant="DIVERGING_BAR",
         fallbacks=("BAR", "TABLE", "TEXT"),
     ),
     VisualizationCapability(
         "waterfall_chart", "Waterfall Chart", "FINANCIAL", "WATERFALL", "WATERFALL_CHART", "BAR",
-        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES", "OHLC"), "ECHARTS",
         minimum_observations=3, priority=0.98, requested_variant="WATERFALL_CHART",
         fallbacks=("BAR", "TABLE", "TEXT"),
     ),
     VisualizationCapability(
         "step_line_chart", "Step Line Chart", "TREND", "LINE", "STEP_LINE_CHART", "LINE",
-        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES", "OHLC"), "ECHARTS",
         minimum_observations=3, priority=0.98, requested_variant="STEP_LINE_CHART",
     ),
     VisualizationCapability(
         "spline_line_chart", "Spline Line Chart", "TREND", "LINE", "SPLINE_LINE_CHART", "LINE",
-        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES", "OHLC"), "ECHARTS",
         minimum_observations=3, priority=0.98, requested_variant="SPLINE_LINE_CHART",
     ),
     VisualizationCapability(
         "area_chart", "Area Chart", "TREND", "AREA", "AREA_CHART", "LINE",
-        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES", "OHLC"), "ECHARTS",
         minimum_observations=3, priority=0.98, requested_variant="AREA_CHART",
     ),
     VisualizationCapability(
         "line_with_markers", "Line with Markers", "TREND", "LINE", "LINE_WITH_MARKERS", "LINE",
-        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES", "OHLC"), "ECHARTS",
         minimum_observations=3, priority=0.98, requested_variant="LINE_WITH_MARKERS",
     ),
     VisualizationCapability(
         "plain_line", "Plain Line", "TREND", "LINE", "PLAIN_LINE", "LINE",
-        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES", "OHLC"), "ECHARTS",
         minimum_observations=3, priority=0.98, requested_variant="PLAIN_LINE",
     ),
     VisualizationCapability(
         "dashed_line", "Dashed Line", "TREND", "LINE", "DASHED_LINE", "LINE",
-        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES", "OHLC"), "ECHARTS",
         minimum_observations=3, priority=0.98, requested_variant="DASHED_LINE",
     ),
     VisualizationCapability(
         "dotted_line", "Dotted Line", "TREND", "LINE", "DOTTED_LINE", "LINE",
-        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES", "OHLC"), "ECHARTS",
         minimum_observations=3, priority=0.98, requested_variant="DOTTED_LINE",
     ),
     VisualizationCapability(
         "dash_dot_line", "Dash-dot Line", "TREND", "LINE", "DASH_DOT_LINE", "LINE",
-        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES", "OHLC"), "ECHARTS",
         minimum_observations=3, priority=0.98, requested_variant="DASH_DOT_LINE",
     ),
     VisualizationCapability(
         "area_with_markers", "Area + Markers", "TREND", "AREA", "AREA_WITH_MARKERS", "LINE",
-        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES", "OHLC"), "ECHARTS",
         minimum_observations=3, priority=0.98, requested_variant="AREA_WITH_MARKERS",
     ),
     VisualizationCapability(
         "value_labeled_line", "Value-labeled Line", "TREND", "LINE", "VALUE_LABELED_LINE", "LINE",
-        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",), "ECHARTS",
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES", "OHLC"), "ECHARTS",
         minimum_observations=3, priority=0.98, requested_variant="VALUE_LABELED_LINE",
     ),
     VisualizationCapability(
@@ -208,7 +218,7 @@ ROUTABLE_CAPABILITIES: tuple[VisualizationCapability, ...] = (
     ),
     VisualizationCapability(
         "line_chart", "Line Chart", "TREND", "LINE", "STANDARD_LINE", "LINE",
-        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES",),
+        ALL_DOMAINS, ("TREND", "__EXPLICIT_VISUAL__"), ("TIME_SERIES", "OHLC"),
         "ECHARTS", minimum_observations=3, priority=0.90,
         fallbacks=("BAR", "TABLE", "TEXT"),
     ),
@@ -217,6 +227,18 @@ ROUTABLE_CAPABILITIES: tuple[VisualizationCapability, ...] = (
         ALL_DOMAINS, ("CURRENT_METRIC", "PRECISE_DATA"), ("SCALAR",),
         "KPI_TILE", minimum_observations=1, priority=0.85,
     ),
+    # A figure against the target it is measured by. SCALAR_TARGET, not
+    # SCALAR: the shape itself is the guarantee that a target was actually
+    # stated, so a gauge can never be drawn over a lone number with an
+    # invented benchmark behind the needle. FACT is in the intent list
+    # because that is how "revenue 8.2m against a target of 10m" classifies —
+    # it reads as a statement, not as a request for a trend or a metric.
+    VisualizationCapability(
+        "gauge_speedometer", "Gauge", "KPI", "GAUGE", "GAUGE_CHART", "GAUGE",
+        ALL_DOMAINS, ("FACT", "CURRENT_METRIC", "PRECISE_DATA", "__EXPLICIT_VISUAL__"),
+        ("SCALAR_TARGET",), "ECHARTS", minimum_observations=1, priority=0.95,
+        fallbacks=("KPI", "TABLE", "TEXT"),
+    ),
     # Real OHLC bars (Polygon/Alpha Vantage, via market_data.py's
     # fetch_market_sources()) — a history-shaped market-data question
     # classifies as TREND under intent_classifier.py's own phrasing overlap
@@ -224,23 +246,40 @@ ROUTABLE_CAPABILITIES: tuple[VisualizationCapability, ...] = (
     VisualizationCapability(
         "candlestick_chart", "Candlestick Chart", "FINANCIAL", "CANDLESTICK",
         "CANDLESTICK_CHART", "CANDLESTICK", ALL_DOMAINS, ("TREND",),
-        ("OHLC",), "ECHARTS", minimum_observations=0, priority=0.90,
+        # 0.92, not 0.90: line_chart now also accepts OHLC, and at equal
+        # priority a tie would be broken by declaration order — handing every
+        # plain stock-history question a line chart. Candlestick must stay the
+        # default for trading bars; an explicitly requested line or bar still
+        # wins through router.py's asked-for ordering, which outranks priority.
+        ("OHLC",), "ECHARTS", minimum_observations=0, priority=0.92,
         fallbacks=("TABLE", "TEXT"),
     ),
     VisualizationCapability(
         "donut_chart", "Donut Chart", "COMPOSITION", "PIE_DONUT",
-        "DONUT_CHART", "DONUT", ALL_DOMAINS, ("COMPOSITION",),
+        "DONUT_CHART", "DONUT", ALL_DOMAINS, ("COMPOSITION", "__EXPLICIT_VISUAL__"),
         ("PART_TO_WHOLE",), "ECHARTS", priority=0.85,
         fallbacks=("TABLE", "TEXT"),
     ),
+    # A pie is a donut with no hole: same data, same DONUT selected_type, one
+    # different radius at render time (EChartsAdapter branches on variant, as
+    # it already does for treemap and radar). Separated from donut_chart
+    # because both words were mapped to DONUT_CHART, so asking for a pie
+    # silently produced a ring — a substitution the reporting path could not
+    # even see, since the delivered variant was the one requested.
+    VisualizationCapability(
+        "pie_chart", "Pie Chart", "COMPOSITION", "PIE_DONUT",
+        "PIE_CHART", "DONUT", ALL_DOMAINS, ("COMPOSITION", "__EXPLICIT_VISUAL__"),
+        ("PART_TO_WHOLE",), "ECHARTS", priority=0.98,
+        requested_variant="PIE_CHART", fallbacks=("DONUT", "TABLE", "TEXT"),
+    ),
     VisualizationCapability(
         "treemap", "Treemap", "COMPOSITION", "TREEMAP", "TREEMAP_CHART", "DONUT",
-        ALL_DOMAINS, ("COMPOSITION",), ("PART_TO_WHOLE",), "ECHARTS",
+        ALL_DOMAINS, ("COMPOSITION", "__EXPLICIT_VISUAL__"), ("PART_TO_WHOLE",), "ECHARTS",
         priority=0.98, requested_variant="TREEMAP_CHART", fallbacks=("DONUT", "TABLE", "TEXT"),
     ),
     VisualizationCapability(
         "radar_chart", "Radar Chart", "COMPARISON", "RADAR", "RADAR_CHART", "DONUT",
-        ALL_DOMAINS, ("COMPOSITION",), ("PART_TO_WHOLE",), "ECHARTS",
+        ALL_DOMAINS, ("COMPOSITION", "__EXPLICIT_VISUAL__"), ("PART_TO_WHOLE",), "ECHARTS",
         priority=0.98, requested_variant="RADAR_CHART", fallbacks=("DONUT", "TABLE", "TEXT"),
     ),
 )

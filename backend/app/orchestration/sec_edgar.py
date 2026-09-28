@@ -425,6 +425,78 @@ async def _fetch_concept(
     return None
 
 
+def _registrant_by_exact_name(phrase: str, registrants: list[dict]) -> Optional[dict]:
+    """The registrant whose name IS this phrase, in full, or None.
+
+    The safe way to resolve a lower-case company name. resolve_company()
+    requires a capital letter, a possessive or a multi-word name before it will
+    match, because a bare lower-case word inside a sentence is usually prose —
+    "set a target revenue" resolving to TARGET CORP is the documented example.
+    That guard cannot be relaxed, but it can be sidestepped honestly: when the
+    question, stripped of its scaffolding, consists of NOTHING BUT a
+    registrant's name, there is no surrounding prose left for the word to be
+    part of. "current nike stock price" reduces to "nike"; "set a target
+    revenue for next year" reduces to "set target next year", which is no
+    company's name and correctly matches nothing.
+
+    Ambiguity returns None rather than a guess: several filers normalise to
+    the same short name, and picking among them by list order is how a
+    question about one company ends up carrying another's figures.
+    """
+    wanted = normalise_company_name(phrase)
+    if len(wanted) < 4:
+        return None
+    matches = [
+        entry for entry in registrants
+        if normalise_company_name(str(entry.get("title", ""))) == wanted
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+async def ticker_for_company(
+    query: str, *, exact_name: str = "",
+) -> Optional[tuple[str, str]]:
+    """(ticker, filed company name) for a US registrant named in the question.
+
+    Exposes the registry this module already downloads to callers that only
+    need the identifier. market_data/identity.py deliberately refuses to guess
+    a ticker from a company name and keeps a hand-written table of sixteen
+    well-known ones, so "Nike stock price" resolved to nothing and the question
+    fell through to a general web search. company_tickers.json lists every US
+    registrant — about ten thousand — and resolve_company() above already
+    carries the guards that make name matching safe (minimum length, required
+    capitalisation, longest-name-wins, tie-break on the full filed title).
+
+    exact_name is the caller's company-name phrase (market data's
+    company_name_hint()). When the strict match above finds nothing, a phrase
+    that is exactly a registrant's name resolves anyway — see
+    _registrant_by_exact_name for why that is safe where relaxing the guard
+    is not.
+
+    Returns None when SEC_USER_AGENT is unset: the SEC blocks unidentified
+    traffic, and this must stay as silent about that as fetch_sec_facts is.
+    The registrant list is cached in-process, so repeat calls cost nothing.
+    """
+    agent = _user_agent()
+    if not agent:
+        return None
+    headers = {"User-Agent": agent, "Accept-Encoding": "gzip, deflate"}
+    try:
+        async with httpx.AsyncClient(timeout=8.0, headers=headers) as client:
+            registrants = await _load_registrants(client)
+    except Exception:
+        return None
+    entry = resolve_company(query, registrants)
+    if entry is None and exact_name:
+        entry = _registrant_by_exact_name(exact_name, registrants)
+    if entry is None:
+        return None
+    ticker = str(entry.get("ticker", "")).strip().upper()
+    if not ticker:
+        return None
+    return ticker, str(entry.get("title", "")).strip()
+
+
 async def fetch_sec_facts(query: str) -> list[WebSource]:
     """Return one WebSource per resolved concept with the company's own filed
     figure, when the question names a US registrant and a known concept; else []."""

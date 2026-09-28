@@ -37,6 +37,11 @@ from app.domains.market_data.schemas import (
     StockQuote,
 )
 
+# Polygon's documented ceiling for the aggregates endpoint. Sent instead of
+# the wanted bar count because this parameter bounds the aggregation scan
+# rather than the result set; get_history() slices to the wanted count itself.
+_AGGREGATE_SCAN_LIMIT = 50000
+
 _INTERVAL_TO_AGG = {
     "1d": ("1", "day"),
     "1w": ("1", "week"),
@@ -146,11 +151,16 @@ class PolygonProvider(BaseStockProvider):
             raise ProviderBadResponse(self.name, "a ticker is required for history")
 
         multiplier, timespan = _INTERVAL_TO_AGG.get(interval, ("1", "day"))
+        # `limit` here caps the aggregate scan, NOT the number of bars returned
+        # — passing the wanted bar count silently under-fetches every interval
+        # coarser than a day. Asking for 120 monthly bars returned six, because
+        # 120 bounded the underlying units the aggregation walked, not the
+        # months it produced. Ask wide and slice below instead.
         payload = await request_json(
             client, self.name,
             f"{self.base_url()}/v2/aggs/ticker/{ref.ticker}/range/{multiplier}/{timespan}/"
             f"{_range_start(limit, timespan)}/{_today()}",
-            params={"adjusted": "true", "sort": "asc", "limit": limit},
+            params={"adjusted": "true", "sort": "asc", "limit": _AGGREGATE_SCAN_LIMIT},
             headers=self.auth_headers(),
         )
         results = (payload or {}).get("results") or []

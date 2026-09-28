@@ -170,6 +170,12 @@ class VisualizationSpec(BaseModel):
     value: float | None = None
     label: str | None = None
 
+    # Gauge only — the target `value` is measured against, and the label for
+    # it. Both come from the user's own sentence; a gauge is never rendered
+    # with a benchmark the question did not state.
+    target: float | None = None
+    target_label: str | None = None
+
     # Graph/flow types (EVIDENCE_GRAPH / PROCESS_FLOW)
     nodes: list[GraphNode] = Field(default_factory=list)
     edges: list[GraphEdge] = Field(default_factory=list)

@@ -28,7 +28,7 @@ import type { VisualizationSpec } from "@/lib/api";
 export type ChartEngine = "RECHARTS" | "ECHARTS";
 
 const RECHARTS_TYPES = new Set<VisualizationSpec["type"]>(["LINE", "BAR", "HISTOGRAM", "GROUPED_BAR"]);
-const ECHARTS_TYPES = new Set<VisualizationSpec["type"]>(["HEATMAP", "BOX", "SCATTER", "DONUT", "CANDLESTICK"]);
+const ECHARTS_TYPES = new Set<VisualizationSpec["type"]>(["HEATMAP", "BOX", "SCATTER", "DONUT", "CANDLESTICK", "GAUGE"]);
 
 export function engineFor(type: VisualizationSpec["type"]): ChartEngine | null {
   if (RECHARTS_TYPES.has(type)) return "RECHARTS";

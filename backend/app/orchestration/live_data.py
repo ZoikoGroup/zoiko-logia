@@ -35,7 +35,9 @@ from app.orchestration.market_data import (
     fetch_market_sources, _find_ownership, _build_ownership_source,
 )
 from app.orchestration.evidence import EvidenceModel, Observation, OHLCBar
-from app.orchestration.frankfurter import _find_rate, _build_source as _build_fx_source
+from app.orchestration.frankfurter import (
+    _find_rate, _build_source as _build_fx_source, unsupported_currency_note,
+)
 from app.orchestration.fred import _find_fred_series, _build_source as _build_fred_source
 from app.orchestration.dbnomics import (
     _find_best_series, _build_source as _build_stats_source,
@@ -75,6 +77,15 @@ async def fetch_live_data(query: str) -> LiveDataResult:
         ownership_match = None
     sources: list[WebSource] = []
     evidence = EvidenceModel()
+
+    if not fx_match:
+        # No rate, but the question may have named a currency the ECB simply
+        # does not publish. Say so as a source rather than leaving the gap for
+        # the model to fill from memory (frankfurter.py's docstring records
+        # the fabrication this prevents).
+        fx_gap = unsupported_currency_note(query)
+        if fx_gap:
+            sources.append(fx_gap)
 
     if fx_match:
         sources.append(_build_fx_source(fx_match))

@@ -29,6 +29,7 @@ from app.orchestration.intent_classifier import (
     DISTRIBUTION,
     _EXPLICIT_AMOUNT_PAIR,
     explicit_amount_pairs,
+    explicit_target_pair,
 )
 
 _MAX_LABEL_LEN = 60
@@ -146,6 +147,18 @@ _RELATION_VERBS = (
     "reports to", "is a subsidiary of", "is owned by", "contracts with", "licenses to",
     "supports", "is audited by", "is supported by", "is controlled by",
     "reviews", "is reviewed by",
+    # Control, settlement and workflow relations. Every one is an ordinary
+    # accounting or audit verb people reach for unprompted — "Control A
+    # mitigates Risk One" and "Payment settles Liability" both read as
+    # obviously structural, and both silently produced no diagram because the
+    # verb was absent here. Adding a verb widens only what can be DRAWN from
+    # a sentence the user wrote; the capitalised-entity guard in
+    # _RELATION_CLAUSE below still keeps ordinary prose out.
+    "mitigates", "is mitigated by", "settles", "is settled by",
+    "approves", "is approved by", "authorises", "authorizes",
+    "triggers", "is triggered by", "reconciles", "is reconciled by",
+    "offsets", "allocates", "is allocated to", "records", "is recorded in",
+    "issues", "is issued by", "receives", "is received from",
 )
 # Entity character class includes "-" — real identifiers are routinely
 # hyphenated ("Invoice-2024", "Auditor-Team-A", "Journal-Entry-88"); see
@@ -212,6 +225,14 @@ _UNIT_HINT = re.compile(
     re.I,
 )
 _MAX_USER_POINTS = 500
+# Four, matching box_plot's own minimum_observations in capabilities.py. The
+# extractor previously demanded eight — the HISTOGRAM minimum — which quietly
+# made the box plot unreachable for any sample between four and seven values:
+# the evidence was discarded here, so the capability that would have accepted
+# it never saw a single point. A histogram still needs eight; that floor lives
+# in the capability and in rules.py, which is where a chart-specific rule
+# belongs, rather than in the code that reads the user's numbers.
+_MIN_SAMPLE_VALUES = 4
 
 
 def _payload_after_colon(query: str) -> tuple[str, str] | None:
@@ -269,6 +290,7 @@ def _composition_from_amounts(
             f"stated total of {total:,.0f}."
         ),
         composition_is_estimated=False,
+        user_supplied=True,
         dimensions=["category"],
         measures=["percent"],
         units=["%"],
@@ -283,6 +305,25 @@ def extract_user_visual_evidence(query: str, intent: str) -> EvidenceModel:
     distributions. Invalid/ambiguous input returns empty evidence so the
     established text fallback remains in control.
     """
+    # An actual-versus-target pair needs no colon and no visual intent word:
+    # the literal "target" (or budget/goal/plan) is specific enough on its own,
+    # and the question is almost never phrased as a dataset. Checked first
+    # because "revenue 8.2m against a target of 10m" would otherwise fall
+    # through every branch below and return nothing at all.
+    target_pair = explicit_target_pair(query)
+    if target_pair is not None:
+        label, actual, target, unit = target_pair
+        return EvidenceModel(
+            subject=label,
+            observations=[Observation(dimension=label, value=actual, measure=label)],
+            target=target,
+            target_label="Target",
+            user_supplied=True,
+            dimensions=["measure"],
+            measures=[label],
+            units=[unit] if unit else [],
+        )
+
     split = _payload_after_colon(query)
     if split is None:
         # Labelled currency amounts carry their own delimiters, so they don't
@@ -321,6 +362,7 @@ def extract_user_visual_evidence(query: str, intent: str) -> EvidenceModel:
             ],
             composition_caveat="Percentages supplied directly by the user.",
             composition_is_estimated=False,
+            user_supplied=True,
             dimensions=["category"],
             measures=["percent"],
             units=["%"],
@@ -331,12 +373,17 @@ def extract_user_visual_evidence(query: str, intent: str) -> EvidenceModel:
         if "%" in payload:
             return EvidenceModel()
         values = [float(match.group(0)) for match in _NUMBER.finditer(payload)]
-        if not 8 <= len(values) <= _MAX_USER_POINTS:
+        if not _MIN_SAMPLE_VALUES <= len(values) <= _MAX_USER_POINTS:
             return EvidenceModel()
         unit_match = _UNIT_HINT.search(prefix)
         unit = unit_match.group(1).lower() if unit_match else None
+        # Chart-name words are stripped alongside the interrogative ones, or
+        # the subject keeps them: "show the distribution of invoice times as a
+        # box plot" left a subject of "invoice times as box", which then
+        # appeared verbatim in the answer text.
         subject = re.sub(
-            r"\b(create|make|show|plot|draw|a|an|the|histogram|distribution|for|of|these|this)\b",
+            r"\b(create|make|show|plot|draw|give|a|an|the|as|in|histogram|distribution|"
+            r"for|of|these|this|box|whisker|chart|graph|diagram|spread|sample|values)\b",
             " ", prefix, flags=re.I,
         )
         subject = re.sub(r"\s+", " ", subject).strip(" -") or "supplied values"
@@ -346,6 +393,7 @@ def extract_user_visual_evidence(query: str, intent: str) -> EvidenceModel:
                 Observation(dimension=str(index), value=value, measure=subject)
                 for index, value in enumerate(values, start=1)
             ],
+            user_supplied=True,
             dimensions=["observation"],
             measures=[subject],
             units=[unit] if unit else [],

@@ -84,6 +84,15 @@ export function checkChartValidity(viz: VisualizationSpec): ChartValidity {
       if (viz.value == null) return "EMPTY";
       if (typeof viz.value !== "number") return "STRUCTURALLY_INVALID";
       return "OK";
+    // A gauge is the ratio between the two, so a missing or non-positive
+    // target is structurally invalid rather than merely empty — the backend
+    // degrades it to a KPI tile, which shows the figure without implying a
+    // benchmark that was never stated.
+    case "GAUGE":
+      if (viz.value == null || viz.target == null) return "EMPTY";
+      if (typeof viz.value !== "number" || typeof viz.target !== "number") return "STRUCTURALLY_INVALID";
+      if (viz.target <= 0) return "STRUCTURALLY_INVALID";
+      return "OK";
     case "TABLE": {
       const columns = Array.isArray(viz.columns) ? viz.columns : [];
       const rows = Array.isArray(viz.rows) ? viz.rows : [];

@@ -67,6 +67,7 @@ from app.orchestration.audit_events import (
 )
 from app.domains.risk_safety.schemas import ClassifyRequest
 from app.domains.model_gateway import service as model_gateway_service
+from app.orchestration import answer_cache
 from app.orchestration.compose import select_prompt
 from app.orchestration.redaction import redact_for_external_exposure
 from app.orchestration.websearch import web_search, build_web_grounded_prompt
@@ -90,7 +91,9 @@ from app.orchestration.visualization.validator import VisualizationValidator
 from app.orchestration.visualization import telemetry as viz_telemetry
 from app.orchestration.query_classifier_shadow import log_shadow_comparison
 from app.orchestration.risk_llm import classify_risk, classify_risk_gemini
-from app.domains.kriton_workspace.documents import retrieve_document_sources, resolve_conversation_document_ids
+from app.domains.kriton_workspace.documents import (
+    expired_attachment_names, retrieve_document_sources, resolve_conversation_document_ids,
+)
 from app.domains.kriton_workspace.artifacts import create_generated_artifact
 from app.orchestration.document_pipeline import (
     analyse_spreadsheet_sources,
@@ -265,6 +268,96 @@ def _grounded_domain_fallback(query: str, evidence: EvidenceModel) -> str | None
     is subsequently processed by the normal validation/disclaimer pipeline.
     """
     intent = classify_intent(query)
+
+    # A figure and the target it is measured against, both stated in the
+    # question ("revenue 8.2m against a target of 10m"). Checked before the
+    # series branch below, which would otherwise read the single observation
+    # as a one-point trend and narrate it as having "increased from X to X".
+    #
+    # Narrated deterministically for the same reason the graph/flow case is:
+    # the answer is a transcription of the user's own two numbers, and a model
+    # paraphrase risks the prose disagreeing with the dial beneath it.
+    if evidence.target is not None and evidence.observations:
+        actual = evidence.observations[-1].value
+        target = evidence.target
+        subject = evidence.subject or "the measure"
+        unit = evidence.units[0] if evidence.units else ""
+        suffix = unit if unit == "%" else ((" " + unit) if unit else "")
+        shortfall = target - actual
+
+        def _fmt(value: float) -> str:
+            return f"{value:,.0f}" if abs(value) >= 1000 else f"{value:g}"
+
+        standing = (
+            f"{_fmt(abs(shortfall))}{suffix} short of target" if shortfall > 0
+            else f"{_fmt(abs(shortfall))}{suffix} above target" if shortfall < 0
+            else "exactly on target"
+        )
+        return (
+            f"{subject} is {_fmt(actual)}{suffix} against a target of "
+            f"{_fmt(target)}{suffix} — {actual / target * 100:.1f}% of target, "
+            f"{standing}. Both figures were supplied in the question; Kriton has "
+            "not retrieved, adjusted or benchmarked either of them, and the "
+            "visualization shows those same two values."
+        )
+
+    # A numeric sample typed into the question. Narrated separately from the
+    # retrieved-series branch below for two reasons, both about saying only
+    # what is true: those figures are not "source-grounded observations", and
+    # they are not a time series — their dimensions are 1, 2, 3…, so the trend
+    # wording would read "increased from 4 in 1 to 16 in 4", describing a
+    # movement over positions in a list as though it were movement over time.
+    if evidence.user_supplied and evidence.observations and not evidence.composition:
+        values = sorted(item.value for item in evidence.observations)
+        count = len(values)
+        middle = (
+            values[count // 2] if count % 2
+            else (values[count // 2 - 1] + values[count // 2]) / 2
+        )
+        subject = evidence.subject or "the supplied values"
+        unit = evidence.units[0] if evidence.units else ""
+        suffix = unit if unit == "%" else ((" " + unit) if unit else "")
+        return (
+            f"{count} values for {subject} were supplied in the question, ranging "
+            f"from {values[0]:g}{suffix} to {values[-1]:g}{suffix}, with a median of "
+            f"{middle:g}{suffix}. Kriton has not retrieved or adjusted these figures; "
+            "the visualization summarises exactly the values as given."
+        )
+
+    # Rows read out of a document are CATEGORIES — balance-sheet line items,
+    # expense headings — not periods. The series wording below would describe
+    # them as a movement over time: "decreased from 418,000 in Inventory to
+    # 87,000 in Deferred tax liability", with Inventory as "first" and a tax
+    # liability as "latest". Nothing decreased, nothing came first, and the
+    # two are not even the same kind of figure. Read quickly, that sentence
+    # states something about the business that the document does not.
+    if (
+        "category" in evidence.dimensions
+        and evidence.observations
+        and not evidence.user_supplied
+    ):
+        rows = evidence.observations
+        largest = max(rows, key=lambda item: item.value)
+        smallest = min(rows, key=lambda item: item.value)
+        subject = evidence.subject or "the figures"
+        total_note = ""
+        total = sum(item.value for item in rows)
+        if all(item.value >= 0 for item in rows) and total > 0:
+            total_note = (
+                f" Together the rows shown come to {total:,.0f}, with "
+                f"{largest.dimension} making up {largest.value / total * 100:.1f}% "
+                "of that. This is the sum of those lines only — any total stated "
+                "in the document was excluded so it is not charted beside its own "
+                "parts."
+            )
+        return (
+            f"{len(rows)} figures were read from the document for {subject}. "
+            f"The largest is {largest.dimension} at {largest.value:,.0f} and the "
+            f"smallest is {smallest.dimension} at {smallest.value:,.0f}.{total_note} "
+            "These are separate line items, not a series over time, and the "
+            "visualization shows the same values as read."
+        )
+
     # Naming ANY chart rendering this pipeline supports ("box plot", "step
     # line chart", "column chart", ...) is itself proof the request is a
     # statistical-data ask, independent of whether intent_classifier.py's
@@ -332,6 +425,23 @@ def _grounded_domain_fallback(query: str, evidence: EvidenceModel) -> str | None
     # a donut-chart one; only the requested display format differs).
     if evidence.composition and intent == COMPOSITION:
         subject = evidence.composition_subject or "the company"
+        # Split by provenance. This branch was written for Companies House
+        # filings and said so in every case, so a user's own typed expense
+        # percentages came back described as "named holders on file" and
+        # "filed ownership data" — naming a statutory register as the source
+        # of figures the reader had just typed. The wording has to follow
+        # where the numbers actually came from.
+        if evidence.user_supplied:
+            parts = ", ".join(
+                f"{item.dimension} {item.value:.4g}%" for item in evidence.composition[:6]
+            )
+            more = "" if len(evidence.composition) <= 6 else f", and {len(evidence.composition) - 6} more"
+            caveat = f" {evidence.composition_caveat}" if evidence.composition_caveat else ""
+            return (
+                f"{subject} was given as {len(evidence.composition)} parts in the question: "
+                f"{parts}{more}. Kriton has not retrieved or verified these figures; the "
+                f"visualization shows exactly the split as supplied.{caveat}"
+            )
         return (
             f"Kriton found {len(evidence.composition)} real, named holders on file for {subject}. "
             "The validated visualization below presents that filed ownership data without adding model-generated figures."
@@ -374,6 +484,29 @@ def _grounded_domain_fallback(query: str, evidence: EvidenceModel) -> str | None
             "The validated process visualization below does not add or remove stages."
         )
     return None
+
+
+def _document_failure_message(expired: list[str]) -> str:
+    """What to tell a user whose attached documents produced no evidence.
+
+    An expired document and an unreadable one both arrive here as zero
+    sources, but only one of them is the user's to fix, and only by doing
+    something the old wording never mentioned. Naming the expiry — and the
+    filename — turns a dead end into a single clear action.
+    """
+    if not expired:
+        return (
+            "Kriton™ could not retrieve readable evidence from the attached "
+            "document. Confirm that the attachment is ready, then attach it again "
+            "or choose another document."
+        )
+    names = ", ".join(sorted(set(expired)))
+    plural = "These documents have" if len(set(expired)) > 1 else "This document has"
+    return (
+        f"{plural} passed the retention period and can no longer be read: {names}. "
+        "Upload the file again to continue — re-selecting it from saved documents "
+        "links the same expired copy."
+    )
 
 
 def _structured_visual_query_is_in_domain(query: str) -> bool | None:
@@ -991,6 +1124,17 @@ async def ask_kriton(
     # clarification outcome keeps the UI from labelling the model's inability
     # to read the workbook as an "Answered" response.
     if request.source_scope == "DOCUMENTS_ONLY" and not document_sources:
+        # Distinguish "past its retention deadline" from "unreadable" before
+        # telling the user anything. Both produce zero sources here, but only
+        # one is fixed by uploading the file again, and the old wording sent
+        # readers to check their file instead.
+        expired_attachments = await expired_attachment_names(
+            db,
+            conversation_id=request.conversation_id,
+            requested_ids=request.document_ids,
+            tenant_id=tenant_id,
+            user_id=actor_id,
+        )
         pending_tasks = [task for task in (web_search_task, live_data_task) if task is not None]
         for task in pending_tasks:
             task.cancel()
@@ -1012,11 +1156,7 @@ async def ask_kriton(
             answer=None,
             next_action=NextAction(
                 type="document_retrieval_failed",
-                message=(
-                    "Kriton™ could not retrieve readable evidence from the attached "
-                    "document. Confirm that the attachment is ready, then attach it again "
-                    "or choose another document."
-                ),
+                message=_document_failure_message(expired_attachments),
             ),
             audit_reference=AuditReference(audit_chain_id=audit_chain_id),
         )
@@ -1274,8 +1414,22 @@ async def ask_kriton(
     if risk_level in ("ZERO", "LOW") and os.getenv("GROQ_API_KEY") and not gemini_active:
         answer_model = os.getenv("GROQ_FAST_ANSWER_MODEL", "openai/gpt-oss-20b")
 
+    # A repeat of the same grounded question costs nothing when its answer is
+    # already known. This matters for the token allowance rather than for
+    # speed: the provider's per-minute ceiling is what turns a second question
+    # into a composition failure, and a cached answer spends none of it. The
+    # audit trail, validation, disclaimer and visualization all still run —
+    # only the model call is skipped. See answer_cache.py.
+    answer_cache_key: str | None = None
+    if deterministic_chart_text is None and answer_cache.is_cacheable(evidence_sources):
+        answer_cache_key = answer_cache.cache_key(grounded_input, answer_model)
+        cached_answer = await answer_cache.get_answer(answer_cache_key)
+        if cached_answer:
+            composed_text = cached_answer
+            prompt_name = "Web-grounded Prompt (cached)"
+
     try:
-        if deterministic_chart_text is None:
+        if deterministic_chart_text is None and composed_text is None:
             if prompt:
                 prompt_row, composed_text = await model_gateway_service.run_test_prompt(
                     db, prompt.id, grounded_input, actor_id, tenant_id,
@@ -1287,13 +1441,20 @@ async def ask_kriton(
                 # No approved prompt template seeded — fall back to a direct
                 # provider completion so web-grounded answering still works.
                 composed_text = await model_gateway_service.run_grounded_completion(grounded_input)
-
             # The model gateway deliberately sanitizes provider exceptions as
             # user-safe text. At the orchestration boundary that text is still
             # a failed composition, never an "answered — source grounded"
             # result. Structured official-data paths above do not reach here.
             if composed_text and _MODEL_PROVIDER_FAILURE in composed_text:
                 raise RuntimeError("model_provider_unavailable")
+
+            # Stored only AFTER that check. The gateway returns its failure as
+            # ordinary text, so caching before this point would pin a
+            # transient outage in place for the whole TTL and serve it as an
+            # answer — the same trap websearch.py avoids by never caching an
+            # empty result set.
+            if answer_cache_key and composed_text:
+                await answer_cache.put_answer(answer_cache_key, composed_text)
 
     except Exception as exc:
         await audit_composition_failed(
@@ -1379,6 +1540,30 @@ async def ask_kriton(
         grounded_fallback = _grounded_domain_fallback(request.query, live_evidence)
         if grounded_fallback:
             composed_text = grounded_fallback
+
+    # A question carrying its own complete chart DATA ("revenue 8.2m against a
+    # target of 10m", "distribution: 4, 8, 15, 16") is the numeric twin of the
+    # graph/flow case above: nothing is retrieved, the figures are the user's
+    # own, and the visualization shows those same figures back. It needs the
+    # same treatment for the same reason — deterministic narration, and the
+    # grounding bypass below.
+    #
+    # Without this the model composed prose with no citation behind it, the
+    # RG-03 grounding check correctly found none, and the answer escalated to
+    # human review — for a question that never needed a source at all. Gated
+    # on live evidence being absent so a real retrieved series is never
+    # displaced by a number that merely appears in the question text.
+    if (
+        not uses_user_supplied_structure
+        and not live_evidence.observations
+        and not live_evidence.composition
+    ):
+        supplied = extract_user_visual_evidence(request.query, classify_intent(request.query))
+        if not supplied.is_empty():
+            supplied_answer = _grounded_domain_fallback(request.query, supplied)
+            if supplied_answer:
+                composed_text = supplied_answer
+                uses_user_supplied_structure = True
 
     # For structured statistical visuals, narrative and chart must come from
     # one normalized evidence object.  Model prose can misread a direction or
@@ -1563,11 +1748,21 @@ async def ask_kriton(
                 viz_evidence.dimensions = supplied_evidence.dimensions
                 viz_evidence.measures = supplied_evidence.measures
                 viz_evidence.units = supplied_evidence.units
+                # The target must travel with the figure it qualifies. Copying
+                # the observation alone left target None, so classify_data_shape
+                # read a lone SCALAR and the gauge capability — which exists
+                # only for SCALAR_TARGET — was never a candidate. The chart
+                # silently disappeared while the answer text still described a
+                # comparison against a target.
+                viz_evidence.target = supplied_evidence.target
+                viz_evidence.target_label = supplied_evidence.target_label
+                viz_evidence.user_supplied = supplied_evidence.user_supplied
             if supplied_evidence.composition and not viz_evidence.composition:
                 viz_evidence.composition = supplied_evidence.composition
                 viz_evidence.composition_subject = supplied_evidence.composition_subject
                 viz_evidence.composition_caveat = supplied_evidence.composition_caveat
                 viz_evidence.composition_is_estimated = supplied_evidence.composition_is_estimated
+                viz_evidence.user_supplied = supplied_evidence.user_supplied
             graph = extract_graph(request.query)
             if graph and (intent in GRAPH_INTENTS or intent == PROCESS):
                 viz_evidence.entities = [Entity(id=n, name=n) for n in graph.nodes]

@@ -51,11 +51,14 @@ services:
       # (sources/source_versions tenant isolation) to actually apply: RLS
       # always exempts superusers, and DATABASE_URL's "zoiko" role is one.
       APP_DATABASE_URL: postgresql+asyncpg://zoiko_app:zoiko_app@postgres:5432/zoiko
-      # Redis logical DB 0 carries queued jobs; DB 1 stores task results.
+      # Redis logical DB 0 carries queued jobs; DB 1 stores task results;
+      # DB 2 the rate limiter; DB 3 the web-search result cache, kept apart so
+      # flushing the cache can never drop a queued job.
       # Container services address Redis by its Compose service name, not localhost.
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       RATE_LIMIT_STORAGE_URI: redis://redis:6379/2
+      SEARXNG_CACHE_REDIS_URL: redis://redis:6379/3
       ASYNC_DOCUMENT_INGESTION: "true"
       # Without this, risk_classifier.py's _get_classifier_pipeline() never
       # loads the real zero-shot model — every query gets a fixed 0.5

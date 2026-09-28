@@ -173,8 +173,29 @@ def _section_of(line: str) -> str | None:
     return None
 
 
-def _extract_pairs(sources: list[WebSource]) -> list[tuple[str, float, str]]:
-    """(label, value, section) for every label/number row that reads
+# A sub-heading inside a statement: a short line carrying no figure, sitting
+# above the rows it groups — "Non-current assets", "Current assets",
+# "Liabilities". Not ALL-CAPS, so _section_of does not claim it, and it is the
+# only thing in the file that says which rows are assets and which are not.
+_MAX_GROUP_WORDS = 5
+_GROUP_LINE = re.compile(r"^[A-Za-z][A-Za-z ,'&()/-]{2,48}$")
+
+
+def _group_of(line: str) -> str | None:
+    stripped = line.strip()
+    if not _GROUP_LINE.match(stripped):
+        return None
+    if _TRAILING_NUMBER.search(stripped) or _section_of(stripped):
+        return None
+    if len(stripped.split()) > _MAX_GROUP_WORDS:
+        return None
+    if _PROSE_MARKERS.search(stripped):
+        return None
+    return stripped
+
+
+def _extract_pairs(sources: list[WebSource]) -> list[tuple[str, float, str, str]]:
+    """(label, value, section, group) for every label/number row that reads
     unambiguously.
 
     Column choice is per-row: the FIRST numeric cell after the label, so a
@@ -185,14 +206,27 @@ def _extract_pairs(sources: list[WebSource]) -> list[tuple[str, float, str]]:
     from different statements are not comparable. Revenue and Net assets are
     both figures in this file, but charting them as neighbouring bars states
     something false about the business.
+
+    It also carries the sub-heading it sat under. A balance sheet is one
+    section but two opposite kinds of figure: asking for "the assets" and
+    receiving Trade payables and Deferred tax liability alongside Inventory is
+    not a near-miss, it is a different statement about the business — and in a
+    pie chart, where every slice is read as part of one whole, it is simply
+    false.
     """
-    pairs: list[tuple[str, float, str]] = []
+    pairs: list[tuple[str, float, str, str]] = []
     for source in sources:
         section = ""
+        group = ""
         for raw in source.snippet.splitlines():
             heading = _section_of(raw)
             if heading:
                 section = heading
+                group = ""
+                continue
+            sub_heading = _group_of(raw)
+            if sub_heading:
+                group = sub_heading
                 continue
             for row in _rows(raw):
                 if len(row) < 2 or not _is_usable_label(row[0]):
@@ -202,18 +236,20 @@ def _extract_pairs(sources: list[WebSource]) -> list[tuple[str, float, str]]:
                     None,
                 )
                 if value is not None:
-                    pairs.append((row[0].strip(), value, section))
+                    pairs.append((row[0].strip(), value, section, group))
     return pairs
 
 
-def _select_section(query: str, pairs: list[tuple[str, float, str]]) -> list[tuple[str, float, str]]:
+def _select_section(
+    query: str, pairs: list[tuple[str, float, str, str]]
+) -> list[tuple[str, float, str, str]]:
     """Keep one statement's rows, not a blend of several.
 
     Preference order: the section the question names, else the largest
     section. A question about assets should chart the balance sheet, not the
     balance sheet interleaved with the profit and loss account.
     """
-    sections: dict[str, list[tuple[str, float, str]]] = {}
+    sections: dict[str, list[tuple[str, float, str, str]]] = {}
     for pair in pairs:
         sections.setdefault(pair[2], []).append(pair)
     if len(sections) <= 1:
@@ -228,12 +264,47 @@ def _select_section(query: str, pairs: list[tuple[str, float, str]]) -> list[tup
         # which is precisely where the question was pointing.
         heading_words = set(re.findall(r"[a-z]{4,}", name.lower()))
         label_words: set[str] = set()
-        for label, _, _ in rows:
+        for label, _, _, _ in rows:
             label_words |= set(re.findall(r"[a-z]{4,}", label.lower()))
         score = 2 * len(heading_words & words) + len(label_words & words)
         scored.append((score, len(rows), name))
     scored.sort(reverse=True)
     return sections[scored[0][2]]
+
+
+# The kinds of figure a question can name, and the sub-headings that hold
+# them. Assets and liabilities live in the same section of the same file and
+# mean opposite things; charting them together answers a question nobody
+# asked. Only applied when the question names one AND the file labels its
+# groups — otherwise the rows are returned untouched.
+_GROUP_KINDS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    ("asset", ("asset",), ("liabilit", "payable", "equity", "capital", "reserve")),
+    ("liabilit", ("liabilit", "payable"), ("asset", "equity", "capital", "reserve")),
+    ("equity", ("equity", "capital", "reserve"), ("asset", "liabilit", "payable")),
+    ("income", ("income", "revenue", "turnover", "sales"), ("expense", "cost")),
+    ("expense", ("expense", "cost"), ("income", "revenue", "turnover", "sales")),
+)
+
+
+def _select_group(
+    query: str, pairs: list[tuple[str, float, str, str]]
+) -> list[tuple[str, float, str, str]]:
+    """Narrow to the kind of figure the question named, when it named one."""
+    lowered = query.lower()
+    for keyword, wanted, excluded in _GROUP_KINDS:
+        if keyword not in lowered:
+            continue
+        kept = [
+            pair for pair in pairs
+            if any(word in pair[3].lower() for word in wanted)
+            and not any(word in pair[3].lower() for word in excluded)
+        ]
+        # Only narrow when the file actually labelled enough rows that way.
+        # A document with no sub-headings yields nothing here, and returning
+        # an empty chart would be worse than returning the whole section.
+        if len(kept) >= _MIN_POINTS:
+            return kept
+    return pairs
 
 
 def build_document_evidence(query: str, sources: list[WebSource]) -> EvidenceModel:
@@ -248,9 +319,10 @@ def build_document_evidence(query: str, sources: list[WebSource]) -> EvidenceMod
         return EvidenceModel()
 
     # Section first (totals still present, so they can identify the statement),
-    # then drop the totals so none is charted beside its own components.
+    # then the kind of figure the question asked about, then drop the totals so
+    # none is charted beside its own components.
     pairs = [
-        pair for pair in _select_section(query, _extract_pairs(sources))
+        pair for pair in _select_group(query, _select_section(query, _extract_pairs(sources)))
         if not _TOTAL_ROW.match(pair[0])
     ]
     if len(pairs) < _MIN_POINTS:
@@ -260,7 +332,7 @@ def build_document_evidence(query: str, sources: list[WebSource]) -> EvidenceMod
     # or two different things sharing a name. Neither can be charted honestly
     # — summing them would invent a figure that appears nowhere in the file.
     seen: dict[str, float] = {}
-    for label, value, _ in pairs:
+    for label, value, _, _ in pairs:
         key = label.casefold()
         if key in seen and seen[key] != value:
             return EvidenceModel()
@@ -268,7 +340,7 @@ def build_document_evidence(query: str, sources: list[WebSource]) -> EvidenceMod
 
     ordered: list[tuple[str, float]] = []
     used: set[str] = set()
-    for label, value, _ in pairs:
+    for label, value, _, _ in pairs:
         key = label.casefold()
         if key not in used:
             used.add(key)
@@ -277,7 +349,7 @@ def build_document_evidence(query: str, sources: list[WebSource]) -> EvidenceMod
         return EvidenceModel()
 
     titles = list(dict.fromkeys(source.title for source in sources))
-    return EvidenceModel(
+    evidence = EvidenceModel(
         subject=_subject(query),
         provider="uploaded_document",
         observations=[
@@ -290,6 +362,41 @@ def build_document_evidence(query: str, sources: list[WebSource]) -> EvidenceMod
         facts=[f"{label}: {value:g}" for label, value in ordered],
         coverage_complete=True,
     )
+
+    # A composition chart was asked for by name, so offer these rows as shares
+    # too. Gated on every value being positive: a pie slice is a portion of a
+    # whole, and a negative figure has no portion — a set containing one is a
+    # list, not a composition, and drawing it would state something the file
+    # does not.
+    if _composition_requested(query) and all(value > 0 for _, value in ordered):
+        total = sum(value for _, value in ordered)
+        evidence.composition = [
+            Observation(dimension=label, value=value / total * 100.0, measure="percent")
+            for label, value in ordered
+        ]
+        evidence.composition_subject = evidence.subject
+        evidence.composition_is_estimated = False
+        # Names what the shares are OF. They are shares of the rows charted,
+        # not of a statement total — the totals were removed above, and the
+        # file may hold figures this section never listed.
+        evidence.composition_caveat = (
+            f"Shares of the {len(ordered)} rows shown, which total "
+            f"{total:,.0f} as read from the document — not of any total stated in it."
+        )
+    return evidence
+
+
+def _composition_requested(query: str) -> bool:
+    """Did the question name a parts-of-a-whole chart?
+
+    Imported here rather than at module scope: response_planner pulls in the
+    visualization package, and this module is imported from within it.
+    """
+    from app.orchestration.response_planner import detect_requested_chart_variant
+
+    return detect_requested_chart_variant(query) in {
+        "PIE_CHART", "DONUT_CHART", "TREEMAP_CHART", "RADAR_CHART",
+    }
 
 
 def _subject(query: str) -> str:

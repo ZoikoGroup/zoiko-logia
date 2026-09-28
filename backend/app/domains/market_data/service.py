@@ -85,6 +85,28 @@ _REQUIRED_ID = {
 }
 
 
+async def _ticker_from_sec_registry(query: str, hint: str) -> tuple[str, str] | None:
+    """(ticker, filed name) from SEC EDGAR's registrant index, or None.
+
+    Imported inside the function on purpose: app.orchestration imports this
+    domain package, so a module-level import back into orchestration would
+    close the loop at startup. Failure is always None — this is an optional
+    accelerator in front of the provider search, never a dependency of it.
+
+    `hint` is the query stripped of its scaffolding, which is what lets a
+    lower-case "nike stock price" resolve: the hint is exactly "nike". Passing
+    it is not the same as relaxing the registry's prose guard — "set a target
+    revenue for next year" reduces to "set target next year" and still matches
+    nothing, which is the behaviour that guard exists to protect.
+    """
+    from app.orchestration.sec_edgar import ticker_for_company
+
+    try:
+        return await ticker_for_company(query, exact_name=hint)
+    except Exception:  # noqa: BLE001 — connector boundary must fail soft
+        return None
+
+
 async def _resolve_entity(
     client: httpx.AsyncClient, query: str, providers: list[BaseStockProvider], intent: str
 ) -> EntityRef:
@@ -107,6 +129,20 @@ async def _resolve_entity(
         return ref
     if not hint:
         return ref
+
+    # The SEC's own registrant index before any provider search: it resolves
+    # roughly ten thousand US companies by name from one cached file, costs no
+    # provider call, and is a filed record rather than a vendor's fuzzy search.
+    # identity.py refuses to guess a ticker from a name and its well-known
+    # table holds sixteen, so without this "Nike stock price" reached the
+    # providers as a free-text guess or resolved to nothing at all.
+    if required == "ticker":
+        resolved = await _ticker_from_sec_registry(query, hint)
+        if resolved is not None:
+            ticker, filed_name = resolved
+            ref.ticker = ticker
+            ref.name = ref.name or filed_name
+            return ref
 
     for provider in providers:
         if not provider.supports(CAP_SEARCH):
@@ -136,7 +172,8 @@ async def _resolve_entity(
 
 
 async def fetch_for_intent(
-    client: httpx.AsyncClient, intent: str, ref: EntityRef, *, limit: int = 10
+    client: httpx.AsyncClient, intent: str, ref: EntityRef, *, limit: int = 10,
+    interval: str = "1d",
 ) -> tuple[MarketResult, str] | None:
     """First provider that produces data for `intent`, with its name."""
     providers = registry.providers_for(intent)
@@ -145,7 +182,7 @@ async def fetch_for_intent(
             if intent == registry.INTENT_QUOTE:
                 return await provider.get_quote(client, ref), provider.name
             if intent == registry.INTENT_HISTORY:
-                return await provider.get_history(client, ref, limit=limit), provider.name
+                return await provider.get_history(client, ref, interval=interval, limit=limit), provider.name
             if intent == registry.INTENT_FUNDAMENTALS:
                 return await provider.get_fundamentals(client, ref), provider.name
             if intent == registry.INTENT_FILINGS:
@@ -197,11 +234,15 @@ async def fetch_market_data(query: str, *, limit: int = 10) -> tuple[MarketResul
                 return None
 
             # History honours an explicit span in the question ("the last 30
-            # days"); everything else uses the caller's limit.
-            effective_limit = (
-                registry.requested_bars(query) if intent == registry.INTENT_HISTORY else limit
+            # days"); everything else uses the caller's limit. The interval
+            # coarsens with the span so a long request covers its whole period
+            # instead of being silently clipped to the most recent 400 days.
+            effective_interval, effective_limit = "1d", limit
+            if intent == registry.INTENT_HISTORY:
+                effective_interval, effective_limit = registry.requested_history_window(query)
+            outcome = await fetch_for_intent(
+                client, intent, ref, limit=effective_limit, interval=effective_interval
             )
-            outcome = await fetch_for_intent(client, intent, ref, limit=effective_limit)
             if outcome is None:
                 return None
             result, provider_name = outcome

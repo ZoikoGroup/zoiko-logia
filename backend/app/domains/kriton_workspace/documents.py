@@ -476,19 +476,78 @@ async def resolve_conversation_document_ids(
         if valid_ids:
             await db.commit()
         return valid_ids
-    result = await db.execute(select(ConversationDocument.document_id).where(
-        ConversationDocument.conversation_id == conversation_id,
-        ConversationDocument.tenant_id == tenant_id,
-        ConversationDocument.user_id == user_id,
-    ).order_by(ConversationDocument.created_at))
+    # Restoring a previous turn's attachments must apply the same READY and
+    # expiry conditions the explicit path above applies. Without them a
+    # conversation kept re-attaching a document that had since passed its
+    # retention deadline: the chip reappeared with its chunk count, every
+    # answer then failed because retrieval filters expired rows out, and
+    # re-uploading through the saved-documents list only re-linked the same
+    # dead record.
+    result = await db.execute(
+        select(ConversationDocument.document_id)
+        .join(Document, Document.id == ConversationDocument.document_id)
+        .where(
+            ConversationDocument.conversation_id == conversation_id,
+            ConversationDocument.tenant_id == tenant_id,
+            ConversationDocument.user_id == user_id,
+            Document.status == "READY",
+            Document.expires_at > datetime.now(timezone.utc),
+        )
+        .order_by(ConversationDocument.created_at)
+    )
     return list(result.scalars().all())
 
 
+async def expired_attachment_names(
+    db: AsyncSession, *, conversation_id: str | None, requested_ids: list[str],
+    tenant_id: str, user_id: str,
+) -> list[str]:
+    """Filenames attached to this turn that are past their retention deadline.
+
+    Lets the caller say what actually went wrong. "Could not retrieve readable
+    evidence … confirm the attachment is ready" points at file readability, so
+    a reader concludes their spreadsheet is corrupt or the parser is broken,
+    when the document was simply too old to be read.
+    """
+    ids = list(requested_ids)
+    if not ids and conversation_id:
+        result = await db.execute(select(ConversationDocument.document_id).where(
+            ConversationDocument.conversation_id == conversation_id,
+            ConversationDocument.tenant_id == tenant_id,
+            ConversationDocument.user_id == user_id,
+        ))
+        ids = list(result.scalars().all())
+    if not ids:
+        return []
+    rows = await db.execute(select(Document.filename, Document.expires_at).where(
+        Document.id.in_(ids),
+        Document.tenant_id == tenant_id,
+        Document.user_id == user_id,
+    ))
+    now = datetime.now(timezone.utc)
+    return [
+        filename for filename, expires_at in rows.all()
+        if expires_at is not None and expires_at <= now
+    ]
+
+
 async def list_documents(db: AsyncSession, *, tenant_id: str, user_id: str) -> list[tuple[Document, int]]:
+    """Documents the user can still attach.
+
+    Expired rows are excluded deliberately. This feeds the saved-documents
+    picker, and retrieve_document_sources() refuses anything past its
+    retention deadline — so listing them offered documents the system had
+    already decided not to read. Selecting one produced a green chip with a
+    real chunk count and then an unexplained failure on every question.
+    """
     result = await db.execute(
         select(Document, func.count(DocumentChunk.id))
         .outerjoin(DocumentChunk, DocumentChunk.document_id == Document.id)
-        .where(Document.tenant_id == tenant_id, Document.user_id == user_id)
+        .where(
+            Document.tenant_id == tenant_id,
+            Document.user_id == user_id,
+            Document.expires_at > datetime.now(timezone.utc),
+        )
         .group_by(Document.id)
         .order_by(Document.created_at.desc())
     )

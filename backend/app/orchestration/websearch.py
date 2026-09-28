@@ -21,10 +21,10 @@ Design notes:
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import os
-import time
-from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import httpx
 
@@ -76,7 +76,37 @@ def _strict_allowlist() -> bool:
 # Caching the repeats is what holds the request rate under whatever trips that.
 # Latency is a side benefit: the search is the slowest single step in
 # ask_kriton (see its background-task comment) and a hit removes it outright.
-_CACHE_MAX_ENTRIES = 512
+#
+# Redis, not a process-local dict. The dict emptied on every restart, and
+# `uvicorn --reload` restarts on every file save — so a normal afternoon's
+# editing handed the same handful of questions back to the engines over and
+# over, which is the precise pattern that got the instance blocked. Redis
+# outlives reloads, container restarts and redeploys. The cost is roughly a
+# millisecond per hit against a search bounded at 6s, which is not a trade
+# worth thinking about; durability was the whole reason for the move, not
+# speed.
+#
+# Redis is a declared dependency, but the import is guarded: this module's
+# contract is to degrade rather than raise, and a cache that cannot even be
+# imported should lose its caching, not take web search down with it.
+try:
+    import redis.asyncio as _redis
+except Exception:                   # pragma: no cover - package absent/broken
+    _redis = None
+
+# Bumped whenever WebSource's field set changes. Entries written by an older
+# build then simply miss, instead of deserialising into a half-populated
+# object that looks valid and cites wrongly.
+_CACHE_KEY_PREFIX = "websearch:v1:"
+
+# DB 3: 0 and 1 carry Celery's queue and results, 2 the rate limiter. A
+# separate DB means flushing this cache can never drop a queued job.
+_CACHE_REDIS_DEFAULT_URL = "redis://localhost:6379/3"
+
+# A stalled Redis has to stay cheaper than the search it exists to avoid.
+# Half a second against a 6s bound is the most it is worth waiting before
+# giving up and going out to the engines.
+_CACHE_SOCKET_TIMEOUT = 0.5
 
 
 def _cache_ttl() -> float:
@@ -94,12 +124,52 @@ def _cache_ttl() -> float:
         return 3600.0
 
 
-# key -> (expires_at, results), ordered most-recently-used last so the first
-# key is always the coldest when the cap is reached. Per-process and in-memory:
-# a --reload restart empties it, which is fine, because the repeats worth
-# absorbing happen within a session. monotonic() not time() — a clock
-# adjustment must not make an entry immortal or expire the lot at once.
-_search_cache: OrderedDict[str, tuple[float, list[WebSource]]] = OrderedDict()
+def _cache_redis_url() -> str:
+    # Compose overrides this with the service name; localhost is for a bare
+    # local run. REDIS_URL sits in between so a deployment that provisions one
+    # Redis does not need a second variable set.
+    return (
+        os.getenv("SEARXNG_CACHE_REDIS_URL")
+        or os.getenv("REDIS_URL")
+        or _CACHE_REDIS_DEFAULT_URL
+    )
+
+
+_redis_client = None
+_redis_client_loop = None
+
+
+def _client():
+    """The shared client, or None when Redis is unusable (callers treat that
+    as a miss).
+
+    Rebuilt whenever the running event loop changes: redis.asyncio binds its
+    connection pool to the loop that created it, and a pool left over from a
+    closed loop raises on first use. Production has one long-lived loop and
+    builds this once; anything driving the module through repeated
+    asyncio.run() gets a fresh client per loop instead of a broken one.
+    """
+    global _redis_client, _redis_client_loop
+    if _redis is None:
+        return None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if _redis_client is not None and _redis_client_loop is loop:
+        return _redis_client
+    try:
+        _redis_client = _redis.from_url(
+            _cache_redis_url(),
+            decode_responses=True,
+            socket_timeout=_CACHE_SOCKET_TIMEOUT,
+            socket_connect_timeout=_CACHE_SOCKET_TIMEOUT,
+        )
+        _redis_client_loop = loop
+    except Exception:
+        _redis_client = None
+        _redis_client_loop = None
+    return _redis_client
 
 
 def _cache_key(query: str, jurisdiction: str, limit: int) -> str:
@@ -108,22 +178,42 @@ def _cache_key(query: str, jurisdiction: str, limit: int) -> str:
     # sources survive _spread_across_organisations. Whitespace and case are
     # normalised so "Federal  income tax" and "federal income tax" share an
     # entry rather than each making its own trip.
-    return f"{(jurisdiction or '').strip().upper()}|{limit}|{' '.join(query.lower().split())}"
+    return (
+        f"{_CACHE_KEY_PREFIX}{(jurisdiction or '').strip().upper()}"
+        f"|{limit}|{' '.join(query.lower().split())}"
+    )
 
 
-def _cache_get(key: str) -> list[WebSource] | None:
-    entry = _search_cache.get(key)
-    if entry is None:
+def _encode(results: list[WebSource]) -> str:
+    return json.dumps([asdict(s) for s in results], separators=(",", ":"))
+
+
+def _decode(raw: str) -> list[WebSource]:
+    return [WebSource(**item) for item in json.loads(raw)]
+
+
+async def _cache_get(key: str) -> list[WebSource] | None:
+    client = _client()
+    if client is None:
         return None
-    expires_at, results = entry
-    if time.monotonic() >= expires_at:
-        del _search_cache[key]
+    try:
+        raw = await client.get(key)
+    except Exception:
+        # Refused, down, or past the socket timeout. Fail open: a cache outage
+        # costs the search it would have saved, never the answer.
         return None
-    _search_cache.move_to_end(key)      # hot entries survive eviction
-    return list(results)                # a copy — callers must not mutate the cache
+    if raw is None:
+        return None
+    try:
+        return _decode(raw)
+    except Exception:
+        # Unreadable entry — hand-edited, truncated, or written by a build
+        # whose WebSource had different fields than the prefix claims. Treat
+        # it as a miss; the refetch overwrites it.
+        return None
 
 
-def _cache_put(key: str, results: list[WebSource]) -> None:
+async def _cache_put(key: str, results: list[WebSource]) -> None:
     # Deliberately NOT caching an empty result. Empty means either a genuine
     # no-match or a blocked/timed-out engine, and the two are indistinguishable
     # at this layer — SearXNG answers 200 with "results": [] for both. Storing
@@ -136,10 +226,20 @@ def _cache_put(key: str, results: list[WebSource]) -> None:
     ttl = _cache_ttl()
     if ttl <= 0:
         return
-    _search_cache[key] = (time.monotonic() + ttl, list(results))
-    _search_cache.move_to_end(key)
-    while len(_search_cache) > _CACHE_MAX_ENTRIES:
-        _search_cache.popitem(last=False)   # evict least recently used
+    client = _client()
+    if client is None:
+        return
+    try:
+        # psetex rather than setex because the TTL is a float and sub-second
+        # values are meaningful. Expiry is now the server's job, so there is
+        # no sweep here and no entry cap to enforce: the TTL bounds the key
+        # count, with maxmemory-policy allkeys-lru as the server-side backstop
+        # if the instance is ever shared with something larger.
+        await client.psetex(key, max(1, int(ttl * 1000)), _encode(results))
+    except Exception:
+        # Same reasoning as the read path: a cache that cannot be written is
+        # a slower next question, not a failed one.
+        return
 
 
 def _spread_across_organisations(
@@ -180,12 +280,13 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
     domains for the jurisdiction and topic. Returns [] on any failure
     (fail-soft).
 
-    Successful results are cached for SEARXNG_CACHE_TTL_SECONDS so a repeated
-    question does not make a second trip to the upstream engines — see the
-    cache block above for why that matters more than the latency it saves.
+    Successful results are cached in Redis for SEARXNG_CACHE_TTL_SECONDS so a
+    repeated question does not make a second trip to the upstream engines —
+    see the cache block above for why that matters more than the latency it
+    saves. An unreachable cache degrades to a normal search.
     """
     cache_key = _cache_key(query, jurisdiction, limit)
-    cached = _cache_get(cache_key)
+    cached = await _cache_get(cache_key)
     if cached is not None:
         return cached
 
@@ -247,7 +348,7 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
     # caller would have received. Caching the raw engine response instead would
     # freeze today's allowlist into every future hit, and a taxonomy change
     # would not take effect until the entries aged out.
-    _cache_put(cache_key, selected)
+    await _cache_put(cache_key, selected)
     return selected
 
 
@@ -369,6 +470,77 @@ _DOMAIN_GATE = (
 )
 
 
+# Total characters of evidence text one request may carry.
+#
+# Groq's on-demand tier allows 8,000 tokens PER MINUTE for gpt-oss-120b, and
+# that budget covers the system prompt, the evidence and the answer together.
+# The system prompt alone is around 2,500 tokens, so evidence had to be
+# bounded or a single question could consume the whole minute: attaching five
+# documents sent every chunk of all five, the request exceeded the cap, and
+# the 429 came back with a 45-second reset — far beyond the one short retry
+# groq_adapter.py performs. The user saw "policy blocked", which it never was.
+#
+# Measured against the on-demand tier, per request:
+#
+#   groq_adapter._SYSTEM_PROMPT   8,785 chars  ~2,196 tokens
+#   this prompt's scaffolding     6,475 chars  ~1,618 tokens
+#   the answer itself                          ~  800 tokens
+#   ------------------------------------------------------
+#   fixed overhead                             ~4,600 tokens
+#
+# That leaves roughly 3,400 tokens of the 8,000 for evidence, and spending
+# all of it means one question consumes an entire minute. 6,000 characters
+# (~1,500 tokens) keeps a five-document question comfortably inside the
+# allowance with room for a follow-up.
+#
+# Raise it on a paid tier via GROUNDED_CONTEXT_CHAR_BUDGET — the limit is the
+# provider plan, not anything about the evidence itself.
+_CONTEXT_CHAR_BUDGET = 6_000
+# No source is cut below this, even with many attached: a 200-character
+# fragment of a balance sheet is worse than useless, because it looks like
+# evidence while being too small to answer from.
+_MIN_SOURCE_CHARS = 700
+
+
+def _context_budget() -> int:
+    try:
+        return max(2_000, int(os.getenv("GROUNDED_CONTEXT_CHAR_BUDGET", str(_CONTEXT_CHAR_BUDGET))))
+    except ValueError:
+        return _CONTEXT_CHAR_BUDGET
+
+
+def _context_allowances(sources: list[WebSource]) -> list[int]:
+    """Characters each source may contribute, shared out fairly.
+
+    Sources under their equal share give the remainder back, so a handful of
+    short snippets never force a long one to be cut. Whatever is left is then
+    divided among the sources still over their share, repeatedly, until the
+    split settles — one big document cannot crowd out the four attached
+    alongside it, which is what "compare these documents" depends on.
+    """
+    if not sources:
+        return []
+    budget = _context_budget()
+    lengths = [len(s.snippet or "") for s in sources]
+    if sum(lengths) <= budget:
+        return lengths
+
+    allowances = [0] * len(sources)
+    remaining = set(range(len(sources)))
+    while remaining:
+        share = max(_MIN_SOURCE_CHARS, budget // len(remaining))
+        fitting = {i for i in remaining if lengths[i] <= share}
+        if not fitting:
+            for i in remaining:
+                allowances[i] = share
+            break
+        for i in fitting:
+            allowances[i] = lengths[i]
+            budget -= lengths[i]
+        remaining -= fitting
+    return allowances
+
+
 def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
     """Assemble a grounded prompt from document, live-data, or web evidence."""
     if not sources:
@@ -405,10 +577,20 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
             + f"\n=== User Question ===\n{query}"
         )
     blocks = []
-    for i, s in enumerate(sources, start=1):
+    truncated_any = False
+    for i, (s, allowance) in enumerate(zip(sources, _context_allowances(sources)), start=1):
         source_location = f"URL: {s.url}" if s.url else f"Document ID: {s.source_id or 'uploaded'}"
-        blocks.append(f"[REF-{i}] {s.title}\n{source_location}\n{s.snippet}")
+        snippet = s.snippet or ""
+        if len(snippet) > allowance:
+            snippet = snippet[:allowance].rstrip() + "\n[…this source was shortened to fit the request budget]"
+            truncated_any = True
+        blocks.append(f"[REF-{i}] {s.title}\n{source_location}\n{snippet}")
     context = "\n\n".join(blocks)
+    if truncated_any:
+        context += (
+            "\n\n[Some sources above were shortened. If the question needs "
+            "detail that was cut, say so rather than guessing at it.]"
+        )
     return (
         _DOMAIN_GATE
         + "Answer the user's question using ONLY the numbered evidence sources below. "

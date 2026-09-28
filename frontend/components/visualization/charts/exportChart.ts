@@ -105,6 +105,13 @@ export function exportChartCsv(viz: VisualizationSpec) {
   } else if (viz.type === "CANDLESTICK") {
     lines.push(csvRow(["Date", "Open", "High", "Low", "Close", "Volume"]));
     for (const b of viz.candlestick) lines.push(csvRow([b.dimension, b.open, b.high, b.low, b.close, b.volume ?? ""]));
+  } else if (viz.type === "GAUGE") {
+    const value = viz.value ?? 0;
+    const target = viz.target ?? 0;
+    lines.push(csvRow(["Measure", "Value"]));
+    lines.push(csvRow([viz.label ?? "Actual", value]));
+    lines.push(csvRow([viz.target_label ?? "Target", target]));
+    lines.push(csvRow(["Percent of target", target > 0 ? ((value / target) * 100).toFixed(1) : ""]));
   } else if (viz.type === "GROUPED_BAR") {
     lines.push(csvRow(["Period", ...viz.series.map((s) => s.name)]));
     const categories = viz.series[0]?.data.map((p) => p.x) ?? [];

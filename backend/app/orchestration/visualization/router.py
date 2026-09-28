@@ -19,6 +19,12 @@ class VisualRoute(BaseModel):
     family: str
     canonical: str
     variant: str
+    # The capability's own variant, before domain_variant() specialized it.
+    # `variant` is renamed per domain (STANDARD_LINE becomes TAX_METRIC_TREND
+    # for a tax question), so it cannot answer "did the user get the chart
+    # they asked for" — comparing it against the request would report a
+    # substitution on a request that was honoured perfectly.
+    base_variant: str
     selected_type: str
     confidence: float
 
@@ -51,9 +57,22 @@ def choose_visual_route(
             capability.requested_variant is None or capability.requested_variant == plan.requested_chart_variant,
         ))
 
+    # A chart the user NAMED outranks a higher-priority default. Priority
+    # alone is the right tie-break between capabilities nobody asked for, but
+    # it cannot express "they said bar chart": on OHLC data the candlestick
+    # default would beat an explicitly requested bar or line every time, since
+    # those capabilities carry no priority advantage over it. Ordering by
+    # (asked-for, priority) keeps every unrequested case exactly as it was.
+    def rank(capability: VisualizationCapability) -> tuple[int, float]:
+        asked_for = bool(
+            plan.requested_chart_variant
+            and capability.variant == plan.requested_chart_variant
+        )
+        return (1 if asked_for else 0, capability.priority)
+
     matches_in_priority_order = sorted(
         (capability for capability in ROUTABLE_CAPABILITIES if matches(capability)),
-        key=lambda capability: capability.priority,
+        key=rank,
         reverse=True,
     )
     if not matches_in_priority_order:
@@ -64,6 +83,7 @@ def choose_visual_route(
         family=selected.family,
         canonical=selected.canonical_type,
         variant=specialized(selected.variant),
+        base_variant=selected.variant,
         selected_type=selected.selected_type,
         confidence=selected.priority,
     )
