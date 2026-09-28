@@ -74,7 +74,7 @@ from app.orchestration.redaction import redact_for_external_exposure
 from app.orchestration.websearch import (
     DocumentExcerpt,
     build_web_grounded_prompt,
-    web_search,
+    web_search_each,
     wants_visual,
 )
 from app.domains.documents import service as documents_service
@@ -406,7 +406,7 @@ async def ask_kriton(
     # the rest of the pipeline instead of paying for them one after another.
     # Fails soft exactly as before (returns [] on any error).
     web_search_task = asyncio.create_task(
-        metrics.run("retrieval.web", web_search(request.query, jurisdiction=request.jurisdiction, limit=5))
+        metrics.run("retrieval.web", web_search_each(request.query, jurisdiction=request.jurisdiction, limit=5))
     )
     # Live exact-figure sources (currency via Frankfurter, economic stats via
     # DBnomics). Self-gating + fail-soft: returns [] unless the question is

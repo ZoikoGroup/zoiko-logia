@@ -21,9 +21,13 @@ Design notes:
 """
 from __future__ import annotations
 
+import asyncio
+import dataclasses
+import html
 import os
 import re
 from dataclasses import dataclass
+from urllib.parse import urlparse
 from app.domains.calculations.schemas import LiveObservation
 
 import httpx
@@ -156,7 +160,176 @@ async def _query_searxng(query: str) -> list[WebSource]:
     return parsed
 
 
-async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list[WebSource]:
+# ── Reading the pages behind the top sources ────────────────────────────────
+# A search result carries a ~150-character snippet — the page's title line,
+# e.g. "Tax rates (For AY 2025-26 and 2026-27) · Tax rates for last 10 years".
+# The figures a question asks for (a slab table, a threshold) are on the page,
+# not in the snippet, so the model filled them from stale memory and cited the
+# official page for them. The top official/trusted pages are now read and the
+# relevant part (tables kept row by row) is passed on instead.
+_PAGE_TIMEOUT_SECONDS = 5.0
+_PAGE_MAX_BYTES = 2_000_000
+_PAGE_EXCERPT_CHARS = 3000
+_OFFICIAL_HOST = re.compile(
+    r"(?:^|\.)(?:gov|gov\.[a-z]{2}|gc\.ca|nic\.in|europa\.eu|ifrs\.org|fasb\.org|"
+    r"iaasb\.org|icai\.org|oecd\.org|worldbank\.org|imf\.org|legislation\.gov\.uk)$"
+)
+_EXCERPT_STOPWORDS = {
+    "what", "which", "when", "where", "does", "under", "with", "from", "this", "that",
+    "their", "there", "about", "rate", "rates", "india", "current", "latest",
+}
+
+
+def _readable_host(url: str, domains: list[str]) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    if urlparse(url).scheme not in {"http", "https"} or not host:
+        return False
+    return bool(_OFFICIAL_HOST.search(host)) or matches_allowlist(url, domains)
+
+
+_ANY_SPACE = re.compile(r"[\s   -​  　﻿]+")
+_CELL = re.compile(r"(?is)<t([dh])\b([^>]*)>(.*?)</t[dh]\s*>")
+_COLSPAN = re.compile(r"""(?i)colspan\s*=\s*["']?(\d+)""")
+_HAS_FIGURE = re.compile(r"[₹$£€]|\d\s?%|\d{1,3}(?:,\d{2,3})+")
+
+
+def _cell_text(fragment: str) -> str:
+    return _ANY_SPACE.sub(" ", html.unescape(re.sub(r"<[^>]+>", " ", fragment))).strip()
+
+
+def _table_to_text(match: re.Match) -> str:
+    """One line per data row with every cell labelled by its column heading
+    ("New Tax Regime – Income Tax Slab: Up to ₹ 4,00,000; …"). A two-level
+    header over side-by-side columns — Old | New regime, each with Slab | Rate
+    — otherwise leaves the model guessing which figures belong to which
+    regime, and it read the old-regime column as the answer."""
+    rows: list[list[str]] = []
+    header_flags: list[bool] = []
+    for row in re.findall(r"(?is)<tr\b.*?</tr\s*>", match.group(0)):
+        cells: list[str] = []
+        all_th = True
+        for kind, attrs, body in _CELL.findall(row):
+            span = int(_COLSPAN.search(attrs).group(1)) if _COLSPAN.search(attrs) else 1
+            cells.extend([_cell_text(body)] * max(1, min(span, 12)))
+            all_th = all_th and kind.lower() == "h"
+        if cells:
+            rows.append(cells)
+            header_flags.append(all_th or not any(_HAS_FIGURE.search(cell) for cell in cells))
+    header_count = 0
+    while header_count < min(2, len(rows) - 1) and header_flags[header_count]:
+        header_count += 1
+    width = max((len(row) for row in rows), default=0)
+    labels = []
+    for column in range(width):
+        parts: list[str] = []
+        for row in rows[:header_count]:
+            if column < len(row) and row[column] and row[column] not in parts:
+                parts.append(row[column])
+        labels.append(" – ".join(parts))
+    lines = []
+    for row in rows[header_count:]:
+        if header_count:
+            lines.append("; ".join(f"{labels[i]}: {cell}" if labels[i] else cell for i, cell in enumerate(row) if cell))
+        else:
+            lines.append(" | ".join(cell for cell in row if cell))
+    return "\n" + "\n".join(lines) + "\n"
+
+
+def _html_to_text(markup: str) -> str:
+    """Visible text with structure kept: tables become one labelled line per
+    row (see _table_to_text); other blocks become lines."""
+    markup = re.sub(r"(?is)<(script|style|noscript|head|nav|footer|svg)\b.*?</\1>", " ", markup)
+    markup = re.sub(r"(?is)<table\b.*?</table\s*>", _table_to_text, markup)
+    markup = re.sub(r"(?i)<br\s*/?>|</(?:p|li|h[1-6]|div|section|caption)\s*>", "\n", markup)
+    text = html.unescape(re.sub(r"<[^>]+>", " ", markup))
+    lines = (_ANY_SPACE.sub(" ", line).strip(" |") for line in text.splitlines())
+    return "\n".join(line for line in lines if line)
+
+
+_FIGURE = re.compile(r"[₹$£€]\s?\d|\d\s?%|\d{1,3}(?:,\d{2,3})+")
+# Small windows so a compact table outscores prose around it; ties go to
+# the earliest window (the main table precedes age-band variants).
+_EXCERPT_WINDOW = 12
+
+
+def _relevant_excerpt(text: str, query: str, limit: int = _PAGE_EXCERPT_CHARS) -> str:
+    """The densest part of the page for this question: windows of lines are
+    scored by query terms and figures (amounts, %), and the best windows are
+    kept in page order. Repeated lines (menus, "Tax slabs" x10) are dropped
+    first so they cannot use up the budget."""
+    terms = {
+        word.lower() for word in re.findall(r"[A-Za-z]{4,}|\d{2,4}(?:-\d{2})?", query)
+    } - _EXCERPT_STOPWORDS
+    seen: set[str] = set()
+    lines: list[str] = []
+    for line in text.splitlines():
+        if line not in seen:
+            seen.add(line)
+            lines.append(line)
+    if not lines:
+        return ""
+    # Stem plurals ("slabs" must match the page's "Income Tax Slab"), weight a
+    # term by how rare it is on the page (a word on every line, like "income"
+    # on a tax page, says little), and favour lines carrying figures — the
+    # rates and thresholds a question asks for live in tables of amounts.
+    terms = {term[:-1] if len(term) > 4 and term.endswith("s") else term for term in terms}
+    lowered = [line.lower() for line in lines]
+    weight = {
+        term: 3.0 / max(1.0, sum(1 for line in lowered if term in line) / 4)
+        for term in terms
+    }
+    scores = [
+        sum(weight[term] for term in terms if term in line) + (2 if _FIGURE.search(original) else 0)
+        for line, original in zip(lowered, lines)
+    ]
+    starts = range(0, max(1, len(lines) - _EXCERPT_WINDOW + 1), 3)
+    ranked = sorted(starts, key=lambda start: -sum(scores[start:start + _EXCERPT_WINDOW]))
+    keep: set[int] = set()
+    used = 0
+    for start in ranked:
+        if sum(scores[start:start + _EXCERPT_WINDOW]) == 0 or used >= limit:
+            break
+        for index in range(start, min(start + _EXCERPT_WINDOW, len(lines))):
+            if index not in keep and used + len(lines[index]) <= limit:
+                keep.add(index)
+                used += len(lines[index]) + 1
+    return "\n".join(lines[index] for index in sorted(keep))
+
+
+async def _page_excerpt(client: httpx.AsyncClient, url: str, query: str) -> str:
+    try:
+        response = await client.get(url)
+        if response.status_code != 200 or "html" not in response.headers.get("content-type", ""):
+            return ""
+        if len(response.content) > _PAGE_MAX_BYTES:
+            return ""
+        return _relevant_excerpt(_html_to_text(response.text), query)
+    except (httpx.HTTPError, ValueError, UnicodeDecodeError):
+        return ""
+
+
+async def _with_page_extracts(
+    sources: list[WebSource], query: str, domains: list[str], pages: int,
+) -> list[WebSource]:
+    """Replace the snippet of the top `pages` official/trusted sources with the
+    relevant part of the page itself. Fail-soft: a slow or failing page keeps
+    its search snippet. Only official or allowlisted hosts are fetched."""
+    targets = [i for i, source in enumerate(sources) if _readable_host(source.url, domains)][:pages]
+    if not targets:
+        return sources
+    async with httpx.AsyncClient(
+        timeout=_PAGE_TIMEOUT_SECONDS, follow_redirects=True, max_redirects=3,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; KritonResearch/1.0)"},
+    ) as client:
+        excerpts = await asyncio.gather(*(_page_excerpt(client, sources[i].url, query) for i in targets))
+    enriched = list(sources)
+    for index, excerpt in zip(targets, excerpts):
+        if len(excerpt) > len(sources[index].snippet):
+            enriched[index] = dataclasses.replace(sources[index], snippet=f"{sources[index].snippet}\n[From the page]\n{excerpt}")
+    return enriched
+
+
+async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pages: int = 2) -> list[WebSource]:
     """Query SearXNG and return up to `limit` sources from the bodies with
     authority over the question's topic. Returns [] on any failure (fail-soft).
 
@@ -179,13 +352,59 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
     trusted = [s for s in parsed if matches_allowlist(s.url, domains)]
 
     if trusted:
-        return _spread_across_organisations(trusted, domains, limit)
-    if _strict_allowlist():
+        chosen = _spread_across_organisations(trusted, domains, limit)
+    elif _strict_allowlist():
         return []
-    # Fallback: no trusted-domain hits — return the general top results so the
-    # bot still answers (allowlist is advisory unless SEARXNG_STRICT_ALLOWLIST).
-    # Spread these too: five pages from one content farm is the worst case.
-    return _spread_across_organisations(parsed, domains, limit)
+    else:
+        # Fallback: no trusted-domain hits — return the general top results so
+        # the bot still answers (allowlist is advisory unless
+        # SEARXNG_STRICT_ALLOWLIST). Spread these too: five pages from one
+        # content farm is the worst case.
+        chosen = _spread_across_organisations(parsed, domains, limit)
+    return await _with_page_extracts(chosen, query, domains, read_pages)
+
+
+# Several questions in one message ("What are the FY 2025-26 slabs? What is
+# the standard deduction? What is the UK VAT threshold? …") searched as ONE
+# query returned pages matching none of them well — a meal-voucher blog, an
+# exam paper — so most parts were answered "not in the sources" or from stale
+# memory. Each question is searched on its own, as a person would.
+_QUESTION_BOUNDARY = re.compile(r"(?<=\?)\s+")
+MAX_SUB_QUESTIONS = 8
+_SOURCES_PER_SUB_QUESTION = 3
+# The public engines behind SearXNG throttle bursts (see web_search), so the
+# per-question searches run a few at a time rather than all at once.
+_SUB_SEARCH_CONCURRENCY = 3
+
+
+def sub_questions(query: str) -> list[str]:
+    """The separate questions in a message, or [query] when it holds one."""
+    parts = [part.strip() for part in _QUESTION_BOUNDARY.split(query.strip()) if part.strip()]
+    parts = [part for part in parts if len(part.split()) >= 3]
+    return parts[:MAX_SUB_QUESTIONS] if len(parts) >= 2 else [query]
+
+
+async def web_search_each(query: str, jurisdiction: str = "", limit: int = 5) -> list[WebSource]:
+    """web_search for a single question; for a message with several questions,
+    one search per question (bounded concurrency), merged without duplicates
+    so every part of the answer has sources of its own."""
+    parts = sub_questions(query)
+    if len(parts) == 1:
+        return await web_search(query, jurisdiction=jurisdiction, limit=limit)
+    gate = asyncio.Semaphore(_SUB_SEARCH_CONCURRENCY)
+
+    async def search(part: str) -> list[WebSource]:
+        async with gate:
+            return await web_search(part, jurisdiction=jurisdiction, limit=_SOURCES_PER_SUB_QUESTION, read_pages=1)
+
+    merged: list[WebSource] = []
+    seen: set[str] = set()
+    for group in await asyncio.gather(*(search(part) for part in parts)):
+        for source in group:
+            if source.url not in seen:
+                seen.add(source.url)
+                merged.append(source)
+    return merged
 
 
 # The table/diagram/chart formatting rules apply whether or not web sources
@@ -646,6 +865,9 @@ def build_web_grounded_prompt(
         "figures and facts from their documents. "
         if documents else
         "Answer the user's question using ONLY the numbered web sources below. "
+        "When sources disagree, prefer official government, tax-authority, regulator "
+        "and standard-setter sources and the most recent period, and state the tax "
+        "year or effective date each rate applies to — never an older rate from memory. "
     )
     return (
         gate
