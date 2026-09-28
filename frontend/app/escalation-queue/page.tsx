@@ -108,8 +108,8 @@ export default function EscalationQueuePage() {
   }
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount: the page starts in its loading snapshot and every later setState happens after an awaited network call
+    load();
   }, []);
 
   async function handleAction(caseId: string, action: "approve" | "refuse" | "escalate" | "request_info") {
@@ -119,7 +119,7 @@ export default function EscalationQueuePage() {
       await actOnEscalation(caseId, action, reviewerId, actionReason);
       setActionReason("");
       await load();
-    } catch (err: unknown) {
+    } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : "Failed to resolve case. Maker-checker constraint violation.");
     } finally {
       setSubmittingId(null);
@@ -136,7 +136,7 @@ export default function EscalationQueuePage() {
       });
       setShowOverrideForm(false);
       await load();
-    } catch (err: unknown) {
+    } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : "Failed to create safety override.");
     }
   }

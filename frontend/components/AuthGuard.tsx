@@ -4,7 +4,7 @@ import { useEffect, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 
-const PUBLIC_PATHS = ["/login", "/signup", "/auth/callback"];
+const PUBLIC_PATHS = ["/login", "/signup", "/auth/callback", "/auth/forgot-password", "/auth/reset-password"];
 
 /** Defense in depth alongside proxy.ts: Next's own guidance is that
  * middleware/proxy alone isn't sufficient for full session enforcement

@@ -3,10 +3,10 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
-from app.core.database import get_db
+from app.core.database import get_db, session_is_sqlite
 from app.core.supabase_auth import verify_token
 from app.domains.identity.models import User
+from app.domains.identity.permissions import user_has_permission
 from app.domains.identity.service import get_user_by_id
 
 # tokenUrl is cosmetic here (Supabase issues the tokens now, not this
@@ -64,13 +64,29 @@ async def get_current_user(
     # deliberately untouched here); this only corrects WHICH tenant that
     # already-authenticated user is scoped to, from the server's own record
     # rather than from a cached claim.
-    if not get_settings().is_sqlite:
+    if not session_is_sqlite(db):
         await db.execute(
             text("SELECT set_config('app.tenant_id', :tenant_id, false)"),
             {"tenant_id": user.tenant_id or ""},
         )
 
     return user
+
+
+def require_permission(permission: str):
+    """Dependency factory: require the authenticated user's role to carry a
+    concrete permission (see identity/permissions.py for the registry). Fails
+    closed — a role this registry knows nothing about can do nothing here."""
+
+    async def dependency(current_user: User = Depends(get_current_user)) -> User:
+        if not user_has_permission(current_user, permission):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Missing required permission: {permission}",
+            )
+        return current_user
+
+    return dependency
 
 
 async def require_admin(current_user: User = Depends(get_current_user)) -> User:

@@ -108,6 +108,12 @@ class GeminiAdapter:
             return await call()
         except Exception as e:
             if not _is_transient(e):
+                logger.warning(
+                    "Gemini request failed: error_type=%s status=%s model=%s",
+                    type(e).__name__,
+                    _status_code(e),
+                    model,
+                )
                 return f"[Error connecting to Gemini API: {str(e)}]"
             status = _status_code(e)
             logger.info("gemini transient failure; retrying once (status=%s, attempt=1)", status)

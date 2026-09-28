@@ -249,14 +249,19 @@ main select:focus {
     88% { opacity: 1; transform: translateY(0); }
     100% { opacity: 0; transform: translateY(-3px); }
   }
-  @keyframes kriton-text-cursor-blink {
-    0%, 45% { opacity: 1; }
-    46%, 100% { opacity: 0; }
+  @keyframes kriton-status-change {
+    from { opacity: 0; transform: translateY(3px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes kriton-stage-icon {
+    0%, 100% { transform: scale(0.9); }
+    50% { transform: scale(1.08); }
   }
 
   .kriton-animate-msg-user { animation: kriton-msg-user-in 0.28s ease-out both; }
   .kriton-animate-msg-response { animation: kriton-msg-response-in 0.32s ease-out both; }
   .kriton-animate-answer-reveal { animation: kriton-answer-reveal 0.35s ease-out both; }
   .kriton-animate-status { animation: kriton-status-crossfade 2.2s ease-in-out infinite; }
-  .kriton-text-cursor { animation: kriton-text-cursor-blink 0.28s steps(1, end) infinite; }
+  .kriton-status-change { animation: kriton-status-change 240ms ease-out both; }
+  .kriton-stage-icon { animation: kriton-stage-icon 1.2s ease-in-out infinite; }
 }

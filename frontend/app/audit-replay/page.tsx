@@ -51,9 +51,8 @@ function AuditReplayContent() {
   }
 
   useEffect(() => {
-    if (!initialId) return;
-    const timer = window.setTimeout(() => void loadManifest(initialId), 0);
-    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- load on correlationId change: the setStates run after the awaited call, not synchronously
+    if (initialId) loadManifest(initialId);
   }, [initialId]);
 
   function handleSubmit(e: FormEvent) {

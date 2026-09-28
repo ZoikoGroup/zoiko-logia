@@ -58,7 +58,7 @@ export default function AiSafetyDashboardPage() {
   const [events, setEvents] = useState<SafetyEvent[]>([]);
   const [escalations, setEscalations] = useState<Escalation[]>([]);
   const [loading, setLoading] = useState(true);
-  const [renderedAt] = useState(() => Date.now());
+  const [now] = useState(() => Date.now());
 
   async function load() {
     setLoading(true);
@@ -69,11 +69,11 @@ export default function AiSafetyDashboardPage() {
   }
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount: the page starts in its loading snapshot and every later setState happens after an awaited network call
+    load();
   }, []);
 
-  const stats = computeStats(events, escalations, renderedAt);
+  const stats = computeStats(events, escalations, now);
 
   return (
     <main className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -266,7 +266,7 @@ export default function AiSafetyDashboardPage() {
                 {escalations
                   .filter((e) => e.status !== "RESOLVED" && e.status !== "REFUSED")
                   .map((esc) => {
-                    const overdue = esc.sla_deadline && new Date(esc.sla_deadline).getTime() < renderedAt;
+                    const overdue = esc.sla_deadline && new Date(esc.sla_deadline).getTime() < now;
                     return (
                       <div
                         key={esc.id}

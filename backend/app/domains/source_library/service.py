@@ -1,21 +1,66 @@
+import asyncio
+import hashlib
 import re
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import HTTPException, UploadFile, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domains.audit_ledger.event_envelope import record_event_async
-from app.domains.source_library.models import Source, SourceVersion
-from app.domains.source_library.schemas import SourceCreateRequest
+from app.domains.kriton_workspace.documents import ExtractedBlock, extract_document
+from app.domains.source_library.licensing import SOURCE_OPERATIONS, SourceUseContext, can_use
+from app.domains.source_library.models import (
+    Source, SourcePassage, SourceRelationship, SourceRight, SourceUsage, SourceVersion,
+)
+from app.domains.source_library.relationships import RELATIONSHIP_TYPES
+from app.domains.source_library.schemas import SourceCreateRequest, SourceRightGrantRequest
 
 _ELIGIBLE_STATUSES = ("ACTIVE", "APPROVED")
 
 _UPLOAD_ROOT = Path(__file__).resolve().parents[3] / "data" / "uploads"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".pptx", ".csv", ".txt", ".md"}
+_MAX_SOURCE_BYTES = 25 * 1024 * 1024
+_PLAIN_TEXT_EXTENSIONS = {".csv", ".txt", ".md"}
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _extract_source_segments(filename: str, content: bytes) -> list[ExtractedBlock]:
+    """Text extraction for a registered source, on the workspace document
+    extractor (kriton_workspace.documents, which replaced app.domains.documents).
+    The plain-text and CSV formats the register accepts but that extractor does
+    not read are handled here, so an accepted upload never registers with a
+    version that has no indexed passages."""
+    if Path(filename).suffix.lower() in _PLAIN_TEXT_EXTENSIONS:
+        text = content.decode("utf-8", errors="replace").strip()
+        if not text:
+            raise ValueError("The file contains no readable text.")
+        return [ExtractedBlock(text, "File text", {})]
+    return extract_document(filename, content)
+
+
+def _file_from_relative_path(file_path: str) -> Path:
+    backend_root = _UPLOAD_ROOT.parents[1].resolve()
+    candidate = (backend_root / file_path).resolve()
+    if backend_root not in candidate.parents:
+        raise HTTPException(status_code=400, detail="Invalid source file path")
+    return candidate
+
+
+def _validate_url(source_url: str | None) -> None:
+    if not source_url:
+        return
+    parsed = urlparse(source_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=422, detail="Source URL must be an absolute HTTP(S) URL")
 
 
 async def save_uploaded_file(file: UploadFile, tenant_id: str) -> str:
@@ -23,20 +68,38 @@ async def save_uploaded_file(file: UploadFile, tenant_id: str) -> str:
     path (recorded on the SourceVersion, mirroring how ingest_reference_sources.py
     links records back to the original file that was ingested)."""
     safe_name = _SAFE_NAME_RE.sub("_", file.filename or "upload")
+    extension = Path(safe_name).suffix.lower()
+    if extension not in _ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=415, detail=f"Unsupported source file type: {extension or 'none'}")
     tenant_dir = _UPLOAD_ROOT / _SAFE_NAME_RE.sub("_", tenant_id)
     tenant_dir.mkdir(parents=True, exist_ok=True)
 
     stored_name = f"{uuid.uuid4().hex[:12]}_{safe_name}"
     dest = tenant_dir / stored_name
     contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=422, detail="The source file is empty")
+    if len(contents) > _MAX_SOURCE_BYTES:
+        raise HTTPException(status_code=413, detail="Source file exceeds the 25MB limit")
     dest.write_bytes(contents)
 
     backend_root = _UPLOAD_ROOT.parents[1]
     return str(dest.relative_to(backend_root))
 
 
+async def _latest_version(db: AsyncSession, source_id: str) -> SourceVersion:
+    result = await db.execute(
+        select(SourceVersion)
+        .where(SourceVersion.source_id == source_id)
+        .order_by(SourceVersion.created_at.desc())
+    )
+    return result.scalars().first()
+
+
 async def list_sources(
-    db: AsyncSession, category: str | None = None, *, tenant_id: str | None = None
+    db: AsyncSession, category: str | None = None, *, tenant_id: str | None = None,
+    operation: str | None = None, jurisdiction: str = "", framework: str = "",
+    effective_date: date | None = None,
 ) -> list[dict]:
     """tenant_id, when given, enforces the same tenant-private boundary
     massarius/license_gate.py's Checkpoint A applies downstream: non-private
@@ -68,10 +131,30 @@ async def list_sources(
     if tenant_id is not None:
         query = query.where((Source.is_tenant_private.is_(False)) | (Source.tenant_id == tenant_id))
     result = await db.execute(query)
-    return [
-        {**source.__dict__, "latest_version": version}
-        for source, version in result.all()
-    ]
+    rows = result.all()
+    if operation is None:
+        return [
+            {**source.__dict__, "latest_version": version}
+            for source, version in rows
+        ]
+    # can_use is a per-version lookup, so it is only paid for when a caller
+    # actually asks for a rights decision — the unfiltered path above stays the
+    # single-statement query that replaced the old per-source round trip.
+    combined = []
+    for source, version in rows:
+        decision = await can_use(
+            db, version.id,
+            SourceUseContext(
+                tenant_id=tenant_id or source.tenant_id,
+                jurisdiction=jurisdiction,
+                framework=framework,
+                effective_date=effective_date,
+            ),
+            operation,
+        )
+        if decision.allowed:
+            combined.append({**source.__dict__, "latest_version": version})
+    return combined
 
 
 async def get_source_by_id(
@@ -97,10 +180,57 @@ async def get_source_by_id(
 async def create_source(
     db: AsyncSession, submitted_by: str, payload: SourceCreateRequest, tenant_id: str = "GLOBAL_CONTROL"
 ) -> dict:
+    _validate_url(payload.source_url)
+    unknown_operations = set(payload.rights) - SOURCE_OPERATIONS
+    if unknown_operations:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown source-right operations: {', '.join(sorted(unknown_operations))}",
+        )
+    if payload.file_path:
+        required_storage_rights = ("ingestion", "indexing", "retention")
+        missing_storage_rights = [op for op in required_storage_rights if payload.rights.get(op) is not True]
+        if missing_storage_rights:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "File registration requires explicit allow rights for: "
+                    + ", ".join(missing_storage_rights)
+                ),
+            )
+    file_bytes = b""
+    segments = []
+    content_hash = payload.content_hash.strip().lower()
+    if payload.file_path:
+        stored_file = _file_from_relative_path(payload.file_path)
+        file_bytes = stored_file.read_bytes()
+        content_hash = hashlib.sha256(file_bytes).hexdigest()
+        try:
+            segments = await asyncio.to_thread(
+                _extract_source_segments, stored_file.name, file_bytes
+            )
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not content_hash and payload.source_url:
+        # URL registrations do not claim a content hash until retrieved bytes
+        # are supplied. They remain unapprovable and fail closed meanwhile.
+        content_hash = ""
+    if content_hash:
+        duplicate = await db.execute(
+            select(SourceVersion.id).where(
+                SourceVersion.tenant_id == tenant_id,
+                SourceVersion.content_hash == content_hash,
+            ).limit(1)
+        )
+        if duplicate.scalar_one_or_none() is not None:
+            raise HTTPException(status_code=409, detail="This exact source content is already registered")
+
     source = Source(
         tenant_id=tenant_id,
         category=payload.category,
         title=payload.title,
+        publisher=payload.publisher,
+        owner=payload.owner,
         source_class=payload.source_class,
         jurisdiction_scope=payload.jurisdiction_scope,
         framework_scope=payload.framework_scope,
@@ -117,8 +247,47 @@ async def create_source(
         file_path=payload.file_path,
         effective_from=payload.effective_from,
         effective_to=payload.effective_to,
+        source_url=payload.source_url,
+        content_hash=content_hash,
+        published_at=payload.published_at,
+        retrieved_at=payload.retrieved_at or _utcnow(),
+        original_language=payload.original_language,
+        translation_of_version_id=payload.translation_of_version_id,
+        quality_state="EXTRACTED" if segments else "UNREVIEWED",
     )
     db.add(version)
+    await db.flush()
+
+    for operation in sorted(SOURCE_OPERATIONS):
+        allowed = payload.rights.get(operation)
+        db.add(SourceRight(
+            tenant_id=tenant_id,
+            source_version_id=version.id,
+            operation=operation,
+            decision="allow" if allowed is True else "deny",
+            rights_version=1,
+            reason_code="EXPLICITLY_GRANTED" if allowed is True else "RIGHT_UNKNOWN",
+            terms_reference=payload.terms_reference,
+            granted_by=submitted_by,
+        ))
+
+    # Extraction is stored only when both ingestion and indexing were
+    # explicitly granted. Bytes may be retained for review, but denied content
+    # never enters the passage index.
+    if payload.rights.get("ingestion") is True and payload.rights.get("indexing") is True:
+        for sequence, segment in enumerate(segments, start=1):
+            content = segment.text.strip()
+            db.add(SourcePassage(
+                tenant_id=tenant_id,
+                source_version_id=version.id,
+                locator=segment.location,
+                sequence=sequence,
+                content=content,
+                content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                language=payload.original_language,
+                is_translation=payload.translation_of_version_id is not None,
+            ))
+
     await db.commit()
     await db.refresh(source)
     await db.refresh(version)
@@ -144,15 +313,21 @@ async def create_source(
     return {**source.__dict__, "latest_version": version}
 
 
-async def get_soonest_expiring(db: AsyncSession) -> dict | None:
+async def get_soonest_expiring(db: AsyncSession, tenant_id: str) -> dict | None:
     """The single approved/active source version with the nearest
     effective_to date, for the license-expiry countdown. Returns None if
     nothing has an expiry date on file — an honest "nothing expiring" state
-    rather than fabricating one."""
+    rather than fabricating one.
+
+    Scoped to the tenant's boundary like list_sources: non-private (shared)
+    sources are visible to every tenant by design (Checkpoint A — e.g.
+    regulatory standards); only rows marked is_tenant_private=True are
+    restricted to their owning tenant."""
     result = await db.execute(
         select(SourceVersion, Source)
         .join(Source, Source.id == SourceVersion.source_id)
         .where(
+            (Source.is_tenant_private.is_(False)) | (Source.tenant_id == tenant_id),
             SourceVersion.status.in_(_ELIGIBLE_STATUSES),
             SourceVersion.effective_to.is_not(None),
         )
@@ -176,11 +351,19 @@ async def get_soonest_expiring(db: AsyncSession) -> dict | None:
     }
 
 
-async def get_jurisdiction_summary(db: AsyncSession) -> list[dict]:
+async def get_jurisdiction_summary(db: AsyncSession, tenant_id: str) -> list[dict]:
     """Real rollout readiness computed from the actual source register — how
     many approved/pending sources exist per jurisdiction and category. No
-    fabricated launch-gate checklist; readiness is derived from real counts."""
-    result = await db.execute(select(Source, SourceVersion).join(SourceVersion, SourceVersion.source_id == Source.id))
+    fabricated launch-gate checklist; readiness is derived from real counts.
+
+    Scoped to the tenant's boundary like list_sources: non-private (shared)
+    sources count for every tenant; only is_tenant_private=True rows are
+    restricted to their owning tenant."""
+    result = await db.execute(
+        select(Source, SourceVersion)
+        .join(SourceVersion, SourceVersion.source_id == Source.id)
+        .where((Source.is_tenant_private.is_(False)) | (Source.tenant_id == tenant_id))
+    )
     rows = result.all()
 
     by_jurisdiction: dict[str, dict[str, dict[str, int]]] = {}
@@ -235,7 +418,49 @@ async def approve_source_version(
             detail="Maker-checker violation: the submitter of a source version cannot approve it.",
         )
 
+    if not version.content_hash:
+        raise HTTPException(status_code=409, detail="A version cannot be approved without a content hash")
+
+    passage_result = await db.execute(
+        select(func.count(SourcePassage.id)).where(SourcePassage.source_version_id == version.id)
+    )
+    if (passage_result.scalar_one() or 0) == 0:
+        raise HTTPException(status_code=409, detail="A version cannot be approved without indexed passages")
+
+    required_for_release = ("retrieval", "model_transmission", "display")
+    # can_use requires approval itself, so inspect explicit rights here while
+    # the version is still PROPOSED.
+    rights_result = await db.execute(
+        select(SourceRight).where(
+            SourceRight.source_version_id == version.id,
+            SourceRight.operation.in_(required_for_release),
+        ).order_by(SourceRight.rights_version.desc())
+    )
+    rights = {}
+    for right in rights_result.scalars().all():
+        rights.setdefault(right.operation, right)
+    now = _utcnow()
+
+    def right_is_current(right: SourceRight | None) -> bool:
+        if right is None or right.decision != "allow":
+            return False
+        valid_from = right.valid_from
+        valid_to = right.valid_to
+        if valid_from and valid_from.tzinfo is None:
+            valid_from = valid_from.replace(tzinfo=timezone.utc)
+        if valid_to and valid_to.tzinfo is None:
+            valid_to = valid_to.replace(tzinfo=timezone.utc)
+        return not ((valid_from and now < valid_from) or (valid_to and now > valid_to))
+
+    missing = [op for op in required_for_release if not right_is_current(rights.get(op))]
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Approval requires explicit allow rights for: {', '.join(missing)}",
+        )
+
     version.status = "APPROVED"
+    version.quality_state = "APPROVED"
     version.approved_by = approver_id
     await db.commit()
     await db.refresh(version)
@@ -261,3 +486,169 @@ async def approve_source_version(
         },
     )
     return {**source.__dict__, "latest_version": version}
+
+
+async def grant_source_right(
+    db: AsyncSession, *, version_id: str, tenant_id: str, actor_id: str,
+    grant: SourceRightGrantRequest,
+) -> SourceRight:
+    version_result = await db.execute(
+        select(SourceVersion).where(
+            SourceVersion.id == version_id,
+            SourceVersion.tenant_id == tenant_id,
+        )
+    )
+    if version_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Source version not found")
+    latest_result = await db.execute(
+        select(func.max(SourceRight.rights_version)).where(
+            SourceRight.source_version_id == version_id,
+            SourceRight.operation == grant.operation,
+        )
+    )
+    next_version = (latest_result.scalar_one() or 0) + 1
+    right = SourceRight(
+        tenant_id=tenant_id,
+        source_version_id=version_id,
+        operation=grant.operation,
+        decision=grant.decision,
+        rights_version=next_version,
+        reason_code=grant.reason_code,
+        terms_reference=grant.terms_reference,
+        valid_from=grant.valid_from,
+        valid_to=grant.valid_to,
+        granted_by=actor_id,
+    )
+    db.add(right)
+    await db.commit()
+    await db.refresh(right)
+    return right
+
+
+async def list_passages(db: AsyncSession, *, version_id: str, tenant_id: str) -> list[SourcePassage]:
+    result = await db.execute(
+        select(SourcePassage)
+        .where(SourcePassage.source_version_id == version_id, SourcePassage.tenant_id == tenant_id)
+        .order_by(SourcePassage.sequence)
+    )
+    return list(result.scalars().all())
+
+
+async def add_relationship(
+    db: AsyncSession, *, from_version_id: str, to_version_id: str,
+    relationship_type: str, tenant_id: str, actor_id: str,
+) -> SourceRelationship:
+    if relationship_type not in RELATIONSHIP_TYPES:
+        raise HTTPException(status_code=422, detail="Unsupported source relationship")
+    versions = await db.execute(
+        select(SourceVersion).where(
+            SourceVersion.id.in_([from_version_id, to_version_id]),
+            SourceVersion.tenant_id == tenant_id,
+        )
+    )
+    found = {version.id: version for version in versions.scalars().all()}
+    if len(found) != 2:
+        raise HTTPException(status_code=404, detail="Both source versions must exist in this tenant")
+    relationship = SourceRelationship(
+        tenant_id=tenant_id,
+        from_version_id=from_version_id,
+        to_version_id=to_version_id,
+        relationship_type=relationship_type,
+        created_by=actor_id,
+    )
+    db.add(relationship)
+    if relationship_type == "supersedes":
+        found[to_version_id].superseded_by_version_id = from_version_id
+        found[to_version_id].status = "SUPERSEDED"
+    await db.commit()
+    await db.refresh(relationship)
+    return relationship
+
+
+async def revoke_source_version(
+    db: AsyncSession, *, version_id: str, tenant_id: str, reason: str,
+) -> SourceVersion:
+    result = await db.execute(
+        select(SourceVersion).where(
+            SourceVersion.id == version_id,
+            SourceVersion.tenant_id == tenant_id,
+        )
+    )
+    version = result.scalar_one_or_none()
+    if version is None:
+        raise HTTPException(status_code=404, detail="Source version not found")
+    if not reason.strip():
+        raise HTTPException(status_code=422, detail="A revocation reason is required")
+    version.status = "WITHDRAWN"
+    version.revoked_at = _utcnow()
+    version.revocation_reason = reason.strip()
+    await db.commit()
+    await db.refresh(version)
+    return version
+
+
+async def find_impacted_usages(
+    db: AsyncSession, *, version_id: str, tenant_id: str,
+) -> list[SourceUsage]:
+    result = await db.execute(
+        select(SourceUsage)
+        .where(SourceUsage.source_version_id == version_id, SourceUsage.tenant_id == tenant_id)
+        .order_by(SourceUsage.recorded_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def record_source_usages(
+    db: AsyncSession, *, sources, tenant_id: str, artifact_type: str,
+    artifact_id: str, operation: str,
+) -> None:
+    """Persist an idempotent reverse reference for later revocation impact."""
+    for source in sources:
+        version_id = getattr(source, "version_id", "")
+        if not version_id:
+            continue
+        existing = await db.execute(
+            select(SourceUsage.id).where(
+                SourceUsage.source_version_id == version_id,
+                SourceUsage.artifact_type == artifact_type,
+                SourceUsage.artifact_id == artifact_id,
+                SourceUsage.operation == operation,
+            )
+        )
+        if existing.scalar_one_or_none() is None:
+            db.add(SourceUsage(
+                tenant_id=tenant_id,
+                source_version_id=version_id,
+                artifact_type=artifact_type,
+                artifact_id=artifact_id,
+                operation=operation,
+            ))
+    await db.commit()
+
+
+async def expire_source_versions(db: AsyncSession, *, tenant_id: str, today: date | None = None) -> int:
+    """Flip every eligible source version whose effective_to has passed to
+    EXPIRED. The mutation is ORM attribute updates on the rows this SELECT
+    returns, so scoping the SELECT here scopes the write: only sources inside
+    the caller tenant's boundary (own private rows, or shared non-private
+    rows) are ever expired — never a private row owned by another tenant.
+
+    The cutoff is computed against UTC (datetime.now(timezone.utc).date()),
+    never the host's local time: an expiry "today" that differs between a
+    dev laptop and a UTC container would silently drift by a day."""
+    cutoff = today or datetime.now(timezone.utc).date()
+    result = await db.execute(
+        select(SourceVersion)
+        .join(Source, Source.id == SourceVersion.source_id)
+        .where(
+            (Source.is_tenant_private.is_(False)) | (Source.tenant_id == tenant_id),
+            SourceVersion.status.in_(_ELIGIBLE_STATUSES),
+            SourceVersion.effective_to.is_not(None),
+            SourceVersion.effective_to < cutoff,
+        )
+    )
+    versions = list(result.scalars().all())
+    for version in versions:
+        version.status = "EXPIRED"
+    await db.commit()
+    return len(versions)

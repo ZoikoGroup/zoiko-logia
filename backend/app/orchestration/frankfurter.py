@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import os
 import re
+import uuid
 from dataclasses import dataclass
 
 import httpx
 
 from app.orchestration.websearch import WebSource
+from app.domains.calculations.schemas import LiveObservation
 
 # Currencies Frankfurter (ECB daily reference rates) actually publishes —
 # NOT a generic ISO-4217 list. AED, SAR and RUB were previously included here
@@ -204,36 +206,56 @@ class RateMatch:
     url: str
 
 
-async def _find_rate(query: str) -> RateMatch | None:
-    """One HTTP round-trip to Frankfurter, returning the matched rate (or
-    None). The sole source of truth both fetch_fx() and the structured
-    evidence path build from."""
+async def _find_rates(query: str) -> list[RateMatch]:
+    """One HTTP round-trip to Frankfurter, returning every matched rate. The
+    first recognised code is the base, every other recognised code is a target
+    rate against it. A query naming three-plus codes ("compare USD to EUR and
+    USD to GBP") previously only ever looked at codes[0]/codes[1] and silently
+    dropped every other pair, e.g. losing GBP from that exact question.
+    Frankfurter's /latest endpoint accepts a comma-separated symbols list, so
+    every target is still fetched in a single request, not one per pair."""
     codes = _find_currencies(query)
     # Two recognised currency codes (from -> to) is itself a strong enough
     # signal — no separate FX-hint check needed on top of it (a prior version
     # of this check was a tautology: it only ever ran once len(codes) >= 2
     # was already known true, so it could never actually reject anything).
     if len(codes) < 2:
-        return None
+        return []
 
-    base_cur, quote_cur = codes[0], codes[1]
+    base_cur, quote_curs = codes[0], codes[1:]
     amount = _find_amount(query)
     base = _frankfurter_base()
-    url = f"{base}/latest?base={base_cur}&symbols={quote_cur}"
+    url = f"{base}/latest?base={base_cur}&symbols={','.join(quote_curs)}"
     try:
         async with httpx.AsyncClient(timeout=6.0) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             data = resp.json()
-        rate = float((data.get("rates") or {}).get(quote_cur))
+        rates = data.get("rates") or {}
         date = data.get("date", "")
     except Exception:
-        return None
+        return []
 
-    return RateMatch(
-        base_cur=base_cur, quote_cur=quote_cur, rate=rate,
-        amount=amount, converted=amount * rate, date=date, url=url,
-    )
+    matches: list[RateMatch] = []
+    for quote_cur in quote_curs:
+        raw_rate = rates.get(quote_cur)
+        if raw_rate is None:
+            continue
+        rate = float(raw_rate)
+        matches.append(RateMatch(
+            base_cur=base_cur, quote_cur=quote_cur, rate=rate,
+            amount=amount, converted=amount * rate, date=date,
+            url=f"{base}/latest?base={base_cur}&symbols={quote_cur}",
+        ))
+    return matches
+
+
+async def _find_rate(query: str) -> RateMatch | None:
+    """The single matched rate for a two-currency question, or None. The sole
+    source of truth both fetch_fx() and the structured evidence path build
+    from."""
+    matches = await _find_rates(query)
+    return matches[0] if matches else None
 
 
 def _build_source(match: RateMatch) -> WebSource:
@@ -246,6 +268,15 @@ def _build_source(match: RateMatch) -> WebSource:
         title=f"Frankfurter — {match.base_cur}/{match.quote_cur} exchange rate ({match.date})",
         url=match.url,
         snippet=snippet,
+        provider="Frankfurter (ECB reference rates)",
+        freshness="daily",
+        observation=LiveObservation(
+            observation_id=f"obs_{uuid.uuid4().hex}",
+            indicator=f"{match.base_cur}/{match.quote_cur} exchange rate",
+            value=str(match.rate), unit=f"{match.quote_cur} per {match.base_cur}",
+            period=match.date, provider="Frankfurter (ECB reference rates)",
+            source_url=match.url, freshness="daily",
+        ),
     )
 
 
@@ -285,11 +316,11 @@ def unsupported_currency_note(query: str) -> WebSource | None:
 
 
 async def fetch_fx(query: str) -> list[WebSource]:
-    """Return a single WebSource with the live exchange rate when the question
-    is an FX/currency query with two recognised currencies; otherwise the
-    explicit "not published" note, or []."""
-    match = await _find_rate(query)
-    if match:
-        return [_build_source(match)]
+    """Return one WebSource per base/target currency pair when the question
+    names two or more supported currencies; otherwise the explicit "not
+    published" note, or []."""
+    matches = await _find_rates(query)
+    if matches:
+        return [_build_source(match) for match in matches]
     note = unsupported_currency_note(query)
     return [note] if note else []

@@ -11,15 +11,21 @@ import {
   Paperclip,
   X,
 } from "lucide-react";
-import { getAuthToken, getKritonAttachment, uploadKritonAttachment, ApiError, type WorkspaceDocument } from "@/lib/api";
+import { getAuthToken, getKritonAttachment, uploadKritonAttachment, deleteKritonAttachment, ApiError, type WorkspaceDocument } from "@/lib/api";
 
 const JURISDICTIONS = ["", "UK", "US", "US-CA", "IFRS", "UAE", "India", "EU"];
-const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".xlsx", ".pptx"];
+const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".xlsx", ".pptx", ".csv", ".txt", ".md"];
 
 // Retrieval ranks chunks across every attached document, so a very wide
 // selection dilutes the ranking rather than improving it — and each file is
 // parsed and chunked server-side before the turn can run.
 const MAX_ATTACHMENTS = 10;
+// Matches the server-side limit, so an oversized file is reported instantly
+// instead of after a full upload that is bound to be rejected.
+const MAX_FILE_BYTES = 20 * 1024 * 1024;
+function formatSize(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
 // Uploads run concurrently so several files don't queue behind each other,
 // but not unboundedly: each one is a multipart POST that parses and indexes
 // server-side, and the browser caps parallel connections per origin anyway.
@@ -36,6 +42,11 @@ export type AttachmentState = {
   progress: number;
   chunkCount?: number;
   error?: string;
+  /** Set when the entry refers to a document that was already indexed in this
+   *  workspace (picked from the library, or restored with a saved conversation)
+   *  rather than uploaded through this composer. Removing such an entry means
+   *  "not for this question", never "delete it". */
+  fromLibrary?: boolean;
 };
 
 let attachmentCounter = 0;
@@ -56,6 +67,7 @@ export function attachmentFromDocument(document: WorkspaceDocument): AttachmentS
     progress: 1,
     chunkCount: document.chunk_count,
     error: document.processing_error ?? undefined,
+    fromLibrary: true,
   };
 }
 
@@ -113,28 +125,44 @@ export function Composer({
   variant,
   query,
   onQueryChange,
-  jurisdiction,
-  onJurisdictionChange,
   onSubmit,
   attachments,
   onAttachmentsChange,
   documents,
   onUploadComplete,
+  engagementId,
   submitting,
   error,
+  jurisdiction,
+  onJurisdictionChange,
 }: {
   variant: "hero" | "sticky";
   query: string;
   onQueryChange: (value: string) => void;
-  jurisdiction: string;
-  onJurisdictionChange: (value: string) => void;
-  onSubmit: (documentIds?: string[]) => void;
+  onSubmit: () => void;
+  /** Attachment list, owned by the page.
+   *
+   *  This deliberately does NOT live in local state. The page renders a "hero"
+   *  Composer before a conversation exists and a "sticky" one afterwards, so
+   *  asking the first question unmounts one instance and mounts the other. With
+   *  the list held locally, the file the user had just attached vanished at
+   *  exactly that moment — the chip disappeared and the ids never reached the
+   *  request, so the answer came back grounded only in web sources. Holding it
+   *  one level up lets the selection survive that swap; the page clears it as
+   *  soon as the current question is submitted. */
   attachments: AttachmentState[];
   onAttachmentsChange: Dispatch<SetStateAction<AttachmentState[]>>;
+  /** Documents already uploaded in this workspace, for the "Add saved
+   *  document" picker. Fetched and owned by the page, since it also refreshes
+   *  the list after an upload. */
   documents: WorkspaceDocument[];
   onUploadComplete: () => void;
+  /** Scopes uploads and the document library to the selected engagement. */
+  engagementId?: string;
   submitting: boolean;
   error: string | null;
+  jurisdiction: string;
+  onJurisdictionChange: (value: string) => void;
 }) {
   const [listening, setListening] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
@@ -162,7 +190,7 @@ export function Composer({
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (pending) return;
-      onSubmit(readyDocumentIds);
+      onSubmit();
     }
   }
 
@@ -173,9 +201,18 @@ export function Composer({
       return;
     }
     try {
-      const result = await uploadKritonAttachment(token, entry.file, (fraction) => {
-        patchAttachment(entry.id, { progress: fraction });
-      });
+      const result = await uploadKritonAttachment(
+        token,
+        entry.file,
+        (fraction) => {
+          // Upload progress only reaches 100% when the bytes have arrived;
+          // extraction happens after that, so the bar is capped at 95% until
+          // the response lands. Showing 100% while the server is still parsing
+          // would read as "done" for several more seconds.
+          patchAttachment(entry.id, { progress: Math.min(fraction, 0.95) });
+        },
+        engagementId,
+      );
       if (result.status === "READY") {
         patchAttachment(entry.id, { documentId: result.document_id, status: "success", progress: 1, chunkCount: result.chunk_count });
       } else {
@@ -214,6 +251,14 @@ export function Composer({
         added.push({ id, name: file.name, status: "error", progress: 0, error: `Unsupported file type — allowed: ${ACCEPTED_EXTENSIONS.join(", ")}` });
         continue;
       }
+      if (file.size === 0) {
+        added.push({ id, name: file.name, status: "error", progress: 0, error: "This file is empty" });
+        continue;
+      }
+      if (file.size > MAX_FILE_BYTES) {
+        added.push({ id, name: file.name, status: "error", progress: 0, error: `${formatSize(file.size)} — over the 20 MB limit` });
+        continue;
+      }
       added.push({ id, name: file.name, status: "uploading", progress: 0 });
       queued.push({ id, file });
     }
@@ -226,6 +271,27 @@ export function Composer({
     // Refresh the saved-document library once, after the whole batch, rather
     // than re-fetching it per file.
     onUploadComplete();
+  }
+
+  async function removeAttachment(attachment: AttachmentState) {
+    onAttachmentsChange((previous) => previous.filter((entry) => entry.id !== attachment.id));
+    // Also drop the indexed copy — leaving chunks behind for a document the
+    // user has visibly removed would keep influencing answers.
+    //
+    // Except for one that was already indexed before this composer saw it:
+    // there, removing it means "not for this question", not "delete it".
+    // Deleting would destroy a stored document the user never asked to lose,
+    // and take it out of every other conversation that cites it.
+    if (attachment.fromLibrary) return;
+    const token = getAuthToken();
+    if (token && attachment.documentId) {
+      try {
+        await deleteKritonAttachment(token, attachment.documentId, engagementId);
+      } catch {
+        /* The row is orphaned but unreachable from the UI; not worth alarming
+           the user, who has already seen the attachment disappear. */
+      }
+    }
   }
 
   function toggleVoice() {
@@ -266,8 +332,9 @@ export function Composer({
         onSubmit={(e) => {
           e.preventDefault();
           if (pending) return;
-          onSubmit(readyDocumentIds);
+          onSubmit();
         }}
+        data-kriton-composer
         className={variant === "sticky" ? "sticky bottom-5 mx-auto max-w-2xl" : "mt-8 w-full"}
       >
         <div className={`kriton-composer-surface ${cardRadius} border p-4 shadow-[0_18px_48px_rgba(18,34,32,0.08)]`}>
@@ -303,7 +370,7 @@ export function Composer({
                   </span>
                   <button
                     type="button"
-                    onClick={() => onAttachmentsChange((previous) => previous.filter((entry) => entry.id !== item.id))}
+                    onClick={() => void removeAttachment(item)}
                     aria-label={`Remove ${item.name}`}
                     className="shrink-0 rounded p-0.5 text-muted hover:bg-soft"
                   >
@@ -394,6 +461,7 @@ export function Composer({
                             progress: 1,
                             chunkCount: document.chunk_count,
                             error: document.processing_error ?? undefined,
+                            fromLibrary: true,
                           }]
                     ));
                   }}
@@ -412,12 +480,13 @@ export function Composer({
 
             <div className="flex min-w-0 items-center justify-end gap-2">
               <select
+                aria-label="Jurisdiction"
                 value={jurisdiction}
-                onChange={(e) => onJurisdictionChange(e.target.value)}
+                onChange={(event) => onJurisdictionChange(event.target.value)}
                 className="hidden h-9 rounded-full !border-transparent !bg-soft px-3 text-xs font-semibold text-ink !shadow-none outline-none hover:bg-line/40 sm:block"
               >
-                {JURISDICTIONS.map((j) => (
-                  <option key={j} value={j}>{j || "Any"}</option>
+                {JURISDICTIONS.map((value) => (
+                  <option key={value || "any"} value={value}>{value || "Any jurisdiction"}</option>
                 ))}
               </select>
               <button

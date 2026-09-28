@@ -47,8 +47,8 @@ export default function IncidentResponsePage() {
   };
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void refreshData(), 0);
-    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount: the page starts in its loading snapshot and every later setState happens after an awaited network call
+    refreshData();
   }, []);
 
   const handleAction = async (action: string) => {

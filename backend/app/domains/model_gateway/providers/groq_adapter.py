@@ -1,7 +1,12 @@
 import asyncio
+import logging
 import os
 
 from groq import AsyncGroq, RateLimitError
+
+from app.domains.model_gateway.tools.chart_tool import CHART_TOOL_SCHEMA, TOOL_NAME, ChartToolError, build_chart_fence
+
+logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
     "You are Kriton™, a professional AI assistant specialised ONLY in these "
@@ -76,11 +81,15 @@ _SYSTEM_PROMPT = (
     "comparisons, examples where useful, step-by-step workings for "
     "calculations, clear journal entries for accounting entries, stated "
     "assumptions for taxation, and formulas for payroll. Charts and diagrams "
-    "are produced by a separate, evidence-backed pipeline, not by you — if "
-    "the user asks for a chart or diagram, answer their question concisely in text and "
+    "come from a separate, evidence-backed pipeline or, when you actually "
+    "hold the real figures, from the render_chart tool — never hand-write a "
+    "chart's JSON in your answer text. When you do have real figures, call "
+    "render_chart with them and pick whichever of its supported types "
+    "actually matches the data, never forcing a type it doesn't fit. If the "
+    "user asks for a chart and you have no real figures, answer their "
+    "question concisely in text and "
     "do not substitute a markdown table, recommend third-party visualization tools, "
-    "describe a hypothetical image, or invent visual data; "
-    "do not attempt to draw one yourself.\n"
+    "describe a hypothetical image, or invent visual data.\n"
     "NEVER fabricate sources, laws, tax rates, accounting standards, government "
     "notifications, legal references, document titles, URLs or citations. If "
     "uncertain, say the figure/rule should be verified with the relevant "
@@ -172,9 +181,15 @@ class GroqAdapter:
         response = await self.client.chat.completions.create(
             model=model,
             messages=messages,
+            tools=[CHART_TOOL_SCHEMA],
+            tool_choice="auto",
             temperature=0.0,  # Deterministic routing/answering per governance
         )
-        return response.choices[0].message.content or ""
+        message = response.choices[0].message
+        tool_calls = message.tool_calls or []
+        if not tool_calls:
+            return message.content or ""
+        return await self._resolve_chart_tool_calls(model, messages, message, tool_calls)
 
     async def complete(self, prompt: str, model: str = _DEFAULT_MODEL) -> str:
         if not self.client:
@@ -209,4 +224,68 @@ class GroqAdapter:
             except Exception as retry_exc:
                 return f"[Error connecting to Groq API: {str(retry_exc)}]"
         except Exception as e:
+            logger.warning(
+                "Groq request failed: error_type=%s status=%s model=%s",
+                type(e).__name__,
+                getattr(e, "status_code", None),
+                model,
+            )
             return f"[Error connecting to Groq API: {str(e)}]"
+
+    async def _resolve_chart_tool_calls(self, model: str, messages: list, message, tool_calls) -> str:
+        """Validate each render_chart call the model made, tell it the
+        outcome, and let it write the final prose now that it knows whether
+        the chart actually rendered — the standard function-calling round
+        trip. The fenced ```chart block returned to the caller is always
+        built from the validated arguments, never from the model's own
+        retelling of them, so a chart the frontend renders can never
+        disagree with the type/data the model actually requested."""
+        fences: list[str] = []
+        # A minimal, hand-built assistant message — not message.model_dump().
+        # The full dump carries extra response-only fields (e.g. `annotations`)
+        # that some Groq models reject outright when echoed back as request
+        # input ("property 'annotations' is unsupported"), so only the fields
+        # a request message actually accepts are forwarded.
+        assistant_message = {
+            "role": "assistant",
+            "content": message.content,
+            "tool_calls": [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {"name": call.function.name, "arguments": call.function.arguments},
+                }
+                for call in tool_calls
+            ],
+        }
+        follow_up = messages + [assistant_message]
+        for call in tool_calls:
+            if call.function.name != TOOL_NAME:
+                tool_result = f"Unknown tool '{call.function.name}'."
+            else:
+                try:
+                    fence = build_chart_fence(call.function.arguments)
+                    fences.append(fence)
+                    tool_result = "Chart rendered successfully. Do not restate its JSON — it will be attached automatically."
+                except ChartToolError as exc:
+                    logger.warning("render_chart arguments failed validation: %s", exc)
+                    tool_result = (
+                        f"The chart could not be rendered ({exc}). Explain what data is "
+                        "missing instead of describing a chart that was not created."
+                    )
+            follow_up.append({"role": "tool", "tool_call_id": call.id, "content": tool_result})
+
+        # tool_choice="none" must be explicit here, not just omitting `tools` —
+        # a model that keeps chasing an invalid type (e.g. "gauge") after a
+        # validation failure will try to call render_chart again on this turn
+        # too, and Groq hard-rejects that against an implicit "none" with
+        # "Tool choice is none, but model called a tool" instead of silently
+        # ignoring it. Declaring the tool but forbidding its use is what
+        # actually stops that.
+        final = await self.client.chat.completions.create(
+            model=model, messages=follow_up, tools=[CHART_TOOL_SCHEMA], tool_choice="none", temperature=0.0,
+        )
+        final_text = final.choices[0].message.content or ""
+        if not fences:
+            return final_text
+        return final_text.rstrip() + "\n\n" + "\n\n".join(fences)

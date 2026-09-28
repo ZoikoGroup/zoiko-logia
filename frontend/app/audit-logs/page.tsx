@@ -58,9 +58,8 @@ export default function AuditLogsPage() {
   }
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
-    // Initial load intentionally uses the initial empty filters.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount: the page starts in its loading snapshot and every later setState happens after an awaited network call
+    load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

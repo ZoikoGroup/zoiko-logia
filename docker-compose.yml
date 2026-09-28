@@ -34,7 +34,7 @@ services:
     # backend/.env supplies every provider credential (Supabase, Groq, Gemini,
     # Companies House, Finnhub, Polygon, Alpha Vantage, SEC_USER_AGENT). Without
     # this the container started with the empty defaults below and every
-    # keyed integration silently did nothing — a compose run behaved
+    # keyed integration silently did nothing â€” a compose run behaved
     # completely differently from a local one, for no visible reason.
     #
     # `required: false` so the stack still builds on a checkout with no .env;
@@ -46,7 +46,7 @@ services:
         required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://zoiko:zoiko@postgres:5432/zoiko
-      # Non-superuser role for request-time queries — provisioned automatically
+      # Non-superuser role for request-time queries â€” provisioned automatically
       # by app/main.py's lifespan on startup. Needed for Postgres RLS
       # (sources/source_versions tenant isolation) to actually apply: RLS
       # always exempts superusers, and DATABASE_URL's "zoiko" role is one.
@@ -61,7 +61,7 @@ services:
       SEARXNG_CACHE_REDIS_URL: redis://redis:6379/3
       ASYNC_DOCUMENT_INGESTION: "true"
       # Without this, risk_classifier.py's _get_classifier_pipeline() never
-      # loads the real zero-shot model — every query gets a fixed 0.5
+      # loads the real zero-shot model â€” every query gets a fixed 0.5
       # confidence, which is always below the 0.65 routing threshold, so
       # every query falls back to "needs clarification" regardless of content.
       ENABLE_ML_CLASSIFIER: "true"
@@ -70,7 +70,7 @@ services:
       # says (that file points at localhost:8888 for local runs).
       SEARXNG_URL: http://searxng:8080
       #
-      # Credentials are deliberately NOT listed here — SUPABASE_URL,
+      # Credentials are deliberately NOT listed here â€” SUPABASE_URL,
       # SUPABASE_SERVICE_ROLE_KEY, GROQ_API_KEY, GEMINI_API_KEY,
       # COMPANIES_HOUSE_API_KEY, FINNHUB_API_KEY, POLYGON_API_KEY,
       # ALPHA_VANTAGE_API_KEY, SEC_USER_AGENT all arrive via env_file above.
@@ -78,6 +78,12 @@ services:
       # file, which is exactly the bug this change fixes.
     ports:
       - "8010:8010"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health/ready', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
     depends_on:
       postgres:
         condition: service_healthy
@@ -103,7 +109,7 @@ services:
     ports:
       - "8888:8080"
     healthcheck:
-      # Checks the JSON API the backend actually calls, not just the web UI —
+      # Checks the JSON API the backend actually calls, not just the web UI â€”
       # the format has to be enabled in settings.yml for retrieval to work at
       # all, so probing the HTML page would report healthy while grounding was
       # broken.
@@ -121,7 +127,7 @@ services:
       postgres:
         condition: service_healthy
       backend:
-        condition: service_started
+        condition: service_healthy
     restart: "no"
     command: >
       sh -c "sleep 5 &&
@@ -161,12 +167,18 @@ services:
 
   frontend:
     build: ./frontend
+    # Supabase URL + anon key, read by lib/supabase.ts. Requires
+    # frontend/.env. Works at runtime because the image runs
+    # `npm run dev`; a production `next build` would need these as build args.
+    env_file:
+      - ./frontend/.env
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8010/api/v1
     ports:
       - "3005:3000"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   postgres_data:

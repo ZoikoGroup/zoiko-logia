@@ -1,4 +1,4 @@
-export function PageHeader(_props: { title: string; subtitle: string }) {
-  void _props;
+export function PageHeader(props: { title: string; subtitle: string }) {
+  void props;
   return null;
 }

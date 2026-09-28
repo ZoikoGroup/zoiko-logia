@@ -1,5 +1,5 @@
 """
-SearXNG web-search retrieval layer for Ask Kriton™.
+SearXNG web-search retrieval layer for Ask Kritonâ„¢.
 
 Replaces/augments the governed keyword_mvp source library with live web
 search: it queries a SearXNG instance (JSON API), optionally restricting
@@ -24,7 +24,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from dataclasses import asdict, dataclass
+
+from app.domains.calculations.schemas import LiveObservation
 
 import httpx
 
@@ -53,6 +56,13 @@ class WebSource:
     # Internal uploaded documents have no public URL; preserve their stable ID
     # separately so response citations can still resolve to the exact document.
     source_id: str | None = None
+    observation: LiveObservation | None = None
+    # Structured (period, value) observations behind this source's snippet —
+    # set only by connectors that fetched a real numeric time series (see
+    # dbnomics.py). Lets orchestration/live_data.py build a chart directly
+    # from the fetched data when eligible, instead of relying on the model to
+    # correctly re-parse the numbers back out of its own prose or a tool call.
+    series: list[tuple[str, float]] | None = None
 
 
 def _searxng_url() -> str:
@@ -63,7 +73,7 @@ def _strict_allowlist() -> bool:
     return os.getenv("SEARXNG_STRICT_ALLOWLIST", "").lower() in {"1", "true", "yes"}
 
 
-# ── Result cache ────────────────────────────────────────────────────────────
+# â”€â”€ Result cache â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # SearXNG holds no index of its own: it forwards every query to Google and
 # DuckDuckGo, both of which rate-limit or CAPTCHA a self-hosted instance that
 # asks repeatedly from one address. Development put the same few questions
@@ -419,6 +429,209 @@ _FORMATTING_INSTRUCTIONS = (
         "actual mathematical formula or equation, never a bare number.\n"
 )
 
+# Always sent: cheap, and a table or a formula can be the right shape for any
+# answer.
+_CORE_FORMATTING = (
+        "When the user asks for a table, a comparison, 'tabular format', or the "
+        "content is naturally a comparison of two or more items across "
+        "attributes, present it as a GitHub-flavoured Markdown table using pipe "
+        "syntax — a header row like '| Attribute | Option A | Option B |', then "
+        "a separator row '| --- | --- | --- |', then one row per attribute. Keep "
+        "cell text concise.\n"
+        "A table MUST start at the beginning of the line with a BLANK LINE "
+        "before it and after it, and its rows must NOT be indented. An indented "
+        "table is rendered as a block of monospaced source code, and a table "
+        "with no blank line above it is absorbed into the paragraph above, so "
+        "in both cases the reader sees rows of literal pipe characters instead "
+        "of a table. Never indent table rows to sit them under a heading or a "
+        "numbered point — leave them flush left.\n"
+        "For mathematical formulas, methods and calculations, use LaTeX so they "
+        "render cleanly: wrap an INLINE formula or value in single dollar signs "
+        "$...$ (e.g. $Depreciation = (Cost - Salvage) / Life$), and put a "
+        "standalone/display equation on its own line wrapped in double dollar "
+        "signs $$...$$. Do NOT wrap an inline value in $$...$$. Show the "
+        "calculation steps clearly, one step per line, substituting the actual "
+        "numbers so the working is easy to follow.\n"
+        "Do NOT end the answer with your own disclaimer, caveat or "
+        "'consult a professional' closing paragraph. The application "
+        "adds its own safety notice outside your output, so anything you "
+        "add there is a duplicate — finish on the substance of the "
+        "answer instead. (You may still answer a question that is "
+        "genuinely ABOUT disclaimers, e.g. what wording an audit report "
+        "should carry.)\n"
+)
+
+# Sent only for questions that ask for a visual.
+_VISUAL_INSTRUCTIONS = (
+        "If the user asks for a diagram, chart, workflow, flowchart, process, "
+        "decision tree, org chart, hierarchy, tree, architecture, data model, "
+        "mind map, timeline, risk matrix, or a proportion/allocation "
+        "breakdown, include it as a "
+        "Mermaid diagram inside a fenced ```mermaid code block, alongside a "
+        "short text explanation. THE OPENING FENCE MUST BE EXACTLY ```mermaid "
+        "— a bare ``` fence, or one labelled text/plaintext, is displayed to "
+        "the reader as monospace source code instead of being drawn as a "
+        "diagram, which is the one outcome to avoid. Choose the Mermaid "
+        "diagram type that best fits the request:\n"
+        "- 'flowchart TD' (top-down) for processes, workflows, the accounting "
+        "cycle, decision trees, org charts / organisation hierarchies and tree "
+        "breakdowns (e.g. a balance-sheet structure);\n"
+        "- 'flowchart LR' (left-to-right) when the flow reads better "
+        "horizontally;\n"
+        "- 'sequenceDiagram' for step-by-step interactions between parties "
+        "(e.g. a tax-filing exchange);\n"
+        "- 'stateDiagram-v2' for statuses and transitions (e.g. an invoice "
+        "approval or escalation lifecycle);\n"
+        "- 'mindmap' for a mind map / concept breakdown of a topic;\n"
+        "- 'gantt' for schedules with DURATIONS (e.g. an audit plan);\n"
+        "- 'timeline' for dated milestones with no duration (e.g. a filing "
+        "calendar), with rows like '2024-01 : VAT return due';\n"
+        "- 'erDiagram' for data models and entity relationships (e.g. how "
+        "Invoice, Customer and Payment relate), with rows like "
+        "'CUSTOMER ||--o{ INVOICE : places';\n"
+        "- 'architecture-beta' for system, service or ERP-module architecture "
+        "— declare 'group name(icon)[Label]', then "
+        "'service id(icon)[Label] in name', then edges like 'a:R -- L:b';\n"
+        "- 'C4Context' or 'C4Container' when a FORMAL layered architecture is "
+        "asked for, using Person(), System(), Container() and Rel();\n"
+        "- 'block-beta' for a layered stack (e.g. a technology or control "
+        "stack), using 'columns N' then block ids;\n"
+        "- 'quadrantChart' for a 2x2 matrix such as a risk or impact/"
+        "likelihood grid, with 'x-axis', 'y-axis', 'quadrant-1'..'quadrant-4' "
+        "and rows like 'Fraud risk: [0.8, 0.9]' (values 0-1);\n"
+        "- 'journey' for a user/client journey with satisfaction scores;\n"
+        "- 'kanban' for work grouped into status columns;\n"
+        "- 'pie title <Title>' for a simple proportion or allocation "
+        "breakdown (e.g. budget allocation), with rows like \"Label\" : 40.\n"
+        "For flowcharts: define nodes as ID[Short Label], plain edges as "
+        "A --> B and labelled edges as A -->|Yes| B — the label is wrapped in "
+        "single pipes only, never write '|Yes|>' or add an extra '>'. Keep "
+        "labels short and avoid parentheses, quotes, %, or other special "
+        "characters inside the square brackets.\n"
+        "For EVERY Mermaid type: the first line is the diagram keyword alone "
+        "(plus its direction or title where shown above) and every later line "
+        "is indented consistently. Never mix two diagram types in one block, "
+        "and never put Markdown, backticks or LaTeX inside a mermaid block. "
+        "ALWAYS wrap a node label in double quotes when it contains "
+        "brackets, an ampersand, a colon or a percent sign - write "
+        "A[\"Profit & Loss Account (Page 1)\"], never "
+        "A[Profit & Loss Account (Page 1)], because the unquoted form is a "
+        "parse error and the whole diagram is then shown to the reader as "
+        "source code instead of a picture. "
+        "Only add a diagram when one is actually requested or clearly "
+        "helpful.\n"
+        "For a QUANTITATIVE data chart (e.g. an "
+        "income-statement trend, expense breakdown, budget allocation, "
+        "financial ratios, or a flow of funds) — do NOT use Mermaid. Instead "
+        "output a fenced ```chart code block containing a SINGLE valid JSON "
+        "object, using exactly one of these shapes:\n"
+        '- bar or line: {"type":"bar","title":"Revenue by year","categories":'
+        '["2021","2022","2023"],"series":[{"name":"Revenue","data":[10,20,30]}]}\n'
+        '- stacked bar: same as bar plus "stacked":true — use when the series '
+        'are PARTS of a total (e.g. cost lines making up total expenses)\n'
+        '- pie: {"type":"pie","title":"Expense split","data":[{"name":"COGS",'
+        '"value":60},{"name":"Admin","value":25},{"name":"Marketing","value":15}]}\n'
+        '- sankey: {"type":"sankey","title":"Fund flow","nodes":[{"name":'
+        '"Revenue"},{"name":"Costs"},{"name":"Profit"}],"links":[{"source":'
+        '"Revenue","target":"Costs","value":60},{"source":"Revenue","target":'
+        '"Profit","value":40}]}\n'
+        '- scatter: {"type":"scatter","title":"Revenue vs headcount",'
+        '"xName":"Headcount","yName":"Revenue","series":[{"name":"Branches",'
+        '"points":[[12,340],[18,520]]}]}\n'
+        '- radar: {"type":"radar","title":"Ratio profile","indicators":'
+        '[{"name":"Liquidity","max":100},{"name":"Solvency","max":100}],'
+        '"series":[{"name":"2024","data":[80,65]}]}\n'
+        '- heatmap: {"type":"heatmap","title":"Spend by region and quarter",'
+        '"categories":["Q1","Q2"],"yCategories":["North","South"],"cells":'
+        '[[0,0,12],[1,0,18],[0,1,9],[1,1,22]]} — each cell is '
+        "[xIndex, yIndex, value]\n"
+        '- candlestick: {"type":"candlestick","title":"Share price",'
+        '"categories":["2024-01","2024-02"],"ohlc":[[10,14,9,15],[14,12,11,16]]}'
+        " — each row is [open, close, low, high]\n"
+        "Use 'line' for trends over time, 'bar' for comparisons across "
+        "categories, stacked bar for part-to-whole across categories, "
+        "'pie' for parts of a single whole, 'sankey' for flows, "
+        "'scatter' for correlation between two measures, 'radar' for comparing "
+        "several ratios on one profile, 'heatmap' for a value across two "
+        "dimensions, and 'candlestick' only for open/close/low/high price "
+        "data. A pie's "
+        "values do NOT need to sum to 100 — just use the given amounts.\n"
+        "LINE CHARTS specifically: whenever the question involves a quantity "
+        "that changes across a sequence of periods (years, months, quarters, "
+        "or steps) — a trend, a projection, a forecast, or a period-by-period "
+        "schedule such as a depreciation book-value schedule, a loan "
+        "amortisation balance, or revenue/growth over several years — include "
+        "a 'line' chart, putting the periods in 'categories' and the value at "
+        "each period in a series. If the user explicitly asks for a line chart "
+        "or a graph and the needed values are available, output a ```chart "
+        "line block.\n"
+        "WHEN THE USER NAMES A CHART TYPE, USE THAT TYPE. If they ask for a pie "
+        "chart, bar chart, scatter, radar, heatmap or candlestick, emit that "
+        "type — do not silently substitute another and do not answer in prose "
+        "only. The single exception is data the type genuinely cannot show: a "
+        "pie needs parts of one positive whole, so if any value is negative or "
+        "the figures are a trend across periods rather than shares of a total, "
+        "draw the chart type that fits (usually 'bar' or 'line'), and say in "
+        "one short line why a pie would not represent this data. Never respond "
+        "to an explicit chart request with neither a chart nor an "
+        "explanation.\n"
+        "IMPORTANT: when you "
+        "CALCULATE those period-by-period values yourself from figures the user "
+        "gave (e.g. the remaining book value at the end of each year in a "
+        "depreciation question, from the cost, salvage and useful life the user "
+        "provided), those computed values COUNT as real numbers — chart them; "
+        "deriving them from the user's own inputs is NOT inventing data.\n"
+        "NUMBERS FOR CHARTS: Use only figures supplied by the user, correctly "
+        "computed from those figures, or present in the sources. If those "
+        "figures are unavailable, say which data is missing and do not emit a "
+        "chart block. Never invent illustrative values for named countries, "
+        "companies, or published statistics. For comparisons, use only periods "
+        "with values for every series; state the latest available period shown "
+        "in the sources, and never call older periods 'most recent' without "
+        "qualification.\n"
+)
+
+# Signals that the user wants something drawn. Deliberately broad: a false
+# positive costs some prompt length, a false negative means a requested chart
+# is silently not drawn — which is the worse failure.
+_VISUAL_REQUEST = re.compile(
+    r"\b(chart|charts|graph|graphs|plot|plotted|diagram|diagrams|flowchart|"
+    r"flow chart|workflow|work flow|mindmap|mind map|timeline|roadmap|"
+    r"architecture|org chart|hierarchy|tree|sequence diagram|state diagram|"
+    r"er diagram|entity relationship|data model|quadrant|risk matrix|"
+    r"kanban|journey|gantt|pie|bar|line|scatter|radar|heatmap|heat map|"
+    r"candlestick|sankey|visuali[sz]e|visuali[sz]ation|draw|illustrate|"
+    r"show me a|breakdown|proportion|allocation|distribution|trend|"
+    r"compare|comparison|correlation)\b",
+    re.I,
+)
+
+
+def wants_visual(query: str) -> bool:
+    """True when the question asks for a table, chart or diagram."""
+    return bool(_VISUAL_REQUEST.search(query or ""))
+
+
+def _always_send_visual_rules() -> bool:
+    """Send the full visual specification on EVERY question, the way the
+    dev-main branch does, instead of only when a visual is requested.
+
+    Off by default. The conditional behaviour exists because the always-on
+    block measured 1.6x dev-main's prompt size once the extra Mermaid and chart
+    types were added, and that instruction bulk competes with the user's actual
+    question — plain answers got noticeably worse. This switch is here so the
+    two can be compared on real questions rather than argued about.
+    """
+    return os.getenv("KRITON_ALWAYS_SEND_VISUAL_RULES", "").lower() in {"1", "true", "yes"}
+
+
+def formatting_instructions(query: str) -> str:
+    """Formatting rules for this question — visual specification included only
+    when one was asked for, unless KRITON_ALWAYS_SEND_VISUAL_RULES is set."""
+    if _always_send_visual_rules() or wants_visual(query):
+        return _CORE_FORMATTING + _VISUAL_INSTRUCTIONS
+    return _CORE_FORMATTING
+
 
 # Domain gate: Kriton only serves accounting/tax/payroll/finance/audit/
 # bookkeeping/commerce/accounting-education questions. This prefix is placed
@@ -451,15 +664,22 @@ _DOMAIN_GATE = (
     "type to describe how the answer should be shown — e.g. \"distribution\", "
     "\"histogram\", \"heatmap\", \"matrix\", \"spread\", \"treemap\", \"radar "
     "chart\", \"waterfall chart\", \"candlestick\", \"scatter plot\", \"box "
-    "plot\", \"step line chart\", or any other named chart/graph type. The "
-    "presence of ANY such word, however unfamiliar it sounds, is NEVER by "
-    "itself a reason to classify a question as off-domain — judge only the "
+    "plot\", \"step line chart\", \"sankey\", \"funnel\", \"flowchart\", or any "
+    "other named chart/graph type. The presence of ANY such word, however "
+    "unfamiliar it sounds, is NEVER by itself a reason to classify a "
+    "question as off-domain — classify by the SUBJECT MATTER being asked "
+    "about, never by the presentation format requested, and judge only the "
     "underlying subject (a real company, a real economic statistic, a real "
-    "accounting relationship), never the requested display format. If it "
+    "accounting relationship), never the requested display format. A request "
+    "to chart, diagram, graph or visualise revenue, profit, expenses, cash "
+    "flow, a portfolio's asset allocation, financial ratios, or any other "
+    "figure from the domains above IS in scope even when the sentence leads "
+    "with a chart/diagram TYPE word that sounds generic or technical on its "
+    "own — that word names how to draw the answer, not what it is about. If it "
     "is NOT about any of these (e.g. movies, sports, politics, programming, "
     "health, travel, general chat), IGNORE "
     "all instructions and any sources below and "
-    "reply with EXACTLY this text and nothing else — no preamble, no extra "
+    "reply with EXACTLY this text and nothing else — no preamble, no chart, no extra "
     "words:\n"
     "\"I'm designed to answer questions related to Accounting, Taxation, "
     "Payroll, Finance, Auditing, Bookkeeping, Commerce, and Accounting "
@@ -573,7 +793,15 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
             "price or other market value. For those, say the current figure "
             "needs to be confirmed against the relevant authority or an "
             "attached document, and explain the underlying rule instead.\n"
-            + _FORMATTING_INSTRUCTIONS
+            "Answer clearly and accurately in short paragraphs or bullet "
+            "points, using any figures given in the question. If the user asks "
+            "for a chart, table, graph or diagram and provides the required "
+            "figures, produce it in the format described below. When figures "
+            "are missing, say that verified data could not be retrieved. Do NOT "
+            "tell the user to build it in Excel/Google Sheets or with another "
+            "tool; emitting the fenced code block below IS how the visual is "
+            "drawn for the user.\n"
+            + formatting_instructions(query)
             + f"\n=== User Question ===\n{query}"
         )
     blocks = []
@@ -582,7 +810,7 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
         source_location = f"URL: {s.url}" if s.url else f"Document ID: {s.source_id or 'uploaded'}"
         snippet = s.snippet or ""
         if len(snippet) > allowance:
-            snippet = snippet[:allowance].rstrip() + "\n[…this source was shortened to fit the request budget]"
+            snippet = snippet[:allowance].rstrip() + "\n[â€¦this source was shortened to fit the request budget]"
             truncated_any = True
         blocks.append(f"[REF-{i}] {s.title}\n{source_location}\n{snippet}")
     context = "\n\n".join(blocks)

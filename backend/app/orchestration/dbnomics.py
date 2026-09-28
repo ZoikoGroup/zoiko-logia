@@ -23,12 +23,14 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
 import httpx
 
 from app.orchestration.websearch import WebSource
+from app.domains.calculations.schemas import LiveObservation
 
 # Only fire on questions that actually look like an economic statistic — avoids
 # firing on definitional/how-to questions SearXNG should answer instead.
@@ -40,6 +42,9 @@ _STAT_HINTS = re.compile(
     r"growth rate|exchange reserves|money supply|statistics?)\b",
     re.I,
 )
+
+# Longest run of values carried into a source snippet / chart window.
+_MAX_POINTS = 20
 
 _STOPWORDS = {
     "the", "and", "for", "with", "what", "show", "give", "rate", "data",
@@ -57,6 +62,20 @@ _STOPWORDS = {
     "compare", "compares", "compared", "comparison", "versus", "against",
     "between", "across", "using", "draw", "create", "make", "please",
     "about", "would", "like", "want", "need",
+}
+
+# Terms under four characters that must NOT be discarded. The old
+# [A-Za-z]{4,} filter silently dropped every one of these, which broke the
+# connector in two ways: "gdp" vanished from "what is India's gdp rate", leaving
+# only a misspelled country to search on; and "us" vanished from "us
+# unemployment rate", leaving no country anchor at all — DBnomics then returned
+# an OECD education series for ARGENTINA that matched purely because
+# "Unemployment" appeared in its 15-dimension name.
+_SHORT_KEEP = {
+    # indicators
+    "cpi", "gdp", "ppi", "gni", "gnp", "fdi", "vat", "gst", "tds", "epf", "esi",
+    # countries / blocs
+    "us", "usa", "uk", "eu", "uae", "prc",
 }
 
 # Also the general country-name detector (_country_in_query/countries_in_query
@@ -87,6 +106,41 @@ _CPI_COUNTRY_CODES = {
     "France": "FR",
     "Canada": "CA",
     "Japan": "JP",
+}
+
+# Country anchoring. A statistic is meaningless without knowing whose it is, so
+# when the question names a country the chosen series MUST be that country's.
+# Aliases resolve to ISO3 directly (rather than to the display labels above), so
+# this pair of tables serves the deterministic World Bank lookup below.
+_COUNTRY_ALIASES: dict[str, str] = {
+    "us": "united states", "usa": "united states", "america": "united states",
+    "american": "united states", "states": "united states",
+    "uk": "united kingdom", "britain": "united kingdom", "british": "united kingdom",
+    "england": "united kingdom", "kingdom": "united kingdom",
+    "india": "india", "indian": "india",
+    "china": "china", "chinese": "china", "prc": "china",
+    "japan": "japan", "japanese": "japan",
+    "germany": "germany", "german": "germany",
+    "france": "france", "french": "france",
+    "canada": "canada", "canadian": "canada",
+    "australia": "australia", "australian": "australia",
+    "uae": "united arab emirates", "emirates": "united arab emirates",
+    "singapore": "singapore", "brazil": "brazil", "brazilian": "brazil",
+    "italy": "italy", "spain": "spain", "mexico": "mexico",
+    "indonesia": "indonesia", "nigeria": "nigeria", "pakistan": "pakistan",
+    "bangladesh": "bangladesh", "russia": "russia", "korea": "korea",
+    "greece": "greece", "greek": "greece",
+}
+
+# ISO-3 codes, because many DBnomics series carry the country only in the code
+# (e.g. ".../ARG.F.Y25T34..."), not in the display name.
+_ISO3: dict[str, str] = {
+    "united states": "USA", "united kingdom": "GBR", "india": "IND",
+    "china": "CHN", "japan": "JPN", "germany": "DEU", "france": "FRA",
+    "canada": "CAN", "australia": "AUS", "united arab emirates": "ARE",
+    "singapore": "SGP", "brazil": "BRA", "italy": "ITA", "spain": "ESP",
+    "mexico": "MEX", "indonesia": "IDN", "nigeria": "NGA", "pakistan": "PAK",
+    "bangladesh": "BGD", "russia": "RUS", "korea": "KOR", "greece": "GRC",
 }
 
 # OECD MEI's harmonised-unemployment-rate series code uses ISO3, unlike CPI's
@@ -128,6 +182,109 @@ _WEO_FALLBACK_RELEASE = "WEO:2025-04"
 _weo_release_cache: str | None = None
 
 
+def _detect_countries(query: str) -> list[str]:
+    """Return every named country once, in the order mentioned."""
+    matches: list[tuple[int, str]] = []
+    for alias, canonical in _COUNTRY_ALIASES.items():
+        match = re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", query, re.I)
+        if match:
+            matches.append((match.start(), canonical))
+    countries: list[str] = []
+    for _, country in sorted(matches):
+        if country not in countries:
+            countries.append(country)
+    return countries
+
+
+# ── Deterministic headline-indicator lookup ─────────────────────────────────
+# DBnomics full-text search does not find headline macro indicators. Asking it
+# for "india gdp" returns a CHELEM trade dataset, an OECD education-expenditure
+# dataset and an IMF balance sheet — not one GDP series among them; "us
+# unemployment" returns OECD social expenditure for AUSTRALIA, because "us"
+# matched "US dollars". No amount of re-scoring fixes that: the right series is
+# never in the candidate set.
+#
+# World Bank WDI series IDs are stable and fully predictable, so the common
+# indicators are looked up directly instead: WB/WDI/A-{INDICATOR}-{ISO3}.
+# Keyword search is kept below as the fallback for anything not in this table.
+_WDI_INDICATORS: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (re.compile(r"\b(gdp growth|economic growth|growth rate of gdp)\b", re.I),
+     "NY.GDP.MKTP.KD.ZG", "GDP growth (annual %)"),
+    (re.compile(r"\bgdp per capita|per capita income\b", re.I),
+     "NY.GDP.PCAP.CD", "GDP per capita (current US$)"),
+    (re.compile(r"\btax[- ]to[- ]gdp|tax revenue\b", re.I),
+     "GC.TAX.TOTL.GD.ZS", "Tax revenue (% of GDP)"),
+    # Must come before the generic "gdp" rule below: "government debt as a
+    # percentage of GDP" contains the literal word "gdp", so with the generic
+    # rule first it always won (returning GDP growth data for a debt
+    # question) and this specific pattern was dead code — never reachable.
+    (re.compile(r"\b(government debt|public debt|central government debt)\b", re.I),
+     "GC.DOD.TOTL.GD.ZS", "Central government debt, total (% of GDP)"),
+    (re.compile(r"\b(gdp|gross domestic product)\b", re.I),
+     "NY.GDP.MKTP.KD.ZG", "GDP growth (annual %)"),
+    (re.compile(r"\b(inflation|cpi|consumer price)\b", re.I),
+     "FP.CPI.TOTL.ZG", "Inflation, consumer prices (annual %)"),
+    (re.compile(r"\bunemploy\w*\b", re.I),
+     "SL.UEM.TOTL.ZS", "Unemployment, total (% of labour force)"),
+    (re.compile(r"\b(population)\b", re.I),
+     "SP.POP.TOTL", "Population, total"),
+    (re.compile(r"\b(real interest rate)\b", re.I),
+     "FR.INR.RINR", "Real interest rate (%)"),
+    (re.compile(r"\b(exports?)\b", re.I),
+     "NE.EXP.GNFS.ZS", "Exports of goods and services (% of GDP)"),
+    (re.compile(r"\b(imports?)\b", re.I),
+     "NE.IMP.GNFS.ZS", "Imports of goods and services (% of GDP)"),
+)
+
+
+async def _fetch_wdi(client: httpx.AsyncClient, indicator: str, iso3: str) -> dict | None:
+    """One World Bank WDI series by exact ID, or None."""
+    sid = f"WB/WDI/A-{indicator}-{iso3}"
+    try:
+        r = await client.get(f"{_dbnomics_base()}/series/{sid}", params={"observations": "1"})
+        if r.status_code != 200:
+            return None
+        docs = r.json().get("series", {}).get("docs", [])
+        return docs[0] if docs else None
+    except Exception:
+        return None
+
+
+async def _fetch_world_bank(
+    client: httpx.AsyncClient, indicator: str, iso3: str
+) -> list[tuple[str, float]]:
+    """Fetch current WDI observations from the publisher before its mirrors."""
+    try:
+        response = await client.get(
+            f"https://api.worldbank.org/v2/country/{iso3}/indicator/{indicator}",
+            params={"format": "json", "per_page": 100},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list) or len(payload) < 2 or not isinstance(payload[1], list):
+            return []
+        return sorted(
+            (str(row["date"]), float(row["value"]))
+            for row in payload[1]
+            if isinstance(row, dict)
+            and re.fullmatch(r"\d{4}", str(row.get("date", "")))
+            and isinstance(row.get("value"), (int, float))
+            and not isinstance(row.get("value"), bool)
+        )
+    except (httpx.HTTPError, ValueError, TypeError, KeyError):
+        return []
+
+
+def _wdi_match(query: str) -> tuple[str, str] | None:
+    """(indicator_code, human_label) for the first headline indicator the
+    question names. Order matters: the more specific patterns come first, so
+    "GDP per capita" is not swallowed by the plain "gdp" rule."""
+    for pattern, code, label in _WDI_INDICATORS:
+        if pattern.search(query):
+            return code, label
+    return None
+
+
 def _dbnomics_base() -> str:
     return os.getenv("DBNOMICS_API_BASE_URL", "https://api.db.nomics.world/v22").rstrip("/")
 
@@ -135,7 +292,7 @@ def _dbnomics_base() -> str:
 def _keywords(query: str) -> list[str]:
     return [
         w for w in re.findall(r"[A-Za-z]{3,}", query.lower())
-        if w not in _STOPWORDS and (len(w) >= 4 or w in {"cpi", "gdp", "gni", "gnp"})
+        if w not in _STOPWORDS and (len(w) >= 4 or w in _SHORT_KEEP)
     ]
 
 
@@ -145,6 +302,63 @@ def _real_points(series: dict) -> list[tuple[str, float]]:
         if isinstance(v, (int, float)):
             out.append((p, float(v)))
     return out
+
+
+async def _wdi_sources(query: str) -> list[WebSource] | None:
+    """Deterministic World Bank sources for a named indicator plus a named
+    country, or None when the question does not name both — None meaning "not
+    applicable", so the targeted resolvers and full-text search below still get
+    their turn. An empty list is a real answer: the countries were named and
+    resolvable, but the data is not there."""
+    countries = _detect_countries(query)
+    indicator = _wdi_match(query)
+    if indicator is None or not countries:
+        return None
+    code, label = indicator
+    if any(not _ISO3.get(named_country) for named_country in countries):
+        return None
+
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        async def source_for(named_country: str) -> WebSource | None:
+            country_iso3 = _ISO3[named_country]
+            points = await _fetch_world_bank(client, code, country_iso3)
+            if points:
+                provider = "World Bank (WDI)"
+                url = f"https://data.worldbank.org/indicator/{code}?locations={country_iso3}"
+            else:
+                doc = await _fetch_wdi(client, code, country_iso3)
+                points = _real_points(doc) if doc else []
+                provider = "World Bank (WDI) via DBnomics"
+                url = f"{_dbnomics_base()}/series/WB/WDI/A-{code}-{country_iso3}"
+            if not points:
+                return None
+            tail = points[-_MAX_POINTS:]
+            values_txt = ", ".join(f"{p}: {v:g}" for p, v in tail)
+            return WebSource(
+                title=f"{label} — {named_country.title()}",
+                url=url,
+                snippet=(f"{provider}. {label} for {named_country.title()}. "
+                         f"Latest available year: {tail[-1][0]}. Values — {values_txt}."),
+                provider=provider,
+                fetched_at=datetime.now(timezone.utc).isoformat(),
+                freshness="historical",
+                observation=LiveObservation(
+                    observation_id=f"obs_{uuid.uuid4().hex}", indicator=label,
+                    value=str(tail[-1][1]),
+                    unit="percent" if "%" in label else "provider-defined",
+                    period=str(tail[-1][0]), provider=provider, source_url=url,
+                    freshness="historical",
+                ),
+                series=tail,
+            )
+
+        sources = await asyncio.gather(*(source_for(c) for c in countries))
+    # A comparison with one missing country must not masquerade as complete.
+    if all(sources):
+        return [source for source in sources if source is not None]
+    if len(countries) > 1:
+        return []
+    return None
 
 
 @dataclass
@@ -694,6 +908,12 @@ def _build_source(match: SeriesMatch) -> WebSource:
         provider=match.provider_name or "DBnomics",
         fetched_at=datetime.now(timezone.utc).isoformat(),
         freshness="historical",
+        # The same points, structured, so live_data.build_forced_chart can chart
+        # a real fetched series instead of trusting the model to re-parse its
+        # own prose back into numbers. Proven and correlated lookups stay
+        # prose-only on purpose: two series over one axis have no single value
+        # per period to plot.
+        series=list(match.points),
     )
 
 
@@ -718,8 +938,17 @@ def _build_pair_source(match_a: SeriesMatch, match_b: SeriesMatch) -> WebSource:
 
 
 async def fetch_stats(query: str) -> list[WebSource]:
-    """Return one WebSource with a matching economic series' recent values when
-    the question is a statistics query and a confident match is found; else []."""
+    """Return WebSources with matching economic series' recent values when
+    the question is a statistics query and a confident match is found; else [].
+
+    A named indicator plus a named country resolves deterministically to an
+    exact World Bank series (_wdi_sources). Anything else falls through to the
+    targeted CPI/unemployment/GDP resolvers and then to full-text search."""
+    if not _STAT_HINTS.search(query):
+        return []
+    wdi = await _wdi_sources(query)
+    if wdi is not None:
+        return wdi
     match = await _find_best_series(query)
     return [_build_source(match)] if match else []
 

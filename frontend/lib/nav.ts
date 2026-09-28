@@ -21,6 +21,30 @@ export type NavL2Item = {
 };
 export type NavL1Section = { id: string; label: string; allowedRoles: RoleCode[]; items: NavL2Item[] };
 
+// Real backend roles (what /auth/me profile.role returns once provisioned)
+// are role-gated here exactly as backend app/domains/identity/permissions.py
+// ROLE_PERMISSIONS gates the endpoints — so a section a real role can't reach
+// on the API is also hidden from its nav, and vice versa. This must track that
+// matrix; per-role one-to-many mapping:
+//   Admin            → everything (provision default)
+//   Governance Ops Lead → all permissions (full read/write)
+//   Source Admin     → source.read/manage
+//   Syllabus Admin   → no permission in ROLE_PERMISSIONS yet, so it gets only
+//                      the base sections below — NOT Source & Knowledge
+//                      Governance. See issue: nav must not outrun the matrix.
+//   Jurisdiction Lead  → source.read (rollout readiness views)
+//   Risk Admin       → model.manage (risk/eval/model registry)
+//   System Auditor   → source.read + support.read (read-only)
+const ALL_BACKEND: RoleCode[] = [
+  "Admin",
+  "Governance Ops Lead",
+  "System Auditor",
+  "Source Admin",
+  "Syllabus Admin",
+  "Jurisdiction Lead",
+  "Risk Admin",
+];
+
 const ALL: RoleCode[] = [
   "CFO",
   "Controller",
@@ -30,16 +54,22 @@ const ALL: RoleCode[] = [
   "Business Owner",
   "Learner",
   "AI Governance Lead",
-  "Admin",
+  ...ALL_BACKEND,
 ];
 
 const ALL_EXCEPT_LEARNER: RoleCode[] = ALL.filter((r) => r !== "Learner");
 
 const FINANCE_ROLES: RoleCode[] = ["CFO", "Controller", "Tax Director", "Finance Manager", "Business Owner"];
 const ACCOUNTING_WORKFLOWS: RoleCode[] = [...FINANCE_ROLES, "Audit Partner", "Admin"];
-const SOURCE_KNOWLEDGE_GOVERNANCE: RoleCode[] = ["Audit Partner", "AI Governance Lead", "Admin"];
-const AI_GOVERNANCE: RoleCode[] = ["AI Governance Lead", "Admin"];
-const REVIEW_ESCALATION_AUDIT: RoleCode[] = ["Audit Partner", "AI Governance Lead", "Admin"];
+const SOURCE_KNOWLEDGE_GOVERNANCE: RoleCode[] = [
+  "Audit Partner", "AI Governance Lead", "Admin",
+  "Source Admin", "Governance Ops Lead", "Jurisdiction Lead", "System Auditor",
+];
+const AI_GOVERNANCE: RoleCode[] = ["AI Governance Lead", "Admin", "Risk Admin", "Governance Ops Lead"];
+const REVIEW_ESCALATION_AUDIT: RoleCode[] = [
+  "Audit Partner", "AI Governance Lead", "Admin",
+  "Governance Ops Lead", "System Auditor",
+];
 const OPERATIONS: RoleCode[] = ["AI Governance Lead", "Admin"];
 const ADMINISTRATION: RoleCode[] = ["Admin"];
 

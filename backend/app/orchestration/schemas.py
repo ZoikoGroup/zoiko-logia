@@ -7,8 +7,117 @@ Gate 1) — massarius/schemas.py re-exports these types rather than redefining t
 since this file already anchors the live AskKritonResponse contract.
 """
 from __future__ import annotations
+from datetime import date
 from typing import Literal, Optional, List
 from pydantic import BaseModel, ConfigDict, Field
+from app.domains.calculations.schemas import (
+    LiveObservation,
+    VerifiedChartSpec,
+    CalculationResult as DeterministicCalculationResult,
+)
+
+
+# ── F0 task context ─────────────────────────────────────────────────────────
+
+TaskType = Literal[
+    "general_question",
+    "policy_research",
+    "document_evidence_extraction",
+    "reconciliation",
+]
+
+
+class TaskContextSelection(BaseModel):
+    """User selections only. Trusted identity/scope is never accepted here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # None means automatic detection. Clients may still provide an explicit
+    # override, but the normal path requires no workflow label.
+    task_type: Optional[TaskType] = None
+    engagement_id: Optional[str] = None
+    purpose: Optional[str] = None
+    jurisdiction: Optional[str] = None
+    framework: Optional[str] = None
+    entity: Optional[str] = None
+    period_start: Optional[date] = None
+    period_end: Optional[date] = None
+    currency: Optional[str] = None
+    language: str = "en"
+    intended_use: Literal["research", "draft_workpaper", "internal_review"] = "research"
+
+
+class TaskContext(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: Literal["1.0"] = "1.0"
+    task_type: TaskType
+    task_spec_version: str
+    actor_id: str
+    tenant_id: str
+    actor_role: str
+    engagement_id: Optional[str] = None
+    purpose: str
+    jurisdiction: Optional[str] = None
+    framework: Optional[str] = None
+    entity: Optional[str] = None
+    period_start: Optional[date] = None
+    period_end: Optional[date] = None
+    currency: Optional[str] = None
+    language: str
+    data_classification: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    intended_use: Literal["research", "draft_workpaper", "internal_review"]
+
+
+class TaskSpec(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    task_type: TaskType
+    version: str
+    required_fields: List[str]
+    allowed_outputs: List[str]
+    prohibited_actions: List[str]
+    review_role: Optional[str] = None
+
+
+class ContextDecision(BaseModel):
+    status: Literal["complete", "clarification_required", "unsupported", "unauthorized"]
+    missing_fields: List[str] = Field(default_factory=list)
+    invalid_fields: List[str] = Field(default_factory=list)
+    reason_codes: List[str] = Field(default_factory=list)
+    clarification_questions: List[str] = Field(default_factory=list)
+    resolved_context: Optional[TaskContext] = None
+
+
+CapabilityId = Literal[
+    "document.retrieve",
+    "document.extract",
+    "source.research",
+    "policy.lookup",
+    "numeric.calculate",
+    "numeric.compare",
+    "evidence.cite",
+    "chart.generate",
+    "response.compose",
+]
+
+
+class CapabilityStep(BaseModel):
+    capability: CapabilityId
+    reason: str
+
+
+class WorkflowPlan(BaseModel):
+    """A bounded, auditable plan. It can select registered capabilities only."""
+
+    model_config = ConfigDict(frozen=True)
+
+    version: Literal["1.0"] = "1.0"
+    task_type: TaskType
+    detection: Literal["automatic", "explicit_override"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    reason_codes: List[str] = Field(default_factory=list)
+    steps: List[CapabilityStep] = Field(default_factory=list)
 
 from app.orchestration.visualization.spec import VisualizationSpec
 from app.orchestration.calculations.schemas import CalculationResult
@@ -17,6 +126,8 @@ from app.orchestration.calculations.schemas import CalculationResult
 # ── Request ──────────────────────────────────────────────────────────────────
 
 class AskKritonRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     query: str
     document_ids: List[str] = Field(default_factory=list)
     source_scope: Literal["WEB_ONLY", "DOCUMENTS_ONLY", "DOCUMENTS_THEN_WEB", "COMBINED"] = "DOCUMENTS_THEN_WEB"
@@ -35,32 +146,37 @@ class AskKritonRequest(BaseModel):
     source_confidence: Optional[str] = None
     pre_bundle_state: Optional[str] = None
     privacy_class: Optional[str] = None
+    # Additive F0 contract. Omitted by legacy clients, which remain on the
+    # general-question workflow until they deliberately select a pilot task.
+    task_context: Optional[TaskContextSelection] = None
 
 
 # ── Retrieval Plan — ZL-ENG-03 §5.1 ──────────────────────────────────────────
-# Produced ahead of retrieval to declare strategy/intent; the live keyword_mvp
-# retrieval layer (orchestration/retrieve.py) doesn't consume this yet — it's
-# the typed shape license_gate.py's Checkpoint A reasons about today, and what
-# a future planner module would populate.
+# Produced and consumed by orchestration/retrieve.py before passage retrieval;
+# it fixes the strategy, context, top-k and index version for replay.
 
 RetrievalMethod = Literal["keyword", "vector", "ontology", "citation_anchor", "tenant_private", "hybrid"]
 
 
 class RetrievalPlan(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     retrieval_plan_id: str
+    version: Literal["1.0"] = "1.0"
     strategy: str
     methods: List[RetrievalMethod] = Field(default_factory=list)
     jurisdiction: str = ""
     framework: str = ""
     requires_tenant_private_sources: bool = False
     requires_current_sources: bool = False
+    top_k: int = Field(default=8, ge=1, le=50)
+    index_version: str = "source-passages-lexical-v1"
     risk_notes: List[str] = Field(default_factory=list)
 
 
 # ── Source Candidate — ZL-ENG-03 §5.2 ────────────────────────────────────────
-# One retrieval hit, pre-bundle. keyword_mvp retrieval today produces
-# SourceSummary directly; SourceCandidate is the richer shape license_gate.py
-# and bundle_builder.py operate on once a candidate needs passage/score detail.
+# One retrieval hit, pre-bundle. EvidencePassage below is the immutable selected
+# form recorded in the final bundle.
 
 class SourceCandidate(BaseModel):
     source_id: str
@@ -68,6 +184,30 @@ class SourceCandidate(BaseModel):
     score: float = 0.0
     method: RetrievalMethod = "keyword"
     index_version: str = "v1"
+
+
+class EvidencePassage(BaseModel):
+    """Safe passage identity included in an API response; content stays server-side."""
+
+    model_config = ConfigDict(frozen=True)
+
+    passage_id: str
+    source_id: str
+    source_version_id: str
+    locator: str
+    content_hash: str
+    score: float = 0.0
+    rank: int = 0
+    method: RetrievalMethod = "keyword"
+
+
+class ExcludedEvidence(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    source_id: str
+    source_version_id: Optional[str] = None
+    passage_id: Optional[str] = None
+    reason_code: str
 
 
 # ── Source Bundle — ZL-ENG-02 §7.2, ZL-ENG-03 §5.5 ───────────────────────────
@@ -78,6 +218,7 @@ class SourceCandidate(BaseModel):
 
 class SourceSummary(BaseModel):
     id: str
+    version_id: str = ""
     title: str
     category: str
     jurisdiction_scope: str
@@ -107,6 +248,11 @@ class SourceBundle(BaseModel):
     # the retrieval index version this bundle was built against.
     source_display_states: dict[str, SourceDisplayState] = Field(default_factory=dict)
     index_version: str = "v1"
+    retrieval_plan: Optional[RetrievalPlan] = None
+    passages: List[EvidencePassage] = Field(default_factory=list)
+    excluded_evidence: List[ExcludedEvidence] = Field(default_factory=list)
+    conflict_version_ids: List[str] = Field(default_factory=list)
+    manifest_version: Literal["1.0"] = "1.0"
 
 
 # ── Citation Map — ZL-ENG-03 §5.4 ────────────────────────────────────────────
@@ -170,10 +316,46 @@ class SourceCitation(BaseModel):
     freshness: Optional[str] = None   # realtime | delayed | historical | filing
 
 
+class WidgetInput(BaseModel):
+    name: str
+    label: str
+    value: str
+    unit: str
+    min: str
+    max: str
+    step: str
+
+
+class ChartPoint(BaseModel):
+    x: str
+    y: str
+
+
+class CalculationWidget(BaseModel):
+    formula_id: str
+    formula_name: str
+    formula_display: str
+    methodology_reference: str
+    inputs: List[WidgetInput] = Field(default_factory=list)
+    output_label: str
+    output_value: str
+    output_unit: str
+    chart_type: Literal["line", "bar", "donut", "gauge", "waterfall", "stacked_bar", "bullet", "treemap", "sankey", "kpi"]
+    chart_label: str
+    chart_x_label: str
+    chart_y_label: str
+    chart_points: List[ChartPoint] = Field(default_factory=list)
+    calculation_id: str
+
+
 class ComposedAnswer(BaseModel):
     text: str
     citations: List[SourceCitation] = Field(default_factory=list)
     limitations: List[str] = Field(default_factory=list)
+    calculation_widget: Optional[CalculationWidget] = None
+    calculation_result: Optional[DeterministicCalculationResult] = None
+    verified_charts: List[VerifiedChartSpec] = Field(default_factory=list)
+    observations: List[LiveObservation] = Field(default_factory=list)
     # Internal fields — kept for model_gateway wiring; never exposed to frontend
     prompt_id: str = "inline"
     prompt_name: str = "Inline RAG Prompt"
@@ -223,6 +405,9 @@ class AskKritonResponse(BaseModel):
     next_action: Optional[NextAction] = None
     artifacts: List[GeneratedArtifactPublic] = Field(default_factory=list)
     artifact_error: Optional[str] = None
+    effective_context: Optional[TaskContext] = None
+    context_decision: Optional[ContextDecision] = None
+    workflow_plan: Optional[WorkflowPlan] = None
     audit_reference: AuditReference
     # Additive field — deterministic, evidence-backed visualization decided by
     # orchestration/visualization/orchestrator.py. Only ever set on "answered"

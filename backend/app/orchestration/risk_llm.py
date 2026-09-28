@@ -64,7 +64,7 @@ async def classify_risk(query: str) -> Optional[str]:
     model = os.getenv("GROQ_CLASSIFIER_MODEL", "openai/gpt-oss-20b")
     try:
         client = AsyncGroq(api_key=api_key)
-        resp = await client.chat.completions.create(
+        resp = await asyncio.wait_for(client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": _SYSTEM},
@@ -83,7 +83,7 @@ async def classify_risk(query: str) -> Optional[str]:
             # rather than just raising the same failure mode's ceiling —
             # still well under a second for this small/fast model.
             max_tokens=1024,
-        )
+        ), timeout=8)
         raw = (resp.choices[0].message.content or "").strip().upper()
     except Exception:
         return None
@@ -132,7 +132,7 @@ async def classify_risk_gemini(query: str) -> Optional[str]:
 
         # google-genai's call is synchronous — run it off the event loop so it
         # doesn't block other concurrent requests while awaiting the model.
-        raw = await asyncio.to_thread(_call)
+        raw = await asyncio.wait_for(asyncio.to_thread(_call), timeout=8)
     except Exception:
         return None
 

@@ -16,13 +16,33 @@ settings = get_settings()
 # pool checkout and individual commands so pool_pre_ping/reconnects fail fast
 # and SQLAlchemy can discard the bad connection.
 _ASYNC_POSTGRES_CONNECT_ARGS = {
-    "timeout": 10,
+    "timeout": settings.DB_CONNECT_TIMEOUT_SECONDS,
     "command_timeout": 15,
 }
 _SYNC_POSTGRES_CONNECT_ARGS = {
-    "connect_timeout": 10,
+    "connect_timeout": settings.DB_CONNECT_TIMEOUT_SECONDS,
     "options": "-c statement_timeout=15000",
 }
+
+
+def session_is_sqlite(session) -> bool:
+    """True when `session` is backed by SQLite. The RLS re-scoping
+    set_config statements are Postgres-only and crash on SQLite with "no
+    such function: set_config", so every caller must skip them there. Prefer
+    the live session's engine dialect over settings.is_sqlite: tests build
+    ad-hoc sqlite+aiosqlite engines (and pass those sessions straight into
+    the domain functions) while settings.DATABASE_URL still points at the
+    real Postgres URL in .env — a config-level check can't see that and
+    wrongly runs set_config on the test's SQLite engine."""
+    if settings.is_sqlite:
+        return True
+    get_bind = getattr(session, "get_bind", None)
+    if get_bind is None:
+        return False
+    try:
+        return get_bind().dialect.name == "sqlite"
+    except Exception:
+        return False
 
 
 def _normalize_scheme(url: str) -> str:
@@ -60,15 +80,34 @@ def to_sync_url(url: str) -> str:
     return url
 
 
+def _sync_engine_options(url: str) -> dict:
+    if url.startswith("sqlite"):
+        return {"connect_args": {"check_same_thread": False}}
+    return {
+        "connect_args": _SYNC_POSTGRES_CONNECT_ARGS,
+        "pool_timeout": settings.DB_POOL_TIMEOUT_SECONDS,
+        "pool_pre_ping": True,
+        "pool_recycle": 300,
+    }
+
+
+def _async_engine_options(url: str) -> dict:
+    if url.startswith("sqlite"):
+        return {}
+    # asyncpg calls its connection-establishment option `timeout`; SQLAlchemy's
+    # pool_timeout separately bounds waiting when every pooled connection is in
+    # use.
+    return {
+        "connect_args": _ASYNC_POSTGRES_CONNECT_ARGS,
+        "pool_timeout": settings.DB_POOL_TIMEOUT_SECONDS,
+        "pool_pre_ping": True,
+        "pool_recycle": 300,
+    }
+
+
 # Sync DB support for Safety Domain
 sync_db_url = to_sync_url(settings.DATABASE_URL)
-connect_args = (
-    {"check_same_thread": False}
-    if sync_db_url.startswith("sqlite")
-    else _SYNC_POSTGRES_CONNECT_ARGS
-)
-
-engine = create_engine(sync_db_url, connect_args=connect_args, pool_pre_ping=True)
+engine = create_engine(sync_db_url, **_sync_engine_options(sync_db_url))
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_sync_db() -> Generator[Session, None, None]:
@@ -90,16 +129,8 @@ def get_sync_db() -> Generator[Session, None, None]:
 # these a reused-but-dead connection fails a request with
 # "asyncpg ... connection is closed" (intermittent, since it only hits stale
 # ones). Mirrors the sync `engine` above, which already sets pool_pre_ping.
-async_engine = create_async_engine(
-    to_async_url(settings.DATABASE_URL),
-    echo=False,
-    pool_pre_ping=True,
-    pool_recycle=300,
-    pool_timeout=10,
-    connect_args=(
-        {} if settings.is_sqlite else _ASYNC_POSTGRES_CONNECT_ARGS
-    ),
-)
+async_db_url = to_async_url(settings.DATABASE_URL)
+async_engine = create_async_engine(async_db_url, echo=False, **_async_engine_options(async_db_url))
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 
 # Request-time engine — deliberately separate from async_engine. Postgres
@@ -108,15 +139,9 @@ AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 # setup, request traffic must go through a distinct, non-superuser role for
 # RLS to actually apply. Falls back to the same URL when APP_DATABASE_URL
 # isn't set (SQLite, or a Postgres instance without the low-priv role).
+request_db_url = to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL)
 request_engine = create_async_engine(
-    to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL),
-    echo=False,
-    pool_pre_ping=True,
-    pool_recycle=300,
-    pool_timeout=10,
-    connect_args=(
-        {} if settings.is_sqlite else _ASYNC_POSTGRES_CONNECT_ARGS
-    ),
+    request_db_url, echo=False, **_async_engine_options(request_db_url)
 )
 RequestSessionLocal = async_sessionmaker(request_engine, expire_on_commit=False)
 

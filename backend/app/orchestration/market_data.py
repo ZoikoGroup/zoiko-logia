@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from app.domains.market_data import registry, service
+from app.domains.market_data import identity, registry, service
 from app.domains.market_data.http import make_client
 from app.domains.market_data.identity import company_name_hint, resolve_local
 from app.domains.market_data.providers.companies_house import CompaniesHouseProvider
@@ -434,29 +434,55 @@ class MarketSourceResult:
     symbol: str = ""
 
 
+def _source_for(intent: str, result) -> WebSource | None:
+    try:
+        if intent == registry.INTENT_QUOTE and isinstance(result, StockQuote):
+            return _quote_source(result)
+        if intent == registry.INTENT_HISTORY and isinstance(result, list) and result:
+            return _history_source(result)
+        if intent == registry.INTENT_FUNDAMENTALS and isinstance(result, list) and result:
+            return _fundamentals_source(result)
+        if intent == registry.INTENT_FILINGS and isinstance(result, list) and result:
+            return _filings_source(result)
+        if isinstance(result, CompanyProfile):
+            return _profile_source(result)
+    except Exception:  # noqa: BLE001 — rendering must never break the request
+        return None
+    return None
+
+
 async def fetch_market_sources(query: str) -> MarketSourceResult:
     """Return grounding sources (and, for a history-shaped question, the
     real OHLC bars behind them) for a market/company question, else an
     empty result. Fetched exactly once — the SAME result builds both the
     WebSource citation and (for history) the chart-ready evidence, never two
     independent fetches for the same fact (see evidence.py's docstring)."""
+    companies = identity.find_all_known_names(query)
+    if len(companies) >= 2:
+        # A question naming two or more well-known companies ("Compare Apple and
+        # Microsoft...") is a comparison, not a single-entity lookup — routed to
+        # fetch_market_data_for_companies() so both get fetched and grounded,
+        # rather than resolving to whichever one company the single-entity path
+        # happened to match first and silently dropping the rest.
+        results = await service.fetch_market_data_for_companies(query, companies)
+        sources = [_source_for(intent, result) for result, _provider, intent, _label in results]
+        return MarketSourceResult(sources=[s for s in sources if s is not None])
+
     outcome = await service.fetch_market_data(query)
     if outcome is None:
         return MarketSourceResult()
 
     result, _provider, intent = outcome
+    # A history result is the one intent whose real bars are chart-ready, so it
+    # is read from the SAME fetch rather than being flattened to a citation.
     try:
-        if intent == registry.INTENT_QUOTE and isinstance(result, StockQuote):
-            return MarketSourceResult(sources=[_quote_source(result)])
         if intent == registry.INTENT_HISTORY and isinstance(result, list) and result:
             bars: list[OHLCVBar] = result  # type: ignore[assignment]
             return MarketSourceResult(sources=[_history_source(bars)], ohlc=bars, symbol=bars[-1].symbol)
-        if intent == registry.INTENT_FUNDAMENTALS and isinstance(result, list) and result:
-            return MarketSourceResult(sources=[_fundamentals_source(result)])  # type: ignore[arg-type]
-        if intent == registry.INTENT_FILINGS and isinstance(result, list) and result:
-            return MarketSourceResult(sources=[_filings_source(result)])  # type: ignore[arg-type]
-        if isinstance(result, CompanyProfile):
-            return MarketSourceResult(sources=[_profile_source(result)])
     except Exception:  # noqa: BLE001 — rendering must never break the request
         return MarketSourceResult()
-    return MarketSourceResult()
+
+    source = _source_for(intent, result)
+    if source is None:
+        return MarketSourceResult()
+    return MarketSourceResult(sources=[source])
