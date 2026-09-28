@@ -19,6 +19,10 @@ export type Turn = {
   submittedQuery: string;
   loading: boolean;
   error: string | null;
+  /** HTTP status behind `error`, when the failure came from the API. Lets the
+   *  UI distinguish "Kriton answered with a 4xx/5xx" from "the request never
+   *  reached Kriton" instead of showing one generic message for both. */
+  errorStatus?: number | null;
   result: AskKritonResponse | null;
   /** Latest server-reported orchestration stage while this turn is running. */
   progressMessage?: string;
@@ -34,6 +38,7 @@ export type Conversation = {
   createdAt: number;
   updatedAt: number;
   pinned: boolean;
+  documentIds?: string[];
 };
 
 const CONVERSATIONS_KEY = "kriton_conversations_v3";
@@ -58,6 +63,7 @@ function migrateLegacy(raw: unknown): Conversation[] {
     createdAt: c.createdAt,
     updatedAt: c.createdAt,
     pinned: false,
+    documentIds: [],
     turns: (c.turns ?? []).map((t) =>
       isLegacyTurn(t)
         ? { id: t.id, query: t.question, submittedQuery: t.question, loading: t.loading, error: t.error, result: t.result }

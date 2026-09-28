@@ -8,10 +8,11 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import func, select
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domains.audit_ledger.event_envelope import record_event_async
-from app.domains.documents.extract import ExtractionError, extract
+from app.domains.kriton_workspace.documents import ExtractedBlock, extract_document
 from app.domains.source_library.licensing import SOURCE_OPERATIONS, SourceUseContext, can_use
 from app.domains.source_library.models import (
     Source, SourcePassage, SourceRelationship, SourceRight, SourceUsage, SourceVersion,
@@ -25,10 +26,25 @@ _UPLOAD_ROOT = Path(__file__).resolve().parents[3] / "data" / "uploads"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".pptx", ".csv", ".txt", ".md"}
 _MAX_SOURCE_BYTES = 25 * 1024 * 1024
+_PLAIN_TEXT_EXTENSIONS = {".csv", ".txt", ".md"}
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _extract_source_segments(filename: str, content: bytes) -> list[ExtractedBlock]:
+    """Text extraction for a registered source, on the workspace document
+    extractor (kriton_workspace.documents, which replaced app.domains.documents).
+    The plain-text and CSV formats the register accepts but that extractor does
+    not read are handled here, so an accepted upload never registers with a
+    version that has no indexed passages."""
+    if Path(filename).suffix.lower() in _PLAIN_TEXT_EXTENSIONS:
+        text = content.decode("utf-8", errors="replace").strip()
+        if not text:
+            raise ValueError("The file contains no readable text.")
+        return [ExtractedBlock(text, "File text", {})]
+    return extract_document(filename, content)
 
 
 def _file_from_relative_path(file_path: str) -> Path:
@@ -93,33 +109,51 @@ async def list_sources(
     data-access layer as well, not just app-layer, per ZL-ENG-03 §7.1 —
     filtering strictly on tenant_id equality here would incorrectly hide
     shared sources from every tenant that doesn't literally own the row."""
-    query = select(Source)
+    # Resolve each source's latest version in the same SQL statement.  The old
+    # implementation fetched Sources first and then issued one ordered query
+    # per source.  Against remote Supabase that N+1 pattern made a three-source
+    # retrieval take more than two minutes, beyond Ask Kriton's 120s client
+    # deadline.
+    latest_version_id = (
+        select(SourceVersion.id)
+        .where(SourceVersion.source_id == Source.id)
+        .order_by(SourceVersion.created_at.desc(), SourceVersion.id.desc())
+        .limit(1)
+        .correlate(Source)
+        .scalar_subquery()
+    )
+    latest_version = aliased(SourceVersion)
+    query = select(Source, latest_version).join(
+        latest_version, latest_version.id == latest_version_id
+    )
     if category:
         query = query.where(Source.category == category)
     if tenant_id is not None:
         query = query.where((Source.is_tenant_private.is_(False)) | (Source.tenant_id == tenant_id))
     result = await db.execute(query)
-    sources = result.scalars().all()
-
+    rows = result.all()
+    if operation is None:
+        return [
+            {**source.__dict__, "latest_version": version}
+            for source, version in rows
+        ]
+    # can_use is a per-version lookup, so it is only paid for when a caller
+    # actually asks for a rights decision — the unfiltered path above stays the
+    # single-statement query that replaced the old per-source round trip.
     combined = []
-    for source in sources:
-        latest = await _latest_version(db, source.id)
-        if latest is None:
-            continue
-        if operation is not None:
-            decision = await can_use(
-                db, latest.id,
-                SourceUseContext(
-                    tenant_id=tenant_id or source.tenant_id,
-                    jurisdiction=jurisdiction,
-                    framework=framework,
-                    effective_date=effective_date,
-                ),
-                operation,
-            )
-            if not decision.allowed:
-                continue
-        combined.append({**source.__dict__, "latest_version": latest})
+    for source, version in rows:
+        decision = await can_use(
+            db, version.id,
+            SourceUseContext(
+                tenant_id=tenant_id or source.tenant_id,
+                jurisdiction=jurisdiction,
+                framework=framework,
+                effective_date=effective_date,
+            ),
+            operation,
+        )
+        if decision.allowed:
+            combined.append({**source.__dict__, "latest_version": version})
     return combined
 
 
@@ -172,8 +206,10 @@ async def create_source(
         file_bytes = stored_file.read_bytes()
         content_hash = hashlib.sha256(file_bytes).hexdigest()
         try:
-            segments = await asyncio.to_thread(extract, file_bytes, stored_file.suffix.lower())
-        except ExtractionError as exc:
+            segments = await asyncio.to_thread(
+                _extract_source_segments, stored_file.name, file_bytes
+            )
+        except (ValueError, OSError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not content_hash and payload.source_url:
         # URL registrations do not claim a content hash until retrieved bytes
@@ -244,7 +280,7 @@ async def create_source(
             db.add(SourcePassage(
                 tenant_id=tenant_id,
                 source_version_id=version.id,
-                locator=segment.locator,
+                locator=segment.location,
                 sequence=sequence,
                 content=content,
                 content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),

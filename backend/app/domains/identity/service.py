@@ -1,4 +1,6 @@
+from fastapi import HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import supabase_admin
@@ -70,7 +72,14 @@ async def create_user(db: AsyncSession, tenant_id: str, payload: UserCreateReque
     return user
 
 
-async def provision_profile(db: AsyncSession, user_id: str, email: str, payload: ProvisionRequest) -> User:
+async def provision_profile(
+    db: AsyncSession,
+    user_id: str,
+    email: str,
+    payload: ProvisionRequest,
+    token_tenant_id: str = "",
+    token_role: str = "",
+) -> User:
     """Idempotent upsert called by the frontend right after a Supabase
     sign-up/first OAuth login. First call creates the Tenant (from
     company_name) + User row and stamps tenant_id/role into the Supabase
@@ -79,6 +88,19 @@ async def provision_profile(db: AsyncSession, user_id: str, email: str, payload:
     Supabase auth user."""
     existing = await get_user_by_id(db, user_id)
     if existing is not None:
+        # Re-stamp app_metadata when this access token's embedded app_metadata
+        # has drifted from the authoritative users row — and only then, so a
+        # matched re-provision (the common daily login) stays a true no-op
+        # that never touches the Admin API. Drift is what breaks RLS writes:
+        # rows are written with this row's tenant_id while the RLS WITH CHECK
+        # compares against app.tenant_id from the token's claim, so a stale
+        # claim makes every INSERT fail with "violates row-level security
+        # policy" until a fresh sign-in re-stamps it. A claim that carries no
+        # identity at all (a bare sub/email token) tells us nothing to fix.
+        if (token_tenant_id and token_tenant_id != existing.tenant_id) or (
+            token_role and token_role != existing.role
+        ):
+            supabase_admin.update_app_metadata(existing.id, existing.tenant_id, existing.role)
         return existing
 
     tenant = Tenant(name=payload.company_name or "")
@@ -96,7 +118,32 @@ async def provision_profile(db: AsyncSession, user_id: str, email: str, payload:
         is_active=True,
     )
     db.add(user)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # A users row already holds this email under a DIFFERENT id — the
+        # lookup above is by auth id, but the uniqueness constraint is on
+        # email. This is what a re-registration looks like: the Supabase auth
+        # user behind the original row was deleted, signing up again minted a
+        # fresh auth id, and the id lookup can no longer find the row that
+        # still owns the address.
+        #
+        # Deliberately NOT auto-adopting that row. Claiming it would hand the
+        # new sign-up whatever tenant and data the old one had, on the
+        # strength of a matching email — an account-linking policy, and one
+        # that cuts straight across the tenant isolation this service exists
+        # to enforce. Re-linking is an administrative act with a human behind
+        # it, so this reports the conflict and stops.
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "An account already exists for this email address under a "
+                "different sign-in identity. An administrator needs to re-link "
+                "or remove the existing profile before this address can be "
+                "registered again."
+            ),
+        ) from exc
     await db.refresh(user)
     _sync_app_metadata_best_effort(user.id, user.tenant_id, user.role)
     return user

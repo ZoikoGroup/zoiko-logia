@@ -38,7 +38,7 @@ const EVENT_TONES: Record<string, "ok" | "warn" | "bad" | "info"> = {
   safety_refusal_returned: "warn",
 };
 
-function computeStats(events: SafetyEvent[], escalations: Escalation[]) {
+function computeStats(events: SafetyEvent[], escalations: Escalation[], now: number) {
   const classified = events.filter((e) => e.event_type === "risk_classification_applied").length;
   const blocked = events.filter((e) => e.event_type === "restricted_topic_blocked").length;
   const uncertain = events.filter((e) => e.event_type === "risk_classification_uncertain").length;
@@ -48,7 +48,7 @@ function computeStats(events: SafetyEvent[], escalations: Escalation[]) {
   ).length;
   const overSla = escalations.filter((e) => {
     if (!e.sla_deadline) return false;
-    return new Date(e.sla_deadline).getTime() < Date.now() && e.status !== "RESOLVED";
+    return new Date(e.sla_deadline).getTime() < now && e.status !== "RESOLVED";
   }).length;
 
   return { classified, blocked, uncertain, incidents, pendingReview, overSla };
@@ -73,7 +73,7 @@ export default function AiSafetyDashboardPage() {
     load();
   }, []);
 
-  const stats = computeStats(events, escalations);
+  const stats = computeStats(events, escalations, now);
 
   return (
     <main className="flex-1 overflow-y-auto p-6 space-y-6">

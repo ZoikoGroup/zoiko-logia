@@ -12,11 +12,14 @@ Two jobs, both pure functions of the query and the environment:
      table, not scattered if-statements, so changing priority is a data edit
      and the whole policy is readable in one place.
 
-Provider set: Twelve Data serves every market intent (quotes, history,
-fundamentals, profiles, symbol search). Company filings have no provider here —
-that data (UK Companies House / US SEC statutory records) is not something a
-market price API carries — so the filings intent resolves to no provider and
-the connector stays silent for it, falling back to the web-grounded answer.
+Priority rationale, not arbitrary:
+  - UK filings go to Companies House alone. It is the statutory register; no
+    other provider here can supply UK filing history, and none should be
+    consulted as a "fallback" for it.
+  - Alpha Vantage is last for every market intent. Its free tier is roughly 25
+    calls per day — viable as a backstop, not as a primary.
+  - Polygon leads history (deep, adjusted aggregates) but not quotes, where its
+    free tier only reaches the previous close.
 """
 from __future__ import annotations
 
@@ -24,6 +27,8 @@ import os
 import re
 from typing import Optional
 
+from app.orchestration.number_words import SPELLED_NUMBER_PATTERN, find_first_spelled_number
+from app.domains.market_data.providers.alpha_vantage import AlphaVantageProvider
 from app.domains.market_data.providers.base import (
     CAP_FILINGS,
     CAP_FUNDAMENTALS,
@@ -33,7 +38,9 @@ from app.domains.market_data.providers.base import (
     CAP_SEARCH,
     BaseStockProvider,
 )
-from app.domains.market_data.providers.twelve_data import TwelveDataProvider
+from app.domains.market_data.providers.companies_house import CompaniesHouseProvider
+from app.domains.market_data.providers.finnhub import FinnhubProvider
+from app.domains.market_data.providers.polygon import PolygonProvider
 
 # ── Intents ──────────────────────────────────────────────────────────────────
 INTENT_QUOTE = "stock_quote"
@@ -68,7 +75,7 @@ _INTENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         INTENT_HISTORY,
         re.compile(
             r"\b(history|historical|over the (last|past)|price (chart|trend|history)|"
-            r"ohlc|candles?|last \d+ (day|days|week|weeks|month|months|year|years))\b",
+            rf"ohlc|candles?|last (?:\d+|{SPELLED_NUMBER_PATTERN}) (day|days|week|weeks|month|months|year|years))\b",
             re.I,
         ),
     ),
@@ -131,39 +138,77 @@ def detect_intent(query: str) -> Optional[str]:
 
 # ── Providers ────────────────────────────────────────────────────────────────
 
-_SPAN = re.compile(r"\b(?:last|past)\s+(\d{1,3})\s*(day|week|month|year)s?\b", re.I)
+# \d{1,3} OR a spelled-out number ("the last twenty days") in the count
+# group — see number_words.py's docstring for why this needed a shared fix.
+_SPAN = re.compile(rf"\b(?:last|past)\s+(\d{{1,3}}|{SPELLED_NUMBER_PATTERN})\s*(day|week|month|year)s?\b", re.I)
 _SPAN_MULTIPLIER = {"day": 1, "week": 5, "month": 21, "year": 252}  # trading days
 
 
+_MAX_BARS = 400
+_TRADING_DAYS_PER = {"week": 5, "month": 21}   # for converting a daily count
+
+
+def _requested_trading_days(query: str, default: int) -> int:
+    """The span in trading days, uncapped. 0 means "no span was stated"."""
+    match = _SPAN.search(query)
+    if not match:
+        return default
+    raw_count = match.group(1)
+    count = int(raw_count) if raw_count.isdigit() else find_first_spelled_number(raw_count)
+    if count is None:
+        return default
+    return max(1, count * _SPAN_MULTIPLIER.get(match.group(2).lower(), 1))
+
+
 def requested_bars(query: str, default: int = 30) -> int:
-    """How many bars a question is asking for.
+    """How many DAILY bars a question is asking for.
 
     "the last 30 days" means 30 calendar days, which is about 21 trading bars —
     but over-fetching slightly and showing the caller everything is better than
     silently truncating a month to ten points, which is what a fixed default
     did. Capped so a stray "last 999 years" cannot ask a provider for a decade.
+
+    Prefer requested_history_window() for history requests: this function can
+    only answer in daily bars, so anything past the cap comes back truncated.
     """
-    match = _SPAN.search(query)
-    if not match:
-        return default
-    count = int(match.group(1))
-    return max(1, min(count * _SPAN_MULTIPLIER.get(match.group(2).lower(), 1), 400))
+    return min(_requested_trading_days(query, default), _MAX_BARS)
+
+
+def requested_history_window(query: str, default: int = 30) -> tuple[str, int]:
+    """(interval, bars) covering the WHOLE span the question asked for.
+
+    Daily bars cannot express a long span: ten years is ~2,520 trading days,
+    and clamping that to the 400-bar ceiling quietly returned about eighteen
+    months while the answer text still said "10 years" — the truncation was
+    invisible to the reader and the chart was simply wrong about its own
+    period. Coarsening the interval fixes it honestly: ten years is 120
+    monthly bars, comfortably inside the cap and genuinely ten years.
+
+    Daily is kept wherever it fits, so short spans are unchanged. Providers
+    already accept these interval keys (polygon.py's _INTERVAL_TO_AGG,
+    alpha_vantage.py's _SERIES_FUNCTION); nothing new is requested of them.
+    """
+    trading_days = _requested_trading_days(query, default)
+    if trading_days <= _MAX_BARS:
+        return "1d", trading_days
+    weeks = -(-trading_days // _TRADING_DAYS_PER["week"])      # ceil
+    if weeks <= _MAX_BARS:
+        return "1w", weeks
+    months = -(-trading_days // _TRADING_DAYS_PER["month"])
+    return "1mo", min(months, _MAX_BARS)
 
 
 def all_providers() -> list[BaseStockProvider]:
-    return [TwelveDataProvider()]
+    return [CompaniesHouseProvider(), FinnhubProvider(), PolygonProvider(), AlphaVantageProvider()]
 
 
 _DEFAULT_PRIORITY: dict[str, tuple[str, ...]] = {
-    INTENT_QUOTE: ("twelve_data",),
-    INTENT_HISTORY: ("twelve_data",),
-    INTENT_FUNDAMENTALS: ("twelve_data",),
-    INTENT_PROFILE: ("twelve_data",),
-    # Filings are UK/US statutory records a market-price API does not carry, so
-    # this intent has no provider — providers_for() returns [] and the connector
-    # stays silent, falling back to the normal web-grounded answer.
-    INTENT_FILINGS: (),
-    INTENT_LOOKUP: ("twelve_data",),
+    INTENT_QUOTE: ("finnhub", "polygon", "alpha_vantage"),
+    INTENT_HISTORY: ("polygon", "alpha_vantage"),
+    INTENT_FUNDAMENTALS: ("finnhub", "alpha_vantage"),
+    INTENT_PROFILE: ("finnhub", "polygon", "alpha_vantage"),
+    INTENT_FILINGS: ("companies_house",),
+    INTENT_LOOKUP: ("companies_house", "finnhub", "polygon", "alpha_vantage"),
 }
 
 

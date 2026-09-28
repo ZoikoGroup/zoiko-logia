@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
@@ -11,32 +11,35 @@ import {
   ChevronDown,
   Copy,
   Download,
-  FileText,
   Loader2,
   ExternalLink,
+  FileText,
+  FolderKanban,
   History,
   Lightbulb,
   PenLine,
-  Quote,
   RotateCcw,
   Share2,
   ShieldAlert,
   ShieldCheck,
   ShieldOff,
   Sparkles,
+  X,
 } from "lucide-react";
 import { AnswerRenderer } from "@/components/AnswerRenderer";
 import {
   askKritonStream,
   createSavedAnswer,
+  downloadKritonArtifact,
   getAuthToken,
   listKritonAttachments,
   listEngagements,
   ApiError,
   type AskKritonResponse,
-  type AttachmentSummary,
   type SourceCitation,
   type TaskType,
+  type RiskLevel,
+  type WorkspaceDocument,
 } from "@/lib/api";
 import {
   answerBodyOnly,
@@ -44,16 +47,15 @@ import {
   safeDownloadName,
   writeTextToClipboard,
 } from "@/lib/presentation";
-import { openSourcePopup } from "@/lib/source-popup";
 import { getFollowUpSuggestions } from "@/lib/follow-up-suggestions";
 import { ThinkingIndicator } from "@/components/ask-kriton/ThinkingIndicator";
 import { DesktopSidebar, MobileDrawer } from "@/components/ask-kriton/Sidebar";
-import { Composer, type Attachment } from "@/components/ask-kriton/Composer";
-import { useAuth } from "@/hooks/useAuth";
+import { Composer, attachmentFromDocument, type AttachmentState } from "@/components/ask-kriton/Composer";
 import { ExploreFurther } from "@/components/ask-kriton/ExploreFurther";
+import { useAuth } from "@/hooks/useAuth";
 import {
-  loadConversations,
   loadActiveConversationId,
+  loadConversations,
   persistActiveConversationId,
   persistConversations,
   sortConversations,
@@ -61,8 +63,6 @@ import {
   type Turn,
   type TurnAttachment,
 } from "@/lib/ask-kriton-storage";
-
-type RiskLevel = "ZERO" | "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
 
 const QUICK_MODES = [
   { label: "Source check", icon: BookOpen, prompt: "Review this question with eligible source grounding: " },
@@ -88,10 +88,8 @@ const RISK_STYLES: Record<RiskLevel, { badge: string; icon: typeof ShieldCheck; 
 };
 
 const ROUTE_LABELS: Record<string, string> = {
-  // LLM is deliberately absent — "source grounded" is only true when sources
-  // were actually retrieved, and retrieval fails soft (a dead SearXNG yields
-  // zero citations silently). routeLabel() below reads the real count instead
-  // of asserting provenance the answer may not have.
+  // LLM is deliberately absent; the per-turn label below uses actual citation
+  // and visualization state instead of asserting provenance from route alone.
   REFUSAL: "Refused — policy blocked",
   CLARIFICATION: "Clarification required",
   HUMAN_REVIEW: "Escalated for human review",
@@ -140,64 +138,86 @@ function ZoikoGlyph({ className = "h-9 w-9" }: { className?: string }) {
   );
 }
 
-function SourceButton({ citation }: { citation: SourceCitation }) {
-  const label = citation.url ? new URL(citation.url).hostname.replace(/^www\./, "") : citation.title;
-  // An uploaded file is the user's own evidence, not a published authority, so
-  // it is marked with a document icon instead of the source icon. The panel
-  // otherwise reads as though the user's own spreadsheet carried the same
-  // standing as HMRC guidance sitting next to it.
-  const isUserDocument = citation.freshness === "user_upload";
+/**
+ * Keep externally linked citations and uploaded-document evidence visible
+ * and verifiable in Kriton's source popup.
+ */
+function KritonPanel({
+  title,
+  description,
+  onClose,
+  children,
+}: {
+  title: string;
+  description: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
   return (
-    <div className="group flex w-full items-start gap-2 rounded-lg px-1 py-1 text-xs leading-5 text-muted hover:bg-soft">
-      {isUserDocument ? (
-        <span title="Your uploaded document" className="mt-0.5 flex shrink-0">
-          <FileText size={13} className="text-muted" aria-label="Your uploaded document" />
-        </span>
-      ) : (
-        <BookOpen size={13} className="mt-0.5 shrink-0 text-brand" />
-      )}
-      {citation.url ? (
-        <a
-          href={citation.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex-1 truncate text-left hover:text-brand hover:underline"
-        >
-          {citation.title || label}
-        </a>
-      ) : (
-        <span className="flex-1 truncate">{citation.title || label}</span>
-      )}
-      {/* The retrieved snippet is the audit evidence for this citation, so it
-          stays reachable — but only when the backend actually returned one,
-          otherwise the control would open an empty popup. */}
-      {citation.evidence_preview && (
-        <button
-          type="button"
-          onClick={() => openSourcePopup(citation)}
-          title="Show the retrieved evidence for this source"
-          aria-label="Show the retrieved evidence for this source"
-          className="mt-0.5 shrink-0 rounded p-0.5 hover:text-brand"
-        >
-          <Quote size={12} />
-        </button>
-      )}
-      {citation.url && (
-        <ExternalLink size={12} className="mt-0.5 shrink-0 opacity-0 group-hover:opacity-100" />
-      )}
+    <div className="absolute inset-0 z-30 flex items-start justify-center bg-ink/20 px-4 pt-20 backdrop-blur-sm" onClick={onClose}>
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(event) => event.stopPropagation()}
+        className="w-full max-w-2xl rounded-2xl border border-line bg-panel p-5 shadow-2xl"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-line pb-4">
+          <div>
+            <h2 className="text-lg font-bold text-ink">{title}</h2>
+            <p className="mt-1 text-sm text-muted">{description}</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label={`Close ${title}`} className="rounded-lg p-2 text-muted hover:bg-soft hover:text-ink">
+            <X size={17} />
+          </button>
+        </div>
+        <div className="max-h-[60vh] overflow-y-auto pt-4">{children}</div>
+      </section>
     </div>
   );
 }
 
-/** Outcome caption under "Kriton". For an answered turn this reports the
- * citations the answer actually carries, rather than claiming it is source
- * grounded on the strength of the route alone — retrieval fails soft, so an
- * unreachable SearXNG produces a confident-looking answer with no provenance
- * behind it at all. */
-function routeLabel(route: string | null, citationCount: number) {
-  if (route !== "LLM") return ROUTE_LABELS[route ?? ""] ?? route;
-  if (citationCount === 0) return "Answered — model knowledge, no sources retrieved";
-  return `Answered — grounded in ${citationCount} source${citationCount === 1 ? "" : "s"}`;
+function externalSourceUrl(rawUrl?: string | null): string | null {
+  if (!rawUrl) return null;
+  try {
+    const url = new URL(rawUrl);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function SourceButton({ citation }: { citation: SourceCitation }) {
+  const href = externalSourceUrl(citation.url);
+  const content = (
+    <>
+      <BookOpen size={13} className="mt-0.5 shrink-0 text-brand" />
+      <span className="min-w-0 flex-1 truncate">{citation.title || "Untitled source"}</span>
+      {href && <ExternalLink size={12} className="mt-0.5 shrink-0 opacity-70 group-hover:opacity-100" />}
+    </>
+  );
+
+  if (!href) {
+    return (
+      <div
+        className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-xs leading-5 text-muted"
+        title="No external link is available for this source"
+      >
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-xs leading-5 text-muted hover:bg-soft hover:text-brand"
+    >
+      {content}
+    </a>
+  );
 }
 
 /** One answer as a self-contained markdown document — the *export*, as opposed
@@ -209,8 +229,11 @@ function answerAsMarkdown(question: string, result: AskKritonResponse) {
   if (!answer) return "";
   const parts = [`# ${question.trim()}`, "", answerBodyOnly(answer.text)];
 
-  if (answer.limitations?.length) {
-    parts.push("", "## Limitations", "", ...answer.limitations.map((l) => `- ${l}`));
+  const visibleLimitations = answer.limitations.filter(
+    (l) => l !== "This response is for educational purposes only. Consult a qualified professional.",
+  );
+  if (visibleLimitations.length) {
+    parts.push("", "## Limitations", "", ...visibleLimitations.map((l) => `- ${l}`));
   }
   if (answer.citations.length) {
     parts.push("", "## Sources", "");
@@ -221,8 +244,8 @@ function answerAsMarkdown(question: string, result: AskKritonResponse) {
   parts.push(
     "",
     "---",
-    `Risk: ${result.safety.risk_level} · Route: ${result.route} · ` +
-      `Confidence: ${result.confidence_state.replaceAll("_", " ")} · ` +
+    `Risk: ${result.safety.risk_level} Â· Route: ${result.route} Â· ` +
+      `Confidence: ${result.confidence_state.replaceAll("_", " ")} Â· ` +
       `Jurisdiction: ${result.source_bundle?.jurisdiction || "Any"}`,
   );
   return parts.join("\n");
@@ -256,7 +279,9 @@ function conversationAsMarkdown(conversation: Conversation) {
   return parts.join("\n");
 }
 
-// Copy / Download / Reuse for one composed answer. Each button owns a
+// Familiar assistant-style action row: lightweight controls immediately
+// below the response, with one unambiguous copy action.
+// Each button owns a
 // short-lived status so the result is visible without a toast system: an
 // action that silently succeeds reads as an action that did nothing.
 function ResponseActions({
@@ -270,7 +295,6 @@ function ResponseActions({
 }) {
   const [status, setStatus] = useState<Record<string, "idle" | "busy" | "done" | "error">>({});
   const [saveError, setSaveError] = useState("");
-  const [showSources, setShowSources] = useState(false);
 
   function flash(key: string, value: "done" | "error") {
     setStatus((prev) => ({ ...prev, [key]: value }));
@@ -296,6 +320,22 @@ function ResponseActions({
       flash("download", "done");
     } catch {
       flash("download", "error");
+    }
+  }
+
+  async function downloadArtifact(artifact: AskKritonResponse["artifacts"][number]) {
+    const token = getAuthToken();
+    if (!token) {
+      setSaveError("Sign in to download generated documents.");
+      return;
+    }
+    const key = `artifact-${artifact.id}`;
+    setStatus((prev) => ({ ...prev, [key]: "busy" }));
+    try {
+      await downloadKritonArtifact(token, artifact);
+      flash(key, "done");
+    } catch {
+      flash(key, "error");
     }
   }
 
@@ -326,81 +366,99 @@ function ResponseActions({
   }
 
   const actions = [
-    { key: "copy", label: "Copy answer", doneLabel: "Copied", icon: Copy, onClick: copyAnswer },
-    { key: "download", label: "Download .md", doneLabel: "Downloaded", icon: Download, onClick: downloadAnswer },
-    { key: "save", label: "Save", doneLabel: "Saved", icon: Bookmark, onClick: saveAnswer },
+    { key: "copy", label: "Copy answer", doneLabel: "Copied", icon: Copy, onClick: copyAnswer, title: "Copy the answer text" },
+    { key: "download", label: "Download .md", doneLabel: "Downloaded", icon: Download, onClick: downloadAnswer, title: "Download the complete response as Markdown" },
+    { key: "save", label: "Save", doneLabel: "Saved", icon: Bookmark, onClick: saveAnswer, title: "Save this answer in Kriton" },
     ...(onReuse
-      ? [{ key: "reuse", label: "Reuse prompt", doneLabel: "Reuse prompt", icon: RotateCcw, onClick: onReuse }]
+      ? [{ key: "reuse", label: "Reuse prompt", doneLabel: "Reuse prompt", icon: RotateCcw, onClick: onReuse, title: "Put this prompt back in the composer" }]
       : []),
   ];
 
-  const citations = result.answer?.citations ?? [];
-
   return (
-    <div className="mt-4 border-t border-line pt-3">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-      {actions.map(({ key, label, doneLabel, icon: Icon, onClick }) => {
+    <div className="mt-4">
+      <div className="flex flex-wrap items-center gap-0.5" aria-label="Response actions">
+      {actions.map(({ key, label, doneLabel, icon: Icon, onClick, title }) => {
         const state = status[key] ?? "idle";
         return (
           <button
             key={key}
             type="button"
             onClick={onClick}
+            title={title}
+            aria-label={title}
             disabled={state === "busy"}
-            className={`inline-flex items-center gap-1.5 text-[13px] font-medium transition disabled:opacity-50 ${
+            className={`inline-flex h-8 min-w-8 items-center justify-center gap-1.5 rounded-lg px-2 text-[11px] font-semibold transition disabled:opacity-50 ${
               state === "error"
-                ? "text-bad"
+                ? "bg-bad/10 text-bad"
                 : state === "done"
-                  ? "text-ok"
-                  : "text-muted hover:text-brand"
+                  ? "bg-ok/10 text-ok"
+                  : "text-muted hover:bg-soft hover:text-ink"
             }`}
           >
             {state === "busy" ? (
-              <Loader2 size={14} className="animate-spin" />
+              <Loader2 size={16} className="animate-spin" />
             ) : state === "done" ? (
-              <CheckCircle2 size={14} />
+              <CheckCircle2 size={16} />
             ) : (
-              <Icon size={14} />
+              <Icon size={16} />
             )}
-            {state === "done" ? doneLabel : label}
+            <span>{state === "done" ? doneLabel : label}</span>
           </button>
         );
       })}
-
-      {/* Sources sits in this row rather than in a block of its own above the
-          answer: it is one of the things you do WITH a finished answer, like
-          copying or saving it, and as a separate bordered section it split the
-          footer into two competing rows. Collapsed by default — the count says
-          what is behind it, so a long answer is not pushed down by its own
-          provenance. */}
-      {citations.length > 0 && (
-        <button
-          type="button"
-          onClick={() => setShowSources((previous) => !previous)}
-          aria-expanded={showSources}
-          className={`inline-flex items-center gap-1.5 text-[13px] font-medium transition ${
-            showSources ? "text-brand" : "text-muted hover:text-brand"
-          }`}
-        >
-          <BookOpen size={14} />
-          Sources
-          <span className="rounded-full bg-soft px-1.5 py-0.5 text-[10px] font-semibold text-muted">
-            {citations.length}
-          </span>
-          <ChevronDown
-            size={14}
-            className={`shrink-0 transition-transform ${showSources ? "rotate-180" : ""}`}
-          />
-        </button>
+      {result.answer && result.answer.citations.length > 0 && (
+        <details className="group/sources basis-full sm:basis-auto">
+          <summary className="flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-muted transition hover:bg-soft hover:text-ink">
+            <BookOpen size={15} />
+            Sources
+            <span className="rounded-full bg-soft px-1.5 py-0.5 text-[10px]">{result.answer.citations.length}</span>
+            <ChevronDown size={13} className="transition-transform group-open/sources:rotate-180" />
+          </summary>
+          <div className="mt-1 w-full min-w-0 rounded-xl border border-line bg-panel p-2 shadow-lg sm:w-[420px]">
+            <div className="max-h-56 overscroll-contain overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+              {result.answer.citations.map((citation) => (
+                <SourceButton key={citation.ref_id} citation={citation} />
+              ))}
+            </div>
+          </div>
+        </details>
       )}
       </div>
-
-      {showSources && citations.length > 0 && (
-        <div className="mt-2.5 space-y-1 border-t border-line pt-2.5">
-          {citations.map((c) => <SourceButton key={c.ref_id} citation={c} />)}
+      {(result.artifacts ?? []).length > 0 && (
+        <div className="mt-3 space-y-2">
+          {result.artifacts.map((artifact) => {
+            const key = `artifact-${artifact.id}`;
+            const state = status[key] ?? "idle";
+            return (
+              <button
+                key={artifact.id}
+                type="button"
+                onClick={() => void downloadArtifact(artifact)}
+                disabled={state === "busy"}
+                className="flex w-full items-center gap-3 rounded-xl border border-brand/30 bg-brand/5 px-3 py-2.5 text-left hover:bg-brand/10 disabled:opacity-60"
+              >
+                {state === "busy" ? <Loader2 size={17} className="animate-spin text-brand" /> : <FileText size={17} className="text-brand" />}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs font-semibold text-ink">{artifact.filename}</span>
+                  <span className="block text-[11px] text-muted">Generated document Â· Click to download</span>
+                </span>
+                <Download size={15} className="text-brand" />
+              </button>
+            );
+          })}
         </div>
       )}
-
+      {result.artifact_error && (
+        <div className="mt-3 flex items-start gap-2 rounded-xl border border-bad/30 bg-bad/5 px-3 py-2.5 text-xs leading-5 text-bad">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          {result.artifact_error}
+        </div>
+      )}
+      <span className="sr-only" aria-live="polite">
+        {Object.entries(status).find(([, state]) => state === "done")?.[0]
+          ? "Response action completed"
+          : Object.values(status).includes("error") ? "Response action failed" : ""}
+      </span>
       {saveError && <p className="mt-1.5 text-[11px] font-medium text-bad">{saveError}</p>}
     </div>
   );
@@ -510,7 +568,7 @@ function ConversationTurn({
   onFollowUp?: (question: string, originalQuery: string) => void;
   onReuse?: (query: string) => void;
 }) {
-  const { submittedQuery, result, error, loading } = turn;
+  const { submittedQuery, result, error, errorStatus, loading } = turn;
   const followUps = useMemo(() => getFollowUpSuggestions(result, submittedQuery), [result, submittedQuery]);
   const safety = result?.safety ?? null;
   const riskLevel = (safety?.risk_level ?? "LOW") as RiskLevel;
@@ -519,6 +577,23 @@ function ConversationTurn({
   const outcome = result?.outcome ?? null;
   const outcomeStyle = outcome ? OUTCOME_STYLES[outcome] : null;
   const bundle = result?.source_bundle ?? null;
+  const visibleLimitations = result?.answer?.limitations.filter(
+    (l) => l !== "This response is for educational purposes only. Consult a qualified professional.",
+  ) ?? [];
+  const citationCount = result?.answer?.citations.length ?? 0;
+  const routeLabel = route === "LLM"
+    ? citationCount > 0
+      ? "Answered — source grounded"
+      : result?.visualization
+        ? "Answered — structured from your input"
+        : "Answered — no cited sources"
+    : route === "CALCULATION"
+      ? result?.calculation?.status === "clarification_required"
+        ? "Clarification required — missing calculation input"
+        : result?.calculation?.status === "undefined"
+        ? "Calculation undefined — verified"
+        : "Answered — calculated and verified"
+      : ROUTE_LABELS[route ?? ""] ?? route;
 
   return (
     <>
@@ -559,9 +634,14 @@ function ConversationTurn({
       {loading && <ThinkingIndicator message={turn.progressMessage} />}
 
       {!loading && error && (
-        <div className="kriton-animate-msg-response">
+        <div className="kriton-animate-msg-response min-w-0">
           <div className="rounded-2xl rounded-tl-md border border-bad/30 bg-bad/5 px-5 py-4 shadow-sm">
-            <p className="text-sm font-semibold text-bad">Kriton could not respond</p>
+            {/* Names the real cause when the backend actually answered. The
+                blanket "could not respond" is only honest for a transport
+                failure, where there is no status to report. */}
+            <p className="text-sm font-semibold text-bad">
+              {errorStatus ? `Kriton returned an error (HTTP ${errorStatus})` : "Kriton could not respond"}
+            </p>
             <p className="mt-1 text-xs text-bad/80">{error}</p>
           </div>
         </div>
@@ -569,7 +649,7 @@ function ConversationTurn({
 
       {result && safety && (
         <div className="kriton-animate-msg-response">
-          <article className="min-w-0 flex-1 py-1 text-ink">
+          <article className="min-w-0 w-full flex-1 py-1 text-ink">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
@@ -577,9 +657,7 @@ function ConversationTurn({
                   {outcomeStyle && <span className={`h-2 w-2 rounded-full ${outcomeStyle.dot}`} />}
                   {outcomeStyle && <span className={`text-xs font-semibold ${outcomeStyle.text}`}>{outcomeStyle.label}</span>}
                 </div>
-                <p className="mt-0.5 text-xs text-muted">
-                  {routeLabel(route, result.answer?.citations.length ?? 0)}
-                </p>
+                <p className="mt-0.5 text-xs text-muted">{routeLabel}</p>
               </div>
               <div className="flex items-center gap-2">
                 <Link
@@ -610,14 +688,16 @@ function ConversationTurn({
                 <>
                   <AnswerRenderer
                     text={result.answer.text}
+                    visualization={result.visualization}
+                    secondaryVisualizations={result.secondary_visualizations}
                     calculationResult={result.answer.calculation_result}
                     verifiedCharts={result.answer.verified_charts}
                   />
                   {/* Citations render from the footer's "Sources" control (see
                       ResponseActions), not from a separate block here. */}
-                  {result.answer.limitations.length > 0 && (
+                  {visibleLimitations.length > 0 && (
                     <div className="mt-4 space-y-2 border-t border-line pt-4">
-                      {result.answer.limitations.map((l, i) => (
+                      {visibleLimitations.map((l, i) => (
                         <div key={i} className="flex items-start gap-2 text-xs leading-5 text-muted">
                           <AlertTriangle size={13} className="mt-0.5 shrink-0 text-warn" />
                           {l}
@@ -674,7 +754,7 @@ function ConversationTurn({
 }
 
 export default function AskKritonPage() {
-  const { session } = useAuth();
+  const { session, loading: authLoading } = useAuth();
   const [query, setQuery] = useState("");
   const [jurisdiction, setJurisdiction] = useState("");
   const [mode, setMode] = useState("Kriton's choice");
@@ -683,28 +763,14 @@ export default function AskKritonPage() {
   const periodEnd = "";
   const currency = "";
   const [engagementId, setEngagementId] = useState("");
-  // Attachments live HERE, not in the Composer. The page renders a "hero"
-  // Composer until a conversation exists and a "sticky" one afterwards, so
-  // asking the first question unmounts one and mounts the other. While this
-  // list was local to the Composer, that swap silently discarded the file the
-  // user had just attached: the chip vanished and no document_ids reached the
-  // request, so the answer came back grounded in web sources only. Owning it
-  // one level up lets the selection survive that component swap. The list is
-  // cleared after every submit, so documents remain explicitly scoped to one
-  // question rather than silently carrying into later questions.
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attachments, setAttachments] = useState<AttachmentState[]>([]);
+  const [documents, setDocuments] = useState<WorkspaceDocument[]>([]);
   // Only successfully indexed uploads are sent. A failed extraction has no
   // chunks behind it, so passing its id would add nothing but noise.
   const readyAttachments: TurnAttachment[] = attachments
     .filter((a) => a.status === "success" && a.documentId)
     .map((a) => ({ documentId: a.documentId as string, name: a.name, chunkCount: a.chunkCount }));
   const [submitting, setSubmitting] = useState(false);
-  // Documents already in this workspace, for the composer's "Add saved
-  // document" picker. Held here rather than in the Composer for the same
-  // reason `attachments` is: the hero and sticky variants swap on the first
-  // question, and a list owned by the component would be re-fetched on every
-  // swap.
-  const [savedDocuments, setSavedDocuments] = useState<AttachmentSummary[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>(() =>
     typeof window === "undefined" ? [] : loadConversations(),
   );
@@ -713,7 +779,56 @@ export default function AskKritonPage() {
     return loadActiveConversationId(loadConversations());
   });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [sidebarPanel, setSidebarPanel] = useState<"projects" | "sources" | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  async function refreshDocuments() {
+    const token = getAuthToken();
+    if (!token) return;
+    try {
+      setDocuments(await listKritonAttachments(token, engagementId || undefined));
+    } catch {
+      // Upload remains available even when the saved-document library cannot load.
+    }
+  }
+
+  // Load the saved-document library once signed in and whenever the engagement
+  // scope changes, then re-attach the active conversation's documents so a
+  // restored thread still shows what it was asked with. Fails soft: uploading
+  // still works when the list cannot be fetched, the picker simply does not
+  // appear. Uploads are covered by `onUploadComplete` instead.
+  //
+  // Keyed on the session token, not only on the engagement: getAuthToken()
+  // reads a module-level cache that AuthContext fills asynchronously after
+  // getSession() resolves, so on a fresh page load it is still "" during the
+  // first render — waiting for an upload would leave the picker missing until
+  // the user happened to attach something, which is exactly when they no
+  // longer need it.
+  useEffect(() => {
+    if (authLoading) return;
+    const token = session?.access_token;
+    if (!token) return;
+    let cancelled = false;
+    void listKritonAttachments(token, engagementId || undefined).then((loadedDocuments) => {
+      if (cancelled) return;
+      setDocuments(loadedDocuments);
+      const selectedIds = conversations.find((item) => item.id === activeId)?.documentIds ?? [];
+      const restored = selectedIds
+        .map((id) => loadedDocuments.find((item) => item.id === id && item.status === "READY"))
+        .filter((item): item is WorkspaceDocument => Boolean(item))
+        .map(attachmentFromDocument);
+      if (restored.length > 0) {
+        setAttachments(restored);
+      }
+    }).catch(() => {
+      // Upload remains available even when the saved-document library cannot load.
+    });
+    return () => { cancelled = true; };
+    // Reload when Supabase restores or changes the authenticated session, or
+    // when the engagement scope changes; conversation changes are handled by
+    // selectConversation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoading, session?.access_token, engagementId]);
 
   function setActiveId(id: string | null) {
     setActiveIdState(id);
@@ -738,9 +853,6 @@ export default function AskKritonPage() {
   function startNewChat() {
     setActiveId(null);
     setQuery("");
-    // Attachments belong to the conversation that was using them. Carrying
-    // them into a fresh chat would quietly ground an unrelated question in a
-    // document the user has visually left behind.
     setAttachments([]);
   }
 
@@ -753,9 +865,13 @@ export default function AskKritonPage() {
   function selectConversation(id: string) {
     setActiveId(id);
     setQuery("");
-    // An unsent selection belongs to the composer it was selected in. Never
-    // leak it into a different conversation when the user changes threads.
-    setAttachments([]);
+    const conversation = conversations.find((item) => item.id === id);
+    setAttachments(
+      (conversation?.documentIds ?? [])
+        .map((documentId) => documents.find((item) => item.id === documentId))
+        .filter((item): item is WorkspaceDocument => Boolean(item) && item!.status === "READY")
+        .map(attachmentFromDocument),
+    );
   }
 
   function pinConversation(id: string) {
@@ -801,6 +917,7 @@ export default function AskKritonPage() {
     const convId = activeId ?? genId("conv");
     const now = timestamp();
     const priorConversation = conversations.find((c) => c.id === convId) ?? null;
+    const previousQuery = priorConversation?.turns.at(-1)?.submittedQuery.trim() || undefined;
     const cycle = clarificationCycleFor(priorConversation);
 
     // Snapshot only the documents currently visible in the composer. Previous
@@ -811,6 +928,7 @@ export default function AskKritonPage() {
       (attachment, index, selected) =>
         selected.findIndex((candidate) => candidate.documentId === attachment.documentId) === index,
     );
+    const documentIds = turnAttachments.map((attachment) => attachment.documentId);
 
     const newTurn: Turn = {
       id: turnId, query: trimmed, submittedQuery: trimmed,
@@ -819,8 +937,8 @@ export default function AskKritonPage() {
     };
     setConversations((prev) => {
       const next = isNew
-        ? [{ id: convId, title: trimmed.slice(0, 80), turns: [newTurn], createdAt: now, updatedAt: now, pinned: false }, ...prev]
-        : prev.map((c) => (c.id === convId ? { ...c, updatedAt: now, turns: [...c.turns, newTurn] } : c));
+        ? [{ id: convId, title: trimmed.slice(0, 80), turns: [newTurn], createdAt: now, updatedAt: now, pinned: false, documentIds }, ...prev]
+        : prev.map((c) => (c.id === convId ? { ...c, updatedAt: now, documentIds, turns: [...c.turns, newTurn] } : c));
       persistConversations(next);
       return next;
     });
@@ -829,9 +947,9 @@ export default function AskKritonPage() {
     }
 
     setQuery("");
-    // Cleared here, not on response: the question has left, so the chip has to
-    // leave with it. Leaving it in place would re-attach the same document to
-    // every following question without the user asking for that.
+    // The submitted attachments are captured on the turn above. Clear only the
+    // composer selection so the sent query and files no longer remain in the
+    // input box while the response is loading.
     setAttachments([]);
     setSubmitError(null);
     setSubmitting(true);
@@ -841,11 +959,16 @@ export default function AskKritonPage() {
         token,
         {
           query: trimmed,
+          previous_query: previousQuery,
           jurisdiction,
           mode,
           clarification_cycle: cycle,
           conversation_id: convId,
-          document_ids: turnAttachments.map((a) => a.documentId),
+          document_ids: documentIds,
+          // An attached file defines the entity/source scope for this chat.
+          // Do not silently replace a document miss with same-name web results
+          // (for example, another company called "Apex").
+          source_scope: documentIds.length ? "DOCUMENTS_ONLY" : "WEB_ONLY",
           task_context: {
             engagement_id: engagementId || null,
             jurisdiction: jurisdiction || null,
@@ -864,6 +987,7 @@ export default function AskKritonPage() {
     } catch (err) {
       patchTurn(convId, turnId, {
         error: err instanceof ApiError ? err.message : "Could not reach the orchestration service.",
+        errorStatus: err instanceof ApiError ? err.status : null,
         loading: false,
       });
     } finally {
@@ -876,39 +1000,23 @@ export default function AskKritonPage() {
   const activeConversation = conversations.find((c) => c.id === activeId) ?? null;
   const hasConversation = activeConversation !== null && activeConversation.turns.length > 0;
   const sorted = useMemo(() => sortConversations(conversations), [conversations]);
+  const conversationSources = useMemo(() => {
+    const unique = new Map<string, SourceCitation>();
+    for (const conversation of conversations) {
+      for (const turn of conversation.turns) {
+        for (const citation of turn.result?.answer?.citations ?? []) {
+          unique.set(citation.url || `${citation.ref_id}:${citation.title}`, citation);
+        }
+      }
+    }
+    return [...unique.values()];
+  }, [conversations]);
   const lastTurnLoading = activeConversation?.turns.at(-1)?.loading;
   const turnCount = activeConversation?.turns.length;
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [turnCount, lastTurnLoading]);
-
-  // Load the saved-document library once signed in, and refresh it whenever an
-  // upload finishes so a file just attached is immediately offerable to the
-  // next question. Fails soft: uploading still works when the list cannot be
-  // fetched, the picker simply does not appear.
-  //
-  // Keyed on the session token, not only on uploads. getAuthToken() reads a
-  // module-level cache that AuthContext fills asynchronously after
-  // getSession() resolves, so on a fresh page load it is still "" during the
-  // first render — depending on uploads alone would leave the picker missing
-  // until the user happened to attach something, which is exactly when they
-  // no longer need it.
-  useEffect(() => {
-    const token = session?.access_token;
-    if (!token) return;
-    let cancelled = false;
-    listKritonAttachments(token, engagementId || undefined)
-      .then((documents) => {
-        if (!cancelled) setSavedDocuments(documents);
-      })
-      .catch(() => {
-        /* Picker stays hidden; attaching a new file is unaffected. */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [session?.access_token, readyAttachments.length, engagementId]);
 
   useEffect(() => {
     const token = session?.access_token;
@@ -936,6 +1044,8 @@ export default function AskKritonPage() {
     onDownload: downloadConversation,
     onDelete: deleteConversation,
     onNewChat: startNewChat,
+    onOpenProjects: () => setSidebarPanel("projects"),
+    onOpenSources: () => setSidebarPanel("sources"),
   };
 
   return (
@@ -956,8 +1066,55 @@ export default function AskKritonPage() {
             </button>
           </header>
 
-          <div ref={scrollRef} className="relative z-10 flex-1 overflow-y-auto px-4">
-            <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col items-center justify-center pb-16 pt-6 md:pb-24 md:pt-8">
+          {sidebarPanel === "projects" && (
+            <KritonPanel
+              title="Projects"
+              description="Continue your Kriton work without leaving the assistant."
+              onClose={() => setSidebarPanel(null)}
+            >
+              {sorted.length === 0 ? (
+                <p className="text-sm text-muted">No project conversations yet. Start a new chat to create your first one.</p>
+              ) : (
+                <div className="space-y-2">
+                  {sorted.map((conversation) => (
+                    <button
+                      key={conversation.id}
+                      type="button"
+                      onClick={() => { selectConversation(conversation.id); setSidebarPanel(null); }}
+                      className="flex w-full items-center justify-between gap-4 rounded-xl border border-line p-3 text-left hover:border-brand/30 hover:bg-soft"
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-semibold text-ink">{conversation.title}</span>
+                        <span className="mt-0.5 block text-xs text-muted">{conversation.turns.length} exchange{conversation.turns.length === 1 ? "" : "s"}</span>
+                      </span>
+                      <FolderKanban size={17} className="shrink-0 text-brand" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </KritonPanel>
+          )}
+
+          {sidebarPanel === "sources" && (
+            <KritonPanel
+              title="Sources"
+              description="Sources cited across your Kriton conversations."
+              onClose={() => setSidebarPanel(null)}
+            >
+              {conversationSources.length === 0 ? (
+                <p className="text-sm text-muted">No cited sources yet. Sources used in answers will appear here.</p>
+              ) : (
+                <div className="space-y-1">
+                  {conversationSources.map((citation) => (
+                    <SourceButton key={citation.url || `${citation.ref_id}:${citation.title}`} citation={citation} />
+                  ))}
+                </div>
+              )}
+            </KritonPanel>
+          )}
+
+          <div ref={scrollRef} className="relative z-10 min-w-0 flex-1 overflow-y-auto px-4">
+            <div className="mx-auto flex min-h-full min-w-0 w-full max-w-5xl flex-col items-center justify-center pb-16 pt-6 md:pb-24 md:pt-8">
               {!hasConversation ? (
                 <div className="flex w-full max-w-3xl flex-col items-center text-center">
                   <div className="w-full">
@@ -979,14 +1136,15 @@ export default function AskKritonPage() {
                       query={query}
                       onQueryChange={setQuery}
                       onSubmit={handleSubmit}
-                      submitting={submitting}
-                      error={submitError}
                       attachments={attachments}
                       onAttachmentsChange={setAttachments}
-                      savedDocuments={savedDocuments}
-                      engagementId={engagementId}
+                      documents={documents}
+                      onUploadComplete={refreshDocuments}
+                      engagementId={engagementId || undefined}
                       jurisdiction={jurisdiction}
                       onJurisdictionChange={setJurisdiction}
+                      submitting={submitting}
+                      error={submitError}
                     />
                   </div>
 
@@ -1008,54 +1166,28 @@ export default function AskKritonPage() {
                   </div>
                 </div>
               ) : (
-                <div className="w-full max-w-4xl space-y-6 self-stretch">
-                  {activeConversation && (
-                    <div className="flex items-center justify-between gap-3 border-b border-line/70 pb-3">
-                      <p className="truncate text-xs font-semibold text-muted">
-                        {activeConversation.title}
-                        <span className="ml-2 font-normal">
-                          {activeConversation.turns.length} exchange
-                          {activeConversation.turns.length === 1 ? "" : "s"}
-                        </span>
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          downloadTextFile(
-                            conversationAsMarkdown(activeConversation),
-                            safeDownloadName(activeConversation.title || "kriton-chat", "md"),
-                          )
-                        }
-                        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[11px] font-semibold text-muted transition hover:border-brand/40 hover:text-brand"
-                      >
-                        <Download size={12} />
-                        Download chat
-                      </button>
-                    </div>
-                  )}
-
+                <div className="w-full min-w-0 max-w-3xl space-y-6 self-stretch md:translate-x-14 lg:translate-x-24">
                   {activeConversation?.turns.map((turn) => (
-                    <div key={turn.id} className="space-y-6 border-b border-line/70 pb-7 last:border-b-0">
+                    <div key={turn.id} className="min-w-0 space-y-6 border-b border-line/70 pb-7 last:border-b-0">
                       <ConversationTurn turn={turn} onFollowUp={handleFollowUp} onReuse={setQuery} />
                     </div>
                   ))}
 
-                  <div className="sticky bottom-5">
-                    <Composer
-                      variant="sticky"
-                      query={query}
-                      onQueryChange={setQuery}
-                      onSubmit={handleSubmit}
-                      submitting={submitting}
-                      error={submitError}
-                      attachments={attachments}
-                      onAttachmentsChange={setAttachments}
-                      savedDocuments={savedDocuments}
-                      engagementId={engagementId}
-                      jurisdiction={jurisdiction}
-                      onJurisdictionChange={setJurisdiction}
-                    />
-                  </div>
+                  <Composer
+                    variant="sticky"
+                    query={query}
+                    onQueryChange={setQuery}
+                    jurisdiction={jurisdiction}
+                    onJurisdictionChange={setJurisdiction}
+                    onSubmit={handleSubmit}
+                    attachments={attachments}
+                    onAttachmentsChange={setAttachments}
+                    documents={documents}
+                    onUploadComplete={refreshDocuments}
+                    engagementId={engagementId || undefined}
+                    submitting={submitting}
+                    error={submitError}
+                  />
                 </div>
               )}
             </div>

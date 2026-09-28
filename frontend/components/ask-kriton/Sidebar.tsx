@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   BookOpen,
@@ -101,10 +101,14 @@ function RecentRow({
         <span className="truncate">{conversation.title}</span>
       </button>
       {showMenu && (
-        <div className="relative shrink-0">
+        // data-recent-menu marks the toggle + dropdown as "inside" for the
+        // document-level dismiss handler in RecentsList.
+        <div data-recent-menu className="relative shrink-0">
           <button
             type="button"
             onClick={onToggleMenu}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
             aria-label="More options"
             className={`flex h-7 w-7 items-center justify-center rounded-md hover:bg-soft ${menuOpen ? "bg-soft" : "opacity-0 group-hover:opacity-100"}`}
           >
@@ -165,6 +169,32 @@ export function RecentsList({
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
 
+  // A dropdown that only closes when you pick something is a trap: click
+  // anywhere else and it follows you down the list. Listening on the document
+  // (rather than onBlur) also lets Escape dismiss it, which matters because
+  // the menu's last item is destructive.
+  useEffect(() => {
+    if (openMenuId === null) return;
+
+    function dismiss(event: MouseEvent) {
+      const target = event.target as HTMLElement | null;
+      // Ignore clicks that land inside a menu — those are handled by the
+      // buttons themselves, which close it after acting.
+      if (target?.closest("[data-recent-menu]")) return;
+      setOpenMenuId(null);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpenMenuId(null);
+    }
+
+    document.addEventListener("mousedown", dismiss);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", dismiss);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [openMenuId]);
+
   if (conversations.length === 0) {
     return <p className="px-2 py-1 text-xs text-muted">No chats yet — ask a question to start one.</p>;
   }
@@ -193,7 +223,13 @@ export function RecentsList({
   );
 }
 
-export function DesktopSidebar(props: RecentsListProps & { onNewChat: () => void }) {
+type KritonNavigationProps = {
+  onNewChat: () => void;
+  onOpenProjects: () => void;
+  onOpenSources: () => void;
+};
+
+export function DesktopSidebar(props: RecentsListProps & KritonNavigationProps) {
   return (
     <aside className="kriton-sidebar-background hidden min-h-0 border-r border-line md:flex md:flex-col">
       <div className="flex items-center justify-between px-5 py-5">
@@ -210,8 +246,8 @@ export function DesktopSidebar(props: RecentsListProps & { onNewChat: () => void
       <nav className="space-y-1 px-3">
         <NavRow icon={Plus} label="New chat" onClick={props.onNewChat} />
         <NavRow icon={MessageSquare} label="Chats" />
-        <NavRow icon={FolderKanban} label="Projects" href="/my-workspace" />
-        <NavRow icon={BookOpen} label="Sources" href="/source-licensing" />
+        <NavRow icon={FolderKanban} label="Projects" onClick={props.onOpenProjects} />
+        <NavRow icon={BookOpen} label="Sources" onClick={props.onOpenSources} />
       </nav>
 
       <div className="mt-6 flex min-h-0 flex-1 flex-col px-5">
@@ -230,7 +266,7 @@ export function DesktopSidebar(props: RecentsListProps & { onNewChat: () => void
   );
 }
 
-export function MobileDrawer(props: RecentsListProps & { onNewChat: () => void; open: boolean; onClose: () => void }) {
+export function MobileDrawer(props: RecentsListProps & KritonNavigationProps & { open: boolean; onClose: () => void }) {
   if (!props.open) return null;
   return (
     <div className="fixed inset-0 z-40 md:hidden" role="dialog" aria-modal="true">
@@ -247,6 +283,8 @@ export function MobileDrawer(props: RecentsListProps & { onNewChat: () => void; 
         </div>
         <nav className="space-y-1 px-3">
           <NavRow icon={Plus} label="New chat" onClick={() => { props.onNewChat(); props.onClose(); }} />
+          <NavRow icon={FolderKanban} label="Projects" onClick={() => { props.onOpenProjects(); props.onClose(); }} />
+          <NavRow icon={BookOpen} label="Sources" onClick={() => { props.onOpenSources(); props.onClose(); }} />
         </nav>
         <div className="mt-6 flex min-h-0 flex-1 flex-col px-5">
           <p className="mb-2 text-xs font-bold text-muted">Recents</p>

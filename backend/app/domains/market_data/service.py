@@ -16,6 +16,7 @@ behaves.
 from __future__ import annotations
 
 import logging
+import re
 
 import httpx
 
@@ -47,6 +48,33 @@ _FALLBACK_ERRORS = (ProviderNotConfigured, CapabilityNotSupported)
 MarketResult = StockQuote | list[OHLCVBar] | list[FinancialMetric] | list[FilingRecord] | CompanyProfile
 MarketResultForCompany = tuple[MarketResult, str, str, str]  # result, provider_name, intent, company_label
 
+_SEC_FILING_HINT = re.compile(r"\b(?:SEC|EDGAR|10-K|10-Q|8-K|20-F|6-K)\b", re.I)
+
+
+def _best_provider_search_match(term: str, candidates: list[EntityRef]) -> EntityRef | None:
+    """Return a candidate only when every requested identity token is present.
+
+    Provider search ordering is not an identity guarantee. In particular,
+    Companies House free-text results may rank a similarly named shell above
+    the entity the user meant. Failing closed is safer than attaching another
+    company's real filings to the answer.
+    """
+    words = tuple(re.findall(r"[a-z0-9]+", (term or "").casefold()))
+    if not words:
+        return None
+
+    def score(candidate: EntityRef) -> tuple[int, int, int]:
+        name = candidate.name.casefold().strip()
+        name_words = set(re.findall(r"[a-z0-9]+", name))
+        if not all(word in name_words for word in words):
+            return (-1, 0, 0)
+        exact = int(name == " ".join(words))
+        active = int(candidate.company_status.casefold() == "active")
+        return (exact, active, -len(name_words))
+
+    ranked = sorted(candidates, key=score, reverse=True)
+    return ranked[0] if ranked and score(ranked[0])[0] >= 0 else None
+
 
 # Which identifier each intent actually needs. A ticker is useless to
 # Companies House and a company number is useless to a market API, so
@@ -56,6 +84,28 @@ _REQUIRED_ID = {
     registry.INTENT_FILINGS: "company_number",
     registry.INTENT_LOOKUP: "company_number",
 }
+
+
+async def _ticker_from_sec_registry(query: str, hint: str) -> tuple[str, str] | None:
+    """(ticker, filed name) from SEC EDGAR's registrant index, or None.
+
+    Imported inside the function on purpose: app.orchestration imports this
+    domain package, so a module-level import back into orchestration would
+    close the loop at startup. Failure is always None — this is an optional
+    accelerator in front of the provider search, never a dependency of it.
+
+    `hint` is the query stripped of its scaffolding, which is what lets a
+    lower-case "nike stock price" resolve: the hint is exactly "nike". Passing
+    it is not the same as relaxing the registry's prose guard — "set a target
+    revenue for next year" reduces to "set target next year" and still matches
+    nothing, which is the behaviour that guard exists to protect.
+    """
+    from app.orchestration.sec_edgar import ticker_for_company
+
+    try:
+        return await ticker_for_company(query, exact_name=hint)
+    except Exception:  # noqa: BLE001 — connector boundary must fail soft
+        return None
 
 
 async def _resolve_entity(
@@ -81,17 +131,33 @@ async def _resolve_entity(
     if not hint:
         return ref
 
+    # The SEC's own registrant index before any provider search: it resolves
+    # roughly ten thousand US companies by name from one cached file, costs no
+    # provider call, and is a filed record rather than a vendor's fuzzy search.
+    # identity.py refuses to guess a ticker from a name and its well-known
+    # table holds sixteen, so without this "Nike stock price" reached the
+    # providers as a free-text guess or resolved to nothing at all.
+    if required == "ticker":
+        resolved = await _ticker_from_sec_registry(query, hint)
+        if resolved is not None:
+            ticker, filed_name = resolved
+            ref.ticker = ticker
+            ref.name = ref.name or filed_name
+            return ref
+
     for provider in providers:
         if not provider.supports(CAP_SEARCH):
             continue
         try:
-            matches = await provider.search(client, hint, limit=1)
+            matches = await provider.search(client, hint, limit=10)
         except ProviderError as exc:
             logger.info("market_data: search via %s failed: %s", provider.name, exc.message)
             continue
         if not matches:
             continue
-        found = matches[0]
+        found = _best_provider_search_match(hint, matches)
+        if found is None:
+            continue
         if not getattr(found, required, ""):
             # This provider found something, but not in the identifier space
             # this intent needs — keep looking rather than returning a ref the
@@ -107,7 +173,8 @@ async def _resolve_entity(
 
 
 async def fetch_for_intent(
-    client: httpx.AsyncClient, intent: str, ref: EntityRef, *, limit: int = 10
+    client: httpx.AsyncClient, intent: str, ref: EntityRef, *, limit: int = 10,
+    interval: str = "1d",
 ) -> tuple[MarketResult, str] | None:
     """First provider that produces data for `intent`, with its name."""
     providers = registry.providers_for(intent)
@@ -116,7 +183,7 @@ async def fetch_for_intent(
             if intent == registry.INTENT_QUOTE:
                 return await provider.get_quote(client, ref), provider.name
             if intent == registry.INTENT_HISTORY:
-                return await provider.get_history(client, ref, limit=limit), provider.name
+                return await provider.get_history(client, ref, interval=interval, limit=limit), provider.name
             if intent == registry.INTENT_FUNDAMENTALS:
                 return await provider.get_fundamentals(client, ref), provider.name
             if intent == registry.INTENT_FILINGS:
@@ -148,6 +215,13 @@ async def fetch_market_data(query: str, *, limit: int = 10) -> tuple[MarketResul
     if intent is None:
         return None
 
+    # "SEC filings" is an explicit source/jurisdiction constraint. Companies
+    # House is authoritative only for UK entities, so allowing this request
+    # into its free-text search can silently return a similarly named UK
+    # company. The EDGAR connector owns explicit SEC filing requests.
+    if intent == registry.INTENT_FILINGS and _SEC_FILING_HINT.search(query):
+        return None
+
     providers = registry.providers_for(intent)
     if not providers:
         return None
@@ -161,11 +235,15 @@ async def fetch_market_data(query: str, *, limit: int = 10) -> tuple[MarketResul
                 return None
 
             # History honours an explicit span in the question ("the last 30
-            # days"); everything else uses the caller's limit.
-            effective_limit = (
-                registry.requested_bars(query) if intent == registry.INTENT_HISTORY else limit
+            # days"); everything else uses the caller's limit. The interval
+            # coarsens with the span so a long request covers its whole period
+            # instead of being silently clipped to the most recent 400 days.
+            effective_interval, effective_limit = "1d", limit
+            if intent == registry.INTENT_HISTORY:
+                effective_interval, effective_limit = registry.requested_history_window(query)
+            outcome = await fetch_for_intent(
+                client, intent, ref, limit=effective_limit, interval=effective_interval
             )
-            outcome = await fetch_for_intent(client, intent, ref, limit=effective_limit)
             if outcome is None:
                 return None
             result, provider_name = outcome

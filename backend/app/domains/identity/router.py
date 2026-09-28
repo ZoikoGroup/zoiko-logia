@@ -54,7 +54,9 @@ async def provision(
 
     was_first_provision = (await get_user_by_id(db, claims.sub)) is None
     try:
-        user = await provision_profile(db, claims.sub, claims.email, payload)
+        user = await provision_profile(
+            db, claims.sub, claims.email, payload, claims.tenant_id, claims.role
+        )
     except supabase_admin.SupabaseNotConfiguredError:
         # Defensive: provisioning commits the local profile row before the
         # (best-effort) app_metadata sync, so this should no longer happen —
