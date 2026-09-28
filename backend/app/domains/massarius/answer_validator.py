@@ -34,7 +34,10 @@ _PROHIBITED_PATTERNS = [
     r"you\s+(should|must|need\s+to)\s+(file|register|pay|submit|declare)",
     r"(your|the\s+company('s)?)\s+(tax\s+(liability|return)|audit\s+opinion)",
     r"i\s+(confirm|certify|guarantee|assure)\s+(that\s+)?",
-    r"(this\s+is\s+)?(legal|tax|audit|financial)\s+(advice|opinion|certification)",
+    # Kriton CLAIMING its answer is professional advice/an opinion. "this is"
+    # used to be optional, so merely explaining the TOPIC ("the types of audit
+    # opinions") was refused as a prohibited claim.
+    r"\bthis\s+(is|constitutes)\s+(a\s+|an\s+|my\s+|formal\s+|professional\s+)*(legal|tax|audit|financial)\s+(advice|opinion|certification)",
     r"as\s+your\s+(accountant|auditor|tax\s+advisor|legal\s+counsel)",
     r"(sign|signature|signed)\s+(off|on)\s+(by|as)",
 ]
@@ -51,7 +54,10 @@ _AUTHORITY_OVERREACH = [re.compile(p, re.IGNORECASE) for p in _AUTHORITY_OVERREA
 
 # ── 5. Confidence support — unhedged certainty language ──
 _UNHEDGED_CERTAINTY_PATTERNS = [
-    r"\bdefinitely\b", r"\balways\b", r"\bguaranteed?\b", r"\bnever\s+wrong\b",
+    # "always" and "guarantee" are ordinary accounting words ("debits must
+    # always equal credits", "bank guarantee", IFRS 9 "financial guarantee
+    # contracts"), not certainty claims; flagging them escalated correct answers.
+    r"\bdefinitely\b", r"\bnever\s+wrong\b",
     r"\bwithout\s+(a\s+)?doubt\b", r"\b100%\s+certain\b",
 ]
 _UNHEDGED_CERTAINTY = [re.compile(p, re.IGNORECASE) for p in _UNHEDGED_CERTAINTY_PATTERNS]

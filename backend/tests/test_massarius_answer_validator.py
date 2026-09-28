@@ -146,3 +146,27 @@ def test_other_checks_still_apply_to_caveated_answers():
         "You must pay the tax by Friday. This is tax advice.", _EMPTY_BUNDLE, ungrounded_answer_allowed=True,
     )
     assert not result.passed and result.degraded_route == "REFUSAL"
+
+
+def test_explaining_audit_opinions_is_not_a_prohibited_claim():
+    """'(this is)?' was optional, so any mention of 'audit opinion' — the topic
+    of 'Explain the types of audit opinions' — was refused."""
+    text = ("There are four types of audit opinions: unmodified, qualified, adverse and "
+            "a disclaimer of opinion. Financial advice should come from a qualified adviser.")
+    assert validate_answer(text, _EMPTY_BUNDLE, ungrounded_answer_allowed=True).passed
+
+
+def test_claiming_to_give_advice_is_still_refused():
+    for text in ("This is tax advice: file by March.", "This constitutes an audit opinion on your accounts."):
+        result = validate_answer(text, _EMPTY_BUNDLE, ungrounded_answer_allowed=True)
+        assert not result.passed and result.degraded_route == "REFUSAL"
+
+
+def test_ordinary_accounting_words_are_not_unhedged_certainty():
+    text = "Debits must always equal credits; a bank guarantee and financial guarantee contracts are disclosed."
+    assert validate_answer(text, _EMPTY_BUNDLE, ungrounded_answer_allowed=True).passed
+
+
+def test_real_certainty_claims_still_need_hedging():
+    result = validate_answer("This is definitely the correct treatment.", _EMPTY_BUNDLE, ungrounded_answer_allowed=True)
+    assert not result.passed and result.degraded_route == "HUMAN_REVIEW"
