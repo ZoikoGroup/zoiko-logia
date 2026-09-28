@@ -138,3 +138,42 @@ async def test_bundle_persists_with_foreign_keys_enforced() -> None:
         count = (await db.execute(select(func.count()).select_from(EvidenceBundleEntry))).scalar_one()
     await engine.dispose()
     assert count == 5
+
+
+@pytest.mark.parametrize("text", [
+    "EBIT = 20,00,000 − 14,50,000 − 1,50,000\n= 5,50,000 − 1,50,000 = 4,00,000",   # chained working
+    "20,00,000 − 14,50,000 = 5,50,000 − 1,50,000 = 4,00,000",
+])
+def test_chained_working_is_not_a_false_mismatch(text) -> None:
+    assert validate_answer_calculations(text) == []
+
+
+def test_wrong_chained_result_is_still_caught() -> None:
+    assert validate_answer_calculations("20,00,000 − 14,50,000 = 5,50,000 − 1,50,000 = 3,00,000")
+
+
+async def test_failed_request_cleanup_rolls_back_before_releasing_idempotency(monkeypatch) -> None:
+    """A timeout mid-query left the session in a failed transaction and the
+    idempotency clean-up raised PendingRollbackError -> unhandled 500."""
+    from app.orchestration import router
+
+    calls: list[str] = []
+
+    class _Db:
+        async def rollback(self):
+            calls.append("rollback")
+
+    async def fake_abandon(db, key, tenant):
+        calls.append("abandon")
+        if calls[0] != "rollback":
+            raise RuntimeError("PendingRollbackError")
+
+    monkeypatch.setattr(router, "abandon_idempotency", fake_abandon)
+    await router._abandon_after_failure(_Db(), "key-1", "t1")
+    assert calls == ["rollback", "abandon"]
+
+    async def broken_abandon(db, key, tenant):
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr(router, "abandon_idempotency", broken_abandon)
+    await router._abandon_after_failure(_Db(), "key-1", "t1")  # must not raise over the original error

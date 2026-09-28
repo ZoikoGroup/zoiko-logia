@@ -34,6 +34,10 @@ _EQUATION = re.compile(
     # but turns the no-match case into an immediate, linear-time failure.
     r"(?P<expression>\(?\s*-?[0-9][0-9,.]*(?>(?:\s*[+\-*/×÷]\s*-?[0-9][0-9,.]*|[0-9,.()\s+\-*/×÷])*)\)?)"
     r"\s*=\s*[$£€]?\s*(?P<result>-?[0-9][0-9,]*(?:\.[0-9]+)?)"
+    # The result must be complete: in chained working ("A - B - C = 5,50,000 -
+    # 1,50,000 = 4,00,000") "5,50,000" is an intermediate expression, not the
+    # value of A - B - C, and was flagged as a mismatch on a correct answer.
+    r"(?![\d,]|\.\d|\s*[+\-*/×÷])"
 )
 
 
