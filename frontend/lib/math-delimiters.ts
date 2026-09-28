@@ -1,8 +1,10 @@
 /**
  * The model writes display maths as \[ … \] and inline maths as \( … \), but
- * remark-math only recognises $$ … $$ and $ … $ — and Markdown reads "\[" as
- * an escaped "[" — so formulas reached the reader as "[ \text{COGS} = … ]".
- * Rewrite the delimiters outside code spans/blocks, which stay untouched.
+ * remark-math only recognises $$ … $$ — single-dollar maths is disabled because
+ * "$" is a currency sign here — and Markdown reads "\[" as an escaped "[", so
+ * formulas reached the reader as "[ \text{COGS} = … ]". Rewrite the delimiters
+ * outside code spans/blocks, which stay untouched: display maths becomes a
+ * $$ block, inline maths becomes $$…$$ on the same line (inline math).
  */
 export function normaliseLatexDelimiters(text: string): string {
   return text
@@ -12,7 +14,7 @@ export function normaliseLatexDelimiters(text: string): string {
         ? part
         : part
             .replace(/\\\[([\s\S]+?)\\\]/g, (_m, body: string) => `\n$$\n${body.trim()}\n$$\n`)
-            .replace(/\\\(([\s\S]+?)\\\)/g, (_m, body: string) => `$${body.trim()}$`),
+            .replace(/\\\(([\s\S]+?)\\\)/g, (_m, body: string) => `$$${body.trim()}$$`),
     )
     .join("");
 }

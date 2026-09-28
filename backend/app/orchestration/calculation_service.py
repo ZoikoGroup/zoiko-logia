@@ -249,6 +249,12 @@ def _normalise_arithmetic(text: str) -> str:
     """Make money-formatted working checkable. "£74,000 ÷ £250,000 × 100 =
     29.6%" was read as "250,000 × 100" (the £ split the expression) and a
     correct answer was escalated as a calculation mismatch."""
+    # LaTeX number/operator formatting the model uses inside formulas:
+    # "50{,}000 \\times 0.06" was read as "000 * 0.06" and a correct
+    # simple-interest answer was escalated.
+    text = text.replace("{,}", ",").replace("\\%", "%").replace("\\cdot", "*")
+    text = re.sub(r"\\(?:left|right)\s*([()\[\]])", r"\1", text)
+    text = re.sub(r"\\[,;:! ]", " ", text)                       # LaTeX spacing commands
     text = re.sub(r"(?:[£$€₹]|\bRs\.?|\bINR|\bUSD|\bGBP|\bEUR)\s*(?=\d)", "", text)
     text = re.sub(r"[\u2010-\u2015\u2212]", "-", text)          # unicode dashes / minus sign
     return re.sub(r"(\d(?:[\d,]*\d)?(?:\.\d+)?)\s*%(?=\s*[*×/÷)])", r"(\1/100)", text)  # "10% ×" -> (10/100)

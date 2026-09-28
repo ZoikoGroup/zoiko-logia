@@ -17,7 +17,7 @@ const cases = [
     "COGS:\n\\[ \\text{COGS} = 50{,}000 + 200{,}000 - 70{,}000 = 180{,}000 \\]\nSo…",
     "COGS:\n\n$$\n\\text{COGS} = 50{,}000 + 200{,}000 - 70{,}000 = 180{,}000\n$$\n\nSo…",
   ],
-  ["inline maths becomes $…$", "ratio \\( \\frac{a}{b} \\) here", "ratio $\\frac{a}{b}$ here"],
+  ["inline maths becomes $$…$$ inline", "ratio \\( \\frac{a}{b} \\) here", "ratio $$\\frac{a}{b}$$ here"],
   ["inline code is untouched", "code `\\[x\\]` stays", "code `\\[x\\]` stays"],
   ["fenced code is untouched", "```\n\\[x\\]\n```", "```\n\\[x\\]\n```"],
   ["ordinary brackets and currency untouched", "plain [link text] and ₹5,000", "plain [link text] and ₹5,000"],

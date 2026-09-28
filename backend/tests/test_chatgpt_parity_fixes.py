@@ -94,3 +94,47 @@ def test_money_formatted_working_is_not_a_false_mismatch(line) -> None:
 ])
 def test_wrong_arithmetic_is_still_caught(line) -> None:
     assert validate_answer_calculations(line)
+
+
+@pytest.mark.parametrize("line", [
+    "50{,}000 \\times 0.06 \\times 3 = 9{,}000",      # LaTeX thousands separator
+    "£50{,}000 \\times 6\\% \\times 3 = £9{,}000",
+    "\\left(74{,}000 / 250{,}000\\right) \\times 100 = 29.6",
+    "50{,}000\\,\\times\\,0.06\\,\\times\\,3 = 9{,}000",
+])
+def test_latex_formatted_working_is_not_a_false_mismatch(line) -> None:
+    assert validate_answer_calculations(line) == []
+
+
+def test_wrong_latex_arithmetic_is_still_caught() -> None:
+    assert validate_answer_calculations("50{,}000 \\times 0.06 \\times 3 = 12{,}000")
+
+
+async def test_bundle_persists_with_foreign_keys_enforced() -> None:
+    """Postgres enforces evidence_bundle_entries -> manifests; SQLite does not
+    by default, which hid that the entries were inserted before their
+    manifest. With FK checks on, persisting a bundle must succeed."""
+    from sqlalchemy import event, select, func
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from app.db.base import Base
+    from app.domains.massarius import bundle_builder
+    from app.orchestration.models import EvidenceBundleEntry
+    from app.orchestration.schemas import ExcludedEvidence, SourceBundle
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _enforce_fks(dbapi_connection, _record):
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    async with async_sessionmaker(engine, expire_on_commit=False)() as db:
+        bundle = SourceBundle(
+            source_bundle_id="sb-fk-test", retrieval_method="lexical_passages_v1",
+            excluded_evidence=[ExcludedEvidence(source_id=f"s{i}", source_version_id=f"v{i}", reason_code="RIGHT_UNKNOWN") for i in range(5)],
+        )
+        await bundle_builder.persist_bundle(db, bundle=bundle, tenant_id="t1", query_id="q1")
+        count = (await db.execute(select(func.count()).select_from(EvidenceBundleEntry))).scalar_one()
+    await engine.dispose()
+    assert count == 5

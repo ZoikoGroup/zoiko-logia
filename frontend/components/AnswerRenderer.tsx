@@ -978,7 +978,9 @@ export function AnswerRenderer({
         ) : (
           <ReactMarkdown
             key={i}
-            remarkPlugins={[remarkGfm, remarkMath, normaliseMathUnicode]}
+            // A single "$" is always a currency sign in a finance answer ("$480,000 is
+            // **$288,000**" rendered as a broken formula); maths uses $$…$$ or \(…\).
+            remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }], normaliseMathUnicode]}
             rehypePlugins={[rehypeKatex]}
             components={mdComponents}
           >

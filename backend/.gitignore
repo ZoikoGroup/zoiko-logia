@@ -11,3 +11,6 @@ data/sources/**/*
 
 # Agent evaluation run output (scripts/run_agent_eval.py)
 evals/reports/
+
+# Local dev server output (scripts/dev.mjs)
+logs/
