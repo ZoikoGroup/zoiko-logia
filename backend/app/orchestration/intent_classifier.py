@@ -101,7 +101,12 @@ _RELATIONSHIP_HINTS = re.compile(
 # request — see classify_intent()'s disambiguation using this.
 _RELATIONSHIP_BETWEEN_HINT = re.compile(r"\brelationship between\b", re.I)
 
-_NETWORK_HINTS = re.compile(r"\b(network (of|diagram|graph)|ownership network|ownership chain)\b", re.I)
+# "relationship network" is listed on its own: it names no "of/diagram/graph"
+# after "network", so without it the request classified as FACT and no graph
+# was drawn over entities and relationships the user had supplied.
+_NETWORK_HINTS = re.compile(
+    r"\b(network (of|diagram|graph)|relationships? network|ownership network|ownership chain)\b", re.I,
+)
 
 _DEPENDENCY_HINTS = re.compile(r"\b(depends? on|dependenc(y|ies)|dependency map)\b", re.I)
 

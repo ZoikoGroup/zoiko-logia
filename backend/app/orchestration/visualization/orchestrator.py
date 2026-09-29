@@ -691,6 +691,16 @@ def _build_spec_for_type(
         return None
 
 
+# Every variant drawn as GROUPED_BAR, read from the capability table rather
+# than listed by hand. A hand-written pair (grouped + stacked) left the 100%
+# and horizontal stacked variants routable but never scored, so asking for
+# one drew nothing at all.
+_GROUPED_BAR_VARIANTS = frozenset(
+    capability.variant for capability in ROUTABLE_CAPABILITIES
+    if capability.selected_type == "GROUPED_BAR"
+)
+
+
 class VisualizationOrchestrator:
     def decide(self, evidence: EvidenceModel, data_shape: str, plan: ResponsePlan, spec_id: str, query: str = "") -> OrchestratorResult:
         if not plan.visual_required or evidence.is_empty():
@@ -722,7 +732,7 @@ class VisualizationOrchestrator:
             explicit_heatmap_request=plan.explicit_heatmap_request,
             explicit_box_request=plan.requested_chart_variant == "BOX_PLOT",
             composition_count=len(evidence.composition),
-            explicit_grouped_bar_request=plan.requested_chart_variant in ("GROUPED_BAR_CHART", "STACKED_BAR_CHART"),
+            explicit_grouped_bar_request=plan.requested_chart_variant in _GROUPED_BAR_VARIANTS,
             ohlc_count=len(evidence.ohlc),
         )
         if not ranked:

@@ -149,7 +149,9 @@ _CHART_VARIANTS = (
     ("STEP_LINE_CHART", re.compile(r"\b(?:step|stepped)[\s-]?line\b", re.I)),
     ("SPLINE_LINE_CHART", re.compile(r"\b(?:spline|smooth\s+spline|smooth(?:ed)?\s+line)\b", re.I)),
     ("AREA_CHART", re.compile(rf"\b(?:area{_KIND}|filled\s+line|filled\s+area)\b", re.I)),
-    ("LINE_WITH_MARKERS", re.compile(r"\b(?:line\s+with\s+markers?|marked\s+line)\b", re.I)),
+    # Optional "chart", as AREA_WITH_MARKERS allows: without it "line chart
+    # with markers" fell through to STANDARD_LINE and drew a plain line.
+    ("LINE_WITH_MARKERS", re.compile(r"\b(?:line\s*(?:chart\s*)?with\s+markers?|marked\s+line)\b", re.I)),
     ("PLAIN_LINE", re.compile(r"\bplain\s+line\b", re.I)),
     ("BOX_PLOT", re.compile(r"\b(?:box\s*plot|box[\s-]?and[\s-]?whisker|whisker\s*plot)\b", re.I)),
     # These two name types that are already the DEFAULT for their data shape,
