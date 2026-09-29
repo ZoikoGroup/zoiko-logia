@@ -153,6 +153,7 @@ _CHART_VARIANTS = (
     # with markers" fell through to STANDARD_LINE and drew a plain line.
     ("LINE_WITH_MARKERS", re.compile(r"\b(?:line\s*(?:chart\s*)?with\s+markers?|marked\s+line)\b", re.I)),
     ("PLAIN_LINE", re.compile(r"\bplain\s+line\b", re.I)),
+    ("SWIMLANE_DIAGRAM", re.compile(r"\bswim[\s-]?lanes?\b", re.I)),
     ("BOX_PLOT", re.compile(r"\b(?:box\s*plot|box[\s-]?and[\s-]?whisker|whisker\s*plot)\b", re.I)),
     # These two name types that are already the DEFAULT for their data shape,
     # so their capabilities carry no requested_variant gate and win on shape

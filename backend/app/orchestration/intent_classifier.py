@@ -62,7 +62,7 @@ GRAPH_INTENTS = frozenset({EVIDENCE_ANALYSIS, RELATIONSHIP, NETWORK, DEPENDENCY,
 
 _PROCESS_HINTS = re.compile(
     r"\b(process|workflow|procedure|steps? (to|for|in)|approval flow|"
-    r"flowchart|flow diagram|interactive flow|interactive diagram|"
+    r"flowchart|flow diagram|interactive flow|interactive diagram|swim[\s-]?lanes?|"
     r"process flow|process diagram|mermaid (?:flowchart|flow|diagram)|x6 (?:workflow|flow|diagram)|"
     r"explain (the|how) .*(process|workflow|procedure)|how does .* work)\b",
     re.I,

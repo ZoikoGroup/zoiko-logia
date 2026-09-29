@@ -155,6 +155,7 @@ function VisualizationRenderer({ viz: rawViz }: { viz: VisualizationSpec }) {
               edges={viz.edges}
               interactive={viz.interactive}
               preferredEngine={viz.flow_engine}
+              capabilityId={viz.capability_id}
             />
           </GraphErrorBoundary>
           {viz.summary && <p className="mt-1 px-1 text-xs leading-5 text-muted">{viz.summary}</p>}

@@ -153,6 +153,16 @@ ROUTABLE_CAPABILITIES: tuple[VisualizationCapability, ...] = (
         ("DIRECTED_STAGES",), "FLOW_ADAPTER", minimum_entities=2,
         priority=0.90, fallbacks=("TEXT",),
     ),
+    # Drawn as PROCESS_FLOW, so every existing flow renderer and validator
+    # still applies; the frontend switches to the Kroki swimlane image by
+    # capability_id and falls back to the ordinary flow if Kroki is down.
+    VisualizationCapability(
+        "swimlane_diagram", "Swimlane Diagram", "PROCESS", "FLOW",
+        "SWIMLANE_DIAGRAM", "PROCESS_FLOW", ALL_DOMAINS, ("PROCESS",),
+        ("DIRECTED_STAGES",), "FLOW_ADAPTER", minimum_entities=2,
+        priority=0.93, requested_variant="SWIMLANE_DIAGRAM",
+        fallbacks=("BASIC_FLOWCHART", "TEXT"),
+    ),
     VisualizationCapability(
         "histogram", "Histogram", "DISTRIBUTION", "HISTOGRAM",
         "STANDARD_HISTOGRAM", "HISTOGRAM", ALL_DOMAINS, ("DISTRIBUTION",),

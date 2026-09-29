@@ -6,6 +6,7 @@ import type { VisualizationGraphEdge, VisualizationGraphNode } from "@/lib/api";
 // Both touch the DOM — client-only, same pattern as ECharts.
 const X6Flow = dynamic(() => import("./X6Flow").then((m) => m.X6Flow), { ssr: false });
 const MermaidFlow = dynamic(() => import("./MermaidFlow").then((m) => m.MermaidFlow), { ssr: false });
+const SwimlaneDiagram = dynamic(() => import("./SwimlaneDiagram").then((m) => m.SwimlaneDiagram), { ssr: false });
 
 /**
  * Renderer-neutral entry point for PROCESS_FLOW (spec §16/§17). Routes
@@ -21,12 +22,17 @@ export function FlowRendererAdapter({
   edges,
   interactive,
   preferredEngine,
+  capabilityId,
 }: {
   nodes: VisualizationGraphNode[];
   edges: VisualizationGraphEdge[];
   interactive: boolean;
   preferredEngine?: "mermaid" | "x6" | null;
+  capabilityId?: string | null;
 }) {
   const useX6 = preferredEngine === "x6" || (preferredEngine !== "mermaid" && interactive);
-  return useX6 ? <X6Flow nodes={nodes} edges={edges} /> : <MermaidFlow nodes={nodes} edges={edges} />;
+  const flow = useX6 ? <X6Flow nodes={nodes} edges={edges} /> : <MermaidFlow nodes={nodes} edges={edges} />;
+  // Swimlanes are drawn by the backend's Kroki; the ordinary flow above is
+  // their fallback when it is unavailable.
+  return capabilityId === "swimlane_diagram" ? <SwimlaneDiagram nodes={nodes} fallback={flow} /> : flow;
 }

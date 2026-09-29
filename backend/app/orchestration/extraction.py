@@ -31,6 +31,7 @@ from app.orchestration.intent_classifier import (
     explicit_amount_pairs,
     explicit_target_pair,
 )
+from app.orchestration.swimlane import extract_swimlane_stages
 
 _MAX_LABEL_LEN = 60
 _MAX_NODES = 40  # sanity cap — a query listing more than this is almost
@@ -199,12 +200,26 @@ def extract_relation_clauses(query: str) -> ExtractedGraph | None:
     return ExtractedGraph(nodes=nodes, edges=edges)
 
 
+def extract_swimlane_chain(query: str) -> ExtractedGraph | None:
+    """"Role: Step -> Role: Step" stages from an explicit swimlane request —
+    see swimlane.py. The plain arrow chain cannot read these: ":" is not a
+    label character there, so the stages were otherwise lost entirely."""
+    stages = extract_swimlane_stages(query)
+    if stages is None:
+        return None
+    edges = [ExtractedEdge(source=stages[i], target=stages[i + 1], type="next") for i in range(len(stages) - 1)]
+    return ExtractedGraph(nodes=list(dict.fromkeys(stages)), edges=edges)
+
+
 def extract_graph(query: str) -> ExtractedGraph | None:
     """Relation clauses take priority — they carry a real relationship type,
     which is strictly more informative than an arrow chain's generic "next"/
-    "related_to". Falls back to an arrow chain when no typed clause is found."""
+    "related_to". Falls back to an arrow chain when no typed clause is found.
+    A swimlane request whose every stage names a role is checked first: the
+    other readers would otherwise pick up a fragment of it."""
     return (
-        extract_relation_clauses(query)
+        extract_swimlane_chain(query)
+        or extract_relation_clauses(query)
         or extract_arrow_statements(query)
         or extract_arrow_chain(query)
         or extract_stage_list(query)
