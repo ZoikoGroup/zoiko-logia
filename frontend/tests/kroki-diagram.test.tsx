@@ -24,6 +24,15 @@ describe("KrokiDiagram", () => {
     expect(krokiKindFor("gantt_chart")).toBe("gantt");
     expect(krokiKindFor("bpmn_diagram")).toBe("bpmn");
     expect(krokiKindFor("er_diagram")).toBe("erd");
+    expect(krokiKindFor("activity_diagram")).toBe("activity");
+    expect(krokiKindFor("state_diagram")).toBe("state");
+    expect(krokiKindFor("event_timeline")).toBe("timing");
+    expect(krokiKindFor("class_diagram")).toBe("class");
+    expect(krokiKindFor("node_link_diagram")).toBe("object");
+    expect(krokiKindFor("use_case_diagram")).toBe("usecase");
+    expect(krokiKindFor("component_diagram")).toBe("component");
+    expect(krokiKindFor("system_architecture")).toBe("deployment");
+    expect(krokiKindFor("dependency_diagram")).toBe("package");
     expect(krokiKindFor("flowchart_basic")).toBeNull();
     expect(krokiKindFor(null)).toBeNull();
   });

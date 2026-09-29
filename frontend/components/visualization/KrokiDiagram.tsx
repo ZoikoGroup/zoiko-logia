@@ -12,11 +12,24 @@ const TITLES: Record<KrokiKind, { title: string; badge: string }> = {
   gantt: { title: "Gantt chart", badge: "Timeline" },
   bpmn: { title: "BPMN diagram", badge: "Process" },
   erd: { title: "ER diagram", badge: "Data model" },
+  activity: { title: "Activity diagram", badge: "UML" },
+  state: { title: "State diagram", badge: "UML" },
+  timing: { title: "Timing diagram", badge: "UML" },
+  class: { title: "Class diagram", badge: "UML" },
+  object: { title: "Object diagram", badge: "UML" },
+  usecase: { title: "Use case diagram", badge: "UML" },
+  component: { title: "Component diagram", badge: "UML" },
+  deployment: { title: "Deployment diagram", badge: "UML" },
+  package: { title: "Package diagram", badge: "UML" },
 };
+
+// Drawn in fixed dark-on-light colors (bpmn.js, PlantUML timing), so these
+// keep a white page in dark mode; the other diagrams are themed.
+const PAPER_KINDS = new Set<KrokiKind>(["bpmn", "timing"]);
 
 /**
  * Diagrams drawn by the backend's self-hosted Kroki — swimlane, sequence,
- * Gantt, BPMN and ER diagrams. The backend builds the diagram source from
+ * Gantt, BPMN, ER and the UML diagrams. The backend builds the diagram source from
  * the spec's own validated labels and edges; this component only displays
  * the returned SVG.
  *
@@ -91,9 +104,7 @@ export function KrokiDiagram({
     <section className="my-4 min-w-0 overflow-hidden rounded-2xl border border-line bg-panel shadow-sm">
       {header}
       <div className="relative">
-        {/* BPMN comes from bpmn.js in fixed black-on-white, so it keeps a
-            white page in dark mode; the PlantUML diagrams are themed. */}
-        <div className={`flex min-w-0 justify-center overflow-x-auto border-t border-line p-3 sm:p-4 ${kind === "bpmn" ? "bg-white" : ""}`}>
+        <div className={`flex min-w-0 justify-center overflow-x-auto border-t border-line p-3 sm:p-4 ${PAPER_KINDS.has(kind) ? "bg-white" : ""}`}>
           {/* A data-URL SVG from our own backend: next/image adds nothing here,
               and <img> is what keeps any script inside the SVG inert. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}

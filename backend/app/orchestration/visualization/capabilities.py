@@ -197,6 +197,45 @@ ROUTABLE_CAPABILITIES: tuple[VisualizationCapability, ...] = (
         excludes_explicit_heatmap=True, interaction_level="HIGH", priority=0.93,
         requested_variant="ER_DIAGRAM", fallbacks=("TABLE", "TEXT"),
     ),
+    # UML diagrams, same Kroki pattern. Step-shaped ones ride on
+    # PROCESS_FLOW; the rest on EVIDENCE_GRAPH — including state diagrams,
+    # whose loops (Draft -> Submitted -> Draft) have no start stage and so
+    # would fail PROCESS_FLOW validation. Timing, object, deployment and
+    # package diagrams have no taxonomy entry of their own and use the
+    # nearest one (event_timeline, node_link_diagram, system_architecture,
+    # dependency_diagram).
+    VisualizationCapability(
+        "activity_diagram", "Activity Diagram", "PROCESS", "FLOW",
+        "ACTIVITY_DIAGRAM", "PROCESS_FLOW", ALL_DOMAINS, ("PROCESS",),
+        ("DIRECTED_STAGES",), "FLOW_ADAPTER", minimum_entities=2,
+        priority=0.93, requested_variant="ACTIVITY_DIAGRAM",
+        fallbacks=("BASIC_FLOWCHART", "TEXT"),
+    ),
+    VisualizationCapability(
+        "event_timeline", "Timing Diagram", "TIMELINE", "TIMELINE",
+        "TIMING_DIAGRAM", "PROCESS_FLOW", ALL_DOMAINS, ("PROCESS",),
+        ("DIRECTED_STAGES",), "FLOW_ADAPTER", minimum_entities=2,
+        priority=0.93, requested_variant="TIMING_DIAGRAM",
+        fallbacks=("BASIC_FLOWCHART", "TEXT"),
+    ),
+    *(
+        VisualizationCapability(
+            capability_id, name, "GRAPH_NETWORK", canonical, variant, "EVIDENCE_GRAPH", ALL_DOMAINS,
+            ("EVIDENCE_ANALYSIS", "RELATIONSHIP", "NETWORK", "DEPENDENCY", "LINEAGE"),
+            ("NODES_EDGES",), "GRAPH_ADAPTER", minimum_entities=2,
+            excludes_explicit_heatmap=True, interaction_level="HIGH", priority=0.93,
+            requested_variant=variant, fallbacks=("TABLE", "TEXT"),
+        )
+        for capability_id, name, canonical, variant in (
+            ("state_diagram", "State Diagram", "FLOW", "STATE_DIAGRAM"),
+            ("class_diagram", "Class Diagram", "GRAPH", "CLASS_DIAGRAM"),
+            ("node_link_diagram", "Object Diagram", "GRAPH", "OBJECT_DIAGRAM"),
+            ("use_case_diagram", "Use Case Diagram", "FLOW", "USE_CASE_DIAGRAM"),
+            ("component_diagram", "Component Diagram", "GRAPH", "COMPONENT_DIAGRAM"),
+            ("system_architecture", "Deployment Diagram", "TABLE", "DEPLOYMENT_DIAGRAM"),
+            ("dependency_diagram", "Package Diagram", "GRAPH", "PACKAGE_DIAGRAM"),
+        )
+    ),
     VisualizationCapability(
         "histogram", "Histogram", "DISTRIBUTION", "HISTOGRAM",
         "STANDARD_HISTOGRAM", "HISTOGRAM", ALL_DOMAINS, ("DISTRIBUTION",),

@@ -1,6 +1,6 @@
 """
-Server-side diagram rendering through a self-hosted Kroki service — swimlane,
-sequence, Gantt, BPMN and ER diagrams (see kroki_diagrams.py).
+Server-side diagram rendering through a self-hosted Kroki service — every
+diagram kind listed in kroki_diagrams.py (swimlane, BPMN, Gantt, ERD, UML).
 
 The browser sends the node labels and edges of a spec it already received;
 this endpoint re-validates them, generates the diagram source itself and
@@ -44,11 +44,14 @@ def _kroki_url() -> str:
 class DiagramEdge(BaseModel):
     source: str = Field(max_length=80)
     target: str = Field(max_length=80)
-    type: str = Field(max_length=30)
+    type: str = Field(max_length=60)     # a state diagram's event text
 
 
 class DiagramRenderRequest(BaseModel):
-    kind: Literal["swimlane", "sequence", "gantt", "bpmn", "erd"]
+    kind: Literal[
+        "swimlane", "sequence", "gantt", "bpmn", "erd", "activity", "state", "timing",
+        "class", "object", "usecase", "component", "deployment", "package",
+    ]
     labels: list[str] = Field(min_length=2, max_length=40)
     edges: list[DiagramEdge] = Field(default_factory=list, max_length=80)
     theme: Literal["light", "dark"] = "light"
