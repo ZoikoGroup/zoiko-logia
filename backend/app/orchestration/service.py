@@ -74,13 +74,14 @@ from app.orchestration.redaction import redact_for_external_exposure
 from app.orchestration.websearch import (
     DocumentExcerpt,
     build_web_grounded_prompt,
+    sub_questions,
     web_search_each,
     wants_visual,
 )
 from app.domains.documents import service as documents_service
 from app.domains.source_library.service import record_source_usages
 from app.orchestration.live_data import build_forced_chart, fetch_live_data
-from app.orchestration.risk_llm import classify_risk, classify_risk_gemini
+from app.orchestration.risk_llm import calibrate_calculation_risk, classify_risk, classify_risk_gemini
 from app.orchestration.calculation_service import (
     build_calculation, build_observation_chart, validate_answer_calculations,
 )
@@ -578,7 +579,7 @@ async def ask_kriton(
         # back to the ML zero-shot result already in risk_level.
         llm_risk = await metrics.run("risk.fallback_provider", classify_risk_gemini(request.query))
     if llm_risk:
-        risk_level = llm_risk
+        risk_level = calibrate_calculation_risk(llm_risk, request.query)
     await report("risk_classified", "Response route selected")
 
     # The provider classifier can resolve the ML model's low-confidence
@@ -948,7 +949,10 @@ async def ask_kriton(
     # flash is already fast, so ZERO/LOW questions need no separate fast model.
     answer_model: Optional[str] = None
     gemini_active = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
-    if risk_level in ("ZERO", "LOW") and os.getenv("GROQ_API_KEY") and not gemini_active:
+    # A pasted set of questions needs the full model: the fast one lost the
+    # thread on long multi-question prompts (blank output, then truncation).
+    multi_question = len(sub_questions(request.query)) > 1
+    if risk_level in ("ZERO", "LOW") and os.getenv("GROQ_API_KEY") and not gemini_active and not multi_question:
         answer_model = os.getenv("GROQ_FAST_ANSWER_MODEL", "llama-3.1-8b-instant")
 
     # ── Agent mode: governed tool-calling loop ─────────────────────────────

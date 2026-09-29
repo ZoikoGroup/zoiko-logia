@@ -91,6 +91,12 @@ async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
     try:
         return await bounded_complete(adapter, None if is_gemini else model)
     except RuntimeError:
+        if not is_gemini and model:
+            # The fast model intermittently returns an empty answer on long
+            # prompts; the user saw "could not compose a response". The main
+            # model answers the same prompt, so try it once before failing.
+            logger.warning("Fast answer model %s failed; retrying with the main model", model)
+            return await bounded_complete(adapter, None)
         if not (is_gemini and os.environ.get("GROQ_API_KEY")):
             raise
         logger.warning("Gemini answer generation failed; trying Groq")

@@ -14,6 +14,7 @@ to the ML classifier's result rather than erroring.
 from __future__ import annotations
 
 import asyncio
+import re
 import os
 from typing import Optional
 
@@ -51,7 +52,10 @@ _SYSTEM = (
     "- NOT HIGH, even with figures or 'this/my': a calculation on figures the "
     "user supplies (margins, ratios, depreciation, tax arithmetic, 'what if cost "
     "rises 10%', a growth forecast or projection from given figures, an EMI or "
-    "loan amortisation schedule, a depreciation table) with no request to decide "
+    "loan amortisation schedule, a depreciation table, the income tax on a "
+    "stated salary or income under a named regime/slab — e.g. 'Salary 18,00,000 "
+    "under the new regime for FY 2025-26: calculate the income tax step by step', "
+    "'VAT on a price of 1,250') with no request to decide "
     "what to do is LOW; so is a chart, graph or table of figures the user gives, "
     "even about 'our' company (e.g. 'Pie chart of our funding: equity 55%, bank "
     "debt 30%' is LOW); summarising or "
@@ -79,6 +83,37 @@ def _token_budget(model: str) -> dict:
     if any(marker in model.lower() for marker in ("gpt-oss", "qwen3", "deepseek-r1")):
         return {"max_tokens": 256, "reasoning_effort": "low"}
     return {"max_tokens": 4}
+
+
+# A computation on figures the user states, with no decision asked for. The
+# classifier model still read "Salary 18,00,000 ...: calculate the income tax"
+# as personal tax advice (HIGH -> human review) with this exact case in its
+# rubric, so it is settled here instead.
+_CALCULATION_REQUEST = re.compile(
+    r"\b(calculate|compute|work\s+out|how\s+much|what\s+is\s+the\s+\w+\s+(?:on|of|for)|"
+    r"show\s+(?:the\s+)?(?:calculation|working)|step\s+by\s+step)\b",
+    re.I,
+)
+_STATED_FIGURE = re.compile(r"\d[\d,]*(?:\.\d+)?\s*(?:%|lakh|crore|k\b|m\b)?|[₹$£€]\s*\d")
+_DECISION_REQUEST = re.compile(
+    r"\b(should|shall|can\s+i|can\s+we|could\s+i|am\s+i|are\s+we|do\s+i\s+need|must\s+i|"
+    r"required|obliged|allowed|eligible|advise|advice|recommend|better|best|opt|choose|"
+    r"which\s+(?:regime|option|one)|my\s+client|avoid|minimi[sz]e|reduce\s+(?:my|our)\s+tax)\b",
+    re.I,
+)
+
+
+def calibrate_calculation_risk(risk_level: str, query: str) -> str:
+    """HIGH -> LOW for arithmetic on stated figures that asks for no decision.
+    Never touches RESTRICTED or anything below HIGH."""
+    if (
+        risk_level == "HIGH"
+        and _CALCULATION_REQUEST.search(query)
+        and len(_STATED_FIGURE.findall(query)) >= 1
+        and not _DECISION_REQUEST.search(query)
+    ):
+        return "LOW"
+    return risk_level
 
 
 async def classify_risk(query: str) -> Optional[str]:
