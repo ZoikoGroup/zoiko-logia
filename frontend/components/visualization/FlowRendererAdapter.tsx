@@ -2,11 +2,12 @@
 
 import dynamic from "next/dynamic";
 import type { VisualizationGraphEdge, VisualizationGraphNode } from "@/lib/api";
+import { krokiKindFor } from "@/lib/diagrams-api";
 
 // Both touch the DOM — client-only, same pattern as ECharts.
 const X6Flow = dynamic(() => import("./X6Flow").then((m) => m.X6Flow), { ssr: false });
 const MermaidFlow = dynamic(() => import("./MermaidFlow").then((m) => m.MermaidFlow), { ssr: false });
-const SwimlaneDiagram = dynamic(() => import("./SwimlaneDiagram").then((m) => m.SwimlaneDiagram), { ssr: false });
+const KrokiDiagram = dynamic(() => import("./KrokiDiagram").then((m) => m.KrokiDiagram), { ssr: false });
 
 /**
  * Renderer-neutral entry point for PROCESS_FLOW (spec §16/§17). Routes
@@ -32,7 +33,8 @@ export function FlowRendererAdapter({
 }) {
   const useX6 = preferredEngine === "x6" || (preferredEngine !== "mermaid" && interactive);
   const flow = useX6 ? <X6Flow nodes={nodes} edges={edges} /> : <MermaidFlow nodes={nodes} edges={edges} />;
-  // Swimlanes are drawn by the backend's Kroki; the ordinary flow above is
-  // their fallback when it is unavailable.
-  return capabilityId === "swimlane_diagram" ? <SwimlaneDiagram nodes={nodes} fallback={flow} /> : flow;
+  // Swimlane, sequence, Gantt and BPMN are drawn by the backend's Kroki; the
+  // ordinary flow above is their fallback when it is unavailable.
+  const kroki = krokiKindFor(capabilityId);
+  return kroki ? <KrokiDiagram kind={kroki} nodes={nodes} edges={edges} fallback={flow} /> : flow;
 }

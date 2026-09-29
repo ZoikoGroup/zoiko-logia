@@ -62,7 +62,7 @@ GRAPH_INTENTS = frozenset({EVIDENCE_ANALYSIS, RELATIONSHIP, NETWORK, DEPENDENCY,
 
 _PROCESS_HINTS = re.compile(
     r"\b(process|workflow|procedure|steps? (to|for|in)|approval flow|"
-    r"flowchart|flow diagram|interactive flow|interactive diagram|swim[\s-]?lanes?|"
+    r"flowchart|flow diagram|interactive flow|interactive diagram|swim[\s-]?lanes?|sequence diagram|bpmn|gantt|"
     r"process flow|process diagram|mermaid (?:flowchart|flow|diagram)|x6 (?:workflow|flow|diagram)|"
     r"explain (the|how) .*(process|workflow|procedure)|how does .* work)\b",
     re.I,
@@ -77,6 +77,8 @@ _EVIDENCE_ANALYSIS_HINTS = re.compile(
 _RELATIONSHIP_HINTS = re.compile(
     r"\b(relationship between|how (are|is) .* (connected|related)|"
     r"connection between|how .* relate|ownership structure|"
+    # An ER diagram draws entities and their relationships.
+    r"erd|er diagram|entity[\s-]relationship|"
     # An explicit request to render AS a graph-shaped format (heatmap/graph/
     # network/matrix) is itself relationship-shaped intent, independent of
     # whether the query also uses "connected"/"related" wording — e.g. "show

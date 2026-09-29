@@ -122,8 +122,15 @@ services:
   kroki:
     image: yuzutech/kroki
     restart: unless-stopped
+    environment:
+      # BPMN is drawn by Kroki's bpmn.js companion below, not the main image.
+      KROKI_BPMN_HOST: kroki-bpmn
     ports:
       - "8300:8000"
+
+  kroki-bpmn:
+    image: yuzutech/kroki-bpmn
+    restart: unless-stopped
 
   seed:
     build: ./backend

@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from app.orchestration.evidence import EvidenceModel, Observation
 from app.orchestration.response_planner import ResponsePlan
-from app.orchestration.swimlane import SWIMLANE_CAPABILITY_ID, downgrade_if_laneless
+from app.orchestration.kroki_diagrams import KROKI_CAPABILITIES, downgrade_if_unrenderable
 from app.orchestration.visualization.capabilities import ROUTABLE_CAPABILITIES
 from app.orchestration.visualization.registry import fallbacks_for, renderer_for, renderer_supports
 from app.orchestration.visualization.rules import score_candidates
@@ -795,8 +795,8 @@ class VisualizationOrchestrator:
                 built_spec.capability_id = route.capability_id
                 built_spec.canonical = route.canonical
                 built_spec.variant = route.variant
-                if route.capability_id == SWIMLANE_CAPABILITY_ID:
-                    downgrade_if_laneless(built_spec)
+                if route.capability_id in KROKI_CAPABILITIES:
+                    downgrade_if_unrenderable(built_spec)
             else:
                 # A fallback substitution was never routed through a
                 # capability decision — it's a plain type-level degrade, not

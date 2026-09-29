@@ -163,6 +163,40 @@ ROUTABLE_CAPABILITIES: tuple[VisualizationCapability, ...] = (
         priority=0.93, requested_variant="SWIMLANE_DIAGRAM",
         fallbacks=("BASIC_FLOWCHART", "TEXT"),
     ),
+    # The same Kroki pattern (see kroki_diagrams.py): one step, message or
+    # task per PROCESS_FLOW node, drawn by Kroki with the ordinary flow as
+    # the fallback.
+    VisualizationCapability(
+        "sequence_diagram", "Sequence Diagram", "PROCESS", "FLOW",
+        "SEQUENCE_DIAGRAM", "PROCESS_FLOW", ALL_DOMAINS, ("PROCESS",),
+        ("DIRECTED_STAGES",), "FLOW_ADAPTER", minimum_entities=2,
+        priority=0.93, requested_variant="SEQUENCE_DIAGRAM",
+        fallbacks=("BASIC_FLOWCHART", "TEXT"),
+    ),
+    VisualizationCapability(
+        "bpmn_diagram", "BPMN Diagram", "PROCESS", "FLOW",
+        "BPMN_DIAGRAM", "PROCESS_FLOW", ALL_DOMAINS, ("PROCESS",),
+        ("DIRECTED_STAGES",), "FLOW_ADAPTER", minimum_entities=2,
+        priority=0.93, requested_variant="BPMN_DIAGRAM",
+        fallbacks=("BASIC_FLOWCHART", "TEXT"),
+    ),
+    VisualizationCapability(
+        "gantt_chart", "Gantt Chart", "PROJECT", "GANTT",
+        "GANTT_CHART", "PROCESS_FLOW", ALL_DOMAINS, ("PROCESS",),
+        ("DIRECTED_STAGES",), "FLOW_ADAPTER", minimum_entities=2,
+        priority=0.93, requested_variant="GANTT_CHART",
+        fallbacks=("BASIC_FLOWCHART", "TEXT"),
+    ),
+    # Entities and relationships as EVIDENCE_GRAPH, so the ordinary graph is
+    # the fallback when Kroki is unavailable.
+    VisualizationCapability(
+        "er_diagram", "ER Diagram", "GRAPH_NETWORK", "GRAPH",
+        "ER_DIAGRAM", "EVIDENCE_GRAPH", ALL_DOMAINS,
+        ("EVIDENCE_ANALYSIS", "RELATIONSHIP", "NETWORK", "DEPENDENCY", "LINEAGE"),
+        ("NODES_EDGES",), "GRAPH_ADAPTER", minimum_entities=2,
+        excludes_explicit_heatmap=True, interaction_level="HIGH", priority=0.93,
+        requested_variant="ER_DIAGRAM", fallbacks=("TABLE", "TEXT"),
+    ),
     VisualizationCapability(
         "histogram", "Histogram", "DISTRIBUTION", "HISTOGRAM",
         "STANDARD_HISTOGRAM", "HISTOGRAM", ALL_DOMAINS, ("DISTRIBUTION",),

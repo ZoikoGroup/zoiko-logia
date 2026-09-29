@@ -137,7 +137,7 @@ function VisualizationRenderer({ viz: rawViz }: { viz: VisualizationSpec }) {
     case "graph":
       return (
         <div className="min-w-0">
-          <GraphRendererAdapter nodes={viz.nodes} edges={viz.edges} preferredEngine={viz.graph_engine} />
+          <GraphRendererAdapter nodes={viz.nodes} edges={viz.edges} preferredEngine={viz.graph_engine} capabilityId={viz.capability_id} />
           {viz.summary && <p className="mt-1 px-1 text-xs leading-5 text-muted">{viz.summary}</p>}
         </div>
       );

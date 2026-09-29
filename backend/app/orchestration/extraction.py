@@ -31,7 +31,7 @@ from app.orchestration.intent_classifier import (
     explicit_amount_pairs,
     explicit_target_pair,
 )
-from app.orchestration.swimlane import extract_swimlane_stages
+from app.orchestration.kroki_diagrams import extract_kroki_graph
 
 _MAX_LABEL_LEN = 60
 _MAX_NODES = 40  # sanity cap — a query listing more than this is almost
@@ -200,25 +200,26 @@ def extract_relation_clauses(query: str) -> ExtractedGraph | None:
     return ExtractedGraph(nodes=nodes, edges=edges)
 
 
-def extract_swimlane_chain(query: str) -> ExtractedGraph | None:
-    """"Role: Step -> Role: Step" stages from an explicit swimlane request —
-    see swimlane.py. The plain arrow chain cannot read these: ":" is not a
-    label character there, so the stages were otherwise lost entirely."""
-    stages = extract_swimlane_stages(query)
-    if stages is None:
+def extract_kroki_diagram(query: str) -> ExtractedGraph | None:
+    """Steps, messages, tasks or entities from an explicitly named Kroki
+    diagram (swimlane, BPMN, sequence, Gantt, ERD) — see kroki_diagrams.py.
+    The readers below cannot parse these: ":" is not a label character for
+    the arrow chain, and "has many" is not a relation verb."""
+    graph = extract_kroki_graph(query)
+    if graph is None:
         return None
-    edges = [ExtractedEdge(source=stages[i], target=stages[i + 1], type="next") for i in range(len(stages) - 1)]
-    return ExtractedGraph(nodes=list(dict.fromkeys(stages)), edges=edges)
+    nodes, edges = graph
+    return ExtractedGraph(nodes=nodes, edges=[ExtractedEdge(source=s, target=t, type=k) for s, t, k in edges])
 
 
 def extract_graph(query: str) -> ExtractedGraph | None:
     """Relation clauses take priority — they carry a real relationship type,
     which is strictly more informative than an arrow chain's generic "next"/
     "related_to". Falls back to an arrow chain when no typed clause is found.
-    A swimlane request whose every stage names a role is checked first: the
+    A named Kroki diagram whose whole payload parses is checked first: the
     other readers would otherwise pick up a fragment of it."""
     return (
-        extract_swimlane_chain(query)
+        extract_kroki_diagram(query)
         or extract_relation_clauses(query)
         or extract_arrow_statements(query)
         or extract_arrow_chain(query)
