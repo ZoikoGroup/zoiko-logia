@@ -10,6 +10,7 @@ import { GraphRendererAdapter } from "@/components/visualization/GraphRendererAd
 import { FlowRendererAdapter } from "@/components/visualization/FlowRendererAdapter";
 import { GraphErrorBoundary, RelationshipTableFallback } from "@/components/visualization/GraphErrorBoundary";
 import { ChartRenderer } from "@/components/visualization/charts/ChartRenderer";
+import { extraChartKind } from "@/components/visualization/charts/extraCharts";
 import { ANSWER_MATH_OPTIONS, hasDisplayMath, sanitizeAnswerMarkdown } from "@/lib/answer-markdown";
 import { ChartErrorBoundary } from "@/components/visualization/charts/ChartErrorBoundary";
 import { checkChartValidity, normalizeVisualizationSpec } from "@/components/visualization/charts/chartValidity";
@@ -121,6 +122,9 @@ function VisualizationRenderer({ viz: rawViz }: { viz: VisualizationSpec }) {
 
   switch (familyFor(viz.type)) {
     case "table":
+      // A table the user typed for a named chart is drawn as that chart;
+      // ChartRenderer's "View as table" still shows the exact rows.
+      if (extraChartKind(viz)) return <ChartRenderer viz={viz} />;
       return (
         <ChartErrorBoundary viz={viz} renderer="TABLE_ADAPTER">
           <TableViz viz={viz} />

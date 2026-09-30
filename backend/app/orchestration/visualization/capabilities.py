@@ -365,6 +365,42 @@ ROUTABLE_CAPABILITIES: tuple[VisualizationCapability, ...] = (
         ALL_DOMAINS, ("COMPOSITION", "__EXPLICIT_VISUAL__"), ("PART_TO_WHOLE",), "ECHARTS",
         priority=0.98, requested_variant="RADAR_CHART", fallbacks=("DONUT", "TABLE", "TEXT"),
     ),
+    # A sunburst of the same composition data; "Parent / Child 20%" labels
+    # give it a second ring. A bullet chart is the gauge's actual-versus-
+    # target pair drawn as a bar. Both only draw differently, as pie and
+    # treemap do.
+    VisualizationCapability(
+        "sunburst_chart", "Sunburst Chart", "COMPOSITION", "TREEMAP", "SUNBURST_CHART", "DONUT",
+        ALL_DOMAINS, ("COMPOSITION", "__EXPLICIT_VISUAL__"), ("PART_TO_WHOLE",), "ECHARTS",
+        priority=0.98, requested_variant="SUNBURST_CHART", fallbacks=("DONUT", "TABLE", "TEXT"),
+    ),
+    VisualizationCapability(
+        "bullet_chart", "Bullet Chart", "KPI", "BAR", "BULLET_CHART", "GAUGE",
+        ALL_DOMAINS, ("FACT", "CURRENT_METRIC", "PRECISE_DATA", "__EXPLICIT_VISUAL__"),
+        ("SCALAR_TARGET",), "ECHARTS", minimum_observations=1, priority=0.98,
+        requested_variant="BULLET_CHART", fallbacks=("GAUGE", "KPI", "TEXT"),
+    ),
+    # Charts over a small table the user typed (chart_tables.py), carried as
+    # TABLE so the exact figures are still shown if the chart cannot be
+    # drawn. Pareto, streamgraph, Sankey and parallel coordinates have no
+    # taxonomy entry of their own and use the nearest one.
+    *(
+        VisualizationCapability(
+            capability_id, name, family, canonical, variant, "TABLE", ALL_DOMAINS,
+            ("__EXPLICIT_VISUAL__",), ("CHART_TABLE",), "TABLE_ADAPTER",
+            minimum_observations=1, priority=0.98, requested_variant=variant,
+            fallbacks=("TABLE", "TEXT"),
+        )
+        for capability_id, name, family, canonical, variant in (
+            ("spend_category_analysis", "Pareto Chart", "COMPARISON", "TABLE", "PARETO_CHART"),
+            ("funnel_chart", "Funnel Chart", "COMPOSITION", "PIE_DONUT", "FUNNEL_CHART"),
+            ("stacked_area_chart", "Streamgraph", "TREND", "AREA", "STREAMGRAPH"),
+            ("bubble_chart", "Bubble Chart", "CORRELATION", "SCATTER", "BUBBLE_CHART"),
+            ("scenario_comparison", "Parallel Coordinates", "COMPARISON", "TABLE", "PARALLEL_COORDINATES"),
+            ("flow_of_funds", "Sankey Chart", "FINANCIAL", "FLOW", "SANKEY_CHART"),
+            ("calendar_heatmap", "Calendar Heatmap", "HEATMAP", "HEATMAP", "CALENDAR_HEATMAP"),
+        )
+    ),
 )
 
 # Fail at startup if an active route drifts away from the supplied taxonomy.

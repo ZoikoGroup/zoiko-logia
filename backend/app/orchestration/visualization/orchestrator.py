@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from app.orchestration.evidence import EvidenceModel, Observation
 from app.orchestration.response_planner import ResponsePlan
+from app.orchestration.chart_tables import build_chart_table_spec, is_chart_table
 from app.orchestration.kroki_diagrams import KROKI_CAPABILITIES, downgrade_if_unrenderable
 from app.orchestration.visualization.capabilities import ROUTABLE_CAPABILITIES
 from app.orchestration.visualization.registry import fallbacks_for, renderer_for, renderer_supports
@@ -662,6 +663,8 @@ def _build_spec_for_type(
         elif selected_type == "SCATTER":
             return _build_scatter_spec(evidence, spec_id)
         elif selected_type == "TABLE":
+            if is_chart_table(evidence):
+                return build_chart_table_spec(evidence, spec_id)
             return _build_table_spec(evidence, spec_id)
         elif selected_type == "KPI":
             return _build_kpi_spec(evidence, spec_id)

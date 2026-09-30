@@ -22,7 +22,7 @@ import re
 from pydantic import BaseModel
 
 from app.orchestration.data_shape import (
-    DIRECTED_STAGES, NODES_EDGES, NONE, OHLC, PART_TO_WHOLE, SCALAR, SCALAR_TARGET,
+    CHART_TABLE, DIRECTED_STAGES, NODES_EDGES, NONE, OHLC, PART_TO_WHOLE, SCALAR, SCALAR_TARGET,
     TIME_SERIES, XY_NUMERIC,
 )
 from app.orchestration.intent_classifier import (
@@ -346,6 +346,15 @@ def plan_response(query: str, intent: str, data_shape: str) -> ResponsePlan:
         return _make_plan(query,
             intent=intent, response_mode=TEXT_CHART, visual_required=True,
             visual_family=FINANCIAL_FAMILY, explicit_visual_request=explicit,
+            confidence=0.9,
+        )
+
+    # A table the user typed for a named chart (chart_tables.py) — the shape
+    # exists only because that chart was asked for, so it always wants it.
+    if data_shape == CHART_TABLE:
+        return _make_plan(query,
+            intent=intent, response_mode=TEXT_TABLE, visual_required=True,
+            visual_family=STATISTICAL, explicit_visual_request=explicit,
             confidence=0.9,
         )
 

@@ -123,7 +123,7 @@ _DISTRIBUTION_HINTS = re.compile(
 )
 
 _COMPOSITION_VISUAL_HINTS = re.compile(
-    r"\b(donut chart|doughnut chart|ring chart|pie chart)\b", re.I,
+    r"\b(donut chart|doughnut chart|ring chart|pie chart|sunburst(?: chart)?)\b", re.I,
 )
 
 _EXPLICIT_PERCENT_VALUE = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?\s*%")

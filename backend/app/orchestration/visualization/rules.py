@@ -10,7 +10,7 @@ orchestrator.py's module docstring for why nothing here needs one yet.
 from __future__ import annotations
 
 from app.orchestration.data_shape import (
-    DIRECTED_STAGES, NODES_EDGES, OHLC, PART_TO_WHOLE, SCALAR, SCALAR_TARGET,
+    CHART_TABLE, DIRECTED_STAGES, NODES_EDGES, OHLC, PART_TO_WHOLE, SCALAR, SCALAR_TARGET,
     TIME_SERIES, XY_NUMERIC,
 )
 from app.orchestration.intent_classifier import COMPOSITION, CORRELATION, DISTRIBUTION, PRECISE_DATA
@@ -135,6 +135,12 @@ def score_candidates(
 
     if data_shape == DIRECTED_STAGES and entity_count >= 2:
         add_score("PROCESS_FLOW", 0.90)
+
+    # A table the user typed for a named chart (chart_tables.py) is only ever
+    # built when that chart was asked for, so an unconditional score is safe
+    # on the same basis as CANDLESTICK's above.
+    if data_shape == CHART_TABLE and observation_count >= 1:
+        add_score("TABLE", 0.95)
 
     # AVA's statistical disambiguation — a genuine second opinion, not a
     # decision override (spec §29 DoD #4: never beats a high-confidence rule).

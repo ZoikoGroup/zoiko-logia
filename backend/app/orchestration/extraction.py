@@ -31,6 +31,7 @@ from app.orchestration.intent_classifier import (
     explicit_amount_pairs,
     explicit_target_pair,
 )
+from app.orchestration.chart_tables import extract_chart_table
 from app.orchestration.kroki_diagrams import extract_kroki_graph
 
 _MAX_LABEL_LEN = 60
@@ -321,6 +322,13 @@ def extract_user_visual_evidence(query: str, intent: str) -> EvidenceModel:
     distributions. Invalid/ambiguous input returns empty evidence so the
     established text fallback remains in control.
     """
+    # A named multi-value chart (Pareto, funnel, Sankey, ...) — chart_tables.py.
+    # First, because its payload would otherwise be misread by the branches
+    # below (a funnel's stage counts as a numeric sample, for example).
+    chart_table = extract_chart_table(query)
+    if chart_table is not None:
+        return chart_table
+
     # An actual-versus-target pair needs no colon and no visual intent word:
     # the literal "target" (or budget/goal/plan) is specific enough on its own,
     # and the question is almost never phrased as a dataset. Checked first
