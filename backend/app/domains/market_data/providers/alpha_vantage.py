@@ -41,6 +41,7 @@ from app.domains.market_data.schemas import (
     EntityRef,
     FinancialMetric,
     OHLCVBar,
+    ProviderAuthError,
     ProviderBadResponse,
     ProviderRateLimited,
     StockQuote,
@@ -55,6 +56,53 @@ _SERIES_FUNCTION = {
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+_INVALID_KEY_MARKERS = (
+    "apikey is invalid",
+    "api key is invalid",
+    "invalid api key",
+    "invalid apikey",
+    "apikey is invalid or missing",
+    "api key is missing",
+)
+
+# Alpha Vantage never answers an authentication failure with a non-200 status.
+# Measured live on 2026-09-30, across TIME_SERIES_DAILY / GLOBAL_QUOTE / OVERVIEW
+# and with the configured key plus two invalid controls:
+#
+#   configured key, quota available -> {"Meta Data", "Time Series (Daily)"}
+#   configured key, daily cap hit    -> {"Information": "We have detected your API
+#                                       key as <KEY> and our standard API rate limit
+#                                       is 25 requests per day..."}
+#   key the provider does not know   -> {"Information": "We have detected your API
+#                                       key as <KEY> and our standard API rate limit
+#                                       is 25 requests per day..."}
+#   key mid-request-rate             -> {"Information": "...spread out your free API
+#                                       requests... (1 request per second)"}
+#   empty key                        -> {"Error Message": "the parameter apikey is
+#                                       invalid or missing..."}
+#
+# Rows 2 and 3 are the same body. A key the provider does not recognise and a key
+# whose 25-request daily allowance is spent are NOT distinguishable from the
+# error path. An earlier revision of this file treated the
+# "We have detected your API key as" opener as proof of an unrecognised key and
+# raised ProviderAuthError; that misclassifies a working key that has simply run
+# out of daily quota, and would report a valid credential as rejected. The
+# provider cannot support the distinction, so neither can this adapter.
+#
+# What is established, and it is not "the endpoint responded":
+#   - the configured key is VALID, because it returns a full
+#     "Time Series (Daily)" dataset that neither invalid control returns;
+#   - the empty key is an authentication failure ("Error Message" wording), and
+#     that is the only body that means anything other than "try later";
+#   - the ambiguous 200-with-prose body means the quota is spent or the key is
+#     unknown, and the honest classification is the retryable one.
+#
+# SECRETS: row 2 and row 3 both embed the caller's own API key in the message.
+# The text is therefore only ever tested, never propagated. This audit saw that
+# payload render a live key to a terminal, so the guard is pinned by a test.
+_REDACTED = "<redacted>"
 
 
 class AlphaVantageProvider(BaseStockProvider):
@@ -75,13 +123,42 @@ class AlphaVantageProvider(BaseStockProvider):
         Without this the throttle message is indistinguishable from an empty
         result, and the pipeline reports "no data available" for a company that
         has plenty — the failure mode is a confidently wrong answer.
+
+        A third shape has to be separated as well: a rejected or missing key also
+        arrives as HTTP 200 with `{"Error Message": "the parameter apikey is
+        invalid or missing..."}`. That is an AUTHENTICATION failure, not a
+        missing company, and folding it into ProviderBadResponse made a
+        misconfigured key read as "that ticker does not exist". ProviderBadResponse
+        also stops the fallback chain in service.fetch_for_intent (the provider
+        answered, so trying the next one could only guess at a different
+        company), which is the wrong response to a bad credential.
+        A fourth shape must be separated, and it is the subtle one. A key whose
+        daily allowance is spent, and a key the provider does not recognise, both
+        arrive as HTTP 200 with
+        `{"Information": "We have detected your API key as <KEY> and our standard
+        API rate limit is 25 requests per day..."}`. The provider does not
+        distinguish those two cases, so this adapter cannot either: both are
+        reported as ProviderRateLimited, the conservative reading, because it is
+        the one that does not tell an operator their key is broken. Only the
+        unambiguous "Error Message: the parameter apikey is invalid or missing"
+        body - an empty or absent key - is raised as an authentication failure.
+
+        An earlier revision keyed on the "We have detected your API key as"
+        opener and raised ProviderAuthError there. That was wrong: it reported a
+        valid key with a spent daily quota as a rejected credential. The
+        echoed key is never copied into any exception message either way.
         """
         if not isinstance(payload, dict):
             raise ProviderBadResponse(self.name, "response was not a JSON object")
         if "Note" in payload or "Information" in payload:
+            # Tested, never propagated: this body carries the caller's own key.
             raise ProviderRateLimited(self.name, "call frequency limit reached")
         if "Error Message" in payload:
-            raise ProviderBadResponse(self.name, str(payload["Error Message"])[:160])
+            message = str(payload["Error Message"])
+            lowered = message.lower()
+            if any(marker in lowered for marker in _INVALID_KEY_MARKERS):
+                raise ProviderAuthError(self.name, "API key rejected or missing")
+            raise ProviderBadResponse(self.name, message[:160])
         return payload
 
     async def _get(self, client: httpx.AsyncClient, **params: Any) -> dict[str, Any]:

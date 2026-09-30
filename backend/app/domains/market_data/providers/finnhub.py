@@ -32,6 +32,7 @@ from app.domains.market_data.providers.base import (
 from app.domains.market_data.schemas import (
     FRESHNESS_DELAYED,
     FRESHNESS_REALTIME,
+    CapabilityNotSupported,
     CompanyProfile,
     EntityRef,
     FinancialMetric,
@@ -42,6 +43,27 @@ from app.domains.market_data.schemas import (
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _refuse_foreign_listing(ticker: str, what: str) -> None:
+    """Step aside for a non-US listing instead of returning wrong data.
+
+    Finnhub's coverage is US equities and US-listed ADRs. Asked for a local
+    listing like 7203.T, it may return a 200 with a fuzzy-matched US symbol's
+    data (e.g., 7203.T → AT&T "T") rather than a proper error. The service
+    reads ProviderBadResponse as "this instrument does not exist" and stops
+    the chain, which is wrong — the next provider does serve it. Raising
+    CapabilityNotSupported lets the fallback chain work correctly.
+
+    US ADRs carry no suffix (SAP, TTE, BABA), so this correctly says False for
+    them and leaves the US providers to answer.
+    """
+    from app.domains.market_data.identity import has_foreign_exchange_suffix
+
+    if has_foreign_exchange_suffix(ticker):
+        raise CapabilityNotSupported(
+            "finnhub", f"{ticker} is not a US listing; this provider does not serve {what} for it"
+        )
 
 
 class FinnhubProvider(BaseStockProvider):
@@ -85,6 +107,7 @@ class FinnhubProvider(BaseStockProvider):
     async def get_quote(self, client: httpx.AsyncClient, ref: EntityRef) -> StockQuote:
         if not ref.ticker:
             raise ProviderBadResponse(self.name, "a ticker is required for a quote")
+        _refuse_foreign_listing(ref.ticker, "quotes")
 
         payload = await request_json(
             client, self.name, f"{self.base_url()}/quote",
