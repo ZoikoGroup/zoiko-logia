@@ -34,6 +34,7 @@ from app.domains.model_gateway.tool_registry import ToolRegistry, ToolResult
 from app.domains.model_gateway.tools.chart_tool import ChartToolError, build_chart_fence
 from app.orchestration.websearch import WebSource
 from app.orchestration.chart_intent import allows_automatic_chart
+from app.orchestration.calculation_service import validate_answer_calculations
 
 StopReason = Literal["final_answer", "max_steps", "time_budget"]
 
@@ -469,6 +470,7 @@ async def run_agent(
         "A debt-to-GDP ratio alone does not establish how either debt or GDP changed."
     )
     reminded_chart = False
+    reminded_working = False
     tools = registry.function_schemas(granted_permissions)
     messages: list[dict] = [
         {"role": "system", "content": system_prompt},
@@ -479,9 +481,42 @@ async def run_agent(
     executed_count = 0
 
     def final_text(text: str) -> str:
+        if validate_answer_calculations(text):
+            # Do not publish an incorrect equality after an unsuccessful repair.
+            working = []
+            for (name, _), result in executed.items():
+                if name == "calculate" and result.ok:
+                    value = result.content.split(" (computed by the application", 1)[0]
+                    working.append(value)
+            text = (
+                "The generated explanation could not be verified. Here is the verified working:\n\n"
+                + "\n\n".join(working)
+                if working else "The numerical working could not be verified. Please retry the calculation."
+            )
         if any(name == "get_economic_indicator" and result.ok
                for (name, _), result in executed.items()):
             text = ground_economic_narrative(text, list(executed.values()))
+        # Include actual retrieval periods even when the model omits them.
+        periods = []
+        for (name, _), result in executed.items():
+            if not result.ok:
+                continue
+            if name == "get_economic_indicator":
+                series = [source.series for source in result.sources if source.series]
+                common = set.intersection(*(set(p for p, _ in s) for s in series)) if series else set()
+                if common:
+                    year = max(common)
+                    if year not in text:
+                        label = result.sources[0].title.split("—")[0].strip()
+                        periods.append((label + " — latest common available year", year))
+            elif name == "get_exchange_rate":
+                for source in result.sources:
+                    obs = source.observation
+                    if obs and obs.period and obs.period not in text:
+                        periods.append((obs.indicator + " — reference date", obs.period))
+        if periods:
+            text += "\n\n| Retrieved data | Period |\n| --- | --- |\n"
+            text += "\n".join(f"| {label.replace('|', '/')} | {period} |" for label, period in dict.fromkeys(periods))
         return _final_text(text, outcome)
 
     async def create(tool_choice: str, budget: float):
@@ -605,6 +640,17 @@ async def run_agent(
         message = response.choices[0].message
         if not message.tool_calls:
             outcome.stop_reason = "final_answer"
+            failures = validate_answer_calculations(message.content or "")
+            if failures and not reminded_working and step < limits.max_steps:
+                reminded_working = True
+                messages.append({"role": "assistant", "content": message.content})
+                messages.append({"role": "user", "content": (
+                    "The displayed working is inconsistent: " + "; ".join(failures)
+                    + ". Rewrite using the exact inputs and outputs from the calculation results. "
+                    "Round only the final amount. Do not show rounded operands with a result "
+                    "computed from different inputs. Preserve source years and exchange-rate dates."
+                )})
+                continue
             if (
                 chart_requested and not outcome.artifacts and not reminded_chart
                 and step < limits.max_steps and (message.content or "").strip()

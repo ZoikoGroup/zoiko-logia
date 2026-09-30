@@ -51,6 +51,8 @@ async def _handle(args: CalculateArgs) -> ToolResult:
         content=(
             f"{prefix}{args.expression} = {shown} (computed by the application; use this exact value)."
             f"{rounding_note}"
+            " Preserve the exact operands above when displaying this working; "
+            "do not replace them with rounded inputs while keeping the same result."
         ),
     )
 

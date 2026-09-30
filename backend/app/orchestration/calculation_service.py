@@ -350,9 +350,15 @@ def validate_answer_calculations(answer_text: str) -> list[str]:
         except (SyntaxError, ValueError, InvalidOperation):
             continue
         # "200,000 / 500,000 = 40%" states the ratio as a percentage.
-        candidates = [expected, expected * 100] if match.group("percent") else [expected]
-        tolerance = max(Decimal("0.01"), abs(expected) * Decimal("0.0001"))
-        if all(abs(candidate - stated) > max(tolerance, abs(candidate) * Decimal("0.0001"))
+        if match.group("percent"):
+            # An explicit ×100 already converted the ratio to percent units.
+            candidates = [expected] if re.search(r"[×*]\s*100\s*\)*$", expression) else [expected * 100]
+        else:
+            candidates = [expected]
+        # Judge the precision displayed, not the size of the amount. A
+        # relative tolerance allowed a 53-rupee error on a million-rupee sum.
+        tolerance = Decimal(5).scaleb(stated.as_tuple().exponent - 1)
+        if all(abs(candidate - stated) > tolerance
                for candidate in candidates):
             failures.append(
                 f"Calculation mismatch: {expression} equals {_format_decimal(expected)}, "
