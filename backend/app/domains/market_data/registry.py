@@ -40,7 +40,9 @@ from app.domains.market_data.providers.base import (
 )
 from app.domains.market_data.providers.companies_house import CompaniesHouseProvider
 from app.domains.market_data.providers.finnhub import FinnhubProvider
+from app.domains.market_data.providers.index_quote import IndexQuoteProvider
 from app.domains.market_data.providers.polygon import PolygonProvider
+from app.domains.market_data.providers.yahoo_equity import YahooEquityProvider
 
 # ── Intents ──────────────────────────────────────────────────────────────────
 INTENT_QUOTE = "stock_quote"
@@ -49,6 +51,7 @@ INTENT_FUNDAMENTALS = "stock_fundamentals"
 INTENT_PROFILE = "stock_company_profile"
 INTENT_FILINGS = "company_filings"
 INTENT_LOOKUP = "company_lookup"
+INTENT_INDEX = "index_quote"
 
 INTENT_CAPABILITY = {
     INTENT_QUOTE: CAP_QUOTE,
@@ -57,6 +60,11 @@ INTENT_CAPABILITY = {
     INTENT_PROFILE: CAP_PROFILE,
     INTENT_FILINGS: CAP_FILINGS,
     INTENT_LOOKUP: CAP_SEARCH,
+    # An index is a quote-shaped question about a market benchmark rather than
+    # a company. The providers below serve it with the same quote/history
+    # endpoints they use for equities, so it reuses those capabilities rather
+    # than declaring new ones.
+    INTENT_INDEX: CAP_QUOTE,
 }
 
 # Order matters: the first pattern that matches wins, so the specific intents
@@ -68,6 +76,29 @@ _INTENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         re.compile(
             r"\b(filing|filings|filing history|annual return|confirmation statement|"
             r"statutory accounts|companies house|filed accounts)\b",
+            re.I,
+        ),
+    ),
+    (
+        # An index question is tested before QUOTE and before the educational
+        # bail-out below, because "What is the S&P 500?" contains "what is"
+        # and would otherwise be classified as a definitional question and
+        # sent to the web rather than to a quote provider — which is why every
+        # index question in the live audit returned nothing at all.
+        #
+        # "index" alone is too broad to anchor on (it also means a price index
+        # or a database index), so the pattern requires either one of the
+        # recognised benchmark names or the word index next to a market word.
+        INTENT_INDEX,
+        re.compile(
+            r"\b(?:s\s*&\s*p\s*500|sp\s?x?500|sp500|ftse\s*100|footsie|"
+            r"tsx\s*(?:composite|60)|asx\s*200|iseq|euronext|dax|nikkei|"
+            r"nifty|sensex|shanghai|sse\s*(?:composite|index)|bombay|"
+            r"hang\s*seng|smi|ibex|randstad|bel\s*20|stoxx\s*600|"
+            r"(?:s\s*&\s*p|dow\s+jones|nasdaq)\s*[\w-]*|cac\s*40|msci\s*\w*)\b"
+            r"|\b(?:index|indices)\b(?=[^.?]*\b(?:level|value|point|performance|"
+            r"today|close|chart|history|year|since|at)\b)"
+            r"|\b(?:level|value|performance)\s+of\s+the\s+\w+\s+index\b",
             re.I,
         ),
     ),
@@ -116,6 +147,21 @@ _EDUCATIONAL = re.compile(
     re.I,
 )
 
+# Macro-statistical words that collide with stock-fundamentals vocabulary.
+# "US government revenue" is a treasury aggregate, not a question about a
+# company whose name coincidentally matches — but FUNDAMENTALS fires on the
+# bare word "revenue", and the provider search then resolves "government
+# revenue" to some company and attaches its fundamentals as provenance. When
+# the question names one of the supported countries AND a macro metric, it is
+# a statistical question and belongs to the web-grounded path unless a
+# specific company is also named.
+_MACRO_METRIC = re.compile(
+    r"\b(?:gdp|gross domestic product|inflation|cpi|consumer price(?: index)?|hicp|"
+    r"unemployment|jobless|deficit|surplus|revenue|receipts|government debt|national debt|"
+    r"tax(?:ation|es| revenue)?|trade (?:balance|deficit|surplus)|current account|retail sales)\b",
+    re.I,
+)
+
 
 def detect_intent(query: str) -> Optional[str]:
     """The market-data intent of a question, or None when it has none.
@@ -123,7 +169,18 @@ def detect_intent(query: str) -> Optional[str]:
     Returns None for educational questions even when they contain a metric
     word, so "how is revenue recognised under IFRS 15?" stays with the normal
     web-grounded path instead of trying to look up a company's revenue.
+
+    An index question is resolved BEFORE the educational check, deliberately.
+    "What is the S&P 500?" is a question about the value of a benchmark, and
+    the educational rule would otherwise read the "what is" and decline to
+    route it — which is precisely the confirmed bug where all five indices
+    returned no data. The distinction that matters is whether an index is
+    NAMED: "what is an index" stays educational, "what is the S&P 500" does
+    not.
     """
+    for intent, pattern in _INTENT_PATTERNS:
+        if intent == INTENT_INDEX and pattern.search(query):
+            return INTENT_INDEX
     if _EDUCATIONAL.search(query):
         # "Apple's revenue" is a lookup; "how is revenue recognised" is not.
         # Only bail out when the educational phrasing is not paired with an
@@ -132,8 +189,34 @@ def detect_intent(query: str) -> Optional[str]:
             return None
     for intent, pattern in _INTENT_PATTERNS:
         if pattern.search(query):
+            if intent in (INTENT_FUNDAMENTALS, INTENT_PROFILE, INTENT_QUOTE):
+                refused = _macro_question_refusal(query)
+                if refused:
+                    return None
             return intent
     return None
+
+
+def _macro_question_refusal(query: str) -> bool:
+    """True when a query that matched a market intent is really a macro-stat
+    question that market data must not answer.
+
+    Fires on the combination the wrong-data bug needs: a supported country plus
+    a macro-statistic word ("US government revenue", "Canada GDP"), no explicit
+    ticker, and no well-known company name. Without the company check,
+    "Apple's government revenue would be..." would be wrongly refused; with it,
+    the guard only fires when there is genuinely no company to attach the
+    figures to.
+    """
+    if not _MACRO_METRIC.search(query or ""):
+        return False
+    from app.orchestration.country_scope import names_country
+    if not any(names_country(query or "", iso2) for iso2 in ("US", "GB", "IE", "CA", "AU", "DE", "FR", "JP", "IN", "CN")):
+        return False
+    from app.domains.market_data.identity import find_ticker, known_ticker_for_name
+    if find_ticker(query or "") or known_ticker_for_name(query or "")[0]:
+        return False
+    return True
 
 
 # ── Providers ────────────────────────────────────────────────────────────────
@@ -199,16 +282,34 @@ def requested_history_window(query: str, default: int = 30) -> tuple[str, int]:
 
 
 def all_providers() -> list[BaseStockProvider]:
-    return [CompaniesHouseProvider(), FinnhubProvider(), PolygonProvider(), AlphaVantageProvider()]
+    return [
+        CompaniesHouseProvider(), FinnhubProvider(), PolygonProvider(),
+        AlphaVantageProvider(), IndexQuoteProvider(), YahooEquityProvider(),
+    ]
 
 
 _DEFAULT_PRIORITY: dict[str, tuple[str, ...]] = {
-    INTENT_QUOTE: ("finnhub", "polygon", "alpha_vantage"),
-    INTENT_HISTORY: ("polygon", "alpha_vantage"),
+    # yahoo_equity sits last among the market-data providers and before Alpha
+    # Vantage, whose free tier is ~25 calls a day. The key-gated providers lead
+    # because where they work they are the better source — Finnhub carries the
+    # ADR fundamentals Yahoo does not — but each of them is US-shaped, and
+    # verified live they fail differently: Finnhub answers a local listing with
+    # 403, Polygon's failure stopped the fallback chain entirely (see
+    # identity.has_foreign_exchange_suffix), and Alpha Vantage has thin
+    # non-US coverage. yahoo_equity is keyless and serves all ten countries, so
+    # it is what a 7203.T or 600519.SS question actually lands on.
+    INTENT_QUOTE: ("finnhub", "polygon", "yahoo_equity", "alpha_vantage"),
+    INTENT_HISTORY: ("polygon", "yahoo_equity", "alpha_vantage"),
     INTENT_FUNDAMENTALS: ("finnhub", "alpha_vantage"),
     INTENT_PROFILE: ("finnhub", "polygon", "alpha_vantage"),
     INTENT_FILINGS: ("companies_house",),
-    INTENT_LOOKUP: ("companies_house", "finnhub", "polygon", "alpha_vantage"),
+    INTENT_LOOKUP: ("companies_house", "finnhub", "polygon", "yahoo_equity", "alpha_vantage"),
+    # The key-gated market providers cannot serve index levels — Finnhub's
+    # free tier zeroes or 403s them, Alpha Vantage rejects ^-symbols, Polygon
+    # has no index series — so the index path belongs to the keyless Yahoo chart
+    # adapter alone. It refuses any non-^ ticker, so this entry can never leak
+    # into ordinary stock quotes.
+    INTENT_INDEX: ("index_quote",),
 }
 
 

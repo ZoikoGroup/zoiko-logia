@@ -49,6 +49,119 @@ def test_dbnomics_source_records_retrieval_provenance():
     assert source.fetched_at is not None
 
 
+def test_dbnomics_source_carries_a_structured_observation_not_just_prose():
+    """A single series has exactly one latest value, so it must be published as a
+    LiveObservation rather than left to be re-parsed out of English.
+
+    This was the last large live-data path shipping prose with
+    observation=None. The failure is quiet rather than loud: the query resolved,
+    the values were correct, the chart rendered - and nothing downstream could
+    read the number, unit or period without parsing the snippet. Measured live
+    before the fix, "Ireland unemployment rate" returned a source whose
+    observation was None.
+    """
+    source = _build_source(SeriesMatch(
+        series_name="Harmonised unemployment - monthly rates > Total > All persons",
+        points=[("2023-11", 4.8), ("2023-12", 4.9)],
+        url="https://example.test/series",
+        provider_name="OECD",
+        dataset_name="Labour Force Survey",
+    ))
+    observation = source.observation
+    assert observation is not None, "single-series DBnomics results must be structured"
+    assert observation.value == "4.9", "must be the LAST point, not the first"
+    assert observation.period == "2023-12"
+    assert observation.provider == "OECD"
+    assert observation.source_url == source.url
+    assert observation.freshness == source.freshness
+    assert observation.observation_id.startswith("obs_")
+
+
+def test_dbnomics_observation_discloses_rather_than_invents_a_unit():
+    """SeriesMatch does not retain DBnomics' own unit metadata.
+
+    Claiming "percent" for every series would be a fabricated label on GDP in
+    dollars and levels; claiming nothing would hide the case where the series
+    name does show one. The middle path, matching the WDI builder, is to claim
+    percent only when the name itself shows a percent sign.
+    """
+    named_percent = _build_source(SeriesMatch(
+        series_name="Monthly · Canada · CPI · Percentage change (%)",
+        points=[("2025-01", 1.9)],
+        url="https://example.test/series",
+        provider_name="IMF",
+        dataset_name="CPI",
+    ))
+    assert named_percent.observation.unit == "percent"
+
+    plain = _build_source(SeriesMatch(
+        series_name="Monthly · Japan · GDP in current prices",
+        points=[("2024", 4210.5)],
+        url="https://example.test/series",
+        provider_name="IMF",
+        dataset_name="WEO",
+    ))
+    assert plain.observation.unit == "provider-defined"
+
+
+def test_dbnomics_match_with_no_points_publishes_no_observation_instead_of_raising():
+    """An empty match still describes itself and must stay renderable.
+
+    Publishing `points[-1]` unconditionally turned a previously harmless empty
+    series into an IndexError, which would have crashed the whole live-data call
+    rather than returning a weaker answer.
+    """
+    source = _build_source(SeriesMatch(
+        series_name="Monthly · Some Publisher · A series that returned nothing",
+        points=[],
+        url="https://example.test/series",
+        provider_name="OECD",
+        dataset_name="Empty",
+    ))
+    assert source.observation is None
+    assert source.series == []
+
+
+def test_dbnomics_observation_never_disagrees_with_the_series_it_attaches():
+    """Prose, series and observation are built from one SeriesMatch, so the
+    reported value must be exactly the series tail - not a separately computed
+    or rounded copy."""
+    points = [("2026-01", 3.5), ("2026-02", 4.25), ("2026-03", 4.75)]
+    source = _build_source(SeriesMatch(
+        series_name="Monthly · Ireland · Harmonised unemployment (%)",
+        points=points,
+        url="https://example.test/series",
+        provider_name="OECD",
+        dataset_name="LFS",
+    ))
+    assert source.series == points
+    assert source.observation.period == points[-1][0]
+    assert source.observation.value == str(points[-1][1])
+    assert f"{points[-1][0]}" in source.snippet
+
+
+def test_correlated_pair_sources_stay_prose_only_and_are_not_given_an_observation():
+    """Two series over one axis have no single value per period, so a pair must
+    not claim one. This is the deliberate exception to the rule above and is
+    pinned so a future "add provenance everywhere" pass does not invent a
+    misleading observation here.
+    """
+    from app.orchestration.dbnomics import _build_pair_source
+
+    pair = _build_pair_source(
+        SeriesMatch(
+            series_name="A", points=[("2025-01", 1.0)],
+            url="https://example.test/a", provider_name="OECD", dataset_name="A",
+        ),
+        SeriesMatch(
+            series_name="B", points=[("2025-01", 2.0)],
+            url="https://example.test/b", provider_name="OECD", dataset_name="B",
+        ),
+    )
+    assert pair.observation is None
+    assert not pair.series, "a pair must not publish a single plotted series"
+
+
 def test_live_chart_narrative_uses_latest_and_correct_direction():
     evidence = EvidenceModel(
         subject="Canada inflation",

@@ -32,10 +32,12 @@ import asyncio
 import os
 import re
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
 
+from app.domains.calculations.schemas import LiveObservation
 from app.orchestration.websearch import WebSource
 
 # ── Concept registry ──────────────────────────────────────────────────────────
@@ -550,11 +552,35 @@ async def fetch_sec_facts(query: str) -> list[WebSource]:
             f"Source: {form} filing, accession {accession}, "
             f"reported under US-GAAP XBRL taxonomy."
         )
+        filing_url = (
+            filing_index_url(cik, accession)
+            if accession
+            else f"{_www_base()}/cgi-bin/browse-edgar?action=getcompany&CIK={cik:010d}"
+        )
+        # The XBRL fact carries everything the citation needs, so the source
+        # states it rather than leaving the value buried in prose. Without a
+        # provider, a freshness state and an observation this citation was a URL
+        # and a sentence: nothing downstream could tell that a figure came from
+        # the SEC rather than from the site the URL happened to point at, or
+        # read the number without re-parsing the snippet.
         sources.append(
             WebSource(
                 title=f"SEC EDGAR — {entity} {label} ({period_end})"[:200],
-                url=filing_index_url(cik, accession) if accession else f"{_www_base()}/cgi-bin/browse-edgar?action=getcompany&CIK={cik:010d}",
+                url=filing_url,
                 snippet=snippet,
+                provider="sec_edgar",
+                fetched_at=datetime.now(timezone.utc).isoformat(),
+                freshness="filing",
+                observation=LiveObservation(
+                    observation_id=f"sec_edgar:{cik}:{accession or period_end}:{label}",
+                    indicator=label,
+                    value=value,
+                    unit=str(fact.get("unit", "USD")),
+                    period=period_end,
+                    provider="sec_edgar",
+                    source_url=filing_url,
+                    freshness="filing",
+                ),
             )
         )
     return sources
