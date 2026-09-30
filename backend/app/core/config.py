@@ -86,8 +86,8 @@ class Settings(BaseSettings):
     # of every question pre-fetching all connectors; any agent failure falls
     # back to the standard composition path. See model_gateway/agent.py.
     KRITON_AGENT_MODE: bool = False
-    AGENT_MAX_STEPS: int = 5
-    AGENT_MAX_TOOL_CALLS: int = 8
+    AGENT_MAX_STEPS: int = 8
+    AGENT_MAX_TOOL_CALLS: int = 12
     # Must leave headroom under ASK_KRITON_TIMEOUT_SECONDS for retrieval
     # before composition and validation after it.
     AGENT_MAX_SECONDS: float = 75.0

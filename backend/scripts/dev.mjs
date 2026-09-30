@@ -25,7 +25,9 @@ mkdirSync(join(backend, "logs"), { recursive: true });
 const log = createWriteStream(join(backend, "logs", "dev.log"), { flags: "w" });
 const child = spawn(
   python,
-  ["-m", "uvicorn", "app.main:app", "--reload", "--port", "8010", ...process.argv.slice(2)],
+  // --reload-dir app: editing tests or scripts must not restart the server
+  // (and drop any question in flight) — only application code needs a reload.
+  ["-m", "uvicorn", "app.main:app", "--reload", "--reload-dir", "app", "--port", "8010", ...process.argv.slice(2)],
   { cwd: backend, stdio: ["inherit", "pipe", "pipe"] },
 );
 child.stdout.on("data", (chunk) => { process.stdout.write(chunk); log.write(chunk); });

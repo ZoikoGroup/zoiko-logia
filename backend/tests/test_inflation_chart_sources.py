@@ -24,14 +24,19 @@ async def test_comparison_retrieves_both_country_series(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_missing_comparison_series_does_not_return_partial_data(monkeypatch):
+async def test_missing_comparison_series_is_named_not_invented(monkeypatch):
+    """The countries with data are kept; the missing one is stated as missing
+    (dropping everything answered "I don't have the figures")."""
     async def observations(_client, _indicator, iso3):
         return [("2025", 2.2)] if iso3 == "DEU" else []
 
     monkeypatch.setattr(dbnomics, "_fetch_world_bank", observations)
     monkeypatch.setattr(dbnomics, "_fetch_wdi", AsyncMock(return_value=None))
 
-    assert await dbnomics.fetch_stats("Compare Germany and France inflation") == []
+    sources = await dbnomics.fetch_stats("Compare Germany and France inflation")
+    assert any("germany" in s.title.lower() for s in sources)
+    note = [s for s in sources if "no " in s.title.lower() and "france" in s.title.lower()]
+    assert note and "Do not state or estimate" in note[0].snippet
 
 
 def test_missing_statistics_do_not_request_an_illustrative_chart():

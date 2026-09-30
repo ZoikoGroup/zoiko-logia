@@ -880,6 +880,8 @@ export type ComposedAnswer = {
   calculation_result?: CalculationResult | null;
   verified_charts?: VerifiedChartSpec[];
   observations?: LiveObservation[];
+  /** No citations, but the figures are the question's or conversation's own, computed or charted exactly. */
+  computed_from_question?: boolean;
   presentation?: AnswerPresentation | null;
   response_mode?: "concise" | "educational" | "analytical" | "calculation" | "workflow" | "compound";
   /** Preferred, ordered rendering path — not yet returned by the backend. */

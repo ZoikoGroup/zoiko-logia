@@ -355,6 +355,9 @@ class ComposedAnswer(BaseModel):
     calculation_result: Optional[CalculationResult] = None
     verified_charts: List[VerifiedChartSpec] = Field(default_factory=list)
     observations: List[LiveObservation] = Field(default_factory=list)
+    # No citations, but the figures are the question's or the conversation's
+    # own, computed or charted exactly — not model knowledge.
+    computed_from_question: bool = False
     # Internal fields — kept for model_gateway wiring; never exposed to frontend
     prompt_id: str = "inline"
     prompt_name: str = "Inline RAG Prompt"

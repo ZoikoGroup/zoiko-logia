@@ -195,11 +195,12 @@ function SourceButton({ citation }: { citation: SourceCitation }) {
  * grounded on the strength of the route alone — retrieval fails soft, so an
  * unreachable SearXNG produces a confident-looking answer with no provenance
  * behind it at all. */
-function routeLabel(route: string | null, citationCount: number, nextActionType?: string) {
+function routeLabel(route: string | null, citationCount: number, nextActionType?: string, computed = false) {
   // A provider/composition failure travels the refusal route, but it is not a
   // policy decision — saying "policy blocked" sent users looking for a rule.
   if (nextActionType === "composition_failed") return "Not answered — please try again";
   if (route !== "LLM") return ROUTE_LABELS[route ?? ""] ?? route;
+  if (citationCount === 0 && computed) return "Answered — from figures in this conversation";
   if (citationCount === 0) return "Answered — model knowledge, no sources retrieved";
   return `Answered — grounded in ${citationCount} source${citationCount === 1 ? "" : "s"}`;
 }
@@ -582,7 +583,10 @@ function ConversationTurn({
                   {outcomeStyle && <span className={`text-xs font-semibold ${outcomeStyle.text}`}>{outcomeStyle.label}</span>}
                 </div>
                 <p className="mt-0.5 text-xs text-muted">
-                  {routeLabel(route, result.answer?.citations.length ?? 0, result.next_action?.type)}
+                  {routeLabel(
+                    route, result.answer?.citations.length ?? 0, result.next_action?.type,
+                    result.answer?.computed_from_question ?? false,
+                  )}
                 </p>
               </div>
               <div className="flex items-center gap-2">

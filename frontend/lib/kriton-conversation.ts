@@ -11,17 +11,31 @@ const MAX_HISTORY_MESSAGES = 12;
  * data: live figures live in the answer, not in the question that asked. */
 const ANSWERS_REPLAYED = 2;
 const ANSWER_CHARS = 1500;
+/** Several figures, not just a year or one number in a sentence. */
+const FIGURES = /\d[\d,.]*/g;
+
+/** The answers worth replaying: the most recent ones carrying figures. A
+ * "couldn't find it" reply or a refusal has nothing to chart, and replaying
+ * only the last two turns left "Give me a chart" with no data to use. */
+function answersToReplay(recent: Turn[]): Set<Turn> {
+  const withFigures = recent.filter((turn) => {
+    const answer = turn.result?.answer?.text ?? "";
+    return turn.result?.outcome !== "refused" && (answer.match(FIGURES)?.length ?? 0) >= 3;
+  });
+  return new Set(withFigures.slice(-ANSWERS_REPLAYED));
+}
 
 export function conversationHistory(turns: Turn[]): ConversationMessage[] {
   // Document-derived answers are not replayed as evidence on a later turn.
   // A document must be selected and authorized again before being consulted.
   const recent = turns.filter((turn) => turn.result && !turn.attachments?.length)
     .slice(-(MAX_HISTORY_MESSAGES - ANSWERS_REPLAYED));
+  const replayed = answersToReplay(recent);
   const messages: ConversationMessage[] = [];
-  recent.forEach((turn, index) => {
+  recent.forEach((turn) => {
     messages.push({ role: "user", content: turn.submittedQuery.slice(0, 4000) });
     const answer = turn.result?.answer?.text?.trim();
-    if (answer && index >= recent.length - ANSWERS_REPLAYED) {
+    if (answer && replayed.has(turn)) {
       messages.push({ role: "assistant", content: answer.slice(0, ANSWER_CHARS) });
     }
   });

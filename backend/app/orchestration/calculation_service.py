@@ -32,8 +32,8 @@ _EQUATION = re.compile(
     # into it, which is a no-op for genuine `expr = result` matches (greedy
     # matching already stops at the right boundary with nothing to backtrack)
     # but turns the no-match case into an immediate, linear-time failure.
-    r"(?P<expression>\(?\s*-?[0-9][0-9,.]*(?>(?:\s*[+\-*/×÷]\s*-?[0-9][0-9,.]*|[0-9,.()\s+\-*/×÷])*)\)?)"
-    r"\s*=\s*[$£€]?\s*(?P<result>-?[0-9][0-9,]*(?:\.[0-9]+)?)"
+    r"(?P<expression>\(*\s*-?[0-9][0-9,.]*(?>(?:\s*[+\-*/×÷]\s*-?[0-9][0-9,.]*|[0-9,.()\s+\-*/×÷])*)\)?)"
+    r"\s*=\s*[$£€]?\s*(?P<result>-?[0-9][0-9,]*(?:\.[0-9]+)?)(?P<percent>\s*%)?"
     # The result must be complete: in chained working ("A - B - C = 5,50,000 -
     # 1,50,000 = 4,00,000") "5,50,000" is an intermediate expression, not the
     # value of A - B - C, and was flagged as a mismatch on a correct answer.
@@ -257,11 +257,83 @@ def _normalise_arithmetic(text: str) -> str:
     # "50{,}000 \\times 0.06" was read as "000 * 0.06" and a correct
     # simple-interest answer was escalated.
     text = text.replace("{,}", ",").replace("\\%", "%").replace("\\cdot", "*")
+    # "\\frac{18,00,000}{1,00,00,000}\\times 100 = 1.8\\%" was never read, so a
+    # ROCE answer ten times too small went out unchecked.
+    text = re.sub(r"\\(?:text|mathrm|mathbf|textbf|boldsymbol)\s*\{([^{}]*)\}", r"\1", text)
+    previous = None
+    while previous != text:
+        previous = text
+        text = re.sub(r"\\[dt]?frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}", r"(\1)/(\2)", text)
     text = re.sub(r"\\(?:left|right)\s*([()\[\]])", r"\1", text)
     text = re.sub(r"\\[,;:! ]", " ", text)                       # LaTeX spacing commands
     text = re.sub(r"(?:[£$€₹]|\bRs\.?|\bINR|\bUSD|\bGBP|\bEUR)\s*(?=\d)", "", text)
     text = re.sub(r"[\u2010-\u2015\u2212]", "-", text)          # unicode dashes / minus sign
-    return re.sub(r"(\d(?:[\d,]*\d)?(?:\.\d+)?)\s*%(?=\s*[*×/÷)])", r"(\1/100)", text)  # "10% ×" -> (10/100)
+    # "10% ×" -> (10/100); also inside brackets and sums, so "\\frac{63.75\\%}{3}
+    # = 21.75\\%" (really 21.25%) is checked instead of skipped.
+    return re.sub(r"(\d(?:[\d,]*\d)?(?:\.\d+)?)\s*%(?=\s*[*×/÷)+\-])", r"(\1/100)", text)
+
+
+_DEBIT_HEADER = re.compile(r"\b(dr|debit)\b", re.I)
+_CREDIT_HEADER = re.compile(r"\b(cr|credit)\b", re.I)
+_AMOUNT = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+
+
+def _cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _amount(cell: str) -> Decimal | None:
+    match = _AMOUNT.search(cell.replace("₹", "").replace("Rs.", ""))
+    try:
+        return Decimal(match.group().replace(",", "")) if match else None
+    except InvalidOperation:
+        return None
+
+
+def _journal_balance_failures(answer_text: str) -> list[str]:
+    """A journal table whose debit and credit columns do not total the same.
+    "Share Capital Dr 10,000 / Calls in Arrears Dr 3,000 / Share Forfeiture
+    Cr 7,000" (13,000 against 7,000) went out as an answer."""
+    failures: list[str] = []
+    lines = answer_text.splitlines()
+    index = 0
+    while index < len(lines):
+        if not lines[index].lstrip().startswith("|"):
+            index += 1
+            continue
+        block = []
+        while index < len(lines) and lines[index].lstrip().startswith("|"):
+            block.append(_cells(lines[index]))
+            index += 1
+        header, rows = block[0], [row for row in block[1:] if not all(set(c) <= set("-: ") for c in row)]
+        debit = next((i for i, cell in enumerate(header) if _DEBIT_HEADER.search(cell)), None)
+        credit = next((i for i, cell in enumerate(header) if _CREDIT_HEADER.search(cell)), None)
+        if debit is None or credit is None or debit == credit or not rows:
+            continue
+
+        def numeric_column(column: int) -> int:
+            # "Account (Debit) | Amount | Account (Credit) | Amount": the
+            # figures sit in the column after the one that names the side.
+            values = [_amount(row[column]) for row in rows if column < len(row) and row[column]]
+            if values and sum(v is not None for v in values) * 2 < len(values) and column + 1 < len(header):
+                return column + 1
+            return column
+
+        debit, credit = numeric_column(debit), numeric_column(credit)
+        totals = [Decimal(0), Decimal(0)]
+        for row in rows:
+            if row and re.search(r"\btotal\b", row[0], re.I):
+                continue
+            for slot, column in enumerate((debit, credit)):
+                value = _amount(row[column]) if column < len(row) else None
+                if value is not None:
+                    totals[slot] += value
+        if totals[0] > 0 and totals[1] > 0 and abs(totals[0] - totals[1]) > Decimal("0.5"):
+            failures.append(
+                f"Journal entry does not balance: debits total {_format_decimal(totals[0])}, "
+                f"credits total {_format_decimal(totals[1])}."
+            )
+    return failures
 
 
 def validate_answer_calculations(answer_text: str) -> list[str]:
@@ -277,13 +349,16 @@ def validate_answer_calculations(answer_text: str) -> list[str]:
             stated = Decimal(match.group("result").replace(",", ""))
         except (SyntaxError, ValueError, InvalidOperation):
             continue
+        # "200,000 / 500,000 = 40%" states the ratio as a percentage.
+        candidates = [expected, expected * 100] if match.group("percent") else [expected]
         tolerance = max(Decimal("0.01"), abs(expected) * Decimal("0.0001"))
-        if abs(expected - stated) > tolerance:
+        if all(abs(candidate - stated) > max(tolerance, abs(candidate) * Decimal("0.0001"))
+               for candidate in candidates):
             failures.append(
                 f"Calculation mismatch: {expression} equals {_format_decimal(expected)}, "
                 f"not {_format_decimal(stated)}."
             )
-    return failures
+    return failures + _journal_balance_failures(answer_text)
 
 
 def build_observation_chart(observations: list[LiveObservation]) -> VerifiedChartSpec | None:

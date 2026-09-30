@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 CLASSIFIER_VERSION = "rc_1.0"
-POLICY_VERSION = "pm_1.2"  # pm_1.1: LOW + insufficient answers with caveat; pm_1.2: MEDIUM likewise
+POLICY_VERSION = "pm_1.3"  # pm_1.1: LOW + insufficient answers with caveat; pm_1.2: MEDIUM likewise; pm_1.3: HIGH answers as general guidance
 
 # Route constants
 ROUTE_LLM = "LLM"
@@ -84,10 +84,17 @@ _MATRIX: dict[tuple[str, str], str] = {
     (RISK_MEDIUM, CONF_LIMITED):       ROUTE_LLM,          # disclaimer + caveat
     (RISK_MEDIUM, CONF_INSUFFICIENT):  ROUTE_LLM,          # disclaimer + caveat
 
-    # HIGH risk — any confidence → HUMAN_REVIEW
-    (RISK_HIGH, CONF_SUFFICIENT):    ROUTE_HUMAN_REVIEW,
-    (RISK_HIGH, CONF_LIMITED):       ROUTE_HUMAN_REVIEW,
-    (RISK_HIGH, CONF_INSUFFICIENT):  ROUTE_HUMAN_REVIEW,
+    # HIGH risk
+    # pm_1.3 (product decision 2026-09-29): answered as GENERAL GUIDANCE with
+    # the disclaimer and a "not advice on your specific matter" caveat, and
+    # the model is told not to make the decision for the asker. No reviewer
+    # workflow or engagement is staffed yet, so escalation left every
+    # "our company / our client" question unanswered. Conflicting evidence
+    # still goes to review, stale evidence to clarification, and restricted
+    # sources / RESTRICTED risk (fraud, concealment) are still refused.
+    (RISK_HIGH, CONF_SUFFICIENT):    ROUTE_LLM,            # disclaimer + caveat
+    (RISK_HIGH, CONF_LIMITED):       ROUTE_LLM,            # disclaimer + caveat
+    (RISK_HIGH, CONF_INSUFFICIENT):  ROUTE_LLM,            # disclaimer + caveat
     (RISK_HIGH, CONF_CONFLICTING):   ROUTE_HUMAN_REVIEW,
     (RISK_HIGH, CONF_STALE):         ROUTE_HUMAN_REVIEW,
     (RISK_HIGH, CONF_RESTRICTED):    ROUTE_REFUSAL,
@@ -148,7 +155,7 @@ def resolve_route(
         route = ROUTE_HUMAN_REVIEW
 
     disclaimer_required = (
-        risk_level == RISK_MEDIUM
+        risk_level in (RISK_MEDIUM, RISK_HIGH)
         or confidence_state in (CONF_LIMITED, CONF_INSUFFICIENT)
     )
 

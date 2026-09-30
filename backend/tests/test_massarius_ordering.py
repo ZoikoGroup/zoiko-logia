@@ -40,7 +40,8 @@ def test_policy_matrix_is_the_single_route_resolution_path():
         jurisdiction="UK",
         clarification_cycle=0,
     )
-    assert decision_high_risk.route == "HUMAN_REVIEW"
+    # pm_1.3: HIGH answers as general guidance with the disclaimer.
+    assert decision_high_risk.route == "LLM" and decision_high_risk.disclaimer_required
     print("test_policy_matrix_is_the_single_route_resolution_path: PASSED")
 
 

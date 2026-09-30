@@ -325,7 +325,7 @@ async def _indicator_source(
     if not points:
         return None
     tail = points[-_MAX_POINTS:]
-    values_txt = ", ".join(f"{p}: {v:g}" for p, v in tail)
+    values_txt = ", ".join(f"{p}: {v:.15g}" for p, v in tail)
     return WebSource(
         title=f"{label} — {country.title()}",
         url=url,
@@ -395,11 +395,26 @@ async def fetch_stats(query: str) -> list[WebSource]:
     if indicator and iso3:
         code, label = indicator
         sources = await fetch_indicator_sources(code, label, countries)
-        # A comparison with one missing country must not masquerade as complete.
-        if all(sources):
-            return [source for source in sources if source is not None]
+        available = [source for source in sources if source is not None]
+        if len(available) == len(sources):
+            return available
         if len(countries) > 1:
-            return []
+            if not available:
+                return []
+            # A comparison with one missing country must not masquerade as
+            # complete — but dropping every country for it answered "I don't
+            # have the figures" when three of four were available. Keep them,
+            # and state plainly which countries have no figure.
+            missing = [country for country, source in zip(countries, sources) if source is None]
+            return available + [WebSource(
+                title=f"World Bank — no {label} figure for {', '.join(missing)}",
+                url="https://data.worldbank.org",
+                snippet=(
+                    f"The World Bank publishes no recent {label} figure for {', '.join(missing)}. "
+                    "Do not state or estimate a value for it; say it is not available from this source."
+                ),
+                provider="World Bank",
+            )]
     # DBnomics full-text search does an AND over the query terms, so natural-
     # language filler ("over the years", "what is…") makes it return nothing.
     # Search with just the extracted keywords instead.
@@ -503,7 +518,7 @@ async def fetch_stats(query: str) -> list[WebSource]:
 
     series_name = str(best.get("series_name") or "series").replace("�", "·").strip()
     tail = best_points[-_MAX_POINTS:]
-    values_txt = ", ".join(f"{p}: {v:g}" for p, v in tail)
+    values_txt = ", ".join(f"{p}: {v:.15g}" for p, v in tail)
     series_code = best.get("series_code", "")
     url = f"{base}/series/{best.get('provider_code')}/{best.get('dataset_code')}/{series_code}"
     ds = best.get("_dataset") or {}

@@ -6,7 +6,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { cleanMathText, normaliseLatexDelimiters } from "@/lib/math-delimiters";
+import { cleanMathText, normaliseLatexDelimiters, wrapDisplayLineBreaks } from "@/lib/math-delimiters";
 import { indianiseRupeeAmounts } from "@/lib/number-format";
 import type { Root } from "mdast";
 import { CheckCircle2, Copy, Download, Table2 } from "lucide-react";
@@ -63,23 +63,50 @@ function normaliseMathUnicode() {
       data?: { hChildren?: HastNode[] };
     };
     type HastNode = { type: string; value?: string; children?: HastNode[] };
-    const cleanHast = (node: HastNode) => {
-      if (node.type === "text" && node.value) node.value = cleanMathText(node.value);
-      node.children?.forEach(cleanHast);
+    const cleanHast = (display: boolean) => (node: HastNode) => {
+      if (node.type === "text" && node.value) {
+        const cleaned = cleanMathText(node.value);
+        node.value = display ? wrapDisplayLineBreaks(cleaned) : cleaned;
+      }
+      node.children?.forEach(cleanHast(display));
     };
     const visit = (node: MathNode) => {
       if ((node.type === "inlineMath" || node.type === "math") && node.value) {
-        node.value = cleanMathText(node.value);
+        const cleaned = cleanMathText(node.value);
+        node.value = node.type === "math" ? wrapDisplayLineBreaks(cleaned) : cleaned;
         // mdast-util-math copies the formula into data.hChildren while
         // parsing (display maths nests it as pre > code > text), and
         // rehype-katex renders THAT copy — cleaning only node.value left
         // KaTeX warning on every render.
-        node.data?.hChildren?.forEach(cleanHast);
+        node.data?.hChildren?.forEach(cleanHast(node.type === "math"));
       }
       node.children?.forEach(visit);
     };
     visit(tree as MathNode);
   };
+}
+
+/** Put the ₹ sign back into rendered formulas. KaTeX has no metrics for ₹, so
+ * cleanMathText() hands it "Rs. " to keep the console free of warnings; the
+ * reader should still see the same ₹ the prose uses. Only the visual
+ * .katex-html output changes — the MathML copy is left for screen readers. */
+function restoreRupeeInFormulas() {
+  type HastElement = {
+    type: string;
+    value?: string;
+    properties?: { className?: unknown };
+    children?: HastElement[];
+  };
+  const swap = (node: HastElement) => {
+    if (node.type === "text" && node.value) node.value = node.value.replace(/\bRs\.\s?/g, "₹");
+    node.children?.forEach(swap);
+  };
+  const visit = (node: HastElement) => {
+    const classes = node.properties?.className;
+    if (Array.isArray(classes) && classes.includes("katex-html")) swap(node);
+    else node.children?.forEach(visit);
+  };
+  return (tree: unknown) => visit(tree as HastElement);
 }
 
 /** A pipe-delimited table row: `| a | b |`, with optional leading spaces. */
@@ -434,6 +461,17 @@ function chartPalette(): string[] {
   ];
 }
 
+/** Five times the smallest of ECharts' own nice steps (1, 2, 3, 5 or 10 × a
+ *  power of ten) that is at least value/5 — a spoke maximum that splits into
+ *  five readable ticks. */
+function niceRadarMax(value: number): number {
+  if (!(value > 0)) return 1;
+  const raw = value / 5;
+  const power = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 3, 5, 10].map((f) => f * power).find((candidate) => candidate >= raw) ?? 10 * power;
+  return Number((step * 5).toPrecision(12));
+}
+
 function buildChartOption(spec: ChartSpec): Record<string, unknown> {
   const ink = cssVar("--ink", "#17211f");
   const muted = cssVar("--muted", "#667673");
@@ -522,7 +560,13 @@ function buildChartOption(spec: ChartSpec): Record<string, unknown> {
       tooltip: { trigger: "item" },
       legend: { bottom: 0, textStyle: { color: muted } },
       radar: {
-        indicator: (spec.indicators ?? []).map((i) => ({ name: i.name, max: i.max })),
+        // ECharts shares one split count across the spokes; a maximum like 18
+        // or 2.2 does not divide into readable ticks and it warns on every
+        // resize. Each maximum is rounded up to five "nice" steps.
+        indicator: (spec.indicators ?? []).map((i, index) => ({
+          name: i.name,
+          max: niceRadarMax(Math.max(i.max ?? 0, ...(spec.series ?? []).map((s) => Number(s.data?.[index] ?? 0)))),
+        })),
         axisName: { color: muted },
         axisLine: { lineStyle: { color: line } },
         splitLine: { lineStyle: { color: line } },
@@ -982,7 +1026,7 @@ export function AnswerRenderer({
             // A single "$" is always a currency sign in a finance answer ("$480,000 is
             // **$288,000**" rendered as a broken formula); maths uses $$…$$ or \(…\).
             remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }], normaliseMathUnicode]}
-            rehypePlugins={[rehypeKatex]}
+            rehypePlugins={[rehypeKatex, restoreRupeeInFormulas]}
             components={mdComponents}
           >
             {normaliseMarkdownTables(stripInlineRefs(normaliseLatexDelimiters(indianiseRupeeAmounts(seg.content))))}

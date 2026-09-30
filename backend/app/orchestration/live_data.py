@@ -22,6 +22,7 @@ import json
 import re
 
 from app.core.config import get_settings
+from app.orchestration.chart_intent import allows_automatic_chart
 from app.domains.model_gateway.tools.chart_tool import ChartToolError, build_chart_fence
 from app.orchestration.websearch import WebSource, wants_visual
 from app.orchestration.frankfurter import fetch_fx
@@ -97,7 +98,7 @@ def build_forced_chart(query: str, sources: list[WebSource]) -> str | None:
     this fence when composed_text has none already, so a chart the model (or
     tool) already produced is never overridden.
     """
-    if not wants_visual(query):
+    if not wants_visual(query) or not allows_automatic_chart(query):
         return None
     stat_sources = [s for s in sources if s.series and len(s.series) >= 2]
     if not stat_sources:

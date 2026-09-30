@@ -7,6 +7,8 @@ both sides of the flag.
 """
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from app.core.config import get_settings
@@ -84,3 +86,35 @@ async def test_startup_requires_security_policies_and_never_creates_accounts(mon
         async with main.lifespan(main.app):
             pass
     create_user.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_ddl_on_startup_is_retried_not_fatal(monkeypatch):
+    from sqlalchemy.exc import OperationalError
+    from app import main
+
+    monkeypatch.setattr(main.asyncio, "sleep", AsyncMock())
+    calls = []
+
+    async def security_step():
+        calls.append(1)
+        if len(calls) < 3:
+            raise OperationalError("ALTER TABLE sources", {}, Exception("canceling statement due to lock timeout"))
+        return "applied"
+
+    assert await main._with_ddl_retry(security_step) == "applied"
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_other_database_errors_still_stop_startup(monkeypatch):
+    from sqlalchemy.exc import OperationalError
+    from app import main
+
+    monkeypatch.setattr(main.asyncio, "sleep", AsyncMock())
+
+    async def broken_policy():
+        raise OperationalError("CREATE POLICY", {}, Exception("permission denied for table sources"))
+
+    with pytest.raises(OperationalError):
+        await main._with_ddl_retry(broken_policy)

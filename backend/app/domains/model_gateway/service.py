@@ -190,6 +190,7 @@ async def run_agentic_completion(
     model: str | None = None,
     on_tool_start: ToolStartHook | None = None,
     on_tool_done: ToolDoneHook | None = None,
+    chart_requested: bool = False,
 ) -> AgentOutcome:
     """Answer through the governed tool-calling loop. Raises on provider
     failure, AgentUnavailable when Groq isn't usable, and RuntimeError on an
@@ -212,6 +213,7 @@ async def run_agentic_completion(
         ),
         on_tool_start=on_tool_start,
         on_tool_done=on_tool_done,
+        chart_requested=chart_requested,
     )
     if not outcome.text.strip():
         raise RuntimeError("Agent produced an empty answer")

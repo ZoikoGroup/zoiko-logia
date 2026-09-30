@@ -71,7 +71,7 @@ KRITON_SYSTEM_PROMPT = _SYSTEM_PROMPT
 # periodically retires models — if you get a "model_decommissioned" error,
 # check console.groq.com/docs/models and update GROQ_MODEL (e.g. to
 # llama-3.3-70b-versatile).
-_DEFAULT_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile")
+_DEFAULT_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")  # llama-3.1-70b-versatile is decommissioned
 
 
 class GroqAdapter:

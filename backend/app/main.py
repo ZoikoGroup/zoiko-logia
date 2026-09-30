@@ -636,6 +636,26 @@ async def _warm_up_ml_models():
             print(f"WARNING: {name} model warmup failed (will still lazy-load on first use): {exc}")
 
 
+# Concurrent DDL on the shared database (two dev reloads a second apart, or
+# another developer's backend starting at the same moment) fails the loser
+# with these; a moment later the same statement succeeds. One of them used to
+# stop the backend outright, and every question then timed out in the browser.
+_DDL_CONTENTION = ("lock timeout", "deadlock detected", "tuple concurrently updated", "could not obtain lock")
+
+
+async def _with_ddl_retry(step, attempts: int = 5):
+    for attempt in range(1, attempts + 1):
+        try:
+            return await step()
+        except SQLAlchemyError as exc:
+            if attempt == attempts or not any(marker in str(exc) for marker in _DDL_CONTENTION):
+                raise
+            delay = 2 * attempt
+            print(f"WARNING: {step.__name__} hit concurrent DDL ({type(exc.orig).__name__ if getattr(exc, 'orig', None) else type(exc).__name__}); "
+                  f"retrying in {delay}s (attempt {attempt}/{attempts})")
+            await asyncio.sleep(delay)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle events: create tables, seed, and dispose of engine."""
@@ -660,8 +680,8 @@ async def lifespan(app: FastAPI):
             print(f"WARNING: startup step {_label} skipped ({type(exc).__name__}: {exc}). "
                   "Service will still start; step retries on next boot.")
     # Security policies are required before any request can be served.
-    await _setup_source_rls()
-    await _setup_user_rls()
+    await _with_ddl_retry(_setup_source_rls)
+    await _with_ddl_retry(_setup_user_rls)
     _seed_defaults()
     _seed_evaluation()
     _seed_escalation_rules()
@@ -701,6 +721,18 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=503,
             content={"detail": "Kriton's database is temporarily unavailable. Please try again shortly."},
+            headers={"Retry-After": "5"},
+        )
+
+    @app.exception_handler(TimeoutError)
+    async def database_timeout_handler(_request, exc: TimeoutError) -> JSONResponse:
+        # A connection that could not be opened in time raised a bare
+        # TimeoutError; unhandled, it became a 500 without CORS headers and the
+        # browser showed a CORS failure instead of a retryable message.
+        logger.error("Request timed out before completing", exc_info=(type(exc), exc, exc.__traceback__))
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Kriton could not reach its database in time. Please try again."},
             headers={"Retry-After": "5"},
         )
 

@@ -76,11 +76,31 @@ function splitTextRuns(formula: string): { text: boolean; value: string }[] {
 }
 
 /** Make a formula KaTeX-safe: no character KaTeX cannot draw. */
+// The model sometimes doubles the backslash of a command ("\\\\text{₹}"); in
+// LaTeX "\\\\" is a line break, so the rest printed as the letters "textRs.".
+const DOUBLED_COMMAND = /\\\\(?=(?:text|textbf|mathbf|mathrm|frac|dfrac|tfrac|times|cdot|div|sqrt|left|right|quad|qquad|approx|le|ge|neq|pm)\b)/g;
+
 export function cleanMathText(formula: string): string {
-  const universal = UNIVERSAL.reduce((value, [pattern, replacement]) => value.replace(pattern, replacement), formula);
+  const repaired = formula
+    .replace(DOUBLED_COMMAND, "\\")
+    // Markdown bold typed inside a formula showed as "∗∗Rs. 40,00,000∗∗".
+    .replace(/\*\*([^*]+)\*\*/g, "\\mathbf{$1}");
+  const universal = UNIVERSAL.reduce((value, [pattern, replacement]) => value.replace(pattern, replacement), repaired);
   return splitTextRuns(universal)
     .map(({ text, value }) =>
       SYMBOLS.reduce((out, [symbol, inMath, inText]) => out.split(symbol).join(text ? inText : inMath), value),
     )
-    .join("");
+    .join("")
+    // A bare % starts a LaTeX comment: "\mathbf{11.10 %}" dropped the closing
+    // brace, the formula failed and the reader saw raw LaTeX. Always a percent.
+    .replace(/(?<!\\)%/g, "\\%");
+}
+
+/** Display formulas that break lines with \\\\ outside any environment: KaTeX
+ *  ignores the break ("\\\\ does nothing in display mode") and warns. Inside
+ *  a gathered block each line shows, centred. */
+export function wrapDisplayLineBreaks(formula: string): string {
+  return /\\\\/.test(formula) && !/\\begin\{/.test(formula)
+    ? `\\begin{gathered}${formula}\\end{gathered}`
+    : formula;
 }

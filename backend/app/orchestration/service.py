@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import time
 import os
 from collections.abc import Awaitable, Callable
@@ -36,7 +37,8 @@ from app.orchestration.identifiers import (
     check_idempotency, claim_idempotency,
 )
 from app.orchestration.prescreen import run_prescreen
-from app.orchestration.conversation import conversation_prompt, screened_history
+from app.orchestration.conversation import bare_chart_hint, conversation_prompt, screened_history
+from app.orchestration.chart_intent import allows_automatic_chart
 from app.orchestration.retrieve import build_source_bundle
 from app.orchestration.routing_matrix import (
     map_safety_confidence,
@@ -68,7 +70,7 @@ from app.domains.identity.permissions import permissions_for_role
 from app.domains.risk_safety.schemas import ClassifyRequest, SafetyDecision
 from app.domains.risk_safety.refusal_templates import get_template as get_refusal_template
 from app.domains.model_gateway import service as model_gateway_service
-from app.domains.model_gateway.agent import with_agent_instructions
+from app.domains.model_gateway.agent import chart_requested, is_agent_clarification, with_agent_instructions
 from app.orchestration.compose import select_prompt
 from app.orchestration.redaction import redact_for_external_exposure
 from app.orchestration.websearch import (
@@ -205,6 +207,7 @@ async def ask_kriton(
     await report("workflow_planned", f"Detected {workflow_plan.task_type.replace('_', ' ')}")
 
     requested_engagement_id = request.task_context.engagement_id if request.task_context else None
+    no_engagement_general_guidance = False
     # A sole authorized engagement is unambiguous and can be selected without
     # a workflow form. Multiple engagements are never guessed; the task
     # contract will request the missing engagement instead.
@@ -222,6 +225,18 @@ async def ask_kriton(
                     update={"engagement_id": requested_engagement_id}
                 )
             })
+        elif not candidates and workflow_plan.detection == "automatic":
+            # With no engagement to choose, the task contract could only ever
+            # ask for one the user cannot supply — every "our company / our
+            # client" question stopped at a clarification with no way on.
+            # Answer as general guidance instead, labelled as such; truly
+            # advisory questions are still routed to human review by risk.
+            no_engagement_general_guidance = True
+            workflow_plan = workflow_plan.model_copy(update={
+                "task_type": "general_question",
+                "reason_codes": [*workflow_plan.reason_codes, "NO_ENGAGEMENT_GENERAL_GUIDANCE"],
+            })
+            request = apply_plan(request, workflow_plan)
     authorized_engagement_id: str | None = None
     if requested_engagement_id:
         required_operations = [ASK, MODEL_TRANSMIT]
@@ -786,7 +801,8 @@ async def ask_kriton(
         source.observation for source in live_sources if source.observation is not None
     ]
     observation_chart = (
-        build_observation_chart(live_observations) if wants_visual(request.query) else None
+        build_observation_chart(live_observations)
+        if wants_visual(request.query) and allows_automatic_chart(request.query) else None
     )
 
     governed_passages = (
@@ -905,6 +921,17 @@ async def ask_kriton(
             f"{authority_context}"
         )
     grounded_input += conversation_prompt(request.conversation_history)
+    grounded_input += bare_chart_hint(request.query, request.conversation_history)
+    if risk_level == "HIGH":
+        # pm_1.3: a question about the asker's own or a client's matter is
+        # answered as general guidance, never as the decision itself.
+        grounded_input += (
+            "\n\nThis question concerns the asker's own or a client's specific matter. "
+            "Give general guidance only: explain the applicable rules and standards, the "
+            "factors that decide the outcome, worked illustrations where useful, and the "
+            "information a qualified professional would need to conclude. Do NOT make the "
+            "decision or give a definitive personal recommendation for their case."
+        )
     if effective_context:
         grounded_input += build_task_prompt_context(effective_context)
     deterministic_calculation = metrics.run_sync(
@@ -980,9 +1007,15 @@ async def ask_kriton(
                 model_gateway_service.run_agentic_completion(
                     with_agent_instructions(grounded_input),
                     granted_permissions=permissions_for_role(role),
-                    model=answer_model,
+                    # Always the full GROQ_MODEL, never the fast one: planning
+                    # tool calls is where the small model failed — refusing
+                    # in-scope questions after fetching data, skipping a
+                    # requested chart, pricing a US stock in rupees — while
+                    # the full model answered the same questions correctly.
+                    model=None,
                     on_tool_start=on_tool_start,
                     on_tool_done=on_tool_done,
+                    chart_requested=chart_requested(request.query),
                 ),
             )
             composed_text = agent_outcome.text
@@ -994,7 +1027,10 @@ async def ask_kriton(
                 tool_call_count=len(agent_outcome.tool_calls), fell_back=False,
             )
         except Exception as exc:
-            logger.warning("Agent composition failed (%s); using standard composition", type(exc).__name__)
+            logger.warning(
+                "Agent composition failed (%s: %s); using standard composition",
+                type(exc).__name__, str(exc)[:300],
+            )
             agent_outcome = None
             await audit_agent_completed(
                 db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
@@ -1075,6 +1111,30 @@ async def ask_kriton(
         )
         return contextualize(response)
 
+    if agent_outcome is not None and is_agent_clarification(composed_text, agent_outcome):
+        # The agent asked for missing input ("which amount?") instead of
+        # answering. Shown as an answer it read "Answered — model knowledge,
+        # no sources retrieved"; it is a clarification, so it gets that status.
+        await audit_clarification_returned(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, clarification_cycle=clarification_cycle,
+        )
+        response = AskKritonResponse(
+            query_id=query_id, correlation_id=correlation_id,
+            outcome="clarification_required", route=ROUTE_CLARIFICATION,
+            safety=safety_state, confidence_state=effective_confidence,
+            source_bundle=source_bundle, answer=None,
+            next_action=NextAction(type="ask_clarifying_question", message=composed_text.strip()),
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        )
+        await _finalise_and_return(
+            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+            audit_chain_id=audit_chain_id, actor_id=actor_id,
+            outcome=response.outcome, route=ROUTE_CLARIFICATION, start_time=start_time,
+        )
+        return contextualize(response)
+
     if agent_outcome is not None:
         # Tool evidence joins the answer exactly like pre-fetched live data
         # would have: cited after the existing sources, observations and the
@@ -1082,9 +1142,9 @@ async def ask_kriton(
         # (built from checked tool arguments, never retyped by the model).
         live_sources = list(agent_outcome.sources)
         live_observations = [s.observation for s in live_sources if s.observation is not None]
-        observation_chart = (
-            build_observation_chart(live_observations) if wants_visual(request.query) else None
-        )
+        # A successful agent decides whether a chart is appropriate, including
+        # conditional requests. Do not override a deliberate no-chart answer.
+        observation_chart = None
         rag_citations = [
             c.model_copy(update={"ref_id": f"REF-{i + 1}"})
             for i, c in enumerate(rag_citations + [_web_citation(s) for s in live_sources])
@@ -1092,11 +1152,10 @@ async def ask_kriton(
         if agent_outcome.artifacts:
             composed_text = composed_text.rstrip() + "\n\n" + "\n\n".join(agent_outcome.artifacts)
 
-    # Force a chart from the connector's own fetched numeric series when the
-    # question wanted one and the model didn't already produce it (via prose
-    # or the render_chart tool) — see live_data.build_forced_chart. Runs
-    # before validation so the forced chart is checked like any other content.
-    if "```chart" not in composed_text:
+    # Only the non-agent path gets a deterministic chart fallback. Successful
+    # agents retain their chart decision; conditional/negative requests are
+    # also excluded inside build_forced_chart when the agent was unavailable.
+    if agent_outcome is None and "```chart" not in composed_text:
         forced_chart = build_forced_chart(request.query, live_sources)
         if forced_chart:
             composed_text = composed_text.rstrip() + "\n\n" + forced_chart
@@ -1128,6 +1187,33 @@ async def ask_kriton(
     # are the [REF-N] citations the reader gets, but they are not registered in
     # the governed SourceBundle. Without it, every answer grounded purely in
     # live sources fails the grounding check and degrades to HUMAN_REVIEW.
+    # Arithmetic the model got wrong is corrected before validation rather than
+    # sending the whole answer to review: "4,07,600 * 180 = 733680000" (one
+    # digit too many) escalated a five-part calculation answer. The model gets
+    # the exact failing lines and correct values once; if its corrected answer
+    # still fails, validation below escalates exactly as before.
+    calculation_failures = metrics.run_sync(
+        "calculation.validate", lambda: validate_answer_calculations(composed_text)
+    )
+    if calculation_failures and agent_outcome is None:
+        await report("correcting", "Correcting a calculation")
+        try:
+            corrected = await metrics.run(
+                "composition.calculation_correction",
+                model_gateway_service.run_grounded_completion(
+                    grounded_input
+                    + "\n\n=== Your previous answer ===\n" + composed_text
+                    + "\n\n=== Arithmetic errors found in it ===\n" + "\n".join(calculation_failures)
+                    + "\n\nRewrite the complete answer with these calculations corrected and every "
+                    "figure that depends on them updated. Keep everything else the same."
+                ),
+            )
+        except Exception:
+            corrected = ""
+        if corrected and corrected.strip():
+            composed_text = corrected
+            calculation_failures = validate_answer_calculations(composed_text)
+
     validation = (
         validate_answer(
             composed_text,
@@ -1137,9 +1223,6 @@ async def ask_kriton(
             ungrounded_answer_allowed=effective_confidence == CONF_INSUFFICIENT,
         )
         if source_bundle else None
-    )
-    calculation_failures = metrics.run_sync(
-        "calculation.validate", lambda: validate_answer_calculations(composed_text)
     )
     if calculation_failures:
         if validation is None:
@@ -1220,6 +1303,17 @@ async def ask_kriton(
 
     # Build limitations list
     limitations: list[str] = list(decision.limitations or [])
+    if risk_level == "HIGH":
+        limitations.append(
+            "General guidance only — not advice on your or your client's specific matter. "
+            "Consult a qualified professional before acting."
+        )
+    if no_engagement_general_guidance and risk_level != "HIGH":
+        limitations.append(
+            "General guidance only: no engagement is set up for you, so this is not advice on "
+            "your or your client's specific matter. Set up an engagement for a governed, "
+            "client-specific answer."
+        )
     # When the LLM authoritatively re-classified risk, drop the weak ML
     # model's "uncertain / needs clarification" artifact — it's noise next to
     # a confidently-answered response.
@@ -1232,6 +1326,16 @@ async def ask_kriton(
         limitations.append(
             "This response is for educational purposes only. Consult a qualified professional."
         )
+    # A calculation on the question's own figures needs no source, and calling
+    # it "model knowledge" misdescribes an exactly computed answer.
+    # So is a chart redrawn from figures already in the conversation ("make
+    # it a bar chart"): render_chart only accepts figures found there.
+    computed_from_question = not rag_citations and (
+        deterministic_calculation is not None
+        or (agent_outcome is not None and any(
+            call.tool in ("calculate", "render_chart") and call.ok for call in agent_outcome.tool_calls
+        ))
+    )
     if effective_confidence == CONF_INSUFFICIENT:
         # Must say what the answer actually rests on: with no citations at
         # all (e.g. web search unreachable) it is the model's own knowledge,
@@ -1240,6 +1344,9 @@ async def ask_kriton(
             "No matching source was found in your governed source library; this answer is "
             "based on live data and web sources. Verify figures against the official source."
             if rag_citations else
+            "Built exactly from figures in your question or earlier in this conversation; no "
+            "new source was needed. Check that those figures are correct."
+            if computed_from_question else
             "No sources could be retrieved for this answer; it is based on the model's general "
             "knowledge and may be outdated or incorrect. Verify against the official source "
             "before relying on it."
@@ -1249,10 +1356,27 @@ async def ask_kriton(
     # about accounting/tax/payroll/finance/audit/bookkeeping/commerce), the
     # web-search results are irrelevant to the reply — so return NO sources and
     # NO disclaimer. Sources are shown only for genuine in-domain answers.
+    # The model sometimes declines an off-topic question in its own words
+    # ("I'm sorry, but I can't help with that.") instead of the fixed domain
+    # message, and it was then shown as an answer with disclaimers attached.
+    # Not when the agent fetched real figures for it: that question is
+    # in-domain, and its short "I can't…" is about one part of it (India
+    # vs Mars), not a reason to discard the whole answer as off-topic.
+    agent_found_evidence = agent_outcome is not None and bool(agent_outcome.sources)
+    if (
+        composed_text and len(composed_text.strip()) < 160 and not agent_found_evidence
+        and _GENERIC_REFUSAL.search(composed_text)
+    ):
+        composed_text = _DOMAIN_REFUSAL_TEXT
     is_offdomain_refusal = "designed to answer questions related to Accounting" in (composed_text or "")
     if is_offdomain_refusal:
         rag_citations = []
         limitations = []
+        final_text = composed_text
+        # A refusal carries no chart, or it showed chart controls on no chart.
+        observation_chart = None
+        deterministic_calculation = None
+        live_observations = []
 
     answer = ComposedAnswer(
         text=final_text,
@@ -1265,6 +1389,7 @@ async def ask_kriton(
             *([observation_chart] if observation_chart else []),
         ],
         observations=live_observations,
+        computed_from_question=computed_from_question and not is_offdomain_refusal,
         prompt_id=prompt_id,
         prompt_name=prompt_name,
         output_text=final_text,
@@ -1273,8 +1398,8 @@ async def ask_kriton(
     response = AskKritonResponse(
         query_id=query_id,
         correlation_id=correlation_id,
-        outcome="answered",
-        route=ROUTE_LLM,
+        outcome="refused" if is_offdomain_refusal else "answered",
+        route=ROUTE_REFUSAL if is_offdomain_refusal else ROUTE_LLM,
         safety=safety_state,
         confidence_state=effective_confidence,
         source_bundle=source_bundle,
@@ -1304,6 +1429,16 @@ async def ask_kriton(
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+_GENERIC_REFUSAL = re.compile(
+    r"^\W*(i'?m|i am)?\s*(sorry|afraid)?[,.]?\s*(but\s+)?i\s+(can'?t|cannot|am unable to|won'?t)\s+"
+    r"(help|assist|answer)", re.I,
+)
+_DOMAIN_REFUSAL_TEXT = (
+    "I'm designed to answer questions related to Accounting, Taxation, Payroll, Finance, "
+    "Auditing, Bookkeeping, Commerce, and Accounting Education across global countries.\n\n"
+    "Please ask a question related to these topics."
+)
 
 async def _record_answer_source_usages(
     db, *, source_bundle, tenant_id: str, query_id: str,

@@ -137,3 +137,37 @@ async def test_incomplete_context_returns_before_safety_retrieval_or_providers(m
     prescreen.assert_not_called()
     retrieval.assert_not_awaited()
     provider.assert_not_awaited()
+
+
+class _ReachedSafety(Exception):
+    pass
+
+
+@pytest.mark.asyncio
+async def test_without_any_engagement_a_detected_professional_task_is_general_guidance(monkeypatch) -> None:
+    """No engagement exists to choose, so asking for one was a dead end."""
+    for name in ("audit_query_received", "audit_request_validated", "audit_context_resolved"):
+        monkeypatch.setattr(service, name, AsyncMock())
+    monkeypatch.setattr(service, "list_authorized_engagements", AsyncMock(return_value=[]))
+    monkeypatch.setattr(service, "run_prescreen", Mock(side_effect=_ReachedSafety))
+
+    with pytest.raises(_ReachedSafety):
+        await service.ask_kriton(
+            db=object(), sync_db=object(), actor_id="user-1", tenant_id="tenant-1", role="Accountant",
+            request=AskKritonRequest(query="Which revenue standard applies to our software subscription contracts?"),
+        )
+
+
+def test_bare_chart_request_points_at_the_latest_answer_with_figures() -> None:
+    from app.orchestration.conversation import bare_chart_hint
+    from app.orchestration.schemas import ConversationMessage
+
+    history = [
+        ConversationMessage(role="user", content="Pakistan inflation?"),
+        ConversationMessage(role="assistant", content="| 2023 | 30.77 |\n| 2024 | 12.63 |\n| 2025 | 3.55 |"),
+        ConversationMessage(role="user", content="What was India's inflation in 1850?"),
+    ]
+    assert "do not ask what to chart" in bare_chart_hint("Give me a chart", history)
+    assert "do not ask what to chart" in bare_chart_hint("Make it a bar chart instead", history)
+    assert bare_chart_hint("Give me a chart of India's inflation", history) == ""
+    assert bare_chart_hint("Give me a chart", history[:1]) == ""

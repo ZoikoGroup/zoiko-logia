@@ -63,5 +63,28 @@ if (rupee === "\\text{Rs. } 5 000 \\text{in Rs. }") {
   console.log(`FAIL  rupee handling: ${JSON.stringify(rupee)}`);
 }
 
+const wacc = "\\text{WACC}= (0.40 \\times 6.75\\%) + (0.60 \\times 14\\%) = \\mathbf{0.1110} \\; \\text{or} \\; \\mathbf{11.10 %}";
+const waccHtml = katex.renderToString(cleanMathText(wacc), { throwOnError: false, displayMode: true });
+if (!waccHtml.includes("katex-error") && cleanMathText(wacc).includes("6.75\\%") && !cleanMathText(wacc).includes("\\\\%")) {
+  console.log("PASS  bare % in a formula renders as a percent, escaped % unchanged");
+} else {
+  failed += 1;
+  console.log(`FAIL  percent handling: ${JSON.stringify(cleanMathText(wacc))}`);
+}
+
+for (const [input, expected] of [
+  ["\\\\text{\u20b9}10,00,000", "\\text{Rs. }10,00,000"],
+  ["= **40,00,000**", "= \\mathbf{40,00,000}"],
+  ["a \\\\ b", "a \\\\ b"],
+]) {
+  const out = cleanMathText(input);
+  if (out === expected && !katex.renderToString(out, { throwOnError: false }).includes("katex-error")) {
+    console.log(`PASS  model formula slip repaired: ${JSON.stringify(input)}`);
+  } else {
+    failed += 1;
+    console.log(`FAIL  ${JSON.stringify(input)} -> ${JSON.stringify(out)}`);
+  }
+}
+
 console.log(failed ? `\n${failed} FAILED` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

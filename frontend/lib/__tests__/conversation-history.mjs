@@ -11,7 +11,7 @@ import { conversationHistory } from "../kriton-conversation.ts";
 
 const turn = (i, extra = {}) => ({
   id: `t${i}`, query: `q${i}`, submittedQuery: `question ${i}`, loading: false, error: null,
-  result: { answer: { text: `answer ${i} ` + "x".repeat(3000) } }, ...extra,
+  result: { outcome: "answered", answer: { text: `answer ${i}: 2021 1.5, 2022 2.5, 2023 3.5 ` + "x".repeat(3000) } }, ...extra,
 });
 
 let failed = 0;
@@ -24,10 +24,19 @@ check("answers are truncated", many.filter((m) => m.role === "assistant").every(
 check("keeps newest questions", many.some((m) => m.content === "question 19") && !many.some((m) => m.content === "question 0"));
 
 const docs = conversationHistory([turn(1), turn(2, { attachments: [{ documentId: "d" }] })]);
-check("document turns are not replayed", !docs.some((m) => m.content.includes("2")));
+check("document turns are not replayed", !docs.some((m) => m.content === "question 2" || m.content.startsWith("answer 2")));
 
 const pending = conversationHistory([turn(1), { ...turn(2), result: null }]);
 check("unanswered turns are skipped", pending.length === 2 && pending[0].content === "question 1");
+
+const noData = (i, outcome = "answered") => ({
+  ...turn(i), result: { outcome, answer: { text: "I could not retrieve that figure." } },
+});
+const chartFollowUp = conversationHistory([turn(1), turn(2), noData(3), noData(4, "refused")]);
+const replayed = chartFollowUp.filter((m) => m.role === "assistant").map((m) => m.content);
+check("'Give me a chart' still sees the last answers WITH figures",
+  replayed.length === 2 && replayed[0].startsWith("answer 1") && replayed[1].startsWith("answer 2"));
+check("every question is still sent", chartFollowUp.filter((m) => m.role === "user").length === 4);
 
 console.log(failed ? `\n${failed} FAILED` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

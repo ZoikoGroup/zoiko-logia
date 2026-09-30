@@ -85,28 +85,33 @@ async def fetch_fx_rates(base_cur: str, quote_curs: list[str], amount: float = 1
     if not quote_curs:
         return []
     base = _frankfurter_base()
-    url = f"{base}/latest?base={base_cur}&symbols={','.join(quote_curs)}"
+    # Always the ECB's own EUR-based rates, crossed here. Asking Frankfurter
+    # for base=INR returns rates cut to ~4 significant digits (1 INR = 0.01042
+    # USD), so ₹25,00,000 came out as $26,050 instead of $26,046.21.
+    symbols = sorted({base_cur, *quote_curs} - {"EUR"})
+    url = f"{base}/latest?symbols={','.join(symbols)}" if symbols else f"{base}/latest"
     try:
         async with httpx.AsyncClient(timeout=6.0) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             data = resp.json()
-        rates = data.get("rates") or {}
+        per_euro = {"EUR": 1.0, **{code: float(value) for code, value in (data.get("rates") or {}).items()}}
         date = data.get("date", "")
     except Exception:
+        return []
+    if not per_euro.get(base_cur):
         return []
 
     sources: list[WebSource] = []
     for quote_cur in quote_curs:
-        raw_rate = rates.get(quote_cur)
-        if raw_rate is None:
+        if quote_cur not in per_euro:
             continue
-        rate = float(raw_rate)
+        rate = per_euro[quote_cur] / per_euro[base_cur]
         converted = amount * rate
         snippet = (
             f"Live ECB reference rate (Frankfurter), {date}: "
-            f"1 {base_cur} = {rate:g} {quote_cur}. "
-            f"{amount:g} {base_cur} = {converted:g} {quote_cur}."
+            f"1 {base_cur} = {rate:.8g} {quote_cur}. "
+            f"{amount:.15g} {base_cur} = {converted:.2f} {quote_cur}."
         )
         pair_url = f"{base}/latest?base={base_cur}&symbols={quote_cur}"
         sources.append(
@@ -119,7 +124,7 @@ async def fetch_fx_rates(base_cur: str, quote_curs: list[str], amount: float = 1
                 observation=LiveObservation(
                     observation_id=f"obs_{uuid.uuid4().hex}",
                     indicator=f"{base_cur}/{quote_cur} exchange rate",
-                    value=str(rate), unit=f"{quote_cur} per {base_cur}", period=str(date),
+                    value=f"{rate:.8g}", unit=f"{quote_cur} per {base_cur}", period=str(date),
                     provider="Frankfurter (ECB reference rates)", source_url=pair_url,
                     freshness="daily",
                 ),

@@ -7,7 +7,7 @@ verified result.
 """
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -41,9 +41,17 @@ async def _handle(args: CalculateArgs) -> ToolResult:
             "Unsupported or invalid expression. Use only numbers, + - * / and parentheses (no powers or functions).",
         )
     prefix = f"{args.label}: " if args.label else ""
+    # The model rounded 259384.0304 to "259,384.02" itself; hand it the
+    # correctly rounded figure too so it never rounds on its own.
+    rounded = result.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    shown = _format(result)
+    rounding_note = f" Rounded to 2 decimal places: {format(rounded, 'f')}." if rounded != result else ""
     return ToolResult(
         ok=True,
-        content=f"{prefix}{args.expression} = {_format(result)} (computed by the application; use this exact value).",
+        content=(
+            f"{prefix}{args.expression} = {shown} (computed by the application; use this exact value)."
+            f"{rounding_note}"
+        ),
     )
 
 

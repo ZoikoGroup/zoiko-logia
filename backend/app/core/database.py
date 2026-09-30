@@ -1,7 +1,10 @@
+import asyncio
+
 from fastapi import Request
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker, create_async_engine
 from collections.abc import AsyncGenerator
 from typing import Generator
 
@@ -128,6 +131,18 @@ def _identity_from_request(request: Request) -> tuple[str, str]:
     return claims.sub, claims.tenant_id
 
 
+async def _open_request_connection() -> AsyncConnection:
+    """Check out the request's connection, retrying once. The Supabase pooler
+    occasionally takes longer than the connect timeout for a single attempt;
+    the retry a moment later usually succeeds, where the failure used to reach
+    the browser as a bare 500 (reported there as a CORS error)."""
+    try:
+        return await request_engine.connect()
+    except (TimeoutError, OSError, SQLAlchemyError):
+        await asyncio.sleep(0.5)
+        return await request_engine.connect()
+
+
 async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
     """Async session dependency for core domain endpoints. Also identity-
     scopes the session for Postgres RLS: sets app.tenant_id (RG-02,
@@ -162,20 +177,23 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
     next UPDATE on that same row matched zero rows — the row was real, the
     policy was right, and the new connection simply had no identity on it.
     Holding one connection for the request removes the possibility."""
-    async with request_engine.connect() as connection, \
-            RequestSessionLocal(bind=connection) as session:
-        if not settings.is_sqlite:
-            user_id, tenant_id = _identity_from_request(request)
-            # set_config(..., false) accepts a bound parameter, unlike SET,
-            # whose grammar takes a literal, not a placeholder — binding
-            # these directly into SET would require unsafe string
-            # formatting. Always called, even with "", so a connection
-            # reused from the pool never carries over a prior request's
-            # identity into a request that has none.
-            await session.execute(
-                text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id}
-            )
-            await session.execute(
-                text("SELECT set_config('app.user_id', :user_id, false)"), {"user_id": user_id}
-            )
-        yield session
+    connection = await _open_request_connection()
+    try:
+        async with RequestSessionLocal(bind=connection) as session:
+            if not settings.is_sqlite:
+                user_id, tenant_id = _identity_from_request(request)
+                # set_config(..., false) accepts a bound parameter, unlike SET,
+                # whose grammar takes a literal, not a placeholder — binding
+                # these directly into SET would require unsafe string
+                # formatting. Always called, even with "", so a connection
+                # reused from the pool never carries over a prior request's
+                # identity into a request that has none.
+                await session.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id}
+                )
+                await session.execute(
+                    text("SELECT set_config('app.user_id', :user_id, false)"), {"user_id": user_id}
+                )
+            yield session
+    finally:
+        await connection.close()

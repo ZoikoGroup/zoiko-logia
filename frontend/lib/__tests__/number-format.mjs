@@ -16,6 +16,8 @@ const cases = [
   ["dollars keep international grouping", "$1,092,600 and 11,403 USD", "$1,092,600 and 11,403 USD"],
   ["bare numbers untouched", "Population 1,092,600", "Population 1,092,600"],
   ["code untouched", "`INR 1,092,600`", "`INR 1,092,600`"],
+  ["space-grouped rupees", "\u20b910 000 000 net income", "\u20b91,00,00,000 net income"],
+  ["a small number after the sign is not a group", "\u20b95 items", "\u20b95 items"],
 ];
 let failed = 0;
 for (const [name, input, expected] of cases) {

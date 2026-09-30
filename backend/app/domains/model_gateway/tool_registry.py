@@ -34,13 +34,13 @@ REGISTRY_VERSION = "1.0"
 
 # What the model reads back is capped: a tool result goes into the next
 # prompt, so an oversized payload would silently eat the token budget.
-MAX_RESULT_CHARS = 4000
+MAX_RESULT_CHARS = 6000
 
 RiskLevel = Literal["low", "medium", "high"]
 ErrorCode = Literal[
     "unknown_tool", "permission_denied", "invalid_arguments", "timeout", "no_data", "tool_error",
     # Set by the agent loop, not by execute():
-    "duplicate_call", "budget_exhausted",
+    "duplicate_call", "budget_exhausted", "unverified_figures",
 ]
 
 

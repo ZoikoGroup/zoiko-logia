@@ -38,6 +38,20 @@ _CLIENT_SPECIFIC = re.compile(
     r"acquisition|business|financial statements|accounting policy)\b", re.I,
 )
 
+# Policy research needs an engagement, jurisdiction, framework and period, so
+# it only applies to the asker's own or a client's matter. A message that
+# merely names a standard ("... under IAS 37?") with no such context is a
+# learning question, whatever it starts with: "Pass journal entries for ...
+# What is the difference between provisions and contingent liabilities under
+# IAS 37? ..." was sent to policy research because it did not START with
+# "what is"/"explain".
+_OWN_MATTER = re.compile(
+    r"\b(my|our|we|us)\b|\bclient'?s?\b|"
+    r"\b(this|these)\s+(company|companies|entity|entities|transactions?|contracts?|leases?|"
+    r"acquisitions?|business|arrangements?|deals?|group)\b",
+    re.I,
+)
+
 
 def _step(capability: str, reason: str) -> CapabilityStep:
     return CapabilityStep(capability=capability, reason=reason)  # type: ignore[arg-type]
@@ -66,7 +80,7 @@ def plan_workflow(request: AskKritonRequest) -> WorkflowPlan:
         elif document_count and (extract or execution):
             task_type, confidence = "document_evidence_extraction", 0.94
             reasons = ["DOCUMENTS_ATTACHED", "EVIDENCE_INTENT"]
-        elif policy and not (educational and not _CLIENT_SPECIFIC.search(query)):
+        elif policy and _OWN_MATTER.search(query) and not (educational and not _CLIENT_SPECIFIC.search(query)):
             task_type, confidence = "policy_research", 0.88
             reasons = ["POLICY_APPLICABILITY_INTENT"]
         else:

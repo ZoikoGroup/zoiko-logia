@@ -31,7 +31,9 @@ _SYSTEM = (
     "auditor or tax authority, evade tax, launder money or otherwise commit "
     "fraud — e.g. 'Help me hide personal expenses so the auditor won't notice', "
     "'How can I keep this income off my tax return?'. Explaining what fraud or "
-    "evasion IS, or how it is detected, is NOT restricted.\n"
+    "evasion IS, or how it is detected, is NOT restricted; nor is looking up or "
+    "converting a company's or country's published figures (e.g. 'Microsoft's net "
+    "income last year, in Indian rupees' is ZERO).\n"
     "Judge by the FORM of the question and GENERALISE to any similar question, "
     "not just the listed examples:\n"
     "- ZERO: a greeting or small talk, help about using the assistant, OR a "
@@ -91,7 +93,11 @@ def _token_budget(model: str) -> dict:
 # rubric, so it is settled here instead.
 _CALCULATION_REQUEST = re.compile(
     r"\b(calculate|compute|work\s+out|how\s+much|what\s+is\s+the\s+\w+\s+(?:on|of|for)|"
-    r"show\s+(?:the\s+)?(?:calculation|working)|step\s+by\s+step)\b",
+    r"show\s+(?:the\s+)?(?:calculation|working)|step\s+by\s+step|"
+    # Textbook journal entries and target-sales questions on stated figures
+    # ("Pass entries for the issue of 5,000 debentures ...") were rated HIGH.
+    r"pass\s+(?:the\s+)?(?:journal\s+|adjusting\s+|rectification\s+)?entr(?:y|ies)|journal\s+entr(?:y|ies)|"
+    r"(?:is|are)\s+needed)\b",
     re.I,
 )
 _STATED_FIGURE = re.compile(r"\d[\d,]*(?:\.\d+)?\s*(?:%|lakh|crore|k\b|m\b)?|[₹$£€]\s*\d")
@@ -116,17 +122,41 @@ def calibrate_calculation_risk(risk_level: str, query: str) -> str:
     return risk_level
 
 
+# Wording that marks a genuine concealment/fraud request. Without any of it,
+# a RESTRICTED verdict from the small classifier is double-checked.
+_CONCEALMENT_CUE = re.compile(
+    r"\b(hid(e|ing|den)|conceal\w*|falsif\w*|fake|forg(e|ed|ery)|backdat\w*|evad\w*|evasion|"
+    r"launder\w*|off[\s-]the[\s-]books|cook(ing)?\s+the\s+books|without\s+(the\s+)?(auditor|tax|anyone)|"
+    r"won'?t\s+notice|not\s+notice|undetect\w*|avoid\s+detection|manipulat\w*|misstat\w*|"
+    r"inflat(e|ing)\s+(revenue|sales|profit)|under[\s-]?report\w*|black\s+money|bribe\w*|kickback\w*|"
+    r"shell\s+compan\w*|round[\s-]trip\w*|fictitious|bogus|keep\s+\w+\s+off)\b",
+    re.I,
+)
+
+
 async def classify_risk(query: str) -> Optional[str]:
-    """Return 'ZERO' | 'LOW' | 'MEDIUM' | 'HIGH' for the question, or None if
-    the LLM is unavailable/errors (caller then keeps the ML classifier result)."""
+    """Return 'ZERO' | 'LOW' | 'MEDIUM' | 'HIGH' | 'RESTRICTED' for the
+    question, or None if the LLM is unavailable/errors (caller then keeps the
+    ML classifier result).
+
+    Classification is a trivial one-word task — a small, fast model
+    (GROQ_CLASSIFIER_MODEL) instead of the large answer model. That model
+    called "Microsoft's net income last year, in Indian rupees" RESTRICTED
+    (fraud) on half of runs and the answer was refused, so a RESTRICTED verdict
+    on a question with no concealment wording is re-asked of GROQ_MODEL, and
+    only kept if that model agrees."""
+    level = await _classify_with(os.getenv("GROQ_CLASSIFIER_MODEL", "llama-3.1-8b-instant"), query)
+    if level == "RESTRICTED" and not _CONCEALMENT_CUE.search(query):
+        second = await _classify_with(os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"), query)
+        if second is not None:
+            return second
+    return level
+
+
+async def _classify_with(model: str, query: str) -> Optional[str]:
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         return None
-    # Classification is a trivial one-word task — use a small, fast model
-    # (llama-3.1-8b-instant) instead of the large answer model, so this extra
-    # call is near-instant. Configurable via GROQ_CLASSIFIER_MODEL; the big
-    # GROQ_MODEL stays reserved for actual answer generation.
-    model = os.getenv("GROQ_CLASSIFIER_MODEL", "llama-3.1-8b-instant")
     try:
         client = AsyncGroq(api_key=api_key)
         resp = await asyncio.wait_for(client.chat.completions.create(
