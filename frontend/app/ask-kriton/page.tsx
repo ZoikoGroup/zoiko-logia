@@ -49,6 +49,7 @@ import {
   writeTextToClipboard,
 } from "@/lib/presentation";
 import { getFollowUpSuggestions } from "@/lib/follow-up-suggestions";
+import { uniqueCitations } from "@/lib/unique-citations";
 import { ThinkingIndicator } from "@/components/ask-kriton/ThinkingIndicator";
 import { DesktopSidebar, MobileDrawer } from "@/components/ask-kriton/Sidebar";
 import { Composer, attachmentFromDocument, type AttachmentState } from "@/components/ask-kriton/Composer";
@@ -412,12 +413,12 @@ function ResponseActions({
           <summary className="flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-muted transition hover:bg-soft hover:text-ink">
             <BookOpen size={15} />
             Sources
-            <span className="rounded-full bg-soft px-1.5 py-0.5 text-[10px]">{result.answer.citations.length}</span>
+            <span className="rounded-full bg-soft px-1.5 py-0.5 text-[10px]">{uniqueCitations(result.answer.citations).length}</span>
             <ChevronDown size={13} className="transition-transform group-open/sources:rotate-180" />
           </summary>
           <div className="mt-1 w-full min-w-0 rounded-xl border border-line bg-panel p-2 shadow-lg sm:w-[420px]">
             <div className="max-h-56 overscroll-contain overflow-y-auto pr-1 [scrollbar-gutter:stable]">
-              {result.answer.citations.map((citation) => (
+              {uniqueCitations(result.answer.citations).map((citation) => (
                 <SourceButton key={citation.ref_id} citation={citation} />
               ))}
             </div>
@@ -1016,17 +1017,10 @@ export default function AskKritonPage() {
   const activeConversation = conversations.find((c) => c.id === activeId) ?? null;
   const hasConversation = activeConversation !== null && activeConversation.turns.length > 0;
   const sorted = useMemo(() => sortConversations(conversations), [conversations]);
-  const conversationSources = useMemo(() => {
-    const unique = new Map<string, SourceCitation>();
-    for (const conversation of conversations) {
-      for (const turn of conversation.turns) {
-        for (const citation of turn.result?.answer?.citations ?? []) {
-          unique.set(citation.url || `${citation.ref_id}:${citation.title}`, citation);
-        }
-      }
-    }
-    return [...unique.values()];
-  }, [conversations]);
+  const conversationSources = useMemo(
+    () => uniqueCitations(conversations.flatMap((c) => c.turns.flatMap((t) => t.result?.answer?.citations ?? []))),
+    [conversations],
+  );
   const lastTurnLoading = activeConversation?.turns.at(-1)?.loading;
   const turnCount = activeConversation?.turns.length;
 
