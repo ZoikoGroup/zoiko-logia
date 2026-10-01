@@ -199,6 +199,56 @@ def _extract_xlsx(content: bytes) -> list[ExtractedBlock]:
         return _extract_xlsx_zip(content)
 
 
+def _extract_csv(content: bytes, sheet: str) -> list[ExtractedBlock]:
+    """A CSV as one worksheet: tab-joined rows in 40-row blocks with the same
+    location and metadata the XLSX extractor emits, so retrieval, figure
+    extraction and spreadsheet KPIs treat it exactly like a workbook.
+
+    The header row is repeated at the top of every block: a CSV has only one,
+    and analyse_spreadsheet_sources reads each block's first line as its
+    column names, so rows past the first block would otherwise lose them.
+    """
+    import csv
+
+    for encoding in ("utf-8-sig", "cp1252"):
+        try:
+            text_content = content.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        text_content = content.decode("utf-8", errors="replace")
+    try:
+        dialect = csv.Sniffer().sniff(text_content[:4096], delimiters=",;\t|")
+    except csv.Error:
+        dialect = csv.excel
+    rows = [
+        # A tab inside a cell would read as a column boundary downstream.
+        "\t".join(cell.replace("\t", " ").strip() for cell in row).rstrip("\t")
+        for row in csv.reader(io.StringIO(text_content), dialect)
+    ]
+    numbered = [(number, row) for number, row in enumerate(rows, start=1) if row.strip()]
+    if not numbered:
+        return []
+    header_number, header = numbered[0]
+    data = numbered[1:]
+    if not data:
+        return [ExtractedBlock(header, f"'{sheet}'!{header_number}:{header_number}",
+                               {"sheet": sheet, "start_row": header_number, "end_row": header_number})]
+    blocks: list[ExtractedBlock] = []
+    for start in range(0, len(data), 40):
+        batch = data[start:start + 40]
+        # The first block really does start at the header row; later blocks
+        # carry a copy of it, so their range starts at their own first row.
+        first, last = (header_number if start == 0 else batch[0][0]), batch[-1][0]
+        blocks.append(ExtractedBlock(
+            "\n".join([header, *(row for _, row in batch)]),
+            f"'{sheet}'!{first}:{last}",
+            {"sheet": sheet, "start_row": first, "end_row": last},
+        ))
+    return blocks
+
+
 def _extract_pptx(content: bytes) -> list[ExtractedBlock]:
     from pptx import Presentation
 
@@ -220,6 +270,8 @@ def extract_document(filename: str, content: bytes) -> list[ExtractedBlock]:
         ".docx": _extract_docx,
         ".xlsx": _extract_xlsx,
         ".pptx": _extract_pptx,
+        # The file name stands in for the worksheet title a CSV does not have.
+        ".csv": lambda data: _extract_csv(data, Path(filename).stem or "Sheet1"),
     }.get(suffix)
     if extractor is None:
         raise ValueError(f"Unsupported file type: {suffix or 'unknown'}")
