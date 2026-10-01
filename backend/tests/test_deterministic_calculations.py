@@ -50,3 +50,24 @@ async def test_calculation_run_is_persisted_with_verified_chart():
         assert row.rule_version == "percentage_change:v1"
         assert row.chart_spec["verified"] is True
     await engine.dispose()
+
+
+@pytest.mark.parametrize("query, emi, total_interest", [
+    # Reported live: answered ₹39,960 / ₹31,92,800 by rounding (1 + r)^180.
+    ("Loan ₹40,00,000 at 8.75% for 15 years. What is the EMI, and how much total interest will I pay?",
+     "39977.95", "3196031.00"),
+    ("What is the EMI on a 50 lakh home loan at 9% for 240 months?", "44986.3", "5796712.00"),
+    ("I borrowed $300,000 at 6.5% for 30 years, what is my monthly payment?", "1896.2", "382632.00"),
+])
+def test_loan_emi_is_computed_exactly(query, emi, total_interest):
+    calculation = build_calculation(query)
+    assert calculation is not None and calculation.widget.formula_name == "Loan EMI"
+    assert calculation.widget.output_value == emi
+    derived = dict(calculation.derived)
+    assert any(label.startswith("Total interest") and value == total_interest for label, value in derived.items())
+    assert f"Verified result: {emi}" in calculation.prompt_context()
+
+
+@pytest.mark.parametrize("query", ["What is EMI?", "How does an EMI work for a home loan?"])
+def test_emi_concept_questions_are_not_calculated(query):
+    assert build_calculation(query) is None

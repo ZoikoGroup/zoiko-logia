@@ -25,6 +25,7 @@ import asyncio
 import json
 import dataclasses
 import html
+import logging
 import os
 import re
 from urllib.parse import urlparse
@@ -66,6 +67,9 @@ class WebSource:
     # from the fetched data when eligible, instead of relying on the model to
     # correctly re-parse the numbers back out of its own prose or a tool call.
     series: list[tuple[str, float]] | None = None
+
+
+logger = logging.getLogger(__name__)
 
 
 def _searxng_url() -> str:
@@ -110,7 +114,7 @@ except Exception:                   # pragma: no cover - package absent/broken
 # Bumped whenever WebSource's field set changes. Entries written by an older
 # build then simply miss, instead of deserialising into a half-populated
 # object that looks valid and cites wrongly.
-_CACHE_KEY_PREFIX = "websearch:v1:"
+_CACHE_KEY_PREFIX = "websearch:v4:"
 
 # DB 3: 0 and 1 carry Celery's queue and results, 2 the rate limiter. A
 # separate DB means flushing this cache can never drop a queued job.
@@ -295,7 +299,7 @@ def _spread_across_organisations(
 # not in the snippet, so the model filled them from stale memory and cited the
 # official page for them. The top official/trusted pages are now read and the
 # relevant part (tables kept row by row) is passed on instead.
-_PAGE_TIMEOUT_SECONDS = 5.0
+_PAGE_TIMEOUT_SECONDS = 4.0
 _PAGE_MAX_BYTES = 2_000_000
 _PAGE_EXCERPT_CHARS = 3000
 _OFFICIAL_HOST = re.compile(
@@ -424,14 +428,26 @@ def _relevant_excerpt(text: str, query: str, limit: int = _PAGE_EXCERPT_CHARS) -
     return "\n".join(lines[index] for index in sorted(keep))
 
 
-async def _page_excerpt(client: httpx.AsyncClient, url: str, query: str) -> str:
-    try:
-        response = await client.get(url)
+async def _read_html(client: httpx.AsyncClient, url: str) -> str:
+    # Headers first: a non-HTML document (a multi-MB World Bank PDF) used to
+    # be downloaded in full before being discarded, holding a search for 13s+.
+    async with client.stream("GET", url) as response:
         if response.status_code != 200 or "html" not in response.headers.get("content-type", ""):
             return ""
-        if len(response.content) > _PAGE_MAX_BYTES:
-            return ""
-        return _relevant_excerpt(_html_to_text(response.text), query)
+        body = bytearray()
+        async for chunk in response.aiter_bytes():
+            body.extend(chunk)
+            if len(body) > _PAGE_MAX_BYTES:
+                return ""
+        return bytes(body).decode(response.encoding or "utf-8", errors="replace")
+
+
+async def _page_excerpt(client: httpx.AsyncClient, url: str, query: str) -> str:
+    try:
+        # httpx's timeout is per read, so a slowly trickling page could run
+        # far past it; this bounds the whole read.
+        html = await asyncio.wait_for(_read_html(client, url), timeout=_PAGE_TIMEOUT_SECONDS)
+        return _relevant_excerpt(_html_to_text(html), query) if html else ""
     except Exception:  # noqa: BLE001 — a page that can't be read keeps its search snippet
         return ""
 
@@ -457,10 +473,140 @@ async def _with_page_extracts(
     return enriched
 
 
+_RELEVANCE_STOPWORDS = frozenset("""
+a an and are as at be been but by can could did do does for from had has have how i if in into is it its
+may me might my no not of on or our should so than that the their them then there these they this those to
+was we were what when where which who whom why will with would you your about after before also any each
+just like more most much only other over same some such very year years per one two three uk us usa india
+""".split())
+
+
+def _terms(text: str) -> set[str]:
+    # Five-letter stems so "invest"/"investment" and "audit"/"auditor" meet.
+    return {
+        word[:5] for word in re.findall(r"[a-z][a-z0-9]+", text.lower())
+        if len(word) >= 3 and word not in _RELEVANCE_STOPWORDS
+    }
+
+
+def _is_relevant(query: str, source: WebSource) -> bool:
+    """A result must be about the question, not merely hosted by a trusted body.
+
+    The site: bias returns whatever a trusted domain has: a compound-interest
+    question came back with five OECD/ILO reports (a health survey, a garment
+    sector study) that were then cited as the answer's sources. A result is
+    kept when its title shares a meaningful word with the question, or its
+    title and snippet together share two."""
+    wanted = _terms(query)
+    if _names_another_procedure(query, source.title):
+        return False
+    return bool(wanted & _terms(source.title)) or len(wanted & _terms(f"{source.title} {source.snippet}")) >= 2
+
+
+# A page about a DIFFERENT procedure on the same tax. "Who can sign off a VAT
+# return?" retrieved "Refunds of UK VAT for non-UK businesses", and the answer
+# carried that page's claimant-signature and power-of-attorney rules over to
+# VAT returns — even with a prompt rule against it. Such a page is dropped
+# unless the question itself is about that procedure.
+_PROCEDURES = {
+    "refund": r"\b(?:refunds?|repayments?|reclaim\w*|claim(?:ing)? (?:vat|tax|gst) back)\b",
+    "registration": r"\b(?:register|registration|deregist\w*|cancel\w*)\b",
+    "penalty": r"\b(?:penalt\w*|surcharges?)\b",
+    "appeal": r"\b(?:appeals?|tribunals?|disputes?)\b",
+    "exemption": r"\b(?:exempt\w*|zero[- ]rat\w*)\b",
+}
+
+
+def _names_another_procedure(query: str, title: str) -> bool:
+    return any(
+        re.search(pattern, title, re.I) and not re.search(pattern, query, re.I)
+        for pattern in _PROCEDURES.values()
+    )
+
+
+_EMPTY_RETRY_DELAY_SECONDS = 1.5
+# Everything web_search does must finish inside the orchestration's 12s
+# search timeout, or the whole result is discarded.
+_SEARCH_BUDGET_SECONDS = 9.5
+
+
+async def _searxng_results(base: str, params: dict) -> list[dict]:
+    """One SearXNG query, retried once when it comes back empty.
+
+    The public engines behind SearXNG throttle bursts (CAPTCHA, "too many
+    requests"), and SearXNG then answers 200 with no results — a question
+    asked seconds after another lost all its sources. A short pause and one
+    retry rides out the brief throttles; a longer suspension still fails soft.
+    The retry is skipped when the first attempt was slow, so the caller's
+    overall search timeout is never exceeded."""
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=6.0) as client:
+                resp = await client.get(f"{base}/search", params=params)
+                resp.raise_for_status()
+                results = resp.json().get("results", []) or []
+        except Exception:
+            results = []
+        if results or attempt == 1 or loop.time() - started > 3.0:
+            return results
+        await asyncio.sleep(_EMPTY_RETRY_DELAY_SECONDS)
+    return []
+
+
+def _tavily_key() -> str:
+    return (os.getenv("TAVILY_API_KEY") or "").strip()
+
+
+_TAVILY_URL = "https://api.tavily.com/search"
+
+
+async def _tavily_results(query: str, domains: list[str]) -> list[dict] | None:
+    """Search through Tavily, restricted to the trusted domains when there are
+    any and widened to the open web only when they hold nothing (unless the
+    allowlist is strict). Results come back in SearXNG's shape (url, title,
+    content) so everything downstream is unchanged.
+
+    Tavily is preferred over SearXNG because the free engines behind SearXNG
+    block a self-hosted instance (CAPTCHA, "too many requests") for minutes at
+    a time, and every answer in that window lost its sources. None means
+    Tavily is not configured or failed, so the caller falls back to SearXNG;
+    [] means it searched and found nothing."""
+    key = _tavily_key()
+    if not key:
+        return None
+    # Advanced depth on the trusted domains: basic depth returned OECD reports
+    # for "GST rate on restaurant services in India" where advanced found the
+    # CBIC rate notification. The open-web fallback is a quick basic search,
+    # so the two together stay inside the caller's search timeout.
+    attempts = [(domains, "advanced")] if domains else []
+    if not domains or not _strict_allowlist():
+        attempts.append(([], "basic"))
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            for include, depth in attempts:
+                body = {"query": query, "max_results": 10, "search_depth": depth}
+                if include:
+                    body["include_domains"] = include
+                resp = await client.post(_TAVILY_URL, headers={"Authorization": f"Bearer {key}"}, json=body)
+                resp.raise_for_status()
+                results = resp.json().get("results", []) or []
+                if results:
+                    return [
+                        {"url": r.get("url"), "title": r.get("title"), "content": r.get("content")}
+                        for r in results
+                    ]
+    except Exception as exc:
+        logger.warning("Tavily search failed (%s); falling back to SearXNG", type(exc).__name__)
+        return None
+    return []
+
+
 async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pages: int = 2) -> list[WebSource]:
-    """Query SearXNG and return up to `limit` sources, preferring trusted
-    domains for the jurisdiction and topic. Returns [] on any failure
-    (fail-soft).
+    """Search the web (Tavily when TAVILY_API_KEY is set, else SearXNG) and
+    return up to `limit` sources, preferring trusted domains for the
+    jurisdiction and topic. Returns [] on any failure (fail-soft).
 
     Successful results are cached in Redis for SEARXNG_CACHE_TTL_SECONDS so a
     repeated question does not make a second trip to the upstream engines —
@@ -472,6 +618,7 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pa
     cached = await _cache_get(cache_key)
     if cached is not None:
         return cached
+    started = asyncio.get_running_loop().time()
 
     base = _searxng_url()
     # Topic narrows the allowlist from "every body in this jurisdiction" to
@@ -489,29 +636,24 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pa
         "safesearch": "1",
         "categories": "general",
     }
-    try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            resp = await client.get(f"{base}/search", params=params)
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception:
-        return []
+    results = await _tavily_results(query, domains)
+    if results is None:
+        results = await _searxng_results(base, params)
 
-    results = data.get("results", []) or []
-
-    # Normalise into WebSource, keeping only entries with a usable URL.
+    # Normalise into WebSource, keeping only entries with a usable URL that
+    # are actually about the question.
     parsed: list[WebSource] = []
     for r in results:
         url = (r.get("url") or "").strip()
         if not url:
             continue
-        parsed.append(
-            WebSource(
-                title=(r.get("title") or url)[:200],
-                url=url,
-                snippet=(r.get("content") or "").strip(),
-            )
+        source = WebSource(
+            title=(r.get("title") or url)[:200],
+            url=url,
+            snippet=(r.get("content") or "").strip(),
         )
+        if _is_relevant(query, source):
+            parsed.append(source)
 
     trusted = [s for s in parsed if matches_allowlist(s.url, domains)]
 
@@ -534,7 +676,17 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pa
     # The top official/trusted pages are read and their relevant part passed
     # on (see _with_page_extracts); cached with the excerpts, so a repeat
     # question does not re-read the pages either.
-    selected = await _with_page_extracts(selected, query, domains, read_pages)
+    # Reading pages is an enrichment, so it gets only the time left before
+    # the caller's search timeout (12s in orchestration); past that, the
+    # search snippets are returned as they are rather than losing everything.
+    remaining = _SEARCH_BUDGET_SECONDS - (asyncio.get_running_loop().time() - started)
+    if remaining > 1.0:
+        try:
+            selected = await asyncio.wait_for(
+                _with_page_extracts(selected, query, domains, read_pages), timeout=remaining,
+            )
+        except asyncio.TimeoutError:
+            pass
     await _cache_put(cache_key, selected)
     return selected
 

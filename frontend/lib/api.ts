@@ -785,7 +785,7 @@ export type NumericInput = {
 
 export type CalculationResult = {
   calculation_id: string;
-  operation: "arithmetic" | "sum" | "difference" | "percentage" | "percentage_change" | "variance" | "straight_line_depreciation";
+  operation: "arithmetic" | "sum" | "difference" | "percentage" | "percentage_change" | "variance" | "straight_line_depreciation" | "loan_emi";
   rule_version: string;
   inputs: NumericInput[];
   output_value: string;
@@ -1120,8 +1120,14 @@ export async function askKritonStream(
 
   const controller = new AbortController();
   // The backend owns the processing deadline. This longer timer only protects
-  // against a connection that stops delivering even heartbeats.
-  const timeout = window.setTimeout(() => controller.abort(), 120_000);
+  // against a connection that stops delivering even heartbeats, so it restarts
+  // whenever data arrives — as a fixed two-minute cap it cut off answers that
+  // were still streaming progress (the first question after a backend restart).
+  let timeout = window.setTimeout(() => controller.abort(), 120_000);
+  const stillAlive = () => {
+    window.clearTimeout(timeout);
+    timeout = window.setTimeout(() => controller.abort(), 120_000);
+  };
   try {
     const res = await authedFetch("/orchestration/ask/stream", token, {
       method: "POST",
@@ -1136,6 +1142,7 @@ export async function askKritonStream(
     let buffer = "";
     while (true) {
       const { done, value } = await reader.read();
+      stillAlive();
       buffer += decoder.decode(value, { stream: !done });
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";

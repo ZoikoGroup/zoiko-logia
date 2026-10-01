@@ -1,9 +1,10 @@
 import { render } from "@testing-library/react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
+import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { describe, expect, it, vi } from "vitest";
-import { ANSWER_MATH_OPTIONS, hasDisplayMath, sanitizeAnswerMarkdown } from "@/lib/answer-markdown";
+import { ANSWER_MATH_OPTIONS, hasDisplayMath, sanitizeAnswerMarkdown, remarkAnswerLineBreaks } from "@/lib/answer-markdown";
 
 describe("answer Markdown math safety", () => {
   it("normalizes narrow no-break spaces before parsing", () => {
@@ -50,4 +51,17 @@ describe("answer Markdown math safety", () => {
 
     expect(container.querySelector(".katex-display")).not.toBeNull();
   });
+});
+
+
+it("renders journal entry line breaks without enabling arbitrary HTML", () => {
+  const { container } = render(
+    <ReactMarkdown remarkPlugins={[remarkGfm, remarkAnswerLineBreaks]}>
+      {"| Entry |\n| --- |\n| Debit Cash $6,000 <br> Credit Receivable $6,000 |\n\n<script>alert(1)</script>\n\n`<br>`"}
+    </ReactMarkdown>,
+  );
+  expect(container.querySelector("td br")).not.toBeNull();
+  expect(container.querySelector("td")?.textContent).not.toContain("<br>");
+  expect(container.querySelector("script")).toBeNull();
+  expect(container.querySelector("code")?.textContent).toBe("<br>");
 });

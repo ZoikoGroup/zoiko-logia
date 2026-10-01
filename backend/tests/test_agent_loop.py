@@ -581,3 +581,116 @@ def test_no_duplicate_note_when_the_answer_already_disclaims_causes() -> None:
     cleaned = ground_economic_narrative(
         "The rise reflects fiscal stimulus. The specific drivers are not detailed in the source data.", [result])
     assert cleaned == "The specific drivers are not detailed in the source data."
+
+
+async def test_expired_deadline_does_not_start_recovery():
+    import asyncio
+    import time
+    import pytest
+    from app.domains.model_gateway.agent import _answer_from_evidence
+
+    client = ScriptedClient([_reply("late answer")])
+    with pytest.raises(asyncio.TimeoutError):
+        await _answer_from_evidence(client, "m", "sys", "query", {}, time.monotonic() - 1)
+    assert client.requests == []
+
+
+async def test_recovery_is_cancelled_at_remaining_deadline():
+    import asyncio
+    import time
+    import pytest
+    from app.domains.model_gateway.agent import _answer_from_evidence
+
+    cancelled = asyncio.Event()
+
+    async def slow(**kwargs):
+        try:
+            await asyncio.sleep(60)
+        finally:
+            cancelled.set()
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=slow)))
+    started = time.monotonic()
+    with pytest.raises(asyncio.TimeoutError):
+        await _answer_from_evidence(client, "m", "sys", "query", {}, started + 0.03)
+    assert cancelled.is_set()
+    assert time.monotonic() - started < 0.5
+
+
+async def test_tool_step_reserves_time_for_recovery(monkeypatch):
+    import asyncio
+    from app.domains.model_gateway import agent
+
+    monkeypatch.setattr(agent, "_FINAL_ANSWER_RESERVE_SECONDS", 0.1)
+    cancelled = asyncio.Event()
+
+    async def slow(args):
+        try:
+            await asyncio.sleep(60)
+        finally:
+            cancelled.set()
+
+    registry = ToolRegistry()
+    registry.register(ToolSpec(
+        name="lookup", version="1", description="lookup", args_model=_LookupArgs,
+        handler=slow, data_source="test", risk_level="low", timeout_seconds=60,
+    ))
+    client = ScriptedClient([
+        _reply(tool_calls=[_call("lookup", {"key": "a"})]),
+        _reply("No data could be retrieved."),
+    ])
+    outcome = await _run(client, registry, limits=AgentLimits(max_seconds=0.15))
+    assert cancelled.is_set()
+    assert outcome.stop_reason == "time_budget"
+    assert outcome.text == "No data could be retrieved."
+    assert "tools" not in client.requests[-1]
+
+
+def test_unsourced_causal_table_cannot_bypass_grounding():
+    from app.domains.model_gateway.agent import ground_economic_narrative
+
+    source = WebSource(title="Debt", url="https://example.test", snippet="2020: 216; 2022: 216")
+    answer = (
+        "| Year | Central government debt |\n| --- | --- |\n| 2022 | 216 |\n\n"
+        "Possible (unsourced) drivers\n\n"
+        "| Period | Likely influencing factors (not directly sourced) |\n| --- | --- |\n"
+        "| 2008-2010 | Global financial crisis → fiscal stimulus and lower tax revenues. |\n"
+        "| 2020-2022 | COVID-19 pandemic → large-scale fiscal packages. |"
+    )
+    cleaned = ground_economic_narrative(answer, [ToolResult(ok=True, content=source.snippet, sources=(source,))])
+    assert "fiscal stimulus" not in cleaned and "COVID-19" not in cleaned
+    assert "| 2022 | 216 |" in cleaned
+    assert "Central government debt" in cleaned
+    assert "Not established by the retrieved sources." in cleaned
+
+
+def test_sourced_causal_table_cell_is_preserved():
+    from app.domains.model_gateway.agent import ground_economic_narrative
+
+    passage = "The rise was driven by infrastructure spending."
+    source = WebSource(title="Analysis", url="https://example.test", snippet=passage)
+    answer = "| Period | Causes |\n| --- | --- |\n| 2020 | " + passage + " |"
+    assert ground_economic_narrative(answer, [ToolResult(ok=True, content=passage, sources=(source,))]) == answer
+
+
+async def test_agent_final_answer_uses_measured_peak():
+    async def economic(_args):
+        source = WebSource(
+            title="Japan debt (% of GDP)", url="https://example.test", snippet="2021: 216.33; 2022: 216.21",
+            series=[("2020", 215.76), ("2021", 216.33), ("2022", 216.21)],
+        )
+        return ToolResult(ok=True, content=source.snippet, sources=(source,))
+
+    registry = ToolRegistry()
+    registry.register(ToolSpec(
+        name="get_economic_indicator", version="1", description="economic series",
+        args_model=_LookupArgs, handler=economic, data_source="test", risk_level="low", timeout_seconds=1,
+    ))
+    client = ScriptedClient([
+        _reply(tool_calls=[_call("get_economic_indicator", {"key": "debt"})]),
+        _reply("Japan's debt rose steadily to its peak in 2022."),
+    ])
+    outcome = await _run(client, registry)
+    assert "maximum is 216.33 in 2021" in outcome.text
+    assert "steadily" not in outcome.text
+    assert "both increases and decreases" in outcome.text

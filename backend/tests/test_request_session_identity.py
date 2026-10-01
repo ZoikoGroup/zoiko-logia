@@ -21,6 +21,9 @@ The second test demonstrates the failure mechanism itself by forcing another
 request to take the connection in between.
 """
 import asyncio
+import os
+
+import pytest
 
 from sqlalchemy import text
 
@@ -28,6 +31,14 @@ from app.core.config import get_settings
 from app.core.database import RequestSessionLocal, get_db, request_engine
 
 settings = get_settings()
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        os.getenv("RUN_DB_INTEGRATION_TESTS") != "1" or settings.is_sqlite,
+        reason="set RUN_DB_INTEGRATION_TESTS=1 with an isolated Postgres database",
+    ),
+]
 
 IDENTITY = "identity-under-test"
 PROBE = "SELECT pg_backend_pid(), current_setting('app.user_id', true)"

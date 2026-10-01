@@ -42,7 +42,7 @@ except Exception:                   # pragma: no cover - package absent/broken
 # Bumped when the prompt scaffolding or the answer contract changes: entries
 # written by an older build then miss rather than returning an answer shaped
 # for a contract that no longer holds.
-_CACHE_KEY_PREFIX = "answer:v1:"
+_CACHE_KEY_PREFIX = "answer:v5:"
 
 # DB 3 alongside the web-search cache — both are derived, both are safe to
 # lose, and keeping them together means one flush clears both.
