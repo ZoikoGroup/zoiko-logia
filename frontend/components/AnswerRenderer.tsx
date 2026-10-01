@@ -11,8 +11,8 @@ import { indianiseRupeeAmounts } from "@/lib/number-format";
 import type { Root } from "mdast";
 import { CheckCircle2, Copy, Download, Table2 } from "lucide-react";
 import type { CalculationResult, VerifiedChartSpec, VisualizationSpec } from "@/lib/api";
+import { remarkAnswerLineBreaks } from "@/lib/answer-markdown";
 import { cssVar } from "@/lib/css-var";
-import { ANSWER_MATH_OPTIONS, hasDisplayMath, sanitizeAnswerMarkdown } from "@/lib/answer-markdown";
 import { GraphRendererAdapter } from "@/components/visualization/GraphRendererAdapter";
 import { FlowRendererAdapter } from "@/components/visualization/FlowRendererAdapter";
 import { GraphErrorBoundary, RelationshipTableFallback } from "@/components/visualization/GraphErrorBoundary";
@@ -1105,14 +1105,32 @@ const mdComponents = {
   h4: (props: ComponentPropsWithoutRef<"h4">) => <h5 className="mb-2 mt-5 text-base leading-7 font-semibold text-ink first:mt-0" {...props} />,
 };
 
+// The backend's unit codes ("currency/month") are not reader-facing text.
+const CALCULATION_UNIT_LABELS: Record<string, string> = {
+  "currency/month": "per month",
+  "currency/year": "per year",
+  percent: "%",
+  currency: "",
+  number: "",
+};
+
+function formatCalculationValue(value: string): string {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && value.trim() !== ""
+    ? parsed.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: value.includes(".") ? 2 : 0 })
+    : value;
+}
+
 function VerifiedCalculation({ result }: { result: CalculationResult }) {
+  const unit = CALCULATION_UNIT_LABELS[result.output_unit] ?? result.output_unit;
   return (
     <section className="my-4 rounded-xl border border-brand/25 bg-brand/5 p-4">
       <div className="flex items-center gap-2 text-xs font-semibold text-brand">
         <CheckCircle2 size={14} /> Verified calculation
       </div>
       <div className="mt-2 text-xl font-bold text-ink">
-        {result.output_value} <span className="text-sm font-medium text-muted">{result.output_unit}</span>
+        {formatCalculationValue(result.output_value)}
+        {unit && <span className="ml-1 text-sm font-medium text-muted">{unit}</span>}
       </div>
       <div className="mt-1 text-[11px] text-muted">
         {result.rule_version} · {result.rounding_mode} · {result.calculation_id}
@@ -1166,7 +1184,7 @@ export function AnswerRenderer({
             key={i}
             // A single "$" is always a currency sign in a finance answer ("$480,000 is
             // **$288,000**" rendered as a broken formula); maths uses $$…$$ or \(…\).
-            remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }], normaliseMathUnicode]}
+            remarkPlugins={[remarkGfm, remarkAnswerLineBreaks, [remarkMath, { singleDollarTextMath: false }], normaliseMathUnicode]}
             rehypePlugins={[rehypeKatex, restoreRupeeInFormulas]}
             components={mdComponents}
           >

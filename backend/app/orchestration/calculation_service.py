@@ -48,18 +48,67 @@ class DeterministicCalculation:
     widget: CalculationWidget
     record: CalculationResult
     chart: VerifiedChartSpec
+    # Further verified figures derived from the result (an EMI's total
+    # payment and interest), given to the model alongside it.
+    derived: tuple[tuple[str, str], ...] = ()
 
     def prompt_context(self) -> str:
+        derived = "".join(f"{label}: {value}\n" for label, value in self.derived)
+        if derived:
+            # The model recomputed an EMI's totals from the unrounded EMI and
+            # disagreed with the verified box beside its answer. Told only to
+            # "state them", it then dropped the explanation altogether.
+            derived += (
+                "Explain the calculation as you normally would (formula, inputs, steps), but use "
+                "these figures for the results instead of recomputing them, written with the "
+                "question's currency symbol.\n"
+            )
         return (
             "\n\nDETERMINISTIC CALCULATION (computed by the application; do not alter):\n"
             f"Expression: {self.expression}\nVerified result: {_format_decimal(self.result)}\n"
+            f"{derived}"
         )
 
 
+_MONEY = r"(?:₹|rs\.?|inr|[$£€])?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(lakhs?|lacs?|crores?|million|m\b)?"
+_LOAN_PRINCIPAL = re.compile(rf"\b(?:loan|borrow(?:ed|ing)?|principal|mortgage)\b(?:\s+(?:amount|of|is))*\s*[:=]?\s*{_MONEY}", re.I)
+_PRINCIPAL_THEN_LOAN = re.compile(rf"{_MONEY}\s+(?:home\s+|car\s+|personal\s+)?(?:loan|mortgage)\b", re.I)
+_ANNUAL_RATE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*%", re.I)
+_TERM = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*(years?|yrs?|months?)\b", re.I)
+_SCALE = {"lakh": Decimal(100_000), "lac": Decimal(100_000), "crore": Decimal(10_000_000),
+          "million": Decimal(1_000_000), "m": Decimal(1_000_000)}
+
+
+def _loan_terms(query: str) -> tuple[Decimal, Decimal, int] | None:
+    """(principal, annual rate %, months) for a loan-repayment question."""
+    if not re.search(r"\b(?:emi|monthly (?:payment|instal+ment|repayment)|instal+ment|amortis|amortiz)", query, re.I):
+        return None
+    principal_match = _LOAN_PRINCIPAL.search(query) or _PRINCIPAL_THEN_LOAN.search(query)
+    rate_match = _ANNUAL_RATE.search(query)
+    term_match = _TERM.search(query)
+    if not (principal_match and rate_match and term_match):
+        return None
+    principal = Decimal(principal_match.group(1).replace(",", ""))
+    scale = (principal_match.group(2) or "").lower().rstrip("s")
+    principal *= _SCALE.get(scale, Decimal(1))
+    months = Decimal(term_match.group(1)) * (1 if term_match.group(2).lower().startswith("m") else 12)
+    if principal <= 0 or months <= 0 or months != months.to_integral_value() or months > 1200:
+        return None
+    return principal, Decimal(rate_match.group(1)), int(months)
+
+
+# Powers make EMI, compound growth, annuity and discount factors computable
+# in one exact step — without them the model approximated (1 + r)^180 as
+# "≈ 3.70" and put a ₹17/month error into an EMI. Bounded so an expression
+# can never become an expensive computation.
+_MAX_EXPONENT = Decimal(1200)
+_MAX_POWER_BASE = Decimal(10) ** 6
+
+
 def _evaluate(expression: str) -> Decimal:
-    cleaned = (expression.replace(",", "").replace("×", "*").replace("÷", "/"))
+    cleaned = (expression.replace(",", "").replace("×", "*").replace("÷", "/").replace("^", "**"))
     cleaned = re.sub(r"(?<=\d)\s*[xX]\s*(?=\d)", "*", cleaned).strip()
-    if len(cleaned) > 160 or not re.fullmatch(r"[0-9.()\s+\-*/]+", cleaned):
+    if len(cleaned) > 240 or not re.fullmatch(r"[0-9.()\s+\-*/]+", cleaned):
         raise ValueError("unsupported arithmetic expression")
     tree = ast.parse(cleaned, mode="eval")
 
@@ -80,6 +129,14 @@ def _evaluate(expression: str) -> Decimal:
             if isinstance(node.op, ast.Mult):
                 return left * right
             return left / right
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
+            base, exponent = visit(node.left), visit(node.right)
+            if abs(exponent) > _MAX_EXPONENT or abs(base) > _MAX_POWER_BASE:
+                raise ValueError("power out of range")
+            if exponent != exponent.to_integral_value() and base <= 0:
+                # A fractional power of a non-positive number has no real value.
+                raise ValueError("invalid power")
+            return base ** exponent
         raise ValueError("unsupported arithmetic expression")
 
     try:
@@ -90,8 +147,8 @@ def _evaluate(expression: str) -> Decimal:
 
 def evaluate_expression(expression: str) -> Decimal:
     """Public entry point for the calculate tool — the same AST-whitelisted
-    evaluator (numbers, + - * /, parentheses; no names, calls or powers) the
-    question-parsing path uses. Raises ValueError on anything else."""
+    evaluator (numbers, + - * /, bounded powers, parentheses; no names or
+    calls) the question-parsing path uses. Raises ValueError on anything else."""
     return _evaluate(expression)
 
 
@@ -108,6 +165,35 @@ _REVENUE_LABEL = r"revenue|(?<!of )sales"
 def _number_for_label(query: str, labels: str) -> Decimal | None:
     match = re.search(rf"(?:{labels})(?:\s+(?:is|of))?\s*[:=]?\s*{_NUMBER}", query, re.IGNORECASE)
     return Decimal(match.group(1).replace(",", "")) if match else None
+
+
+_FINANCE_FORMULA = re.compile(
+    r"\b(?:compound(?:ed|ing)?|future value|present value|emi|cagr|simple interest|annuity|npv|irr|"
+    r"(?:net |gross |operating )?(?:profit )?margin|break[- ]?even|payback|depreciation|"
+    r"monthly (?:payment|instal+ment)|markup|mark-up|percentage (?:change|increase|decrease))\b",
+    re.I,
+)
+# Something the question expects to be LOOKED UP, not computed from its own
+# figures: a current or statutory rate, a threshold, a provision.
+_NEEDS_LOOKUP = re.compile(
+    r"\b(?:current|currently|today|latest|prevailing|this year'?s|repo|rbi|federal reserve|bank rate|"
+    r"tax (?:rate|slab|bracket)s?|slabs?|thresholds?|limits?|gst rate|vat rate|according to|as per|"
+    r"under section|act|rules?|standard|ifrs|ind as|gaap)\b",
+    re.I,
+)
+
+
+def is_self_contained_calculation(query: str) -> bool:
+    """Every input is in the question and nothing needs looking up — "invest
+    $10,000 at 8% compounded annually for 10 years". Web search adds nothing
+    to such a question: it returned unrelated World Bank reports that were
+    then cited as the answer's sources."""
+    if _NEEDS_LOOKUP.search(query):
+        return False
+    if build_calculation(query) is not None:
+        return True
+    numbers = re.findall(r"\d[\d,]*(?:\.\d+)?", query)
+    return len(numbers) >= 2 and bool(_FINANCE_FORMULA.search(query))
 
 
 def build_calculation(query: str, history=()) -> DeterministicCalculation | None:
@@ -139,7 +225,24 @@ def build_calculation(query: str, history=()) -> DeterministicCalculation | None
     change = re.search(rf"\bfrom\s+{_NUMBER}\s+to\s+{_NUMBER}", query, re.I)
     actual = _number_for_label(query, r"actual")
     budget = _number_for_label(query, r"budget")
-    if revenue is not None and sales_cost is not None and re.search(r"\b(?:gross profit|margin)\b", query, re.I):
+    loan = _loan_terms(query)
+    derived: tuple[tuple[str, str], ...] = ()
+    if loan is not None:
+        principal, annual_rate, months = loan
+        if annual_rate == 0:
+            expression = f"{principal} / {months}"
+        else:
+            r = f"({annual_rate} / 12 / 100)"
+            expression = f"{principal} * {r} * (1 + {r}) ** {months} / ((1 + {r}) ** {months} - 1)"
+        formula_name = "Loan EMI"
+        operation = "loan_emi"
+        output_unit = "currency/month"
+        inputs = [
+            _widget_input("principal", "Loan amount", principal, "currency"),
+            _widget_input("annual_rate", "Annual interest rate", annual_rate, "percent"),
+            _widget_input("months", "Term", Decimal(months), "months"),
+        ]
+    elif revenue is not None and sales_cost is not None and re.search(r"\b(?:gross profit|margin)\b", query, re.I):
         if revenue == 0:
             return None
         margin = bool(re.search(r"\bmargin\b", query, re.I))
@@ -190,6 +293,21 @@ def build_calculation(query: str, history=()) -> DeterministicCalculation | None
         return None
 
     rendered = _format_decimal(result)
+    if loan is not None:
+        # Totals from the EMI as shown (two decimals), so "EMI × months"
+        # in the answer's working re-checks exactly.
+        emi = result.quantize(Decimal("0.01"))
+        total = emi * loan[2]
+        # Money keeps both decimals: _format_decimal shows 44986.30 as
+        # "44986.3", which the model then copied into the answer.
+        def money(value: Decimal) -> str:
+            return format(value.quantize(Decimal("0.01")), "f")
+
+        derived = (
+            ("EMI (rounded to 2 decimals)", money(emi)),
+            (f"Total paid over {loan[2]} months ({money(emi)} * {loan[2]})", money(total)),
+            (f"Total interest ({money(total)} - {money(loan[0])})", money(total - loan[0])),
+        )
     calculation_id = f"calc_{uuid.uuid4().hex}"
     widget = CalculationWidget(
         formula_id="straight_line_depreciation" if formula_name.startswith("Straight") else "arithmetic",
@@ -236,7 +354,7 @@ def build_calculation(query: str, history=()) -> DeterministicCalculation | None
         calculation_id=calculation_id,
     )
     return DeterministicCalculation(
-        expression=expression, result=result, widget=widget, record=record, chart=chart,
+        expression=expression, result=result, widget=widget, record=record, chart=chart, derived=derived,
     )
 
 

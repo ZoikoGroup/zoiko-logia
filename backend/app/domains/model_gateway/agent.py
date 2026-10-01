@@ -32,6 +32,8 @@ from typing import Any, Awaitable, Callable, Literal
 
 from app.domains.model_gateway.tool_registry import ToolRegistry, ToolResult
 from app.domains.model_gateway.tools.chart_tool import ChartToolError, build_chart_fence
+from app.orchestration.series_summary import ground_series_summary
+from app.orchestration.evidence_narrative import ground_economic_narrative
 from app.orchestration.websearch import WebSource
 from app.orchestration.chart_intent import allows_automatic_chart
 from app.orchestration.calculation_service import validate_answer_calculations
@@ -143,109 +145,6 @@ _CHART_REQUEST = re.compile(r"\b(chart|charts|graph|graphs|plot|candlestick|visu
 
 def chart_requested(question: str) -> bool:
     return bool(_CHART_REQUEST.search(question or "")) and allows_automatic_chart(question or "")
-
-
-# A sentence explaining WHY an economic figure moved: a causal connector AND
-# a real-world cause. Both are required — a connector alone is ordinary
-# reasoning ("Because Japan's rate is lower, no chart is needed"), and
-# removing whole lines on "because" alone deleted exactly that conclusion.
-_CAUSAL_CONNECTOR = re.compile(
-    r"\b(?:because|due to|driven by|attribut(?:ed|able) to|caused by|owing to|as a result of|"
-    r"on the back of|fu?ell?ed by|led to|resulted in|contributed to|reflect(?:s|ed|ing)?|"
-    r"linked to|thanks to|amid|as (?:the )?econom\w+|as economic activity)\b",
-    re.I,
-)
-_EXTERNAL_CAUSE = re.compile(
-    r"\b(?:stimulus|pandemic|covid|lockdown|recession|crisis|war|conflict|sanction|tariff|"
-    r"monetary|fiscal|policy|policies|central bank|interest rates?|rate (?:hikes?|cuts?)|"
-    r"spending|tax (?:cuts?|receipts|revenues?|reforms?)|borrowing|deficits?|demand|supply|"
-    r"commodit\w*|oil|energy|food prices|currency|depreciation of|devaluation|exchange rate|"
-    r"investment|consumption|exports? (?:boom|surge|slump)|reforms?|elections?|government|"
-    r"recover\w*|fiscal position|economic activity)\b",
-    re.I,
-)
-_SENTENCE = re.compile(r"(?<=[.!?])\s+(?=[A-Z*])")
-
-
-# Causes that are attributions on their own, even with no connector
-# ("after the pandemic-related surge").
-_STRONG_CAUSE = re.compile(r"\b(?:pandemic|covid(?:-19)?|stimulus|lockdowns?)\b", re.I)
-_CAUSES_ALREADY_DISCLAIMED = re.compile(
-    r"\b(?:causes?|drivers?|reasons?)\b[^.\n]{0,60}\bnot (?:established|detailed|stated|given|explained|provided)"
-    r"|\bdo(?:es)? not (?:state|establish|explain|detail) (?:the |their |its )?(?:causes?|drivers?|reasons?)",
-    re.I,
-)
-_TREND_WORDS = re.compile(r"\d|\b(?:rose|fell|rise|fall|increase\w*|decrease\w*|declin\w*|peak\w*|"
-                          r"grew|growth|drop\w*|climb\w*|eas\w*|rebound\w*|stable|stabilis\w*|stabiliz\w*|higher|lower)\b", re.I)
-
-
-def _without_cause(sentence: str) -> str | None:
-    """The sentence with its unsupported causal part removed, or None when
-    nothing worth keeping is left. "Debt fell to 112.72% in 2022 as the
-    economy recovered." keeps "Debt fell to 112.72% in 2022." — deleting the
-    whole sentence dropped the trend itself."""
-    ending = "." if sentence.rstrip().endswith(".") else ""
-    connector = _CAUSAL_CONNECTOR.search(sentence)
-    if connector and _EXTERNAL_CAUSE.search(sentence[connector.start():]):
-        head = sentence[:connector.start()].rstrip(" ,;:—–-")
-        return head + ending if _TREND_WORDS.search(head) and len(head.split()) >= 3 else None
-    # No connector: drop the comma/dash-separated clause carrying the cause.
-    clauses = re.split(r"(,\s+|\s+[—–-]\s+)", sentence)
-    kept = [c for c in clauses[::2] if not _STRONG_CAUSE.search(c) and not _EXTERNAL_CAUSE.search(c)]
-    head = ", ".join(c.strip(" .") for c in kept if c.strip(" ."))
-    head = head[:1].upper() + head[1:]
-    return head + ending if head and _TREND_WORDS.search(head) and len(head.split()) >= 3 else None
-
-
-def ground_economic_narrative(text: str, results: list[ToolResult]) -> str:
-    """Keep numeric-only economic evidence from acquiring causal prose.
-
-    Trims the part of a sentence that explains a movement by an outside cause
-    the sources do not state ("… due to pandemic stimulus", "after the
-    pandemic-related surge"), keeping the description of the numbers; drops
-    "commonly cited" boilerplate. Comparisons, conclusions ("Because Japan's
-    rate is lower, no chart is needed"), tables, chart payloads and quoted
-    source text are kept. A note is added only when something was removed
-    and the answer does not already say the causes are not established.
-    """
-    evidence = " ".join(
-        " ".join(source.snippet.casefold().split()) for result in results for source in result.sources
-    )
-    kept: list[str] = []
-    in_fence = False
-    removed = False
-    for line in text.splitlines():
-        if line.lstrip().startswith("```"):
-            in_fence = not in_fence
-        if in_fence or line.lstrip().startswith(("|", "```")):
-            kept.append(line)
-            continue
-        prefix = re.match(r"^\s*(?:[-*]\s+|\d+\.\s+)?", line).group(0)
-        sentences = _SENTENCE.split(line[len(prefix):])
-        survivors = []
-        for sentence in sentences:
-            normalized = " ".join(sentence.strip(" *->").casefold().split())
-            causal = (
-                (_CAUSAL_CONNECTOR.search(sentence) and _EXTERNAL_CAUSE.search(sentence))
-                or _STRONG_CAUSE.search(sentence)
-            )
-            if re.search(r"\bcommonly cited\b", sentence, re.I) and normalized not in evidence:
-                removed = True
-                continue
-            if causal and normalized and normalized not in evidence:
-                removed = True
-                trimmed = _without_cause(sentence)
-                if trimmed:
-                    survivors.append(trimmed)
-                continue
-            survivors.append(sentence)
-        if survivors:
-            kept.append(prefix + " ".join(survivors))
-        elif not line.strip():
-            kept.append("")
-    if removed and not _CAUSES_ALREADY_DISCLAIMED.search("\n".join(kept)):
-        kept.append("\n*The figures come from official statistics, which do not state the causes of these changes.*")
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
 
 
 # A reply that asks the user for missing input rather than answering.
@@ -496,6 +395,10 @@ async def run_agent(
         if any(name == "get_economic_indicator" and result.ok
                for (name, _), result in executed.items()):
             text = ground_economic_narrative(text, list(executed.values()))
+            text = ground_series_summary(text, [
+                source for (name, _), result in executed.items()
+                if name == "get_economic_indicator" and result.ok for source in result.sources
+            ])
         # Include actual retrieval periods even when the model omits them.
         periods = []
         for (name, _), result in executed.items():
@@ -520,11 +423,13 @@ async def run_agent(
         return _final_text(text, outcome)
 
     async def create(tool_choice: str, budget: float):
+        if budget <= 0:
+            raise asyncio.TimeoutError("Agent deadline exhausted")
         return await asyncio.wait_for(
             client.chat.completions.create(
                 model=model, messages=messages, tools=tools, tool_choice=tool_choice, temperature=0.0,
             ),
-            timeout=max(budget, 1.0),
+            timeout=budget,
         )
 
     async def execute(name: str, raw: str | None) -> tuple[ToolResult, int]:
@@ -672,8 +577,21 @@ async def run_agent(
             # the answer below instead of failing the whole agent run.
             break
 
+        remaining = deadline - time.monotonic() - _FINAL_ANSWER_RESERVE_SECONDS
+        if remaining <= 0:
+            outcome.stop_reason = "time_budget"
+            break
         messages.append(_assistant_message(message))
-        results = await run_step(step, list(message.tool_calls))
+        try:
+            results = await asyncio.wait_for(run_step(step, list(message.tool_calls)), timeout=remaining)
+        except asyncio.TimeoutError:
+            outcome.stop_reason = "time_budget"
+            # Interrupted tool calls have no complete protocol response. Recover
+            # from already recorded evidence in a fresh conversation instead.
+            outcome.text = final_text(await _answer_from_evidence(
+                client, model, system_prompt, user_prompt, executed, deadline,
+            ))
+            return outcome
         for call, result in zip(message.tool_calls, results):
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result.content})
     else:
@@ -722,6 +640,9 @@ async def _answer_from_evidence(
         "drawn is attached automatically; never write chart JSON."
     )
     for attempt in range(2):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise asyncio.TimeoutError("Agent deadline exhausted")
         try:
             response = await asyncio.wait_for(
                 client.chat.completions.create(
@@ -733,7 +654,7 @@ async def _answer_from_evidence(
                         )},
                     ],
                 ),
-                timeout=max(deadline - time.monotonic(), 15.0),
+                timeout=remaining,
             )
             return response.choices[0].message.content or ""
         except Exception as exc:

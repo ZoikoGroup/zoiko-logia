@@ -253,12 +253,28 @@ async def test_calculate_hands_over_the_correctly_rounded_value() -> None:
     assert "Rounded" not in short.content
 
 
-@pytest.mark.parametrize("expression", ["__import__('os').system('x')", "2 ** 10", "10 / 0", "abs(-1)"])
+@pytest.mark.parametrize("expression", [
+    "__import__('os').system('x')", "10 / 0", "abs(-1)",
+    # Powers are allowed, but bounded so an expression stays cheap.
+    "2 ** 100000", "10 ** 10 ** 10", "(-8) ** (1 / 3)",
+])
 async def test_calculate_rejects_anything_but_plain_arithmetic(expression) -> None:
     result = await build_default_registry().execute(
         "calculate", {"expression": expression}, granted_permissions=NO_PERMISSIONS,
     )
     assert result.error_code == "invalid_arguments"
+
+
+async def test_calculate_computes_a_loan_emi_exactly_in_one_call() -> None:
+    # Reported live: without powers the model approximated (1 + r)^180 as
+    # "≈ 3.70" and answered an EMI of ₹39,960 instead of ₹39,977.95.
+    result = await build_default_registry().execute(
+        "calculate",
+        {"expression": "4000000 * (8.75 / 12 / 100) * (1 + 8.75 / 12 / 100) ** 180 "
+                       "/ ((1 + 8.75 / 12 / 100) ** 180 - 1)"},
+        granted_permissions=NO_PERMISSIONS,
+    )
+    assert result.ok and "Rounded to 2 decimal places: 39977.95." in result.content
 
 
 # ── get_market_data ──────────────────────────────────────────────────────────

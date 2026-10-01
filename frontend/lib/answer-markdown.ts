@@ -29,3 +29,19 @@ export const ANSWER_MATH_OPTIONS = { singleDollarTextMath: false } as const;
 export function hasDisplayMath(text: string): boolean {
   return /(?:^|\n)[ \t]*\$\$[ \t]*\n[\s\S]*?\n[ \t]*\$\$(?=\n|$)/.test(text);
 }
+
+
+/** Interpret only HTML line breaks; all other model HTML stays inert. */
+export function remarkAnswerLineBreaks() {
+  type Node = { type: string; value?: string; children?: Node[] };
+  return (tree: Node) => {
+    function walk(node: Node) {
+      if (node.type === "html" && /^<br\s*\/?\s*>$/i.test(node.value?.trim() ?? "")) {
+        node.type = "break";
+        delete node.value;
+      }
+      node.children?.forEach(walk);
+    }
+    walk(tree);
+  };
+}
