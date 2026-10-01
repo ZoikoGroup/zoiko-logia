@@ -19,19 +19,27 @@ import {
   Lightbulb,
   PenLine,
   RotateCcw,
+  Share2,
+  ShieldAlert,
+  ShieldCheck,
+  ShieldOff,
   Sparkles,
   X,
 } from "lucide-react";
 import { AnswerRenderer } from "@/components/AnswerRenderer";
+import { conversationHistory, splitQuestions } from "@/lib/kriton-conversation";
 import {
-  askKriton,
+  askKritonStream,
   createSavedAnswer,
   downloadKritonArtifact,
   getAuthToken,
   listKritonAttachments,
+  listEngagements,
   ApiError,
   type AskKritonResponse,
   type SourceCitation,
+  type TaskType,
+  type RiskLevel,
   type WorkspaceDocument,
 } from "@/lib/api";
 import {
@@ -54,6 +62,7 @@ import {
   sortConversations,
   type Conversation,
   type Turn,
+  type TurnAttachment,
 } from "@/lib/ask-kriton-storage";
 
 const QUICK_MODES = [
@@ -63,6 +72,21 @@ const QUICK_MODES = [
   { label: "Workflow", icon: BriefcaseBusiness, prompt: "Turn this into a practical accounting workflow: " },
   { label: "Kriton's choice", icon: Sparkles, prompt: "" },
 ];
+
+const TASK_TYPES: Array<{ value: TaskType; label: string }> = [
+  { value: "general_question", label: "General question" },
+  { value: "policy_research", label: "Policy research" },
+  { value: "document_evidence_extraction", label: "Document extraction" },
+  { value: "reconciliation", label: "Reconciliation" },
+];
+
+const RISK_STYLES: Record<RiskLevel, { badge: string; icon: typeof ShieldCheck; label: string }> = {
+  ZERO: { badge: "border-line bg-soft text-muted", icon: ShieldCheck, label: "Zero risk" },
+  LOW: { badge: "border-ok/30 bg-ok/10 text-ok", icon: ShieldCheck, label: "Low risk" },
+  MEDIUM: { badge: "border-info/30 bg-info/10 text-info", icon: ShieldCheck, label: "Medium risk" },
+  HIGH: { badge: "border-warn/30 bg-warn/10 text-warn", icon: ShieldAlert, label: "High risk" },
+  RESTRICTED: { badge: "border-bad/30 bg-bad/10 text-bad", icon: ShieldOff, label: "Restricted — blocked" },
+};
 
 const ROUTE_LABELS: Record<string, string> = {
   // LLM is deliberately absent; the per-turn label below uses actual citation
@@ -115,23 +139,10 @@ function ZoikoGlyph({ className = "h-9 w-9" }: { className?: string }) {
   );
 }
 
-/** How each freshness class reads, and how alarming it should look. A figure's
- * currency is part of its meaning here — "delayed" next to a share price is
- * information the reader needs, not decoration. */
-const FRESHNESS_BADGE: Record<string, { label: string; className: string }> = {
-  realtime: { label: "real-time", className: "border-ok/40 bg-ok/10 text-ok" },
-  delayed: { label: "delayed", className: "border-warn/40 bg-warn/10 text-warn" },
-  historical: { label: "end of day", className: "border-line bg-soft text-muted" },
-  filing: { label: "as filed", className: "border-info/40 bg-info/10 text-info" },
-};
-
-/** Keep externally linked citations and uploaded-document evidence. Uploaded
- * files have no public URL, but their filename, location and evidence preview
- * are still verifiable in Kriton's source popup. */
-function linkedCitations(citations: SourceCitation[]): SourceCitation[] {
-  return citations.filter((c) => !!c.url || c.provider === "uploaded_document");
-}
-
+/**
+ * Keep externally linked citations and uploaded-document evidence visible
+ * and verifiable in Kriton's source popup.
+ */
 function KritonPanel({
   title,
   description,
@@ -234,8 +245,8 @@ function answerAsMarkdown(question: string, result: AskKritonResponse) {
   parts.push(
     "",
     "---",
-    `Risk: ${result.safety.risk_level} · Route: ${result.route} · ` +
-      `Confidence: ${result.confidence_state.replaceAll("_", " ")} · ` +
+    `Risk: ${result.safety.risk_level} Â· Route: ${result.route} Â· ` +
+      `Confidence: ${result.confidence_state.replaceAll("_", " ")} Â· ` +
       `Jurisdiction: ${result.source_bundle?.jurisdiction || "Any"}`,
   );
   return parts.join("\n");
@@ -430,7 +441,7 @@ function ResponseActions({
                 {state === "busy" ? <Loader2 size={17} className="animate-spin text-brand" /> : <FileText size={17} className="text-brand" />}
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-xs font-semibold text-ink">{artifact.filename}</span>
-                  <span className="block text-[11px] text-muted">Generated document · Click to download</span>
+                  <span className="block text-[11px] text-muted">Generated document Â· Click to download</span>
                 </span>
                 <Download size={15} className="text-brand" />
               </button>
@@ -454,6 +465,101 @@ function ResponseActions({
   );
 }
 
+/** Hover actions on the user's own question bubble, mirroring the affordances
+ * people expect from a chat UI. Kept deliberately separate from
+ * ResponseActions: that toolbar acts on Kriton's answer (and can hit the
+ * network to save), whereas everything here is local to the question text. */
+function QuestionActions({ question, onEdit }: { question: string; onEdit?: () => void }) {
+  const [status, setStatus] = useState<Record<string, "idle" | "done" | "error">>({});
+
+  function flash(key: string, value: "done" | "error") {
+    setStatus((prev) => ({ ...prev, [key]: value }));
+    window.setTimeout(() => setStatus((prev) => ({ ...prev, [key]: "idle" })), 1800);
+  }
+
+  async function copyQuestion() {
+    try {
+      await writeTextToClipboard(question);
+      flash("copy", "done");
+    } catch {
+      flash("copy", "error");
+    }
+  }
+
+  // Uses the OS share sheet where the browser exposes one and falls back to the
+  // clipboard everywhere else — navigator.share is missing in most desktop
+  // browsers, and a button that silently does nothing is worse than one that
+  // copies.
+  async function shareQuestion() {
+    try {
+      if (typeof navigator !== "undefined" && navigator.share) {
+        await navigator.share({ text: question });
+      } else {
+        await writeTextToClipboard(question);
+      }
+      flash("share", "done");
+    } catch (err) {
+      // Dismissing the OS share sheet rejects with AbortError. That is a
+      // cancellation, not a failure, so it must not flash red.
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        flash("share", "error");
+      }
+    }
+  }
+
+  // "Edit" refills the composer rather than rewriting history: every question
+  // already carries a query_id and a durable audit chain, so silently replacing
+  // a past turn would break the audit trail. The edited question is asked as a
+  // new turn, and the original stays on the record.
+  //
+  // Refilling alone reads as a no-op, because the composer sits at the bottom
+  // of a long conversation and is usually out of view — so scroll to it, put
+  // the caret at the end of the restored text, and flash the button.
+  function editQuestion() {
+    if (!onEdit) return;
+    onEdit();
+    const box = document.querySelector<HTMLTextAreaElement>("[data-kriton-composer]");
+    if (box) {
+      box.scrollIntoView({ behavior: "smooth", block: "center" });
+      // Deferred: the value lands on the next render, and focusing before that
+      // would put the caret in a textarea that is still empty.
+      window.setTimeout(() => {
+        box.focus();
+        box.setSelectionRange(box.value.length, box.value.length);
+      }, 0);
+    }
+    flash("edit", "done");
+  }
+
+  const actions = [
+    { key: "copy", label: "Copy message", icon: Copy, onClick: copyQuestion },
+    { key: "share", label: "Share prompt", icon: Share2, onClick: shareQuestion },
+    ...(onEdit ? [{ key: "edit", label: "Edit message", icon: PenLine, onClick: editQuestion }] : []),
+  ];
+
+  return (
+    <div className="mt-1 flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+      {actions.map(({ key, label, icon: Icon, onClick }) => {
+        const state = status[key] ?? "idle";
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={onClick}
+            title={label}
+            aria-label={label}
+            className={`rounded-md p-1.5 transition hover:bg-soft ${
+              state === "error" ? "text-bad" : state === "done" ? "text-ok" : "text-muted hover:text-brand"
+            }`}
+          >
+            {state === "done" ? <CheckCircle2 size={13} /> : <Icon size={13} />}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ConversationTurn({
   turn,
   onFollowUp,
@@ -463,19 +569,28 @@ function ConversationTurn({
   onFollowUp?: (question: string, originalQuery: string) => void;
   onReuse?: (query: string) => void;
 }) {
-  const { submittedQuery, result, error, loading, attachments = [] } = turn;
+  const { submittedQuery, result, error, errorStatus, loading } = turn;
   const followUps = useMemo(() => getFollowUpSuggestions(result, submittedQuery), [result, submittedQuery]);
   const safety = result?.safety ?? null;
+  const riskLevel = (safety?.risk_level ?? "LOW") as RiskLevel;
+  const style = safety ? RISK_STYLES[riskLevel] : null;
   const route = result?.route ?? null;
   const outcome = result?.outcome ?? null;
   const outcomeStyle = outcome ? OUTCOME_STYLES[outcome] : null;
+  const bundle = result?.source_bundle ?? null;
   const visibleLimitations = result?.answer?.limitations.filter(
     (l) => l !== "This response is for educational purposes only. Consult a qualified professional.",
   ) ?? [];
   const citationCount = result?.answer?.citations.length ?? 0;
-  const routeLabel = route === "LLM"
+  // A provider/composition failure travels the refusal route, but it is not a
+  // policy decision — saying "policy blocked" sent users looking for a rule.
+  const routeLabel = result?.next_action?.type === "composition_failed"
+    ? "Not answered — please try again"
+    : route === "LLM"
     ? citationCount > 0
       ? "Answered — source grounded"
+      : result?.answer?.computed_from_question
+        ? "Answered — from figures in this conversation"
       : result?.visualization
         ? "Answered — structured from your input"
         : "Answered — no cited sources"
@@ -489,28 +604,51 @@ function ConversationTurn({
 
   return (
     <>
-      <div className="flex justify-end">
-        <div className="kriton-animate-msg-user kriton-user-query mr-2 max-w-[76%] rounded-2xl rounded-tr-md border px-5 py-3 text-sm font-medium leading-6 text-ink shadow-sm sm:mr-4">
-          {attachments.length > 0 && (
-            <div className="mb-2 flex flex-wrap gap-2">
-              {attachments.map((item) => (
-                <span key={item.documentId} className="inline-flex items-center gap-1.5 rounded-lg border border-brand/30 bg-brand/10 px-2 py-1 text-xs font-semibold text-brand">
-                  <FileText size={13} />
-                  {item.filename}
-                </span>
-              ))}
-            </div>
-          )}
-          <div>{submittedQuery}</div>
+      <div className="group flex flex-col items-end">
+        {/* The documents this question was asked with, above the bubble and
+            aligned with it. Shown per turn rather than only in the composer so
+            a conversation scrolled back to weeks later still says which file an
+            answer was grounded in — without it, an answer full of the client's
+            own figures has no visible origin at all. */}
+        {turn.attachments?.length ? (
+          <div className="mb-1.5 flex max-w-[82%] flex-col items-end gap-1">
+            {turn.attachments.map((attachment) => (
+              <div
+                key={attachment.documentId}
+                className="flex max-w-full items-center gap-1.5 rounded-lg border border-line bg-soft/70 px-2.5 py-1 text-[11px] text-muted"
+                title={attachment.name}
+              >
+                <FileText size={11} className="shrink-0" />
+                <span className="min-w-0 truncate font-medium text-ink">{attachment.name}</span>
+                {attachment.chunkCount ? (
+                  <span className="shrink-0">
+                    · {attachment.chunkCount} section{attachment.chunkCount === 1 ? "" : "s"}
+                  </span>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <div className="kriton-animate-msg-user kriton-user-query max-w-[82%] rounded-2xl rounded-tr-md border px-5 py-3 text-sm font-medium leading-6 text-ink shadow-sm">
+          {submittedQuery}
         </div>
+        <QuestionActions
+          question={submittedQuery}
+          onEdit={onReuse ? () => onReuse(submittedQuery) : undefined}
+        />
       </div>
 
-      {loading && <ThinkingIndicator />}
+      {loading && <ThinkingIndicator message={turn.progressMessage} />}
 
       {!loading && error && (
         <div className="kriton-animate-msg-response min-w-0">
           <div className="rounded-2xl rounded-tl-md border border-bad/30 bg-bad/5 px-5 py-4 shadow-sm">
-            <p className="text-sm font-semibold text-bad">Kriton could not respond</p>
+            {/* Names the real cause when the backend actually answered. The
+                blanket "could not respond" is only honest for a transport
+                failure, where there is no status to report. */}
+            <p className="text-sm font-semibold text-bad">
+              {errorStatus ? `Kriton returned an error (HTTP ${errorStatus})` : "Kriton could not respond"}
+            </p>
             <p className="mt-1 text-xs text-bad/80">{error}</p>
           </div>
         </div>
@@ -539,6 +677,18 @@ function ConversationTurn({
               </div>
             </div>
 
+            {result.effective_context && result.effective_context.task_type !== "general_question" && (
+              <div className="mb-4 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
+                <span className="font-bold text-ink">
+                  {TASK_TYPES.find((task) => task.value === result.effective_context?.task_type)?.label ?? result.effective_context.task_type}
+                </span>
+                {result.effective_context.jurisdiction && <span>{result.effective_context.jurisdiction}</span>}
+                {result.effective_context.framework && <span>{result.effective_context.framework.replaceAll("_", " ")}</span>}
+                {result.effective_context.period_end && <span>Period end {result.effective_context.period_end}</span>}
+                {result.effective_context.currency && <span>{result.effective_context.currency}</span>}
+              </div>
+            )}
+
             <div className="kriton-animate-answer-reveal">
               {result.answer ? (
                 <>
@@ -546,7 +696,11 @@ function ConversationTurn({
                     text={result.answer.text}
                     visualization={result.visualization}
                     secondaryVisualizations={result.secondary_visualizations}
+                    calculationResult={result.answer.calculation_result}
+                    verifiedCharts={result.answer.verified_charts}
                   />
+                  {/* Citations render from the footer's "Sources" control (see
+                      ResponseActions), not from a separate block here. */}
                   {visibleLimitations.length > 0 && (
                     <div className="mt-4 space-y-2 border-t border-line pt-4">
                       {visibleLimitations.map((l, i) => (
@@ -558,7 +712,7 @@ function ConversationTurn({
                     </div>
                   )}
                 </>
-              ) : (
+              ) : !result.next_action ? (
                 <p className="rounded-xl border border-line bg-soft p-4 text-sm italic leading-6 text-muted">
                   {outcome === "escalated"
                     ? "This query has been escalated for human review. No AI-generated response is returned until a qualified reviewer clears it."
@@ -568,12 +722,11 @@ function ConversationTurn({
                         ? "This request was blocked before processing."
                         : "This query was refused by the policy engine. No response was composed."}
                 </p>
-              )}
+              ) : null}
 
               {result.next_action && (
-                <div className="mt-4 rounded-xl border border-info/30 bg-info/5 p-3 text-sm leading-6 text-ink">
-                  <span className="block text-[11px] font-bold uppercase text-info">{result.next_action.type}</span>
-                  {result.next_action.message}
+                <div className="mt-4 text-base leading-7 text-ink">
+                  <AnswerRenderer text={result.next_action.message} />
                 </div>
               )}
 
@@ -590,6 +743,19 @@ function ConversationTurn({
                 onFollowUp={onFollowUp ? (question) => onFollowUp(question, submittedQuery) : undefined}
               />
             </div>
+
+            {/* Governed-evidence details only mean something when governed
+                sources were used; "0 eligible · 63 excluded · unknown sources"
+                under every answer read as an error. The risk level stays. */}
+            {bundle && bundle.eligible_source_count > 0 ? (
+              <p className="mt-4 border-t border-line pt-3 text-[11px] text-muted">
+                {bundle.eligible_source_count} eligible
+                {bundle.excluded_source_count > 0 ? ` · ${bundle.excluded_source_count} excluded` : ""} · {result.confidence_state.replaceAll("_", " ")} confidence
+                {bundle.jurisdiction ? ` · ${bundle.jurisdiction}` : " · Any jurisdiction"} · {bundle.freshness_state} sources · {style?.label ?? "Unknown risk"}
+              </p>
+            ) : style ? (
+              <p className="mt-4 border-t border-line pt-3 text-[11px] text-muted">{style.label}</p>
+            ) : null}
           </article>
         </div>
       )}
@@ -602,8 +768,18 @@ export default function AskKritonPage() {
   const [query, setQuery] = useState("");
   const [jurisdiction, setJurisdiction] = useState("");
   const [mode, setMode] = useState("Kriton's choice");
+  const framework = "";
+  const periodStart = "";
+  const periodEnd = "";
+  const currency = "";
+  const [engagementId, setEngagementId] = useState("");
   const [attachments, setAttachments] = useState<AttachmentState[]>([]);
   const [documents, setDocuments] = useState<WorkspaceDocument[]>([]);
+  // Only successfully indexed uploads are sent. A failed extraction has no
+  // chunks behind it, so passing its id would add nothing but noise.
+  const readyAttachments: TurnAttachment[] = attachments
+    .filter((a) => a.status === "success" && a.documentId)
+    .map((a) => ({ documentId: a.documentId as string, name: a.name, chunkCount: a.chunkCount }));
   const [submitting, setSubmitting] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>(() =>
     typeof window === "undefined" ? [] : loadConversations(),
@@ -620,17 +796,31 @@ export default function AskKritonPage() {
     const token = getAuthToken();
     if (!token) return;
     try {
-      setDocuments(await listKritonAttachments(token));
+      setDocuments(await listKritonAttachments(token, engagementId || undefined));
     } catch {
       // Upload remains available even when the saved-document library cannot load.
     }
   }
 
+  // Load the saved-document library once signed in and whenever the engagement
+  // scope changes, then re-attach the active conversation's documents so a
+  // restored thread still shows what it was asked with. Fails soft: uploading
+  // still works when the list cannot be fetched, the picker simply does not
+  // appear. Uploads are covered by `onUploadComplete` instead.
+  //
+  // Keyed on the session token, not only on the engagement: getAuthToken()
+  // reads a module-level cache that AuthContext fills asynchronously after
+  // getSession() resolves, so on a fresh page load it is still "" during the
+  // first render — waiting for an upload would leave the picker missing until
+  // the user happened to attach something, which is exactly when they no
+  // longer need it.
   useEffect(() => {
     if (authLoading) return;
     const token = session?.access_token;
     if (!token) return;
-    void listKritonAttachments(token).then((loadedDocuments) => {
+    let cancelled = false;
+    void listKritonAttachments(token, engagementId || undefined).then((loadedDocuments) => {
+      if (cancelled) return;
       setDocuments(loadedDocuments);
       const selectedIds = conversations.find((item) => item.id === activeId)?.documentIds ?? [];
       const restored = selectedIds
@@ -643,10 +833,12 @@ export default function AskKritonPage() {
     }).catch(() => {
       // Upload remains available even when the saved-document library cannot load.
     });
-    // Reload when Supabase restores or changes the authenticated session;
-    // conversation changes are handled by selectConversation.
+    return () => { cancelled = true; };
+    // Reload when Supabase restores or changes the authenticated session, or
+    // when the engagement scope changes; conversation changes are handled by
+    // selectConversation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, session?.access_token]);
+  }, [authLoading, session?.access_token, engagementId]);
 
   function setActiveId(id: string | null) {
     setActiveIdState(id);
@@ -716,10 +908,12 @@ export default function AskKritonPage() {
     persist(conversations.filter((c) => c.id !== id));
     if (activeId === id) {
       setActiveId(null);
+      // The active composer's pending selection no longer has a conversation.
+      setAttachments([]);
     }
   }
 
-  async function handleSubmit(documentIds: string[] = []) {
+  async function handleSubmit() {
     const trimmed = query.trim();
     if (!trimmed || submitting) return;
     const token = getAuthToken();
@@ -728,31 +922,32 @@ export default function AskKritonPage() {
       return;
     }
 
-    const turnId = genId("turn");
-    const turnAttachments = documentIds.map((documentId) => ({
-      documentId,
-      filename: documents.find((document) => document.id === documentId)?.filename ?? "Uploaded document",
-    }));
-    const newTurn: Turn = {
-      id: turnId,
-      query: trimmed,
-      submittedQuery: trimmed,
-      result: null,
-      error: null,
-      loading: true,
-      attachments: turnAttachments,
-    };
-
+    const questions = splitQuestions(trimmed);
     const isNew = activeId === null;
     const convId = activeId ?? genId("conv");
     const now = timestamp();
     const priorConversation = conversations.find((c) => c.id === convId) ?? null;
-    const previousQuery = priorConversation?.turns.at(-1)?.submittedQuery.trim() || undefined;
-    const cycle = clarificationCycleFor(priorConversation);
+    const completedTurns = [...(priorConversation?.turns ?? [])];
+
+    // Snapshot only the documents currently visible in the composer. Previous
+    // turns retain their attachment metadata for display and audit, but must
+    // never repopulate a later request implicitly. De-duplicate defensively in
+    // case the same document entered through both upload and library selection.
+    const turnAttachments: TurnAttachment[] = readyAttachments.filter(
+      (attachment, index, selected) =>
+        selected.findIndex((candidate) => candidate.documentId === attachment.documentId) === index,
+    );
+    const documentIds = turnAttachments.map((attachment) => attachment.documentId);
+
+    const newTurns: Turn[] = questions.map((question) => ({
+      id: genId("turn"), query: question, submittedQuery: question,
+      result: null, error: null, loading: true,
+      attachments: turnAttachments.length ? turnAttachments : undefined,
+    }));
     setConversations((prev) => {
       const next = isNew
-        ? [{ id: convId, title: trimmed.slice(0, 80), turns: [newTurn], createdAt: now, updatedAt: now, pinned: false, documentIds }, ...prev]
-        : prev.map((c) => (c.id === convId ? { ...c, updatedAt: now, documentIds, turns: [...c.turns, newTurn] } : c));
+        ? [{ id: convId, title: questions[0].slice(0, 80), turns: newTurns, createdAt: now, updatedAt: now, pinned: false, documentIds }, ...prev]
+        : prev.map((c) => (c.id === convId ? { ...c, updatedAt: now, documentIds, turns: [...c.turns, ...newTurns] } : c));
       persistConversations(next);
       return next;
     });
@@ -768,30 +963,49 @@ export default function AskKritonPage() {
     setSubmitError(null);
     setSubmitting(true);
     try {
+      for (const turn of newTurns) {
+        const turnId = turn.id;
+        try {
       const idempotencyKey = genId("idem");
-      const response = await askKriton(
+      const response = await askKritonStream(
         token,
         {
-          query: trimmed,
-          previous_query: previousQuery,
+          query: turn.submittedQuery,
+          previous_query: completedTurns.at(-1)?.submittedQuery.trim() || undefined,
           jurisdiction,
           mode,
-          clarification_cycle: cycle,
+          clarification_cycle: questions.length === 1 ? clarificationCycleFor(priorConversation) : 0,
           conversation_id: convId,
+          conversation_history: conversationHistory(completedTurns),
           document_ids: documentIds,
           // An attached file defines the entity/source scope for this chat.
           // Do not silently replace a document miss with same-name web results
           // (for example, another company called "Apex").
           source_scope: documentIds.length ? "DOCUMENTS_ONLY" : "WEB_ONLY",
+          task_context: {
+            engagement_id: engagementId || null,
+            jurisdiction: jurisdiction || null,
+            framework: framework || null,
+            period_start: periodStart || null,
+            period_end: periodEnd || null,
+            currency: currency || null,
+            language: "en",
+            intended_use: "research",
+          },
         },
         idempotencyKey,
+        ({ message }) => patchTurn(convId, turnId, { progressMessage: message }),
       );
       patchTurn(convId, turnId, { result: response, loading: false });
+      completedTurns.push({ ...turn, result: response, loading: false });
     } catch (err) {
       patchTurn(convId, turnId, {
         error: err instanceof ApiError ? err.message : "Could not reach the orchestration service.",
+        errorStatus: err instanceof ApiError ? err.status : null,
         loading: false,
       });
+        }
+      }
     } finally {
       setSubmitting(false);
     }
@@ -819,6 +1033,23 @@ export default function AskKritonPage() {
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [turnCount, lastTurnLoading]);
+
+  useEffect(() => {
+    const token = session?.access_token;
+    if (!token) return;
+    let cancelled = false;
+    listEngagements(token)
+      .then((items) => {
+        if (!cancelled) {
+          setEngagementId((current) => current || (items.length === 1 ? items[0].id : ""));
+        }
+      })
+      .catch(() => {
+        // No automatic engagement scope is available. The backend will ask a
+        // targeted clarification if protected work requires one.
+      });
+    return () => { cancelled = true; };
+  }, [session?.access_token]);
 
   const sidebarProps = {
     conversations: sorted,
@@ -920,13 +1151,14 @@ export default function AskKritonPage() {
                       variant="hero"
                       query={query}
                       onQueryChange={setQuery}
-                      jurisdiction={jurisdiction}
-                      onJurisdictionChange={setJurisdiction}
                       onSubmit={handleSubmit}
                       attachments={attachments}
                       onAttachmentsChange={setAttachments}
                       documents={documents}
                       onUploadComplete={refreshDocuments}
+                      engagementId={engagementId || undefined}
+                      jurisdiction={jurisdiction}
+                      onJurisdictionChange={setJurisdiction}
                       submitting={submitting}
                       error={submitError}
                     />
@@ -968,6 +1200,7 @@ export default function AskKritonPage() {
                     onAttachmentsChange={setAttachments}
                     documents={documents}
                     onUploadComplete={refreshDocuments}
+                    engagementId={engagementId || undefined}
                     submitting={submitting}
                     error={submitError}
                   />

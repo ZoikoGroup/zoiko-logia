@@ -35,32 +35,35 @@ export default function AuditLogsPage() {
   const [subjectId, setSubjectId] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
 
-  async function load() {
+  // State is only set in the promise callbacks, so the initial load can run
+  // from the effect without a synchronous setState (react-hooks rule).
+  function fetchLedger() {
+    const token = getAuthToken();
+    return Promise.all([
+      listAuditEvents(token, {
+        eventName: eventName || undefined,
+        subjectId: subjectId || undefined,
+        limit: 100,
+      }),
+      verifyAuditChain(token),
+    ])
+      .then(([eventsRes, chainRes]) => {
+        setEvents(eventsRes);
+        setChainResult(chainRes);
+      })
+      .catch(() => setError("Could not load the audit ledger from the server."))
+      .finally(() => setLoading(false));
+  }
+
+  function load() {
     setLoading(true);
     setError("");
-    const token = getAuthToken();
-    try {
-      const [eventsRes, chainRes] = await Promise.all([
-        listAuditEvents(token, {
-          eventName: eventName || undefined,
-          subjectId: subjectId || undefined,
-          limit: 100,
-        }),
-        verifyAuditChain(token),
-      ]);
-      setEvents(eventsRes);
-      setChainResult(chainRes);
-    } catch {
-      setError("Could not load the audit ledger from the server.");
-    } finally {
-      setLoading(false);
-    }
+    void fetchLedger();
   }
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
-    // Initial load intentionally uses the initial empty filters.
+    void fetchLedger();
+    // Initial load only; filters apply when the user presses a button.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

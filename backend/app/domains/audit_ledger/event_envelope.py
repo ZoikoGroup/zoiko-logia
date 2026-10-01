@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.database import session_is_sqlite
 from app.domains.audit_ledger.chain_integrity import compute_chain_hash, compute_payload_hash
 from app.domains.audit_ledger.models import AuditEvent, _event_id, _now
 
@@ -56,11 +57,78 @@ def _is_transient_db_error(exc: BaseException) -> bool:
 # process already knows its own immediately-previous write (it just made
 # it). Cached here per async task (i.e. per request — FastAPI/Starlette
 # gives each request its own context, so this never leaks between
-# concurrent requests), and only falls back to a real DB lookup for the
-# first event of a request, when no prior write in this task is known yet.
-_cached_previous_chain_hash: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+# concurrent requests), keyed by tenant_id — the chain is tenant-scoped, so
+# even an unusual multi-tenant task must never hand tenant B the previous
+# hash it read for tenant A, or the B ledger would point at A's chain row.
+# Only falls back to a real DB lookup for the first event of a request for
+# a given tenant, when no prior write in this task is known for it yet.
+_cached_previous_chain_hash: contextvars.ContextVar[Optional[dict[str, str]]] = contextvars.ContextVar(
     "audit_previous_chain_hash", default=None
 )
+_audit_batch: contextvars.ContextVar[Optional[list[AuditEvent]]] = contextvars.ContextVar(
+    "audit_event_batch", default=None
+)
+
+
+def begin_audit_batch() -> contextvars.Token:
+    """Buffer audit rows in this task until commit_audit_batch()."""
+    _cached_previous_chain_hash.set(None)
+    return _audit_batch.set([])
+
+
+def discard_audit_batch(token: contextvars.Token) -> None:
+    _audit_batch.reset(token)
+    _cached_previous_chain_hash.set(None)
+
+
+async def commit_audit_batch(db: AsyncSession, token: contextvars.Token) -> None:
+    """Persist buffered events in one ordered transaction.
+
+    The tenant advisory lock serialises concurrent chain writers. Hashes are
+    rebuilt after taking that lock, against the latest committed event.
+    """
+    rows = list(_audit_batch.get() or [])
+    try:
+        if not rows:
+            return
+        tenant_id = rows[0].tenant_id
+
+        async def stage_against_latest_chain() -> None:
+            if not session_is_sqlite(db):
+                await db.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext(:tenant_id))"),
+                    {"tenant_id": tenant_id},
+                )
+            result = await db.execute(
+                select(AuditEvent.chain_hash)
+                .where(AuditEvent.tenant_id == tenant_id)
+                .order_by(AuditEvent.ingested_at.desc())
+                .limit(1)
+            )
+            previous = result.scalar_one_or_none()
+            for row in rows:
+                row.previous_chain_hash = previous
+                row.chain_hash = compute_chain_hash(
+                    row.id, row.event_name, row.payload_hash, previous
+                )
+                previous = row.chain_hash
+            db.add_all(rows)
+
+        for backoff in _DB_RETRY_BACKOFFS:
+            try:
+                await stage_against_latest_chain()
+                await db.commit()
+                break
+            except (DBAPIError, OSError) as exc:
+                if not _is_transient_db_error(exc):
+                    raise
+                await db.rollback()
+                await asyncio.sleep(backoff)
+        else:
+            await stage_against_latest_chain()
+            await db.commit()
+    finally:
+        discard_audit_batch(token)
 
 
 def _build_row(
@@ -139,7 +207,26 @@ async def record_event_async(
     # settings can be restored if SQLAlchemy checks out a different pooled
     # connection afterwards.
     rls_user_id = kwargs.get("actor_id") or ""
-    previous_chain_hash = _cached_previous_chain_hash.get()
+    batch = _audit_batch.get()
+    if batch is not None:
+        previous = batch[-1].chain_hash if batch else None
+        row = _build_row(tenant_id=tenant_id, previous_chain_hash=previous, **kwargs)
+        batch.append(row)
+        cache = _cached_previous_chain_hash.get()
+        if not isinstance(cache, dict):
+            cache = {}
+            _cached_previous_chain_hash.set(cache)
+        cache[tenant_id] = row.chain_hash
+        return row
+
+    cache = _cached_previous_chain_hash.get()
+    if isinstance(cache, dict):
+        previous_chain_hash = cache.get(tenant_id)
+    else:
+        # Unit tests pin the cache to a bare previous-hash string; treat any
+        # non-dict value as that string (per-tenant dict only ever comes from
+        # the writers below).
+        previous_chain_hash = cache
     if previous_chain_hash is None:
         # Only hit the DB for the first event of this request (task) — every
         # subsequent event in the same request already knows its own
@@ -180,7 +267,10 @@ async def record_event_async(
             await asyncio.sleep(backoff)
     else:
         await db.commit()  # final attempt — propagate if still failing
-    _cached_previous_chain_hash.set(new_chain_hash)
+    if not isinstance(cache, dict):
+        cache = {}
+    cache[tenant_id] = new_chain_hash
+    _cached_previous_chain_hash.set(cache)
 
     # This commit just ended the transaction get_db() originally scoped to
     # this tenant (app/core/database.py). SQLAlchemy's connection pool may
@@ -192,7 +282,7 @@ async def record_event_async(
     # and actor ids here. Re-assert both: workspace-document policies require
     # app.user_id as well as app.tenant_id, so restoring only the tenant makes
     # valid document chunks disappear without a query error.
-    if restore_tenant_context and not settings.is_sqlite:
+    if restore_tenant_context and not session_is_sqlite(db):
         await _execute_reconnect(
             db,
             text("SELECT set_config('app.tenant_id', :tenant_id, false)"),

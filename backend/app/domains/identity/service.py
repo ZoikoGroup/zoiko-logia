@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -6,6 +8,31 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import supabase_admin
 from app.domains.identity.models import Role, Tenant, User
 from app.domains.identity.schemas import ProvisionRequest, UserCreateRequest
+
+log = logging.getLogger("uvicorn.error")
+
+
+def _sync_app_metadata_best_effort(user_id: str, tenant_id: str, role: str) -> None:
+    """Best-effort stamp of tenant_id/role into the Supabase user's
+    app_metadata so future-issued tokens carry it (see database.py's
+    _identity_from_request). The local DB row is the source of truth for
+    get_current_user, so a missing/misconfigured service-role key must not
+    brick provisioning — without this, login 503s right after the profile
+    row is committed whenever SUPABASE_SERVICE_ROLE_KEY is absent."""
+    try:
+        supabase_admin.update_app_metadata(user_id, tenant_id, role)
+    except supabase_admin.SupabaseNotConfiguredError:
+        log.warning(
+            "app_metadata sync skipped: SUPABASE_SERVICE_ROLE_KEY unset. "
+            "Provisioning proceeded; tokens will not carry tenant_id/role "
+            "until the service-role key is configured."
+        )
+    except Exception:
+        log.warning(
+            "app_metadata sync skipped for user %s: admin API call failed.", user_id,
+        )
+
+logger = logging.getLogger(__name__)
 
 
 async def get_user_by_id(db: AsyncSession, user_id: str) -> User | None:
@@ -44,29 +71,55 @@ async def create_user(db: AsyncSession, tenant_id: str, payload: UserCreateReque
     db.add(user)
     await db.commit()
     await db.refresh(user)
-    supabase_admin.update_app_metadata(user.id, tenant_id, payload.role)
+    _sync_app_metadata_best_effort(user.id, tenant_id, payload.role)
     return user
 
 
-async def provision_profile(db: AsyncSession, user_id: str, email: str, payload: ProvisionRequest) -> User:
+async def provision_profile(
+    db: AsyncSession,
+    user_id: str,
+    email: str,
+    payload: ProvisionRequest,
+    *,
+    token_tenant_id: str = "",
+    token_role: str = "",
+) -> User:
     """Idempotent upsert called by the frontend right after a Supabase
     sign-up/first OAuth login. First call creates the Tenant (from
     company_name) + User row and stamps tenant_id/role into the Supabase
-    user's app_metadata. Later calls just return the existing row —
+    user's app_metadata. Later calls return the existing row —
     provisioning must never create a second Tenant/User for the same
-    Supabase auth user."""
+    Supabase auth user.
+
+    Later calls also repair the stamp when the caller's token disagrees with
+    the profile (token_tenant_id/token_role are the verified token's claims).
+    The first call commits the User row BEFORE stamping app_metadata, so a
+    failed stamp (Admin API down, bad service-role key) used to leave the
+    account permanently without a tenant in its tokens — and every
+    tenant-scoped RLS write then failed for that user. A repair failure is
+    logged, never raised: an existing user must still be able to sign in."""
     existing = await get_user_by_id(db, user_id)
     if existing is not None:
-        # Re-stamp app_metadata every time, not only when the row is created.
-        # Supabase embeds app_metadata into every access token it issues, and
-        # RLS reads app.tenant_id from that token while every row is written
-        # with the tenant on THIS row. If the two ever drift — a user moved to
-        # another tenant, a row seeded before its auth user was provisioned —
-        # the token keeps asserting the old tenant and every RLS-protected
-        # INSERT is refused ("new row violates row-level security policy"),
-        # with no way to recover: signing out and back in just reissues the
-        # same stale claim. Re-stamping here makes a fresh sign-in the fix.
-        supabase_admin.update_app_metadata(existing.id, existing.tenant_id, existing.role)
+        # Re-stamp app_metadata when this access token's embedded app_metadata
+        # has drifted from the authoritative users row — and only then, so a
+        # matched re-provision (the common daily login) stays a true no-op
+        # that never touches the Admin API. Drift is what breaks RLS writes:
+        # rows are written with this row's tenant_id while the RLS WITH CHECK
+        # compares against app.tenant_id from the token's claim, so a stale
+        # claim makes every INSERT fail with "violates row-level security
+        # policy" until a fresh sign-in re-stamps it. A claim that carries no
+        # identity at all (a bare sub/email token) tells us nothing to fix.
+        # Also when the token carries NO tenant: a first provision whose stamp
+        # failed otherwise left that account's tokens without a tenant for
+        # good, and every tenant-scoped write failed until it was stamped.
+        if (token_tenant_id, token_role) != (existing.tenant_id, existing.role):
+            try:
+                supabase_admin.update_app_metadata(existing.id, existing.tenant_id, existing.role)
+            except Exception as exc:  # noqa: BLE001 — sign-in must not depend on the repair
+                logger.warning(
+                    "Could not repair app_metadata for user %s (%s); tenant-scoped writes "
+                    "will fail until it is stamped", existing.id, type(exc).__name__,
+                )
         return existing
 
     tenant = Tenant(name=payload.company_name or "")
@@ -111,7 +164,7 @@ async def provision_profile(db: AsyncSession, user_id: str, email: str, payload:
             ),
         ) from exc
     await db.refresh(user)
-    supabase_admin.update_app_metadata(user.id, user.tenant_id, user.role)
+    _sync_app_metadata_best_effort(user.id, user.tenant_id, user.role)
     return user
 
 
@@ -124,3 +177,25 @@ async def set_user_active(db: AsyncSession, user_id: str, tenant_id: str, is_act
     await db.commit()
     await db.refresh(user)
     return user
+
+
+async def update_own_profile(
+    db: AsyncSession, user_id: str, first_name: str | None, last_name: str | None,
+) -> User | None:
+    """Self-service edit of the user's own profile row. Scope stays on the
+    caller's row — there is no tenant_id parameter here, so PATCH /auth/me
+    can never touch another user's record. A None field means "not in this
+    request": omitted fields are preserved, and full_name is rebuilt from
+    the existing values plus whatever was actually provided — a partial
+    PATCH must never blank out a field the client didn't send."""
+    existing = await get_user_by_id(db, user_id)
+    if existing is None:
+        return None
+    if first_name is not None:
+        existing.first_name = first_name
+    if last_name is not None:
+        existing.last_name = last_name
+    existing.full_name = f"{existing.first_name} {existing.last_name}".strip()
+    await db.commit()
+    await db.refresh(existing)
+    return existing

@@ -59,9 +59,14 @@ Before running the application, you must configure the backend environment varia
 # LLM Provider (Groq for high-speed Llama-3 inference)
 GROQ_API_KEY=your_groq_api_key_here
 
-# Supabase Auth
+# Supabase Auth — REQUIRED. Without it, token verification fails closed
+# (every authenticated endpoint 401s) and user seeding is skipped. Must match
+# the frontend's project (frontend/.env → NEXT_PUBLIC_SUPABASE_URL).
 SUPABASE_URL=https://<project-ref>.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+# Opt-in hard startup failure when the above is missing (staging/prod).
+# Local/dev can leave this unset/false.
+REQUIRE_SUPABASE_CONFIG=false
 ```
 
 ## 5. Architectural Naming Conventions (ZL-ENG-01)

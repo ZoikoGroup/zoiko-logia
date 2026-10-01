@@ -1,7 +1,8 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { createContext, useContext, useSyncExternalStore, ReactNode } from "react";
 import { Theme, THEME_COOKIE } from "@/lib/theme";
+import { readCookie, subscribeCookies, writeCookie } from "@/lib/cookie-store";
 
 type ThemeContextValue = {
   theme: Theme;
@@ -10,32 +11,32 @@ type ThemeContextValue = {
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
-function readResolvedTheme(): Theme {
-  // The inline script in layout.tsx (THEME_INIT_SCRIPT) runs before hydration
-  // and already sets this attribute — read it back rather than re-deriving
-  // independently from the cookie/prefers-color-scheme here. Two separate
-  // computations of "what theme should this be" can disagree (e.g. if the
-  // OS-level dark-mode signal isn't perfectly stable between the script's
-  // run and this effect's), which reads as the background randomly flipping
-  // between loads. The DOM attribute the script set is the single source of
-  // truth for what was actually painted.
-  if (typeof document === "undefined") return "light";
-  const attr = document.documentElement.getAttribute("data-theme");
-  return attr === "dark" ? "dark" : "light";
+function readThemeCookie(): Theme | null {
+  return readCookie(THEME_COOKIE) as Theme | null;
+}
+
+function systemPrefersDark(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
+function currentTheme(): Theme {
+  return readThemeCookie() ?? (systemPrefersDark() ? "dark" : "light");
+}
+
+function serverTheme(): Theme {
+  return "light";
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>("light");
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setThemeState(readResolvedTheme()), 0);
-    return () => window.clearTimeout(timer);
-  }, []);
+  // "light" during SSR/hydration, then the saved cookie (or the system
+  // preference) — read as an external store rather than copied into state
+  // from an effect.
+  const theme = useSyncExternalStore(subscribeCookies, currentTheme, serverTheme);
 
   function applyTheme(next: Theme) {
     document.documentElement.setAttribute("data-theme", next);
-    document.cookie = `${THEME_COOKIE}=${next}; path=/; max-age=${60 * 60 * 24 * 365}`;
-    setThemeState(next);
+    writeCookie(THEME_COOKIE, next, 60 * 60 * 24 * 365);
   }
 
   function toggleTheme() {

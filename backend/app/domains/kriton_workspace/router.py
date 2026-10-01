@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -6,6 +6,7 @@ from app.core.database import get_db
 from app.domains.audit_ledger.event_envelope import record_event_async
 from app.domains.identity.models import User
 from app.domains.identity.rbac import get_current_user
+from app.domains.identity.authorization import DOCUMENT_READ, DOCUMENT_WRITE, authorize
 from app.domains.kriton_workspace.schemas import (
     DraftCreateRequest,
     DraftPublic,
@@ -47,6 +48,7 @@ _ATTACHMENT_MIME_TYPES = {
 @router.post("/attachments")
 async def upload_attachment(
     file: UploadFile = File(...),
+    engagement_id: str | None = Form(default=None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
@@ -61,6 +63,14 @@ async def upload_attachment(
         raise HTTPException(status_code=422, detail="The uploaded file is empty")
     if len(content) > _MAX_ATTACHMENT_BYTES:
         raise HTTPException(status_code=413, detail="File exceeds the 20MB upload limit")
+
+    if engagement_id:
+        decision = await authorize(
+            db, actor_id=current_user.id, tenant_id=current_user.tenant_id,
+            engagement_id=engagement_id, operation=DOCUMENT_WRITE,
+        )
+        if not decision.allowed:
+            raise HTTPException(status_code=403, detail=decision.reason_code)
 
     if get_settings().ASYNC_DOCUMENT_INGESTION:
         document = await create_document_upload(
@@ -90,7 +100,13 @@ async def upload_attachment(
         actor_id=current_user.id,
         subject_type="attachment",
         subject_id=document.id,
-        payload={"filename": name, "size_bytes": len(content), "chunk_count": chunk_count, "status": document.status},
+        payload={
+            "filename": name,
+            "size_bytes": len(content),
+            "chunk_count": chunk_count,
+            "status": document.status,
+            "engagement_id": engagement_id,
+        },
     )
 
     return {"document_id": document.id, "filename": name, "chunk_count": chunk_count, "status": document.status}
@@ -98,9 +114,18 @@ async def upload_attachment(
 
 @router.get("/attachments", response_model=list[DocumentPublic])
 async def get_attachments(
+    engagement_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[DocumentPublic]:
+    """The caller own indexed documents, newest first."""
+    if engagement_id:
+        decision = await authorize(
+            db, actor_id=current_user.id, tenant_id=current_user.tenant_id,
+            engagement_id=engagement_id, operation=DOCUMENT_READ,
+        )
+        if not decision.allowed:
+            raise HTTPException(status_code=403, detail=decision.reason_code)
     rows = await list_documents(db, tenant_id=current_user.tenant_id, user_id=current_user.id)
     return [
         DocumentPublic(
@@ -141,9 +166,17 @@ async def get_attachment(
 @router.delete("/attachments/{document_id}")
 async def delete_attachment(
     document_id: str,
+    engagement_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
+    if engagement_id:
+        decision = await authorize(
+            db, tenant_id=current_user.tenant_id, actor_id=current_user.id,
+            engagement_id=engagement_id, operation=DOCUMENT_WRITE,
+        )
+        if not decision.allowed:
+            raise HTTPException(status_code=403, detail=decision.reason_code)
     deleted = await delete_document(
         db, document_id=document_id, tenant_id=current_user.tenant_id, user_id=current_user.id
     )
@@ -157,7 +190,7 @@ async def delete_attachment(
         actor_id=current_user.id,
         subject_type="attachment",
         subject_id=document_id,
-        payload={},
+        payload={"document_id": document_id, "engagement_id": engagement_id},
     )
     return {"deleted": True}
 

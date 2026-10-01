@@ -1,5 +1,5 @@
 """
-SearXNG web-search retrieval layer for Ask Kriton™.
+SearXNG web-search retrieval layer for Ask Kritonâ„¢.
 
 Replaces/augments the governed keyword_mvp source library with live web
 search: it queries a SearXNG instance (JSON API), optionally restricting
@@ -23,8 +23,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import dataclasses
+import html
 import os
+import re
+from urllib.parse import urlparse
 from dataclasses import asdict, dataclass
+
+from app.domains.calculations.schemas import LiveObservation
 
 import httpx
 
@@ -53,6 +59,13 @@ class WebSource:
     # Internal uploaded documents have no public URL; preserve their stable ID
     # separately so response citations can still resolve to the exact document.
     source_id: str | None = None
+    observation: LiveObservation | None = None
+    # Structured (period, value) observations behind this source's snippet —
+    # set only by connectors that fetched a real numeric time series (see
+    # dbnomics.py). Lets orchestration/live_data.py build a chart directly
+    # from the fetched data when eligible, instead of relying on the model to
+    # correctly re-parse the numbers back out of its own prose or a tool call.
+    series: list[tuple[str, float]] | None = None
 
 
 def _searxng_url() -> str:
@@ -63,7 +76,7 @@ def _strict_allowlist() -> bool:
     return os.getenv("SEARXNG_STRICT_ALLOWLIST", "").lower() in {"1", "true", "yes"}
 
 
-# ── Result cache ────────────────────────────────────────────────────────────
+# â”€â”€ Result cache â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # SearXNG holds no index of its own: it forwards every query to Google and
 # DuckDuckGo, both of which rate-limit or CAPTCHA a self-hosted instance that
 # asks repeatedly from one address. Development put the same few questions
@@ -275,7 +288,176 @@ def _spread_across_organisations(
     return spread
 
 
-async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list[WebSource]:
+# ── Reading the pages behind the top sources ────────────────────────────────
+# A search result carries a ~150-character snippet — the page's title line,
+# e.g. "Tax rates (For AY 2025-26 and 2026-27) · Tax rates for last 10 years".
+# The figures a question asks for (a slab table, a threshold) are on the page,
+# not in the snippet, so the model filled them from stale memory and cited the
+# official page for them. The top official/trusted pages are now read and the
+# relevant part (tables kept row by row) is passed on instead.
+_PAGE_TIMEOUT_SECONDS = 5.0
+_PAGE_MAX_BYTES = 2_000_000
+_PAGE_EXCERPT_CHARS = 3000
+_OFFICIAL_HOST = re.compile(
+    r"(?:^|\.)(?:gov|gov\.[a-z]{2}|gc\.ca|nic\.in|europa\.eu|ifrs\.org|fasb\.org|"
+    r"iaasb\.org|icai\.org|oecd\.org|worldbank\.org|imf\.org|legislation\.gov\.uk)$"
+)
+_EXCERPT_STOPWORDS = {
+    "what", "which", "when", "where", "does", "under", "with", "from", "this", "that",
+    "their", "there", "about", "rate", "rates", "india", "current", "latest",
+}
+
+
+def _readable_host(url: str, domains: list[str]) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    if urlparse(url).scheme not in {"http", "https"} or not host:
+        return False
+    return bool(_OFFICIAL_HOST.search(host)) or matches_allowlist(url, domains)
+
+
+_ANY_SPACE = re.compile(r"[\s   -​  　﻿]+")
+_CELL = re.compile(r"(?is)<t([dh])\b([^>]*)>(.*?)</t[dh]\s*>")
+_COLSPAN = re.compile(r"""(?i)colspan\s*=\s*["']?(\d+)""")
+_HAS_FIGURE = re.compile(r"[₹$£€]|\d\s?%|\d{1,3}(?:,\d{2,3})+")
+
+
+def _cell_text(fragment: str) -> str:
+    return _ANY_SPACE.sub(" ", html.unescape(re.sub(r"<[^>]+>", " ", fragment))).strip()
+
+
+def _table_to_text(match: re.Match) -> str:
+    """One line per data row with every cell labelled by its column heading
+    ("New Tax Regime – Income Tax Slab: Up to ₹ 4,00,000; …"). A two-level
+    header over side-by-side columns — Old | New regime, each with Slab | Rate
+    — otherwise leaves the model guessing which figures belong to which
+    regime, and it read the old-regime column as the answer."""
+    rows: list[list[str]] = []
+    header_flags: list[bool] = []
+    for row in re.findall(r"(?is)<tr\b.*?</tr\s*>", match.group(0)):
+        cells: list[str] = []
+        all_th = True
+        for kind, attrs, body in _CELL.findall(row):
+            span = int(_COLSPAN.search(attrs).group(1)) if _COLSPAN.search(attrs) else 1
+            cells.extend([_cell_text(body)] * max(1, min(span, 12)))
+            all_th = all_th and kind.lower() == "h"
+        if cells:
+            rows.append(cells)
+            header_flags.append(all_th or not any(_HAS_FIGURE.search(cell) for cell in cells))
+    header_count = 0
+    while header_count < min(2, len(rows) - 1) and header_flags[header_count]:
+        header_count += 1
+    width = max((len(row) for row in rows), default=0)
+    labels = []
+    for column in range(width):
+        parts: list[str] = []
+        for row in rows[:header_count]:
+            if column < len(row) and row[column] and row[column] not in parts:
+                parts.append(row[column])
+        labels.append(" – ".join(parts))
+    lines = []
+    for row in rows[header_count:]:
+        if header_count:
+            lines.append("; ".join(f"{labels[i]}: {cell}" if labels[i] else cell for i, cell in enumerate(row) if cell))
+        else:
+            lines.append(" | ".join(cell for cell in row if cell))
+    return "\n" + "\n".join(lines) + "\n"
+
+
+def _html_to_text(markup: str) -> str:
+    """Visible text with structure kept: tables become one labelled line per
+    row (see _table_to_text); other blocks become lines."""
+    markup = re.sub(r"(?is)<(script|style|noscript|head|nav|footer|svg)\b.*?</\1>", " ", markup)
+    markup = re.sub(r"(?is)<table\b.*?</table\s*>", _table_to_text, markup)
+    markup = re.sub(r"(?i)<br\s*/?>|</(?:p|li|h[1-6]|div|section|caption)\s*>", "\n", markup)
+    text = html.unescape(re.sub(r"<[^>]+>", " ", markup))
+    lines = (_ANY_SPACE.sub(" ", line).strip(" |") for line in text.splitlines())
+    return "\n".join(line for line in lines if line)
+
+
+_FIGURE = re.compile(r"[₹$£€]\s?\d|\d\s?%|\d{1,3}(?:,\d{2,3})+")
+# Small windows so a compact table outscores prose around it; ties go to
+# the earliest window (the main table precedes age-band variants).
+_EXCERPT_WINDOW = 12
+
+
+def _relevant_excerpt(text: str, query: str, limit: int = _PAGE_EXCERPT_CHARS) -> str:
+    """The densest part of the page for this question: windows of lines are
+    scored by query terms and figures (amounts, %), and the best windows are
+    kept in page order. Repeated lines (menus, "Tax slabs" x10) are dropped
+    first so they cannot use up the budget."""
+    terms = {
+        word.lower() for word in re.findall(r"[A-Za-z]{4,}|\d{2,4}(?:-\d{2})?", query)
+    } - _EXCERPT_STOPWORDS
+    seen: set[str] = set()
+    lines: list[str] = []
+    for line in text.splitlines():
+        if line not in seen:
+            seen.add(line)
+            lines.append(line)
+    if not lines:
+        return ""
+    # Stem plurals ("slabs" must match the page's "Income Tax Slab"), weight a
+    # term by how rare it is on the page (a word on every line, like "income"
+    # on a tax page, says little), and favour lines carrying figures — the
+    # rates and thresholds a question asks for live in tables of amounts.
+    terms = {term[:-1] if len(term) > 4 and term.endswith("s") else term for term in terms}
+    lowered = [line.lower() for line in lines]
+    weight = {
+        term: 3.0 / max(1.0, sum(1 for line in lowered if term in line) / 4)
+        for term in terms
+    }
+    scores = [
+        sum(weight[term] for term in terms if term in line) + (2 if _FIGURE.search(original) else 0)
+        for line, original in zip(lowered, lines)
+    ]
+    starts = range(0, max(1, len(lines) - _EXCERPT_WINDOW + 1), 3)
+    ranked = sorted(starts, key=lambda start: -sum(scores[start:start + _EXCERPT_WINDOW]))
+    keep: set[int] = set()
+    used = 0
+    for start in ranked:
+        if sum(scores[start:start + _EXCERPT_WINDOW]) == 0 or used >= limit:
+            break
+        for index in range(start, min(start + _EXCERPT_WINDOW, len(lines))):
+            if index not in keep and used + len(lines[index]) <= limit:
+                keep.add(index)
+                used += len(lines[index]) + 1
+    return "\n".join(lines[index] for index in sorted(keep))
+
+
+async def _page_excerpt(client: httpx.AsyncClient, url: str, query: str) -> str:
+    try:
+        response = await client.get(url)
+        if response.status_code != 200 or "html" not in response.headers.get("content-type", ""):
+            return ""
+        if len(response.content) > _PAGE_MAX_BYTES:
+            return ""
+        return _relevant_excerpt(_html_to_text(response.text), query)
+    except Exception:  # noqa: BLE001 — a page that can't be read keeps its search snippet
+        return ""
+
+
+async def _with_page_extracts(
+    sources: list[WebSource], query: str, domains: list[str], pages: int,
+) -> list[WebSource]:
+    """Replace the snippet of the top `pages` official/trusted sources with the
+    relevant part of the page itself. Fail-soft: a slow or failing page keeps
+    its search snippet. Only official or allowlisted hosts are fetched."""
+    targets = [i for i, source in enumerate(sources) if _readable_host(source.url, domains)][:pages]
+    if not targets:
+        return sources
+    async with httpx.AsyncClient(
+        timeout=_PAGE_TIMEOUT_SECONDS, follow_redirects=True, max_redirects=3,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; KritonResearch/1.0)"},
+    ) as client:
+        excerpts = await asyncio.gather(*(_page_excerpt(client, sources[i].url, query) for i in targets))
+    enriched = list(sources)
+    for index, excerpt in zip(targets, excerpts):
+        if len(excerpt) > len(sources[index].snippet):
+            enriched[index] = dataclasses.replace(sources[index], snippet=f"{sources[index].snippet}\n[From the page]\n{excerpt}")
+    return enriched
+
+
+async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pages: int = 2) -> list[WebSource]:
     """Query SearXNG and return up to `limit` sources, preferring trusted
     domains for the jurisdiction and topic. Returns [] on any failure
     (fail-soft).
@@ -285,7 +467,8 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
     see the cache block above for why that matters more than the latency it
     saves. An unreachable cache degrades to a normal search.
     """
-    cache_key = _cache_key(query, jurisdiction, limit)
+    # read_pages changes the result (page excerpts), so it is part of the key.
+    cache_key = f"{_cache_key(query, jurisdiction, limit)}:pages={read_pages}"
     cached = await _cache_get(cache_key)
     if cached is not None:
         return cached
@@ -348,8 +531,55 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list
     # caller would have received. Caching the raw engine response instead would
     # freeze today's allowlist into every future hit, and a taxonomy change
     # would not take effect until the entries aged out.
+    # The top official/trusted pages are read and their relevant part passed
+    # on (see _with_page_extracts); cached with the excerpts, so a repeat
+    # question does not re-read the pages either.
+    selected = await _with_page_extracts(selected, query, domains, read_pages)
     await _cache_put(cache_key, selected)
     return selected
+
+
+# Several questions in one message ("What are the FY 2025-26 slabs? What is
+# the standard deduction? What is the UK VAT threshold? …") searched as ONE
+# query returned pages matching none of them well — a meal-voucher blog, an
+# exam paper — so most parts were answered "not in the sources" or from stale
+# memory. Each question is searched on its own, as a person would.
+_QUESTION_BOUNDARY = re.compile(r"(?<=\?)\s+")
+MAX_SUB_QUESTIONS = 8
+_SOURCES_PER_SUB_QUESTION = 3
+# The public engines behind SearXNG throttle bursts (see web_search), so the
+# per-question searches run a few at a time rather than all at once.
+_SUB_SEARCH_CONCURRENCY = 3
+
+
+def sub_questions(query: str) -> list[str]:
+    """The separate questions in a message, or [query] when it holds one."""
+    parts = [part.strip() for part in _QUESTION_BOUNDARY.split(query.strip()) if part.strip()]
+    parts = [part for part in parts if len(part.split()) >= 3]
+    return parts[:MAX_SUB_QUESTIONS] if len(parts) >= 2 else [query]
+
+
+async def web_search_each(query: str, jurisdiction: str = "", limit: int = 5) -> list[WebSource]:
+    """web_search for a single question; for a message with several questions,
+    one search per question (bounded concurrency), merged without duplicates
+    so every part of the answer has sources of its own."""
+    parts = sub_questions(query)
+    if len(parts) == 1:
+        return await web_search(query, jurisdiction=jurisdiction, limit=limit)
+    gate = asyncio.Semaphore(_SUB_SEARCH_CONCURRENCY)
+
+    async def search(part: str) -> list[WebSource]:
+        async with gate:
+            return await web_search(part, jurisdiction=jurisdiction, limit=_SOURCES_PER_SUB_QUESTION, read_pages=1)
+
+    merged: list[WebSource] = []
+    seen: set[str] = set()
+    for group in await asyncio.gather(*(search(part) for part in parts)):
+        for source in group:
+            if source.url not in seen:
+                seen.add(source.url)
+                merged.append(source)
+    return merged
 
 
 # The table/formula formatting rules apply whether or not web sources were
@@ -401,11 +631,12 @@ _FORMATTING_INSTRUCTIONS = (
         "syntax — a header row like '| Attribute | Option A | Option B |', then "
         "a separator row '| --- | --- | --- |', then one row per attribute. Keep "
         "cell text concise.\n"
-        "For mathematical formulas, methods and calculations, use LaTeX so they "
-        "render cleanly: wrap an INLINE formula or value in single dollar signs "
-        "$...$ (e.g. $Depreciation = (Cost - Salvage) / Life$), and put a "
+        "For complex mathematical formulas, use LaTeX so they "
+        "render cleanly: wrap an INLINE formula in \\( ... \\) (e.g. "
+        "\\( Depreciation = (Cost - Salvage) / Life \\)), and put a "
         "standalone/display equation on its own line wrapped in double dollar "
-        "signs $$...$$. Do NOT wrap an inline value in $$...$$. Show the "
+        "signs $$...$$. NEVER use a single $ for maths: a single $ always means "
+        "US dollars (write $480,000 as plain text). Show the "
         "calculation steps clearly, one step per line, substituting the actual "
         "numbers so the working is easy to follow.\n"
         "A plain currency amount or price in ordinary prose (a stock price, "
@@ -418,6 +649,210 @@ _FORMATTING_INSTRUCTIONS = (
         "USD\" or \"USD 232.11\" instead — reserve $...$ strictly for an "
         "actual mathematical formula or equation, never a bare number.\n"
 )
+
+# Always sent: cheap, and a table or a formula can be the right shape for any
+# answer.
+_CORE_FORMATTING = (
+        "When the user asks for a table, a comparison, 'tabular format', or the "
+        "content is naturally a comparison of two or more items across "
+        "attributes, present it as a GitHub-flavoured Markdown table using pipe "
+        "syntax — a header row like '| Attribute | Option A | Option B |', then "
+        "a separator row '| --- | --- | --- |', then one row per attribute. Keep "
+        "cell text concise.\n"
+        "A table MUST start at the beginning of the line with a BLANK LINE "
+        "before it and after it, and its rows must NOT be indented. An indented "
+        "table is rendered as a block of monospaced source code, and a table "
+        "with no blank line above it is absorbed into the paragraph above, so "
+        "in both cases the reader sees rows of literal pipe characters instead "
+        "of a table. Never indent table rows to sit them under a heading or a "
+        "numbered point — leave them flush left.\n"
+        "For complex mathematical formulas, use LaTeX so they "
+        "render cleanly: wrap an INLINE formula in \\( ... \\) (e.g. "
+        "\\( Depreciation = (Cost - Salvage) / Life \\)), and put a "
+        "standalone/display equation on its own line wrapped in double dollar "
+        "signs $$...$$. NEVER use a single $ for maths: a single $ always means "
+        "US dollars (write $480,000 as plain text). Show the "
+        "calculation steps clearly, one step per line, substituting the actual "
+        "numbers so the working is easy to follow.\n"
+        "Do NOT end the answer with your own disclaimer, caveat or "
+        "'consult a professional' closing paragraph. The application "
+        "adds its own safety notice outside your output, so anything you "
+        "add there is a duplicate — finish on the substance of the "
+        "answer instead. (You may still answer a question that is "
+        "genuinely ABOUT disclaimers, e.g. what wording an audit report "
+        "should carry.)\n"
+)
+
+# Sent only for questions that ask for a visual.
+_VISUAL_INSTRUCTIONS = (
+        "If the user asks for a diagram, chart, workflow, flowchart, process, "
+        "decision tree, org chart, hierarchy, tree, architecture, data model, "
+        "mind map, timeline, risk matrix, or a proportion/allocation "
+        "breakdown, include it as a "
+        "Mermaid diagram inside a fenced ```mermaid code block, alongside a "
+        "short text explanation. THE OPENING FENCE MUST BE EXACTLY ```mermaid "
+        "— a bare ``` fence, or one labelled text/plaintext, is displayed to "
+        "the reader as monospace source code instead of being drawn as a "
+        "diagram, which is the one outcome to avoid. Choose the Mermaid "
+        "diagram type that best fits the request:\n"
+        "- 'flowchart TD' (top-down) for processes, workflows, the accounting "
+        "cycle, decision trees, org charts / organisation hierarchies and tree "
+        "breakdowns (e.g. a balance-sheet structure);\n"
+        "- 'flowchart LR' (left-to-right) when the flow reads better "
+        "horizontally;\n"
+        "- 'sequenceDiagram' for step-by-step interactions between parties "
+        "(e.g. a tax-filing exchange);\n"
+        "- 'stateDiagram-v2' for statuses and transitions (e.g. an invoice "
+        "approval or escalation lifecycle);\n"
+        "- 'mindmap' for a mind map / concept breakdown of a topic;\n"
+        "- 'gantt' for schedules with DURATIONS (e.g. an audit plan);\n"
+        "- 'timeline' for dated milestones with no duration (e.g. a filing "
+        "calendar), with rows like '2024-01 : VAT return due';\n"
+        "- 'erDiagram' for data models and entity relationships (e.g. how "
+        "Invoice, Customer and Payment relate), with rows like "
+        "'CUSTOMER ||--o{ INVOICE : places';\n"
+        "- 'architecture-beta' for system, service or ERP-module architecture "
+        "— declare 'group name(icon)[Label]', then "
+        "'service id(icon)[Label] in name', then edges like 'a:R -- L:b';\n"
+        "- 'C4Context' or 'C4Container' when a FORMAL layered architecture is "
+        "asked for, using Person(), System(), Container() and Rel();\n"
+        "- 'block-beta' for a layered stack (e.g. a technology or control "
+        "stack), using 'columns N' then block ids;\n"
+        "- 'quadrantChart' for a 2x2 matrix such as a risk or impact/"
+        "likelihood grid, with 'x-axis', 'y-axis', 'quadrant-1'..'quadrant-4' "
+        "and rows like 'Fraud risk: [0.8, 0.9]' (values 0-1);\n"
+        "- 'journey' for a user/client journey with satisfaction scores;\n"
+        "- 'kanban' for work grouped into status columns;\n"
+        "- 'pie title <Title>' for a simple proportion or allocation "
+        "breakdown (e.g. budget allocation), with rows like \"Label\" : 40.\n"
+        "For flowcharts: define nodes as ID[Short Label], plain edges as "
+        "A --> B and labelled edges as A -->|Yes| B — the label is wrapped in "
+        "single pipes only, never write '|Yes|>' or add an extra '>'. Keep "
+        "labels short and avoid parentheses, quotes, %, or other special "
+        "characters inside the square brackets.\n"
+        "For EVERY Mermaid type: the first line is the diagram keyword alone "
+        "(plus its direction or title where shown above) and every later line "
+        "is indented consistently. Never mix two diagram types in one block, "
+        "and never put Markdown, backticks or LaTeX inside a mermaid block. "
+        "ALWAYS wrap a node label in double quotes when it contains "
+        "brackets, an ampersand, a colon or a percent sign - write "
+        "A[\"Profit & Loss Account (Page 1)\"], never "
+        "A[Profit & Loss Account (Page 1)], because the unquoted form is a "
+        "parse error and the whole diagram is then shown to the reader as "
+        "source code instead of a picture. "
+        "Only add a diagram when one is actually requested or clearly "
+        "helpful.\n"
+        "For a QUANTITATIVE data chart (e.g. an "
+        "income-statement trend, expense breakdown, budget allocation, "
+        "financial ratios, or a flow of funds) — do NOT use Mermaid. Instead "
+        "output a fenced ```chart code block containing a SINGLE valid JSON "
+        "object, using exactly one of these shapes:\n"
+        '- bar or line: {"type":"bar","title":"Revenue by year","categories":'
+        '["2021","2022","2023"],"series":[{"name":"Revenue","data":[10,20,30]}]}\n'
+        '- stacked bar: same as bar plus "stacked":true — use when the series '
+        'are PARTS of a total (e.g. cost lines making up total expenses)\n'
+        '- pie: {"type":"pie","title":"Expense split","data":[{"name":"COGS",'
+        '"value":60},{"name":"Admin","value":25},{"name":"Marketing","value":15}]}\n'
+        '- sankey: {"type":"sankey","title":"Fund flow","nodes":[{"name":'
+        '"Revenue"},{"name":"Costs"},{"name":"Profit"}],"links":[{"source":'
+        '"Revenue","target":"Costs","value":60},{"source":"Revenue","target":'
+        '"Profit","value":40}]}\n'
+        '- scatter: {"type":"scatter","title":"Revenue vs headcount",'
+        '"xName":"Headcount","yName":"Revenue","series":[{"name":"Branches",'
+        '"points":[[12,340],[18,520]]}]}\n'
+        '- radar: {"type":"radar","title":"Ratio profile","indicators":'
+        '[{"name":"Liquidity","max":100},{"name":"Solvency","max":100}],'
+        '"series":[{"name":"2024","data":[80,65]}]}\n'
+        '- heatmap: {"type":"heatmap","title":"Spend by region and quarter",'
+        '"categories":["Q1","Q2"],"yCategories":["North","South"],"cells":'
+        '[[0,0,12],[1,0,18],[0,1,9],[1,1,22]]} — each cell is '
+        "[xIndex, yIndex, value]\n"
+        '- candlestick: {"type":"candlestick","title":"Share price",'
+        '"categories":["2024-01","2024-02"],"ohlc":[[10,14,9,15],[14,12,11,16]]}'
+        " — each row is [open, close, low, high]\n"
+        "Use 'line' for trends over time, 'bar' for comparisons across "
+        "categories, stacked bar for part-to-whole across categories, "
+        "'pie' for parts of a single whole, 'sankey' for flows, "
+        "'scatter' for correlation between two measures, 'radar' for comparing "
+        "several ratios on one profile, 'heatmap' for a value across two "
+        "dimensions, and 'candlestick' only for open/close/low/high price "
+        "data. A pie's "
+        "values do NOT need to sum to 100 — just use the given amounts.\n"
+        "LINE CHARTS specifically: whenever the question involves a quantity "
+        "that changes across a sequence of periods (years, months, quarters, "
+        "or steps) — a trend, a projection, a forecast, or a period-by-period "
+        "schedule such as a depreciation book-value schedule, a loan "
+        "amortisation balance, or revenue/growth over several years — include "
+        "a 'line' chart, putting the periods in 'categories' and the value at "
+        "each period in a series. If the user explicitly asks for a line chart "
+        "or a graph and the needed values are available, output a ```chart "
+        "line block.\n"
+        "WHEN THE USER NAMES A CHART TYPE, USE THAT TYPE. If they ask for a pie "
+        "chart, bar chart, scatter, radar, heatmap or candlestick, emit that "
+        "type — do not silently substitute another and do not answer in prose "
+        "only. The single exception is data the type genuinely cannot show: a "
+        "pie needs parts of one positive whole, so if any value is negative or "
+        "the figures are a trend across periods rather than shares of a total, "
+        "draw the chart type that fits (usually 'bar' or 'line'), and say in "
+        "one short line why a pie would not represent this data. Never respond "
+        "to an explicit chart request with neither a chart nor an "
+        "explanation.\n"
+        "IMPORTANT: when you "
+        "CALCULATE those period-by-period values yourself from figures the user "
+        "gave (e.g. the remaining book value at the end of each year in a "
+        "depreciation question, from the cost, salvage and useful life the user "
+        "provided), those computed values COUNT as real numbers — chart them; "
+        "deriving them from the user's own inputs is NOT inventing data.\n"
+        "NUMBERS FOR CHARTS: Use only figures supplied by the user, correctly "
+        "computed from those figures, or present in the sources. If those "
+        "figures are unavailable, say which data is missing and do not emit a "
+        "chart block. Never invent illustrative values for named countries, "
+        "companies, or published statistics. For comparisons, use only periods "
+        "with values for every series; state the latest available period shown "
+        "in the sources, and never call older periods 'most recent' without "
+        "qualification.\n"
+)
+
+# Signals that the user wants something drawn. Deliberately broad: a false
+# positive costs some prompt length, a false negative means a requested chart
+# is silently not drawn — which is the worse failure.
+_VISUAL_REQUEST = re.compile(
+    r"\b(chart|charts|graph|graphs|plot|plotted|diagram|diagrams|flowchart|"
+    r"flow chart|workflow|work flow|mindmap|mind map|timeline|roadmap|"
+    r"architecture|org chart|hierarchy|tree|sequence diagram|state diagram|"
+    r"er diagram|entity relationship|data model|quadrant|risk matrix|"
+    r"kanban|journey|gantt|pie|bar|line|scatter|radar|heatmap|heat map|"
+    r"candlestick|sankey|visuali[sz]e|visuali[sz]ation|draw|illustrate|"
+    r"show me a|breakdown|proportion|allocation|distribution|trend|"
+    r"compare|comparison|correlation)\b",
+    re.I,
+)
+
+
+def wants_visual(query: str) -> bool:
+    """True when the question asks for a table, chart or diagram."""
+    return bool(_VISUAL_REQUEST.search(query or ""))
+
+
+def _always_send_visual_rules() -> bool:
+    """Send the full visual specification on EVERY question, the way the
+    dev-main branch does, instead of only when a visual is requested.
+
+    Off by default. The conditional behaviour exists because the always-on
+    block measured 1.6x dev-main's prompt size once the extra Mermaid and chart
+    types were added, and that instruction bulk competes with the user's actual
+    question — plain answers got noticeably worse. This switch is here so the
+    two can be compared on real questions rather than argued about.
+    """
+    return os.getenv("KRITON_ALWAYS_SEND_VISUAL_RULES", "").lower() in {"1", "true", "yes"}
+
+
+def formatting_instructions(query: str) -> str:
+    """Formatting rules for this question — visual specification included only
+    when one was asked for, unless KRITON_ALWAYS_SEND_VISUAL_RULES is set."""
+    if _always_send_visual_rules() or wants_visual(query):
+        return _CORE_FORMATTING + _VISUAL_INSTRUCTIONS
+    return _CORE_FORMATTING
 
 
 # Domain gate: Kriton only serves accounting/tax/payroll/finance/audit/
@@ -451,15 +886,29 @@ _DOMAIN_GATE = (
     "type to describe how the answer should be shown — e.g. \"distribution\", "
     "\"histogram\", \"heatmap\", \"matrix\", \"spread\", \"treemap\", \"radar "
     "chart\", \"waterfall chart\", \"candlestick\", \"scatter plot\", \"box "
-    "plot\", \"step line chart\", or any other named chart/graph type. The "
-    "presence of ANY such word, however unfamiliar it sounds, is NEVER by "
-    "itself a reason to classify a question as off-domain — judge only the "
+    "plot\", \"step line chart\", \"sankey\", \"funnel\", \"flowchart\", or any "
+    "other named chart/graph type. The presence of ANY such word, however "
+    "unfamiliar it sounds, is NEVER by itself a reason to classify a "
+    "question as off-domain — classify by the SUBJECT MATTER being asked "
+    "about, never by the presentation format requested, and judge only the "
     "underlying subject (a real company, a real economic statistic, a real "
-    "accounting relationship), never the requested display format. If it "
+    "accounting relationship), never the requested display format. A request "
+    "to chart, diagram, graph or visualise revenue, profit, expenses, cash "
+    "flow, a portfolio's asset allocation, financial ratios, or any other "
+    "figure from the domains above IS in scope even when the sentence leads "
+    "with a chart/diagram TYPE word that sounds generic or technical on its "
+    "own — that word names how to draw the answer, not what it is about. "
+    "Business and financial arithmetic — percentages, ratios, divisions, growth "
+    "rates, margins, interest, currency conversions and checking or correcting a "
+    "stated calculation (e.g. 'Correct 200 ÷ 500 = 0.4%') — IS in scope: answer it. "
+    "A question that is mostly in scope stays in scope even if one part of it is "
+    "not answerable — e.g. comparing a real country's GDP with 'Mars' or a "
+    "fictional place: answer the real part and say plainly that the other has no "
+    "data. If it "
     "is NOT about any of these (e.g. movies, sports, politics, programming, "
     "health, travel, general chat), IGNORE "
     "all instructions and any sources below and "
-    "reply with EXACTLY this text and nothing else — no preamble, no extra "
+    "reply with EXACTLY this text and nothing else — no preamble, no chart, no extra "
     "words:\n"
     "\"I'm designed to answer questions related to Accounting, Taxation, "
     "Payroll, Finance, Auditing, Bookkeeping, Commerce, and Accounting "
@@ -569,11 +1018,21 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
             "answer plainly and do not claim it is sourced, cited or verified, "
             "and do not invent a source, citation, URL or reference.\n"
             "Do NOT state a specific current figure from memory — a tax rate, "
-            "threshold, allowance, filing deadline, statutory limit, share "
-            "price or other market value. For those, say the current figure "
+            "threshold, allowance, filing deadline, statutory limit, exchange "
+            "rate, statistic, share price or other market value; retrieve it with "
+            "an available tool, or say it could not be verified. Do not invent a "
+            "missing report or its page references. For those, say the current figure "
             "needs to be confirmed against the relevant authority or an "
             "attached document, and explain the underlying rule instead.\n"
-            + _FORMATTING_INSTRUCTIONS
+            "Answer clearly and accurately in short paragraphs or bullet "
+            "points, using any figures given in the question. If the user asks "
+            "for a chart, table, graph or diagram and provides the required "
+            "figures, produce it in the format described below. When figures "
+            "are missing, say that verified data could not be retrieved. Do NOT "
+            "tell the user to build it in Excel/Google Sheets or with another "
+            "tool; emitting the fenced code block below IS how the visual is "
+            "drawn for the user.\n"
+            + formatting_instructions(query)
             + f"\n=== User Question ===\n{query}"
         )
     blocks = []
@@ -582,7 +1041,7 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
         source_location = f"URL: {s.url}" if s.url else f"Document ID: {s.source_id or 'uploaded'}"
         snippet = s.snippet or ""
         if len(snippet) > allowance:
-            snippet = snippet[:allowance].rstrip() + "\n[…this source was shortened to fit the request budget]"
+            snippet = snippet[:allowance].rstrip() + "\n[â€¦this source was shortened to fit the request budget]"
             truncated_any = True
         blocks.append(f"[REF-{i}] {s.title}\n{source_location}\n{snippet}")
     context = "\n\n".join(blocks)
@@ -609,12 +1068,15 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
         # question. Only the uncovered part falls back to professional
         # knowledge, and it must be visibly marked as such so a reader is
         # never left guessing which half was sourced.
+        "When sources disagree, prefer official government, tax-authority, regulator "
+        "and standard-setter sources and the most recent period, and state the tax "
+        "year or effective date each rate applies to — never an older rate from memory. "
         "If the sources only partly cover the question, use them for the part "
         "they do cover and answer the rest from your own settled professional "
         "knowledge — say briefly that the sources did not address that part. "
         "If they do not cover it at all, answer from professional knowledge "
         "and say plainly that the retrieved sources did not address the "
-        "question. Never present unsourced material as though it came from "
+        "question; never reply only that the sources do not contain it. Never present unsourced material as though it came from "
         "the evidence, and never invent a source, citation or reference.\n"
         "Do NOT state a specific current figure from memory — a tax rate, "
         "threshold, allowance, filing deadline, statutory limit, share price "

@@ -243,3 +243,82 @@ def test_filing_index_url_points_at_the_filing():
     url = filing_index_url(320193, "0000320193-23-000106")
     assert url.endswith("/Archives/edgar/data/320193/000032019323000106/0000320193-23-000106-index.htm")
     print("test_filing_index_url_points_at_the_filing: PASSED")
+
+
+def test_agent_named_company_resolves_by_well_known_name_ticker_or_filed_name():
+    from app.orchestration.sec_edgar import _registrant_for_company
+
+    registrants = _REGISTRANTS + [{"cik_str": 1652044, "ticker": "GOOGL", "title": "Alphabet Inc."}]
+    assert _registrant_for_company("Google", registrants)["ticker"] == "GOOGL"
+    assert _registrant_for_company("MSFT", registrants)["ticker"] == "MSFT"
+    assert _registrant_for_company("Tesla", registrants)["ticker"] == "TSLA"
+    assert _registrant_for_company("Tata Motors", registrants) is None
+
+
+async def test_concept_uses_the_newest_fact_across_candidate_tags():
+    # Alphabet's first-priority revenue tag stops at FY2024; FY2025 is filed
+    # under a later tag. Taking the first tag with data quoted a stale year.
+    import httpx
+
+    from app.orchestration.sec_edgar import _fetch_concept
+
+    def annual(end, val):
+        return {"units": {"USD": [{"form": "10-K", "start": f"{end[:4]}-01-01", "end": end, "val": val, "fy": int(end[:4])}]}}
+
+    payloads = {
+        "RevenueFromContractWithCustomerExcludingAssessedTax": annual("2024-12-31", 350_018_000_000),
+        "Revenues": annual("2025-12-31", 402_836_000_000),
+    }
+
+    def handler(request):
+        tag = request.url.path.rsplit("/", 1)[-1].removesuffix(".json")
+        return httpx.Response(200, json=payloads[tag]) if tag in payloads else httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        label, fact = await _fetch_concept(client, 1652044, "Revenue", (
+            "RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet",
+        ), None)
+    assert label == "Revenue" and fact["end"] == "2025-12-31" and fact["val"] == 402_836_000_000
+
+
+def test_format_value_names_a_non_usd_currency():
+    assert format_value(2_894_307_700_000, "TWD") == "TWD 2,894,307,700,000 (TWD 2,894.31 billion)"
+    assert format_value(44.67, "TWD/shares") == "TWD 44.67 per share"
+
+
+async def test_foreign_filer_gets_ifrs_figures_in_one_currency(monkeypatch):
+    """Infosys/TSMC file a 20-F under IFRS — no us-gaap facts at all — and
+    TSMC tags some lines in USD beside its TWD statements."""
+    import httpx
+
+    import app.orchestration.sec_edgar as sec
+
+    def annual(unit, val, end="2024-12-31"):
+        return {"form": "20-F", "start": f"{end[:4]}-01-01", "end": end, "val": val, "fy": int(end[:4]), "unit": unit}
+
+    ifrs = {
+        "RevenueFromContractsWithCustomers": {"TWD": [annual("TWD", 2_894_307_700_000)]},
+        # Operating income exists in both; USD must lose to revenue's TWD.
+        "ProfitLossFromOperatingActivities": {
+            "USD": [annual("USD", 40_318_800_000)], "TWD": [annual("TWD", 1_322_053_000_000)],
+        },
+    }
+
+    def handler(request):
+        taxonomy, tag = request.url.path.split("/")[-2:]
+        tag = tag.removesuffix(".json")
+        if taxonomy == "ifrs-full" and tag in ifrs:
+            return httpx.Response(200, json={"units": ifrs[tag]})
+        return httpx.Response(404)
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(sec.httpx, "AsyncClient", lambda **kw: real_client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setenv("SEC_USER_AGENT", "Test Ops ops@zoiko.test")
+    monkeypatch.setattr(sec, "_tickers_cache", [{"cik_str": 1046179, "ticker": "TSM", "title": "TAIWAN SEMICONDUCTOR MANUFACTURING CO LTD"}])
+    monkeypatch.setattr(sec, "_tickers_fetched_at", __import__("time").monotonic())
+
+    source = await sec.fetch_company_fundamentals("TSM")
+    assert source is not None and "annual 20-F report, IFRS XBRL" in source.snippet
+    assert "Revenue for the fiscal year ending 2024-12-31 (FY2024): TWD 2,894,307,700,000" in source.snippet
+    assert "Operating income for the fiscal year ending 2024-12-31 (FY2024): TWD 1,322,053,000,000" in source.snippet
+    assert "$" not in source.snippet

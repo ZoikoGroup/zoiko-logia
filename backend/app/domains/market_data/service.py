@@ -22,7 +22,7 @@ import httpx
 
 from app.domains.market_data import registry
 from app.domains.market_data.http import make_client
-from app.domains.market_data.identity import company_name_hint, resolve_local
+from app.domains.market_data.identity import company_name_hint, resolve_index, resolve_local
 from app.domains.market_data.providers.base import CAP_SEARCH, BaseStockProvider
 from app.domains.market_data.schemas import (
     CapabilityNotSupported,
@@ -46,8 +46,67 @@ logger = logging.getLogger(__name__)
 _FALLBACK_ERRORS = (ProviderNotConfigured, CapabilityNotSupported)
 
 MarketResult = StockQuote | list[OHLCVBar] | list[FinancialMetric] | list[FilingRecord] | CompanyProfile
+MarketResultForCompany = tuple[MarketResult, str, str, str]  # result, provider_name, intent, company_label
 
 _SEC_FILING_HINT = re.compile(r"\b(?:SEC|EDGAR|10-K|10-Q|8-K|20-F|6-K)\b", re.I)
+
+# Language that pins a query to the UK register even when a foreign country or
+# a foreign-sounding name also appears. "Canada House Limited" is a real UK
+# company, so the country word alone cannot be the whole decision — but without
+# some corroborating UK cue, a query that names Canada and an unnamed company
+# must not be answered from the UK register, which is the exact false positive
+# being guarded against. A UK company number is itself the strongest cue.
+_UK_REGISTER_CUE = re.compile(
+    r"\b(?:UK|Britain|British|England|England and Wales|Wales|Welsh|Scotland|Scottish|"
+    r"Northern Ireland|London|Companies House|GB)\b",
+    re.I,
+)
+
+
+def _companies_house_should_refuse(query: str) -> bool:
+    """Whether a filings/lookup question must NOT be answered by Companies House.
+
+    Companies House is authoritative only for UK-registered companies. A
+    question that names one of the other supported countries, without any UK
+    cue, is a request about that country's registry — answering it from the UK
+    register yields a real UK company (sometimes literally the same name) that
+    is not the entity asked about. The asymmetry matches uk_scope: naming the
+    foreign country is affirmative about jurisdiction, and a UK company number
+    or UK language can rehabilitate the question.
+
+    Naming a foreign COUNTRY is not the only way to name a foreign company, and
+    the live audit found the gap this leaves. "What are the latest Apple
+    filings?" and "Toyota filings" name no foreign country at all, so the country
+    test above passed them to the UK register, which returned APPLE LTD,
+    MICROSOFT LIMITED and — for Toyota — TOYOMAX LIMITED. Real filings, real
+    companies, entirely the wrong entity, and not one of them looked like an
+    error. This is why the jurisdiction test is now made twice: once on the
+    words in the question, and once on the entity the product's own identity
+    index resolves the question to. That index already records the country, so
+    a name it knows to be American, Japanese or German is refused from a UK
+    register without having to guess.
+    """
+    from app.domains.market_data import identity
+    from app.orchestration.country_scope import names_country
+
+    for iso2 in ("US", "IE", "CA", "AU", "DE", "FR", "JP", "IN", "CN"):
+        if not names_country(query or "", iso2):
+            continue
+        if _UK_REGISTER_CUE.search(query or ""):
+            return False
+        return True
+
+    if _UK_REGISTER_CUE.search(query or ""):
+        return False
+
+    # No country named in the words. Ask the identity index instead: if the
+    # company this question is about is a known non-UK entity, the UK register
+    # is the wrong authority even though its free-text search will happily
+    # return a same-named UK shell.
+    for _ticker, country, _name in identity.find_all_known_names(query or ""):
+        if (country or "").strip().upper() not in ("", "GB", "UK"):
+            return True
+    return False
 
 
 def _best_provider_search_match(term: str, candidates: list[EntityRef]) -> EntityRef | None:
@@ -125,6 +184,22 @@ async def _resolve_entity(
     hint = company_name_hint(query)
 
     required = _REQUIRED_ID.get(intent, "ticker")
+
+    # An index is resolved here and returns immediately, skipping the SEC
+    # registry and every provider search below. That skip is the point, not an
+    # optimisation: "S&P 500" is not a company, and both fallbacks answer it
+    # with the wrong instrument — the SEC registrant index has no such entity
+    # and a provider search for "S&P 500" reliably returns SPY and VOO, the
+    # ETFs, so the answer would have been an ETF's price presented as the
+    # index's level. An unrecognised index name resolves to nothing at all,
+    # which sends the question down the normal web path instead.
+    if intent == registry.INTENT_INDEX:
+        index = resolve_index(query)
+        if index is None:
+            return EntityRef()
+        symbol, index_name, country = index
+        return EntityRef(ticker=symbol, country=country, name=index_name)
+
     if getattr(ref, required, ""):
         return ref
     if not hint:
@@ -179,7 +254,9 @@ async def fetch_for_intent(
     providers = registry.providers_for(intent)
     for provider in providers:
         try:
-            if intent == registry.INTENT_QUOTE:
+            # An index is served by the same quote call as an equity — the
+            # providers quote ^GSPC and friends through get_quote unchanged.
+            if intent in (registry.INTENT_QUOTE, registry.INTENT_INDEX):
                 return await provider.get_quote(client, ref), provider.name
             if intent == registry.INTENT_HISTORY:
                 return await provider.get_history(client, ref, interval=interval, limit=limit), provider.name
@@ -220,6 +297,13 @@ async def fetch_market_data(query: str, *, limit: int = 10) -> tuple[MarketResul
     # company. The EDGAR connector owns explicit SEC filing requests.
     if intent == registry.INTENT_FILINGS and _SEC_FILING_HINT.search(query):
         return None
+    # The same foreign-jurisdiction risk in the other direction: a question
+    # naming Canada/US/Ireland/Australia, without any UK cue, must not be
+    # answered from the UK register — "Canada House Limited" is a genuine UK
+    # company, and a naive search returns exactly that, for a question that
+    # was about Canada.
+    if intent == registry.INTENT_FILINGS and _companies_house_should_refuse(query):
+        return None
 
     providers = registry.providers_for(intent)
     if not providers:
@@ -249,6 +333,81 @@ async def fetch_market_data(query: str, *, limit: int = 10) -> tuple[MarketResul
             return result, provider_name, intent
     except Exception as exc:  # noqa: BLE001 — connector boundary must fail soft
         logger.warning("market_data: unexpected failure: %s", type(exc).__name__)
+        return None
+
+
+async def fetch_market_data_for_companies(
+    query: str, companies: list[tuple[str, str, str]], *, limit: int = 10
+) -> list[MarketResultForCompany]:
+    """(result, provider_name, intent, company_label) for each of `companies`
+    (ticker, country, name) — see identity.find_all_known_names(), which the
+    caller uses to detect a comparison question up front.
+
+    fetch_market_data() above only ever resolves and answers for a single
+    company: "Compare Apple and Microsoft stock price performance" resolved
+    to whichever one _resolve_entity() happened to match first, so the other
+    company's data was never fetched at all, not just dropped from the
+    answer. Each company here is resolved directly from its already-known
+    identifiers (no text re-parsing needed, since the caller already pinned
+    them) and fetched independently; one company having no data must not
+    drop the rest of the comparison, so a per-company failure is skipped
+    rather than raised — the answer includes whichever companies actually
+    had usable data, same fail-soft contract as fetch_market_data()."""
+    intent = registry.detect_intent(query)
+    if intent is None:
+        return []
+
+    providers = registry.providers_for(intent)
+    if not providers:
+        return []
+
+    effective_limit = registry.requested_bars(query) if intent == registry.INTENT_HISTORY else limit
+
+    results: list[MarketResultForCompany] = []
+    try:
+        async with make_client() as client:
+            for ticker, country, name in companies:
+                ref = EntityRef(ticker=ticker, country=country, name=name)
+                try:
+                    outcome = await fetch_for_intent(client, intent, ref, limit=effective_limit)
+                except Exception as exc:  # noqa: BLE001 — one company's failure must not drop the rest
+                    logger.warning(
+                        "market_data: comparison fetch failed for %s: %s", name, type(exc).__name__
+                    )
+                    continue
+                if outcome is None:
+                    continue
+                result, provider_name = outcome
+                results.append((result, provider_name, intent, name))
+    except Exception as exc:  # noqa: BLE001 — connector boundary must fail soft
+        logger.warning("market_data: unexpected failure building comparison client: %s", type(exc).__name__)
+        return results
+    return results
+
+
+async def fetch_for_company(
+    company: str, intent: str, *, limit: int = 10
+) -> tuple[MarketResult, str, str] | None:
+    """(result, provider_name, company_label) for one company already named
+    by the caller — a ticker ("AAPL"), a well-known name ("Apple") or a
+    search phrase — for an intent the caller already chose. The structured
+    entry point for the get_market_data tool: nothing is re-detected from
+    question wording. Never raises; None means no provider had data."""
+    providers = registry.providers_for(intent)
+    if not providers:
+        return None
+    try:
+        async with make_client() as client:
+            ref = await _resolve_entity(client, company, providers, intent)
+            if not ref.has_any_id() and not ref.name:
+                return None
+            outcome = await fetch_for_intent(client, intent, ref, limit=limit)
+            if outcome is None:
+                return None
+            result, provider_name = outcome
+            return result, provider_name, ref.name or ref.ticker or company
+    except Exception as exc:  # noqa: BLE001 — connector boundary must fail soft
+        logger.warning("market_data: unexpected failure for %s: %s", intent, type(exc).__name__)
         return None
 
 

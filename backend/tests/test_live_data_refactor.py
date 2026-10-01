@@ -68,7 +68,8 @@ async def test_fetch_live_data_evidence_matches_source_numbers():
     assert [o.value for o in result.evidence.observations] == [100.0, 101.5, 103.2]
 
 
-_FRANKFURTER_PAYLOAD = {"rates": {"INR": 83.42}, "date": "2024-06-01"}
+# ECB per-euro table; frankfurter crosses USD->INR from it: 83.42 / 1.0.
+_FRANKFURTER_PAYLOAD = {"rates": {"USD": 1.0, "INR": 83.42}, "date": "2024-06-01"}
 
 
 @pytest.mark.asyncio

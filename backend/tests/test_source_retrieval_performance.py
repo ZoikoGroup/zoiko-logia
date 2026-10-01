@@ -45,7 +45,7 @@ async def test_source_retrieval_has_a_bounded_fail_soft_deadline(monkeypatch):
     async def never_returns(*_args, **_kwargs):
         await asyncio.sleep(1)
 
-    monkeypatch.setattr(retrieve, "list_sources", never_returns)
+    monkeypatch.setattr(retrieve, "_candidate_versions", never_returns)
     monkeypatch.setenv("SOURCE_RETRIEVAL_TIMEOUT_SECONDS", "0.01")
 
     # The configured value is clamped to one second to prevent accidental

@@ -1,7 +1,10 @@
+import asyncio
+
 from fastapi import Request
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker, create_async_engine
 from collections.abc import AsyncGenerator
 from typing import Generator
 
@@ -16,13 +19,33 @@ settings = get_settings()
 # pool checkout and individual commands so pool_pre_ping/reconnects fail fast
 # and SQLAlchemy can discard the bad connection.
 _ASYNC_POSTGRES_CONNECT_ARGS = {
-    "timeout": 10,
+    "timeout": settings.DB_CONNECT_TIMEOUT_SECONDS,
     "command_timeout": 15,
 }
 _SYNC_POSTGRES_CONNECT_ARGS = {
-    "connect_timeout": 10,
+    "connect_timeout": settings.DB_CONNECT_TIMEOUT_SECONDS,
     "options": "-c statement_timeout=15000",
 }
+
+
+def session_is_sqlite(session) -> bool:
+    """True when `session` is backed by SQLite. The RLS re-scoping
+    set_config statements are Postgres-only and crash on SQLite with "no
+    such function: set_config", so every caller must skip them there. Prefer
+    the live session's engine dialect over settings.is_sqlite: tests build
+    ad-hoc sqlite+aiosqlite engines (and pass those sessions straight into
+    the domain functions) while settings.DATABASE_URL still points at the
+    real Postgres URL in .env — a config-level check can't see that and
+    wrongly runs set_config on the test's SQLite engine."""
+    if settings.is_sqlite:
+        return True
+    get_bind = getattr(session, "get_bind", None)
+    if get_bind is None:
+        return False
+    try:
+        return get_bind().dialect.name == "sqlite"
+    except Exception:
+        return False
 
 
 def _normalize_scheme(url: str) -> str:
@@ -60,15 +83,34 @@ def to_sync_url(url: str) -> str:
     return url
 
 
+def _sync_engine_options(url: str) -> dict:
+    if url.startswith("sqlite"):
+        return {"connect_args": {"check_same_thread": False}}
+    return {
+        "connect_args": _SYNC_POSTGRES_CONNECT_ARGS,
+        "pool_timeout": settings.DB_POOL_TIMEOUT_SECONDS,
+        "pool_pre_ping": True,
+        "pool_recycle": 300,
+    }
+
+
+def _async_engine_options(url: str) -> dict:
+    if url.startswith("sqlite"):
+        return {}
+    # asyncpg calls its connection-establishment option `timeout`; SQLAlchemy's
+    # pool_timeout separately bounds waiting when every pooled connection is in
+    # use.
+    return {
+        "connect_args": _ASYNC_POSTGRES_CONNECT_ARGS,
+        "pool_timeout": settings.DB_POOL_TIMEOUT_SECONDS,
+        "pool_pre_ping": True,
+        "pool_recycle": 300,
+    }
+
+
 # Sync DB support for Safety Domain
 sync_db_url = to_sync_url(settings.DATABASE_URL)
-connect_args = (
-    {"check_same_thread": False}
-    if sync_db_url.startswith("sqlite")
-    else _SYNC_POSTGRES_CONNECT_ARGS
-)
-
-engine = create_engine(sync_db_url, connect_args=connect_args, pool_pre_ping=True)
+engine = create_engine(sync_db_url, **_sync_engine_options(sync_db_url))
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_sync_db() -> Generator[Session, None, None]:
@@ -90,16 +132,8 @@ def get_sync_db() -> Generator[Session, None, None]:
 # these a reused-but-dead connection fails a request with
 # "asyncpg ... connection is closed" (intermittent, since it only hits stale
 # ones). Mirrors the sync `engine` above, which already sets pool_pre_ping.
-async_engine = create_async_engine(
-    to_async_url(settings.DATABASE_URL),
-    echo=False,
-    pool_pre_ping=True,
-    pool_recycle=300,
-    pool_timeout=10,
-    connect_args=(
-        {} if settings.is_sqlite else _ASYNC_POSTGRES_CONNECT_ARGS
-    ),
-)
+async_db_url = to_async_url(settings.DATABASE_URL)
+async_engine = create_async_engine(async_db_url, echo=False, **_async_engine_options(async_db_url))
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 
 # Request-time engine — deliberately separate from async_engine. Postgres
@@ -108,15 +142,9 @@ AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 # setup, request traffic must go through a distinct, non-superuser role for
 # RLS to actually apply. Falls back to the same URL when APP_DATABASE_URL
 # isn't set (SQLite, or a Postgres instance without the low-priv role).
+request_db_url = to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL)
 request_engine = create_async_engine(
-    to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL),
-    echo=False,
-    pool_pre_ping=True,
-    pool_recycle=300,
-    pool_timeout=10,
-    connect_args=(
-        {} if settings.is_sqlite else _ASYNC_POSTGRES_CONNECT_ARGS
-    ),
+    request_db_url, echo=False, **_async_engine_options(request_db_url)
 )
 RequestSessionLocal = async_sessionmaker(request_engine, expire_on_commit=False)
 
@@ -135,6 +163,18 @@ def _identity_from_request(request: Request) -> tuple[str, str]:
     if claims is None:
         return "", ""
     return claims.sub, claims.tenant_id
+
+
+async def _open_request_connection() -> AsyncConnection:
+    """Check out the request's connection, retrying once. The Supabase pooler
+    occasionally takes longer than the connect timeout for a single attempt;
+    the retry a moment later usually succeeds, where the failure used to reach
+    the browser as a bare 500 (reported there as a CORS error)."""
+    try:
+        return await request_engine.connect()
+    except (TimeoutError, OSError, SQLAlchemyError):
+        await asyncio.sleep(0.5)
+        return await request_engine.connect()
 
 
 async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
@@ -157,24 +197,22 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
     when they're falsy would leave whatever a *previous* request left on
     that same pooled connection in effect for this one.
 
-    The session is bound to ONE explicitly checked-out connection for the
-    whole request, rather than letting it draw from the pool per
-    transaction. Session-scoped settings live on the CONNECTION, but a
-    session returns its connection to the pool on every commit and checks
-    out a fresh one for the next statement — so in an unbound session the
-    identity set here survives only until the request's first commit. After
-    that, statements land on an arbitrary pooled connection carrying
-    whatever identity some earlier request left on it: usually none, which
-    fails closed (`new row violates row-level security policy`), and
-    sometimes another tenant's, which would be far worse.
+    The session is bound to ONE checked-out connection for the whole request,
+    which is what makes the two settings above mean anything. They live on a
+    connection, not on a session: a session normally returns its connection to
+    the pool at every commit and checks one out again for the next statement,
+    and a request that commits part-way — every audit write does — can be
+    handed a different connection afterwards, one that never had set_config run
+    on it. Every RLS-protected statement after that point then sees nothing.
 
-    That made it look intermittent — a freshly-started process with a cold
-    pool almost always hands back the same connection and appears to work,
-    while a long-running one with several pooled connections fails often.
-    Requests here commit more than once (audit events, document ingestion),
-    so this affected every write that followed a commit.
-    """
-    async with request_engine.connect() as connection:
+    That failure is invisible on a quiet pool, because the connection just
+    released is usually the one handed back. Under any concurrency it appears:
+    a document upload inserted its row successfully, committed, and the very
+    next UPDATE on that same row matched zero rows — the row was real, the
+    policy was right, and the new connection simply had no identity on it.
+    Holding one connection for the request removes the possibility."""
+    connection = await _open_request_connection()
+    try:
         async with RequestSessionLocal(bind=connection) as session:
             if not settings.is_sqlite:
                 user_id, tenant_id = _identity_from_request(request)
@@ -191,3 +229,5 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
                     text("SELECT set_config('app.user_id', :user_id, false)"), {"user_id": user_id}
                 )
             yield session
+    finally:
+        await connection.close()

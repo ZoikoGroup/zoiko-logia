@@ -4,6 +4,8 @@
  * Calls the configured backend (NEXT_PUBLIC_API_URL, same as lib/api.ts).
  */
 
+import { getCurrentAccessToken } from "@/lib/session-token";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010/api/v1";
 const BACKEND = `${API_URL}/safety`;
 
@@ -39,15 +41,26 @@ export type SafetyEvent = {
 
 // ─── Backend API Calls ──────────────────────────────────────────────────────
 
-async function tryBackend<T>(path: string, options?: RequestInit): Promise<T | null> {
+async function tryBackend<T>(path: string, options?: RequestInit, required = false): Promise<T | null> {
   try {
     const res = await fetch(`${BACKEND}${path}`, {
-      headers: { "Content-Type": "application/json" },
       ...options,
+      headers: {
+        ...options?.headers,
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${getCurrentAccessToken()}`,
+      },
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      if (required) {
+        const body = await res.json().catch(() => null);
+        throw new Error(typeof body?.detail === "string" ? body.detail : "Safety action failed. Please try again.");
+      }
+      return null;
+    }
     return (await res.json()) as T;
-  } catch {
+  } catch (error) {
+    if (required) throw error;
     return null;
   }
 }
@@ -69,8 +82,11 @@ export async function validateOutput(text: string): Promise<{
   });
   if (remote) return remote;
 
-  // Fallback: no violations
-  return { is_safe: true, violations: [], cleaned_text: text };
+  return {
+    is_safe: false,
+    violations: [{ phrase: "Validation unavailable", category: "Service unavailable", severity: "hard" }],
+    cleaned_text: "",
+  };
 }
 
 export async function getEscalations(): Promise<Escalation[]> {
@@ -111,7 +127,7 @@ export async function actOnEscalation(
   return tryBackend<Escalation>(`/escalations/${caseId}/action`, {
     method: "POST",
     body: JSON.stringify({ action, reviewer_id: reviewerId, reason }),
-  });
+  }, true);
 }
 
 export async function getEscalationStats(): Promise<EscalationStats | null> {
@@ -135,7 +151,7 @@ export async function createSafetyOverride(payload: {
   return tryBackend<SafetyOverride>("/overrides", {
     method: "POST",
     body: JSON.stringify(payload),
-  });
+  }, true);
 }
 
 export async function getSafetyEvents(): Promise<SafetyEvent[]> {

@@ -14,17 +14,26 @@ to the ML classifier's result rather than erroring.
 from __future__ import annotations
 
 import asyncio
+import re
 import os
 from typing import Optional
 
 from groq import AsyncGroq
 
-_VALID = {"ZERO", "LOW", "MEDIUM", "HIGH"}
+_VALID = {"ZERO", "LOW", "MEDIUM", "HIGH", "RESTRICTED"}
 
 _SYSTEM = (
     "You classify the RISK LEVEL of a user's question for an accounting, tax, "
     "audit and payroll advisory assistant. Reply with EXACTLY ONE word — "
-    "ZERO, LOW, MEDIUM, or HIGH — and nothing else.\n\n"
+    "ZERO, LOW, MEDIUM, HIGH or RESTRICTED — and nothing else.\n\n"
+    "- RESTRICTED (check this FIRST): a request to help conceal, falsify, "
+    "backdate or misstate transactions or records, hide anything from an "
+    "auditor or tax authority, evade tax, launder money or otherwise commit "
+    "fraud — e.g. 'Help me hide personal expenses so the auditor won't notice', "
+    "'How can I keep this income off my tax return?'. Explaining what fraud or "
+    "evasion IS, or how it is detected, is NOT restricted; nor is looking up or "
+    "converting a company's or country's published figures (e.g. 'Microsoft's net "
+    "income last year, in Indian rupees' is ZERO).\n"
     "Judge by the FORM of the question and GENERALISE to any similar question, "
     "not just the listed examples:\n"
     "- ZERO: a greeting or small talk, help about using the assistant, OR a "
@@ -42,6 +51,20 @@ _SYSTEM = (
     "method, procedure or calculation, NOT about the asker's own specific "
     "case. e.g. 'How is a finance lease recorded?', 'How do I calculate VAT on "
     "a mixed supply?', 'Steps to prepare a bank reconciliation'.\n"
+    "- NOT HIGH, even with figures or 'this/my': a calculation on figures the "
+    "user supplies (margins, ratios, depreciation, tax arithmetic, 'what if cost "
+    "rises 10%', a growth forecast or projection from given figures, an EMI or "
+    "loan amortisation schedule, a depreciation table, the income tax on a "
+    "stated salary or income under a named regime/slab — e.g. 'Salary 18,00,000 "
+    "under the new regime for FY 2025-26: calculate the income tax step by step', "
+    "'VAT on a price of 1,250') with no request to decide "
+    "what to do is LOW; so is a chart, graph or table of figures the user gives, "
+    "even about 'our' company (e.g. 'Pie chart of our funding: equity 55%, bank "
+    "debt 30%' is LOW); summarising or "
+    "extracting from a report/document the user provides is MEDIUM (e.g. "
+    "'Summarize this report's financial performance, cite page numbers and flag "
+    "missing information' is MEDIUM, not HIGH). Supplying "
+    "numbers is not asking for advice.\n"
     "- HIGH: a request to DECIDE or ADVISE on the asker's or a client's OWN "
     "specific situation, or a tax/audit/legal opinion or decision with real "
     "consequences — usually signalled by 'I', 'my', 'my company', 'my client', "
@@ -51,39 +74,100 @@ _SYSTEM = (
 )
 
 
+def _token_budget(model: str) -> dict:
+    """Completion limits for a one-word answer. Reasoning models (gpt-oss,
+    qwen3, deepseek-r1) spend completion tokens thinking before they answer:
+    with the old max_tokens=4 openai/gpt-oss-20b returned empty content
+    (finish_reason=length) on EVERY question, so classification silently fell
+    back to the local ML model and everything came out LOW. They get low
+    reasoning effort and room to finish; other models keep the tight cap
+    (and are never sent reasoning_effort, which they reject)."""
+    if any(marker in model.lower() for marker in ("gpt-oss", "qwen3", "deepseek-r1")):
+        return {"max_tokens": 256, "reasoning_effort": "low"}
+    return {"max_tokens": 4}
+
+
+# A computation on figures the user states, with no decision asked for. The
+# classifier model still read "Salary 18,00,000 ...: calculate the income tax"
+# as personal tax advice (HIGH -> human review) with this exact case in its
+# rubric, so it is settled here instead.
+_CALCULATION_REQUEST = re.compile(
+    r"\b(calculate|compute|work\s+out|how\s+much|what\s+is\s+the\s+\w+\s+(?:on|of|for)|"
+    r"show\s+(?:the\s+)?(?:calculation|working)|step\s+by\s+step|"
+    # Textbook journal entries and target-sales questions on stated figures
+    # ("Pass entries for the issue of 5,000 debentures ...") were rated HIGH.
+    r"pass\s+(?:the\s+)?(?:journal\s+|adjusting\s+|rectification\s+)?entr(?:y|ies)|journal\s+entr(?:y|ies)|"
+    r"(?:is|are)\s+needed)\b",
+    re.I,
+)
+_STATED_FIGURE = re.compile(r"\d[\d,]*(?:\.\d+)?\s*(?:%|lakh|crore|k\b|m\b)?|[₹$£€]\s*\d")
+_DECISION_REQUEST = re.compile(
+    r"\b(should|shall|can\s+i|can\s+we|could\s+i|am\s+i|are\s+we|do\s+i\s+need|must\s+i|"
+    r"required|obliged|allowed|eligible|advise|advice|recommend|better|best|opt|choose|"
+    r"which\s+(?:regime|option|one)|my\s+client|avoid|minimi[sz]e|reduce\s+(?:my|our)\s+tax)\b",
+    re.I,
+)
+
+
+def calibrate_calculation_risk(risk_level: str, query: str) -> str:
+    """HIGH -> LOW for arithmetic on stated figures that asks for no decision.
+    Never touches RESTRICTED or anything below HIGH."""
+    if (
+        risk_level == "HIGH"
+        and _CALCULATION_REQUEST.search(query)
+        and len(_STATED_FIGURE.findall(query)) >= 1
+        and not _DECISION_REQUEST.search(query)
+    ):
+        return "LOW"
+    return risk_level
+
+
+# Wording that marks a genuine concealment/fraud request. Without any of it,
+# a RESTRICTED verdict from the small classifier is double-checked.
+_CONCEALMENT_CUE = re.compile(
+    r"\b(hid(e|ing|den)|conceal\w*|falsif\w*|fake|forg(e|ed|ery)|backdat\w*|evad\w*|evasion|"
+    r"launder\w*|off[\s-]the[\s-]books|cook(ing)?\s+the\s+books|without\s+(the\s+)?(auditor|tax|anyone)|"
+    r"won'?t\s+notice|not\s+notice|undetect\w*|avoid\s+detection|manipulat\w*|misstat\w*|"
+    r"inflat(e|ing)\s+(revenue|sales|profit)|under[\s-]?report\w*|black\s+money|bribe\w*|kickback\w*|"
+    r"shell\s+compan\w*|round[\s-]trip\w*|fictitious|bogus|keep\s+\w+\s+off)\b",
+    re.I,
+)
+
+
 async def classify_risk(query: str) -> Optional[str]:
-    """Return 'ZERO' | 'LOW' | 'MEDIUM' | 'HIGH' for the question, or None if
-    the LLM is unavailable/errors (caller then keeps the ML classifier result)."""
+    """Return 'ZERO' | 'LOW' | 'MEDIUM' | 'HIGH' | 'RESTRICTED' for the
+    question, or None if the LLM is unavailable/errors (caller then keeps the
+    ML classifier result).
+
+    Classification is a trivial one-word task — a small, fast model
+    (GROQ_CLASSIFIER_MODEL) instead of the large answer model. That model
+    called "Microsoft's net income last year, in Indian rupees" RESTRICTED
+    (fraud) on half of runs and the answer was refused, so a RESTRICTED verdict
+    on a question with no concealment wording is re-asked of GROQ_MODEL, and
+    only kept if that model agrees."""
+    level = await _classify_with(os.getenv("GROQ_CLASSIFIER_MODEL", "llama-3.1-8b-instant"), query)
+    if level == "RESTRICTED" and not _CONCEALMENT_CUE.search(query):
+        second = await _classify_with(os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"), query)
+        if second is not None:
+            return second
+    return level
+
+
+async def _classify_with(model: str, query: str) -> Optional[str]:
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         return None
-    # Classification is a trivial one-word task — use a small, fast model
-    # instead of the large answer model, so this extra call is near-instant.
-    # Configurable via GROQ_CLASSIFIER_MODEL; the big GROQ_MODEL stays
-    # reserved for actual answer generation.
-    model = os.getenv("GROQ_CLASSIFIER_MODEL", "openai/gpt-oss-20b")
     try:
         client = AsyncGroq(api_key=api_key)
-        resp = await client.chat.completions.create(
+        resp = await asyncio.wait_for(client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": _SYSTEM},
                 {"role": "user", "content": query},
             ],
             temperature=0.0,
-            # openai/gpt-oss-20b is a reasoning model: its internal
-            # chain-of-thought is billed against max_tokens before any
-            # visible content, so a tiny cap (e.g. 4) is fully consumed by
-            # reasoning and returns EMPTY content (finish_reason="length")
-            # every time — silently disabling this classifier entirely, with
-            # every call falling through to classify_risk_gemini below (see
-            # that function's own max_output_tokens for the analogous fix on
-            # the Gemini side). Some queries reason for 250+ tokens before
-            # reaching a one-word verdict, so 1024 leaves real headroom
-            # rather than just raising the same failure mode's ceiling —
-            # still well under a second for this small/fast model.
-            max_tokens=1024,
-        )
+            **_token_budget(model),
+        ), timeout=8)
         raw = (resp.choices[0].message.content or "").strip().upper()
     except Exception:
         return None
@@ -132,7 +216,7 @@ async def classify_risk_gemini(query: str) -> Optional[str]:
 
         # google-genai's call is synchronous — run it off the event loop so it
         # doesn't block other concurrent requests while awaiting the model.
-        raw = await asyncio.to_thread(_call)
+        raw = await asyncio.wait_for(asyncio.to_thread(_call), timeout=8)
     except Exception:
         return None
 

@@ -1,12 +1,16 @@
+import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.v1.router import api_v1_router
 from app.core.config import get_settings
@@ -15,6 +19,7 @@ from app.core.rate_limit import limiter
 from app.db.base import Base
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 _TENANT_SCOPED_TABLES = (
     "sources", "source_versions", "workspace_documents", "workspace_document_chunks", "workspace_artifacts",
@@ -65,6 +70,51 @@ _TENANT_POLICY_USING = {
 }
 
 
+# Uploaded-document tables (app/domains/kriton_workspace/documents.py, which
+# replaced app/domains/documents). Kept apart from
+# _TENANT_SCOPED_TABLES because these are strictly private: `sources` has a
+# shared, non-tenant-private case by design, a client's own uploaded
+# spreadsheet never does.
+#
+# The predicate keys on the UPLOADER ONLY, deliberately not on tenant as well.
+# Two reasons, and the second one is why the first is safe:
+#
+#   1. app.user_id is reliable; app.tenant_id is not. Both are set in
+#      core/database.py's get_db from the caller's JWT. app.user_id is
+#      claims.sub, which is exactly the value get_current_user looks the local
+#      row up by (users.id), so the two cannot disagree. app.tenant_id is
+#      claims.tenant_id, read from Supabase app_metadata — a SECOND copy of
+#      the tenant that has to be kept in step with users.tenant_id by hand at
+#      provision time, and in this database it has drifted for several
+#      accounts (one of them points at a tenant id that no longer exists in
+#      `tenants` at all). Writing a row with users.tenant_id while the policy
+#      checks app_metadata's copy makes every insert hostage to that drift.
+#
+#   2. Nothing is lost by dropping it. A user belongs to exactly one tenant,
+#      and every document row is written with its uploader's own tenant_id, so
+#      "only rows whose user_id is you" already implies "only rows in your
+#      tenant". Tenant isolation follows from uploader isolation here rather
+#      than being weakened by its absence — and tenant_id stays on the row for
+#      filtering, reporting and retention.
+#
+# WITH CHECK is stated explicitly rather than left to default to USING: the
+# reader of a policy should not have to know that Postgres reuses USING for
+# INSERT when WITH CHECK is omitted.
+_HAS_USER_CONTEXT = (
+    "current_setting('app.user_id', true) IS NOT NULL "
+    "AND current_setting('app.user_id', true) != ''"
+)
+_DOCUMENT_TABLES = ("user_documents", "document_chunks")
+_DOCUMENT_POLICY_USING = (
+    f"({_HAS_USER_CONTEXT} AND ("
+    "(engagement_id IS NULL AND user_id = current_setting('app.user_id', true)) OR "
+    "engagement_id IN (SELECT engagement_id FROM engagement_memberships "
+    "WHERE user_id = current_setting('app.user_id', true) "
+    "AND status = 'active' AND revoked_at IS NULL)"
+    "))"
+)
+
+
 @asynccontextmanager
 async def _ddl_conn():
     """Open a transaction for startup DDL with short lock/statement timeouts so a
@@ -111,7 +161,7 @@ async def _migrate_tenant_columns():
 
 async def _migrate_source_licence_columns():
     """Add licence_state/authority_level/is_tenant_private to `sources` if this
-    DB predates them — ZL-ENG-03 §5.6 Checkpoint A/B needs real per-source
+    DB predates them — ZL-ENG-03 Â§5.6 Checkpoint A/B needs real per-source
     eligibility data. Same create_all()-doesn't-alter-existing-tables
     situation as _migrate_tenant_columns above."""
     async with _ddl_conn() as conn:
@@ -420,7 +470,7 @@ def _seed_evaluation():
 
     db = SessionLocal()
     try:
-        # ── Benchmark Dataset ────────────────────────────────────────────
+        # â”€â”€ Benchmark Dataset â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if db.query(EvaluationDataset).count() == 0:
             dataset = EvaluationDataset(
                 id="ds-safety-benchmark-v1",
@@ -480,7 +530,7 @@ def _seed_evaluation():
             ]
             db.add_all(benchmark_cases)
 
-        # ── Threshold Set ────────────────────────────────────────────────
+        # â”€â”€ Threshold Set â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if db.query(ThresholdSet).count() == 0:
             threshold_set = ThresholdSet(
                 id="ts-safety-v1",
@@ -510,7 +560,7 @@ def _seed_evaluation():
 
 
 def _seed_escalation_rules():
-    """Seed escalation rules per ZL-T0-04 §14."""
+    """Seed escalation rules per ZL-T0-04 Â§14."""
     from app.domains.risk_safety.models import EscalationRule
     db = SessionLocal()
     try:
@@ -557,56 +607,26 @@ def _seed_incidents():
         db.close()
 
 
-def _seed_users():
-    """Seed a default tenant and admin user on first startup. Since
-    Supabase now owns credentials, this needs a Supabase auth user created
-    via the Admin API (service-role key) before the local profile row can
-    reference it — skipped (like the APP_DATABASE_URL warning above) when
-    SUPABASE_SERVICE_ROLE_KEY isn't configured, e.g. plain SQLite dev mode."""
+def _require_supabase_config():
+    """Regression guard for missing/misconfigured Supabase auth.
+
+    The failure mode this exists for: with SUPABASE_URL and/or
+    SUPABASE_SERVICE_ROLE_KEY unset, token verification fails closed (no JWKS
+    client), so every authenticated endpoint 401s, which reads as "auth is broken" far from the real,
+    config-level cause. Local/demo runs legitimately skip Supabase (plain
+    SQLite dev, frontend-only work), so this gate is opt-in: staging/prod set
+    REQUIRE_SUPABASE_CONFIG=true and a missing key aborts startup loudly at
+    the gateway instead of later surfacing as a wall of 401s. When unset, the
+    existing soft warning behavior is untouched."""
     from app.core import supabase_admin
-    from app.domains.identity.models import Tenant, User
 
-    if not supabase_admin.is_configured():
-        print("WARNING: SUPABASE_SERVICE_ROLE_KEY/SUPABASE_URL not set — "
-              "skipping default user seeding (no Supabase auth user can be "
-              "created for admin@zoiko.com / kriton@zoiko.com).")
-        return
-
-    db = SessionLocal()
-    try:
-        # Create default tenant if it doesn't exist
-        tenant = db.query(Tenant).filter(Tenant.id == "tenant-default").first()
-        if tenant is None:
-            tenant = Tenant(id="tenant-default", name="ZoikoLogia Default Tenant")
-            db.add(tenant)
-            db.flush()
-
-        # Create default admin user if no users exist
-        if db.query(User).count() == 0:
-            for email, password, full_name, role in (
-                ("admin@zoiko.com", "Admin@1234", "System Administrator", "Admin"),
-                ("kriton@zoiko.com", "Kriton@1234", "Kriton Reviewer", "SME Reviewer"),
-            ):
-                existing_auth_user = supabase_admin.get_user_by_email(email)
-                auth_user = existing_auth_user or supabase_admin.create_user(email, password, email_confirm=True)
-                first_name, _, last_name = full_name.partition(" ")
-                db.add(User(
-                    id=auth_user["id"],
-                    tenant_id="tenant-default",
-                    email=email,
-                    first_name=first_name,
-                    last_name=last_name,
-                    full_name=full_name,
-                    role=role,
-                    is_active=True,
-                ))
-                db.flush()
-                supabase_admin.update_app_metadata(auth_user["id"], "tenant-default", role)
-        db.commit()
-    except Exception:
-        db.rollback()
-    finally:
-        db.close()
+    if settings.REQUIRE_SUPABASE_CONFIG and not supabase_admin.is_configured():
+        raise RuntimeError(
+            "REQUIRE_SUPABASE_CONFIG=true but SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY "
+            "are not configured — refusing to start so the gap is a loud deploy "
+            "failure instead of silent 401s. Set both in backend/.env (or the "
+            "environment) or unset REQUIRE_SUPABASE_CONFIG for local dev."
+        )
 
 
 async def _warm_up_ml_models():
@@ -638,9 +658,30 @@ async def _warm_up_ml_models():
             print(f"WARNING: {name} model warmup failed (will still lazy-load on first use): {exc}")
 
 
+# Concurrent DDL on the shared database (two dev reloads a second apart, or
+# another developer's backend starting at the same moment) fails the loser
+# with these; a moment later the same statement succeeds. One of them used to
+# stop the backend outright, and every question then timed out in the browser.
+_DDL_CONTENTION = ("lock timeout", "deadlock detected", "tuple concurrently updated", "could not obtain lock")
+
+
+async def _with_ddl_retry(step, attempts: int = 5):
+    for attempt in range(1, attempts + 1):
+        try:
+            return await step()
+        except SQLAlchemyError as exc:
+            if attempt == attempts or not any(marker in str(exc) for marker in _DDL_CONTENTION):
+                raise
+            delay = 2 * attempt
+            print(f"WARNING: {step.__name__} hit concurrent DDL ({type(exc.orig).__name__ if getattr(exc, 'orig', None) else type(exc).__name__}); "
+                  f"retrying in {delay}s (attempt {attempt}/{attempts})")
+            await asyncio.sleep(delay)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle events: create tables, seed, and dispose of engine."""
+    _require_supabase_config()
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     # Each schema migration is idempotent and already applied on the first
@@ -663,11 +704,13 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             print(f"WARNING: startup step {_label} skipped ({type(exc).__name__}: {exc}). "
                   "Service will still start; step retries on next boot.")
+    # Security policies are required before any request can be served.
+    await _with_ddl_retry(_setup_source_rls)
+    await _with_ddl_retry(_setup_user_rls)
     _seed_defaults()
     _seed_evaluation()
     _seed_escalation_rules()
     _seed_incidents()
-    _seed_users()
     await _warm_up_ml_models()
     yield
     await async_engine.dispose()
@@ -691,6 +734,48 @@ def create_app() -> FastAPI:
 
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    @app.exception_handler(SQLAlchemyError)
+    async def database_error_handler(_request, exc: SQLAlchemyError) -> JSONResponse:
+        # Keep connection strings and driver details out of the client while
+        # retaining the complete exception in backend logs for diagnosis.
+        logger.error(
+            "Database operation failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Kriton's database is temporarily unavailable. Please try again shortly."},
+            headers={"Retry-After": "5"},
+        )
+
+    @app.exception_handler(TimeoutError)
+    async def database_timeout_handler(_request, exc: TimeoutError) -> JSONResponse:
+        # A connection that could not be opened in time raised a bare
+        # TimeoutError; unhandled, it became a 500 without CORS headers and the
+        # browser showed a CORS failure instead of a retryable message.
+        logger.error("Request timed out before completing", exc_info=(type(exc), exc, exc.__traceback__))
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Kriton could not reach its database in time. Please try again."},
+            headers={"Retry-After": "5"},
+        )
+
+    @app.get("/health/live", tags=["Health"])
+    async def health_live() -> dict[str, str]:
+        return {"status": "alive"}
+
+    @app.get("/health/ready", tags=["Health"])
+    async def health_ready() -> dict[str, str]:
+        async def check_database() -> None:
+            async with async_engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+
+        try:
+            await asyncio.wait_for(check_database(), timeout=3)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Database unavailable") from exc
+        return {"status": "ready"}
 
     # Core API endpoints from main branch
     app.include_router(api_v1_router, prefix="/api/v1")

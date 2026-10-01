@@ -51,6 +51,9 @@ export async function provisionProfile(accessToken: string, payload: ProvisionRe
 export async function getMe(token: string): Promise<UserPublic> {
   const res = await fetch(`${API_URL}/auth/me`, {
     headers: { Authorization: `Bearer ${token}` },
+    // Bounded so an unreachable backend can't hold the role-gated nav on its
+    // loading state indefinitely; a timeout falls back like any other failure.
+    signal: AbortSignal.timeout(8000),
   });
 
   if (!res.ok) {
@@ -531,19 +534,102 @@ export async function getReplayManifest(token: string, correlationId: string): P
   return res.json();
 }
 
-// ── Ask Kriton™ — ZL-ENG-02 §12 Canonical Response Contract ────────────────
+// â”€â”€ Ask Kritonâ„¢ — ZL-ENG-02 Â§12 Canonical Response Contract â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export type AskKritonRequest = {
   query: string;
-  document_ids?: string[];
   source_scope?: "WEB_ONLY" | "DOCUMENTS_ONLY" | "DOCUMENTS_THEN_WEB" | "COMBINED";
   /** Immediately preceding user query, used to resolve contextual follow-ups. */
   previous_query?: string;
   jurisdiction?: string;
   mode?: string;
   clarification_cycle?: number;
-  /** Scopes audit correlation and follow-up context to one thread. */
+  /** Correlates requests in the same chat; never grants access. */
   conversation_id?: string;
+  conversation_history?: { role: "user" | "assistant"; content: string }[];
+  /** Documents attached to this turn. Ids of successfully indexed uploads
+   * only; the backend re-verifies ownership and readiness, so sending an id
+   * the caller does not own simply retrieves nothing. */
+  document_ids?: string[];
+  task_context?: TaskContextSelection;
+};
+
+export type TaskType =
+  | "general_question"
+  | "policy_research"
+  | "document_evidence_extraction"
+  | "reconciliation";
+
+export type Engagement = {
+  id: string;
+  name: string;
+  status: string;
+  rights_version: string;
+};
+
+export async function listEngagements(token: string): Promise<Engagement[]> {
+  const res = await authedFetch("/engagements", token);
+  return res.json();
+}
+
+export type TaskContextSelection = {
+  /** Omit for automatic capability-based detection. */
+  task_type?: TaskType;
+  engagement_id?: string | null;
+  purpose?: string | null;
+  jurisdiction?: string | null;
+  framework?: string | null;
+  entity?: string | null;
+  period_start?: string | null;
+  period_end?: string | null;
+  currency?: string | null;
+  language?: string;
+  intended_use?: "research" | "draft_workpaper" | "internal_review";
+};
+
+export type TaskContext = {
+  schema_version: "1.0";
+  task_type: TaskType;
+  task_spec_version: string;
+  actor_id: string;
+  tenant_id: string;
+  actor_role: string;
+  engagement_id: string | null;
+  purpose: string;
+  jurisdiction: string | null;
+  framework: string | null;
+  entity: string | null;
+  period_start: string | null;
+  period_end: string | null;
+  currency: string | null;
+  language: string;
+  data_classification: "PUBLIC" | "INTERNAL" | "CONFIDENTIAL" | "RESTRICTED";
+  intended_use: "research" | "draft_workpaper" | "internal_review";
+};
+
+export type ContextDecision = {
+  status: "complete" | "clarification_required" | "unsupported" | "unauthorized";
+  missing_fields: string[];
+  invalid_fields: string[];
+  reason_codes: string[];
+  clarification_questions: string[];
+  resolved_context: TaskContext | null;
+};
+
+export type CapabilityStep = {
+  capability: "document.retrieve" | "document.extract" | "source.research" |
+    "policy.lookup" | "numeric.calculate" | "numeric.compare" |
+    "evidence.cite" | "chart.generate" | "response.compose";
+  reason: string;
+};
+
+export type WorkflowPlan = {
+  version: "1.0";
+  task_type: TaskType;
+  detection: "automatic" | "explicit_override";
+  confidence: number;
+  reason_codes: string[];
+  steps: CapabilityStep[];
 };
 
 // ---- Top-level response ----
@@ -574,9 +660,11 @@ export type ConfidenceState =
   | "stale_sources"
   | "restricted_sources";
 
-/** §12 SafetyState — frontend renders from this, not by parsing answer text */
+/** Â§12 SafetyState — frontend renders from this, not by parsing answer text */
+export type RiskLevel = "ZERO" | "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
+
 export type SafetyState = {
-  risk_level: "ZERO" | "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
+  risk_level: RiskLevel;
   policy_state: "allowed" | "blocked" | "needs_more_context";
   disclaimer_required: boolean;
   refusal_text?: string;
@@ -587,7 +675,7 @@ export type NextAction = {
   message: string;
 };
 
-/** §12 — opaque audit reference; never exposes internal hashes */
+/** Â§12 — opaque audit reference; never exposes internal hashes */
 export type AuditReference = {
   audit_chain_id: string;
 };
@@ -603,10 +691,10 @@ export type SourceSummary = {
   status: string;
 };
 
-/** §7.2 SourceBundle — six confidence states */
+/** Â§7.2 SourceBundle — six confidence states */
 export type SourceBundle = {
   source_bundle_id: string;
-  retrieval_method: string;             // "keyword_mvp" (not RAG until §7 criteria met)
+  retrieval_method: string;             // "keyword_mvp" (not RAG until Â§7 criteria met)
   eligible_source_count: number;
   excluded_source_count: number;
   sources: SourceSummary[];
@@ -686,6 +774,47 @@ export type CalculationWidget = {
   calculation_id: string;
 };
 
+export type NumericInput = {
+  name: string;
+  value: string;
+  unit: string;
+  currency?: string | null;
+  period?: string | null;
+  evidence_id?: string | null;
+};
+
+export type CalculationResult = {
+  calculation_id: string;
+  operation: "arithmetic" | "sum" | "difference" | "percentage" | "percentage_change" | "variance" | "straight_line_depreciation";
+  rule_version: string;
+  inputs: NumericInput[];
+  output_value: string;
+  output_unit: string;
+  rounding_mode: "ROUND_HALF_UP";
+  scale: number;
+};
+
+export type VerifiedChartSpec = {
+  chart_id: string;
+  type: "bar" | "line" | "kpi";
+  title: string;
+  categories: string[];
+  series: Array<{ name: string; values: string[]; unit: string; source_ids: string[] }>;
+  calculation_id: string;
+  verified: true;
+};
+
+export type LiveObservation = {
+  observation_id: string;
+  indicator: string;
+  value: string;
+  unit: string;
+  period: string;
+  provider: string;
+  source_url: string;
+  freshness: string;
+};
+
 // ---- Presentation / visualization payload ----
 
 export type PresentationChartType =
@@ -720,7 +849,7 @@ export type PresentationChart = {
   domain: "general" | "accounting" | "audit" | "tax";
   summary_mode: "latest" | "total" | "average";
   // Optional — chart-selection alternatives, telemetry, and personalization
-  // metadata layered on across v3–v10; never required for rendering.
+  // metadata layered on across v3â€“v10; never required for rendering.
   alternatives?: PresentationChartType[];
   original_chart_type?: PresentationChartType | null;
   fallback_note?: string | null;
@@ -754,6 +883,11 @@ export type ComposedAnswer = {
   citations: SourceCitation[];
   limitations: string[];
   calculation_widget?: CalculationWidget | null;
+  calculation_result?: CalculationResult | null;
+  verified_charts?: VerifiedChartSpec[];
+  observations?: LiveObservation[];
+  /** No citations, but the figures are the question's or conversation's own, computed or charted exactly. */
+  computed_from_question?: boolean;
   presentation?: AnswerPresentation | null;
   response_mode?: "concise" | "educational" | "analytical" | "calculation" | "workflow" | "compound";
   /** Preferred, ordered rendering path — not yet returned by the backend. */
@@ -871,7 +1005,11 @@ export type GeneratedArtifact = {
   expires_at?: string | null;
 };
 
-export type CalculationResult = {
+/** Deterministic accounting-formula result — the self-contained calculation
+ * engine's own record, returned alongside the composed answer rather than
+ * inside it. Distinct from `CalculationResult` above, which is the verified
+ * single-operation record carried on `ComposedAnswer.calculation_result`. */
+export type FormulaCalculationResult = {
   matched: boolean;
   status: "success" | "undefined" | "clarification_required" | "not_matched";
   formula_ids: string[];
@@ -897,7 +1035,7 @@ export type CalculationResult = {
   message: string;
 };
 
-/** §12 Canonical response contract — frontend renders from route/outcome ONLY */
+/** Â§12 Canonical response contract — frontend renders from route/outcome ONLY */
 export type AskKritonResponse = {
   query_id: string;
   correlation_id: string;
@@ -910,14 +1048,17 @@ export type AskKritonResponse = {
   next_action: NextAction | null;
   artifacts: GeneratedArtifact[];
   artifact_error?: string | null;
+  effective_context?: TaskContext | null;
+  context_decision?: ContextDecision | null;
+  workflow_plan?: WorkflowPlan | null;
   /** Opaque — never expose audit_chain_id internals to UI rendering logic */
   audit_reference: AuditReference;
   visualization?: VisualizationSpec | null;
-  /** Complementary visuals (spec §17) — a different lens on the SAME
+  /** Complementary visuals (spec Â§17) — a different lens on the SAME
    * evidence as `visualization` (e.g. current-value KPI beside a trend
    * line), never a redundant alternate chart type. */
   secondary_visualizations?: VisualizationSpec[];
-  calculation?: CalculationResult | null;
+  calculation?: FormulaCalculationResult | null;
 };
 
 export async function downloadKritonArtifact(token: string, artifact: GeneratedArtifact): Promise<void> {
@@ -952,7 +1093,72 @@ export async function askKriton(
     return res.json();
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
-      throw new ApiError(408, "Kriton took too long to respond. Please try again.");
+      throw new ApiError(408, "Kriton did not finish within two minutes. Please try again.");
+    }
+    if (error instanceof TypeError) {
+      throw new ApiError(0, "Could not connect to Kriton. Please check that the backend is running and try again.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+export type KritonProgress = { stage: string; message: string };
+
+export async function askKritonStream(
+  token: string,
+  payload: AskKritonRequest,
+  idempotencyKey: string | undefined,
+  onProgress: (progress: KritonProgress) => void,
+): Promise<AskKritonResponse> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/x-ndjson",
+  };
+  if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
+
+  const controller = new AbortController();
+  // The backend owns the processing deadline. This longer timer only protects
+  // against a connection that stops delivering even heartbeats.
+  const timeout = window.setTimeout(() => controller.abort(), 120_000);
+  try {
+    const res = await authedFetch("/orchestration/ask/stream", token, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!res.body) throw new ApiError(502, "Kriton returned an empty response stream.");
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line) as
+          | { type: "progress"; stage: string; message: string }
+          | { type: "heartbeat" }
+          | { type: "result"; data: AskKritonResponse }
+          | { type: "error"; status: number; message: string };
+        if (event.type === "progress") onProgress(event);
+        if (event.type === "result") return event.data;
+        if (event.type === "error") throw new ApiError(event.status, event.message);
+      }
+      if (done) break;
+    }
+    throw new ApiError(502, "Kriton's response stream ended before completion.");
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new ApiError(408, "Kriton's response connection timed out. Please try again.");
+    }
+    if (error instanceof TypeError) {
+      throw new ApiError(0, "Could not connect to Kriton. Please check that the backend is running and try again.");
     }
     throw error;
   } finally {
@@ -995,6 +1201,7 @@ export function uploadKritonAttachment(
   token: string,
   file: File,
   onProgress?: (fraction: number) => void,
+  engagementId?: string,
 ): Promise<AttachmentUploadResult> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -1023,12 +1230,14 @@ export function uploadKritonAttachment(
     xhr.onerror = () => reject(new ApiError(0, "Could not reach the attachment service."));
     const form = new FormData();
     form.append("file", file);
+    if (engagementId) form.append("engagement_id", engagementId);
     xhr.send(form);
   });
 }
 
-export async function listKritonAttachments(token: string): Promise<WorkspaceDocument[]> {
-  const res = await authedFetch("/kriton-workspace/attachments", token);
+export async function listKritonAttachments(token: string, engagementId?: string): Promise<WorkspaceDocument[]> {
+  const query = engagementId ? `?engagement_id=${encodeURIComponent(engagementId)}` : "";
+  const res = await authedFetch(`/kriton-workspace/attachments${query}`, token);
   return res.json();
 }
 
@@ -1037,8 +1246,11 @@ export async function getKritonAttachment(token: string, documentId: string): Pr
   return res.json();
 }
 
-export async function deleteKritonAttachment(token: string, documentId: string): Promise<void> {
-  await authedFetch(`/kriton-workspace/attachments/${encodeURIComponent(documentId)}`, token, { method: "DELETE" });
+export async function deleteKritonAttachment(token: string, documentId: string, engagementId?: string): Promise<void> {
+  const query = engagementId ? `?engagement_id=${encodeURIComponent(engagementId)}` : "";
+  await authedFetch(`/kriton-workspace/attachments/${encodeURIComponent(documentId)}${query}`, token, {
+    method: "DELETE",
+  });
 }
 
 export async function listSavedAnswers(token: string): Promise<SavedAnswer[]> {

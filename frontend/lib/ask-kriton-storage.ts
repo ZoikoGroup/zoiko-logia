@@ -1,5 +1,16 @@
 import type { AskKritonResponse } from "@/lib/api";
 
+/** A document that was attached to one question. Recorded per turn, not per
+ *  conversation: the composer is cleared once a question is sent, so each turn
+ *  is a faithful record of what that particular answer could see. Persisted
+ *  with the conversation so scrolling back still shows which file an answer
+ *  was grounded in. */
+export type TurnAttachment = {
+  documentId: string;
+  name: string;
+  chunkCount?: number;
+};
+
 export type Turn = {
   id: string;
   /** Raw text as typed, before any quick-mode prefix or follow-up context tail. */
@@ -8,8 +19,16 @@ export type Turn = {
   submittedQuery: string;
   loading: boolean;
   error: string | null;
+  /** HTTP status behind `error`, when the failure came from the API. Lets the
+   *  UI distinguish "Kriton answered with a 4xx/5xx" from "the request never
+   *  reached Kriton" instead of showing one generic message for both. */
+  errorStatus?: number | null;
   result: AskKritonResponse | null;
-  attachments?: Array<{ documentId: string; filename: string }>;
+  /** Latest server-reported orchestration stage while this turn is running. */
+  progressMessage?: string;
+  /** Documents sent with this question. Optional so conversations stored
+   *  before this existed still load. */
+  attachments?: TurnAttachment[];
 };
 
 export type Conversation = {

@@ -32,28 +32,31 @@ function AuditReplayContent() {
 
   const [correlationId, setCorrelationId] = useState(initialId);
   const [manifest, setManifest] = useState<ReplayManifest | null>(null);
-  const [loading, setLoading] = useState(false);
+  // A deep link (?correlation_id=…) starts loading immediately.
+  const [loading, setLoading] = useState(Boolean(initialId.trim()));
   const [error, setError] = useState("");
 
-  async function loadManifest(id: string) {
+  // State is only set in the promise callbacks, so the deep-link load can run
+  // from the effect without a synchronous setState (react-hooks rule).
+  function fetchManifest(id: string) {
+    return getReplayManifest(getAuthToken(), id.trim())
+      .then((result) => setManifest(result))
+      .catch((err) => {
+        setManifest(null);
+        setError(err instanceof ApiError ? err.message : "Could not build a replay manifest.");
+      })
+      .finally(() => setLoading(false));
+  }
+
+  function loadManifest(id: string) {
     if (!id.trim()) return;
     setLoading(true);
     setError("");
-    try {
-      const result = await getReplayManifest(getAuthToken(), id.trim());
-      setManifest(result);
-    } catch (err) {
-      setManifest(null);
-      setError(err instanceof ApiError ? err.message : "Could not build a replay manifest.");
-    } finally {
-      setLoading(false);
-    }
+    void fetchManifest(id);
   }
 
   useEffect(() => {
-    if (!initialId) return;
-    const timer = window.setTimeout(() => void loadManifest(initialId), 0);
-    return () => window.clearTimeout(timer);
+    if (initialId.trim()) void fetchManifest(initialId);
   }, [initialId]);
 
   function handleSubmit(e: FormEvent) {

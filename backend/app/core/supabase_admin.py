@@ -6,15 +6,52 @@ settings = get_settings()
 
 
 def _headers() -> dict:
-    return {
+    headers = {
         "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
         "Content-Type": "application/json",
     }
+    # Supabase's sb_secret_* API keys are opaque keys, not JWTs. Sending one
+    # as a Bearer token makes the gateway reject the Admin API request.
+    # Keep the Bearer header for older JWT-based service_role keys.
+    if not settings.SUPABASE_SERVICE_ROLE_KEY.startswith("sb_secret_"):
+        headers["Authorization"] = f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}"
+    return headers
+
+
+def _looks_masked(key: str) -> bool:
+    # The Supabase dashboard displays secret keys shortened with an ellipsis
+    # (sb_secret_abcd…wxyz). Copying that display value gives a key that can
+    # never authenticate — and whose "…" crashes header encoding as a raw
+    # UnicodeEncodeError 500 instead of a clear configuration error.
+    return "…" in key or "..." in key
 
 
 def is_configured() -> bool:
-    return bool(settings.SUPABASE_URL and settings.SUPABASE_SERVICE_ROLE_KEY)
+    key = settings.SUPABASE_SERVICE_ROLE_KEY
+    return bool(settings.SUPABASE_URL and key and not _looks_masked(key))
+
+
+class SupabaseNotConfiguredError(RuntimeError):
+    """Raised when a Supabase Admin API operation is attempted while
+    SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY is unset or empty. Guards run
+    BEFORE any request is assembled, so the alternative failure mode here —
+    a malformed "Bearer " header leaking an httpx.LocalProtocolError as a raw
+    500 — is structurally impossible."""
+
+
+def _require_configured() -> None:
+    if settings.SUPABASE_SERVICE_ROLE_KEY and _looks_masked(settings.SUPABASE_SERVICE_ROLE_KEY):
+        raise SupabaseNotConfiguredError(
+            "SUPABASE_SERVICE_ROLE_KEY in backend/.env is the dashboard's masked display "
+            "value (contains '…'). Copy the full secret key from Supabase → Project "
+            "Settings → API Keys."
+        )
+    if not is_configured():
+        raise SupabaseNotConfiguredError(
+            "Supabase admin API not configured — set SUPABASE_URL and "
+            "SUPABASE_SERVICE_ROLE_KEY (service-role key) in backend/.env "
+            "or the environment before calling the Admin API."
+        )
 
 
 def create_user(email: str, password: str, email_confirm: bool = False) -> dict:
@@ -22,6 +59,7 @@ def create_user(email: str, password: str, email_confirm: bool = False) -> dict:
     only — never callable from the frontend. email_confirm=True bypasses
     the verification email (used for backend-seeded/admin-created accounts,
     which aren't going through the public sign-up flow)."""
+    _require_configured()
     resp = httpx.post(
         f"{settings.SUPABASE_URL}/auth/v1/admin/users",
         headers=_headers(),
@@ -33,6 +71,7 @@ def create_user(email: str, password: str, email_confirm: bool = False) -> dict:
 
 
 def get_user_by_email(email: str) -> dict | None:
+    _require_configured()
     resp = httpx.get(
         f"{settings.SUPABASE_URL}/auth/v1/admin/users",
         headers=_headers(),
@@ -44,12 +83,28 @@ def get_user_by_email(email: str) -> dict | None:
     return users[0] if users else None
 
 
+def revoke_all_sessions(user_id: str) -> bool:
+    """Revoke every active session for a user via the GoTrue Admin API —
+    used by POST /auth/sign-out-all-sessions. Service-role only. 204 means
+    every access/refresh token the user holds became invalid server-side,
+    so a lost/stolen session dies even if the client never signs out."""
+    _require_configured()
+    resp = httpx.delete(
+        f"{settings.SUPABASE_URL}/auth/v1/admin/users/{user_id}/sessions",
+        headers=_headers(),
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.status_code == 204
+
+
 def update_app_metadata(user_id: str, tenant_id: str, role: str) -> dict:
     """Set tenant_id/role into app_metadata — writable only via the
     service-role key, so a client can never grant itself a role/tenant.
     Supabase embeds app_metadata into every access token it issues for
     this user afterwards, which is what lets get_current_user/get_db read
     tenant_id and role straight off the verified token, no DB round-trip."""
+    _require_configured()
     resp = httpx.put(
         f"{settings.SUPABASE_URL}/auth/v1/admin/users/{user_id}",
         headers=_headers(),

@@ -68,6 +68,21 @@ async def audit_query_received(db, *, query_id, correlation_id, tenant_id, audit
 async def audit_request_validated(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id):
     await _emit(db, "request_validated", query_id, correlation_id, tenant_id, audit_chain_id, actor_id, {})
 
+async def audit_context_resolved(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                 status: str, task_type: str, task_spec_version: str,
+                                 reason_codes: list[str], effective_context: dict | None):
+    await _emit(
+        db, "task_context_resolved", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+        {
+            "status": status,
+            "task_type": task_type,
+            "task_spec_version": task_spec_version,
+            "reason_codes": reason_codes,
+            "effective_context": effective_context,
+        },
+        replay_relevance="REQUIRED",
+    )
+
 async def audit_request_rejected(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id, reason: str):
     await _emit(db, "request_rejected", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"reason": reason}, replay_relevance="REQUIRED")
@@ -174,6 +189,24 @@ async def audit_composition_completed(db, *, query_id, correlation_id, tenant_id
     await _emit(db, "composition_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"prompt_id": prompt_id, "output_hash": output_hash})
 
+async def audit_agent_tool_called(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                  step: int, tool: str, arguments_hash: str, ok: bool,
+                                  error_code: str | None, duration_ms: int, source_count: int):
+    # Arguments are recorded as a digest only (they can echo user text); the
+    # tool name, outcome and evidence count are what replay needs.
+    await _emit(db, "agent_tool_called", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"step": step, "tool": tool, "arguments_hash": arguments_hash, "ok": ok,
+                 "error_code": error_code, "duration_ms": duration_ms, "source_count": source_count},
+                replay_relevance="REQUIRED")
+
+async def audit_agent_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                steps: int, stop_reason: str, tool_call_count: int,
+                                fell_back: bool, error: str | None = None):
+    await _emit(db, "agent_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"steps": steps, "stop_reason": stop_reason, "tool_call_count": tool_call_count,
+                 "fell_back": fell_back, "error": error},
+                replay_relevance="REQUIRED")
+
 async def audit_composition_failed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id, error: str):
     await _emit(db, "composition_failed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"error": error}, replay_relevance="REQUIRED")
@@ -219,7 +252,7 @@ async def audit_response_finalised(db, *, query_id, correlation_id, tenant_id, a
                 {"outcome": outcome, "route": route})
 
 async def audit_response_returned(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
-                                   latency_ms: float):
+                                   latency_ms: float, stage_metrics: dict | None = None):
     # This is the terminal database write for the request.  Re-applying the
     # session-scoped tenant setting after its commit would open a brand-new
     # transaction that FastAPI must roll back during dependency teardown
@@ -227,4 +260,5 @@ async def audit_response_returned(db, *, query_id, correlation_id, tenant_id, au
     # that unnecessary rollback has blocked for ~120s.  Earlier events still
     # restore the context because more tenant-scoped work follows them.
     await _emit(db, "response_returned", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
-                {"latency_ms": round(latency_ms, 2)}, restore_tenant_context=False)
+                {"latency_ms": round(latency_ms, 2), "stage_metrics": stage_metrics or {}},
+                restore_tenant_context=False)

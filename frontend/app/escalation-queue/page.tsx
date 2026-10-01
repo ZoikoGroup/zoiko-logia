@@ -90,26 +90,26 @@ export default function EscalationQueuePage() {
     duration_hours: 24
   });
 
+  // State is only set in the promise callbacks, so the initial load can run
+  // from the effect without a synchronous setState (react-hooks rule).
+  function fetchQueue() {
+    return Promise.all([getEscalations(), getEscalationStats(), getSafetyOverrides()])
+      .then(([escData, statsData, overrideData]) => {
+        setEscalations(escData);
+        setStats(statsData || null);
+        setOverrides(overrideData);
+      })
+      .catch((e) => console.error(e))
+      .finally(() => setLoading(false));
+  }
+
   async function load() {
     setLoading(true);
-    try {
-      const [escData, statsData, overrideData] = await Promise.all([
-        getEscalations(),
-        getEscalationStats(),
-        getSafetyOverrides()
-      ]);
-      setEscalations(escData);
-      setStats(statsData || null);
-      setOverrides(overrideData);
-    } catch (e) {
-      console.error(e);
-    }
-    setLoading(false);
+    await fetchQueue();
   }
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
+    void fetchQueue();
   }, []);
 
   async function handleAction(caseId: string, action: "approve" | "refuse" | "escalate" | "request_info") {
@@ -119,8 +119,8 @@ export default function EscalationQueuePage() {
       await actOnEscalation(caseId, action, reviewerId, actionReason);
       setActionReason("");
       await load();
-    } catch (err: unknown) {
-      setErrorMsg(err instanceof Error ? err.message : "Failed to resolve case. Maker-checker constraint violation.");
+    } catch (err) {
+      setErrorMsg((err instanceof Error && err.message) || "Failed to resolve case. Maker-checker constraint violation.");
     } finally {
       setSubmittingId(null);
     }
@@ -136,8 +136,8 @@ export default function EscalationQueuePage() {
       });
       setShowOverrideForm(false);
       await load();
-    } catch (err: unknown) {
-      setErrorMsg(err instanceof Error ? err.message : "Failed to create safety override.");
+    } catch (err) {
+      setErrorMsg((err instanceof Error && err.message) || "Failed to create safety override.");
     }
   }
 

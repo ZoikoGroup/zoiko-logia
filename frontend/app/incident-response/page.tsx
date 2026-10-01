@@ -33,22 +33,18 @@ export default function IncidentResponsePage() {
   const [loading, setLoading] = useState(false);
   const [actionNote, setActionNote] = useState("");
 
-  const refreshData = async () => {
-    try {
-      const [resIncidents, resStats] = await Promise.all([
-        getIncidents(),
-        getIncidentStats(),
-      ]);
-      setIncidents(resIncidents);
-      setStats(resStats);
-    } catch {
-      setError("Could not load incidents from the server.");
-    }
-  };
+  // State is only set in the promise callbacks, so the initial load can run
+  // from the effect without a synchronous setState (react-hooks rule).
+  const refreshData = () =>
+    Promise.all([getIncidents(), getIncidentStats()])
+      .then(([resIncidents, resStats]) => {
+        setIncidents(resIncidents);
+        setStats(resStats);
+      })
+      .catch(() => setError("Could not load incidents from the server."));
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void refreshData(), 0);
-    return () => window.clearTimeout(timer);
+    void refreshData();
   }, []);
 
   const handleAction = async (action: string) => {

@@ -30,6 +30,7 @@ from app.domains.market_data.providers.base import (
 from app.domains.market_data.schemas import (
     FRESHNESS_HISTORICAL,
     FRESHNESS_REALTIME,
+    CapabilityNotSupported,
     CompanyProfile,
     EntityRef,
     OHLCVBar,
@@ -53,6 +54,28 @@ _INTERVAL_TO_AGG = {
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _refuse_foreign_listing(provider: str, ticker: str, what: str) -> None:
+    """Step aside for a non-US listing instead of failing as if it did not exist.
+
+    Polygon's coverage is US equities, and asked for 7203.T it answers with an
+    error document the adapter reports as ProviderBadResponse. The service reads
+    that as "the provider answered: no such instrument" and STOPS, which is
+    right for a delisted US ticker and wrong here — the next provider in the
+    chain does serve 7203.T. Verified live: a Japanese share-price question was
+    being dropped at this provider, before the keyless adapter that answers it.
+
+    Only an obviously foreign symbol is reclassified. A plain US ticker that
+    404s still raises ProviderBadResponse and still ends the chain, so "this
+    company does not exist" keeps its meaning.
+    """
+    from app.domains.market_data.identity import has_foreign_exchange_suffix
+
+    if has_foreign_exchange_suffix(ticker):
+        raise CapabilityNotSupported(
+            provider, f"{ticker} is not a US listing; this provider does not serve {what} for it"
+        )
 
 
 def _ms_to_iso(ms: float | None) -> str:
@@ -106,6 +129,7 @@ class PolygonProvider(BaseStockProvider):
     async def get_quote(self, client: httpx.AsyncClient, ref: EntityRef) -> StockQuote:
         if not ref.ticker:
             raise ProviderBadResponse(self.name, "a ticker is required for a quote")
+        _refuse_foreign_listing(self.name, ref.ticker, "quotes")
 
         # prev-close is the endpoint a free key can actually reach; realtime
         # snapshots are a paid entitlement. Reporting it honestly as the
@@ -149,6 +173,7 @@ class PolygonProvider(BaseStockProvider):
     ) -> list[OHLCVBar]:
         if not ref.ticker:
             raise ProviderBadResponse(self.name, "a ticker is required for history")
+        _refuse_foreign_listing(self.name, ref.ticker, "history")
 
         multiplier, timespan = _INTERVAL_TO_AGG.get(interval, ("1", "day"))
         # `limit` here caps the aggregate scan, NOT the number of bars returned

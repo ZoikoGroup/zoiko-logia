@@ -5,7 +5,7 @@ Canonical flow:
   1. Generate identifiers
   2. Validate request
   3. Pre-screen safety (BEFORE retrieval) — Release Gate RG-01
-  4. Retrieve SourceBundle (Massarius™ keyword_mvp retrieval layer)
+  4. Retrieve a rights-filtered passage bundle and persist its replay manifest
   5. Classify risk + resolve route from versioned policy matrix
   6. Execute deterministic route
   7. Post-composition validation — Release Gate RG-03
@@ -25,6 +25,7 @@ import logging
 import time
 import os
 import re
+from collections.abc import Awaitable, Callable
 from typing import Optional
 
 from fastapi import HTTPException
@@ -34,7 +35,7 @@ from sqlalchemy.orm import Session
 from app.orchestration.identifiers import (
     generate_query_id, generate_correlation_id,
     generate_audit_chain_id,
-    check_idempotency, store_idempotency,
+    check_idempotency, claim_idempotency, store_idempotency,
 )
 from app.orchestration.prescreen import run_prescreen
 from app.orchestration.retrieve import build_source_bundle
@@ -51,6 +52,7 @@ from app.orchestration.schemas import (
     GeneratedArtifactPublic,
 )
 from app.orchestration.audit_events import (
+    audit_agent_tool_called, audit_agent_completed,
     audit_query_received, audit_request_validated, audit_request_rejected,
     audit_prescreen_completed, audit_retrieval_started, audit_retrieval_completed,
     audit_retrieval_failed, audit_risk_classified, audit_route_selected,
@@ -64,14 +66,22 @@ from app.orchestration.audit_events import (
     audit_document_retrieval,
     audit_artifact_generation_failed,
     audit_calculation_completed,
+    audit_context_resolved,
 )
-from app.domains.risk_safety.schemas import ClassifyRequest
+from app.domains.risk_safety.schemas import ClassifyRequest, SafetyDecision
 from app.domains.model_gateway import service as model_gateway_service
 from app.orchestration import answer_cache
+from app.domains.model_gateway.agent import chart_requested, is_agent_clarification, with_agent_instructions
+from app.domains.identity.permissions import permissions_for_role
+from app.orchestration.conversation import bare_chart_hint, conversation_prompt
 from app.orchestration.compose import select_prompt
 from app.orchestration.redaction import redact_for_external_exposure
-from app.orchestration.websearch import web_search, build_web_grounded_prompt
-from app.orchestration.live_data import fetch_live_data, LiveDataResult
+from app.orchestration.websearch import (
+    sub_questions,
+    web_search_each,
+    build_web_grounded_prompt,
+    web_search,
+)
 from app.orchestration.dbnomics import countries_in_query
 from app.domains.market_data.registry import detect_intent as detect_market_data_intent
 from app.orchestration.market_data import _OWNERSHIP_HINTS, _OWNERSHIP_STRUCTURE_CHART_HINT
@@ -90,7 +100,7 @@ from app.orchestration.visualization.orchestrator import VisualizationOrchestrat
 from app.orchestration.visualization.validator import VisualizationValidator
 from app.orchestration.visualization import telemetry as viz_telemetry
 from app.orchestration.query_classifier_shadow import log_shadow_comparison
-from app.orchestration.risk_llm import classify_risk, classify_risk_gemini
+from app.orchestration.risk_llm import calibrate_calculation_risk, classify_risk, classify_risk_gemini
 from app.domains.kriton_workspace.documents import (
     expired_attachment_names, retrieve_document_sources, resolve_conversation_document_ids,
 )
@@ -102,6 +112,22 @@ from app.orchestration.document_pipeline import (
 )
 from app.orchestration.calculations import calculate_from_query
 from app.orchestration.calculations.engine import calculation_markdown
+from app.domains.source_library.service import record_source_usages
+from app.orchestration.live_data import build_forced_chart, fetch_live_data, LiveDataResult
+from app.orchestration.calculation_service import (
+    build_calculation, validate_answer_calculations,
+)
+from app.domains.calculations.service import persist_run as persist_calculation_run
+from app.orchestration.telemetry import StageMetrics, current_stage_metrics
+from app.orchestration.task_context import (
+    ResolutionInput,
+    prompt_context as build_task_prompt_context,
+    resolve_task_context,
+)
+from app.orchestration.workflow_planner import apply_plan, plan_workflow
+from app.domains.identity.authorization import (
+    ASK, DOCUMENT_READ, MODEL_TRANSMIT, authorize, list_authorized_engagements,
+)
 
 # Massarius™ retrieval and evidence subsystem — Phase 1 control modules
 # (ZL-ENG-03). These wrap/replace the inline licence filtering, bundle
@@ -115,6 +141,15 @@ from app.domains.massarius.policy_matrix import resolve_policy
 
 
 logger = logging.getLogger("kriton.orchestration")
+
+
+_TOOL_PROGRESS = {
+    "get_exchange_rate": "Fetching live exchange rates",
+    "get_economic_indicator": "Fetching official economic statistics",
+    "get_market_data": "Fetching market data",
+    "calculate": "Calculating",
+    "render_chart": "Building chart",
+}
 
 
 def _hash_query(query: str) -> str:
@@ -190,6 +225,13 @@ def _should_reuse_previous_evidence(query: str) -> bool:
 
 
 _MODEL_DOMAIN_REFUSAL = "designed to answer questions related to Accounting"
+# The model sometimes declines an off-topic question in its own words ("I'm
+# sorry, but I can't help with that.") instead of the fixed domain message,
+# and it was then shown as an answer with disclaimers attached.
+_GENERIC_REFUSAL = re.compile(
+    r"^\W*(i'?m|i am)?\s*(sorry|afraid)?[,.]?\s*(but\s+)?i\s+(can'?t|cannot|am unable to|won'?t)\s+"
+    r"(help|assist|answer)", re.I,
+)
 _MODEL_DOMAIN_REFUSAL_TEXT = (
     "I'm designed to answer questions related to Accounting, Taxation, Payroll, "
     "Finance, Auditing, Bookkeeping, Commerce, and Accounting Education across "
@@ -529,6 +571,23 @@ def _structured_visual_query_is_in_domain(query: str) -> bool | None:
     return bool(_ACCOUNTING_ENTITY_HINTS.search(query))
 
 
+def _classification_allowed(decision: SafetyDecision, provider_risk: Optional[str]) -> bool:
+    """Use a provider risk result to resolve only ML classification uncertainty."""
+    return decision.allowed or bool(
+        provider_risk and "l2-classification-uncertain" in decision.rules_applied
+    )
+
+
+async def _classify_after_bundle_nonblocking(classify_request, sync_db):
+    """Run the synchronous local classifier without occupying the event loop."""
+    return await asyncio.to_thread(
+        massarius_risk_safety.classify_after_bundle,
+        True,
+        classify_request,
+        sync_db,
+    )
+
+
 def _force_direct_answer() -> bool:
     """Dev/test-only override: force every query to the LLM route and skip
     the post-composition validation degrade, instead of the normal risk-based
@@ -563,6 +622,7 @@ async def ask_kriton(
     idempotency_key: Optional[str] = None,
     clarification_cycle: int = 0,
     conversation_id: Optional[str] = None,
+    progress: Optional[Callable[[str, str], Awaitable[None]]] = None,
 ) -> AskKritonResponse:
 
     start_time = time.monotonic()
@@ -571,16 +631,84 @@ async def ask_kriton(
         request.previous_query,
         clarification_cycle=clarification_cycle,
     )
+    metrics = StageMetrics()
+
+    async def report(stage: str, message: str) -> None:
+        if progress is not None:
+            await progress(stage, message)
+
+    workflow_plan = metrics.run_sync("workflow.plan", lambda: plan_workflow(request))
+    request = apply_plan(request, workflow_plan)
+    await report("workflow_planned", f"Detected {workflow_plan.task_type.replace('_', ' ')}")
+
+    requested_engagement_id = request.task_context.engagement_id if request.task_context else None
+    no_engagement_general_guidance = False
+    # A sole authorized engagement is unambiguous and can be selected without
+    # a workflow form. Multiple engagements are never guessed; the task
+    # contract will request the missing engagement instead.
+    if workflow_plan.task_type != "general_question" and not requested_engagement_id:
+        candidates = await metrics.run(
+            "authorization.engagement_candidates",
+            list_authorized_engagements(
+                db, actor_id=actor_id, tenant_id=tenant_id, operation=ASK,
+            ),
+        )
+        if len(candidates) == 1:
+            requested_engagement_id = candidates[0].id
+            request = request.model_copy(update={
+                "task_context": request.task_context.model_copy(
+                    update={"engagement_id": requested_engagement_id}
+                )
+            })
+        elif not candidates and workflow_plan.detection == "automatic":
+            # With no engagement to choose, the task contract could only ever
+            # ask for one the user cannot supply — every "our company / our
+            # client" question stopped at a clarification with no way on.
+            # Answer as general guidance instead, labelled as such; truly
+            # advisory questions are still routed to human review by risk.
+            no_engagement_general_guidance = True
+            workflow_plan = workflow_plan.model_copy(update={
+                "task_type": "general_question",
+                "reason_codes": [*workflow_plan.reason_codes, "NO_ENGAGEMENT_GENERAL_GUIDANCE"],
+            })
+            request = apply_plan(request, workflow_plan)
+    authorized_engagement_id: str | None = None
+    if requested_engagement_id:
+        required_operations = [ASK, MODEL_TRANSMIT]
+        if request.document_ids:
+            required_operations.append(DOCUMENT_READ)
+        for operation in required_operations:
+            authz = await metrics.run(
+                f"authorization.{operation}",
+                authorize(
+                    db, actor_id=actor_id, tenant_id=tenant_id,
+                    engagement_id=requested_engagement_id, operation=operation,
+                ),
+            )
+            if not authz.allowed:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=403, detail={
+                    "code": authz.reason_code,
+                    "operation": operation,
+                    "engagement_id": requested_engagement_id,
+                })
+        authorized_engagement_id = requested_engagement_id
 
     # ── Idempotency check ─────────────────────────────────────────────────────
     request_hash = hashlib.sha256(request.model_dump_json().encode("utf-8")).hexdigest()
     if idempotency_key:
         try:
-            cached = await check_idempotency(db, idempotency_key, tenant_id, request_hash)
+            cached = await metrics.run(
+                "idempotency.lookup",
+                check_idempotency(db, idempotency_key, tenant_id, request_hash),
+            )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if cached is not None:
             return AskKritonResponse(**cached)
+        if not await metrics.run("idempotency.claim", claim_idempotency(db, idempotency_key, tenant_id)):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=409, detail="This request is already being processed.")
 
     # ── Step 1: Generate identifiers (§5) ────────────────────────────────────
     query_id = generate_query_id()
@@ -608,9 +736,90 @@ async def ask_kriton(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
     )
+    await report("validated", "Request validated")
+
+    # ── F0: resolve a trusted, versioned task context before retrieval ──────
+    context_decision = metrics.run_sync(
+        "context.resolve",
+        lambda: resolve_task_context(
+            request,
+            ResolutionInput(actor_id=actor_id, tenant_id=tenant_id, role=role),
+            authorized_engagement_id=authorized_engagement_id,
+        ),
+    )
+    effective_context = context_decision.resolved_context
+
+    def contextualize(response: AskKritonResponse) -> AskKritonResponse:
+        return response.model_copy(update={
+            "effective_context": effective_context,
+            "context_decision": context_decision,
+            "workflow_plan": workflow_plan,
+        })
+
+    await audit_context_resolved(
+        db, query_id=query_id, correlation_id=correlation_id,
+        tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
+        status=context_decision.status,
+        task_type=effective_context.task_type if effective_context else "general_question",
+        task_spec_version=effective_context.task_spec_version if effective_context else "unknown",
+        reason_codes=context_decision.reason_codes,
+        effective_context=effective_context.model_dump(mode="json") if effective_context else None,
+    )
+    await report("context_resolved", "Professional task context checked")
+
+    if context_decision.status != "complete":
+        is_clarification = context_decision.status == "clarification_required"
+        if is_clarification:
+            message = " ".join(context_decision.clarification_questions)
+            await audit_clarification_returned(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+                actor_id=actor_id, clarification_cycle=clarification_cycle,
+            )
+        else:
+            message = (
+                "This professional task context is not supported by the current pilot. "
+                f"Reason: {', '.join(context_decision.reason_codes)}."
+            )
+            await audit_request_rejected(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+                actor_id=actor_id, reason=";".join(context_decision.reason_codes),
+            )
+        response = AskKritonResponse(
+            query_id=query_id,
+            correlation_id=correlation_id,
+            outcome="clarification_required" if is_clarification else "rejected",
+            route=ROUTE_CLARIFICATION if is_clarification else ROUTE_REJECTED,
+            safety=SafetyState(
+                risk_level="ZERO",
+                policy_state="needs_more_context" if is_clarification else "blocked",
+            ),
+            confidence_state=CONF_INSUFFICIENT,
+            source_bundle=None,
+            answer=None,
+            next_action=NextAction(
+                type="ask_clarifying_question" if is_clarification else "unsupported_context",
+                message=message,
+            ),
+            effective_context=effective_context,
+            context_decision=context_decision,
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        )
+        await _finalise_and_return(
+            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+            audit_chain_id=audit_chain_id, actor_id=actor_id,
+            outcome=response.outcome, route=response.route, start_time=start_time,
+        )
+        return contextualize(response)
+
+    # The legacy jurisdiction field remains the retrieval input during the F0
+    # compatibility period, but its value is now the normalized resolved value.
+    if effective_context and effective_context.jurisdiction:
+        request.jurisdiction = effective_context.jurisdiction
 
     # ── Step 3: Pre-screen safety BEFORE retrieval (§6, RG-01) ───────────────
-    prescreen = run_prescreen(effective_query)
+    prescreen = metrics.run_sync("safety.prescreen", lambda: run_prescreen(effective_query))
     await audit_prescreen_completed(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id,
@@ -643,7 +852,9 @@ async def ask_kriton(
         )
         if idempotency_key:
             await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
-        return response
+        return contextualize(response)
+
+    await report("safety_complete", "Safety controls passed")
 
     # Self-contained, allow-listed calculations are executed after the hard
     # safety pre-screen and before retrieval/model calls.  The matcher only
@@ -722,7 +933,7 @@ async def ask_kriton(
                 db, idempotency_key, tenant_id, request_hash,
                 response.model_dump(mode="json"),
             )
-        return response
+        return contextualize(response)
 
     # ── Kick off the live web search NOW, concurrently ──────────────────────
     # SearXNG is the slowest single step (~several seconds waiting on search
@@ -737,7 +948,10 @@ async def ask_kriton(
     web_search_task = (
         asyncio.create_task(
             asyncio.wait_for(
-                web_search(effective_query, jurisdiction=request.jurisdiction, limit=5),
+                metrics.run(
+                    "retrieval.web",
+                    web_search_each(effective_query, jurisdiction=request.jurisdiction, limit=5),
+                ),
                 timeout=12.0,
             )
         )
@@ -759,14 +973,31 @@ async def ask_kriton(
     # turn's text here would let its country/company names hijack THIS
     # turn's evidence — e.g. a prior "India CPI" turn silently redirecting a
     # later "UK inflation" turn onto India's series.
+    # In agent mode the model fetches exactly the figures it needs through
+    # registered tools during composition, so nothing is pre-fetched here.
+    agent_mode = model_gateway_service.agent_mode_active()
     live_data_task = (
         asyncio.create_task(
-            asyncio.wait_for(fetch_live_data(request.query), timeout=25.0)
+            asyncio.wait_for(
+                metrics.run("retrieval.live_data", fetch_live_data(request.query)),
+                timeout=25.0,
+            )
         )
-        if needs_web else None
+        if needs_web and not agent_mode else None
     )
+    # These are speculative child tasks. Tie their lifetime to this request so
+    # an early refusal, client disconnect, or end-to-end timeout cannot leave
+    # provider calls running after the parent orchestration has finished.
+    parent_task = asyncio.current_task()
+    if parent_task is not None:
+        def cancel_retrieval_tasks(_completed: asyncio.Task) -> None:
+            for child in (web_search_task, live_data_task):
+                if child is not None and not child.done():
+                    child.cancel()
 
-    # ── Step 4: Retrieve SourceBundle (Massarius™ keyword_mvp layer) (§7) ────
+        parent_task.add_done_callback(cancel_retrieval_tasks)
+
+    # ── Step 4: Plan and retrieve rights-filtered evidence passages (§7) ────
     await audit_retrieval_started(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
@@ -807,8 +1038,16 @@ async def ask_kriton(
         error=document_retrieval_error,
     )
     try:
-        preliminary_bundle = await build_source_bundle(
-            db, query=request.query, jurisdiction=request.jurisdiction, tenant_id=tenant_id,
+        preliminary_bundle = await metrics.run(
+            "retrieval.governed_sources",
+            build_source_bundle(
+                db,
+                query=request.query,
+                jurisdiction=request.jurisdiction,
+                tenant_id=tenant_id,
+                framework=(effective_context.framework or "") if effective_context else "",
+                effective_date=effective_context.period_end if effective_context else None,
+            ),
         )
         await audit_retrieval_completed(
             db, query_id=query_id, correlation_id=correlation_id,
@@ -819,13 +1058,21 @@ async def ask_kriton(
         )
 
         # ── Massarius™ Checkpoint A/B + bundle_builder (ZL-ENG-03 §5) ────────
-        # retrieve.py's own bundle is treated as preliminary/keyword_mvp
-        # output; license_gate.py re-verifies eligibility of what it
+        # retrieve.py's bundle is the preliminary lexical ranking output;
+        # license_gate.py re-verifies model eligibility of what it
         # returned and resolves per-source display states, and
         # bundle_builder.py is the sole producer of the final, frozen
         # SourceBundle everything downstream actually uses.
-        licence_result = await license_gate.check_eligibility(
-            db, preliminary_bundle.sources, tenant_id=tenant_id,
+        licence_result = await metrics.run(
+            "retrieval.licence_gate",
+            license_gate.check_eligibility(
+                db,
+                preliminary_bundle.sources,
+                tenant_id=tenant_id,
+                jurisdiction=request.jurisdiction,
+                framework=(effective_context.framework or "") if effective_context else "",
+                effective_date=effective_context.period_end if effective_context else None,
+            ),
         )
         await audit_licence_prefilter_completed(
             db, query_id=query_id, correlation_id=correlation_id,
@@ -842,6 +1089,17 @@ async def ask_kriton(
             )
 
         source_bundle = bundle_builder.build_bundle(preliminary_bundle, licence_result)
+        await bundle_builder.persist_bundle(
+            db, bundle=source_bundle, tenant_id=tenant_id, query_id=query_id,
+        )
+        await record_source_usages(
+            db,
+            sources=source_bundle.sources,
+            tenant_id=tenant_id,
+            artifact_type="source_bundle",
+            artifact_id=source_bundle.source_bundle_id,
+            operation="model_transmission",
+        )
         await audit_bundle_built(
             db, query_id=query_id, correlation_id=correlation_id,
             tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
@@ -849,17 +1107,21 @@ async def ask_kriton(
             confidence_state=source_bundle.confidence_state,
             index_version=source_bundle.index_version,
         )
+        await report("sources_ready", "Eligible sources checked")
     except Exception as exc:
-        # A database timeout/cancellation leaves SQLAlchemy's transaction in
-        # a failed state.  Reset it before recording the fail-soft audit event;
-        # otherwise the audit write itself raises PendingRollbackError and the
-        # request still never reaches composition.
+        # PostgreSQL leaves a transaction unusable after any statement error
+        # (for example, a deployment/schema mismatch), and a database
+        # timeout/cancellation does the same. Roll back before the durable
+        # failure audit; otherwise that audit raises InFailedSQLTransaction
+        # (PendingRollbackError on SQLAlchemy) and turns a controlled retrieval
+        # degradation into a generic request failure.
         await db.rollback()
         await audit_retrieval_failed(
             db, query_id=query_id, correlation_id=correlation_id,
             tenant_id=tenant_id, audit_chain_id=audit_chain_id,
             actor_id=actor_id, error=str(exc),
         )
+        logger.exception("Governed source retrieval failed; continuing without a source bundle")
         source_bundle = None
 
     # ── Step 5: Classify risk (after bundle_builder.py, ZL-ENG-03 §5.6) +
@@ -892,7 +1154,10 @@ async def ask_kriton(
     # is True here regardless of whether it succeeded — the try/except above
     # already ran either way; source_bundle itself may still be None if
     # retrieval failed).
-    decision = massarius_risk_safety.classify_after_bundle(True, classify_request, sync_db)
+    # The local transformers classifier and its synchronous SQLAlchemy writes
+    # are blocking work. Keep them off the event loop; this session is used
+    # exclusively by this call while the worker owns it.
+    decision = await metrics.run("risk.local_classifier", _classify_after_bundle_nonblocking(classify_request, sync_db))
     risk_level = decision.risk_level
 
     # LLM risk override (ZERO/LOW/MEDIUM/HIGH): the built-in zero-shot model is
@@ -901,14 +1166,16 @@ async def ask_kriton(
     # more accurate ("What is a tax credit?" -> LOW, not MEDIUM). Fails soft:
     # keeps the ML result if the LLM is unavailable. Never downgrades a
     # pre-screen hard block — those RESTRICTED cases return before this point.
-    llm_risk = await classify_risk(effective_query)
+    llm_risk = await metrics.run("risk.primary_provider", classify_risk(effective_query))
     if not llm_risk:
         # Primary Groq classifier unavailable/failed — try Gemini as the
         # fallback LLM classifier (provider-level redundancy) before falling
         # back to the ML zero-shot result already in risk_level.
-        llm_risk = await classify_risk_gemini(effective_query)
+        llm_risk = await metrics.run("risk.fallback_provider", classify_risk_gemini(effective_query))
     if llm_risk:
-        risk_level = llm_risk
+        # Arithmetic on figures the user states, with no decision asked for,
+        # is LOW even when the classifier reads it as personal advice.
+        risk_level = calibrate_calculation_risk(llm_risk, request.query)
     # A non-personal request to visualize a public economic statistic is an
     # educational formatting task. Keep equivalent country/chart phrasings
     # consistently LOW instead of letting model wording drift between ZERO,
@@ -933,6 +1200,12 @@ async def ask_kriton(
         and not re.search(r"\b(my|our|client|should i|should we)\b", effective_query, re.I)
     ):
         risk_level = "LOW"
+    await report("risk_classified", "Response route selected")
+
+    # The provider classifier can resolve the ML model's low-confidence
+    # decision. Only this specific uncertainty may be superseded: other
+    # classifier blocks (privacy, licence, policy, etc.) still stop the query.
+    classification_allowed = _classification_allowed(decision, llm_risk)
 
     await audit_risk_classified(
         db, query_id=query_id, correlation_id=correlation_id,
@@ -973,13 +1246,13 @@ async def ask_kriton(
 
     safety_state = SafetyState(
         risk_level=risk_level,
-        policy_state="allowed" if decision.allowed else "blocked",
+        policy_state="allowed" if classification_allowed else "blocked",
         disclaimer_required=route_decision.disclaimer_required,
     )
 
     # ── Step 6: Execute deterministic route (§8, §9) ──────────────────────────
 
-    if not force_direct and not decision.allowed and decision.route == ROUTE_CLARIFICATION:
+    if not force_direct and not classification_allowed and decision.route == ROUTE_CLARIFICATION:
         # The classifier's own signal was "needs clarification" (e.g. ambiguous/
         # low-confidence query), not a hard block — it still sets allowed=False,
         # but collapsing that into REFUSAL would show a refusal outcome next to
@@ -1011,9 +1284,9 @@ async def ask_kriton(
         )
         if idempotency_key:
             await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
-        return response
+        return contextualize(response)
 
-    if not force_direct and (not decision.allowed or route == ROUTE_REFUSAL):
+    if not force_direct and (not classification_allowed or route == ROUTE_REFUSAL):
         # REFUSAL path
         refusal_reason = decision.refusal_text or "Query blocked by risk classification policy."
         await audit_refusal_returned(
@@ -1040,7 +1313,7 @@ async def ask_kriton(
         )
         if idempotency_key:
             await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
-        return response
+        return contextualize(response)
 
     if route == ROUTE_HUMAN_REVIEW:
         # Persist review case (§11.1) — returning label without persisted object is non-compliant
@@ -1082,7 +1355,7 @@ async def ask_kriton(
         )
         if idempotency_key:
             await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
-        return response
+        return contextualize(response)
 
     if route == ROUTE_CLARIFICATION:
         await audit_clarification_returned(
@@ -1112,7 +1385,7 @@ async def ask_kriton(
         )
         if idempotency_key:
             await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
-        return response
+        return contextualize(response)
 
     # ── LLM Route ─────────────────────────────────────────────────────────────
     # Model gateway executes ONLY when route == LLM (§9)
@@ -1168,12 +1441,13 @@ async def ask_kriton(
         )
         if idempotency_key:
             await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
-        return response
+        return contextualize(response)
 
     await audit_composition_started(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,
     )
+    await report("retrieving_live_data", "Retrieving current evidence")
 
     # ── Web retrieval (SearXNG) ─────────────────────────────────────────────
     # The answer is grounded in live web sources found via SearXNG, restricted
@@ -1268,6 +1542,33 @@ async def ask_kriton(
                 update={"jurisdiction": " / ".join(query_countries)}
             )
 
+    governed_passages = (
+        await metrics.run(
+            "retrieval.bundle_replay",
+            bundle_builder.load_bundle_passage_text(db, source_bundle),
+        )
+        if source_bundle else []
+    )
+    source_by_id = {source.id: source for source in source_bundle.sources} if source_bundle else {}
+    selection_by_passage = {
+        passage.passage_id: passage for passage in source_bundle.passages
+    } if source_bundle else {}
+    governed_citations: list[SourceCitation] = []
+    for passage_id, locator, content in governed_passages:
+        selection = selection_by_passage[passage_id]
+        source = source_by_id[selection.source_id]
+        display_state = source_bundle.source_display_states.get(source.id, "internal_reasoning_only")
+        if display_state == "internal_reasoning_only":
+            continue
+        governed_citations.append(SourceCitation(
+            ref_id="",
+            source_id=passage_id,
+            title=f"{source.title} — {locator}",
+            evidence_preview=content[:240].strip() if display_state == "show" else None,
+            provider="Governed source register",
+            freshness="registered_version",
+        ))
+
     if request.source_scope == "DOCUMENTS_ONLY":
         evidence_sources = document_sources
     elif request.source_scope == "WEB_ONLY":
@@ -1294,6 +1595,12 @@ async def ask_kriton(
         )
         for i, s in enumerate(evidence_sources)
     ]
+    # The governed register passages the prompt carries are cited after the
+    # retrieved sources, renumbered so REF-1..N still follows reading order.
+    rag_citations.extend(
+        citation.model_copy(update={"ref_id": f"REF-{len(rag_citations) + i + 1}"})
+        for i, citation in enumerate(governed_citations)
+    )
 
     document_analysis: dict = {}
     if document_plan.task_type == "document_generation" and document_sources:
@@ -1382,6 +1689,37 @@ async def ask_kriton(
                 "Please try again shortly or specify a source and date range."
             )
         grounded_input = build_web_grounded_prompt(effective_query, evidence_sources)
+        if governed_passages:
+            authority_context = "\n\n".join(
+                f"[GOV-{index}] {locator} (passage_id={passage_id})\n{content}"
+                for index, (passage_id, locator, content) in enumerate(governed_passages, start=1)
+            )
+            grounded_input += (
+                "\n\n=== Governed registered evidence ===\n"
+                "Use these approved passages for material professional claims. "
+                "If they conflict or do not support the requested conclusion, say so.\n"
+                f"{authority_context}"
+            )
+        if effective_context:
+            grounded_input += build_task_prompt_context(effective_context)
+        deterministic_calculation = metrics.run_sync(
+            "calculation.extract", lambda: build_calculation(request.query)
+        )
+        if deterministic_calculation:
+            await persist_calculation_run(
+                db,
+                tenant_id=tenant_id,
+                query_id=query_id,
+                result=deterministic_calculation.record,
+                chart=deterministic_calculation.chart,
+            )
+            grounded_input += deterministic_calculation.prompt_context()
+
+    # Earlier turns (including answers with figures) for follow-ups such as
+    # "add Thailand" or "make it a bar chart" — untrusted context, redacted
+    # below with the rest of the prompt.
+    grounded_input += conversation_prompt(request.conversation_history)
+    grounded_input += bare_chart_hint(request.query, request.conversation_history)
 
     # External-provider exposure boundary (ZL-ENG-03 §5.8): redact before
     # grounded_input leaves the tenant trust boundary for the model gateway.
@@ -1395,6 +1733,7 @@ async def ask_kriton(
         redaction_applied=redaction_result.redaction_applied,
         redaction_categories=redaction_result.redaction_categories,
     )
+    await report("generating", "Generating the governed answer")
 
     composed_text: Optional[str] = deterministic_chart_text
     prompt_id = "inline"
@@ -1411,8 +1750,67 @@ async def ask_kriton(
     # flash is already fast, so ZERO/LOW questions need no separate fast model.
     answer_model: Optional[str] = None
     gemini_active = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
-    if risk_level in ("ZERO", "LOW") and os.getenv("GROQ_API_KEY") and not gemini_active:
+    # A pasted set of questions needs the full model: the fast one lost the
+    # thread on long multi-question prompts (blank output, then truncation).
+    multi_question = len(sub_questions(request.query)) > 1
+    if risk_level in ("ZERO", "LOW") and os.getenv("GROQ_API_KEY") and not gemini_active and not multi_question:
         answer_model = os.getenv("GROQ_FAST_ANSWER_MODEL", "openai/gpt-oss-20b")
+
+    # ── Agent mode: governed tool-calling loop ─────────────────────────────
+    # The model fetches figures through registered tools (permission-checked,
+    # validated, time-boxed) and every call is audited. Any failure falls
+    # through to the standard composition below, so agent mode can only add
+    # evidence to an answer — never lose one.
+    agent_outcome = None
+    if agent_mode and deterministic_chart_text is None:
+        async def on_tool_start(tool: str) -> None:
+            await report("tool_call", _TOOL_PROGRESS.get(tool, "Gathering evidence"))
+
+        async def on_tool_done(record) -> None:
+            await audit_agent_tool_called(
+                db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+                audit_chain_id=audit_chain_id, actor_id=actor_id,
+                step=record.step, tool=record.tool, arguments_hash=record.arguments_hash,
+                ok=record.ok, error_code=record.error_code,
+                duration_ms=record.duration_ms, source_count=record.source_count,
+            )
+
+        try:
+            agent_outcome = await metrics.run(
+                "composition.agent",
+                model_gateway_service.run_agentic_completion(
+                    with_agent_instructions(grounded_input),
+                    granted_permissions=permissions_for_role(role),
+                    # Always the full GROQ_MODEL, never the fast one: planning
+                    # tool calls is where the small model failed — refusing
+                    # in-scope questions after fetching data, skipping a
+                    # requested chart, pricing a US stock in rupees — while
+                    # the full model answered the same questions correctly.
+                    model=None,
+                    on_tool_start=on_tool_start,
+                    on_tool_done=on_tool_done,
+                    chart_requested=chart_requested(request.query),
+                ),
+            )
+            composed_text = agent_outcome.text
+            prompt_id, prompt_name = "agent", "Agent (governed tool calling)"
+            await audit_agent_completed(
+                db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+                audit_chain_id=audit_chain_id, actor_id=actor_id,
+                steps=agent_outcome.steps, stop_reason=agent_outcome.stop_reason,
+                tool_call_count=len(agent_outcome.tool_calls), fell_back=False,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Agent composition failed (%s: %s); using standard composition",
+                type(exc).__name__, str(exc)[:300],
+            )
+            agent_outcome = None
+            await audit_agent_completed(
+                db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+                audit_chain_id=audit_chain_id, actor_id=actor_id,
+                steps=0, stop_reason="error", tool_call_count=0, fell_back=True, error=type(exc).__name__,
+            )
 
     # A repeat of the same grounded question costs nothing when its answer is
     # already known. This matters for the token allowance rather than for
@@ -1421,7 +1819,7 @@ async def ask_kriton(
     # audit trail, validation, disclaimer and visualization all still run —
     # only the model call is skipped. See answer_cache.py.
     answer_cache_key: str | None = None
-    if deterministic_chart_text is None and answer_cache.is_cacheable(evidence_sources):
+    if agent_outcome is None and deterministic_chart_text is None and answer_cache.is_cacheable(evidence_sources):
         answer_cache_key = answer_cache.cache_key(grounded_input, answer_model)
         cached_answer = await answer_cache.get_answer(answer_cache_key)
         if cached_answer:
@@ -1431,16 +1829,22 @@ async def ask_kriton(
     try:
         if deterministic_chart_text is None and composed_text is None:
             if prompt:
-                prompt_row, composed_text = await model_gateway_service.run_test_prompt(
-                    db, prompt.id, grounded_input, actor_id, tenant_id,
-                    correlation_id=query_id, model=answer_model,
+                prompt_row, composed_text = await metrics.run(
+                    "composition.model",
+                    model_gateway_service.run_test_prompt(
+                        db, prompt.id, grounded_input, actor_id, tenant_id,
+                        correlation_id=query_id, model=answer_model,
+                    ),
                 )
                 prompt_id = prompt_row.id
                 prompt_name = prompt_row.name
             else:
                 # No approved prompt template seeded — fall back to a direct
                 # provider completion so web-grounded answering still works.
-                composed_text = await model_gateway_service.run_grounded_completion(grounded_input)
+                composed_text = await metrics.run(
+                    "composition.model",
+                    model_gateway_service.run_grounded_completion(grounded_input),
+                )
             # The model gateway deliberately sanitizes provider exceptions as
             # user-safe text. At the orchestration boundary that text is still
             # a failed composition, never an "answered — source grounded"
@@ -1481,7 +1885,7 @@ async def ask_kriton(
         )
         if idempotency_key:
             await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
-        return response
+        return contextualize(response)
 
     if not composed_text:
         # No content — insufficient sources and no fallback
@@ -1509,7 +1913,60 @@ async def ask_kriton(
             audit_chain_id=audit_chain_id, actor_id=actor_id,
             outcome=response.outcome, route=ROUTE_CLARIFICATION, start_time=start_time,
         )
-        return response
+        return contextualize(response)
+
+    if agent_outcome is not None and is_agent_clarification(composed_text, agent_outcome):
+        # The agent asked for missing input ("which amount?") instead of
+        # answering. Shown as an answer it read "Answered — model knowledge,
+        # no sources retrieved"; it is a clarification, so it gets that status.
+        await audit_clarification_returned(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, clarification_cycle=clarification_cycle,
+        )
+        response = AskKritonResponse(
+            query_id=query_id, correlation_id=correlation_id,
+            outcome="clarification_required", route=ROUTE_CLARIFICATION,
+            safety=safety_state, confidence_state=effective_confidence,
+            source_bundle=source_bundle, answer=None,
+            next_action=NextAction(type="ask_clarifying_question", message=composed_text.strip()),
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        )
+        await _finalise_and_return(
+            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+            audit_chain_id=audit_chain_id, actor_id=actor_id,
+            outcome=response.outcome, route=ROUTE_CLARIFICATION, start_time=start_time,
+        )
+        return contextualize(response)
+
+    if agent_outcome is not None:
+        # Tool evidence joins the answer's citations after the retrieved
+        # sources, and validated charts are attached as-is (built from checked
+        # tool arguments, never retyped by the model).
+        rag_citations = rag_citations + [
+            SourceCitation(
+                ref_id=f"REF-{len(rag_citations) + i + 1}",
+                source_id=s.url,
+                title=s.title,
+                url=s.url or None,
+                evidence_preview=(s.snippet[:240].strip() or None) if s.snippet else None,
+                provider=s.provider,
+                fetched_at=s.fetched_at,
+                freshness=s.freshness,
+            )
+            for i, s in enumerate(agent_outcome.sources)
+        ]
+        if agent_outcome.artifacts:
+            composed_text = composed_text.rstrip() + "\n\n" + "\n\n".join(agent_outcome.artifacts)
+
+    # Force a chart from the connector's own fetched numeric series when the
+    # question wanted one and the model didn't already produce it (via prose
+    # or the render_chart tool) — see live_data.build_forced_chart. Runs
+    # before validation so the forced chart is checked like any other content.
+    if agent_outcome is None and "```chart" not in composed_text:
+        forced_chart = build_forced_chart(request.query, live_result.sources)
+        if forced_chart:
+            composed_text = composed_text.rstrip() + "\n\n" + forced_chart
 
     # Provider models occasionally ignore the shared domain instructions and
     # refuse clearly in-domain CPI/FX or corporate-relationship prompts. Use a
@@ -1580,6 +2037,7 @@ async def ask_kriton(
         tenant_id=tenant_id, audit_chain_id=audit_chain_id,
         actor_id=actor_id, prompt_id=prompt_id, output_hash=output_hash,
     )
+    await report("validating", "Validating citations and safety controls")
 
     # ── Step 7: Post-composition validation — Massarius™ Checkpoint C
     # (§10, RG-03; ZL-ENG-03 §5.7) ────────────────────────────────────────────
@@ -1599,6 +2057,21 @@ async def ask_kriton(
         )
         if source_bundle else None
     )
+    calculation_failures = metrics.run_sync(
+        "calculation.validate", lambda: validate_answer_calculations(composed_text)
+    )
+    if calculation_failures:
+        if validation is None:
+            from app.orchestration.schemas import ValidationResult
+            validation = ValidationResult(
+                passed=False, failures=calculation_failures, degraded_route=ROUTE_HUMAN_REVIEW
+            )
+        else:
+            validation = validation.model_copy(update={
+                "passed": False,
+                "failures": [*validation.failures, *calculation_failures],
+                "degraded_route": validation.degraded_route or ROUTE_HUMAN_REVIEW,
+            })
     final_text = composed_text
     await audit_validation_completed(
         db, query_id=query_id, correlation_id=correlation_id,
@@ -1630,6 +2103,7 @@ async def ask_kriton(
                 tenant_id=tenant_id, risk_level=risk_level,
                 confidence_state=effective_confidence,
                 reason=f"Composition rejected: {'; '.join(validation.failures[:2])}",
+                query_text=request.query,
             )
             await audit_human_review_created(
                 db, query_id=query_id, correlation_id=correlation_id,
@@ -1665,7 +2139,7 @@ async def ask_kriton(
         )
         if idempotency_key:
             await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
-        return response
+        return contextualize(response)
 
     # ── Step 8: Finalise response ─────────────────────────────────────────────
     # final_text already has the mandatory disclaimer (§10) applied above, and
@@ -1681,12 +2155,27 @@ async def ask_kriton(
             l for l in limitations
             if "CLASSIFICATION_UNCERTAIN" not in l and "clarification" not in l.lower()
         ]
+    if no_engagement_general_guidance and risk_level != "HIGH":
+        limitations.append(
+            "General guidance only: no engagement is set up for you, so this is not advice on "
+            "your or your client's specific matter. Set up an engagement for a governed, "
+            "client-specific answer."
+        )
     # Do not duplicate generic disclaimer copy in the limitations panel.
 
     # Off-domain refusal: when the domain gate declined the question (it is not
     # about accounting/tax/payroll/finance/audit/bookkeeping/commerce), the
     # web-search results are irrelevant to the reply — so return NO sources and
     # NO disclaimer. Sources are shown only for genuine in-domain answers.
+    # Not when the agent fetched real figures for it: that question is
+    # in-domain, and its short "I can't…" is about one part of it (India vs
+    # Mars), not a reason to discard the whole answer as off-topic.
+    agent_found_evidence = agent_outcome is not None and bool(agent_outcome.sources)
+    if (
+        composed_text and len(composed_text.strip()) < 160 and not agent_found_evidence
+        and _GENERIC_REFUSAL.search(composed_text)
+    ):
+        composed_text = final_text = _MODEL_DOMAIN_REFUSAL_TEXT
     is_offdomain_refusal = _MODEL_DOMAIN_REFUSAL in (composed_text or "")
     if is_offdomain_refusal:
         # This is a scope notice, not accounting guidance. Do not attach the
@@ -1706,10 +2195,23 @@ async def ask_kriton(
         # externally source-grounded.
         rag_citations = []
 
+    # A calculation on the question's own figures, or a chart redrawn from
+    # figures already in the conversation, needs no source — calling it
+    # "model knowledge" misdescribes it.
+    computed_from_question = not rag_citations and not is_offdomain_refusal and (
+        deterministic_calculation is not None
+        or (agent_outcome is not None and any(
+            call.tool in ("calculate", "render_chart") and call.ok for call in agent_outcome.tool_calls
+        ))
+    )
     answer = ComposedAnswer(
         text=final_text,
         citations=rag_citations,
         limitations=limitations,
+        calculation_widget=deterministic_calculation.widget if deterministic_calculation else None,
+        calculation_result=deterministic_calculation.record if deterministic_calculation else None,
+        verified_charts=[deterministic_calculation.chart] if deterministic_calculation else [],
+        computed_from_question=computed_from_question,
         prompt_id=prompt_id,
         prompt_name=prompt_name,
         output_text=final_text,
@@ -1876,17 +2378,27 @@ async def ask_kriton(
         audit_reference=AuditReference(audit_chain_id=audit_chain_id),
     )
 
+    # Retrieval is intentionally fail-soft so live/web-grounded answers can
+    # still complete during a governed-source outage. In that degraded path
+    # there is no governed bundle to dereference or record. The old unconditional
+    # access raised AttributeError here and discarded an otherwise completed
+    # response.
+    await _record_answer_source_usages(
+        db, source_bundle=source_bundle, tenant_id=tenant_id, query_id=query_id,
+    )
+
     # Audit BEFORE response is returned (§13, RG-04)
     await _finalise_and_return(
         db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
         audit_chain_id=audit_chain_id, actor_id=actor_id,
         outcome=response.outcome, route=response.route, start_time=start_time,
     )
+    await report("complete", "Response ready")
 
     if idempotency_key:
         await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
 
-    return response
+    return contextualize(response)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -1898,11 +2410,26 @@ def _terminal_response_state(is_offdomain_refusal: bool) -> tuple[str, str]:
     return "answered", ROUTE_LLM
 
 
+async def _record_answer_source_usages(
+    db, *, source_bundle, tenant_id: str, query_id: str,
+) -> None:
+    if source_bundle is None:
+        return
+    await record_source_usages(
+        db,
+        sources=source_bundle.sources,
+        tenant_id=tenant_id,
+        artifact_type="answer",
+        artifact_id=query_id,
+        operation="model_transmission",
+    )
+
 async def _finalise_and_return(
     db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
     outcome, route, start_time: float
 ) -> None:
     latency_ms = (time.monotonic() - start_time) * 1000
+    metrics = current_stage_metrics()
     await audit_response_finalised(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id,
@@ -1912,6 +2439,7 @@ async def _finalise_and_return(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id,
         actor_id=actor_id, latency_ms=latency_ms,
+        stage_metrics=metrics.snapshot() if metrics else {},
     )
 
 
