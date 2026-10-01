@@ -63,6 +63,25 @@ _NOT_RESTRICTIVE_REASONS = frozenset({
     "JURISDICTION_MISMATCH", "FRAMEWORK_MISMATCH", "NOT_YET_EFFECTIVE", "SOURCE_EXPIRED",
     "RIGHT_UNKNOWN", "RIGHT_NOT_YET_VALID", "RIGHT_EXPIRED",
 })
+def _retrieval_timeout_seconds() -> float:
+    """Bound remote governed-source reads below the frontend request limit.
+
+    Retrieval is useful grounding, but it already has a defined insufficient-
+    evidence fallback.  A slow database must therefore fail soft instead of
+    preventing an otherwise valid live-data/LLM answer from returning at all.
+    """
+    try:
+        return max(1.0, float(os.getenv("SOURCE_RETRIEVAL_TIMEOUT_SECONDS", "20")))
+    except ValueError:
+        return 20.0
+
+
+def infer_category(query: str) -> str:
+    lowered = query.lower()
+    for category, patterns in _CATEGORY_KEYWORD_PATTERNS.items():
+        if any(pattern.search(lowered) for pattern in patterns):
+            return category
+    return _DEFAULT_CATEGORY
 
 
 def _tokens(value: str) -> set[str]:
@@ -138,12 +157,17 @@ async def build_source_bundle(
     )
 
     query_tokens = _tokens(query)
+    category = infer_category(query)
     eligible_rows: list[tuple[Source, SourceVersion]] = []
     excluded: list[ExcludedEvidence] = []
     # Whether a source RELEVANT to this question was explicitly denied — the
     # only exclusion that means "the evidence exists but may not be used".
     relevant_source_denied = False
-    for source, version in await _candidate_versions(db, tenant_id=tenant_id):
+    async with asyncio.timeout(_retrieval_timeout_seconds()):
+        candidates = await _candidate_versions(
+            db, tenant_id=tenant_id, category=category,
+        )
+    for source, version in candidates:
         decision = await can_use(db, version.id, context, "retrieval")
         if decision.allowed:
             eligible_rows.append((source, version))

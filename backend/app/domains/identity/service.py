@@ -1,5 +1,6 @@
 import logging
 
+from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import supabase_admin
 from app.domains.identity.models import Role, Tenant, User
 from app.domains.identity.schemas import ProvisionRequest, UserCreateRequest
-import logging
 
 log = logging.getLogger("uvicorn.error")
 
@@ -100,6 +100,18 @@ async def provision_profile(
     logged, never raised: an existing user must still be able to sign in."""
     existing = await get_user_by_id(db, user_id)
     if existing is not None:
+        # Re-stamp app_metadata when this access token's embedded app_metadata
+        # has drifted from the authoritative users row — and only then, so a
+        # matched re-provision (the common daily login) stays a true no-op
+        # that never touches the Admin API. Drift is what breaks RLS writes:
+        # rows are written with this row's tenant_id while the RLS WITH CHECK
+        # compares against app.tenant_id from the token's claim, so a stale
+        # claim makes every INSERT fail with "violates row-level security
+        # policy" until a fresh sign-in re-stamps it. A claim that carries no
+        # identity at all (a bare sub/email token) tells us nothing to fix.
+        # Also when the token carries NO tenant: a first provision whose stamp
+        # failed otherwise left that account's tokens without a tenant for
+        # good, and every tenant-scoped write failed until it was stamped.
         if (token_tenant_id, token_role) != (existing.tenant_id, existing.role):
             try:
                 supabase_admin.update_app_metadata(existing.id, existing.tenant_id, existing.role)

@@ -197,16 +197,13 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
     when they're falsy would leave whatever a *previous* request left on
     that same pooled connection in effect for this one.
 
-    The session is bound to ONE explicitly checked-out connection for the
-    whole request, rather than letting it draw from the pool per
-    transaction. Session-scoped settings live on the CONNECTION, but a
-    session returns its connection to the pool on every commit and checks
-    out a fresh one for the next statement — so in an unbound session the
-    identity set here survives only until the request's first commit. After
-    that, statements land on an arbitrary pooled connection carrying
-    whatever identity some earlier request left on it: usually none, which
-    fails closed (`new row violates row-level security policy`), and
-    sometimes another tenant's, which would be far worse.
+    The session is bound to ONE checked-out connection for the whole request,
+    which is what makes the two settings above mean anything. They live on a
+    connection, not on a session: a session normally returns its connection to
+    the pool at every commit and checks one out again for the next statement,
+    and a request that commits part-way — every audit write does — can be
+    handed a different connection afterwards, one that never had set_config run
+    on it. Every RLS-protected statement after that point then sees nothing.
 
     That failure is invisible on a quiet pool, because the connection just
     released is usually the one handed back. Under any concurrency it appears:

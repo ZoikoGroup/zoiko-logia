@@ -228,43 +228,87 @@ _COUNTRY_ALIASES: dict[str, str] = {
     "indonesia": "indonesia", "nigeria": "nigeria", "pakistan": "pakistan",
     "bangladesh": "bangladesh", "russia": "russia", "korea": "korea",
     "greece": "greece", "greek": "greece",
-    "south africa": "south africa", "south african": "south africa",
-    "netherlands": "netherlands", "dutch": "netherlands", "holland": "netherlands",
-    "switzerland": "switzerland", "swiss": "switzerland",
-    "sweden": "sweden", "swedish": "sweden",
-    "norway": "norway", "norwegian": "norway",
-    "denmark": "denmark", "danish": "denmark",
-    "finland": "finland", "finnish": "finland",
-    "ireland": "ireland", "irish": "ireland",
-    "belgium": "belgium", "belgian": "belgium",
-    "austria": "austria", "austrian": "austria",
-    "portugal": "portugal", "portuguese": "portugal",
-    "poland": "poland", "polish": "poland",
-    "turkey": "turkey", "turkiye": "turkey", "turkish": "turkey",
-    "argentina": "argentina", "argentine": "argentina", "argentinian": "argentina",
-    "chile": "chile", "chilean": "chile",
-    "colombia": "colombia", "colombian": "colombia",
-    "peru": "peru", "peruvian": "peru",
-    "egypt": "egypt", "egyptian": "egypt",
-    "kenya": "kenya", "kenyan": "kenya",
-    "ghana": "ghana", "ghanaian": "ghana",
-    "morocco": "morocco", "moroccan": "morocco",
-    "saudi arabia": "saudi arabia", "saudi": "saudi arabia",
-    "qatar": "qatar", "qatari": "qatar",
-    "kuwait": "kuwait", "kuwaiti": "kuwait",
-    "israel": "israel", "israeli": "israel",
-    "vietnam": "vietnam", "vietnamese": "vietnam",
-    "thailand": "thailand", "thai": "thailand",
-    "malaysia": "malaysia", "malaysian": "malaysia",
-    "philippines": "philippines", "filipino": "philippines",
-    "sri lanka": "sri lanka", "sri lankan": "sri lanka",
-    "nepal": "nepal", "nepalese": "nepal", "nepali": "nepal",
+    # Bare ISO-2 codes, matched capitals-only via _CASE_SENSITIVE_ALIASES. Same
+    # reason and same fix as in _CPI_COUNTRIES above: an unrecognised country is
+    # how the Italian series got attached to a German question.
+    "de": "germany", "fr": "france", "jp": "japan",
+    "cn": "china", "ca": "canada", "ie": "ireland", "au": "australia",
+    # Countries the agent's get_economic_indicator tool supports (Naresh-new).
+    "south africa": "south africa",
+    "south african": "south africa",
+    "netherlands": "netherlands",
+    "dutch": "netherlands",
+    "holland": "netherlands",
+    "switzerland": "switzerland",
+    "swiss": "switzerland",
+    "sweden": "sweden",
+    "swedish": "sweden",
+    "norway": "norway",
+    "norwegian": "norway",
+    "denmark": "denmark",
+    "danish": "denmark",
+    "finland": "finland",
+    "finnish": "finland",
+    "belgium": "belgium",
+    "belgian": "belgium",
+    "austria": "austria",
+    "austrian": "austria",
+    "portugal": "portugal",
+    "portuguese": "portugal",
+    "poland": "poland",
+    "polish": "poland",
+    "turkey": "turkey",
+    "turkiye": "turkey",
+    "turkish": "turkey",
+    "argentina": "argentina",
+    "argentine": "argentina",
+    "argentinian": "argentina",
+    "chile": "chile",
+    "chilean": "chile",
+    "colombia": "colombia",
+    "colombian": "colombia",
+    "peru": "peru",
+    "peruvian": "peru",
+    "egypt": "egypt",
+    "egyptian": "egypt",
+    "kenya": "kenya",
+    "kenyan": "kenya",
+    "ghana": "ghana",
+    "ghanaian": "ghana",
+    "morocco": "morocco",
+    "moroccan": "morocco",
+    "saudi arabia": "saudi arabia",
+    "saudi": "saudi arabia",
+    "qatar": "qatar",
+    "qatari": "qatar",
+    "kuwait": "kuwait",
+    "kuwaiti": "kuwait",
+    "israel": "israel",
+    "israeli": "israel",
+    "vietnam": "vietnam",
+    "vietnamese": "vietnam",
+    "thailand": "thailand",
+    "thai": "thailand",
+    "malaysia": "malaysia",
+    "malaysian": "malaysia",
+    "philippines": "philippines",
+    "filipino": "philippines",
+    "sri lanka": "sri lanka",
+    "sri lankan": "sri lanka",
+    "nepal": "nepal",
+    "nepalese": "nepal",
+    "nepali": "nepal",
     "new zealand": "new zealand",
     "hong kong": "hong kong",
-    "ukraine": "ukraine", "ukrainian": "ukraine",
-    "czech republic": "czech republic", "czechia": "czech republic", "czech": "czech republic",
-    "hungary": "hungary", "hungarian": "hungary",
-    "romania": "romania", "romanian": "romania",
+    "ukraine": "ukraine",
+    "ukrainian": "ukraine",
+    "czech republic": "czech republic",
+    "czechia": "czech republic",
+    "czech": "czech republic",
+    "hungary": "hungary",
+    "hungarian": "hungary",
+    "romania": "romania",
+    "romanian": "romania",
 }
 
 # ISO-3 codes, because many DBnomics series carry the country only in the code
@@ -277,6 +321,7 @@ _ISO3: dict[str, str] = {
     "singapore": "SGP", "brazil": "BRA", "italy": "ITA", "spain": "ESP",
     "mexico": "MEX", "indonesia": "IDN", "nigeria": "NGA", "pakistan": "PAK",
     "bangladesh": "BGD", "russia": "RUS", "korea": "KOR", "greece": "GRC",
+    # Countries the agent's get_economic_indicator tool supports (Naresh-new).
     "south africa": "ZAF",
     "netherlands": "NLD",
     "switzerland": "CHE",
@@ -284,7 +329,6 @@ _ISO3: dict[str, str] = {
     "norway": "NOR",
     "denmark": "DNK",
     "finland": "FIN",
-    "ireland": "IRL",
     "belgium": "BEL",
     "austria": "AUT",
     "portugal": "PRT",
@@ -331,38 +375,125 @@ _UNEMPLOYMENT_COUNTRY_CODES = {
     "Australia": "AUS",
 }
 
-def _detect_country(query: str) -> str | None:
-    """Canonical country named in the question, or None. Multi-word names are
-    checked first so "united states" is not resolved twice via "states"."""
-    q = query.lower()
-    for phrase in ("united states", "united kingdom", "united arab emirates", "south africa",
-                   "saudi arabia", "sri lanka", "new zealand", "hong kong", "czech republic"):
-        if phrase in q:
-            return phrase
-    for token in re.findall(r"[A-Za-z]{2,}", q):
-        canonical = _COUNTRY_ALIASES.get(token)
-        if canonical:
-            return canonical
-    return None
+_UNEMPLOYMENT_HINTS = re.compile(r"\b(unemployment|jobless(?:ness)?|labou?r force)\b", re.I)
 
+# IMF WEO is country-keyed by ISO3 and, unlike OECD/MEI, covers India — so
+# this is a third code map rather than a reuse of either existing one.
+_GDP_COUNTRY_CODES = {
+    "India": "IND",
+    "United States": "USA",
+    "United Kingdom": "GBR",
+    "Germany": "DEU",
+    "France": "FRA",
+    "Canada": "CAN",
+    "Japan": "JPN",
+    "Ireland": "IRL",
+    "Australia": "AUS",
+    "China": "CHN",
+}
 
-def canonical_country(name: str) -> str | None:
-    """Canonical country (a key of _ISO3) for a name, alias or ISO-3 code the
-    caller already isolated — e.g. a tool argument — or None if unsupported."""
-    value = name.strip().lower()
-    if value in _ISO3:
-        return value
-    alias = _COUNTRY_ALIASES.get(value)
-    if alias in _ISO3:
-        return alias
-    for country, iso3 in _ISO3.items():
-        if iso3 == value.upper():
-            return country
-    return None
+# The five economies added in the 2026 coverage expansion. Several targeted
+# lookups below (fiscal aggregates, WEO-unemployment, policy rate) are scoped
+# to exactly these countries so they can never shadow the deterministic
+# paths the earlier five already take (WDI, OECD, FRED, Treasury, BoC, RBA,
+# ABS, CSO, BoE).
+_NEW_FIVE = frozenset({"Germany", "France", "Japan", "India", "China"})
 
+_GDP_HINTS = re.compile(r"\b(gdp|gross domestic product|economic growth)\b", re.I)
+_GDP_GROWTH_HINTS = re.compile(r"\b(growth|rate|percent(?:age)?\s+change|expansion)\b", re.I)
 
-def supported_countries() -> list[str]:
-    return sorted(_ISO3)
+# IMF WEO series codes carry a third dimension for the unit ("DEU.NGDPD.us_dollars",
+# "DEU.NGDP_RPCH.pcent_change") — dropping it 404s every series. These are the
+# exact units DBnomics exposes for the WEO subjects this module uses, verified
+# live against the WEO:2025-04 release for all nine+GDP countries.
+_WEO_UNITS: dict[str, str] = {
+    "NGDPD": "us_dollars",
+    "NGDP_RPCH": "pcent_change",
+    "NGDPDPC": "us_dollars",
+    "LUR": "pcent_total_labor_force",
+    "GGXCNL_NGDP": "pcent_gdp",
+    "GGREV_NGDP": "pcent_gdp",
+    "GGR_NGDP": "pcent_gdp",
+    "GGXWDG_NGDP": "pcent_gdp",
+    "GGXWDN_NGDP": "pcent_gdp",
+    "BCA_NGDPD": "pcent_gdp",
+}
+
+# Fiscal/government-word patterns routed to deterministic WEO indicators for
+# the five new countries. These are distinct from the WDI indicators above so
+# the existing World Bank paths for the first five are never disturbed.
+# The debt phrases are kept intentionally loose ("general government central
+# debt", "national debt") so a fiscal question is never misrouted to the
+# generic WDI GDP-growth rule just because it also says "as a share of GDP".
+_FISCAL_DEBT_HINT = re.compile(
+    r"\b(?:general\s+government|government|public|national|federal|central government)\b"
+    r".{0,45}?\b(?:debt)\b|debt[- ]to[- ]gdp",
+    re.I,
+)
+_FISCAL_HINTS = re.compile(
+    r"\b(government (?:debt|revenue|deficit)|public debt|national debt|"
+    r"budget deficit|fiscal (?:deficit|balance)|general government (?:debt|revenue)|"
+    r"debt[- ]to[- ]gdp|deficit to gdp)\b"
+    r"|\b(?:general\s+government|government|public|national|federal|central government)\b"
+    r".{0,45}?\b(?:debt)\b",
+    re.I,
+)
+_FISCAL_WEO_SUBJECTS: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (_FISCAL_DEBT_HINT,
+     "GGXWDG_NGDP", "General government gross debt (% of GDP)"),
+    (re.compile(r"\b(deficit|budget balance|fiscal balance)\b", re.I),
+     "GGXCNL_NGDP", "General government net lending/borrowing (% of GDP)"),
+    (re.compile(r"\bgovernment revenue\b", re.I),
+     "GGR_NGDP", "General government revenue (% of GDP)"),
+)
+
+# A "policy rate" question for the new five is deterministic and unlike any
+# existing connector's territory. Germany and France share the euro area's ECB
+# deposit facility (neither has a national policy rate); Japan and China have
+# IMF IFS policy-related rates (verified current: JP 0.5% 2025-07, CN 1.4%
+# 2025-06). India's IMF IFS policy rate has been frozen at 6.25% since 2017 —
+# presenting that as today's rate would be the unverifiable claim this module
+# refuses to make, so India is deliberately absent and reported as a gap.
+#
+# Ireland is here for the same reason Germany and France are, and its absence
+# was an inconsistency rather than a considered gap: Ireland has been a euro
+# member since 1999 (cash 2002), so it has no national policy rate of its own
+# and the ECB's deposit facility IS Ireland's policy rate — the identical
+# series already served for Germany and France. cso_ireland.py had documented
+# the value as "already reachable (dbnomics.py)", but the resolver gated on
+# _NEW_FIVE, which does not contain Ireland, so the documented route did not
+# exist and "Ireland policy rate" was a hard NO_SOURCE while the two other
+# euro members in the same product answered. The gate below is now the map
+# itself, which is what the docstring has always claimed it was.
+_POLICY_RATE_HINTS = re.compile(
+    r"\b(policy rate|policy interest rate|repo rate|benchmark rate|reference rate|"
+    r"central bank rate|key interest rate|key rate|official interest rate|"
+    r"refinanc\w+ rate|interest rate)\b",
+    re.I,
+)
+_POLICY_RATE_SOURCES: dict[str, tuple[str, str, str]] = {
+    "Germany": ("ECB/ILM/M.4F.E.L020200.U2.EUR", "European Central Bank",
+                "Internal liquidity management — Deposit facility (euro area)"),
+    "France": ("ECB/ILM/M.4F.E.L020200.U2.EUR", "European Central Bank",
+               "Internal liquidity management — Deposit facility (euro area)"),
+    # Same series, same reason: no national rate exists to report instead. The
+    # dataset label already says "(euro area)", so the answer cannot be read as
+    # an Irish-only rate.
+    "Ireland": ("ECB/ILM/M.4F.E.L020200.U2.EUR", "European Central Bank",
+                "Internal liquidity management — Deposit facility (euro area)"),
+    "Japan": ("IMF/IFS/M.JP.FPOLM_PA", "International Monetary Fund",
+              "International Financial Statistics — Monetary policy-related interest rate"),
+    "China": ("IMF/IFS/M.CN.FPOLM_PA", "International Monetary Fund",
+              "International Financial Statistics — Monetary policy-related interest rate"),
+}
+
+# WEO is published as dated release datasets (WEO:2024-10, WEO:2025-04, …)
+# rather than one rolling series, so the release has to be resolved at call
+# time. Pinning one would silently go stale the way the retired Groq model
+# ids in .env.example did; this falls back to a known-good release only if
+# discovery fails outright.
+_WEO_FALLBACK_RELEASE = "WEO:2025-04"
+_weo_release_cache: str | None = None
 
 
 def _detect_countries(query: str) -> list[str]:
@@ -403,7 +534,7 @@ _WDI_INDICATORS: tuple[tuple[re.Pattern[str], str, str], ...] = (
     (re.compile(r"\bgdp per capita|per capita income\b", re.I),
      "NY.GDP.PCAP.CD", "GDP per capita (current US$)"),
     (re.compile(r"\btax[- ]to[- ]gdp|tax revenue\b", re.I),
-     "GC.TAX.TOTL.GD.ZS", "Tax revenue, central government only (% of GDP)"),
+     "GC.TAX.TOTL.GD.ZS", "Tax revenue (% of GDP)"),
     # Must come before the generic "gdp" rule below: "government debt as a
     # percentage of GDP" contains the literal word "gdp", so with the generic
     # rule first it always won (returning GDP growth data for a debt
@@ -483,6 +614,25 @@ def _wdi_match(query: str) -> tuple[str, str] | None:
     return None
 
 
+def canonical_country(name: str) -> str | None:
+    """Canonical country (a key of _ISO3) for a name, alias or ISO-3 code the
+    caller already isolated — e.g. a tool argument — or None if unsupported."""
+    value = name.strip().lower()
+    if value in _ISO3:
+        return value
+    alias = _COUNTRY_ALIASES.get(value)
+    if alias in _ISO3:
+        return alias
+    for country, iso3 in _ISO3.items():
+        if iso3 == value.upper():
+            return country
+    return None
+
+
+def supported_countries() -> list[str]:
+    return sorted(_ISO3)
+
+
 async def _indicator_source(
     client: httpx.AsyncClient, code: str, label: str, country: str
 ) -> WebSource | None:
@@ -508,6 +658,7 @@ async def _indicator_source(
         snippet=(f"{provider}. {label} for {country.title()}. "
                  f"Latest available year: {tail[-1][0]}. Values — {values_txt}."),
         provider=provider,
+        fetched_at=datetime.now(timezone.utc).isoformat(),
         freshness="historical",
         observation=LiveObservation(
             observation_id=f"obs_{uuid.uuid4().hex}", indicator=label,
@@ -521,10 +672,9 @@ async def _indicator_source(
 
 
 async def fetch_indicator_sources(code: str, label: str, countries: list[str]) -> list[WebSource | None]:
-    """Structured entry point: one slot per country, in order (None where that
-    country has no data) — what the get_economic_indicator tool calls with the
-    model's typed arguments, and what fetch_stats() calls after parsing the
-    question. Every country must be a key of _ISO3."""
+    """Structured entry point for the agent's get_economic_indicator tool: one
+    slot per canonical country, in order (None where that country has no
+    data). Every country must be a key of _ISO3."""
     async with httpx.AsyncClient(timeout=8.0) as client:
         return list(await asyncio.gather(*(_indicator_source(client, code, label, c) for c in countries)))
 
@@ -560,30 +710,750 @@ async def _wdi_sources(query: str) -> list[WebSource] | None:
     resolvable, but the data is not there."""
     countries = _detect_countries(query)
     indicator = _wdi_match(query)
-    iso3 = _ISO3.get(country or "", "")
-    if indicator and iso3:
-        code, label = indicator
-        sources = await fetch_indicator_sources(code, label, countries)
-        available = [source for source in sources if source is not None]
-        if len(available) == len(sources):
-            return available
-        if len(countries) > 1:
-            if not available:
-                return []
-            # A comparison with one missing country must not masquerade as
-            # complete — but dropping every country for it answered "I don't
-            # have the figures" when three of four were available. Keep them,
-            # and state plainly which countries have no figure.
-            missing = [country for country, source in zip(countries, sources) if source is None]
-            return available + [WebSource(
-                title=f"World Bank — no {label} figure for {', '.join(missing)}",
-                url="https://data.worldbank.org",
-                snippet=(
-                    f"The World Bank publishes no recent {label} figure for {', '.join(missing)}. "
-                    "Do not state or estimate a value for it; say it is not available from this source."
-                ),
-                provider="World Bank",
-            )]
+    if indicator is None or not countries:
+        return None
+    code, label = indicator
+    if any(not _ISO3.get(named_country) for named_country in countries):
+        return None
+
+    sources = await fetch_indicator_sources(code, label, countries)
+    available = [source for source in sources if source is not None]
+    if len(available) == len(sources):
+        return available
+    if len(countries) > 1:
+        if not available:
+            return []
+        # A comparison with one missing country must not masquerade as
+        # complete — but dropping every country for it answered "I don't
+        # have the figures" when three of four were available. Keep them,
+        # and state plainly which countries have no figure.
+        missing = [country for country, source in zip(countries, sources) if source is None]
+        return available + [WebSource(
+            title=f"World Bank — no {label} figure for {', '.join(c.title() for c in missing)}",
+            url="https://data.worldbank.org",
+            snippet=(
+                f"The World Bank publishes no recent {label} figure for "
+                f"{', '.join(c.title() for c in missing)}. Do not state or estimate a value "
+                "for it; say it is not available from this source."
+            ),
+            provider="World Bank",
+        )]
+    return None
+
+
+@dataclass
+class SeriesMatch:
+    """The full result of a DBnomics series lookup — WebSource text (via
+    fetch_stats) and structured evidence (via evidence.py) are both built from
+    this SAME object, so they can never disagree about the underlying numbers."""
+
+    series_name: str
+    points: list[tuple[str, float]] = field(default_factory=list)
+    url: str = ""
+    provider_name: str = ""
+    dataset_name: str = ""
+
+
+def _country_in_query(query: str) -> str | None:
+    lowered = query.lower()
+    for alias in sorted(_CPI_COUNTRIES, key=len, reverse=True):
+        if alias in _CASE_SENSITIVE_ALIASES:
+            # The alias is stored lower-case, so the capitals form is what has
+            # to be matched here: searching the lower-case alias with case
+            # sensitivity would match the pronoun and miss "US GDP".
+            if re.search(rf"\b{re.escape(alias.upper())}\b", query):
+                return _CPI_COUNTRIES[alias]
+        elif re.search(rf"\b{re.escape(alias)}\b", lowered):
+            return _CPI_COUNTRIES[alias]
+    return None
+
+
+# Substrings that identify a country inside a DBnomics series name. Series names
+# are publisher-supplied free text, so the same country appears spelled several
+# ways across IMF, OECD, World Bank and UNCTAD. Each entry is matched as a
+# WORD, which is what keeps "Ireland" from matching a series about the Irish
+# Sea's shipping traffic and, more importantly, keeps a short code like "CA"
+# from matching inside unrelated words.
+_COUNTRY_NAME_HINTS: dict[str, tuple[str, ...]] = {
+    # "America" alone is deliberately NOT a US hint: "Latin America" and
+    # "North America" are regions that contain many countries, and matching
+    # them as the United States is precisely the kind of wrong-country answer
+    # this guard exists to stop. The explicit forms are used instead.
+    "United States": ("united states", "u.s.", "usa"),
+    "United Kingdom": ("united kingdom", "u.k.", "uk", "britain", "england", "scotland", "wales"),
+    # "Northern Ireland" is part of the UK, not Ireland, so a UK series may
+    # legitimately be named for it — checked separately below.
+    "Ireland": ("ireland", "irish", "eire"),
+    "Canada": ("canada", "canadian"),
+    "Australia": ("australia", "australian"),
+    "Germany": ("germany", "german"),
+    "France": ("france", "french"),
+    "Japan": ("japan", "japanese"),
+    "India": ("india", "indian"),
+    "China": ("china", "chinese", "prc"),
+}
+
+# ISO3 codes, for series whose name carries only the code.
+_COUNTRY_ISO3: dict[str, str] = {
+    "United States": "USA", "United Kingdom": "GBR", "Ireland": "IRL",
+    "Canada": "CAN", "Australia": "AUS", "Germany": "DEU", "France": "FRA",
+    "Japan": "JPN", "India": "IND", "China": "CHN",
+}
+
+
+# A series name that is demonstrably about a country this module does not
+# support. Used only when the question named no country we could recognise: in
+# that case "answer with whatever the search ranked first" returned a real,
+# correctly-formatted series for the wrong economy, and a bare two-letter token
+# the country tables do not cover ("de GDP growth rate") is exactly how that
+# happens. Refusing is the only honest answer — the alternative is Italy's GDP
+# growth, correctly labelled, for a question that never mentioned Italy.
+_UNSUPPORTED_COUNTRY_HINTS: tuple[str, ...] = (
+    "italy", "italian", "spain", "spanish", "netherlands", "dutch", "belgium",
+    "belgian", "portugal", "sweden", "norway", "denmark", "finland", "poland",
+    "greece", "greek", "turkey", "turkish", "russia", "russian", "ukraine",
+    "romania", "bulgaria", "hungary", "czech", "austria", "switzerland",
+    "brazil", "mexico", "argentina", "chile", "colombia", "peru",
+    "south korea", "korea", "taiwan", "singapore", "indonesia", "malaysia",
+    "thailand", "vietnam", "philippines", "pakistan", "bangladesh",
+    "new zealand", "israel", "turk", "egypt", "south africa", "nigeria",
+    "kenya", "morocco", "saudi", "emirates", "luxembourg", "malta",
+)
+
+# Aggregates that are not any one of the ten economies this product covers.
+# Kept deliberately narrow, and applied to the QUESTION (see
+# _names_out_of_scope_geometry) rather than to the series name: "world GDP
+# growth" was answered with Australia's Penn World Table series, because Penn
+# tables are published per country and Australia happened to be first. An
+# economy we do not claim to cover is refused, exactly as an unsupported country
+# is refused.
+_GLOBAL_SCOPE_HINTS: tuple[str, ...] = (
+    "world", "global", "worldwide", "euro area", "eurozone", "euro-area",
+    "oecd", "g7", "g20", "advanced econom", "emerging market",
+    "developing econom",
+)
+
+
+def _names_out_of_scope_geometry(text: str) -> bool:
+    """Whether the question is about an economy this product does not cover.
+
+    Naming no country at all is not the same as being free to answer with any
+    country: with no country named the generic search used to take whatever the
+    ranking put first, which is a guess. This catches the cases where the guess is
+    visibly wrong — an economy we do not support, or an aggregate that is not one
+    of the ten at all.
+    """
+    lowered = (text or "").lower()
+    if any(re.search(rf"\b{re.escape(hint)}", lowered) for hint in _GLOBAL_SCOPE_HINTS):
+        return True
+    return any(re.search(rf"\b{re.escape(hint)}\b", lowered)
+               for hint in _UNSUPPORTED_COUNTRY_HINTS)
+
+
+def _series_is_country(series_name: str, country: str | None) -> bool:
+    """Whether a series demonstrably belongs to the country the question named.
+
+    False means the question asked for one country and this series is provably
+    about another, or the question named no country we recognise and this series
+    is provably about a country outside the ten we support — and refusing is the
+    only honest answer in either case.
+
+    True whenever the question named no country and the series is not provably
+    about an unsupported one: a series that names no country at all cannot be
+    shown to be another country's, and refusing those would break every
+    legitimately unscoped question (an aggregate or thematic series). That is
+    why the check is restricted to countries we can positively identify as
+    wrong rather than requiring positive proof of rightness.
+    """
+    name = (series_name or "").lower()
+    if not country:
+        if any(re.search(rf"\b{re.escape(hint)}\b", name) for hint in _UNSUPPORTED_COUNTRY_HINTS):
+            return False
+        return True
+    hints = _COUNTRY_NAME_HINTS.get(country, ())
+    if country == "Ireland" and re.search(r"\bnorthern ireland\b", name):
+        return False
+    if any(re.search(rf"\b{re.escape(hint)}\b", name) for hint in hints):
+        return True
+    iso3 = _COUNTRY_ISO3.get(country)
+    return bool(iso3) and re.search(rf"\b{iso3}\b", name) is not None
+
+
+def countries_in_query(query: str) -> list[str]:
+    """Return distinct canonical country labels in their query order."""
+    lowered = query.lower()
+    matches: list[tuple[int, str]] = []
+    for alias in sorted(_CPI_COUNTRIES, key=len, reverse=True):
+        match = re.search(rf"\b{re.escape(alias)}\b", lowered)
+        if match:
+            matches.append((match.start(), _CPI_COUNTRIES[alias]))
+    ordered: list[str] = []
+    for _, country in sorted(matches):
+        if country not in ordered:
+            ordered.append(country)
+    return ordered
+
+
+async def _find_cpi_series(query: str, window: int = 12) -> SeriesMatch | None:
+    """Resolve common CPI prompts against IMF/CPI's explicit all-items
+    series instead of trusting full-text dataset ranking. This prevents terms
+    such as "distribution" from selecting an unrelated tax-distribution
+    dataset that merely mentions the requested country.
+
+    `window` is only widened by the two-series correlation path (see
+    _find_series_for_phrase) — different providers publish on different
+    lags, so trimming each side to its own last 12 points independently can
+    leave zero overlapping periods once _find_two_series intersects them."""
+    country = _country_in_query(query)
+    if not country:
+        return None
+    # Country + CPI/inflation is specific enough to bypass generic full-text
+    # ranking. Generic ranking previously failed outright for US/France and
+    # matched an unrelated tax dataset for "India inflation". IMF/CPI's
+    # explicit country/all-items dimensions are the safer common source for
+    # cross-country comparison.
+    if not re.search(r"\b(cpi|inflation|consumer prices?)\b", query, re.I):
+        return None
+
+    wants_quarterly = bool(re.search(r"\bquarter", query, re.I))
+    wants_annual = bool(re.search(r"\b(annual|yearly|by year)\b", query, re.I))
+    wants_change = bool(re.search(r"\binflation\b|percentage change|change in cpi", query, re.I))
+    frequency_code = "Q" if wants_quarterly else ("A" if wants_annual else "M")
+    indicator_code = "PCPI_PC_CP_A_PT" if wants_change else "PCPI_IX"
+    # Australia is recognised in _CPI_COUNTRIES precisely so this connector CLAIMS
+    # the question (stopping it falling through to generic full-text search, which
+    # returned ABS *energy* inflation instead of headline CPI) even though
+    # IMF/CPI publishes no AU series — and that is why it is deliberately absent
+    # from _CPI_COUNTRY_CODES. Look it up with .get(), not [...]: indexing raised
+    # KeyError, which live_data.py's result fan-out swallows, so Australia was
+    # only ever answered correctly by accident. Return the honest gap the
+    # _CPI_COUNTRIES comment promises and let abs_australia.py fill it from the
+    # statistical agency itself.
+    country_code = _CPI_COUNTRY_CODES.get(country)
+    if not country_code:
+        return None
+    requested_series_code = f"{frequency_code}.{country_code}.{indicator_code}"
+
+    base = _dbnomics_base()
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                f"{base}/series/IMF/CPI/{requested_series_code}",
+                params={"observations": "1"},
+            )
+            response.raise_for_status()
+            candidates = response.json().get("series", {}).get("docs", [])
+    except Exception:
+        return None
+
+    preferred_frequency = "Quarterly" if wants_quarterly else ("Annual" if wants_annual else "Monthly")
+
+    ranked: list[tuple[int, dict, list[tuple[str, float]]]] = []
+    for candidate in candidates:
+        name = str(candidate.get("series_name") or "")
+        lowered = name.lower()
+        points = _real_points(candidate)
+        if country.lower() not in lowered or "all items" not in lowered or not points:
+            continue
+        score = 10
+        if name.startswith(preferred_frequency):
+            score += 6
+        has_change = "percentage change" in lowered
+        if has_change == wants_change:
+            score += 5
+        if "harmonized" not in lowered:
+            score += 1
+        if "previous year" in lowered:
+            score += 1
+        ranked.append((score, candidate, points))
+
+    if not ranked:
+        return None
+    _, best, points = max(ranked, key=lambda item: item[0])
+    # One shared window for both the grounding excerpt and visualization.
+    # Twelve points are sufficient for a meaningful histogram/trend while
+    # remaining small enough for the narrative model to inspect in full.
+    points = points[-window:]
+    series_name = str(best.get("series_name") or "series").replace("�", "·").strip()
+    series_code = best.get("series_code", "")
+    return SeriesMatch(
+        series_name=series_name,
+        points=points,
+        url=f"{base}/series/IMF/CPI/{series_code}",
+        provider_name="International Monetary Fund",
+        dataset_name="Consumer Price Index (CPI)",
+    )
+
+
+async def _find_unemployment_series(query: str, window: int = 12) -> SeriesMatch | None:
+    """Resolve unemployment-rate prompts against OECD/MEI's explicit
+    harmonised-unemployment-rate series (Total > All persons, seasonally
+    adjusted) instead of trusting full-text dataset ranking — the same
+    data-honesty rationale as _find_cpi_series. Generic ranking previously
+    matched a completely unrelated Argentina education/demographics dataset
+    for "UK unemployment", since the plain word "unemployment" appears in
+    hundreds of narrowly-segmented (age/sex/education) series across many
+    countries with no reliable way to text-rank the right one.
+
+    India and China are not OECD members, so they have no MEI series — the
+    same OECD lookup would 404 and the question would fall to generic full-text
+    search. Instead they resolve to IMF WEO's unemployment-rate indicator
+    (LUR, percent of total labour force, verified live: China 2024 ~4.7%),
+    which publishes for every WEO country."""
+    country = _country_in_query(query)
+    if not country or not _UNEMPLOYMENT_HINTS.search(query):
+        return None
+    country_code = _UNEMPLOYMENT_COUNTRY_CODES.get(country)
+    base = _dbnomics_base()
+
+    if country_code:
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(
+                    f"{base}/series/OECD/MEI/{country_code}.LRHUTTTT.STSA.M",
+                    params={"observations": "1"},
+                )
+                response.raise_for_status()
+                candidates = response.json().get("series", {}).get("docs", [])
+        except Exception:
+            return None
+
+        points: list[tuple[str, float]] = []
+        series_name = ""
+        series_code = ""
+        for candidate in candidates:
+            pts = _real_points(candidate)
+            if not pts:
+                continue
+            points = pts
+            series_name = str(candidate.get("series_name") or "series").replace("�", "·").strip()
+            series_code = candidate.get("series_code", "")
+            break
+        if not points:
+            return None
+        return SeriesMatch(
+            series_name=series_name,
+            points=points[-window:],
+            url=f"{base}/series/OECD/MEI/{series_code}",
+            provider_name="OECD",
+            dataset_name="Main Economic Indicators — Harmonised Unemployment Rate",
+        )
+
+    # Non-OECD members use the IMF WEO unemployment-rate indicator instead.
+    iso3 = _GDP_COUNTRY_CODES.get(country)
+    if not iso3:
+        return None
+    series_code = f"{iso3}.LUR.{_WEO_UNITS['LUR']}"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            release = await _latest_weo_release(client)
+            response = await client.get(
+                f"{base}/series/IMF/{release}/{series_code}",
+                params={"observations": "1"},
+            )
+            response.raise_for_status()
+            candidates = response.json().get("series", {}).get("docs", [])
+    except Exception:
+        return None
+    if not candidates:
+        return None
+    best = candidates[0]
+    # Same outturns-only rule as _find_gdp_series: WEO carries projections for
+    # the release year and beyond, so cut against the release year.
+    release_year = int(release.split(":", 1)[-1][:4]) if release.split(":", 1)[-1][:4].isdigit() else 0
+    cutoff = min(datetime.now(timezone.utc).year, release_year or 9999)
+    points = [
+        (period, value)
+        for period, value in _real_points(best)
+        if period[:4].isdigit() and int(period[:4]) < cutoff
+    ]
+    if not points:
+        return None
+    series_name = str(best.get("series_name") or "series").replace("�", "·").strip()
+    return SeriesMatch(
+        series_name=series_name,
+        points=points[-window:],
+        url=f"{base}/series/IMF/{release}/{series_code}",
+        provider_name="International Monetary Fund",
+        dataset_name=f"World Economic Outlook — Unemployment rate ({release.split(':', 1)[-1]} release), outturns only",
+    )
+
+
+async def _latest_weo_release(client: httpx.AsyncClient) -> str:
+    """Newest IMF WEO release code on DBnomics, cached per process."""
+    global _weo_release_cache
+    if _weo_release_cache is not None:
+        return _weo_release_cache
+    try:
+        codes: list[str] = []
+        offset = 0
+        while True:
+            response = await client.get(
+                f"{_dbnomics_base()}/datasets/IMF",
+                params={"offset": offset, "limit": 100},
+            )
+            response.raise_for_status()
+            payload = response.json().get("datasets", {})
+            docs = payload.get("docs", [])
+            if not docs:
+                break
+            codes += [str(d.get("code") or "") for d in docs]
+            offset += len(docs)
+            if offset >= payload.get("num_found", 0):
+                break
+        releases = sorted(c for c in codes if c.startswith("WEO:"))
+        _weo_release_cache = releases[-1] if releases else _WEO_FALLBACK_RELEASE
+    except Exception:
+        _weo_release_cache = _WEO_FALLBACK_RELEASE
+    return _weo_release_cache
+
+
+async def _find_gdp_series(query: str, window: int = 12) -> SeriesMatch | None:
+    """Resolve GDP prompts against IMF WEO's explicit national-accounts
+    indicators instead of trusting full-text dataset ranking — the same
+    rationale as _find_cpi_series and _find_unemployment_series. Generic
+    ranking for "gdp india" matched CEPII's *trade balance as a share of
+    GDP*, a completely different statistic that happens to carry "GDP" in
+    its name.
+
+    WEO carries IMF PROJECTIONS as well as outturns — the 2025-04 release
+    runs to 2030 — and DBnomics exposes no observation-status flag to tell
+    them apart. Charting a forecast as though it were history is precisely
+    the kind of unverifiable claim this pipeline refuses to make elsewhere,
+    so everything from the current year onward is dropped: WEO's own
+    current-year figure is an estimate too, not an outturn.
+    """
+    country = _country_in_query(query)
+    if not country or not _GDP_HINTS.search(query):
+        return None
+    country_code = _GDP_COUNTRY_CODES.get(country)
+    if not country_code:
+        return None
+
+    # NGDP_RPCH is real GDP growth (percent change); NGDPD is GDP at current
+    # prices in USD; NGDPDPC is GDP per capita in USD. "GDP rate"/"GDP growth"
+    # means the first, a bare "GDP" the middle one, and "GDP per capita" the
+    # third — per-capita phrasing must not be answered with the total, which
+    # would be two orders of magnitude too large.
+    per_capita = bool(re.search(r"\bper\s*capita\b|per\s*head\b", query, re.I))
+    wants_growth = bool(_GDP_GROWTH_HINTS.search(query)) and not per_capita
+    indicator = "NGDP_RPCH" if wants_growth else ("NGDPDPC" if per_capita else "NGDPD")
+    unit = _WEO_UNITS.get(indicator)
+    if not unit:
+        return None
+    series_code = f"{country_code}.{indicator}.{unit}"
+
+    base = _dbnomics_base()
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            release = await _latest_weo_release(client)
+            response = await client.get(
+                f"{base}/series/IMF/{release}/{series_code}",
+                params={"observations": "1"},
+            )
+            response.raise_for_status()
+            candidates = response.json().get("series", {}).get("docs", [])
+    except Exception:
+        return None
+
+    if not candidates:
+        return None
+    best = candidates[0]
+    # Cut against the RELEASE year, not the calendar year. WEO:2025-04 was
+    # published in April 2025, so its 2025 value is a projection even though
+    # 2025 is now in the past — using the calendar year would have let one
+    # forecast through while the series was still labelled "outturns only".
+    # Whichever of the two is earlier is the last year that can be an outturn.
+    release_year = int(release.split(":", 1)[-1][:4]) if release.split(":", 1)[-1][:4].isdigit() else 0
+    cutoff = min(datetime.now(timezone.utc).year, release_year or 9999)
+    points = [
+        (period, value)
+        for period, value in _real_points(best)
+        if period[:4].isdigit() and int(period[:4]) < cutoff
+    ]
+    if not points:
+        return None
+
+    series_name = str(best.get("series_name") or "series").replace("�", "·").strip()
+    series_code = best.get("series_code", "")
+    return SeriesMatch(
+        series_name=series_name,
+        points=points[-window:],
+        url=f"{base}/series/IMF/{release}/{series_code}",
+        provider_name="International Monetary Fund",
+        dataset_name=f"World Economic Outlook ({release.split(':', 1)[-1]} release), outturns only",
+    )
+
+
+async def _find_weo_fiscal_series(query: str, window: int = 12) -> SeriesMatch | None:
+    """Deterministic WEO fiscal aggregates for the five new countries —
+    general government gross debt, net lending/borrowing (deficit) and revenue,
+    each as a percentage of GDP.
+
+    Scoped so it can never shadow the paths the first five already take for
+    DEBT. China is the case it is most needed for: WDI's
+    central-government-debt series carries no China observations at all
+    (verified empty), so before this the question fell through to fuzzy
+    full-text search.
+
+    The _NEW_FIVE scope now applies to the DEBT subject alone, because debt is
+    the one fiscal aggregate the first five already answer correctly through a
+    better source:
+
+      * UK / Ireland / Canada / Australia — WDI GC.DOD.TOTL.GD.ZS (central
+        government debt, % of GDP), resolved deterministically.
+      * US — FRED GFDEGDQ188S, plus US Treasury's own debt-to-the-penny feed.
+
+    Routing those five to the WEO general-government series instead would swap
+    a working, publisher-specific source for a different (though also valid)
+    aggregate, which is exactly the "replace working routing" this must not do.
+
+    Revenue and net lending/borrowing get the opposite treatment, because for
+    the first five they had NO route at all: both phrases contain "GDP" in the
+    common "as a percentage of GDP" form, so they fell through to the generic
+    WDI "gdp" rule and were answered with GDP GROWTH (verified: US, UK,
+    Ireland, Canada and Australia all returned NY.GDP.MKTP.KD.ZG). WEO
+    publishes both aggregates for all ten countries, so extending them here is
+    the fix rather than a replacement.
+
+    These WEO series contain IMF projections for the current and future years,
+    so — exactly like _find_gdp_series — everything from the release year on is
+    dropped, leaving only published outturns."""
+    country = _country_in_query(query)
+    if not country:
+        return None
+    if not _FISCAL_HINTS.search(query):
+        return None
+    iso3 = _GDP_COUNTRY_CODES.get(country)
+    if not iso3:
+        return None
+
+    subject = next((s for p, s, _ in _FISCAL_WEO_SUBJECTS if p.search(query)), None)
+    if not subject:
+        return None
+    if country not in _NEW_FIVE and subject == "GGXWDG_NGDP":
+        return None
+    unit = _WEO_UNITS.get(subject)
+    if not unit:
+        return None
+    series_code = f"{iso3}.{subject}.{unit}"
+
+    base = _dbnomics_base()
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            release = await _latest_weo_release(client)
+            response = await client.get(
+                f"{base}/series/IMF/{release}/{series_code}",
+                params={"observations": "1"},
+            )
+            response.raise_for_status()
+            candidates = response.json().get("series", {}).get("docs", [])
+    except Exception:
+        return None
+    if not candidates:
+        return None
+    best = candidates[0]
+    release_year = int(release.split(":", 1)[-1][:4]) if release.split(":", 1)[-1][:4].isdigit() else 0
+    cutoff = min(datetime.now(timezone.utc).year, release_year or 9999)
+    points = [
+        (period, value)
+        for period, value in _real_points(best)
+        if period[:4].isdigit() and int(period[:4]) < cutoff
+    ]
+    if not points:
+        return None
+
+    series_name = str(best.get("series_name") or "series").replace("�", "·").strip()
+    return SeriesMatch(
+        series_name=series_name,
+        points=points[-window:],
+        url=f"{base}/series/IMF/{release}/{series_code}",
+        provider_name="International Monetary Fund",
+        dataset_name=f"World Economic Outlook — fiscal aggregates ({release.split(':', 1)[-1]} release), outturns only",
+    )
+
+
+async def _find_policy_rate_series(query: str, window: int = 12) -> SeriesMatch | None:
+    """Deterministic policy-rate series for every country that has one here.
+
+    Germany, France and Ireland share the euro area's ECB deposit-facility rate
+    (each national rate died with the euro, so there is nothing Irish to report
+    instead); Japan and China have IMF IFS policy-related rates (both current).
+    India is deliberately absent — its IFS series has been frozen at 6.25% since
+    2017 — so an "India policy rate" question returns None and flows to the
+    web-grounded path rather than being answered with an eight-year-old figure.
+
+    The map key gates the whole resolver, and nothing else does. It used to be
+    `country in _NEW_FIVE`, which is why Ireland was unreachable: it is in the
+    product's earlier five, not the new five, but the series that answers an
+    Irish policy-rate question is the same ECB series the new five already
+    served. A question naming any other country (the US's FRED path, the UK's
+    BoE path, Canada, Australia) is untouched."""
+    country = _country_in_query(query)
+    if not country:
+        return None
+    if not _POLICY_RATE_HINTS.search(query):
+        return None
+    source = _POLICY_RATE_SOURCES.get(country)
+    if not source:
+        return None
+    series_code, provider_name, dataset_name = source
+
+    base = _dbnomics_base()
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                f"{base}/series/{series_code}",
+                params={"observations": "1"},
+            )
+            response.raise_for_status()
+            candidates = response.json().get("series", {}).get("docs", [])
+    except Exception:
+        return None
+    if not candidates:
+        return None
+    best = candidates[0]
+    points = _real_points(best)
+    if not points:
+        return None
+
+    series_name = str(best.get("series_name") or "series").replace("�", "·").strip()
+    return SeriesMatch(
+        series_name=series_name,
+        points=points[-window:],
+        url=f"{base}/series/{series_code}",
+        provider_name=provider_name,
+        dataset_name=dataset_name,
+    )
+
+
+# The only indicators _find_wdi_fallback_series will answer. This is
+# deliberately NOT "every WDI indicator": each entry is here because the
+# single-series path was verified to get that question wrong or to return
+# nothing at all. Adding an indicator that already has a working route would
+# swap a correct publisher-specific source for a different one, which is the
+# one change this file must never make.
+#
+#   BN.CAB.XOKA.GD.ZS  current account          -> answered with the WEO GDP LEVEL
+#   NE.RSB.GNFS.ZS     external balance goods   -> answered with the WEO GDP LEVEL
+#   GC.DOD.TOTL.GD.ZS  central government debt  -> no source at all (first five)
+#
+# All three arrived at the GDP branch for the same reason: the question says
+# "as a percentage of GDP", so _GDP_HINTS matched and _find_gdp_series returned
+# the country's nominal GDP in dollars. That is a real, correctly-formatted
+# number for a different statistic — UK GDP of 3,644.64 billion was being
+# presented as the UK's current account balance.
+_WDI_FALLBACK_CODES = frozenset({
+    "BN.CAB.XOKA.GD.ZS",
+    "NE.RSB.GNFS.ZS",
+    "GC.DOD.TOTL.GD.ZS",
+})
+
+
+async def _find_wdi_fallback_series(query: str, window: int = 12) -> SeriesMatch | None:
+    """World Bank indicator for a named country, as a SeriesMatch.
+
+    Mirrors _wdi_sources (which returns WebSources for fetch_stats) but returns
+    the SeriesMatch the structured evidence path builds from, so both callers
+    agree on the numbers by construction.
+    """
+    countries = _detect_countries(query)
+    indicator = _wdi_match(query)
+    if indicator is None or not countries:
+        return None
+    code, label = indicator
+    if code not in _WDI_FALLBACK_CODES:
+        return None
+    if any(not _ISO3.get(named) for named in countries):
+        return None
+    # A comparison question is _find_two_series' job.
+    if len(countries) > 1:
+        return None
+    iso3 = _ISO3[countries[0]]
+
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        points = await _fetch_world_bank(client, code, iso3)
+        if points:
+            provider_name = "World Bank (WDI)"
+            url = f"https://data.worldbank.org/indicator/{code}?locations={iso3}"
+        else:
+            doc = await _fetch_wdi(client, code, iso3)
+            points = _real_points(doc) if doc else []
+            provider_name = "World Bank (WDI) via DBnomics"
+            url = f"{_dbnomics_base()}/series/WB/WDI/A-{code}-{iso3}"
+    if not points:
+        return None
+    return SeriesMatch(
+        series_name=f"{label} — {countries[0].title()}",
+        points=points[-window:],
+        url=url,
+        provider_name=provider_name,
+        dataset_name=f"World Development Indicators ({code})",
+    )
+
+
+async def _find_best_series(query: str) -> SeriesMatch | None:
+    """One HTTP round-trip to DBnomics, returning the best-matching series (or
+    None). The sole source of truth both fetch_stats() and the structured
+    evidence path build from."""
+    if not _STAT_HINTS.search(query):
+        return None
+    # A correlation-shaped query ("correlation between X and Y") names TWO
+    # subjects — defer entirely to _find_two_series so this single-series
+    # path never fires on half of a correlation question and populates
+    # evidence with one confused, mixed-keyword series instead.
+    if _split_correlation_subjects(query) is not None:
+        return None
+    # A named-country CPI/inflation request must never fall through to broad
+    # full-text search: that is how "Canada inflation" matched an energy
+    # projection mentioning the US Inflation Reduction Act. No exact CPI
+    # series is safer than an unrelated numeric series.
+    if _country_in_query(query) and re.search(r"\b(cpi|inflation|consumer prices?)\b", query, re.I):
+        return await _find_cpi_series(query)
+    # Same rationale for unemployment — see _find_unemployment_series'
+    # docstring for the specific false-positive (Argentina demographics) this
+    # replaces.
+    if _country_in_query(query) and _UNEMPLOYMENT_HINTS.search(query):
+        return await _find_unemployment_series(query)
+    # Fiscal aggregates fire before GDP: "debt to GDP" also contains the
+    # literal word "gdp", and the WEO debt/revenue/deficit indicator is the
+    # right answer for that phrasing rather than a GDP level.
+    if _country_in_query(query) and _FISCAL_HINTS.search(query):
+        fiscal = await _find_weo_fiscal_series(query)
+        if fiscal is not None:
+            return fiscal
+        # Only fall through when WEO genuinely declined. It declines debt for
+        # the first five (they have a better publisher-specific route) and any
+        # aggregate when the network call fails; both cases then reach the WDI
+        # table below instead of dying here. This used to `return` the None
+        # outright, which is why "UK government debt as a percentage of GDP"
+        # returned no source at all even though WDI's GC.DOD.TOTL.GD.ZS answers
+        # it directly.
+    # Deterministic WDI indicators, for the specific cases where the GDP branch
+    # below would otherwise capture the question purely because the phrasing
+    # ends in "as a percentage of GDP".
+    if _country_in_query(query):
+        wdi = await _find_wdi_fallback_series(query)
+        if wdi is not None:
+            return wdi
+    # And for GDP — generic ranking resolved "gdp india" to CEPII's trade
+    # balance/GDP ratio. See _find_gdp_series' docstring.
+    if _country_in_query(query) and _GDP_HINTS.search(query):
+        return await _find_gdp_series(query)
+    if _country_in_query(query) and _POLICY_RATE_HINTS.search(query):
+        return await _find_policy_rate_series(query)
+    return await _find_generic_series(query)
+
+
+async def _find_generic_series(text: str) -> SeriesMatch | None:
+    """Full-text DBnomics search over arbitrary text (a whole query, or a
+    single subject phrase split out of a two-subject correlation query — see
+    _find_series_for_phrase). Split out of _find_best_series so the same
+    matching logic can be reused per-phrase rather than only over a whole
+    query, without duplicating it."""
+    kws = _keywords(text)
+    if not kws:
+        return None
     # DBnomics full-text search does an AND over the query terms, so natural-
     # language filler ("over the years", "what is…") makes it return nothing.
     # Search with just the extracted keywords instead.
@@ -650,8 +1520,6 @@ async def _wdi_sources(query: str) -> list[WebSource] | None:
         return None
 
     series_name = str(best.get("series_name") or "series").replace("�", "·").strip()
-    tail = best_points[-_MAX_POINTS:]
-    values_txt = ", ".join(f"{p}: {v:.15g}" for p, v in tail)
     series_code = best.get("series_code", "")
     url = f"{base}/series/{best.get('provider_code')}/{best.get('dataset_code')}/{series_code}"
     provider_name = str(top.get("provider_name") or best.get("provider_code") or "")

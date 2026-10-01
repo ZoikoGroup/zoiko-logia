@@ -70,7 +70,7 @@ async def test_startup_requires_security_policies_and_never_creates_accounts(mon
     for name in (
         "_migrate_tenant_columns", "_migrate_source_licence_columns",
         "_migrate_user_profile_columns", "_migrate_orphan_tenant_id_not_null",
-        "_migrate_document_search_vector", "_setup_source_rls", "_setup_user_rls",
+        "_setup_document_search_index", "_setup_source_rls", "_setup_user_rls",
         "_warm_up_ml_models",
     ):
         monkeypatch.setattr(main, name, AsyncMock(side_effect=RuntimeError("policy failed") if name == failed_step else None))

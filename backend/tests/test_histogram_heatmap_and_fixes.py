@@ -28,7 +28,9 @@ def test_frankfurter_matches_how_much_is_phrasing():
             return None
 
         def json(self):
-            return {"rates": {"USD": 1.25}, "date": "2026-08-20"}
+            # ECB per-euro table (frankfurter crosses the pair from it):
+            # 1 GBP = 1.00 / 0.80 = 1.25 USD.
+            return {"rates": {"GBP": 0.8, "USD": 1.0}, "date": "2026-08-20"}
 
     # This is a deterministic parser regression test, not a live-network
     # smoke test. Mocking the transport keeps CI independent of Frankfurter.

@@ -144,13 +144,19 @@ async def test_provision_succeeds_when_admin_not_configured(fresh_db, monkeypatc
 async def test_provision_profile_commits_row_when_admin_not_configured(fresh_db, monkeypatch) -> None:
     _unconfigured(monkeypatch)
     _no_transport(monkeypatch)
-    with pytest.raises(supabase_admin.SupabaseNotConfiguredError):
-        await provision_profile(
-            fresh_db,
-            "user-abc123",
-            "ada@example.com",
-            ProvisionRequest(first_name="Ada", last_name="Lovelace", company_name="ACME"),
-        )
+    user = await provision_profile(
+        fresh_db,
+        "user-abc123",
+        "ada@example.com",
+        ProvisionRequest(first_name="Ada", last_name="Lovelace", company_name="ACME"),
+    )
+    assert user.id == "user-abc123"
+
+    from app.domains.identity.service import get_user_by_id
+    persisted = await get_user_by_id(fresh_db, "user-abc123")
+    assert persisted is not None
+    assert persisted.role == "Admin"
+
 
 # ── Masked dashboard key + app_metadata self-repair ──────────────────────────
 

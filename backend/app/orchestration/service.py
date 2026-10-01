@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import re
 import time
 import os
 import re
@@ -39,8 +38,6 @@ from app.orchestration.identifiers import (
     check_idempotency, claim_idempotency, store_idempotency,
 )
 from app.orchestration.prescreen import run_prescreen
-from app.orchestration.conversation import bare_chart_hint, conversation_prompt, screened_history
-from app.orchestration.chart_intent import allows_automatic_chart
 from app.orchestration.retrieve import build_source_bundle
 from app.orchestration.routing_matrix import (
     map_safety_confidence,
@@ -55,6 +52,7 @@ from app.orchestration.schemas import (
     GeneratedArtifactPublic,
 )
 from app.orchestration.audit_events import (
+    audit_agent_tool_called, audit_agent_completed,
     audit_query_received, audit_request_validated, audit_request_rejected,
     audit_prescreen_completed, audit_retrieval_started, audit_retrieval_completed,
     audit_retrieval_failed, audit_risk_classified, audit_route_selected,
@@ -69,25 +67,53 @@ from app.orchestration.audit_events import (
     audit_artifact_generation_failed,
     audit_calculation_completed,
     audit_context_resolved,
-    audit_agent_tool_called, audit_agent_completed,
 )
-from app.domains.identity.permissions import permissions_for_role
 from app.domains.risk_safety.schemas import ClassifyRequest, SafetyDecision
-from app.domains.risk_safety.refusal_templates import get_template as get_refusal_template
 from app.domains.model_gateway import service as model_gateway_service
+from app.orchestration import answer_cache
 from app.domains.model_gateway.agent import chart_requested, is_agent_clarification, with_agent_instructions
+from app.domains.identity.permissions import permissions_for_role
+from app.orchestration.conversation import bare_chart_hint, conversation_prompt
 from app.orchestration.compose import select_prompt
 from app.orchestration.redaction import redact_for_external_exposure
 from app.orchestration.websearch import (
-    build_web_grounded_prompt,
     sub_questions,
     web_search_each,
-    wants_visual,
+    build_web_grounded_prompt,
+    web_search,
 )
-from app.domains.documents import service as documents_service
-from app.domains.source_library.service import record_source_usages
-from app.orchestration.live_data import build_forced_chart, fetch_live_data
+from app.orchestration.dbnomics import countries_in_query
+from app.domains.market_data.registry import detect_intent as detect_market_data_intent
+from app.orchestration.market_data import _OWNERSHIP_HINTS, _OWNERSHIP_STRUCTURE_CHART_HINT
+from app.orchestration.document_evidence import build_document_evidence
+from app.orchestration.evidence import EvidenceModel, Entity, Relationship
+from app.orchestration.extraction import extract_graph, extract_user_visual_evidence
+from app.orchestration.intent_classifier import (
+    classify_intent, GRAPH_INTENTS, PROCESS, DISTRIBUTION, TREND,
+    CURRENT_METRIC, PRECISE_DATA, COMPOSITION,
+)
+from app.orchestration.data_shape import classify_data_shape
+from app.orchestration.response_planner import (
+    plan_response, detect_explicit_visual_request, detect_requested_chart_variant,
+)
+from app.orchestration.visualization.orchestrator import VisualizationOrchestrator
+from app.orchestration.visualization.validator import VisualizationValidator
+from app.orchestration.visualization import telemetry as viz_telemetry
+from app.orchestration.query_classifier_shadow import log_shadow_comparison
 from app.orchestration.risk_llm import calibrate_calculation_risk, classify_risk, classify_risk_gemini
+from app.domains.kriton_workspace.documents import (
+    expired_attachment_names, retrieve_document_sources, resolve_conversation_document_ids,
+)
+from app.domains.kriton_workspace.artifacts import create_generated_artifact
+from app.orchestration.document_pipeline import (
+    analyse_spreadsheet_sources,
+    build_document_generation_prompt,
+    plan_document_task,
+)
+from app.orchestration.calculations import calculate_from_query
+from app.orchestration.calculations.engine import calculation_markdown
+from app.domains.source_library.service import record_source_usages
+from app.orchestration.live_data import build_forced_chart, fetch_live_data, LiveDataResult
 from app.orchestration.calculation_service import (
     build_calculation, validate_answer_calculations,
 )
@@ -114,26 +140,7 @@ from app.domains.massarius.answer_validator import validate_answer
 from app.domains.massarius.policy_matrix import resolve_policy
 
 
-async def _no_live_data() -> list:
-    return []
-
-
-def _web_citation(source) -> SourceCitation:
-    return SourceCitation(
-        ref_id="",
-        source_id=source.url,
-        title=source.title,
-        url=source.url,
-        # Genuine retrieved snippet, capped to a preview length — not a
-        # fabricated summary.
-        evidence_preview=(source.snippet[:240].strip() or None) if source.snippet else None,
-        # Carried through so the reader can see whether a figure is
-        # real-time, delayed, end-of-day or as-filed. Only market/company
-        # connectors set these; a plain web hit leaves them None.
-        provider=source.provider,
-        fetched_at=source.fetched_at,
-        freshness=source.freshness,
-    )
+logger = logging.getLogger("kriton.orchestration")
 
 
 _TOOL_PROGRESS = {
@@ -218,6 +225,13 @@ def _should_reuse_previous_evidence(query: str) -> bool:
 
 
 _MODEL_DOMAIN_REFUSAL = "designed to answer questions related to Accounting"
+# The model sometimes declines an off-topic question in its own words ("I'm
+# sorry, but I can't help with that.") instead of the fixed domain message,
+# and it was then shown as an answer with disclaimers attached.
+_GENERIC_REFUSAL = re.compile(
+    r"^\W*(i'?m|i am)?\s*(sorry|afraid)?[,.]?\s*(but\s+)?i\s+(can'?t|cannot|am unable to|won'?t)\s+"
+    r"(help|assist|answer)", re.I,
+)
 _MODEL_DOMAIN_REFUSAL_TEXT = (
     "I'm designed to answer questions related to Accounting, Taxation, Payroll, "
     "Finance, Auditing, Bookkeeping, Commerce, and Accounting Education across "
@@ -930,8 +944,18 @@ async def ask_kriton(
     # answer actually needs the sources. This overlaps the long search with
     # the rest of the pipeline instead of paying for them one after another.
     # Fails soft exactly as before (returns [] on any error).
-    web_search_task = asyncio.create_task(
-        metrics.run("retrieval.web", web_search_each(request.query, jurisdiction=request.jurisdiction, limit=5))
+    needs_web = request.source_scope != "DOCUMENTS_ONLY"
+    web_search_task = (
+        asyncio.create_task(
+            asyncio.wait_for(
+                metrics.run(
+                    "retrieval.web",
+                    web_search_each(effective_query, jurisdiction=request.jurisdiction, limit=5),
+                ),
+                timeout=12.0,
+            )
+        )
+        if needs_web else None
     )
     # Live exact-figure sources (currency via Frankfurter, economic stats via
     # DBnomics). Self-gating + fail-soft: returns [] unless the question is
@@ -939,12 +963,27 @@ async def ask_kriton(
     # web search, and its results are merged into web_sources at composition —
     # so figures flow through the exact same grounding pipeline as SearXNG hits,
     # with no change to the prompt, citations, or answer format.
+    # Individual connectors are already bounded, but DNS resolution and an
+    # accidentally unbounded provider implementation can still strand the
+    # gather as a whole.  This deadline starts now (not later when composition
+    # awaits the task), so retrieval/risk work cannot hide accumulated delay.
+    # request.query, NOT effective_query: fetch_live_data's country/entity/
+    # ownership resolution is naive keyword matching over the whole string
+    # (see dbnomics.py's _country_in_query), so folding in the previous
+    # turn's text here would let its country/company names hijack THIS
+    # turn's evidence — e.g. a prior "India CPI" turn silently redirecting a
+    # later "UK inflation" turn onto India's series.
     # In agent mode the model fetches exactly the figures it needs through
     # registered tools during composition, so nothing is pre-fetched here.
     agent_mode = model_gateway_service.agent_mode_active()
-    live_data_task = asyncio.create_task(
-        _no_live_data() if agent_mode
-        else metrics.run("retrieval.live_data", fetch_live_data(request.query))
+    live_data_task = (
+        asyncio.create_task(
+            asyncio.wait_for(
+                metrics.run("retrieval.live_data", fetch_live_data(request.query)),
+                timeout=25.0,
+            )
+        )
+        if needs_web and not agent_mode else None
     )
     # These are speculative child tasks. Tie their lifetime to this request so
     # an early refusal, client disconnect, or end-to-end timeout cannot leave
@@ -1134,7 +1173,33 @@ async def ask_kriton(
         # back to the ML zero-shot result already in risk_level.
         llm_risk = await metrics.run("risk.fallback_provider", classify_risk_gemini(effective_query))
     if llm_risk:
+        # Arithmetic on figures the user states, with no decision asked for,
+        # is LOW even when the classifier reads it as personal advice.
         risk_level = calibrate_calculation_risk(llm_risk, request.query)
+    # A non-personal request to visualize a public economic statistic is an
+    # educational formatting task. Keep equivalent country/chart phrasings
+    # consistently LOW instead of letting model wording drift between ZERO,
+    # LOW and MEDIUM for the same operation.
+    if (
+        detect_explicit_visual_request(effective_query)
+        and re.search(r"\b(inflation|cpi|consumer prices?|gdp|unemployment|interest rate)\b", effective_query, re.I)
+        and not re.search(r"\b(my|our|client|should i|should we)\b", effective_query, re.I)
+    ):
+        risk_level = "LOW"
+    # A plain lookup of a real, named company's public data (SEC filings,
+    # stock quote/history, fundamentals, profile, ownership) is a factual
+    # retrieval task, not advice — but nothing in the risk rubric's HIGH
+    # criteria excludes it by name the way "my/our/should I" does, and both
+    # LLM classifiers have been observed calling "Show recent SEC filings for
+    # AAPL" HIGH despite matching none of the rubric's own HIGH signals. Same
+    # treatment as the economic-statistic override above: keep this category
+    # consistently LOW rather than at the mercy of classifier wording drift.
+    elif (
+        (detect_market_data_intent(effective_query) is not None
+         or _OWNERSHIP_HINTS.search(effective_query) or _OWNERSHIP_STRUCTURE_CHART_HINT.search(effective_query))
+        and not re.search(r"\b(my|our|client|should i|should we)\b", effective_query, re.I)
+    ):
+        risk_level = "LOW"
     await report("risk_classified", "Response route selected")
 
     # The provider classifier can resolve the ML model's low-confidence
@@ -1224,10 +1289,6 @@ async def ask_kriton(
     if not force_direct and (not classification_allowed or route == ROUTE_REFUSAL):
         # REFUSAL path
         refusal_reason = decision.refusal_text or "Query blocked by risk classification policy."
-        if llm_risk == "RESTRICTED":
-            # Fraud/concealment: refuse with the legitimate alternative, not a dead end.
-            integrity = get_refusal_template("ACCOUNTING_INTEGRITY")
-            refusal_reason = f"{integrity.body}\n\n{integrity.safe_alternative}"
         await audit_refusal_returned(
             db, query_id=query_id, correlation_id=correlation_id,
             tenant_id=tenant_id, audit_chain_id=audit_chain_id,
@@ -1406,16 +1467,80 @@ async def ask_kriton(
     try:
         live_result: LiveDataResult = await live_data_task if live_data_task is not None else LiveDataResult()
     except Exception:
-        live_sources = []
-    if live_sources:
-        web_sources = live_sources + web_sources
-    live_observations = [
-        source.observation for source in live_sources if source.observation is not None
-    ]
-    observation_chart = (
-        build_observation_chart(live_observations)
-        if wants_visual(request.query) and allows_automatic_chart(request.query) else None
-    )
+        live_result = LiveDataResult()
+
+    # Elliptical follow-up fallback: "show the SAME data as a horizontal bar
+    # chart" names no subject of its own, so request.query alone (correctly
+    # scoped — see the fetch_live_data comment above) resolves no evidence.
+    # Re-fetch using request.previous_query ALONE, never concatenated with
+    # request.query — that concatenation is exactly the bug that let a prior
+    # turn's country/company hijack this turn's evidence (see
+    # _with_previous_context). Only attempted when this turn explicitly asks
+    # for a chart, so an unrelated follow-up never has a stale chart
+    # silently attached to it.
+    #
+    # Gated on the *_subject fields, NOT on the data lists being empty: a
+    # real, named subject that legitimately has no data (e.g. Companies
+    # House genuinely has no PSC entries for a widely-held listed company —
+    # see the COMPOSITION branch of _grounded_domain_fallback) sets
+    # composition_subject with an empty `composition` list. Gating on the
+    # data lists instead previously mistook that honest "checked, nothing on
+    # file" result for "no subject was named", and silently substituted in
+    # the PREVIOUS turn's unrelated evidence instead of preserving the
+    # correct "no ownership data found" answer.
+    #
+    # extract_graph(request.query) is None is also required: a PROCESS_FLOW
+    # or EVIDENCE_GRAPH request ("Show this as a flowchart: A -> B -> C")
+    # carries its own complete structure in the query text and never needs
+    # ANY external evidence — but it does name an explicit chart type
+    # ("flowchart"), which satisfied the condition above on its own and let
+    # this fallback overwrite live_evidence with the PREVIOUS turn's
+    # unrelated data (e.g. UK CPI figures), which _grounded_domain_fallback
+    # then narrated instead of the correct process description — reproduced
+    # live: asking for UK inflation, then a flowchart, produced the CPI
+    # trend text under a correctly-rendered, unrelated PROCESS_FLOW chart.
+    # A query with its own real graph/stage structure must never be
+    # "completed" from a prior turn's evidence.
+    if (
+        not live_result.evidence.subject and not live_result.evidence.composition_subject
+        and not live_result.evidence.ohlc_subject and not live_result.evidence.secondary_subject
+        and request.previous_query
+        and extract_graph(request.query) is None
+        and _should_reuse_previous_evidence(request.query)
+        and (detect_explicit_visual_request(request.query) or detect_requested_chart_variant(request.query) is not None)
+    ):
+        try:
+            live_result = await asyncio.wait_for(fetch_live_data(request.previous_query), timeout=25.0)
+        except Exception:
+            live_result = LiveDataResult()
+
+    if live_result.sources:
+        web_sources = live_result.sources + web_sources
+    live_evidence: EvidenceModel = live_result.evidence
+    # Charts are built from EvidenceModel.observations, and fetch_live_data()
+    # only ever sees the query string — it has no access to an attachment. So
+    # a question about an uploaded file retrieved and answered from the
+    # document's text, then reported that no verified data existed for the
+    # chart. True of the live feeds; wrong about the file in front of it.
+    #
+    # Read the document's own tables instead, but ONLY when the live
+    # connectors found nothing: a real IMF or market series stays
+    # authoritative over a figure lifted from a spreadsheet. Extraction fails
+    # closed — an unreadable or ambiguous table returns empty evidence, which
+    # lands on exactly the honest message shown today.
+    if not live_evidence.observations and document_sources:
+        document_evidence = build_document_evidence(request.query, document_sources)
+        if document_evidence.observations:
+            live_evidence = document_evidence
+    if source_bundle and live_evidence.observations and not request.jurisdiction:
+        query_countries = countries_in_query(request.query)
+        if query_countries:
+            # SourceBundle is deliberately frozen once built. Preserve that
+            # contract and create an updated copy for the inferred display
+            # jurisdiction instead of crashing successful live-data requests.
+            source_bundle = source_bundle.model_copy(
+                update={"jurisdiction": " / ".join(query_countries)}
+            )
 
     governed_passages = (
         await metrics.run(
@@ -1444,21 +1569,37 @@ async def ask_kriton(
             freshness="registered_version",
         ))
 
-    web_citations: list[SourceCitation] = [_web_citation(s) for s in web_sources]
-
-    # One ordered evidence list, numbered after ordering so REF-1 is the first
-    # row the reader sees.
+    if request.source_scope == "DOCUMENTS_ONLY":
+        evidence_sources = document_sources
+    elif request.source_scope == "WEB_ONLY":
+        evidence_sources = web_sources
+    elif request.source_scope == "COMBINED":
+        evidence_sources = document_sources + web_sources
+    else:  # DOCUMENTS_THEN_WEB
+        evidence_sources = document_sources or web_sources
     rag_citations: list[SourceCitation] = [
-        c.model_copy(update={"ref_id": f"REF-{i + 1}"})
-        for i, c in enumerate(document_citations + governed_citations + web_citations)
+        SourceCitation(
+            ref_id=f"REF-{i + 1}",
+            source_id=s.source_id or s.url,
+            title=s.title,
+            url=s.url or None,
+            # Genuine retrieved snippet, capped to a preview length — not a
+            # fabricated summary.
+            evidence_preview=(s.snippet[:240].strip() or None) if s.snippet else None,
+            # Carried through so the reader can see whether a figure is
+            # real-time, delayed, end-of-day or as-filed. Only market/company
+            # connectors set these; a plain web hit leaves them None.
+            provider=s.provider,
+            fetched_at=s.fetched_at,
+            freshness=s.freshness,
+        )
+        for i, s in enumerate(evidence_sources)
     ]
-
-    # Build grounded prompt input from the web sources.
-    prompt = await metrics.run("composition.prompt_lookup", select_prompt(db, request.mode))
-    grounded_input = build_web_grounded_prompt(
-        request.query, web_sources,
-        documents=document_excerpts,
-        documents_partial=documents_partial,
+    # The governed register passages the prompt carries are cited after the
+    # retrieved sources, renumbered so REF-1..N still follows reading order.
+    rag_citations.extend(
+        citation.model_copy(update={"ref_id": f"REF-{len(rag_citations) + i + 1}"})
+        for i, citation in enumerate(governed_citations)
     )
 
     document_analysis: dict = {}
@@ -1564,32 +1705,21 @@ async def ask_kriton(
         deterministic_calculation = metrics.run_sync(
             "calculation.extract", lambda: build_calculation(request.query)
         )
+        if deterministic_calculation:
+            await persist_calculation_run(
+                db,
+                tenant_id=tenant_id,
+                query_id=query_id,
+                result=deterministic_calculation.record,
+                chart=deterministic_calculation.chart,
+            )
+            grounded_input += deterministic_calculation.prompt_context()
+
+    # Earlier turns (including answers with figures) for follow-ups such as
+    # "add Thailand" or "make it a bar chart" — untrusted context, redacted
+    # below with the rest of the prompt.
     grounded_input += conversation_prompt(request.conversation_history)
     grounded_input += bare_chart_hint(request.query, request.conversation_history)
-    if risk_level == "HIGH":
-        # pm_1.3: a question about the asker's own or a client's matter is
-        # answered as general guidance, never as the decision itself.
-        grounded_input += (
-            "\n\nThis question concerns the asker's own or a client's specific matter. "
-            "Give general guidance only: explain the applicable rules and standards, the "
-            "factors that decide the outcome, worked illustrations where useful, and the "
-            "information a qualified professional would need to conclude. Do NOT make the "
-            "decision or give a definitive personal recommendation for their case."
-        )
-    if effective_context:
-        grounded_input += build_task_prompt_context(effective_context)
-    deterministic_calculation = metrics.run_sync(
-        "calculation.extract", lambda: build_calculation(request.query, screened_history(request.conversation_history))
-    )
-    if deterministic_calculation:
-        await persist_calculation_run(
-            db,
-            tenant_id=tenant_id,
-            query_id=query_id,
-            result=deterministic_calculation.record,
-            chart=deterministic_calculation.chart,
-        )
-        grounded_input += deterministic_calculation.prompt_context()
 
     # External-provider exposure boundary (ZL-ENG-03 §5.8): redact before
     # grounded_input leaves the tenant trust boundary for the model gateway.
@@ -1624,7 +1754,7 @@ async def ask_kriton(
     # thread on long multi-question prompts (blank output, then truncation).
     multi_question = len(sub_questions(request.query)) > 1
     if risk_level in ("ZERO", "LOW") and os.getenv("GROQ_API_KEY") and not gemini_active and not multi_question:
-        answer_model = os.getenv("GROQ_FAST_ANSWER_MODEL", "llama-3.1-8b-instant")
+        answer_model = os.getenv("GROQ_FAST_ANSWER_MODEL", "openai/gpt-oss-20b")
 
     # ── Agent mode: governed tool-calling loop ─────────────────────────────
     # The model fetches figures through registered tools (permission-checked,
@@ -1632,7 +1762,7 @@ async def ask_kriton(
     # through to the standard composition below, so agent mode can only add
     # evidence to an answer — never lose one.
     agent_outcome = None
-    if agent_mode:
+    if agent_mode and deterministic_chart_text is None:
         async def on_tool_start(tool: str) -> None:
             await report("tool_call", _TOOL_PROGRESS.get(tool, "Gathering evidence"))
 
@@ -1682,25 +1812,53 @@ async def ask_kriton(
                 steps=0, stop_reason="error", tool_call_count=0, fell_back=True, error=type(exc).__name__,
             )
 
+    # A repeat of the same grounded question costs nothing when its answer is
+    # already known. This matters for the token allowance rather than for
+    # speed: the provider's per-minute ceiling is what turns a second question
+    # into a composition failure, and a cached answer spends none of it. The
+    # audit trail, validation, disclaimer and visualization all still run —
+    # only the model call is skipped. See answer_cache.py.
+    answer_cache_key: str | None = None
+    if agent_outcome is None and deterministic_chart_text is None and answer_cache.is_cacheable(evidence_sources):
+        answer_cache_key = answer_cache.cache_key(grounded_input, answer_model)
+        cached_answer = await answer_cache.get_answer(answer_cache_key)
+        if cached_answer:
+            composed_text = cached_answer
+            prompt_name = "Web-grounded Prompt (cached)"
+
     try:
-        if agent_outcome is not None:
-            pass
-        elif prompt:
-            prompt_row, composed_text = await metrics.run(
-                "composition.model",
-                model_gateway_service.run_test_prompt(
-                    db, prompt.id, grounded_input, actor_id, tenant_id,
-                    correlation_id=query_id, model=answer_model,
-                ),
-            )
-            prompt_id = prompt_row.id
-            prompt_name = prompt_row.name
-        else:
-            # No approved prompt template seeded — fall back to a direct
-            # provider completion so web-grounded answering still works.
-            composed_text = await metrics.run(
-                "composition.model", model_gateway_service.run_grounded_completion(grounded_input)
-            )
+        if deterministic_chart_text is None and composed_text is None:
+            if prompt:
+                prompt_row, composed_text = await metrics.run(
+                    "composition.model",
+                    model_gateway_service.run_test_prompt(
+                        db, prompt.id, grounded_input, actor_id, tenant_id,
+                        correlation_id=query_id, model=answer_model,
+                    ),
+                )
+                prompt_id = prompt_row.id
+                prompt_name = prompt_row.name
+            else:
+                # No approved prompt template seeded — fall back to a direct
+                # provider completion so web-grounded answering still works.
+                composed_text = await metrics.run(
+                    "composition.model",
+                    model_gateway_service.run_grounded_completion(grounded_input),
+                )
+            # The model gateway deliberately sanitizes provider exceptions as
+            # user-safe text. At the orchestration boundary that text is still
+            # a failed composition, never an "answered — source grounded"
+            # result. Structured official-data paths above do not reach here.
+            if composed_text and _MODEL_PROVIDER_FAILURE in composed_text:
+                raise RuntimeError("model_provider_unavailable")
+
+            # Stored only AFTER that check. The gateway returns its failure as
+            # ordinary text, so caching before this point would pin a
+            # transient outage in place for the whole TTL and serve it as an
+            # answer — the same trap websearch.py avoids by never caching an
+            # empty result set.
+            if answer_cache_key and composed_text:
+                await answer_cache.put_answer(answer_cache_key, composed_text)
 
     except Exception as exc:
         await audit_composition_failed(
@@ -1782,27 +1940,31 @@ async def ask_kriton(
         return contextualize(response)
 
     if agent_outcome is not None:
-        # Tool evidence joins the answer exactly like pre-fetched live data
-        # would have: cited after the existing sources, observations and the
-        # verified chart built from it, and validated charts attached as-is
-        # (built from checked tool arguments, never retyped by the model).
-        live_sources = list(agent_outcome.sources)
-        live_observations = [s.observation for s in live_sources if s.observation is not None]
-        # A successful agent decides whether a chart is appropriate, including
-        # conditional requests. Do not override a deliberate no-chart answer.
-        observation_chart = None
-        rag_citations = [
-            c.model_copy(update={"ref_id": f"REF-{i + 1}"})
-            for i, c in enumerate(rag_citations + [_web_citation(s) for s in live_sources])
+        # Tool evidence joins the answer's citations after the retrieved
+        # sources, and validated charts are attached as-is (built from checked
+        # tool arguments, never retyped by the model).
+        rag_citations = rag_citations + [
+            SourceCitation(
+                ref_id=f"REF-{len(rag_citations) + i + 1}",
+                source_id=s.url,
+                title=s.title,
+                url=s.url or None,
+                evidence_preview=(s.snippet[:240].strip() or None) if s.snippet else None,
+                provider=s.provider,
+                fetched_at=s.fetched_at,
+                freshness=s.freshness,
+            )
+            for i, s in enumerate(agent_outcome.sources)
         ]
         if agent_outcome.artifacts:
             composed_text = composed_text.rstrip() + "\n\n" + "\n\n".join(agent_outcome.artifacts)
 
-    # Only the non-agent path gets a deterministic chart fallback. Successful
-    # agents retain their chart decision; conditional/negative requests are
-    # also excluded inside build_forced_chart when the agent was unavailable.
+    # Force a chart from the connector's own fetched numeric series when the
+    # question wanted one and the model didn't already produce it (via prose
+    # or the render_chart tool) — see live_data.build_forced_chart. Runs
+    # before validation so the forced chart is checked like any other content.
     if agent_outcome is None and "```chart" not in composed_text:
-        forced_chart = build_forced_chart(request.query, live_sources)
+        forced_chart = build_forced_chart(request.query, live_result.sources)
         if forced_chart:
             composed_text = composed_text.rstrip() + "\n\n" + forced_chart
 
@@ -1886,42 +2048,17 @@ async def ask_kriton(
     # are the [REF-N] citations the reader gets, but they are not registered in
     # the governed SourceBundle. Without it, every answer grounded purely in
     # live sources fails the grounding check and degrades to HUMAN_REVIEW.
-    # Arithmetic the model got wrong is corrected before validation rather than
-    # sending the whole answer to review: "4,07,600 * 180 = 733680000" (one
-    # digit too many) escalated a five-part calculation answer. The model gets
-    # the exact failing lines and correct values once; if its corrected answer
-    # still fails, validation below escalates exactly as before.
-    calculation_failures = metrics.run_sync(
-        "calculation.validate", lambda: validate_answer_calculations(composed_text)
-    )
-    if calculation_failures and agent_outcome is None:
-        await report("correcting", "Correcting a calculation")
-        try:
-            corrected = await metrics.run(
-                "composition.calculation_correction",
-                model_gateway_service.run_grounded_completion(
-                    grounded_input
-                    + "\n\n=== Your previous answer ===\n" + composed_text
-                    + "\n\n=== Arithmetic errors found in it ===\n" + "\n".join(calculation_failures)
-                    + "\n\nRewrite the complete answer with these calculations corrected and every "
-                    "figure that depends on them updated. Keep everything else the same."
-                ),
-            )
-        except Exception:
-            corrected = ""
-        if corrected and corrected.strip():
-            composed_text = corrected
-            calculation_failures = validate_answer_calculations(composed_text)
-
     validation = (
         validate_answer(
             composed_text,
             source_bundle,
             disclaimer_required=False,
             external_source_count=len(rag_citations),
-            ungrounded_answer_allowed=effective_confidence == CONF_INSUFFICIENT,
         )
         if source_bundle else None
+    )
+    calculation_failures = metrics.run_sync(
+        "calculation.validate", lambda: validate_answer_calculations(composed_text)
     )
     if calculation_failures:
         if validation is None:
@@ -2010,17 +2147,6 @@ async def ask_kriton(
 
     # Build limitations list
     limitations: list[str] = list(decision.limitations or [])
-    if risk_level == "HIGH":
-        limitations.append(
-            "General guidance only — not advice on your or your client's specific matter. "
-            "Consult a qualified professional before acting."
-        )
-    if no_engagement_general_guidance and risk_level != "HIGH":
-        limitations.append(
-            "General guidance only: no engagement is set up for you, so this is not advice on "
-            "your or your client's specific matter. Set up an engagement for a governed, "
-            "client-specific answer."
-        )
     # When the LLM authoritatively re-classified risk, drop the weak ML
     # model's "uncertain / needs clarification" artifact — it's noise next to
     # a confidently-answered response.
@@ -2029,53 +2155,28 @@ async def ask_kriton(
             l for l in limitations
             if "CLASSIFICATION_UNCERTAIN" not in l and "clarification" not in l.lower()
         ]
-    if route_decision.disclaimer_required:
+    if no_engagement_general_guidance and risk_level != "HIGH":
         limitations.append(
-            "This response is for educational purposes only. Consult a qualified professional."
+            "General guidance only: no engagement is set up for you, so this is not advice on "
+            "your or your client's specific matter. Set up an engagement for a governed, "
+            "client-specific answer."
         )
-    # A calculation on the question's own figures needs no source, and calling
-    # it "model knowledge" misdescribes an exactly computed answer.
-    # So is a chart redrawn from figures already in the conversation ("make
-    # it a bar chart"): render_chart only accepts figures found there.
-    computed_from_question = not rag_citations and (
-        deterministic_calculation is not None
-        or (agent_outcome is not None and any(
-            call.tool in ("calculate", "render_chart") and call.ok for call in agent_outcome.tool_calls
-        ))
-    )
-    if effective_confidence == CONF_INSUFFICIENT:
-        # Must say what the answer actually rests on: with no citations at
-        # all (e.g. web search unreachable) it is the model's own knowledge,
-        # which can be outdated — the reader needs to know that.
-        limitations.append(
-            "No matching source was found in your governed source library; this answer is "
-            "based on live data and web sources. Verify figures against the official source."
-            if rag_citations else
-            "Built exactly from figures in your question or earlier in this conversation; no "
-            "new source was needed. Check that those figures are correct."
-            if computed_from_question else
-            "No sources could be retrieved for this answer; it is based on the model's general "
-            "knowledge and may be outdated or incorrect. Verify against the official source "
-            "before relying on it."
-        )
+    # Do not duplicate generic disclaimer copy in the limitations panel.
 
     # Off-domain refusal: when the domain gate declined the question (it is not
     # about accounting/tax/payroll/finance/audit/bookkeeping/commerce), the
     # web-search results are irrelevant to the reply — so return NO sources and
     # NO disclaimer. Sources are shown only for genuine in-domain answers.
-    # The model sometimes declines an off-topic question in its own words
-    # ("I'm sorry, but I can't help with that.") instead of the fixed domain
-    # message, and it was then shown as an answer with disclaimers attached.
     # Not when the agent fetched real figures for it: that question is
-    # in-domain, and its short "I can't…" is about one part of it (India
-    # vs Mars), not a reason to discard the whole answer as off-topic.
+    # in-domain, and its short "I can't…" is about one part of it (India vs
+    # Mars), not a reason to discard the whole answer as off-topic.
     agent_found_evidence = agent_outcome is not None and bool(agent_outcome.sources)
     if (
         composed_text and len(composed_text.strip()) < 160 and not agent_found_evidence
         and _GENERIC_REFUSAL.search(composed_text)
     ):
-        composed_text = _DOMAIN_REFUSAL_TEXT
-    is_offdomain_refusal = "designed to answer questions related to Accounting" in (composed_text or "")
+        composed_text = final_text = _MODEL_DOMAIN_REFUSAL_TEXT
+    is_offdomain_refusal = _MODEL_DOMAIN_REFUSAL in (composed_text or "")
     if is_offdomain_refusal:
         # This is a scope notice, not accounting guidance. Do not attach the
         # professional-advice disclaimer that may already have been added for
@@ -2083,24 +2184,34 @@ async def ask_kriton(
         final_text = composed_text
         rag_citations = []
         limitations = []
-        final_text = composed_text
-        # A refusal carries no chart, or it showed chart controls on no chart.
-        observation_chart = None
-        deterministic_calculation = None
-        live_observations = []
+        await audit_refusal_returned(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, reason="Structured visualization request is outside Kriton's supported domain",
+        )
+    elif uses_user_supplied_structure:
+        # The flow/graph is grounded solely in the user's supplied stages or
+        # relationships. Unrelated web-search hits must not make this appear
+        # externally source-grounded.
+        rag_citations = []
 
+    # A calculation on the question's own figures, or a chart redrawn from
+    # figures already in the conversation, needs no source — calling it
+    # "model knowledge" misdescribes it.
+    computed_from_question = not rag_citations and not is_offdomain_refusal and (
+        deterministic_calculation is not None
+        or (agent_outcome is not None and any(
+            call.tool in ("calculate", "render_chart") and call.ok for call in agent_outcome.tool_calls
+        ))
+    )
     answer = ComposedAnswer(
         text=final_text,
         citations=rag_citations,
         limitations=limitations,
         calculation_widget=deterministic_calculation.widget if deterministic_calculation else None,
         calculation_result=deterministic_calculation.record if deterministic_calculation else None,
-        verified_charts=[
-            *([deterministic_calculation.chart] if deterministic_calculation else []),
-            *([observation_chart] if observation_chart else []),
-        ],
-        observations=live_observations,
-        computed_from_question=computed_from_question and not is_offdomain_refusal,
+        verified_charts=[deterministic_calculation.chart] if deterministic_calculation else [],
+        computed_from_question=computed_from_question,
         prompt_id=prompt_id,
         prompt_name=prompt_name,
         output_text=final_text,
@@ -2253,8 +2364,8 @@ async def ask_kriton(
     response = AskKritonResponse(
         query_id=query_id,
         correlation_id=correlation_id,
-        outcome="refused" if is_offdomain_refusal else "answered",
-        route=ROUTE_REFUSAL if is_offdomain_refusal else ROUTE_LLM,
+        outcome=response_outcome,
+        route=response_route,
         safety=safety_state,
         confidence_state=effective_confidence,
         source_bundle=source_bundle,
@@ -2292,15 +2403,12 @@ async def ask_kriton(
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-_GENERIC_REFUSAL = re.compile(
-    r"^\W*(i'?m|i am)?\s*(sorry|afraid)?[,.]?\s*(but\s+)?i\s+(can'?t|cannot|am unable to|won'?t)\s+"
-    r"(help|assist|answer)", re.I,
-)
-_DOMAIN_REFUSAL_TEXT = (
-    "I'm designed to answer questions related to Accounting, Taxation, Payroll, Finance, "
-    "Auditing, Bookkeeping, Commerce, and Accounting Education across global countries.\n\n"
-    "Please ask a question related to these topics."
-)
+def _terminal_response_state(is_offdomain_refusal: bool) -> tuple[str, str]:
+    """Return the single terminal state used by artifacts and the response."""
+    if is_offdomain_refusal:
+        return "refused", ROUTE_REFUSAL
+    return "answered", ROUTE_LLM
+
 
 async def _record_answer_source_usages(
     db, *, source_bundle, tenant_id: str, query_id: str,

@@ -22,12 +22,14 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import json
 import dataclasses
 import html
 import os
 import re
-from dataclasses import dataclass
 from urllib.parse import urlparse
+from dataclasses import asdict, dataclass
+
 from app.domains.calculations.schemas import LiveObservation
 
 import httpx
@@ -286,63 +288,6 @@ def _spread_across_organisations(
     return spread
 
 
-async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list[WebSource]:
-    """Query SearXNG and return up to `limit` sources, preferring trusted
-    domains for the jurisdiction and topic. Returns [] on any failure
-    (fail-soft).
-
-    Successful results are cached in Redis for SEARXNG_CACHE_TTL_SECONDS so a
-    repeated question does not make a second trip to the upstream engines —
-    see the cache block above for why that matters more than the latency it
-    saves. An unreachable cache degrades to a normal search.
-    """
-    cache_key = _cache_key(query, jurisdiction, limit)
-    cached = await _cache_get(cache_key)
-    if cached is not None:
-        return cached
-
-    base = _searxng_url()
-    # Topic narrows the allowlist from "every body in this jurisdiction" to
-    # the ones with authority over THIS question (source_taxonomy.py). An
-    # off-taxonomy question detects no topics, which yields the full
-    # jurisdiction list — the behaviour before topics existed.
-    domains = allowed_domains(jurisdiction, detect_topics(query), query)
-    # Bias retrieval toward those bodies up front. Filtering alone only drops
-    # results after the fact, so a narrow question could return twenty blog
-    # posts, lose all of them, and fall through to untrusted general results.
-    sites = site_filter(domains)
-    params = {
-        "q": f"{query} {sites}".strip() if sites else query,
-        "format": "json",
-        "safesearch": "1",
-        "categories": "general",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            resp = await client.get(f"{base}/search", params=params)
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception:
-        return []
-
-    results = data.get("results", []) or []
-
-    # Normalise into WebSource, keeping only entries with a usable URL.
-    parsed: list[WebSource] = []
-    for r in results:
-        url = (r.get("url") or "").strip()
-        if not url:
-            continue
-        parsed.append(
-            WebSource(
-                title=(r.get("title") or url)[:200],
-                url=url,
-                snippet=(r.get("content") or "").strip(),
-            )
-        )
-    return parsed
-
-
 # ── Reading the pages behind the top sources ────────────────────────────────
 # A search result carries a ~150-character snippet — the page's title line,
 # e.g. "Tax rates (For AY 2025-26 and 2026-27) · Tax rates for last 10 years".
@@ -487,7 +432,7 @@ async def _page_excerpt(client: httpx.AsyncClient, url: str, query: str) -> str:
         if len(response.content) > _PAGE_MAX_BYTES:
             return ""
         return _relevant_excerpt(_html_to_text(response.text), query)
-    except (httpx.HTTPError, ValueError, UnicodeDecodeError):
+    except Exception:  # noqa: BLE001 — a page that can't be read keeps its search snippet
         return ""
 
 
@@ -513,38 +458,85 @@ async def _with_page_extracts(
 
 
 async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pages: int = 2) -> list[WebSource]:
-    """Query SearXNG and return up to `limit` sources from the bodies with
-    authority over the question's topic. Returns [] on any failure (fail-soft).
+    """Query SearXNG and return up to `limit` sources, preferring trusted
+    domains for the jurisdiction and topic. Returns [] on any failure
+    (fail-soft).
 
-    ONE SearXNG call per question, deliberately. An earlier version ran a second
-    `site:`-biased pass to steer the engines toward the authoritative domains.
-    It did retrieve better sources, but it doubled the query volume, and the
-    public engines behind SearXNG (DuckDuckGo, Brave, Startpage, Google CSE)
-    rate-limit and serve CAPTCHAs well before that pays off — the whole panel
-    then comes back empty, which is far worse than a slightly weaker source.
-    Topic relevance is still applied, just by filtering rather than by asking
-    twice.
+    Successful results are cached in Redis for SEARXNG_CACHE_TTL_SECONDS so a
+    repeated question does not make a second trip to the upstream engines —
+    see the cache block above for why that matters more than the latency it
+    saves. An unreachable cache degrades to a normal search.
     """
-    topics = detect_topics(query)
-    domains = allowed_domains(jurisdiction, topics)
+    # read_pages changes the result (page excerpts), so it is part of the key.
+    cache_key = f"{_cache_key(query, jurisdiction, limit)}:pages={read_pages}"
+    cached = await _cache_get(cache_key)
+    if cached is not None:
+        return cached
 
-    parsed = await _query_searxng(query)
-    if not parsed:
+    base = _searxng_url()
+    # Topic narrows the allowlist from "every body in this jurisdiction" to
+    # the ones with authority over THIS question (source_taxonomy.py). An
+    # off-taxonomy question detects no topics, which yields the full
+    # jurisdiction list — the behaviour before topics existed.
+    domains = allowed_domains(jurisdiction, detect_topics(query), query)
+    # Bias retrieval toward those bodies up front. Filtering alone only drops
+    # results after the fact, so a narrow question could return twenty blog
+    # posts, lose all of them, and fall through to untrusted general results.
+    sites = site_filter(domains)
+    params = {
+        "q": f"{query} {sites}".strip() if sites else query,
+        "format": "json",
+        "safesearch": "1",
+        "categories": "general",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            resp = await client.get(f"{base}/search", params=params)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception:
         return []
+
+    results = data.get("results", []) or []
+
+    # Normalise into WebSource, keeping only entries with a usable URL.
+    parsed: list[WebSource] = []
+    for r in results:
+        url = (r.get("url") or "").strip()
+        if not url:
+            continue
+        parsed.append(
+            WebSource(
+                title=(r.get("title") or url)[:200],
+                url=url,
+                snippet=(r.get("content") or "").strip(),
+            )
+        )
 
     trusted = [s for s in parsed if matches_allowlist(s.url, domains)]
 
     if trusted:
-        chosen = _spread_across_organisations(trusted, domains, limit)
+        selected = _spread_across_organisations(trusted, domains, limit)
     elif _strict_allowlist():
-        return []
+        selected = []
     else:
         # Fallback: no trusted-domain hits — return the general top results so
         # the bot still answers (allowlist is advisory unless
-        # SEARXNG_STRICT_ALLOWLIST). Spread these too: five pages from one
-        # content farm is the worst case.
-        chosen = _spread_across_organisations(parsed, domains, limit)
-    return await _with_page_extracts(chosen, query, domains, read_pages)
+        # SEARXNG_STRICT_ALLOWLIST). Spread these too: organisation_key falls
+        # back to the bare hostname off the allowlist, so five pages of one
+        # blog still collapse to one voice.
+        selected = _spread_across_organisations(parsed, domains, limit)
+
+    # Cached AFTER filtering and spreading, so the stored value is what a
+    # caller would have received. Caching the raw engine response instead would
+    # freeze today's allowlist into every future hit, and a taxonomy change
+    # would not take effect until the entries aged out.
+    # The top official/trusted pages are read and their relevant part passed
+    # on (see _with_page_extracts); cached with the excerpts, so a repeat
+    # question does not re-read the pages either.
+    selected = await _with_page_extracts(selected, query, domains, read_pages)
+    await _cache_put(cache_key, selected)
+    return selected
 
 
 # Several questions in one message ("What are the FY 2025-26 slabs? What is
@@ -639,11 +631,12 @@ _FORMATTING_INSTRUCTIONS = (
         "syntax — a header row like '| Attribute | Option A | Option B |', then "
         "a separator row '| --- | --- | --- |', then one row per attribute. Keep "
         "cell text concise.\n"
-        "For mathematical formulas, methods and calculations, use LaTeX so they "
-        "render cleanly: wrap an INLINE formula or value in single dollar signs "
-        "$...$ (e.g. $Depreciation = (Cost - Salvage) / Life$), and put a "
+        "For complex mathematical formulas, use LaTeX so they "
+        "render cleanly: wrap an INLINE formula in \\( ... \\) (e.g. "
+        "\\( Depreciation = (Cost - Salvage) / Life \\)), and put a "
         "standalone/display equation on its own line wrapped in double dollar "
-        "signs $$...$$. Do NOT wrap an inline value in $$...$$. Show the "
+        "signs $$...$$. NEVER use a single $ for maths: a single $ always means "
+        "US dollars (write $480,000 as plain text). Show the "
         "calculation steps clearly, one step per line, substituting the actual "
         "numbers so the working is easy to follow.\n"
         "A plain currency amount or price in ordinary prose (a stock price, "
@@ -660,24 +653,6 @@ _FORMATTING_INSTRUCTIONS = (
 # Always sent: cheap, and a table or a formula can be the right shape for any
 # answer.
 _CORE_FORMATTING = (
-        "If the message contains several questions or tasks, answer EVERY one, in "
-        "order, each under its own short heading — including any chart or table it "
-        "asks for; never answer only the first or skip one. If the user supplies "
-        "their own answer (e.g. '… → 36%'), work the question out independently, "
-        "show the working, and say whether their answer is correct — never reply "
-        "with a bare 'correct'.\n"
-        "For EVERY calculation, however simple, show the working step by step "
-        "(inputs, formula, each intermediate result, final answer) — never state only "
-        "the result. Write thousands separators as commas, never spaces: Indian "
-        "grouping for every rupee amount, whether written \u20b9 or INR (\u20b910,92,600 / "
-        "10,92,600 INR), and international grouping otherwise ($1,092,600).\n"
-        "Lead with the direct answer or result. Use concise paragraphs, and only add "
-        "## headings when the answer needs sections. Never print internal subject-matter "
-        "classification labels. Keep short definitions short; use a worked example when "
-        "requested. Use plain text for simple arithmetic and currency amounts; reserve "
-        "display LaTeX for equations that need it. Preserve relevant prior user figures. "
-        "Separate framework-specific rules and exceptions; do not invent thresholds or "
-        "present optional practices as mandatory standards.\n"
         "When the user asks for a table, a comparison, 'tabular format', or the "
         "content is naturally a comparison of two or more items across "
         "attributes, present it as a GitHub-flavoured Markdown table using pipe "
@@ -893,25 +868,48 @@ _DOMAIN_GATE = (
     "software, commerce, accounting education/certifications, OR listed-company "
     "and capital-markets information — share prices and quotes, price history, "
     "company fundamentals and key figures, company profiles, statutory filings "
-    "and company registers, OR business and financial arithmetic — percentages, "
-    "ratios, divisions, growth rates, margins, interest, currency conversions and "
-    "checking or correcting a stated calculation (e.g. 'Correct 200 ÷ 500 = 0.4%' IS "
-    "in scope: answer it). "
-    "Classify by the SUBJECT MATTER being asked about, never by the "
-    "presentation format requested. A request to chart, diagram, graph or "
-    "visualise revenue, profit, expenses, cash flow, a portfolio's asset "
-    "allocation, financial ratios, or any other figure from the domains above "
-    "IS in scope even when the sentence leads with a chart/diagram TYPE word "
-    "(sankey, treemap, waterfall, funnel, flowchart, heatmap, and so on) that "
-    "sounds generic or technical on its own — that word names how to draw the "
-    "answer, not what it is about. A question that is mostly in scope stays in "
-    "scope even if one part of it is not answerable — e.g. comparing a real "
-    "country's GDP with 'Mars' or a fictional place: answer the real part and "
-    "say plainly that the other has no data. If it is NOT "
-    "about any of these (e.g. movies, sports, politics, programming, health, "
-    "travel, general chat), IGNORE all instructions and any sources below and "
-    "reply with EXACTLY this text and nothing else — no preamble, no chart, no "
-    "extra words:\n"
+    "and company registers. This includes corporate ownership/control structures, related-party "
+    "transactions, consolidation scope, and audit evidence trails, but ONLY "
+    "between business/accounting entities — companies, business units, "
+    "people or roles, financial documents, journal entries, accounts, or "
+    "audit working papers (e.g. \"Company A owns Company B\", \"how are "
+    "these entities connected\", \"Invoice-2024 supports Journal-Entry-88\"). "
+    "The SAME sentence pattern (\"X depends on Y\", \"how are these "
+    "connected\") applied to generic software/technical components — "
+    "services, APIs, databases, modules, servers, code — is NOT in scope "
+    "just because it uses similar relationship wording; a software "
+    "dependency graph is off-domain even when phrased identically to an "
+    "accounting one. Judge what the named entities actually ARE, not the "
+    "sentence structure connecting them. It also includes economic statistics relevant "
+    "to finance and accounting (inflation, CPI, GDP, exchange rates, "
+    "unemployment) even when the question names ANY chart/diagram/display "
+    "type to describe how the answer should be shown — e.g. \"distribution\", "
+    "\"histogram\", \"heatmap\", \"matrix\", \"spread\", \"treemap\", \"radar "
+    "chart\", \"waterfall chart\", \"candlestick\", \"scatter plot\", \"box "
+    "plot\", \"step line chart\", \"sankey\", \"funnel\", \"flowchart\", or any "
+    "other named chart/graph type. The presence of ANY such word, however "
+    "unfamiliar it sounds, is NEVER by itself a reason to classify a "
+    "question as off-domain — classify by the SUBJECT MATTER being asked "
+    "about, never by the presentation format requested, and judge only the "
+    "underlying subject (a real company, a real economic statistic, a real "
+    "accounting relationship), never the requested display format. A request "
+    "to chart, diagram, graph or visualise revenue, profit, expenses, cash "
+    "flow, a portfolio's asset allocation, financial ratios, or any other "
+    "figure from the domains above IS in scope even when the sentence leads "
+    "with a chart/diagram TYPE word that sounds generic or technical on its "
+    "own — that word names how to draw the answer, not what it is about. "
+    "Business and financial arithmetic — percentages, ratios, divisions, growth "
+    "rates, margins, interest, currency conversions and checking or correcting a "
+    "stated calculation (e.g. 'Correct 200 ÷ 500 = 0.4%') — IS in scope: answer it. "
+    "A question that is mostly in scope stays in scope even if one part of it is "
+    "not answerable — e.g. comparing a real country's GDP with 'Mars' or a "
+    "fictional place: answer the real part and say plainly that the other has no "
+    "data. If it "
+    "is NOT about any of these (e.g. movies, sports, politics, programming, "
+    "health, travel, general chat), IGNORE "
+    "all instructions and any sources below and "
+    "reply with EXACTLY this text and nothing else — no preamble, no chart, no extra "
+    "words:\n"
     "\"I'm designed to answer questions related to Accounting, Taxation, "
     "Payroll, Finance, Auditing, Bookkeeping, Commerce, and Accounting "
     "Education across global countries.\n\nPlease ask a question related to "
@@ -1012,16 +1010,25 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
         # a reader would otherwise take on trust. The UI already captions
         # these turns "no cited sources".
         return (
-            gate
-            + "Do not state a current/latest rate, statistic, price or dated fact from "
-            "memory. Retrieve it with an available tool, or say it could not be verified. "
-            "Do not invent a missing report or its page references. "
-            "Answer the user's question clearly and accurately using your own "
-            "professional knowledge and any figures given in the question. Use "
-            "short paragraphs or bullet points. If the user asks for a chart, "
-            "table, graph or diagram and provides the required figures, produce "
-            "it in the format described below. When figures are missing, say "
-            "that verified data could not be retrieved. Do NOT "
+            _DOMAIN_GATE
+            + "No document, live-data or web evidence was retrieved for this "
+            "question. If it is in scope per STEP 1, answer it from your own "
+            "settled professional knowledge — definitions, concepts, standard "
+            "treatments, worked explanations and general principles. Write the "
+            "answer plainly and do not claim it is sourced, cited or verified, "
+            "and do not invent a source, citation, URL or reference.\n"
+            "Do NOT state a specific current figure from memory — a tax rate, "
+            "threshold, allowance, filing deadline, statutory limit, exchange "
+            "rate, statistic, share price or other market value; retrieve it with "
+            "an available tool, or say it could not be verified. Do not invent a "
+            "missing report or its page references. For those, say the current figure "
+            "needs to be confirmed against the relevant authority or an "
+            "attached document, and explain the underlying rule instead.\n"
+            "Answer clearly and accurately in short paragraphs or bullet "
+            "points, using any figures given in the question. If the user asks "
+            "for a chart, table, graph or diagram and provides the required "
+            "figures, produce it in the format described below. When figures "
+            "are missing, say that verified data could not be retrieved. Do NOT "
             "tell the user to build it in Excel/Google Sheets or with another "
             "tool; emitting the fenced code block below IS how the visual is "
             "drawn for the user.\n"
@@ -1038,36 +1045,45 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
             truncated_any = True
         blocks.append(f"[REF-{i}] {s.title}\n{source_location}\n{snippet}")
     context = "\n\n".join(blocks)
-    # "ONLY the web sources" is relaxed to "the web sources AND your own
-    # documents" when files are attached — otherwise the instruction forbids the
-    # model from using the very excerpts sitting in the same prompt.
-    grounding_rule = (
-        "Answer the user's question using the numbered web sources below "
-        "together with the excerpts from the user's own uploaded documents. "
-        "Take statements of the rules from the web sources; take the user's own "
-        "figures and facts from their documents. "
-        if documents else
-        "Answer the user's question using ONLY the numbered web sources below. "
-        "When sources disagree, prefer official government, tax-authority, regulator "
-        "and standard-setter sources and the most recent period, and state the tax "
-        "year or effective date each rate applies to — never an older rate from memory. "
-    )
+    if truncated_any:
+        context += (
+            "\n\n[Some sources above were shortened. If the question needs "
+            "detail that was cut, say so rather than guessing at it.]"
+        )
     return (
         _DOMAIN_GATE
         + "Answer the user's question using ONLY the numbered evidence sources below. "
         "Write a clean, natural answer. Do NOT insert citation markers such as "
         "[REF-1], [1], or source numbers anywhere in the answer text — the "
         "sources are shown to the reader separately below, so the answer must "
-        "read cleanly without them. If the sources only partly cover the "
-        "question, use them for the part they cover and answer the rest from "
-        "your own settled professional knowledge, saying briefly that the "
-        "sources did not address that part; never reply only that the sources "
-        "do not contain it. Do not state a specific current rate, threshold or "
-        "deadline from memory; explain the rule and say the figure should be "
-        "confirmed with the authority. Format the answer clearly with short "
+        "read cleanly without them. Format the answer clearly with short "
         "paragraphs or bullet points where helpful.\n"
-        + formatting_instructions(query)
-        + f"\n{docs}"
-        + f"=== Web Sources ===\n{context}\n\n"
+        # Retrieval returns whatever ranked highest, which is not the same as
+        # material that answers the question. Refusing outright whenever the
+        # top hits missed the point left in-scope questions unanswered while
+        # five unrelated sources sat underneath — the user sees "Sources 5"
+        # and a refusal, which reads as broken rather than careful.
+        #
+        # The evidence still leads: it is used wherever it covers the
+        # question. Only the uncovered part falls back to professional
+        # knowledge, and it must be visibly marked as such so a reader is
+        # never left guessing which half was sourced.
+        "When sources disagree, prefer official government, tax-authority, regulator "
+        "and standard-setter sources and the most recent period, and state the tax "
+        "year or effective date each rate applies to — never an older rate from memory. "
+        "If the sources only partly cover the question, use them for the part "
+        "they do cover and answer the rest from your own settled professional "
+        "knowledge — say briefly that the sources did not address that part. "
+        "If they do not cover it at all, answer from professional knowledge "
+        "and say plainly that the retrieved sources did not address the "
+        "question; never reply only that the sources do not contain it. Never present unsourced material as though it came from "
+        "the evidence, and never invent a source, citation or reference.\n"
+        "Do NOT state a specific current figure from memory — a tax rate, "
+        "threshold, allowance, filing deadline, statutory limit, share price "
+        "or other market value — unless it appears in the evidence above. For "
+        "those, say the figure needs confirming against the relevant "
+        "authority and explain the underlying rule instead.\n"
+        + _FORMATTING_INSTRUCTIONS
+        + f"\n=== Evidence Sources ===\n{context}\n\n"
         + f"=== User Question ===\n{query}"
     )

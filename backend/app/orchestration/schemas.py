@@ -146,13 +146,12 @@ class AskKritonRequest(BaseModel):
     # resolve_policy() can escalate instead of looping forever on a query that
     # keeps coming back "needs clarification".
     clarification_cycle: int = 0
-    # Client-generated correlation identifier, never an authorization grant.
+    # Client-generated — scopes audit correlation to one chat thread.
     conversation_id: Optional[str] = None
+    # Recent turns, including earlier answers that carry figures, so a
+    # follow-up ("make it a bar chart", "add Thailand") has the data. Treated
+    # as untrusted context, never as evidence (see conversation.py).
     conversation_history: List[ConversationMessage] = Field(default_factory=list, max_length=12)
-    # Documents the user attached to this turn (app/domains/documents). Ids
-    # only: ownership and readiness are re-verified server-side against the
-    # caller's identity, because the client is not an authority on either.
-    document_ids: List[str] = Field(default_factory=list)
     # Safety simulation overrides (playground only — not trusted in production)
     source_confidence: Optional[str] = None
     pre_bundle_state: Optional[str] = None

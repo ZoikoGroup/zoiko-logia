@@ -694,7 +694,10 @@ async def lifespan(app: FastAPI):
         ("migrate_source_licence_columns", _migrate_source_licence_columns),
         ("migrate_user_profile_columns", _migrate_user_profile_columns),
         ("migrate_orphan_tenant_id_not_null", _migrate_orphan_tenant_id_not_null),
-        ("migrate_document_search_vector", _migrate_document_search_vector),
+        ("migrate_workspace_retention_columns", _migrate_workspace_retention_columns),
+        ("setup_source_rls", _setup_source_rls),
+        ("setup_document_search_index", _setup_document_search_index),
+        ("setup_user_rls", _setup_user_rls),
     ):
         try:
             await _step()

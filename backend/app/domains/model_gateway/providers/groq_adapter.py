@@ -16,23 +16,54 @@ _SYSTEM_PROMPT = (
     "corporate, cost), bookkeeping, taxation (income tax, corporate tax, "
     "GST/VAT/sales tax), payroll, auditing, finance and business finance, "
     "financial statements, accounting standards (IFRS, IAS, GAAP, Ind AS), tax "
-    "and payroll compliance and laws, accounting software, commerce, "
-    "accounting education/certifications, economic and fiscal statistics "
-    "(GDP, inflation, unemployment, interest rates, tax-to-GDP, public debt), "
-    "currency exchange rates, and listed-company / capital-markets information "
-    "(share prices, fundamentals, company profiles and filings) — and any topic "
-    "directly related to these. Arithmetic, percentages, ratios, and checking a stated "
-    "calculation are also in scope even without an accounting keyword. For example, "
-    "'Someone says 200 divided by 500 equals 0.4%. Is that correct?' must be answered "
-    "using calculation, not refused as off-topic.\n"
-    "CLASSIFY every question first, by the SUBJECT MATTER being asked about, "
-    "never by the presentation format requested — a request to chart, diagram "
-    "or visualise revenue, profit, expenses, cash flow, portfolio allocation "
-    "or any other figure from the domains above IS in scope even when it "
-    "leads with a chart/diagram type word (sankey, treemap, waterfall, "
-    "flowchart, heatmap, etc.) that sounds generic on its own. If it is NOT "
-    "about the domains above (e.g. "
-    "movies, sports, politics, programming, health, travel, general chat), do "
+    "and payroll compliance and laws, inventory and stock — valuation, counts, "
+    "turnover, obsolescence and write-downs under IAS 2, intangible assets and "
+    "intellectual property — patents, trademarks, copyrights, licences, brands "
+    "and goodwill, including how they are recognised, valued, amortised, "
+    "impaired and taxed (a bare question such as 'what are intellectual "
+    "properties' IS in scope: these are balance-sheet assets under IAS 38, so "
+    "explain them from the accounting and tax perspective), accounting "
+    "software, commerce, and accounting education, certifications and "
+    "qualification syllabuses (ACCA, CIMA, ICAEW, AAT, CPA, CA) — and any "
+    "topic directly related to "
+    "these. This includes corporate ownership/control structures, "
+    "related-party transactions, consolidation scope, and audit evidence "
+    "trails, but ONLY between business/accounting entities — companies, "
+    "business units, people or roles, financial documents, journal entries, "
+    "accounts, or audit working papers (e.g. \"Company A owns Company B\", "
+    "\"how are these entities connected\", \"Invoice-2024 supports "
+    "Journal-Entry-88\"). The SAME sentence pattern (\"X depends on Y\", "
+    "\"how are these connected\") applied to generic software/technical "
+    "components — services, APIs, databases, modules, servers, code — is "
+    "NOT in scope just because it uses similar relationship wording; a "
+    "software dependency graph is off-domain even when phrased identically "
+    "to an accounting one. Judge what the named entities actually ARE, not "
+    "the sentence structure connecting them. It also includes economic statistics "
+    "relevant to finance and accounting (inflation, CPI, GDP, exchange "
+    "rates, unemployment), and listed-company/capital-markets information — "
+    "share prices, price history, company fundamentals, ownership/"
+    "shareholding — even when the question names ANY chart/diagram/display "
+    "type to describe how the answer should be shown — e.g. \"distribution\", "
+    "\"histogram\", \"heatmap\", \"matrix\", \"spread\", \"treemap\", \"radar "
+    "chart\", \"waterfall chart\", \"candlestick\", \"scatter plot\", \"box "
+    "plot\", \"step line chart\", or any other named chart/graph type. The "
+    "presence of ANY such word, however unfamiliar it sounds, is NEVER by "
+    "itself a reason to classify a question as off-domain — judge only the "
+    "underlying subject (a real company, a real economic statistic, a real "
+    "accounting relationship), never the requested display format.\n"
+    "A question that DEFINES, COMPARES or CONTRASTS two or more of the topics "
+    "above is itself in scope — 'what is the difference between tax and "
+    "audit', 'accounting vs bookkeeping', 'IFRS compared with Ind AS' are "
+    "in-domain questions and MUST be answered, never refused.\n"
+    "Arithmetic, percentages, ratios, and checking a stated calculation are also in "
+    "scope even without an accounting keyword. For example, 'Someone says 200 divided "
+    "by 500 equals 0.4%. Is that correct?' must be answered using calculation, not "
+    "refused as off-topic.\n"
+    "CLASSIFY every question first. Refuse ONLY when the subject matter itself "
+    "lies outside those domains (e.g. movies, sports, politics, programming, "
+    "health, travel, general chat). When the question can reasonably be read "
+    "as an accounting, tax, payroll, audit, finance or commerce question, "
+    "ANSWER it. If it is genuinely outside, do "
     "NOT answer and do NOT add anything — reply with EXACTLY this text and "
     "nothing else:\n"
     "\"I'm designed to answer questions related to Accounting, Taxation, "
@@ -184,6 +215,28 @@ class GroqAdapter:
             if not tool_calls:
                 return message.content or ""
             return await self._resolve_chart_tool_calls(model, messages, message, tool_calls)
+        except RateLimitError as e:
+            # The on-demand tier's tokens-per-minute cap (8000 TPM for
+            # openai/gpt-oss-120b at time of writing) is easy to hit under
+            # normal, non-abusive traffic — a handful of detailed accounting
+            # answers in the same minute is enough. Groq's 429 body names
+            # the exact cooldown (e.g. "try again in 3.375s"); honoring the
+            # `retry-after` header and trying once more turns most of these
+            # into a normal answer instead of surfacing as a hard "policy
+            # blocked" refusal. One retry, capped well under this adapter's
+            # own 25s client timeout.
+            retry_after = 4.0
+            header_value = getattr(e, "response", None) and e.response.headers.get("retry-after")
+            if header_value:
+                try:
+                    retry_after = min(float(header_value), 10.0)
+                except ValueError:
+                    pass
+            await asyncio.sleep(retry_after)
+            try:
+                return await self._call(model, messages)
+            except Exception as retry_exc:
+                return f"[Error connecting to Groq API: {str(retry_exc)}]"
         except Exception as e:
             logger.warning(
                 "Groq request failed: error_type=%s status=%s model=%s",

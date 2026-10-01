@@ -20,9 +20,12 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
+from app.core.database import session_is_sqlite
 from app.domains.audit_ledger.chain_integrity import compute_chain_hash, compute_payload_hash
 from app.domains.audit_ledger.models import AuditEvent, _event_id, _now
 
+settings = get_settings()
 
 # A transient DB fault mid-request has two flavours, and both are recoverable:
 #   1. Supabase's pooler reaps the pooled connection while it sits idle during
@@ -275,14 +278,11 @@ async def record_event_async(
     # that had app.tenant_id set on it — under concurrent load this
     # intermittently makes RLS-protected queries later in the same request
     # see zero rows, since the new connection never had it set at all.
-    # Every orchestration call site already passes the request's real
-    # tenant_id here, so re-asserting it right after commit is free
-    # insurance against exactly that race, regardless of which connection
-    # the pool hands back next.
-    # Decided by the session's own dialect, not settings.DATABASE_URL: a
-    # session bound elsewhere (the SQLite test databases, while .env points
-    # at Postgres) has no set_config() — and no RLS to re-assert.
-    if db.sync_session.get_bind().dialect.name == "postgresql":
+    # Every orchestration call site already passes the request's real tenant
+    # and actor ids here. Re-assert both: workspace-document policies require
+    # app.user_id as well as app.tenant_id, so restoring only the tenant makes
+    # valid document chunks disappear without a query error.
+    if restore_tenant_context and not session_is_sqlite(db):
         await _execute_reconnect(
             db,
             text("SELECT set_config('app.tenant_id', :tenant_id, false)"),

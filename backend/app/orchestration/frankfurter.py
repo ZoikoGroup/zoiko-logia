@@ -222,20 +222,17 @@ async def _find_rates(query: str) -> list[RateMatch]:
     if len(codes) < 2:
         return []
 
-    return await fetch_fx_rates(codes[0], codes[1:], _find_amount(query))
+    return await _fetch_matches(codes[0], codes[1:], _find_amount(query))
 
 
-async def fetch_fx_rates(base_cur: str, quote_curs: list[str], amount: float = 1.0) -> list[WebSource]:
-    """Structured entry point: one WebSource per quote currency, from already
-    known ISO codes — what the get_exchange_rate tool calls with the model's
-    typed arguments, and what fetch_fx() calls after parsing the question.
-    Fails soft to [] like fetch_fx()."""
+async def _fetch_matches(base_cur: str, quote_curs: list[str], amount: float = 1.0) -> list[RateMatch]:
+    """One request for the ECB's own EUR-based rates, crossed here. Asking
+    Frankfurter for base=INR returns rates cut to ~4 significant digits
+    (1 INR = 0.01042 USD), so ₹25,00,000 came out as $26,050 instead of
+    $26,045.73; the EUR table carries the ECB's full published precision."""
     if not quote_curs:
         return []
     base = _frankfurter_base()
-    # Always the ECB's own EUR-based rates, crossed here. Asking Frankfurter
-    # for base=INR returns rates cut to ~4 significant digits (1 INR = 0.01042
-    # USD), so ₹25,00,000 came out as $26,050 instead of $26,046.21.
     symbols = sorted({base_cur, *quote_curs} - {"EUR"})
     url = f"{base}/latest?symbols={','.join(symbols)}" if symbols else f"{base}/latest"
     try:
@@ -255,27 +252,92 @@ async def fetch_fx_rates(base_cur: str, quote_curs: list[str], amount: float = 1
         if quote_cur not in per_euro:
             continue
         rate = per_euro[quote_cur] / per_euro[base_cur]
-        converted = amount * rate
-        snippet = (
-            f"Live ECB reference rate (Frankfurter), {date}: "
-            f"1 {base_cur} = {rate:.8g} {quote_cur}. "
-            f"{amount:.15g} {base_cur} = {converted:.2f} {quote_cur}."
-        )
-        pair_url = f"{base}/latest?base={base_cur}&symbols={quote_cur}"
-        sources.append(
-            WebSource(
-                title=f"Frankfurter — {base_cur}/{quote_cur} exchange rate ({date})",
-                url=pair_url,
-                snippet=snippet,
-                provider="Frankfurter (ECB reference rates)",
-                freshness="daily",
-                observation=LiveObservation(
-                    observation_id=f"obs_{uuid.uuid4().hex}",
-                    indicator=f"{base_cur}/{quote_cur} exchange rate",
-                    value=f"{rate:.8g}", unit=f"{quote_cur} per {base_cur}", period=str(date),
-                    provider="Frankfurter (ECB reference rates)", source_url=pair_url,
-                    freshness="daily",
-                ),
-            )
-        )
-    return sources
+        matches.append(RateMatch(
+            base_cur=base_cur, quote_cur=quote_cur, rate=rate,
+            amount=amount, converted=amount * rate, date=date,
+            url=f"{base}/latest?base={base_cur}&symbols={quote_cur}",
+        ))
+    return matches
+
+
+async def fetch_fx_rates(base_cur: str, quote_curs: list[str], amount: float = 1.0) -> list[WebSource]:
+    """Structured entry point: one WebSource per quote currency, from already
+    known ISO codes — what the get_exchange_rate tool calls with the model's
+    typed arguments. Fails soft to [] like fetch_fx()."""
+    return [_build_source(match) for match in await _fetch_matches(base_cur, quote_curs, amount)]
+
+
+async def _find_rate(query: str) -> RateMatch | None:
+    """The single matched rate for a two-currency question, or None. The sole
+    source of truth both fetch_fx() and the structured evidence path build
+    from."""
+    matches = await _find_rates(query)
+    return matches[0] if matches else None
+
+
+def _build_source(match: RateMatch) -> WebSource:
+    snippet = (
+        f"Live ECB reference rate (Frankfurter), {match.date}: "
+        f"1 {match.base_cur} = {match.rate:.8g} {match.quote_cur}. "
+        f"{match.amount:.15g} {match.base_cur} = {match.converted:.2f} {match.quote_cur}."
+    )
+    return WebSource(
+        title=f"Frankfurter — {match.base_cur}/{match.quote_cur} exchange rate ({match.date})",
+        url=match.url,
+        snippet=snippet,
+        provider="Frankfurter (ECB reference rates)",
+        freshness="daily",
+        observation=LiveObservation(
+            observation_id=f"obs_{uuid.uuid4().hex}",
+            indicator=f"{match.base_cur}/{match.quote_cur} exchange rate",
+            value=f"{match.rate:.8g}", unit=f"{match.quote_cur} per {match.base_cur}",
+            period=match.date, provider="Frankfurter (ECB reference rates)",
+            source_url=match.url, freshness="daily",
+        ),
+    )
+
+
+def unsupported_currency_note(query: str) -> WebSource | None:
+    """A source stating that a named currency has no ECB reference rate.
+
+    Returning nothing for these is what produced the fabrication bug recorded
+    above _CURRENCY_CODES: with no source either way, the model supplied a
+    rate from its training data and it looked as grounded as a real one.
+    Saying "Frankfurter does not publish this" is itself a fact worth
+    grounding on, so it goes into the source panel like any other.
+
+    Only speaks when the question is clearly about a currency pair — two
+    currencies named, at least one of them unserviceable — so it stays silent
+    on text that merely mentions a currency in passing.
+    """
+    mentions = _find_currency_mentions(query)
+    if len(mentions) < 2:
+        return None
+    missing = [code for code, supported in mentions if not supported]
+    if not missing:
+        return None
+    named = ", ".join(missing)
+    plural = "these currencies" if len(missing) > 1 else "this currency"
+    return WebSource(
+        title=f"Frankfurter — no ECB reference rate for {named}",
+        url="https://frankfurter.dev",
+        snippet=(
+            f"Frankfurter serves the European Central Bank's daily reference "
+            f"rates, which do not include {named}. No live rate is available "
+            f"for {plural} from this source, and none should be stated. "
+            f"The currencies covered are: {', '.join(sorted(_CURRENCY_CODES))}."
+        ),
+        provider="frankfurter",
+        freshness="realtime",
+    )
+
+
+async def fetch_fx(query: str) -> list[WebSource]:
+    """Return one WebSource per base/target currency pair when the question
+    names two or more supported currencies; otherwise the explicit "not
+    published" note, or []."""
+    matches = await _find_rates(query)
+    if matches:
+        return [_build_source(match) for match in matches]
+    note = unsupported_currency_note(query)
+    return [note] if note else []
