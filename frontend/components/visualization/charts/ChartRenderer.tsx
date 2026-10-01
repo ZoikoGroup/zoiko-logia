@@ -6,6 +6,7 @@ import type { VisualizationSpec } from "@/lib/api";
 import { engineFor, SAME_SHAPE_VIEW_ALTERNATIVES } from "./engineRouting";
 import { RechartsChart } from "./RechartsAdapter";
 import { EChartsChart, type EChartsInstanceLike } from "./EChartsAdapter";
+import { extraChartKind } from "./extraCharts";
 import { ChartErrorBoundary } from "./ChartErrorBoundary";
 import { DataTableView } from "./DataTableView";
 import { checkChartValidity, normalizeVisualizationSpec } from "./chartValidity";
@@ -68,7 +69,8 @@ export function ChartRenderer({ viz: rawViz }: { viz: VisualizationSpec }) {
   // Shadow the original payload with a derived object for a switched view —
   // never mutate what the backend actually sent.
   const viz: VisualizationSpec = activeType === originalViz.type ? originalViz : { ...originalViz, type: activeType };
-  const engine = engineFor(viz.type);
+  // The typed-data charts (extraCharts.ts) are ECharts whatever their carrier type.
+  const engine = extraChartKind(viz) ? "ECHARTS" : engineFor(viz.type);
   const ariaLabel = viz.summary ?? viz.title ?? `${viz.type} chart`;
   const otherViews = [originalViz.type, ...alternatives].filter((t) => t !== viz.type);
 

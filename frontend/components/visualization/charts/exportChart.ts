@@ -112,6 +112,9 @@ export function exportChartCsv(viz: VisualizationSpec) {
     lines.push(csvRow([viz.label ?? "Actual", value]));
     lines.push(csvRow([viz.target_label ?? "Target", target]));
     lines.push(csvRow(["Percent of target", target > 0 ? ((value / target) * 100).toFixed(1) : ""]));
+  } else if (viz.type === "TABLE") {
+    lines.push(csvRow(viz.columns));
+    for (const row of viz.rows) lines.push(csvRow(viz.columns.map((c) => row[c] ?? "")));
   } else if (viz.type === "GROUPED_BAR") {
     lines.push(csvRow(["Period", ...viz.series.map((s) => s.name)]));
     const categories = viz.series[0]?.data.map((p) => p.x) ?? [];

@@ -51,6 +51,15 @@ def test_line_with_markers_phrasing_classified_as_trend():
     assert classify_intent("Show India CPI as a line with markers") == TREND
 
 
+def test_line_chart_with_markers_phrasing_is_detected():
+    # "chart" between "line" and "with markers" used to fall through to
+    # STANDARD_LINE, so the markers were silently dropped.
+    for query in ("Show India CPI as a line chart with markers", "Show India CPI as a line with markers"):
+        assert detect_requested_chart_variant(query) == "LINE_WITH_MARKERS"
+    assert detect_requested_chart_variant("Show India CPI as a line chart") == "STANDARD_LINE"
+    assert detect_requested_chart_variant("Show India CPI as an area chart with markers") == "AREA_WITH_MARKERS"
+
+
 def test_bare_trend_phrasing_still_works():
     assert classify_intent("Show India CPI over the last 10 years") == TREND
 

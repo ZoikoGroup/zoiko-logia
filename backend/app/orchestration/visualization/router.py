@@ -53,7 +53,10 @@ def choose_visual_route(
             not capability.requires_explicit_heatmap or plan.explicit_heatmap_request,
             not capability.excludes_explicit_heatmap or not plan.explicit_heatmap_request,
             not capability.requires_interactivity or interactive,
-            capability.requires_interactivity or not interactive or capability.canonical_type != "FLOW",
+            # A flow the user named (swimlane) is drawn at any stage count;
+            # only the unnamed flows split on interactivity.
+            capability.requires_interactivity or not interactive or capability.canonical_type != "FLOW"
+            or capability.requested_variant is not None,
             capability.requested_variant is None or capability.requested_variant == plan.requested_chart_variant,
         ))
 

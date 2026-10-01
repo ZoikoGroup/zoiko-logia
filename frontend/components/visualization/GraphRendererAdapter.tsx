@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import { GraphErrorBoundary, RelationshipTableFallback } from "./GraphErrorBoundary";
 import type { VisualizationGraphEdge, VisualizationGraphNode } from "@/lib/api";
+import { krokiKindFor } from "@/lib/diagrams-api";
 
 // Both touch the DOM/canvas — client-only, same pattern as ECharts/mermaid.
 // Each gets its own loading placeholder so the OTHER engine's bundle cost is
@@ -15,6 +16,8 @@ const G6Graph = dynamic(() => import("./G6Graph").then((m) => m.G6Graph), {
   ssr: false,
   loading: () => <GraphLoadingPlaceholder />,
 });
+
+const KrokiDiagram = dynamic(() => import("./KrokiDiagram").then((m) => m.KrokiDiagram), { ssr: false });
 
 function GraphLoadingPlaceholder() {
   return <div className="my-4 h-[360px] min-w-0 animate-pulse rounded-2xl border border-line bg-soft shadow-sm" />;
@@ -46,15 +49,18 @@ function resolveEngine(nodeCount: number, preferred?: GraphEngineName | "auto" |
  * retried, permanently for this mount (spec §19's full chain).
  */
 export function GraphRendererAdapter({
-  nodes, edges, preferredEngine,
-}: { nodes: VisualizationGraphNode[]; edges: VisualizationGraphEdge[]; preferredEngine?: GraphEngineName | "auto" | null }) {
+  nodes, edges, preferredEngine, capabilityId,
+}: {
+  nodes: VisualizationGraphNode[]; edges: VisualizationGraphEdge[]; preferredEngine?: GraphEngineName | "auto" | null;
+  capabilityId?: string | null;
+}) {
   const primary = resolveEngine(nodes.length, preferredEngine);
   const secondary: GraphEngineName = primary === "g6" ? "cytoscape" : "g6";
 
   const secondaryEl = secondary === "g6" ? <G6Graph nodes={nodes} edges={edges} /> : <CytoscapeGraph nodes={nodes} edges={edges} />;
   const primaryEl = primary === "g6" ? <G6Graph nodes={nodes} edges={edges} /> : <CytoscapeGraph nodes={nodes} edges={edges} />;
 
-  return (
+  const graph = (
     <GraphErrorBoundary
       failedRenderer={primary}
       fallbackRenderer={secondary}
@@ -71,4 +77,8 @@ export function GraphRendererAdapter({
       {primaryEl}
     </GraphErrorBoundary>
   );
+  // ER diagrams are drawn by the backend's Kroki; the ordinary graph above
+  // is their fallback when it is unavailable.
+  const kroki = krokiKindFor(capabilityId);
+  return kroki ? <KrokiDiagram kind={kroki} nodes={nodes} edges={edges} fallback={graph} /> : graph;
 }

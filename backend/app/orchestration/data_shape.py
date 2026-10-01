@@ -34,6 +34,10 @@ DIRECTED_STAGES = "DIRECTED_STAGES"
 XY_NUMERIC = "XY_NUMERIC"
 PART_TO_WHOLE = "PART_TO_WHOLE"
 OHLC = "OHLC"
+# A small table the user typed for a named multi-value chart (Pareto, funnel,
+# Sankey, bubble, ...) — see chart_tables.py. Also the marker that
+# chart_tables.py puts first in `dimensions`, which is how it is recognised.
+CHART_TABLE = "CHART_TABLE"
 
 # Below this many observations, a line chart is more noise than signal — a
 # two-point "trend" line is just a single change, better said in text.
@@ -55,6 +59,11 @@ _MIN_OHLC_BARS = 2
 
 
 def classify_data_shape(evidence: EvidenceModel, intent: str | None = None) -> str:
+    # Checked first: its cells are stored as observations, which every branch
+    # below would otherwise read as a series or a single figure.
+    if evidence.dimensions[:1] == [CHART_TABLE] and evidence.observations:
+        return CHART_TABLE
+
     # Two real, independently-fetched, period-aligned series (dbnomics.py's
     # _find_two_series) — checked before the entities/relationships and
     # single-series branches below, since a correlation query also carries

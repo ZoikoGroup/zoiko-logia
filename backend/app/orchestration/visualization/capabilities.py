@@ -153,6 +153,89 @@ ROUTABLE_CAPABILITIES: tuple[VisualizationCapability, ...] = (
         ("DIRECTED_STAGES",), "FLOW_ADAPTER", minimum_entities=2,
         priority=0.90, fallbacks=("TEXT",),
     ),
+    # Drawn as PROCESS_FLOW, so every existing flow renderer and validator
+    # still applies; the frontend switches to the Kroki swimlane image by
+    # capability_id and falls back to the ordinary flow if Kroki is down.
+    VisualizationCapability(
+        "swimlane_diagram", "Swimlane Diagram", "PROCESS", "FLOW",
+        "SWIMLANE_DIAGRAM", "PROCESS_FLOW", ALL_DOMAINS, ("PROCESS",),
+        ("DIRECTED_STAGES",), "FLOW_ADAPTER", minimum_entities=2,
+        priority=0.93, requested_variant="SWIMLANE_DIAGRAM",
+        fallbacks=("BASIC_FLOWCHART", "TEXT"),
+    ),
+    # The same Kroki pattern (see kroki_diagrams.py): one step, message or
+    # task per PROCESS_FLOW node, drawn by Kroki with the ordinary flow as
+    # the fallback.
+    VisualizationCapability(
+        "sequence_diagram", "Sequence Diagram", "PROCESS", "FLOW",
+        "SEQUENCE_DIAGRAM", "PROCESS_FLOW", ALL_DOMAINS, ("PROCESS",),
+        ("DIRECTED_STAGES",), "FLOW_ADAPTER", minimum_entities=2,
+        priority=0.93, requested_variant="SEQUENCE_DIAGRAM",
+        fallbacks=("BASIC_FLOWCHART", "TEXT"),
+    ),
+    VisualizationCapability(
+        "bpmn_diagram", "BPMN Diagram", "PROCESS", "FLOW",
+        "BPMN_DIAGRAM", "PROCESS_FLOW", ALL_DOMAINS, ("PROCESS",),
+        ("DIRECTED_STAGES",), "FLOW_ADAPTER", minimum_entities=2,
+        priority=0.93, requested_variant="BPMN_DIAGRAM",
+        fallbacks=("BASIC_FLOWCHART", "TEXT"),
+    ),
+    VisualizationCapability(
+        "gantt_chart", "Gantt Chart", "PROJECT", "GANTT",
+        "GANTT_CHART", "PROCESS_FLOW", ALL_DOMAINS, ("PROCESS",),
+        ("DIRECTED_STAGES",), "FLOW_ADAPTER", minimum_entities=2,
+        priority=0.93, requested_variant="GANTT_CHART",
+        fallbacks=("BASIC_FLOWCHART", "TEXT"),
+    ),
+    # Entities and relationships as EVIDENCE_GRAPH, so the ordinary graph is
+    # the fallback when Kroki is unavailable.
+    VisualizationCapability(
+        "er_diagram", "ER Diagram", "GRAPH_NETWORK", "GRAPH",
+        "ER_DIAGRAM", "EVIDENCE_GRAPH", ALL_DOMAINS,
+        ("EVIDENCE_ANALYSIS", "RELATIONSHIP", "NETWORK", "DEPENDENCY", "LINEAGE"),
+        ("NODES_EDGES",), "GRAPH_ADAPTER", minimum_entities=2,
+        excludes_explicit_heatmap=True, interaction_level="HIGH", priority=0.93,
+        requested_variant="ER_DIAGRAM", fallbacks=("TABLE", "TEXT"),
+    ),
+    # UML diagrams, same Kroki pattern. Step-shaped ones ride on
+    # PROCESS_FLOW; the rest on EVIDENCE_GRAPH — including state diagrams,
+    # whose loops (Draft -> Submitted -> Draft) have no start stage and so
+    # would fail PROCESS_FLOW validation. Timing, object, deployment and
+    # package diagrams have no taxonomy entry of their own and use the
+    # nearest one (event_timeline, node_link_diagram, system_architecture,
+    # dependency_diagram).
+    VisualizationCapability(
+        "activity_diagram", "Activity Diagram", "PROCESS", "FLOW",
+        "ACTIVITY_DIAGRAM", "PROCESS_FLOW", ALL_DOMAINS, ("PROCESS",),
+        ("DIRECTED_STAGES",), "FLOW_ADAPTER", minimum_entities=2,
+        priority=0.93, requested_variant="ACTIVITY_DIAGRAM",
+        fallbacks=("BASIC_FLOWCHART", "TEXT"),
+    ),
+    VisualizationCapability(
+        "event_timeline", "Timing Diagram", "TIMELINE", "TIMELINE",
+        "TIMING_DIAGRAM", "PROCESS_FLOW", ALL_DOMAINS, ("PROCESS",),
+        ("DIRECTED_STAGES",), "FLOW_ADAPTER", minimum_entities=2,
+        priority=0.93, requested_variant="TIMING_DIAGRAM",
+        fallbacks=("BASIC_FLOWCHART", "TEXT"),
+    ),
+    *(
+        VisualizationCapability(
+            capability_id, name, "GRAPH_NETWORK", canonical, variant, "EVIDENCE_GRAPH", ALL_DOMAINS,
+            ("EVIDENCE_ANALYSIS", "RELATIONSHIP", "NETWORK", "DEPENDENCY", "LINEAGE"),
+            ("NODES_EDGES",), "GRAPH_ADAPTER", minimum_entities=2,
+            excludes_explicit_heatmap=True, interaction_level="HIGH", priority=0.93,
+            requested_variant=variant, fallbacks=("TABLE", "TEXT"),
+        )
+        for capability_id, name, canonical, variant in (
+            ("state_diagram", "State Diagram", "FLOW", "STATE_DIAGRAM"),
+            ("class_diagram", "Class Diagram", "GRAPH", "CLASS_DIAGRAM"),
+            ("node_link_diagram", "Object Diagram", "GRAPH", "OBJECT_DIAGRAM"),
+            ("use_case_diagram", "Use Case Diagram", "FLOW", "USE_CASE_DIAGRAM"),
+            ("component_diagram", "Component Diagram", "GRAPH", "COMPONENT_DIAGRAM"),
+            ("system_architecture", "Deployment Diagram", "TABLE", "DEPLOYMENT_DIAGRAM"),
+            ("dependency_diagram", "Package Diagram", "GRAPH", "PACKAGE_DIAGRAM"),
+        )
+    ),
     VisualizationCapability(
         "histogram", "Histogram", "DISTRIBUTION", "HISTOGRAM",
         "STANDARD_HISTOGRAM", "HISTOGRAM", ALL_DOMAINS, ("DISTRIBUTION",),
@@ -281,6 +364,42 @@ ROUTABLE_CAPABILITIES: tuple[VisualizationCapability, ...] = (
         "radar_chart", "Radar Chart", "COMPARISON", "RADAR", "RADAR_CHART", "DONUT",
         ALL_DOMAINS, ("COMPOSITION", "__EXPLICIT_VISUAL__"), ("PART_TO_WHOLE",), "ECHARTS",
         priority=0.98, requested_variant="RADAR_CHART", fallbacks=("DONUT", "TABLE", "TEXT"),
+    ),
+    # A sunburst of the same composition data; "Parent / Child 20%" labels
+    # give it a second ring. A bullet chart is the gauge's actual-versus-
+    # target pair drawn as a bar. Both only draw differently, as pie and
+    # treemap do.
+    VisualizationCapability(
+        "sunburst_chart", "Sunburst Chart", "COMPOSITION", "TREEMAP", "SUNBURST_CHART", "DONUT",
+        ALL_DOMAINS, ("COMPOSITION", "__EXPLICIT_VISUAL__"), ("PART_TO_WHOLE",), "ECHARTS",
+        priority=0.98, requested_variant="SUNBURST_CHART", fallbacks=("DONUT", "TABLE", "TEXT"),
+    ),
+    VisualizationCapability(
+        "bullet_chart", "Bullet Chart", "KPI", "BAR", "BULLET_CHART", "GAUGE",
+        ALL_DOMAINS, ("FACT", "CURRENT_METRIC", "PRECISE_DATA", "__EXPLICIT_VISUAL__"),
+        ("SCALAR_TARGET",), "ECHARTS", minimum_observations=1, priority=0.98,
+        requested_variant="BULLET_CHART", fallbacks=("GAUGE", "KPI", "TEXT"),
+    ),
+    # Charts over a small table the user typed (chart_tables.py), carried as
+    # TABLE so the exact figures are still shown if the chart cannot be
+    # drawn. Pareto, streamgraph, Sankey and parallel coordinates have no
+    # taxonomy entry of their own and use the nearest one.
+    *(
+        VisualizationCapability(
+            capability_id, name, family, canonical, variant, "TABLE", ALL_DOMAINS,
+            ("__EXPLICIT_VISUAL__",), ("CHART_TABLE",), "TABLE_ADAPTER",
+            minimum_observations=1, priority=0.98, requested_variant=variant,
+            fallbacks=("TABLE", "TEXT"),
+        )
+        for capability_id, name, family, canonical, variant in (
+            ("spend_category_analysis", "Pareto Chart", "COMPARISON", "TABLE", "PARETO_CHART"),
+            ("funnel_chart", "Funnel Chart", "COMPOSITION", "PIE_DONUT", "FUNNEL_CHART"),
+            ("stacked_area_chart", "Streamgraph", "TREND", "AREA", "STREAMGRAPH"),
+            ("bubble_chart", "Bubble Chart", "CORRELATION", "SCATTER", "BUBBLE_CHART"),
+            ("scenario_comparison", "Parallel Coordinates", "COMPARISON", "TABLE", "PARALLEL_COORDINATES"),
+            ("flow_of_funds", "Sankey Chart", "FINANCIAL", "FLOW", "SANKEY_CHART"),
+            ("calendar_heatmap", "Calendar Heatmap", "HEATMAP", "HEATMAP", "CALENDAR_HEATMAP"),
+        )
     ),
 )
 

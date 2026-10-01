@@ -22,7 +22,7 @@ import re
 from pydantic import BaseModel
 
 from app.orchestration.data_shape import (
-    DIRECTED_STAGES, NODES_EDGES, NONE, OHLC, PART_TO_WHOLE, SCALAR, SCALAR_TARGET,
+    CHART_TABLE, DIRECTED_STAGES, NODES_EDGES, NONE, OHLC, PART_TO_WHOLE, SCALAR, SCALAR_TARGET,
     TIME_SERIES, XY_NUMERIC,
 )
 from app.orchestration.intent_classifier import (
@@ -149,8 +149,23 @@ _CHART_VARIANTS = (
     ("STEP_LINE_CHART", re.compile(r"\b(?:step|stepped)[\s-]?line\b", re.I)),
     ("SPLINE_LINE_CHART", re.compile(r"\b(?:spline|smooth\s+spline|smooth(?:ed)?\s+line)\b", re.I)),
     ("AREA_CHART", re.compile(rf"\b(?:area{_KIND}|filled\s+line|filled\s+area)\b", re.I)),
-    ("LINE_WITH_MARKERS", re.compile(r"\b(?:line\s+with\s+markers?|marked\s+line)\b", re.I)),
+    # Optional "chart", as AREA_WITH_MARKERS allows: without it "line chart
+    # with markers" fell through to STANDARD_LINE and drew a plain line.
+    ("LINE_WITH_MARKERS", re.compile(r"\b(?:line\s*(?:chart\s*)?with\s+markers?|marked\s+line)\b", re.I)),
     ("PLAIN_LINE", re.compile(r"\bplain\s+line\b", re.I)),
+    ("SWIMLANE_DIAGRAM", re.compile(r"\bswim[\s-]?lanes?\b", re.I)),
+    ("SEQUENCE_DIAGRAM", re.compile(r"\bsequence\s+diagram\b", re.I)),
+    ("BPMN_DIAGRAM", re.compile(r"\bbpmn\b", re.I)),
+    ("ER_DIAGRAM", re.compile(r"\b(?:erd|er\s+diagram|entity[\s-]relationship)\b", re.I)),
+    ("ACTIVITY_DIAGRAM", re.compile(r"\bactivity\s+diagram\b", re.I)),
+    ("TIMING_DIAGRAM", re.compile(r"\btiming\s+diagram\b", re.I)),
+    ("STATE_DIAGRAM", re.compile(r"\bstate(?:\s+machine)?\s+diagram\b|\bstate\s+machine\b", re.I)),
+    ("CLASS_DIAGRAM", re.compile(r"\bclass\s+diagram\b", re.I)),
+    ("OBJECT_DIAGRAM", re.compile(r"\bobject\s+diagram\b", re.I)),
+    ("USE_CASE_DIAGRAM", re.compile(r"\buse[\s-]?case\s+diagram\b", re.I)),
+    ("COMPONENT_DIAGRAM", re.compile(r"\bcomponent\s+diagram\b", re.I)),
+    ("DEPLOYMENT_DIAGRAM", re.compile(r"\bdeployment\s+diagram\b", re.I)),
+    ("PACKAGE_DIAGRAM", re.compile(r"\bpackage\s+diagram\b", re.I)),
     ("BOX_PLOT", re.compile(r"\b(?:box\s*plot|box[\s-]?and[\s-]?whisker|whisker\s*plot)\b", re.I)),
     # These two name types that are already the DEFAULT for their data shape,
     # so their capabilities carry no requested_variant gate and win on shape
@@ -331,6 +346,15 @@ def plan_response(query: str, intent: str, data_shape: str) -> ResponsePlan:
         return _make_plan(query,
             intent=intent, response_mode=TEXT_CHART, visual_required=True,
             visual_family=FINANCIAL_FAMILY, explicit_visual_request=explicit,
+            confidence=0.9,
+        )
+
+    # A table the user typed for a named chart (chart_tables.py) — the shape
+    # exists only because that chart was asked for, so it always wants it.
+    if data_shape == CHART_TABLE:
+        return _make_plan(query,
+            intent=intent, response_mode=TEXT_TABLE, visual_required=True,
+            visual_family=STATISTICAL, explicit_visual_request=explicit,
             confidence=0.9,
         )
 

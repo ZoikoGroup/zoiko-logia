@@ -62,7 +62,8 @@ GRAPH_INTENTS = frozenset({EVIDENCE_ANALYSIS, RELATIONSHIP, NETWORK, DEPENDENCY,
 
 _PROCESS_HINTS = re.compile(
     r"\b(process|workflow|procedure|steps? (to|for|in)|approval flow|"
-    r"flowchart|flow diagram|interactive flow|interactive diagram|"
+    r"flowchart|flow diagram|interactive flow|interactive diagram|swim[\s-]?lanes?|sequence diagram|bpmn|gantt|"
+    r"activity diagram|timing diagram|"
     r"process flow|process diagram|mermaid (?:flowchart|flow|diagram)|x6 (?:workflow|flow|diagram)|"
     r"explain (the|how) .*(process|workflow|procedure)|how does .* work)\b",
     re.I,
@@ -77,6 +78,10 @@ _EVIDENCE_ANALYSIS_HINTS = re.compile(
 _RELATIONSHIP_HINTS = re.compile(
     r"\b(relationship between|how (are|is) .* (connected|related)|"
     r"connection between|how .* relate|ownership structure|"
+    # An ER diagram draws entities and their relationships; so do these UML
+    # structure diagrams (and a state diagram's states and transitions).
+    r"erd|er diagram|entity[\s-]relationship|"
+    r"(?:class|object|use[\s-]?case|component|deployment|package|state(?: machine)?) diagram|state machine|"
     # An explicit request to render AS a graph-shaped format (heatmap/graph/
     # network/matrix) is itself relationship-shaped intent, independent of
     # whether the query also uses "connected"/"related" wording — e.g. "show
@@ -101,7 +106,12 @@ _RELATIONSHIP_HINTS = re.compile(
 # request — see classify_intent()'s disambiguation using this.
 _RELATIONSHIP_BETWEEN_HINT = re.compile(r"\brelationship between\b", re.I)
 
-_NETWORK_HINTS = re.compile(r"\b(network (of|diagram|graph)|ownership network|ownership chain)\b", re.I)
+# "relationship network" is listed on its own: it names no "of/diagram/graph"
+# after "network", so without it the request classified as FACT and no graph
+# was drawn over entities and relationships the user had supplied.
+_NETWORK_HINTS = re.compile(
+    r"\b(network (of|diagram|graph)|relationships? network|ownership network|ownership chain)\b", re.I,
+)
 
 _DEPENDENCY_HINTS = re.compile(r"\b(depends? on|dependenc(y|ies)|dependency map)\b", re.I)
 
@@ -113,7 +123,7 @@ _DISTRIBUTION_HINTS = re.compile(
 )
 
 _COMPOSITION_VISUAL_HINTS = re.compile(
-    r"\b(donut chart|doughnut chart|ring chart|pie chart)\b", re.I,
+    r"\b(donut chart|doughnut chart|ring chart|pie chart|sunburst(?: chart)?)\b", re.I,
 )
 
 _EXPLICIT_PERCENT_VALUE = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?\s*%")
