@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 CalculationOperation = Literal[
     "arithmetic", "sum", "difference", "percentage", "percentage_change",
-    "variance", "straight_line_depreciation",
+    "variance", "straight_line_depreciation", "loan_emi",
 ]
 
 

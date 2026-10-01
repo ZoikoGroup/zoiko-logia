@@ -38,6 +38,9 @@ from app.orchestration.identifiers import (
     check_idempotency, claim_idempotency, store_idempotency,
 )
 from app.orchestration.prescreen import run_prescreen
+from app.orchestration.evidence_narrative import ground_causal_claims
+from app.orchestration.professional_boundary import CERTIFICATION_REFUSAL, requests_tax_certification
+from app.orchestration.series_summary import ground_series_summary
 from app.orchestration.retrieve import build_source_bundle
 from app.orchestration.routing_matrix import (
     map_safety_confidence,
@@ -115,7 +118,7 @@ from app.orchestration.calculations.engine import calculation_markdown
 from app.domains.source_library.service import record_source_usages
 from app.orchestration.live_data import build_forced_chart, fetch_live_data, LiveDataResult
 from app.orchestration.calculation_service import (
-    build_calculation, validate_answer_calculations,
+    build_calculation, is_self_contained_calculation, validate_answer_calculations,
 )
 from app.domains.calculations.service import persist_run as persist_calculation_run
 from app.orchestration.telemetry import StageMetrics, current_stage_metrics
@@ -160,6 +163,7 @@ def _hash_query(query: str) -> str:
 _SAME_DATA_REFERENCE = re.compile(
     r"\b(?:same|previous|above|that)\s+(?:data|series|figures?|values?|chart|graph|table)\b|"
     r"\b(?:show|render|display|plot)\s+(?:it|them)\s+as\b|"
+    r"\b(?:change|convert|make|turn)\s+(?:that|this|it|them)\s+(?:to|into|as)\b|"
     r"\bthe\s+(?:underlying|raw|source)\s+(?:data|table|figures?|values?|numbers?)\b|"
     r"\bshow\s+(?:me\s+)?the\s+table\b",
     re.I,
@@ -220,7 +224,13 @@ def _with_previous_context(
 
 
 def _should_reuse_previous_evidence(query: str) -> bool:
-    """Only explicit formatting follow-ups inherit the previous evidence."""
+    """Only explicit formatting follow-ups inherit the previous evidence.
+
+    A question that names its own countries ("Compare inflation in India, the
+    US and the UK ... show it as a chart") has a subject of its own, so a
+    failed live lookup must not swap in the previous turn's series."""
+    if countries_in_query(query or ""):
+        return False
     return bool(_SAME_DATA_REFERENCE.search(query or ""))
 
 
@@ -854,6 +864,31 @@ async def ask_kriton(
             await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
         return contextualize(response)
 
+    # Certification is a request-level boundary, independent of stochastic
+    # model wording, source availability, or cached composed answers.
+    if requests_tax_certification(request.query):
+        await audit_refusal_returned(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, reason="Professional tax certification requested",
+        )
+        response = AskKritonResponse(
+            query_id=query_id, correlation_id=correlation_id,
+            outcome="refused", route=ROUTE_REFUSAL,
+            safety=SafetyState(risk_level="HIGH", policy_state="blocked"),
+            confidence_state=CONF_INSUFFICIENT, source_bundle=None, answer=None,
+            next_action=NextAction(type="refusal", message=CERTIFICATION_REFUSAL),
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        )
+        await _finalise_and_return(
+            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+            audit_chain_id=audit_chain_id, actor_id=actor_id,
+            outcome=response.outcome, route=response.route, start_time=start_time,
+        )
+        if idempotency_key:
+            await store_idempotency(db, idempotency_key, tenant_id, request_hash, response.model_dump())
+        return contextualize(response)
+
     await report("safety_complete", "Safety controls passed")
 
     # Self-contained, allow-listed calculations are executed after the hard
@@ -944,7 +979,10 @@ async def ask_kriton(
     # answer actually needs the sources. This overlaps the long search with
     # the rest of the pipeline instead of paying for them one after another.
     # Fails soft exactly as before (returns [] on any error).
-    needs_web = request.source_scope != "DOCUMENTS_ONLY"
+    # A calculation whose every input is in the question has nothing to look
+    # up; searching it only attached unrelated reports as its "sources".
+    self_contained_calculation = is_self_contained_calculation(request.query)
+    needs_web = request.source_scope != "DOCUMENTS_ONLY" and not self_contained_calculation
     web_search_task = (
         asyncio.create_task(
             asyncio.wait_for(
@@ -1603,6 +1641,7 @@ async def ask_kriton(
     )
 
     document_analysis: dict = {}
+    deterministic_calculation = None
     if document_plan.task_type == "document_generation" and document_sources:
         document_analysis = analyse_spreadsheet_sources(document_sources)
         grounded_input = build_document_generation_prompt(
@@ -1672,7 +1711,7 @@ async def ask_kriton(
                 prompt = None
 
         if (
-            explicit_visual_request and not live_evidence.observations
+            explicit_visual_request and not live_evidence.observations and not agent_mode
             and deterministic_chart_text is None
         ):
             # Whether an approved prompt template happens to exist is an
@@ -1939,6 +1978,18 @@ async def ask_kriton(
         )
         return contextualize(response)
 
+    # The agent loop grounds its own prose against its tool results. A
+    # standard composition (agent mode off, or the agent failed and fell back)
+    # gets the same treatment against the series fetched for this question:
+    # extrema and trend claims are restated from the numbers, and causes the
+    # sources never state are removed.
+    if agent_outcome is None and deterministic_chart_text is None:
+        series_sources = [source for source in live_result.sources if source.series]
+        if series_sources:
+            composed_text = ground_series_summary(
+                ground_causal_claims(composed_text, series_sources), series_sources,
+            )
+
     if agent_outcome is not None:
         # Tool evidence joins the answer's citations after the retrieved
         # sources, and validated charts are attached as-is (built from checked
@@ -2048,17 +2099,32 @@ async def ask_kriton(
     # are the [REF-N] citations the reader gets, but they are not registered in
     # the governed SourceBundle. Without it, every answer grounded purely in
     # live sources fails the grounding check and degrades to HUMAN_REVIEW.
+    calculation_failures = metrics.run_sync(
+        "calculation.validate", lambda: validate_answer_calculations(composed_text)
+    )
+    # A calculation on the question's own figures ("revenue ₹50,00,000,
+    # expenses ₹38,50,000 — net margin?") has nothing to cite, so failing it
+    # for lacking sources escalated every such question. It is exempt from
+    # the source-count check only when it was actually computed (a verified
+    # calculation, or the agent's calculate/render_chart tools succeeded) AND
+    # every calculation shown in the prose re-checks — the prohibited-claim
+    # and citation checks still apply to it in full.
+    computed_from_own_figures = not calculation_failures and (
+        deterministic_calculation is not None
+        or (self_contained_calculation and not rag_citations)
+        or (agent_outcome is not None and any(
+            call.tool in ("calculate", "render_chart") and call.ok for call in agent_outcome.tool_calls
+        ))
+    )
     validation = (
         validate_answer(
             composed_text,
             source_bundle,
             disclaimer_required=False,
             external_source_count=len(rag_citations),
+            ungrounded_answer_allowed=effective_confidence == CONF_INSUFFICIENT or computed_from_own_figures,
         )
         if source_bundle else None
-    )
-    calculation_failures = metrics.run_sync(
-        "calculation.validate", lambda: validate_answer_calculations(composed_text)
     )
     if calculation_failures:
         if validation is None:
@@ -2129,7 +2195,14 @@ async def ask_kriton(
                 outcome="refused", route=ROUTE_REFUSAL,
                 safety=safety_state, confidence_state=effective_confidence,
                 source_bundle=source_bundle, answer=None,
-                next_action=NextAction(type="refusal", message="Response validation failed. Please rephrase your query."),
+                next_action=NextAction(type="refusal", message=(
+                    "I can explain general requirements and help you prepare a review checklist, "
+                    "but I cannot certify compliance or provide a professional sign-off. "
+                    "Please have a qualified professional review your situation."
+                    if any("Prohibited-claim" in failure for failure in validation.failures)
+                    else "I couldn't provide a response that meets the source and safety requirements. "
+                         "Please narrow your question or provide an approved source."
+                )),
                 audit_reference=AuditReference(audit_chain_id=audit_chain_id),
             )
         await _finalise_and_return(
@@ -2200,6 +2273,7 @@ async def ask_kriton(
     # "model knowledge" misdescribes it.
     computed_from_question = not rag_citations and not is_offdomain_refusal and (
         deterministic_calculation is not None
+        or self_contained_calculation
         or (agent_outcome is not None and any(
             call.tool in ("calculate", "render_chart") and call.ok for call in agent_outcome.tool_calls
         ))

@@ -17,6 +17,7 @@ registry, account lifecycle, audit trail) have a regression net:
 from __future__ import annotations
 
 import inspect
+import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -380,12 +381,16 @@ async def _count_visible_users(user_id: str, tenant_id: str) -> list[str]:
         return [row[0] for row in result.all()]
 
 
+@pytest.mark.integration
+@pytest.mark.skipif(
+    os.getenv("RUN_DB_INTEGRATION_TESTS") != "1",
+    reason="set RUN_DB_INTEGRATION_TESTS=1 with an isolated Postgres database",
+)
 async def test_non_admin_cannot_read_another_users_row() -> None:
     """Functional check against live Postgres with the app's RLS setup applied
     (docker compose exec backend python -m pytest tests/test_auth.py)."""
     if settings.is_sqlite:
-        print("test_non_admin_cannot_read_another_users_row: SKIPPED (SQLite has no RLS)")
-        return
+        pytest.skip("SQLite has no RLS")
 
     async with AsyncSessionLocal() as db:
         caller_tenant = Tenant(name="RLS Caller Tenant")

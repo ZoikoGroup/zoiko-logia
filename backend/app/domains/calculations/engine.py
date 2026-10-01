@@ -21,6 +21,15 @@ def execute(operation: CalculationOperation, values: list[Decimal]) -> Decimal:
         if operation == "straight_line_depreciation":
             _require(values, 3)
             return (values[0] - values[1]) / values[2]
+        if operation == "loan_emi":
+            # principal, annual rate (%), term in months
+            _require(values, 3)
+            principal, months = values[0], values[2]
+            rate = values[1] / Decimal("12") / Decimal("100")
+            if rate == 0:
+                return principal / months
+            growth = (1 + rate) ** months
+            return principal * rate * growth / (growth - 1)
     except (DivisionByZero, InvalidOperation, ZeroDivisionError) as exc:
         raise ValueError("The calculation cannot divide by zero") from exc
     raise ValueError(f"Unsupported calculation operation: {operation}")

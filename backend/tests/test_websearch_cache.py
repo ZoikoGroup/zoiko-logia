@@ -121,6 +121,7 @@ def test_empty_results_are_never_cached(monkeypatch, fake_redis):
     """
     calls: list[int] = []
     _fake_searxng(monkeypatch, [], calls)
+    monkeypatch.setattr(websearch, "_EMPTY_RETRY_DELAY_SECONDS", 0)
 
     async def run():
         await websearch.web_search("a question nothing matches")
@@ -128,7 +129,9 @@ def test_empty_results_are_never_cached(monkeypatch, fake_redis):
 
     asyncio.run(run())
 
-    assert len(calls) == 2, "an empty result was cached, freezing the outage in"
+    # Each search retries an empty answer once (a throttled engine), and the
+    # second search goes upstream again rather than reading a cached empty.
+    assert len(calls) == 4, "an empty result was cached, freezing the outage in"
     assert not fake_redis.store
 
 
@@ -275,3 +278,99 @@ def test_a_returned_list_cannot_mutate_the_cache(monkeypatch):
 
     second = asyncio.run(run())
     assert [s.url for s in second] == ["https://www.irs.gov/filing/rates"]
+
+
+def test_trusted_domain_results_must_be_about_the_question():
+    # Reported live: a compound-interest question was "source grounded" in
+    # five OECD/ILO reports that merely sit on allowlisted domains.
+    query = "If I invest $10,000 at 8% a year compounded annually, what will it be worth after 10 years?"
+    unrelated = WebSource(
+        title="Health at a Glance: Latin America and the Caribbean 2026 (EN)", url="https://www.oecd.org/x",
+        snippet="The OECD, IDB and The World Bank shall not be liable for any content or error in this translation.",
+    )
+    assert not websearch._is_relevant(query, unrelated)
+    relevant = WebSource(
+        title="What to include in a VAT Return - GOV.UK", url="https://www.gov.uk/submit-vat-return",
+        snippet="You can account for import VAT on your VAT Return.",
+    )
+    assert websearch._is_relevant("Who can sign off a VAT return in the UK?", relevant)
+
+
+def _fake_tavily(monkeypatch, responses: list[list[dict]], bodies: list[dict]):
+    """Stub Tavily: each POST returns the next result list in `responses`."""
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+    queue = list(responses)
+
+    class _Resp:
+        def __init__(self, results):
+            self._results = results
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"results": self._results}
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, *a, json=None, **kw):
+            bodies.append(json)
+            return _Resp(queue.pop(0) if queue else [])
+
+        async def get(self, *a, **kw):
+            raise AssertionError("SearXNG must not be called when Tavily answered")
+
+    monkeypatch.setattr(websearch.httpx, "AsyncClient", _Client)
+
+
+_TAVILY_HIT = [{
+    "url": "https://www.gov.uk/guidance/authorise-an-agent-to-deal-with-certain-tax-services-for-you",
+    "title": "Authorise an agent to deal with certain tax services for you - GOV.UK",
+    "content": "If you authorise your agent for Making Tax Digital for VAT, they can submit VAT returns for you.",
+    "score": 0.8,
+}]
+
+
+def test_tavily_is_searched_first_within_the_trusted_domains(monkeypatch):
+    bodies: list[dict] = []
+    _fake_tavily(monkeypatch, [_TAVILY_HIT], bodies)
+    results = asyncio.run(websearch.web_search("Who can submit a VAT return in the UK?", read_pages=0))
+    assert [s.url for s in results] == [_TAVILY_HIT[0]["url"]]
+    assert bodies[0]["include_domains"] and bodies[0]["search_depth"] == "advanced"
+    assert len(bodies) == 1
+
+
+def test_tavily_widens_to_the_open_web_only_when_trusted_domains_are_empty(monkeypatch):
+    bodies: list[dict] = []
+    _fake_tavily(monkeypatch, [[], _TAVILY_HIT], bodies)
+    results = asyncio.run(websearch.web_search("Who can submit a VAT return in the UK?", read_pages=0))
+    assert results and len(bodies) == 2
+    assert "include_domains" not in bodies[1] and bodies[1]["search_depth"] == "basic"
+
+
+def test_tavily_failure_falls_back_to_searxng(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+    calls: list[int] = []
+    _fake_searxng(monkeypatch, _IRS_HIT, calls)  # its client has no post(): Tavily raises
+    results = asyncio.run(websearch.web_search("federal income tax", read_pages=0))
+    assert results and len(calls) == 1
+
+
+def test_a_page_about_a_different_procedure_is_not_a_source():
+    # Reported live: "Who can sign off a VAT return?" was answered with the
+    # claimant-signature rules of the VAT refund page, even with a prompt rule.
+    refund_page = WebSource(
+        title="Refunds of UK VAT for non-UK businesses (VAT Notice 723A) - GOV.UK",
+        url="https://www.gov.uk/guidance/refunds-of-uk-vat-for-non-uk-businesses",
+        snippet="The claim must be signed by the claimant or an agent holding a power of attorney.",
+    )
+    assert not websearch._is_relevant("Who can sign off a VAT return in the UK?", refund_page)
+    assert websearch._is_relevant("How do I claim a VAT refund as a non-UK business?", refund_page)

@@ -25,6 +25,14 @@ def test_previous_evidence_reuse_requires_an_explicit_same_data_reference():
     assert not _should_reuse_previous_evidence("Show US GDP as a line chart.")
 
 
+def test_question_naming_its_own_countries_never_reuses_previous_evidence():
+    # Reported live: a failed inflation lookup charted the previous turn's
+    # India GDP series because "show it as a chart" read as a follow-up.
+    assert not _should_reuse_previous_evidence(
+        "Compare inflation in India, the US and the UK for the last 3 years, and show it as a chart."
+    )
+
+
 def test_standard_scatter_comparison_is_in_domain_and_splits_both_series():
     query = "Create a scatter plot comparing UK inflation and US inflation."
     assert classify_intent(query) == CORRELATION
@@ -207,3 +215,13 @@ def test_standard_scatter_routes_with_real_paired_evidence():
     )
     assert result.spec is not None
     assert result.spec.type == "SCATTER"
+
+
+def test_change_that_chart_followup_keeps_previous_context():
+    from app.orchestration.service import _with_previous_context
+
+    query = "“Change that to a line chart.”"
+    previous = "Revenue is ₹850,000 and expenses are ₹637,500. Calculate profit and profit margin."
+    assert _should_reuse_previous_evidence(query)
+    assert previous in _with_previous_context(query, previous)
+    assert not _should_reuse_previous_evidence("Change that to a line chart for Japan unemployment")
