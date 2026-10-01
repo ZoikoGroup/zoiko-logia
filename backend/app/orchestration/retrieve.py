@@ -53,6 +53,16 @@ _STOP_WORDS = {
 }
 
 
+# Exclusions that mean "not applicable or not yet set up", not "forbidden":
+# lifecycle, context mismatch, tenant boundary and rights that are unknown,
+# not yet valid or lapsed. Anything else (an explicit rights denial and its
+# custom reason codes) is a real restriction.
+_NOT_RESTRICTIVE_REASONS = frozenset({
+    "UNKNOWN_OPERATION", "SOURCE_VERSION_NOT_FOUND", "TENANT_PRIVATE_BOUNDARY",
+    "SOURCE_REVOKED", "SOURCE_SUPERSEDED", "VERSION_NOT_APPROVED",
+    "JURISDICTION_MISMATCH", "FRAMEWORK_MISMATCH", "NOT_YET_EFFECTIVE", "SOURCE_EXPIRED",
+    "RIGHT_UNKNOWN", "RIGHT_NOT_YET_VALID", "RIGHT_EXPIRED",
+})
 def _retrieval_timeout_seconds() -> float:
     """Bound remote governed-source reads below the frontend request limit.
 
@@ -146,9 +156,13 @@ async def build_source_bundle(
         framework=framework, effective_date=effective_date,
     )
 
+    query_tokens = _tokens(query)
     category = infer_category(query)
     eligible_rows: list[tuple[Source, SourceVersion]] = []
     excluded: list[ExcludedEvidence] = []
+    # Whether a source RELEVANT to this question was explicitly denied — the
+    # only exclusion that means "the evidence exists but may not be used".
+    relevant_source_denied = False
     async with asyncio.timeout(_retrieval_timeout_seconds()):
         candidates = await _candidate_versions(
             db, tenant_id=tenant_id, category=category,
@@ -162,6 +176,11 @@ async def build_source_bundle(
                 source_id=source.id, source_version_id=version.id,
                 reason_code=decision.reason_code,
             ))
+            # Relevance from the title (metadata) only: an ineligible
+            # source's text is never read.
+            if (decision.reason_code not in _NOT_RESTRICTIVE_REASONS
+                    and _lexical_score(query_tokens, source.title or "") > 0):
+                relevant_source_denied = True
 
     # Only now is source text loaded: every version in this query has already
     # passed tenant, status, date, framework, jurisdiction and retrieval-right checks.
@@ -176,7 +195,6 @@ async def build_source_bundle(
         passages = list(result.scalars().all())
 
     version_to_source = {version.id: source for source, version in eligible_rows}
-    query_tokens = _tokens(query)
     ranked: list[tuple[float, SourcePassage]] = []
     for passage in passages:
         score = _lexical_score(query_tokens, passage.content)
@@ -229,7 +247,12 @@ async def build_source_bundle(
     if conflict_version_ids:
         confidence = CONF_CONFLICTING
     elif not selected_passages:
-        confidence = CONF_RESTRICTED if excluded and not eligible_rows else CONF_INSUFFICIENT
+        # Previously RESTRICTED whenever every library source was excluded for
+        # any reason — e.g. all licence rights still unrecorded — which made
+        # EVERY question, on any topic, route to refusal. Restricted now means
+        # a relevant source was explicitly denied; otherwise the library just
+        # has no usable evidence for this question.
+        confidence = CONF_RESTRICTED if relevant_source_denied else CONF_INSUFFICIENT
     elif len(selected_passages) < 2:
         confidence = CONF_LIMITED
     else:

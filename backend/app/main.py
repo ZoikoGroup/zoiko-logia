@@ -612,8 +612,7 @@ def _require_supabase_config():
 
     The failure mode this exists for: with SUPABASE_URL and/or
     SUPABASE_SERVICE_ROLE_KEY unset, token verification fails closed (no JWKS
-    client), so every authenticated endpoint 401s and default-user seeding is
-    silently skipped — which reads as "auth is broken" far from the real,
+    client), so every authenticated endpoint 401s, which reads as "auth is broken" far from the real,
     config-level cause. Local/demo runs legitimately skip Supabase (plain
     SQLite dev, frontend-only work), so this gate is opt-in: staging/prod set
     REQUIRE_SUPABASE_CONFIG=true and a missing key aborts startup loudly at
@@ -628,58 +627,6 @@ def _require_supabase_config():
             "failure instead of silent 401s. Set both in backend/.env (or the "
             "environment) or unset REQUIRE_SUPABASE_CONFIG for local dev."
         )
-
-
-def _seed_users():
-    """Seed a default tenant and admin user on first startup. Since
-    Supabase now owns credentials, this needs a Supabase auth user created
-    via the Admin API (service-role key) before the local profile row can
-    reference it — skipped (like the APP_DATABASE_URL warning above) when
-    SUPABASE_SERVICE_ROLE_KEY isn't configured, e.g. plain SQLite dev mode."""
-    from app.core import supabase_admin
-    from app.domains.identity.models import Tenant, User
-
-    if not supabase_admin.is_configured():
-        print("WARNING: SUPABASE_SERVICE_ROLE_KEY/SUPABASE_URL not set — "
-              "skipping default user seeding (no Supabase auth user can be "
-              "created for admin@zoiko.com / kriton@zoiko.com).")
-        return
-
-    db = SessionLocal()
-    try:
-        # Create default tenant if it doesn't exist
-        tenant = db.query(Tenant).filter(Tenant.id == "tenant-default").first()
-        if tenant is None:
-            tenant = Tenant(id="tenant-default", name="ZoikoLogia Default Tenant")
-            db.add(tenant)
-            db.flush()
-
-        # Create default admin user if no users exist
-        if db.query(User).count() == 0:
-            for email, password, full_name, role in (
-                ("admin@zoiko.com", "Admin@1234", "System Administrator", "Admin"),
-                ("kriton@zoiko.com", "Kriton@1234", "Kriton Reviewer", "SME Reviewer"),
-            ):
-                existing_auth_user = supabase_admin.get_user_by_email(email)
-                auth_user = existing_auth_user or supabase_admin.create_user(email, password, email_confirm=True)
-                first_name, _, last_name = full_name.partition(" ")
-                db.add(User(
-                    id=auth_user["id"],
-                    tenant_id="tenant-default",
-                    email=email,
-                    first_name=first_name,
-                    last_name=last_name,
-                    full_name=full_name,
-                    role=role,
-                    is_active=True,
-                ))
-                db.flush()
-                supabase_admin.update_app_metadata(auth_user["id"], "tenant-default", role)
-        db.commit()
-    except Exception:
-        db.rollback()
-    finally:
-        db.close()
 
 
 async def _warm_up_ml_models():
@@ -711,9 +658,30 @@ async def _warm_up_ml_models():
             print(f"WARNING: {name} model warmup failed (will still lazy-load on first use): {exc}")
 
 
+# Concurrent DDL on the shared database (two dev reloads a second apart, or
+# another developer's backend starting at the same moment) fails the loser
+# with these; a moment later the same statement succeeds. One of them used to
+# stop the backend outright, and every question then timed out in the browser.
+_DDL_CONTENTION = ("lock timeout", "deadlock detected", "tuple concurrently updated", "could not obtain lock")
+
+
+async def _with_ddl_retry(step, attempts: int = 5):
+    for attempt in range(1, attempts + 1):
+        try:
+            return await step()
+        except SQLAlchemyError as exc:
+            if attempt == attempts or not any(marker in str(exc) for marker in _DDL_CONTENTION):
+                raise
+            delay = 2 * attempt
+            print(f"WARNING: {step.__name__} hit concurrent DDL ({type(exc.orig).__name__ if getattr(exc, 'orig', None) else type(exc).__name__}); "
+                  f"retrying in {delay}s (attempt {attempt}/{attempts})")
+            await asyncio.sleep(delay)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle events: create tables, seed, and dispose of engine."""
+    _require_supabase_config()
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     # Each schema migration is idempotent and already applied on the first
@@ -736,12 +704,13 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             print(f"WARNING: startup step {_label} skipped ({type(exc).__name__}: {exc}). "
                   "Service will still start; step retries on next boot.")
+    # Security policies are required before any request can be served.
+    await _with_ddl_retry(_setup_source_rls)
+    await _with_ddl_retry(_setup_user_rls)
     _seed_defaults()
     _seed_evaluation()
     _seed_escalation_rules()
     _seed_incidents()
-    _require_supabase_config()
-    _seed_users()
     await _warm_up_ml_models()
     yield
     await async_engine.dispose()
@@ -777,6 +746,18 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=503,
             content={"detail": "Kriton's database is temporarily unavailable. Please try again shortly."},
+            headers={"Retry-After": "5"},
+        )
+
+    @app.exception_handler(TimeoutError)
+    async def database_timeout_handler(_request, exc: TimeoutError) -> JSONResponse:
+        # A connection that could not be opened in time raised a bare
+        # TimeoutError; unhandled, it became a 500 without CORS headers and the
+        # browser showed a CORS failure instead of a retryable message.
+        logger.error("Request timed out before completing", exc_info=(type(exc), exc, exc.__traceback__))
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Kriton could not reach its database in time. Please try again."},
             headers={"Retry-After": "5"},
         )
 

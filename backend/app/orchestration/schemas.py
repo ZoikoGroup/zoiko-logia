@@ -125,6 +125,12 @@ from app.orchestration.calculations.schemas import CalculationResult
 
 # ── Request ──────────────────────────────────────────────────────────────────
 
+class ConversationMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=4000)
+
+
 class AskKritonRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -142,6 +148,10 @@ class AskKritonRequest(BaseModel):
     clarification_cycle: int = 0
     # Client-generated — scopes audit correlation to one chat thread.
     conversation_id: Optional[str] = None
+    # Recent turns, including earlier answers that carry figures, so a
+    # follow-up ("make it a bar chart", "add Thailand") has the data. Treated
+    # as untrusted context, never as evidence (see conversation.py).
+    conversation_history: List[ConversationMessage] = Field(default_factory=list, max_length=12)
     # Safety simulation overrides (playground only — not trusted in production)
     source_confidence: Optional[str] = None
     pre_bundle_state: Optional[str] = None
@@ -356,6 +366,9 @@ class ComposedAnswer(BaseModel):
     calculation_result: Optional[DeterministicCalculationResult] = None
     verified_charts: List[VerifiedChartSpec] = Field(default_factory=list)
     observations: List[LiveObservation] = Field(default_factory=list)
+    # No citations, but the figures are the question's or the conversation's
+    # own, computed or charted exactly — not model knowledge.
+    computed_from_question: bool = False
     # Internal fields — kept for model_gateway wiring; never exposed to frontend
     prompt_id: str = "inline"
     prompt_name: str = "Inline RAG Prompt"

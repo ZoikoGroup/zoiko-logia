@@ -54,6 +54,20 @@ async def list_task_specs(
     return list(TASK_SPECS.values())
 
 
+async def _abandon_after_failure(db: AsyncSession, idempotency_key: str, tenant_id: str) -> None:
+    """Release the idempotency reservation after a failed request. The failure
+    (a timeout mid-query, a dropped connection) can leave the session in a
+    failed transaction; querying it then raised PendingRollbackError, which
+    turned a clean 504/"please try again" into an unhandled 500. Roll back
+    first, and never let the clean-up itself mask the original failure."""
+    with suppress(Exception):
+        await db.rollback()
+    try:
+        await abandon_idempotency(db, idempotency_key, tenant_id)
+    except Exception:
+        logger.warning("Could not release idempotency key after a failed request", exc_info=True)
+
+
 async def _run_with_deadline(**kwargs) -> AskKritonResponse:
     if kwargs.get("idempotency_key"):
         request = kwargs.get("request")
@@ -88,9 +102,7 @@ async def _run_with_deadline(**kwargs) -> AskKritonResponse:
         with suppress(ValueError, RuntimeError):
             discard_audit_batch(token)
         if kwargs.get("idempotency_key"):
-            await abandon_idempotency(
-                kwargs["db"], kwargs["idempotency_key"], kwargs["tenant_id"]
-            )
+            await _abandon_after_failure(kwargs["db"], kwargs["idempotency_key"], kwargs["tenant_id"])
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail="Kriton could not complete the response within the processing deadline.",
@@ -101,17 +113,13 @@ async def _run_with_deadline(**kwargs) -> AskKritonResponse:
         # 409 means another worker owns the durable reservation. Never delete
         # that worker's row while it is still processing.
         if exc.status_code != status.HTTP_409_CONFLICT and kwargs.get("idempotency_key"):
-            await abandon_idempotency(
-                kwargs["db"], kwargs["idempotency_key"], kwargs["tenant_id"]
-            )
+            await _abandon_after_failure(kwargs["db"], kwargs["idempotency_key"], kwargs["tenant_id"])
         raise
     except Exception:
         with suppress(ValueError, RuntimeError):
             discard_audit_batch(token)
         if kwargs.get("idempotency_key"):
-            await abandon_idempotency(
-                kwargs["db"], kwargs["idempotency_key"], kwargs["tenant_id"]
-            )
+            await _abandon_after_failure(kwargs["db"], kwargs["idempotency_key"], kwargs["tenant_id"])
         raise
 
 

@@ -233,6 +233,82 @@ _COUNTRY_ALIASES: dict[str, str] = {
     # how the Italian series got attached to a German question.
     "de": "germany", "fr": "france", "jp": "japan",
     "cn": "china", "ca": "canada", "ie": "ireland", "au": "australia",
+    # Countries the agent's get_economic_indicator tool supports (Naresh-new).
+    "south africa": "south africa",
+    "south african": "south africa",
+    "netherlands": "netherlands",
+    "dutch": "netherlands",
+    "holland": "netherlands",
+    "switzerland": "switzerland",
+    "swiss": "switzerland",
+    "sweden": "sweden",
+    "swedish": "sweden",
+    "norway": "norway",
+    "norwegian": "norway",
+    "denmark": "denmark",
+    "danish": "denmark",
+    "finland": "finland",
+    "finnish": "finland",
+    "belgium": "belgium",
+    "belgian": "belgium",
+    "austria": "austria",
+    "austrian": "austria",
+    "portugal": "portugal",
+    "portuguese": "portugal",
+    "poland": "poland",
+    "polish": "poland",
+    "turkey": "turkey",
+    "turkiye": "turkey",
+    "turkish": "turkey",
+    "argentina": "argentina",
+    "argentine": "argentina",
+    "argentinian": "argentina",
+    "chile": "chile",
+    "chilean": "chile",
+    "colombia": "colombia",
+    "colombian": "colombia",
+    "peru": "peru",
+    "peruvian": "peru",
+    "egypt": "egypt",
+    "egyptian": "egypt",
+    "kenya": "kenya",
+    "kenyan": "kenya",
+    "ghana": "ghana",
+    "ghanaian": "ghana",
+    "morocco": "morocco",
+    "moroccan": "morocco",
+    "saudi arabia": "saudi arabia",
+    "saudi": "saudi arabia",
+    "qatar": "qatar",
+    "qatari": "qatar",
+    "kuwait": "kuwait",
+    "kuwaiti": "kuwait",
+    "israel": "israel",
+    "israeli": "israel",
+    "vietnam": "vietnam",
+    "vietnamese": "vietnam",
+    "thailand": "thailand",
+    "thai": "thailand",
+    "malaysia": "malaysia",
+    "malaysian": "malaysia",
+    "philippines": "philippines",
+    "filipino": "philippines",
+    "sri lanka": "sri lanka",
+    "sri lankan": "sri lanka",
+    "nepal": "nepal",
+    "nepalese": "nepal",
+    "nepali": "nepal",
+    "new zealand": "new zealand",
+    "hong kong": "hong kong",
+    "ukraine": "ukraine",
+    "ukrainian": "ukraine",
+    "czech republic": "czech republic",
+    "czechia": "czech republic",
+    "czech": "czech republic",
+    "hungary": "hungary",
+    "hungarian": "hungary",
+    "romania": "romania",
+    "romanian": "romania",
 }
 
 # ISO-3 codes, because many DBnomics series carry the country only in the code
@@ -245,6 +321,43 @@ _ISO3: dict[str, str] = {
     "singapore": "SGP", "brazil": "BRA", "italy": "ITA", "spain": "ESP",
     "mexico": "MEX", "indonesia": "IDN", "nigeria": "NGA", "pakistan": "PAK",
     "bangladesh": "BGD", "russia": "RUS", "korea": "KOR", "greece": "GRC",
+    # Countries the agent's get_economic_indicator tool supports (Naresh-new).
+    "south africa": "ZAF",
+    "netherlands": "NLD",
+    "switzerland": "CHE",
+    "sweden": "SWE",
+    "norway": "NOR",
+    "denmark": "DNK",
+    "finland": "FIN",
+    "belgium": "BEL",
+    "austria": "AUT",
+    "portugal": "PRT",
+    "poland": "POL",
+    "turkey": "TUR",
+    "argentina": "ARG",
+    "chile": "CHL",
+    "colombia": "COL",
+    "peru": "PER",
+    "egypt": "EGY",
+    "kenya": "KEN",
+    "ghana": "GHA",
+    "morocco": "MAR",
+    "saudi arabia": "SAU",
+    "qatar": "QAT",
+    "kuwait": "KWT",
+    "israel": "ISR",
+    "vietnam": "VNM",
+    "thailand": "THA",
+    "malaysia": "MYS",
+    "philippines": "PHL",
+    "sri lanka": "LKA",
+    "nepal": "NPL",
+    "new zealand": "NZL",
+    "hong kong": "HKG",
+    "ukraine": "UKR",
+    "czech republic": "CZE",
+    "hungary": "HUN",
+    "romania": "ROU",
 }
 
 # OECD MEI's harmonised-unemployment-rate series code uses ISO3, unlike CPI's
@@ -501,6 +614,71 @@ def _wdi_match(query: str) -> tuple[str, str] | None:
     return None
 
 
+def canonical_country(name: str) -> str | None:
+    """Canonical country (a key of _ISO3) for a name, alias or ISO-3 code the
+    caller already isolated — e.g. a tool argument — or None if unsupported."""
+    value = name.strip().lower()
+    if value in _ISO3:
+        return value
+    alias = _COUNTRY_ALIASES.get(value)
+    if alias in _ISO3:
+        return alias
+    for country, iso3 in _ISO3.items():
+        if iso3 == value.upper():
+            return country
+    return None
+
+
+def supported_countries() -> list[str]:
+    return sorted(_ISO3)
+
+
+async def _indicator_source(
+    client: httpx.AsyncClient, code: str, label: str, country: str
+) -> WebSource | None:
+    """One World Bank WDI indicator for one canonical country (a key of
+    _ISO3): the publisher first, the DBnomics mirror as fallback, else None."""
+    country_iso3 = _ISO3[country]
+    points = await _fetch_world_bank(client, code, country_iso3)
+    if points:
+        provider = "World Bank (WDI)"
+        url = f"https://data.worldbank.org/indicator/{code}?locations={country_iso3}"
+    else:
+        doc = await _fetch_wdi(client, code, country_iso3)
+        points = _real_points(doc) if doc else []
+        provider = "World Bank (WDI) via DBnomics"
+        url = f"{_dbnomics_base()}/series/WB/WDI/A-{code}-{country_iso3}"
+    if not points:
+        return None
+    tail = points[-_MAX_POINTS:]
+    values_txt = ", ".join(f"{p}: {v:.15g}" for p, v in tail)
+    return WebSource(
+        title=f"{label} — {country.title()}",
+        url=url,
+        snippet=(f"{provider}. {label} for {country.title()}. "
+                 f"Latest available year: {tail[-1][0]}. Values — {values_txt}."),
+        provider=provider,
+        fetched_at=datetime.now(timezone.utc).isoformat(),
+        freshness="historical",
+        observation=LiveObservation(
+            observation_id=f"obs_{uuid.uuid4().hex}", indicator=label,
+            value=str(tail[-1][1]),
+            unit="percent" if "%" in label else "provider-defined",
+            period=str(tail[-1][0]), provider=provider, source_url=url,
+            freshness="historical",
+        ),
+        series=tail,
+    )
+
+
+async def fetch_indicator_sources(code: str, label: str, countries: list[str]) -> list[WebSource | None]:
+    """Structured entry point for the agent's get_economic_indicator tool: one
+    slot per canonical country, in order (None where that country has no
+    data). Every country must be a key of _ISO3."""
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        return list(await asyncio.gather(*(_indicator_source(client, code, label, c) for c in countries)))
+
+
 def _dbnomics_base() -> str:
     return os.getenv("DBNOMICS_API_BASE_URL", "https://api.db.nomics.world/v22").rstrip("/")
 
@@ -538,46 +716,28 @@ async def _wdi_sources(query: str) -> list[WebSource] | None:
     if any(not _ISO3.get(named_country) for named_country in countries):
         return None
 
-    async with httpx.AsyncClient(timeout=8.0) as client:
-        async def source_for(named_country: str) -> WebSource | None:
-            country_iso3 = _ISO3[named_country]
-            points = await _fetch_world_bank(client, code, country_iso3)
-            if points:
-                provider = "World Bank (WDI)"
-                url = f"https://data.worldbank.org/indicator/{code}?locations={country_iso3}"
-            else:
-                doc = await _fetch_wdi(client, code, country_iso3)
-                points = _real_points(doc) if doc else []
-                provider = "World Bank (WDI) via DBnomics"
-                url = f"{_dbnomics_base()}/series/WB/WDI/A-{code}-{country_iso3}"
-            if not points:
-                return None
-            tail = points[-_MAX_POINTS:]
-            values_txt = ", ".join(f"{p}: {v:g}" for p, v in tail)
-            return WebSource(
-                title=f"{label} — {named_country.title()}",
-                url=url,
-                snippet=(f"{provider}. {label} for {named_country.title()}. "
-                         f"Latest available year: {tail[-1][0]}. Values — {values_txt}."),
-                provider=provider,
-                fetched_at=datetime.now(timezone.utc).isoformat(),
-                freshness="historical",
-                observation=LiveObservation(
-                    observation_id=f"obs_{uuid.uuid4().hex}", indicator=label,
-                    value=str(tail[-1][1]),
-                    unit="percent" if "%" in label else "provider-defined",
-                    period=str(tail[-1][0]), provider=provider, source_url=url,
-                    freshness="historical",
-                ),
-                series=tail,
-            )
-
-        sources = await asyncio.gather(*(source_for(c) for c in countries))
-    # A comparison with one missing country must not masquerade as complete.
-    if all(sources):
-        return [source for source in sources if source is not None]
+    sources = await fetch_indicator_sources(code, label, countries)
+    available = [source for source in sources if source is not None]
+    if len(available) == len(sources):
+        return available
     if len(countries) > 1:
-        return []
+        if not available:
+            return []
+        # A comparison with one missing country must not masquerade as
+        # complete — but dropping every country for it answered "I don't
+        # have the figures" when three of four were available. Keep them,
+        # and state plainly which countries have no figure.
+        missing = [country for country, source in zip(countries, sources) if source is None]
+        return available + [WebSource(
+            title=f"World Bank — no {label} figure for {', '.join(c.title() for c in missing)}",
+            url="https://data.worldbank.org",
+            snippet=(
+                f"The World Bank publishes no recent {label} figure for "
+                f"{', '.join(c.title() for c in missing)}. Do not state or estimate a value "
+                "for it; say it is not available from this source."
+            ),
+            provider="World Bank",
+        )]
     return None
 
 

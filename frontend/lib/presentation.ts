@@ -12,8 +12,15 @@
  * model output, so "copy the response" should not include it. */
 const DISCLAIMER_MARKER = "Kriton™ Disclaimer";
 
-/** Inline citation markers are internal ref ids, meaningless outside the app. */
-const REF_MARKER = /\s*\[\s*(?:REF-)?\d+(?:\s*,\s*(?:REF-)?\d+)*\s*\]/gi;
+/**
+ * Inline citation markers are internal ref ids, meaningless to a reader: the
+ * Sources panel carries the citations. Matches "[REF-1]", "[1]",
+ * "[REF-2, REF-5]", "(REF-1)" and a bare "REF-1", with any hyphen the model
+ * types (it has written "(REF\u20111)" with a non-breaking hyphen). A plain
+ * "(1)" is left alone — in ordinary text it is usually a real list reference.
+ */
+export const REF_MARKER =
+  /\s*(?:\[\s*(?:REF[\s\-\u2010-\u2015]?)?\d+(?:\s*,\s*(?:REF[\s\-\u2010-\u2015]?)?\d+)*\s*\]|\(\s*REF[\s\-\u2010-\u2015]?\d+(?:\s*,\s*(?:REF[\s\-\u2010-\u2015]?)?\d+)*\s*\)|\bREF[\-\u2010-\u2015]\d+\b)/gi;
 
 /**
  * The answer body alone — what the user actually asked Kriton, with the

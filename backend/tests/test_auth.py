@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import inspect
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
@@ -326,6 +325,12 @@ async def test_provision_is_idempotent(provision_db, monkeypatch) -> None:
     _stub_claims(monkeypatch)
     payload = ProvisionRequest(first_name="Ada", last_name="Lovelace", company_name="ACME Ltd")
     first = await provision(payload, db, "token-xyz")
+    # The frontend refreshes the session after provisioning, so the next
+    # sign-in's token carries the tenant/role just stamped into app_metadata.
+    refreshed = supabase_auth.SupabaseClaims(
+        sub="user-abc123", email="ada@example.com", tenant_id=first.tenant_id, role=first.role,
+    )
+    monkeypatch.setattr("app.domains.identity.router.verify_token", lambda token: refreshed)
     second = await provision(payload, db, "token-xyz")
 
     assert second.id == first.id
@@ -334,7 +339,7 @@ async def test_provision_is_idempotent(provision_db, monkeypatch) -> None:
     user_count = (await db.execute(select(func.count()).select_from(User))).scalar_one()
     assert tenant_count == 1
     assert user_count == 1
-    # Only the first call reaches the Supabase Admin API.
+    # A correctly stamped account causes no further Admin API calls.
     assert len(captured) == 1
 
 

@@ -78,8 +78,11 @@ def _fake_searxng(monkeypatch, results, counter):
         async def __aexit__(self, *a):
             return False
 
-        async def get(self, *a, **kw):
-            counter.append(1)
+        async def get(self, url="", *a, **kw):
+            # Count trips to the search engine only — reading the top official
+            # pages (websearch._with_page_extracts) is a separate request.
+            if str(url).endswith("/search"):
+                counter.append(1)
             return _Resp()
 
     monkeypatch.setattr(websearch.httpx, "AsyncClient", _Client)

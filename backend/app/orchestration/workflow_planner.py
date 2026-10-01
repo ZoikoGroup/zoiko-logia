@@ -25,7 +25,32 @@ _POLICY = re.compile(
 _CALCULATE = re.compile(r"\b(calculate|compute|percentage|ratio|growth|margin|total)\w*\b", re.I)
 _CHART = re.compile(r"\b(chart|graph|plot|visuali[sz]e|trend)\w*\b", re.I)
 _EXECUTION = re.compile(r"\b(reconcile|compare|extract|calculate|compute|review|test)\w*\b", re.I)
-_EDUCATIONAL = re.compile(r"^\s*(what is|what are|explain|define|how does|why does)\b", re.I)
+# "How is goodwill impairment tested under IAS 36?" is a learning question,
+# but "how is" was missing here, so it was treated as professional policy
+# research and asked for an engagement, jurisdiction and period end date.
+_EDUCATIONAL = re.compile(
+    r"^[\s\"\u201c\u201d']*(what is|what are|what does|explain|define|describe|compare|list|"
+    r"how does|how do|how is|how are|how to|why does|why is|why are|when is|when does)\b",
+    re.I,
+)
+_CLIENT_SPECIFIC = re.compile(
+    r"\b(my|our|this|these|the client's)\s+(company|client|entity|transaction|contract|"
+    r"acquisition|business|financial statements|accounting policy)\b", re.I,
+)
+
+# Policy research needs an engagement, jurisdiction, framework and period, so
+# it only applies to the asker's own or a client's matter. A message that
+# merely names a standard ("... under IAS 37?") with no such context is a
+# learning question, whatever it starts with: "Pass journal entries for ...
+# What is the difference between provisions and contingent liabilities under
+# IAS 37? ..." was sent to policy research because it did not START with
+# "what is"/"explain".
+_OWN_MATTER = re.compile(
+    r"\b(my|our|we|us)\b|\bclient'?s?\b|"
+    r"\b(this|these)\s+(company|companies|entity|entities|transactions?|contracts?|leases?|"
+    r"acquisitions?|business|arrangements?|deals?|group)\b",
+    re.I,
+)
 
 
 def _step(capability: str, reason: str) -> CapabilityStep:
@@ -55,7 +80,7 @@ def plan_workflow(request: AskKritonRequest) -> WorkflowPlan:
         elif document_count and (extract or execution):
             task_type, confidence = "document_evidence_extraction", 0.94
             reasons = ["DOCUMENTS_ATTACHED", "EVIDENCE_INTENT"]
-        elif policy and not (educational and not selection.engagement_id):
+        elif policy and _OWN_MATTER.search(query) and not (educational and not _CLIENT_SPECIFIC.search(query)):
             task_type, confidence = "policy_research", 0.88
             reasons = ["POLICY_APPLICABILITY_INTENT"]
         else:
@@ -69,7 +94,7 @@ def plan_workflow(request: AskKritonRequest) -> WorkflowPlan:
             _step("document.retrieve", "Selected documents are required as evidence."),
             _step("document.extract", "Relevant facts must be extracted from authorized documents."),
         ])
-    if task_type == "policy_research":
+    if task_type == "policy_research" or _POLICY.search(request.query):
         steps.extend([
             _step("source.research", "Current authoritative sources are required."),
             _step("policy.lookup", "The request asks for applicable requirements."),

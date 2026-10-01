@@ -24,6 +24,8 @@ from app.domains.identity.permissions import (
     SOURCE_READ,
     SUPPORT_MANAGE,
     SUPPORT_READ,
+    SAFETY_READ,
+    SAFETY_MANAGE,
     permissions_for_role,
     user_has_permission,
 )
@@ -50,7 +52,7 @@ def _user(role: str) -> User:
 
 
 async def test_permissions_declared_exactly_once_in_registry() -> None:
-    declared = {SOURCE_READ, SOURCE_MANAGE, SUPPORT_READ, SUPPORT_MANAGE, MODEL_MANAGE, AUDIT_CORRECT}
+    declared = {SOURCE_READ, SOURCE_MANAGE, SUPPORT_READ, SUPPORT_MANAGE, MODEL_MANAGE, AUDIT_CORRECT, SAFETY_READ, SAFETY_MANAGE}
     assert ALL_PERMISSIONS == declared
     # Every permission a role carries must be a declared one — a mistyped
     # permission would otherwise silently deny forever (unknown permission).
@@ -63,12 +65,13 @@ async def test_role_matrix_matches_approved_mapping() -> None:
     assert ROLE_PERMISSIONS["Admin"] == ALL_PERMISSIONS
     assert ROLE_PERMISSIONS["Governance Ops Lead"] == frozenset({
         SOURCE_READ, SOURCE_MANAGE, SUPPORT_READ, SUPPORT_MANAGE, MODEL_MANAGE, AUDIT_CORRECT,
+        SAFETY_READ, SAFETY_MANAGE,
     })
     assert ROLE_PERMISSIONS["Source Admin"] == frozenset({SOURCE_READ, SOURCE_MANAGE})
     assert ROLE_PERMISSIONS["Syllabus Admin"] == frozenset()
     assert ROLE_PERMISSIONS["Jurisdiction Lead"] == frozenset({SOURCE_READ})
-    assert ROLE_PERMISSIONS["Risk Admin"] == frozenset({MODEL_MANAGE})
-    assert ROLE_PERMISSIONS["System Auditor"] == frozenset({SOURCE_READ, SUPPORT_READ})
+    assert ROLE_PERMISSIONS["Risk Admin"] == frozenset({MODEL_MANAGE, SAFETY_READ, SAFETY_MANAGE})
+    assert ROLE_PERMISSIONS["System Auditor"] == frozenset({SOURCE_READ, SUPPORT_READ, SAFETY_READ})
 
 
 async def test_unknown_role_denies_everything() -> None:

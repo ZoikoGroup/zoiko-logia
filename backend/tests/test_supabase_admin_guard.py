@@ -156,3 +156,62 @@ async def test_provision_profile_commits_row_when_admin_not_configured(fresh_db,
     persisted = await get_user_by_id(fresh_db, "user-abc123")
     assert persisted is not None
     assert persisted.role == "Admin"
+
+
+# ── Masked dashboard key + app_metadata self-repair ──────────────────────────
+
+@pytest.mark.parametrize("masked", ["sb_secret_abcd…wxyz", "sb_secret_abcd...wxyz"])
+def test_masked_dashboard_key_is_not_configured(monkeypatch, masked) -> None:
+    """The dashboard's shortened display value used to pass is_configured()
+    and then crash header encoding ('…' is not ASCII) as a raw 500."""
+    monkeypatch.setattr(settings, "SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setattr(settings, "SUPABASE_SERVICE_ROLE_KEY", masked)
+    _no_transport(monkeypatch)
+    assert supabase_admin.is_configured() is False
+    with pytest.raises(supabase_admin.SupabaseNotConfiguredError, match="masked"):
+        supabase_admin.update_app_metadata("user-1", "tenant-1", "Admin")
+
+
+async def _existing_user(fresh_db, monkeypatch):
+    _configured(monkeypatch)
+    stamped: list[tuple] = []
+    monkeypatch.setattr(supabase_admin, "update_app_metadata", lambda *a: stamped.append(a) or {})
+    user = await provision_profile(
+        fresh_db, "user-abc123", "ada@example.com", ProvisionRequest(company_name="ACME"),
+    )
+    stamped.clear()
+    return user, stamped
+
+
+async def test_existing_user_with_unstamped_token_is_repaired(fresh_db, monkeypatch) -> None:
+    """A first provision whose stamp failed left tokens with no tenant forever;
+    the next sign-in (token tenant '' ≠ profile tenant) re-stamps it."""
+    user, stamped = await _existing_user(fresh_db, monkeypatch)
+    again = await provision_profile(
+        fresh_db, "user-abc123", "ada@example.com", ProvisionRequest(),
+        token_tenant_id="", token_role="",
+    )
+    assert again.id == user.id
+    assert stamped == [(user.id, user.tenant_id, "Admin")]
+
+
+async def test_existing_user_with_correct_token_makes_no_admin_call(fresh_db, monkeypatch) -> None:
+    user, stamped = await _existing_user(fresh_db, monkeypatch)
+    await provision_profile(
+        fresh_db, "user-abc123", "ada@example.com", ProvisionRequest(),
+        token_tenant_id=user.tenant_id, token_role=user.role,
+    )
+    assert stamped == []
+
+
+async def test_failed_repair_never_blocks_sign_in(fresh_db, monkeypatch) -> None:
+    user, _ = await _existing_user(fresh_db, monkeypatch)
+
+    def broken(*_args):
+        raise supabase_admin.SupabaseNotConfiguredError("masked key")
+
+    monkeypatch.setattr(supabase_admin, "update_app_metadata", broken)
+    again = await provision_profile(
+        fresh_db, "user-abc123", "ada@example.com", ProvisionRequest(), token_tenant_id="",
+    )
+    assert again.id == user.id

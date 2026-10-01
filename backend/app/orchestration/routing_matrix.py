@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 CLASSIFIER_VERSION = "rc_1.0"
-POLICY_VERSION = "pm_1.0"
+POLICY_VERSION = "pm_1.3"  # pm_1.1: LOW + insufficient answers with caveat; pm_1.2: MEDIUM likewise; pm_1.3: HIGH answers as general guidance
 
 # Route constants
 ROUTE_LLM = "LLM"
@@ -84,17 +84,34 @@ _MATRIX: dict[tuple[str, str], str] = {
     # personal/contextual questions — neither of which this row ever was.
     (RISK_LOW, CONF_SUFFICIENT):    ROUTE_LLM,
     (RISK_LOW, CONF_LIMITED):       ROUTE_LLM,            # with mandatory caveats
-    (RISK_LOW, CONF_INSUFFICIENT):  ROUTE_LLM,
+    # pm_1.1 (product decision 2026-09-25): answered with a caveat instead of
+    # a clarification. LOW risk is non-advisory by definition, and answers are
+    # grounded in live data and web sources the governed library does not
+    # hold (economic statistics, exchange rates, market data); asking for a
+    # jurisdiction/framework could never supply what was missing. MEDIUM and
+    # HIGH with insufficient evidence still go to human review.
+    (RISK_LOW, CONF_INSUFFICIENT):  ROUTE_LLM,            # with mandatory caveats
 
     # MEDIUM risk
     (RISK_MEDIUM, CONF_SUFFICIENT):    ROUTE_LLM,          # disclaimer_required = True
-    (RISK_MEDIUM, CONF_LIMITED):       ROUTE_HUMAN_REVIEW,
-    (RISK_MEDIUM, CONF_INSUFFICIENT):  ROUTE_HUMAN_REVIEW,
+    # pm_1.2 (product decision 2026-09-26): MEDIUM is a general method /
+    # procedure question, never the asker's own case (that is HIGH), so it
+    # answers with the disclaimer and evidence caveat instead of waiting on a
+    # reviewer while the governed library cannot cover it.
+    (RISK_MEDIUM, CONF_LIMITED):       ROUTE_LLM,          # disclaimer + caveat
+    (RISK_MEDIUM, CONF_INSUFFICIENT):  ROUTE_LLM,          # disclaimer + caveat
 
-    # HIGH risk — any confidence → HUMAN_REVIEW
-    (RISK_HIGH, CONF_SUFFICIENT):    ROUTE_HUMAN_REVIEW,
-    (RISK_HIGH, CONF_LIMITED):       ROUTE_HUMAN_REVIEW,
-    (RISK_HIGH, CONF_INSUFFICIENT):  ROUTE_HUMAN_REVIEW,
+    # HIGH risk
+    # pm_1.3 (product decision 2026-09-29): answered as GENERAL GUIDANCE with
+    # the disclaimer and a "not advice on your specific matter" caveat, and
+    # the model is told not to make the decision for the asker. No reviewer
+    # workflow or engagement is staffed yet, so escalation left every
+    # "our company / our client" question unanswered. Conflicting evidence
+    # still goes to review, stale evidence to clarification, and restricted
+    # sources / RESTRICTED risk (fraud, concealment) are still refused.
+    (RISK_HIGH, CONF_SUFFICIENT):    ROUTE_LLM,            # disclaimer + caveat
+    (RISK_HIGH, CONF_LIMITED):       ROUTE_LLM,            # disclaimer + caveat
+    (RISK_HIGH, CONF_INSUFFICIENT):  ROUTE_LLM,            # disclaimer + caveat
     (RISK_HIGH, CONF_CONFLICTING):   ROUTE_HUMAN_REVIEW,
     (RISK_HIGH, CONF_STALE):         ROUTE_HUMAN_REVIEW,
     (RISK_HIGH, CONF_RESTRICTED):    ROUTE_REFUSAL,
@@ -155,8 +172,8 @@ def resolve_route(
         route = ROUTE_HUMAN_REVIEW
 
     disclaimer_required = (
-        risk_level == RISK_MEDIUM
-        or confidence_state == CONF_LIMITED
+        risk_level in (RISK_MEDIUM, RISK_HIGH)
+        or confidence_state in (CONF_LIMITED, CONF_INSUFFICIENT)
     )
 
     clarification_message: Optional[str] = None

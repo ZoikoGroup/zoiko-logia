@@ -1,7 +1,10 @@
+import asyncio
+
 from fastapi import Request
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker, create_async_engine
 from collections.abc import AsyncGenerator
 from typing import Generator
 
@@ -162,6 +165,18 @@ def _identity_from_request(request: Request) -> tuple[str, str]:
     return claims.sub, claims.tenant_id
 
 
+async def _open_request_connection() -> AsyncConnection:
+    """Check out the request's connection, retrying once. The Supabase pooler
+    occasionally takes longer than the connect timeout for a single attempt;
+    the retry a moment later usually succeeds, where the failure used to reach
+    the browser as a bare 500 (reported there as a CORS error)."""
+    try:
+        return await request_engine.connect()
+    except (TimeoutError, OSError, SQLAlchemyError):
+        await asyncio.sleep(0.5)
+        return await request_engine.connect()
+
+
 async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
     """Async session dependency for core domain endpoints. Also identity-
     scopes the session for Postgres RLS: sets app.tenant_id (RG-02,
@@ -182,24 +197,22 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
     when they're falsy would leave whatever a *previous* request left on
     that same pooled connection in effect for this one.
 
-    The session is bound to ONE explicitly checked-out connection for the
-    whole request, rather than letting it draw from the pool per
-    transaction. Session-scoped settings live on the CONNECTION, but a
-    session returns its connection to the pool on every commit and checks
-    out a fresh one for the next statement — so in an unbound session the
-    identity set here survives only until the request's first commit. After
-    that, statements land on an arbitrary pooled connection carrying
-    whatever identity some earlier request left on it: usually none, which
-    fails closed (`new row violates row-level security policy`), and
-    sometimes another tenant's, which would be far worse.
+    The session is bound to ONE checked-out connection for the whole request,
+    which is what makes the two settings above mean anything. They live on a
+    connection, not on a session: a session normally returns its connection to
+    the pool at every commit and checks one out again for the next statement,
+    and a request that commits part-way — every audit write does — can be
+    handed a different connection afterwards, one that never had set_config run
+    on it. Every RLS-protected statement after that point then sees nothing.
 
-    That made it look intermittent — a freshly-started process with a cold
-    pool almost always hands back the same connection and appears to work,
-    while a long-running one with several pooled connections fails often.
-    Requests here commit more than once (audit events, document ingestion),
-    so this affected every write that followed a commit.
-    """
-    async with request_engine.connect() as connection:
+    That failure is invisible on a quiet pool, because the connection just
+    released is usually the one handed back. Under any concurrency it appears:
+    a document upload inserted its row successfully, committed, and the very
+    next UPDATE on that same row matched zero rows — the row was real, the
+    policy was right, and the new connection simply had no identity on it.
+    Holding one connection for the request removes the possibility."""
+    connection = await _open_request_connection()
+    try:
         async with RequestSessionLocal(bind=connection) as session:
             if not settings.is_sqlite:
                 user_id, tenant_id = _identity_from_request(request)
@@ -216,3 +229,5 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
                     text("SELECT set_config('app.user_id', :user_id, false)"), {"user_id": user_id}
                 )
             yield session
+    finally:
+        await connection.close()

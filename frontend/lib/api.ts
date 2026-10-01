@@ -544,8 +544,9 @@ export type AskKritonRequest = {
   jurisdiction?: string;
   mode?: string;
   clarification_cycle?: number;
-  /** Scopes audit correlation and follow-up context to one thread. */
+  /** Correlates requests in the same chat; never grants access. */
   conversation_id?: string;
+  conversation_history?: { role: "user" | "assistant"; content: string }[];
   /** Documents attached to this turn. Ids of successfully indexed uploads
    * only; the backend re-verifies ownership and readiness, so sending an id
    * the caller does not own simply retrieves nothing. */
@@ -885,6 +886,8 @@ export type ComposedAnswer = {
   calculation_result?: CalculationResult | null;
   verified_charts?: VerifiedChartSpec[];
   observations?: LiveObservation[];
+  /** No citations, but the figures are the question's or conversation's own, computed or charted exactly. */
+  computed_from_question?: boolean;
   presentation?: AnswerPresentation | null;
   response_mode?: "concise" | "educational" | "analytical" | "calculation" | "workflow" | "compound";
   /** Preferred, ordered rendering path — not yet returned by the backend. */

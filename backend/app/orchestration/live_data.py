@@ -41,6 +41,7 @@ import re
 from dataclasses import dataclass, field
 
 from app.core.config import get_settings
+from app.orchestration.chart_intent import allows_automatic_chart
 from app.domains.model_gateway.tools.chart_tool import ChartToolError, build_chart_fence
 from app.orchestration.country_scope import display_name
 from app.orchestration.websearch import WebSource, wants_visual
@@ -445,12 +446,17 @@ async def fetch_live_data(query: str) -> LiveDataResult:
 # question actually asked for. dbnomics.py's connector always returns up to its
 # own MAX_POINTS (20) regardless of what was asked, so without this a "last 3
 # years" request silently charts two decades of data instead.
-_REQUESTED_PERIOD_COUNT = re.compile(r"\b(?:last|past|previous)\s+(\d+)\s*(?:years?|yrs?|quarters?)\b", re.I)
+_REQUESTED_PERIOD_COUNT = re.compile(r"\b(?:last|past|previous|latest|most recent)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:available\s+)?(?:years?|yrs?|quarters?)\b", re.I)
 
 
 def _requested_period_count(query: str) -> int | None:
     match = _REQUESTED_PERIOD_COUNT.search(query)
-    return int(match.group(1)) if match else None
+    if not match:
+        return None
+    value = match.group(1).lower()
+    words = {word: index for index, word in enumerate(
+        ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"), start=1)}
+    return int(value) if value.isdigit() else words[value]
 
 
 def build_forced_chart(query: str, sources: list[WebSource]) -> str | None:
@@ -467,7 +473,7 @@ def build_forced_chart(query: str, sources: list[WebSource]) -> str | None:
     this fence when composed_text has none already, so a chart the model (or
     tool) already produced is never overridden.
     """
-    if not wants_visual(query):
+    if not wants_visual(query) or not allows_automatic_chart(query):
         return None
     stat_sources = [s for s in sources if s.series and len(s.series) >= 2]
     if not stat_sources:

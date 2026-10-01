@@ -189,6 +189,24 @@ async def audit_composition_completed(db, *, query_id, correlation_id, tenant_id
     await _emit(db, "composition_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"prompt_id": prompt_id, "output_hash": output_hash})
 
+async def audit_agent_tool_called(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                  step: int, tool: str, arguments_hash: str, ok: bool,
+                                  error_code: str | None, duration_ms: int, source_count: int):
+    # Arguments are recorded as a digest only (they can echo user text); the
+    # tool name, outcome and evidence count are what replay needs.
+    await _emit(db, "agent_tool_called", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"step": step, "tool": tool, "arguments_hash": arguments_hash, "ok": ok,
+                 "error_code": error_code, "duration_ms": duration_ms, "source_count": source_count},
+                replay_relevance="REQUIRED")
+
+async def audit_agent_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                steps: int, stop_reason: str, tool_call_count: int,
+                                fell_back: bool, error: str | None = None):
+    await _emit(db, "agent_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"steps": steps, "stop_reason": stop_reason, "tool_call_count": tool_call_count,
+                 "fell_back": fell_back, "error": error},
+                replay_relevance="REQUIRED")
+
 async def audit_composition_failed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id, error: str):
     await _emit(db, "composition_failed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"error": error}, replay_relevance="REQUIRED")

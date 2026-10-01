@@ -104,6 +104,12 @@ async def persist_bundle(
         manifest=bundle.model_dump(mode="json"),
         index_version=bundle.index_version,
     ))
+    # Flush the manifest on its own first. In a single flush the unit of work
+    # inserted the entries before their manifest (FK evidence_bundle_entries
+    # -> evidence_bundle_manifests), so Postgres rejected every bundle and
+    # governed retrieval silently degraded on every question. SQLite, which
+    # the unit tests use, does not enforce the FK, so it never showed there.
+    await db.flush()
     for passage in bundle.passages:
         db.add(EvidenceBundleEntry(
             bundle_id=bundle.source_bundle_id,

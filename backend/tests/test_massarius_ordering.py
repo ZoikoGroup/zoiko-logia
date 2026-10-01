@@ -40,16 +40,19 @@ def test_policy_matrix_is_the_single_route_resolution_path():
         jurisdiction="UK",
         clarification_cycle=0,
     )
-    assert decision_high_risk.route == "HUMAN_REVIEW"
+    # pm_1.3: HIGH answers as general guidance with the disclaimer.
+    assert decision_high_risk.route == "LLM" and decision_high_risk.disclaimer_required
     print("test_policy_matrix_is_the_single_route_resolution_path: PASSED")
 
 
 def test_policy_matrix_callable_twice_for_reevaluation():
     """Same function, same determinism guarantee, callable again with an
     updated confidence_state (e.g. after Checkpoint C downgrades it)."""
+    # A Checkpoint C style downgrade that still changes the route under
+    # pm_1.2 (MEDIUM sufficient/limited both answer with a disclaimer now).
     first = resolve_policy(confidence_state="sufficient", risk_level="MEDIUM")
-    second = resolve_policy(confidence_state="limited", risk_level="MEDIUM")
-    assert first.route != second.route or first != second
+    second = resolve_policy(confidence_state="conflicting_sources", risk_level="MEDIUM")
+    assert first.route != second.route
     # Re-running with the exact same inputs as `first` must reproduce it —
     # determinism, not just "callable twice".
     third = resolve_policy(confidence_state="sufficient", risk_level="MEDIUM")

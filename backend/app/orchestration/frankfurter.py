@@ -222,32 +222,49 @@ async def _find_rates(query: str) -> list[RateMatch]:
     if len(codes) < 2:
         return []
 
-    base_cur, quote_curs = codes[0], codes[1:]
-    amount = _find_amount(query)
+    return await _fetch_matches(codes[0], codes[1:], _find_amount(query))
+
+
+async def _fetch_matches(base_cur: str, quote_curs: list[str], amount: float = 1.0) -> list[RateMatch]:
+    """One request for the ECB's own EUR-based rates, crossed here. Asking
+    Frankfurter for base=INR returns rates cut to ~4 significant digits
+    (1 INR = 0.01042 USD), so ₹25,00,000 came out as $26,050 instead of
+    $26,045.73; the EUR table carries the ECB's full published precision."""
+    if not quote_curs:
+        return []
     base = _frankfurter_base()
-    url = f"{base}/latest?base={base_cur}&symbols={','.join(quote_curs)}"
+    symbols = sorted({base_cur, *quote_curs} - {"EUR"})
+    url = f"{base}/latest?symbols={','.join(symbols)}" if symbols else f"{base}/latest"
     try:
         async with httpx.AsyncClient(timeout=6.0) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             data = resp.json()
-        rates = data.get("rates") or {}
+        per_euro = {"EUR": 1.0, **{code: float(value) for code, value in (data.get("rates") or {}).items()}}
         date = data.get("date", "")
     except Exception:
+        return []
+    if not per_euro.get(base_cur):
         return []
 
     matches: list[RateMatch] = []
     for quote_cur in quote_curs:
-        raw_rate = rates.get(quote_cur)
-        if raw_rate is None:
+        if quote_cur not in per_euro:
             continue
-        rate = float(raw_rate)
+        rate = per_euro[quote_cur] / per_euro[base_cur]
         matches.append(RateMatch(
             base_cur=base_cur, quote_cur=quote_cur, rate=rate,
             amount=amount, converted=amount * rate, date=date,
             url=f"{base}/latest?base={base_cur}&symbols={quote_cur}",
         ))
     return matches
+
+
+async def fetch_fx_rates(base_cur: str, quote_curs: list[str], amount: float = 1.0) -> list[WebSource]:
+    """Structured entry point: one WebSource per quote currency, from already
+    known ISO codes — what the get_exchange_rate tool calls with the model's
+    typed arguments. Fails soft to [] like fetch_fx()."""
+    return [_build_source(match) for match in await _fetch_matches(base_cur, quote_curs, amount)]
 
 
 async def _find_rate(query: str) -> RateMatch | None:
@@ -261,8 +278,8 @@ async def _find_rate(query: str) -> RateMatch | None:
 def _build_source(match: RateMatch) -> WebSource:
     snippet = (
         f"Live ECB reference rate (Frankfurter), {match.date}: "
-        f"1 {match.base_cur} = {match.rate:g} {match.quote_cur}. "
-        f"{match.amount:g} {match.base_cur} = {match.converted:g} {match.quote_cur}."
+        f"1 {match.base_cur} = {match.rate:.8g} {match.quote_cur}. "
+        f"{match.amount:.15g} {match.base_cur} = {match.converted:.2f} {match.quote_cur}."
     )
     return WebSource(
         title=f"Frankfurter — {match.base_cur}/{match.quote_cur} exchange rate ({match.date})",
@@ -273,7 +290,7 @@ def _build_source(match: RateMatch) -> WebSource:
         observation=LiveObservation(
             observation_id=f"obs_{uuid.uuid4().hex}",
             indicator=f"{match.base_cur}/{match.quote_cur} exchange rate",
-            value=str(match.rate), unit=f"{match.quote_cur} per {match.base_cur}",
+            value=f"{match.rate:.8g}", unit=f"{match.quote_cur} per {match.base_cur}",
             period=match.date, provider="Frankfurter (ECB reference rates)",
             source_url=match.url, freshness="daily",
         ),

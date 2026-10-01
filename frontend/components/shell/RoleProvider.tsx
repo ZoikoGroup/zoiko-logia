@@ -1,8 +1,9 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { createContext, useContext, useSyncExternalStore, ReactNode } from "react";
 import { RoleCode, DEFAULT_ROLE, ROLE_COOKIE, resolveEffectiveRole } from "@/lib/roles";
 import { useAuth } from "@/hooks/useAuth";
+import { readCookie, subscribeCookies, writeCookie } from "@/lib/cookie-store";
 
 type RoleContextValue = {
   role: RoleCode;
@@ -15,19 +16,19 @@ type RoleContextValue = {
 const RoleContext = createContext<RoleContextValue | null>(null);
 
 function readRoleCookie(): RoleCode {
-  if (typeof document === "undefined") return DEFAULT_ROLE;
-  const match = document.cookie.match(new RegExp(`(?:^|; )${ROLE_COOKIE}=([^;]*)`));
-  return (match ? decodeURIComponent(match[1]) : DEFAULT_ROLE) as RoleCode;
+  return (readCookie(ROLE_COOKIE) ?? DEFAULT_ROLE) as RoleCode;
+}
+
+function serverRole(): RoleCode {
+  return DEFAULT_ROLE;
 }
 
 export function RoleProvider({ children }: { children: ReactNode }) {
   const { profile, session, loading, profileLoading } = useAuth();
-  const [demoRole, setDemoRole] = useState<RoleCode>(DEFAULT_ROLE);
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- document is unavailable during SSR prerender; the cookie is read once on mount, after hydration
-    setDemoRole(readRoleCookie());
-  }, []);
+  // The demo-mode cookie role: DEFAULT_ROLE during SSR/hydration, then the
+  // cookie's value — read as an external store rather than copied into state
+  // from an effect.
+  const demoRole = useSyncExternalStore(subscribeCookies, readRoleCookie, serverRole);
 
   // The provisioned profile's role (AuthContext → getMe) is what the app
   // gates on. The zoiko_role cookie stays exactly as it was — a demo-mode
@@ -48,8 +49,7 @@ export function RoleProvider({ children }: { children: ReactNode }) {
   const roleReady = !loading && !(session && profileLoading && !profile);
 
   function setRole(next: RoleCode) {
-    document.cookie = `${ROLE_COOKIE}=${encodeURIComponent(next)}; path=/; max-age=${60 * 60 * 24 * 7}`;
-    setDemoRole(next);
+    writeCookie(ROLE_COOKIE, next, 60 * 60 * 24 * 7);
   }
 
   return <RoleContext.Provider value={{ role, roleReady, setRole }}>{children}</RoleContext.Provider>;

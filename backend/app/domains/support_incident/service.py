@@ -1,6 +1,5 @@
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
-from sqlalchemy import select
 
 from app.domains.support_incident.models import SecurityIncident, SupportTicket
 from app.domains.support_incident.schemas import TicketCreateRequest

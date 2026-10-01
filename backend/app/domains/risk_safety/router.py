@@ -19,6 +19,9 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_sync_db
+from app.domains.identity.models import User
+from app.domains.identity.rbac import get_current_user, require_permission
+from app.domains.identity.permissions import SAFETY_READ, SAFETY_MANAGE
 from app.domains.risk_safety import service as safety_service
 from app.domains.risk_safety import refusal_templates
 from app.domains.risk_safety.schemas import (
@@ -33,19 +36,22 @@ from app.domains.risk_safety.schemas import (
 )
 from app.domains.risk_safety.models import RiskPolicy, SafetyEvent
 
-router = APIRouter(prefix="/safety", tags=["AI Safety & Risk Classification"])
+router = APIRouter(prefix="/safety", tags=["AI Safety & Risk Classification"],
+                   dependencies=[Depends(get_current_user)])
 
 
 # ─── Classification ─────────────────────────────────────────────────────────
 
 @router.post("/classify", response_model=SafetyDecision)
-def classify_query(request: ClassifyRequest, db: Session = Depends(get_sync_db)):
+def classify_query(request: ClassifyRequest, db: Session = Depends(get_sync_db),
+                   user: User = Depends(get_current_user)):
     """
     Classify a user query against the risk taxonomy.
 
     Returns a structured SafetyDecision that tells the Query Orchestrator
     whether generation is allowed and under what constraints.
     """
+    request = request.model_copy(update={"user_id": user.id, "tenant_id": user.tenant_id, "role": user.role})
     return safety_service.evaluate(request, db=db)
 
 
@@ -69,18 +75,20 @@ def validate_output(request: ValidateOutputRequest):
 # ─── Escalation Queue ───────────────────────────────────────────────────────
 
 @router.get("/escalations/stats", response_model=EscalationStatsOut)
-def get_escalation_stats(db: Session = Depends(get_sync_db)):
+def get_escalation_stats(db: Session = Depends(get_sync_db),
+                         user: User = Depends(require_permission(SAFETY_READ))):
     """Summary counts for the escalation queue dashboard."""
-    return safety_service.get_escalation_stats(db)
+    return safety_service.get_escalation_stats(db, tenant_id=user.tenant_id)
 
 
 @router.get("/escalations", response_model=list[EscalationOut])
 def list_escalations(
     status: Optional[str] = None,
     db: Session = Depends(get_sync_db),
+    user: User = Depends(require_permission(SAFETY_READ)),
 ):
     """List escalation cases, optionally filtered by status."""
-    cases = safety_service.get_escalations(db, status=status)
+    cases = safety_service.get_escalations(db, status=status, tenant_id=user.tenant_id)
     return cases
 
 
@@ -89,15 +97,16 @@ def act_on_escalation(
     case_id: str,
     action: EscalationAction,
     db: Session = Depends(get_sync_db),
+    user: User = Depends(require_permission(SAFETY_MANAGE)),
 ):
     """Record a reviewer decision on an escalation case."""
-    case = safety_service.resolve_escalation(
-        db=db,
-        case_id=case_id,
-        action=action.action,
-        reviewer_id=action.reviewer_id,
-        reason=action.reason,
-    )
+    try:
+        case = safety_service.resolve_escalation(
+            db=db, case_id=case_id, action=action.action,
+            reviewer_id=user.id, reason=action.reason, tenant_id=user.tenant_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not case:
         raise HTTPException(status_code=404, detail="Escalation case not found.")
     return case
@@ -109,18 +118,21 @@ def act_on_escalation(
 def list_safety_overrides(
     active_only: bool = True,
     db: Session = Depends(get_sync_db),
+    user: User = Depends(require_permission(SAFETY_READ)),
 ):
     """List safety overrides."""
-    return safety_service.list_safety_overrides(db, active_only=active_only)
+    return safety_service.list_safety_overrides(db, active_only=active_only, tenant_id=user.tenant_id)
 
 
 @router.post("/overrides", response_model=SafetyOverrideOut)
 def create_safety_override(
     request: OverrideRequest,
     db: Session = Depends(get_sync_db),
+    user: User = Depends(require_permission(SAFETY_MANAGE)),
 ):
     """Create a new time-bounded safety override."""
-    return safety_service.create_safety_override(db, request)
+    request = request.model_copy(update={"actor_id": user.id, "authority_role": user.role})
+    return safety_service.create_safety_override(db, request, tenant_id=user.tenant_id)
 
 
 # ─── Risk Policies ──────────────────────────────────────────────────────────
@@ -143,11 +155,13 @@ def list_templates():
 # ─── Safety Event Log ──────────────────────────────────────────────────────
 
 @router.get("/events")
-def list_events(limit: int = 50, db: Session = Depends(get_sync_db)):
+def list_events(limit: int = 50, db: Session = Depends(get_sync_db),
+                user: User = Depends(require_permission(SAFETY_READ))):
 
     """List recent safety events from the audit ledger."""
     events = (
         db.query(SafetyEvent)
+        .filter(SafetyEvent.tenant_id == user.tenant_id)
         .order_by(SafetyEvent.timestamp.desc())
         .limit(limit)
         .all()

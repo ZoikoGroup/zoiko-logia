@@ -385,6 +385,32 @@ async def fetch_market_data_for_companies(
     return results
 
 
+async def fetch_for_company(
+    company: str, intent: str, *, limit: int = 10
+) -> tuple[MarketResult, str, str] | None:
+    """(result, provider_name, company_label) for one company already named
+    by the caller — a ticker ("AAPL"), a well-known name ("Apple") or a
+    search phrase — for an intent the caller already chose. The structured
+    entry point for the get_market_data tool: nothing is re-detected from
+    question wording. Never raises; None means no provider had data."""
+    providers = registry.providers_for(intent)
+    if not providers:
+        return None
+    try:
+        async with make_client() as client:
+            ref = await _resolve_entity(client, company, providers, intent)
+            if not ref.has_any_id() and not ref.name:
+                return None
+            outcome = await fetch_for_intent(client, intent, ref, limit=limit)
+            if outcome is None:
+                return None
+            result, provider_name = outcome
+            return result, provider_name, ref.name or ref.ticker or company
+    except Exception as exc:  # noqa: BLE001 — connector boundary must fail soft
+        logger.warning("market_data: unexpected failure for %s: %s", intent, type(exc).__name__)
+        return None
+
+
 async def health() -> list[ProviderHealth]:
     """Per-provider health for the status endpoint. Never raises, never returns
     anything derived from a credential."""

@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -6,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import supabase_admin
 from app.domains.identity.models import Role, Tenant, User
 from app.domains.identity.schemas import ProvisionRequest, UserCreateRequest
-import logging
 
 log = logging.getLogger("uvicorn.error")
 
@@ -30,6 +31,8 @@ def _sync_app_metadata_best_effort(user_id: str, tenant_id: str, role: str) -> N
         log.warning(
             "app_metadata sync skipped for user %s: admin API call failed.", user_id,
         )
+
+logger = logging.getLogger(__name__)
 
 
 async def get_user_by_id(db: AsyncSession, user_id: str) -> User | None:
@@ -77,15 +80,24 @@ async def provision_profile(
     user_id: str,
     email: str,
     payload: ProvisionRequest,
+    *,
     token_tenant_id: str = "",
     token_role: str = "",
 ) -> User:
     """Idempotent upsert called by the frontend right after a Supabase
     sign-up/first OAuth login. First call creates the Tenant (from
     company_name) + User row and stamps tenant_id/role into the Supabase
-    user's app_metadata. Later calls just return the existing row —
+    user's app_metadata. Later calls return the existing row —
     provisioning must never create a second Tenant/User for the same
-    Supabase auth user."""
+    Supabase auth user.
+
+    Later calls also repair the stamp when the caller's token disagrees with
+    the profile (token_tenant_id/token_role are the verified token's claims).
+    The first call commits the User row BEFORE stamping app_metadata, so a
+    failed stamp (Admin API down, bad service-role key) used to leave the
+    account permanently without a tenant in its tokens — and every
+    tenant-scoped RLS write then failed for that user. A repair failure is
+    logged, never raised: an existing user must still be able to sign in."""
     existing = await get_user_by_id(db, user_id)
     if existing is not None:
         # Re-stamp app_metadata when this access token's embedded app_metadata
@@ -97,10 +109,17 @@ async def provision_profile(
         # claim makes every INSERT fail with "violates row-level security
         # policy" until a fresh sign-in re-stamps it. A claim that carries no
         # identity at all (a bare sub/email token) tells us nothing to fix.
-        if (token_tenant_id and token_tenant_id != existing.tenant_id) or (
-            token_role and token_role != existing.role
-        ):
-            supabase_admin.update_app_metadata(existing.id, existing.tenant_id, existing.role)
+        # Also when the token carries NO tenant: a first provision whose stamp
+        # failed otherwise left that account's tokens without a tenant for
+        # good, and every tenant-scoped write failed until it was stamped.
+        if (token_tenant_id, token_role) != (existing.tenant_id, existing.role):
+            try:
+                supabase_admin.update_app_metadata(existing.id, existing.tenant_id, existing.role)
+            except Exception as exc:  # noqa: BLE001 — sign-in must not depend on the repair
+                logger.warning(
+                    "Could not repair app_metadata for user %s (%s); tenant-scoped writes "
+                    "will fail until it is stamped", existing.id, type(exc).__name__,
+                )
         return existing
 
     tenant = Tenant(name=payload.company_name or "")

@@ -9,7 +9,9 @@ MIN_BOUNDS = {
     "accuracy",
     "precision",
     "recall",
-    "f1_score"
+    "f1_score",
+    "restricted_block_rate",
+    "boundary_pass_rate",
 }
 
 MAX_BOUNDS = {

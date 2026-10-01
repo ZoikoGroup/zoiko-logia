@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Column, String, DateTime, Float, Text, JSON, Boolean, Enum, Integer,
+    Column, String, DateTime, Text, JSON, Boolean, Enum, Integer,
 )
 from app.db.base import Base
 
@@ -85,11 +85,8 @@ class EscalationCase(Base):
     __tablename__ = "escalation_cases"
 
     id = Column(String, primary_key=True, default=lambda: _new_id("ESC-"))
-    # Vestigial DB column carried over from an earlier schema: the escalation
-    # DB table has a NOT NULL tenant_id that keeps getting re-applied, but this
-    # model never populated it. Declaring it here with a Python-side default
-    # makes every ORM insert supply a value, so the NOT NULL constraint is
-    # always satisfied regardless of the DB's current state.
+    # Request writes supply the verified tenant. Legacy/unattributed records
+    # retain GLOBAL_CONTROL and are excluded from tenant API reads.
     tenant_id = Column(String, nullable=False, default="GLOBAL_CONTROL")
     query_id = Column(String, nullable=False)
     query_text = Column(Text, nullable=False)
@@ -115,8 +112,7 @@ class SafetyOverride(Base):
     __tablename__ = "safety_overrides"
 
     id = Column(String, primary_key=True, default=lambda: _new_id("ovr-"))
-    # See EscalationCase.tenant_id — vestigial NOT NULL column, defaulted here
-    # so ORM inserts always supply a value.
+    # See EscalationCase.tenant_id; API writes always supply the tenant.
     tenant_id = Column(String, nullable=False, default="GLOBAL_CONTROL")
     actor_id = Column(String, nullable=False)
     authority_role = Column(String, nullable=False)
@@ -152,9 +148,7 @@ class SafetyEvent(Base):
     __tablename__ = "safety_events"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    # See EscalationCase.tenant_id — vestigial NOT NULL column, defaulted here
-    # so ORM inserts always supply a value (this is the one that fires on every
-    # query, via risk_classification_applied).
+    # See EscalationCase.tenant_id; tenant events supply explicit ownership.
     tenant_id = Column(String, nullable=False, default="GLOBAL_CONTROL")
     event_type = Column(String, nullable=False)
     query_id = Column(String, nullable=True)
@@ -210,4 +204,3 @@ class RestrictedTopicRule(Base):
     allowed_safe_alternative = Column(Text, nullable=False)
     refusal_template_id = Column(String, nullable=False)
     clarification_permitted = Column(Boolean, nullable=False, default=False)
-

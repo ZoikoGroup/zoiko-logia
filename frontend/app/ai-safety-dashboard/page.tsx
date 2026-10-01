@@ -54,26 +54,35 @@ function computeStats(events: SafetyEvent[], escalations: Escalation[], now: num
   return { classified, blocked, uncertain, incidents, pendingReview, overSla };
 }
 
+function fetchSafetyData(): Promise<[SafetyEvent[], Escalation[]]> {
+  return Promise.all([getSafetyEvents(), getEscalations()]);
+}
+
 export default function AiSafetyDashboardPage() {
   const [events, setEvents] = useState<SafetyEvent[]>([]);
   const [escalations, setEscalations] = useState<Escalation[]>([]);
   const [loading, setLoading] = useState(true);
-  const [now] = useState(() => Date.now());
+  // When the data was fetched — SLA "overdue" is judged against this rather
+  // than Date.now() during render, which would make rendering impure.
+  const [loadedAt, setLoadedAt] = useState(0);
 
-  async function load() {
-    setLoading(true);
-    const [evts, escs] = await Promise.all([getSafetyEvents(), getEscalations()]);
+  function applyData([evts, escs]: [SafetyEvent[], Escalation[]]) {
     setEvents(evts);
     setEscalations(escs);
+    setLoadedAt(Date.now());
     setLoading(false);
   }
 
+  function refresh() {
+    setLoading(true);
+    void fetchSafetyData().then(applyData);
+  }
+
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount: the page starts in its loading snapshot and every later setState happens after an awaited network call
-    load();
+    void fetchSafetyData().then(applyData);
   }, []);
 
-  const stats = computeStats(events, escalations, now);
+  const stats = computeStats(events, escalations, loadedAt);
 
   return (
     <main className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -168,7 +177,7 @@ export default function AiSafetyDashboardPage() {
                 </div>
               </div>
               <button
-                onClick={load}
+                onClick={refresh}
                 className="flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-semibold text-ink hover:bg-soft transition-all duration-200 cursor-pointer shadow-sm"
               >
                 <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
@@ -266,7 +275,7 @@ export default function AiSafetyDashboardPage() {
                 {escalations
                   .filter((e) => e.status !== "RESOLVED" && e.status !== "REFUSED")
                   .map((esc) => {
-                    const overdue = esc.sla_deadline && new Date(esc.sla_deadline).getTime() < now;
+                    const overdue = esc.sla_deadline && new Date(esc.sla_deadline).getTime() < loadedAt;
                     return (
                       <div
                         key={esc.id}

@@ -7,10 +7,17 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.domains.audit_ledger.event_envelope import record_event_async
+from app.domains.model_gateway.agent import AgentLimits, AgentOutcome, ToolDoneHook, ToolStartHook, run_agent
 from app.domains.model_gateway.models import ModelDefinition, PromptTemplate
 from app.domains.model_gateway.providers.mock_adapter import MockProviderAdapter
-from app.domains.model_gateway.providers.groq_adapter import GroqAdapter
+from app.domains.model_gateway.providers.groq_adapter import (
+    _DEFAULT_MODEL as GROQ_DEFAULT_MODEL,
+    KRITON_SYSTEM_PROMPT,
+    GroqAdapter,
+)
+from app.domains.model_gateway.tool_registry import ToolRegistry, build_default_registry
 from app.domains.model_gateway.providers.google_adapter import GeminiAdapter
 from app.domains.model_gateway.providers.openai_adapter import OpenAIAdapter
 from app.core.config import get_settings
@@ -110,6 +117,12 @@ async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
         return output
 
     output = await bounded_complete(adapter, None if is_gemini else model)
+    if _invalid_output(output) and not is_gemini and model:
+        # The fast model intermittently returns an empty answer on long
+        # prompts; the user saw "could not compose a response". The main
+        # model answers the same prompt, so try it once before failing.
+        logger.warning("Fast answer model %s failed; retrying with the main model", model)
+        output = await bounded_complete(adapter, None)
     if _invalid_output(output) and is_gemini and os.environ.get("GROQ_API_KEY"):
         logger.warning("Gemini answer generation failed; trying Groq")
         output = await bounded_complete(GroqAdapter(), model)
@@ -189,6 +202,65 @@ async def run_grounded_completion(input_text: str, model: str | None = None) -> 
         # hand text to users translate that into the one clean, generic
         # message (never the raw provider "[Error…]" string).
         return _PROVIDER_FAILURE_MESSAGE
+
+
+class AgentUnavailable(RuntimeError):
+    """Agent mode can't run for this request; use the standard path."""
+
+
+_default_registry: ToolRegistry | None = None
+
+
+def _tool_registry() -> ToolRegistry:
+    global _default_registry
+    if _default_registry is None:
+        _default_registry = build_default_registry()
+    return _default_registry
+
+
+def agent_mode_active() -> bool:
+    """Agent mode needs the flag AND Groq as the answering provider — the
+    loop speaks the OpenAI-compatible tool-calling API, and when Gemini is
+    configured it answers instead (see _select_adapter)."""
+    gemini_active = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+    return get_settings().KRITON_AGENT_MODE and bool(os.environ.get("GROQ_API_KEY")) and not gemini_active
+
+
+async def run_agentic_completion(
+    input_text: str,
+    *,
+    granted_permissions: frozenset[str],
+    model: str | None = None,
+    on_tool_start: ToolStartHook | None = None,
+    on_tool_done: ToolDoneHook | None = None,
+    chart_requested: bool = False,
+) -> AgentOutcome:
+    """Answer through the governed tool-calling loop. Raises on provider
+    failure, AgentUnavailable when Groq isn't usable, and RuntimeError on an
+    empty answer — the caller falls back to run_grounded_completion()."""
+    adapter = GroqAdapter()
+    if adapter.client is None:
+        raise AgentUnavailable("GROQ_API_KEY is not configured")
+    settings = get_settings()
+    outcome = await run_agent(
+        adapter.client,
+        model=model or GROQ_DEFAULT_MODEL,
+        system_prompt=KRITON_SYSTEM_PROMPT,
+        user_prompt=input_text,
+        registry=_tool_registry(),
+        granted_permissions=granted_permissions,
+        limits=AgentLimits(
+            max_steps=settings.AGENT_MAX_STEPS,
+            max_tool_calls=settings.AGENT_MAX_TOOL_CALLS,
+            max_seconds=settings.AGENT_MAX_SECONDS,
+        ),
+        on_tool_start=on_tool_start,
+        on_tool_done=on_tool_done,
+        chart_requested=chart_requested,
+    )
+    if not outcome.text.strip():
+        raise RuntimeError("Agent produced an empty answer")
+    return outcome
 
 
 async def run_test_prompt(

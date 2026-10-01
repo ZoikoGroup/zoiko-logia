@@ -6,7 +6,7 @@ and exact event payloads per ZL-T0-04 Section 15.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -135,7 +135,6 @@ def validate_output(text: str, db: Optional[Session] = None, answer_id: str = "a
 
     violation_dicts = [{"phrase": v.phrase_matched, "category": v.category, "severity": v.severity} for v in violations]
     has_soft = any(v.severity == "soft" for v in violations)
-    has_hard = any(v.severity == "hard" for v in violations)
 
     if is_safe and has_soft:
         cleaned = professional_boundary.append_boundary_notice(text)
@@ -169,8 +168,8 @@ def validate_output(text: str, db: Optional[Session] = None, answer_id: str = "a
     return {"is_safe": is_safe, "violations": violation_dicts, "cleaned_text": cleaned}
 
 
-def get_escalations(db: Session, status: Optional[str] = None) -> list[EscalationCase]:
-    query = db.query(EscalationCase).order_by(EscalationCase.created_at.desc())
+def get_escalations(db: Session, status: Optional[str] = None, *, tenant_id: str) -> list[EscalationCase]:
+    query = db.query(EscalationCase).filter(EscalationCase.tenant_id == tenant_id).order_by(EscalationCase.created_at.desc())
     if status:
         query = query.filter(EscalationCase.status == status)
     return query.all()
@@ -182,8 +181,9 @@ def resolve_escalation(
     action: str,
     reviewer_id: str,
     reason: str = "",
+    *, tenant_id: str,
 ) -> Optional[EscalationCase]:
-    case = db.query(EscalationCase).filter(EscalationCase.id == case_id).first()
+    case = db.query(EscalationCase).filter(EscalationCase.id == case_id, EscalationCase.tenant_id == tenant_id).first()
     if not case:
         return None
 
@@ -191,6 +191,7 @@ def resolve_escalation(
     # This enforces that the same person cannot both route and approve a review case.
     if reviewer_id and case.owner and reviewer_id.strip().lower() == case.owner.strip().lower():
         db.add(SafetyEvent(
+            tenant_id=tenant_id,
             event_type="maker_checker_violation_blocked",
             payload={
                 "object_type": "escalation_case",
@@ -221,6 +222,7 @@ def resolve_escalation(
 
     # Audit Ledger Event (Section 15)
     db.add(SafetyEvent(
+        tenant_id=tenant_id,
         event_type="human_review_decision_recorded",
         query_id=case.query_id,
         payload={
@@ -237,16 +239,16 @@ def resolve_escalation(
     return case
 
 
-def get_escalation_stats(db: Session) -> dict:
+def get_escalation_stats(db: Session, *, tenant_id: str) -> dict:
     """Summary counts for the escalation queue dashboard (ZL-T0-04 §10)."""
-    from sqlalchemy import func
-    total = db.query(EscalationCase).count()
-    pending = db.query(EscalationCase).filter(EscalationCase.status == EscalationStatus.PENDING).count()
-    under_review = db.query(EscalationCase).filter(EscalationCase.status == EscalationStatus.UNDER_REVIEW).count()
-    resolved = db.query(EscalationCase).filter(EscalationCase.status == EscalationStatus.RESOLVED).count()
-    refused = db.query(EscalationCase).filter(EscalationCase.status == EscalationStatus.REFUSED).count()
-    escalated = db.query(EscalationCase).filter(EscalationCase.status == EscalationStatus.ESCALATED).count()
-    over_sla = len(get_sla_breached_cases(db))
+    query = db.query(EscalationCase).filter(EscalationCase.tenant_id == tenant_id)
+    total = query.count()
+    pending = query.filter(EscalationCase.status == EscalationStatus.PENDING).count()
+    under_review = query.filter(EscalationCase.status == EscalationStatus.UNDER_REVIEW).count()
+    resolved = query.filter(EscalationCase.status == EscalationStatus.RESOLVED).count()
+    refused = query.filter(EscalationCase.status == EscalationStatus.REFUSED).count()
+    escalated = query.filter(EscalationCase.status == EscalationStatus.ESCALATED).count()
+    over_sla = len(get_sla_breached_cases(db, tenant_id=tenant_id))
     return {
         "total": total,
         "pending": pending,
@@ -258,12 +260,13 @@ def get_escalation_stats(db: Session) -> dict:
     }
 
 
-def get_sla_breached_cases(db: Session) -> list[EscalationCase]:
+def get_sla_breached_cases(db: Session, *, tenant_id: str) -> list[EscalationCase]:
     """Return all active cases where the SLA deadline has passed."""
     now = _utcnow()
     return (
         db.query(EscalationCase)
         .filter(
+            EscalationCase.tenant_id == tenant_id,
             EscalationCase.sla_deadline < now,
             EscalationCase.status.notin_([EscalationStatus.RESOLVED, EscalationStatus.REFUSED]),
         )
@@ -271,12 +274,12 @@ def get_sla_breached_cases(db: Session) -> list[EscalationCase]:
     )
 
 
-def create_safety_override(db: Session, payload) -> SafetyOverride:
+def create_safety_override(db: Session, payload, *, tenant_id: str) -> SafetyOverride:
     """Create a narrowing-only time-bounded override (max 72h, ZL-T0-04 §10.1)."""
-    from app.domains.risk_safety.schemas import OverrideRequest
     duration = min(payload.duration_hours, 72)  # Hard cap at spec maximum
     now = _utcnow()
     override = SafetyOverride(
+        tenant_id=tenant_id,
         id=_new_id("ovr-"),
         actor_id=payload.actor_id,
         authority_role=payload.authority_role,
@@ -291,6 +294,7 @@ def create_safety_override(db: Session, payload) -> SafetyOverride:
     )
     db.add(override)
     db.add(SafetyEvent(
+        tenant_id=tenant_id,
         event_type="safety_override_applied",
         payload={
             "override_id": override.id,
@@ -310,9 +314,9 @@ def create_safety_override(db: Session, payload) -> SafetyOverride:
     return override
 
 
-def list_safety_overrides(db: Session, active_only: bool = True) -> list[SafetyOverride]:
+def list_safety_overrides(db: Session, active_only: bool = True, *, tenant_id: str) -> list[SafetyOverride]:
     """Return safety overrides, optionally filtering to only active (non-expired) ones."""
-    query = db.query(SafetyOverride).order_by(SafetyOverride.created_at.desc())
+    query = db.query(SafetyOverride).filter(SafetyOverride.tenant_id == tenant_id).order_by(SafetyOverride.created_at.desc())
     if active_only:
         now = _utcnow()
         query = query.filter(SafetyOverride.is_active == True, SafetyOverride.expires_at > now)
@@ -325,6 +329,8 @@ def _create_escalation(db: Session, request: ClassifyRequest, result: dict) -> N
     sub_class = result.get("restricted_sub_class")
 
     case = EscalationCase(
+        tenant_id=request.tenant_id,
+        owner=request.user_id,
         id=_new_id("ESC-"),
         query_id=result["query_id"],
         query_text=request.query,
@@ -343,6 +349,7 @@ def _create_escalation(db: Session, request: ClassifyRequest, result: dict) -> N
     
     # Audit Ledger Event (Section 15)
     db.add(SafetyEvent(
+        tenant_id=request.tenant_id,
         event_type="human_review_case_created",
         query_id=result["query_id"],
         payload={
@@ -402,6 +409,7 @@ def _log_safety_event(db: Session, request: ClassifyRequest, result: dict, templ
         }
 
     db.add(SafetyEvent(
+        tenant_id=request.tenant_id,
         event_type=event_type,
         query_id=query_id,
         payload=payload,
@@ -415,6 +423,7 @@ def _log_security_incident(db: Session, request: ClassifyRequest, result: dict) 
     sub_class = result.get("restricted_sub_class", "RESTRICTED_CONTROL_BYPASS")
 
     db.add(SafetyEvent(
+        tenant_id=request.tenant_id,
         event_type="security_incident_created",
         query_id=query_id,
         payload={

@@ -8,7 +8,7 @@ system is functional without a database seed.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from app.domains.risk_safety.models import RestrictedSubClass
@@ -86,6 +86,28 @@ _TEMPLATES: dict[str, RefusalTemplate] = {
         ),
         safe_alternative="",
         restricted_sub_class=RestrictedSubClass.CONTROL_BYPASS.value,
+    ),
+
+    # Fraud / concealment requests (LLM classifier RESTRICTED): refuse, but
+    # point to the legitimate treatment rather than a dead end.
+    "ACCOUNTING_INTEGRITY": RefusalTemplate(
+        template_id="tpl-integrity-001",
+        title="Unable to help with concealment",
+        body=(
+            "I can't help conceal transactions, falsify or backdate records, or mislead "
+            "an auditor or a tax authority."
+        ),
+        safe_alternative=(
+            "I can help you with the legitimate side instead:\n\n"
+            "- Identify the expenses and deductions you are genuinely entitled to claim\n"
+            "- Record and classify transactions correctly, with supporting evidence\n"
+            "- Prepare correcting journal entries for anything already misstated\n"
+            "- Explain how to disclose and correct past errors, including voluntary "
+            "disclosure where it applies\n"
+            "- Document the position for your auditor or tax adviser\n\n"
+            "Share the details and your jurisdiction, and I'll help with the compliant "
+            "treatment."
+        ),
     ),
 
     # Generic HIGH-risk limitation notice

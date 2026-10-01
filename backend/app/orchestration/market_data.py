@@ -504,6 +504,11 @@ def _source_for(intent: str, result) -> WebSource | None:
     return None
 
 
+# Public name for the agent's get_market_data tool, which builds a source
+# from a result it fetched itself (model_gateway/tools/market_tool.py).
+source_for_result = _source_for
+
+
 async def fetch_market_sources(query: str) -> MarketSourceResult:
     """Return grounding sources (and, for a history-shaped question, the
     real OHLC bars behind them) for a market/company question, else an

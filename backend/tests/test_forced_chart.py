@@ -21,6 +21,18 @@ def test_no_chart_when_query_does_not_ask_for_one():
     assert build_forced_chart("what is Germany's GDP growth", sources) is None
 
 
+def test_automatic_charts_do_not_resolve_conditions_or_ignore_negation():
+    sources = [_stat_source("Unemployment — Japan", [("2024", 2.5), ("2025", 2.4)])]
+    for question in (
+        "Is Japan unemployment higher than Germany? If yes, chart both for 10 years.",
+        "Chart Japan only when its unemployment is higher than Germany.",
+        "Compare unemployment without a chart.",
+        "Show the trend but do not draw a chart.",
+        "Compare unemployment. No graphs please.",
+    ):
+        assert build_forced_chart(question, sources) is None, question
+
+
 def test_no_chart_when_no_stat_sources_present():
     assert build_forced_chart("compare Germany and France GDP growth", []) is None
 

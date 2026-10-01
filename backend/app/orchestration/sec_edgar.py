@@ -267,15 +267,25 @@ def resolve_company(query: str, registrants: list[dict]) -> Optional[dict]:
     return None
 
 
-def latest_annual_fact(units: dict, year: Optional[int] = None) -> Optional[dict]:
+def latest_annual_fact(
+    units: dict, year: Optional[int] = None, forms: tuple[str, ...] = ("10-K",),
+    currency: Optional[str] = None,
+) -> Optional[dict]:
     """Pick the annual fact to quote from a companyconcept `units` payload.
 
-    Annual reports only (10-K and its amendments): a 10-Q figure quoted as "the"
-    revenue would be a quarter presented as a year. Duration facts are further
-    required to span most of a year, since 10-K payloads also carry the
-    embedded quarterly periods.
+    Annual reports only (10-K, or a foreign filer's 20-F/40-F, and their
+    amendments): a 10-Q figure quoted as "the" revenue would be a quarter
+    presented as a year. Duration facts are further required to span most of
+    a year, since annual payloads also carry the embedded quarterly periods.
+    USD is preferred; a foreign filer reporting only in its home currency
+    (TWD, EUR…) is quoted in that currency. `currency` restricts the choice
+    to one currency, so a company's figures are never quoted in a mix.
     """
-    for unit_key in ("USD", "USD/shares"):
+    preferred = [key for key in ("USD", "USD/shares") if key in units]
+    candidates = preferred + sorted(key for key in units if key not in preferred)
+    if currency:
+        candidates = [key for key in candidates if key.split("/")[0] == currency]
+    for unit_key in candidates:
         facts = units.get(unit_key)
         if not facts:
             continue
@@ -283,7 +293,7 @@ def latest_annual_fact(units: dict, year: Optional[int] = None) -> Optional[dict
         eligible = []
         for fact in facts:
             form = str(fact.get("form", ""))
-            if not form.startswith("10-K"):
+            if not form.startswith(forms):
                 continue
             end = str(fact.get("end", ""))
             if not end:
@@ -320,14 +330,16 @@ def latest_annual_fact(units: dict, year: Optional[int] = None) -> Optional[dict
 def format_value(value: float, unit: str) -> str:
     """Exact figure first, with a scaled reading alongside for large amounts —
     "391,035,000,000" is precise but "391.04 billion" is what a reader checks."""
-    if unit == "USD/shares":
-        return f"${value:,.2f} per share"
-    exact = f"${value:,.0f}"
+    currency, _, per = unit.partition("/")
+    sign = "$" if currency == "USD" else f"{currency} "
+    if per == "shares":
+        return f"{sign}{value:,.2f} per share"
+    exact = f"{sign}{value:,.0f}"
     magnitude = abs(value)
     if magnitude >= 1e9:
-        return f"{exact} (${value / 1e9:,.2f} billion)"
+        return f"{exact} ({sign}{value / 1e9:,.2f} billion)"
     if magnitude >= 1e6:
-        return f"{exact} (${value / 1e6:,.2f} million)"
+        return f"{exact} ({sign}{value / 1e6:,.2f} million)"
     return exact
 
 
@@ -406,25 +418,40 @@ async def _load_registrants(client: httpx.AsyncClient) -> list[dict]:
         return registrants
 
 
+# Annual reports: US registrants file a 10-K; foreign private issuers a 20-F
+# (or a 40-F from Canada).
+_ANNUAL_FORMS = ("10-K", "20-F", "40-F")
+
+
 async def _fetch_concept(
-    client: httpx.AsyncClient, cik: int, label: str, tags: tuple[str, ...], year: Optional[int]
+    client: httpx.AsyncClient, cik: int, label: str, tags: tuple[str, ...], year: Optional[int],
+    taxonomy: str = "us-gaap", currency: Optional[str] = None,
 ) -> Optional[tuple[str, dict]]:
-    """First candidate tag that yields a usable annual fact, or None."""
-    for tag in tags:
+    """The newest usable annual fact across the candidate tags, or None.
+
+    Every tag is checked, not just the first with data: filers switch tags
+    over time (Alphabet's latest revenue sits under a different tag than its
+    older years), so the first match can be years out of date. Ties on period
+    end keep tag priority order."""
+
+    async def one(tag: str) -> Optional[dict]:
         try:
             resp = await client.get(
-                f"{_data_base()}/api/xbrl/companyconcept/CIK{cik:010d}/us-gaap/{tag}.json"
+                f"{_data_base()}/api/xbrl/companyconcept/CIK{cik:010d}/{taxonomy}/{tag}.json"
             )
             if resp.status_code == 404:
-                # Filer does not report under this tag — try the next candidate.
-                continue
+                # Filer does not report under this tag.
+                return None
             resp.raise_for_status()
-            fact = latest_annual_fact(resp.json().get("units", {}) or {}, year)
+            return latest_annual_fact(resp.json().get("units", {}) or {}, year, _ANNUAL_FORMS, currency)
         except Exception:
-            continue
-        if fact is not None:
-            return label, fact
-    return None
+            return None
+
+    facts = [fact for fact in await asyncio.gather(*(one(tag) for tag in tags)) if fact is not None]
+    if not facts:
+        return None
+    newest_end = max(str(fact.get("end", "")) for fact in facts)
+    return label, next(fact for fact in facts if str(fact.get("end", "")) == newest_end)
 
 
 def _registrant_by_exact_name(phrase: str, registrants: list[dict]) -> Optional[dict]:
@@ -497,6 +524,104 @@ async def ticker_for_company(
     if not ticker:
         return None
     return ticker, str(entry.get("title", "")).strip()
+
+
+# Headline figures for a fundamentals request from the agent's market-data
+# tool, which names a company but not a concept.
+_FUNDAMENTAL_LABELS = ("Revenue", "Operating income", "Net income", "Diluted EPS")
+
+# The same headline figures for foreign filers reporting under IFRS in a 20-F
+# (Infosys, TSMC…), which have no us-gaap facts at all.
+_IFRS_FUNDAMENTALS: list[tuple[str, tuple[str, ...]]] = [
+    ("Revenue", ("RevenueFromContractsWithCustomers", "Revenue")),
+    ("Operating income", ("ProfitLossFromOperatingActivities",)),
+    ("Net income", ("ProfitLossAttributableToOwnersOfParent", "ProfitLoss")),
+    ("Diluted EPS", ("DilutedEarningsLossPerShare", "BasicEarningsLossPerShare")),
+]
+
+
+def _registrant_for_company(company: str, registrants: list[dict]) -> Optional[dict]:
+    """A company the agent named — ticker ("MSFT"), well-known name ("Google")
+    or filed name ("Alphabet") — to its registrant entry, or None."""
+    from app.domains.market_data.identity import known_ticker_for_name
+
+    wanted = company.strip()
+    ticker = known_ticker_for_name(wanted)[0]
+    if not ticker and re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,5}", wanted):
+        ticker = wanted
+    if ticker:
+        by_ticker = [entry for entry in registrants if str(entry.get("ticker", "")).upper() == ticker]
+        if by_ticker:
+            return by_ticker[0]
+    return resolve_company(wanted, registrants) or _registrant_by_exact_name(wanted, registrants)
+
+
+async def fetch_company_fundamentals(company: str, year: Optional[int] = None) -> Optional[WebSource]:
+    """One WebSource with a company's own annual-report headline figures
+    (revenue, operating income, net income, diluted EPS) — US-GAAP from a 10-K,
+    or IFRS from a foreign filer's 20-F — or None when SEC_USER_AGENT is
+    unset, the company doesn't file with the SEC, or EDGAR has none of them."""
+    agent = _user_agent()
+    if not agent:
+        return None
+    us_gaap = [(label, tags) for _, label, tags in _CONCEPTS if label in _FUNDAMENTAL_LABELS]
+    headers = {"User-Agent": agent, "Accept-Encoding": "gzip, deflate"}
+    try:
+        async with httpx.AsyncClient(timeout=8.0, headers=headers) as client:
+            registrants = await _load_registrants(client)
+            entry = _registrant_for_company(company, registrants)
+            if entry is None:
+                return None
+            cik = int(entry["cik_str"])
+            facts: list[tuple[str, dict]] = []
+            taxonomy = "us-gaap"
+
+            async def fetch_all(concepts, currency: Optional[str] = None) -> list[tuple[str, dict]]:
+                results = await asyncio.gather(
+                    *(_fetch_concept(client, cik, label, tags, year, taxonomy, currency) for label, tags in concepts),
+                    return_exceptions=True,
+                )
+                return [result for result in results if isinstance(result, tuple)]
+
+            # US-GAAP first; IFRS only when there is none, so a US company
+            # costs no extra requests against the SEC's rate limit.
+            for taxonomy, concepts in (("us-gaap", us_gaap), ("ifrs-full", _IFRS_FUNDAMENTALS)):
+                facts = await fetch_all(concepts)
+                if facts:
+                    break
+            # Foreign filers tag some lines in USD (a convenience translation)
+            # and the rest in their home currency. Quote everything in the
+            # currency revenue is reported in, never a mix.
+            currencies = {str(fact.get("unit", "USD")).split("/")[0] for _, fact in facts}
+            if len(currencies) > 1:
+                revenue = next((fact for label, fact in facts if label == "Revenue"), facts[0][1])
+                facts = await fetch_all(concepts, str(revenue.get("unit", "USD")).split("/")[0])
+    except Exception:
+        return None
+
+    if not facts:
+        return None
+    entity = str(entry.get("title", "")).strip()
+    ticker = str(entry.get("ticker", "")).strip()
+    figures = "; ".join(
+        f"{label} for the fiscal year ending {fact.get('end', '')}"
+        f"{f' (FY{fact.get('fy')})' if fact.get('fy') else ''}: "
+        f"{format_value(float(fact['val']), str(fact.get('unit', 'USD')))}"
+        for label, fact in facts
+    )
+    newest = max(facts, key=lambda item: str(item[1].get("end", "")))[1]
+    accession = str(newest.get("accn", ""))
+    return WebSource(
+        title=f"SEC EDGAR — {entity} annual financials"[:200],
+        url=filing_index_url(cik, accession) if accession
+        else f"{_www_base()}/cgi-bin/browse-edgar?action=getcompany&CIK={cik:010d}",
+        snippet=(
+            f"As filed with the SEC by {entity} ({ticker}) in its annual {newest.get('form', '10-K')} report, "
+            f"{'IFRS' if taxonomy == 'ifrs-full' else 'US-GAAP'} XBRL: {figures}."
+        ),
+        provider="sec_edgar",
+        freshness="filing",
+    )
 
 
 async def fetch_sec_facts(query: str) -> list[WebSource]:

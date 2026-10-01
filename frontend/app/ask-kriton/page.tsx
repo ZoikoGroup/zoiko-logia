@@ -27,6 +27,7 @@ import {
   X,
 } from "lucide-react";
 import { AnswerRenderer } from "@/components/AnswerRenderer";
+import { conversationHistory, splitQuestions } from "@/lib/kriton-conversation";
 import {
   askKritonStream,
   createSavedAnswer,
@@ -581,9 +582,15 @@ function ConversationTurn({
     (l) => l !== "This response is for educational purposes only. Consult a qualified professional.",
   ) ?? [];
   const citationCount = result?.answer?.citations.length ?? 0;
-  const routeLabel = route === "LLM"
+  // A provider/composition failure travels the refusal route, but it is not a
+  // policy decision — saying "policy blocked" sent users looking for a rule.
+  const routeLabel = result?.next_action?.type === "composition_failed"
+    ? "Not answered — please try again"
+    : route === "LLM"
     ? citationCount > 0
       ? "Answered — source grounded"
+      : result?.answer?.computed_from_question
+        ? "Answered — from figures in this conversation"
       : result?.visualization
         ? "Answered — structured from your input"
         : "Answered — no cited sources"
@@ -670,8 +677,8 @@ function ConversationTurn({
               </div>
             </div>
 
-            {result.effective_context && (
-              <div className="mb-4 flex flex-wrap gap-x-3 gap-y-1 rounded-xl border border-line bg-soft/60 px-3 py-2 text-[11px] text-muted">
+            {result.effective_context && result.effective_context.task_type !== "general_question" && (
+              <div className="mb-4 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
                 <span className="font-bold text-ink">
                   {TASK_TYPES.find((task) => task.value === result.effective_context?.task_type)?.label ?? result.effective_context.task_type}
                 </span>
@@ -679,7 +686,6 @@ function ConversationTurn({
                 {result.effective_context.framework && <span>{result.effective_context.framework.replaceAll("_", " ")}</span>}
                 {result.effective_context.period_end && <span>Period end {result.effective_context.period_end}</span>}
                 {result.effective_context.currency && <span>{result.effective_context.currency}</span>}
-                <span>Context {result.context_decision?.status ?? "resolved"}</span>
               </div>
             )}
 
@@ -706,7 +712,7 @@ function ConversationTurn({
                     </div>
                   )}
                 </>
-              ) : (
+              ) : !result.next_action ? (
                 <p className="rounded-xl border border-line bg-soft p-4 text-sm italic leading-6 text-muted">
                   {outcome === "escalated"
                     ? "This query has been escalated for human review. No AI-generated response is returned until a qualified reviewer clears it."
@@ -716,12 +722,11 @@ function ConversationTurn({
                         ? "This request was blocked before processing."
                         : "This query was refused by the policy engine. No response was composed."}
                 </p>
-              )}
+              ) : null}
 
               {result.next_action && (
-                <div className="mt-4 rounded-xl border border-info/30 bg-info/5 p-3 text-sm leading-6 text-ink">
-                  <span className="block text-[11px] font-bold uppercase text-info">{result.next_action.type}</span>
-                  {result.next_action.message}
+                <div className="mt-4 text-base leading-7 text-ink">
+                  <AnswerRenderer text={result.next_action.message} />
                 </div>
               )}
 
@@ -739,13 +744,18 @@ function ConversationTurn({
               />
             </div>
 
-            {bundle && (
+            {/* Governed-evidence details only mean something when governed
+                sources were used; "0 eligible · 63 excluded · unknown sources"
+                under every answer read as an error. The risk level stays. */}
+            {bundle && bundle.eligible_source_count > 0 ? (
               <p className="mt-4 border-t border-line pt-3 text-[11px] text-muted">
                 {bundle.eligible_source_count} eligible
                 {bundle.excluded_source_count > 0 ? ` · ${bundle.excluded_source_count} excluded` : ""} · {result.confidence_state.replaceAll("_", " ")} confidence
                 {bundle.jurisdiction ? ` · ${bundle.jurisdiction}` : " · Any jurisdiction"} · {bundle.freshness_state} sources · {style?.label ?? "Unknown risk"}
               </p>
-            )}
+            ) : style ? (
+              <p className="mt-4 border-t border-line pt-3 text-[11px] text-muted">{style.label}</p>
+            ) : null}
           </article>
         </div>
       )}
@@ -912,13 +922,12 @@ export default function AskKritonPage() {
       return;
     }
 
-    const turnId = genId("turn");
+    const questions = splitQuestions(trimmed);
     const isNew = activeId === null;
     const convId = activeId ?? genId("conv");
     const now = timestamp();
     const priorConversation = conversations.find((c) => c.id === convId) ?? null;
-    const previousQuery = priorConversation?.turns.at(-1)?.submittedQuery.trim() || undefined;
-    const cycle = clarificationCycleFor(priorConversation);
+    const completedTurns = [...(priorConversation?.turns ?? [])];
 
     // Snapshot only the documents currently visible in the composer. Previous
     // turns retain their attachment metadata for display and audit, but must
@@ -930,15 +939,15 @@ export default function AskKritonPage() {
     );
     const documentIds = turnAttachments.map((attachment) => attachment.documentId);
 
-    const newTurn: Turn = {
-      id: turnId, query: trimmed, submittedQuery: trimmed,
+    const newTurns: Turn[] = questions.map((question) => ({
+      id: genId("turn"), query: question, submittedQuery: question,
       result: null, error: null, loading: true,
       attachments: turnAttachments.length ? turnAttachments : undefined,
-    };
+    }));
     setConversations((prev) => {
       const next = isNew
-        ? [{ id: convId, title: trimmed.slice(0, 80), turns: [newTurn], createdAt: now, updatedAt: now, pinned: false, documentIds }, ...prev]
-        : prev.map((c) => (c.id === convId ? { ...c, updatedAt: now, documentIds, turns: [...c.turns, newTurn] } : c));
+        ? [{ id: convId, title: questions[0].slice(0, 80), turns: newTurns, createdAt: now, updatedAt: now, pinned: false, documentIds }, ...prev]
+        : prev.map((c) => (c.id === convId ? { ...c, updatedAt: now, documentIds, turns: [...c.turns, ...newTurns] } : c));
       persistConversations(next);
       return next;
     });
@@ -954,16 +963,20 @@ export default function AskKritonPage() {
     setSubmitError(null);
     setSubmitting(true);
     try {
+      for (const turn of newTurns) {
+        const turnId = turn.id;
+        try {
       const idempotencyKey = genId("idem");
       const response = await askKritonStream(
         token,
         {
-          query: trimmed,
-          previous_query: previousQuery,
+          query: turn.submittedQuery,
+          previous_query: completedTurns.at(-1)?.submittedQuery.trim() || undefined,
           jurisdiction,
           mode,
-          clarification_cycle: cycle,
+          clarification_cycle: questions.length === 1 ? clarificationCycleFor(priorConversation) : 0,
           conversation_id: convId,
+          conversation_history: conversationHistory(completedTurns),
           document_ids: documentIds,
           // An attached file defines the entity/source scope for this chat.
           // Do not silently replace a document miss with same-name web results
@@ -984,12 +997,15 @@ export default function AskKritonPage() {
         ({ message }) => patchTurn(convId, turnId, { progressMessage: message }),
       );
       patchTurn(convId, turnId, { result: response, loading: false });
+      completedTurns.push({ ...turn, result: response, loading: false });
     } catch (err) {
       patchTurn(convId, turnId, {
         error: err instanceof ApiError ? err.message : "Could not reach the orchestration service.",
         errorStatus: err instanceof ApiError ? err.status : null,
         loading: false,
       });
+        }
+      }
     } finally {
       setSubmitting(false);
     }

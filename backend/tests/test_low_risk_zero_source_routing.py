@@ -97,8 +97,13 @@ def test_medium_and_high_risk_zero_sources_still_escalate():
     technical answer may be generated... unless its source basis is
     traceable"). This is requirement #5's "truthful source-unavailable
     state / escalate" path for evidence-required questions."""
-    assert resolve_route(RISK_MEDIUM, CONF_INSUFFICIENT).route == ROUTE_HUMAN_REVIEW
-    assert resolve_route(RISK_HIGH, CONF_INSUFFICIENT).route == ROUTE_HUMAN_REVIEW
+    # Product policy on Naresh-new (pm_1.1 / pm_1.2): with no governed
+    # evidence, MEDIUM and HIGH questions are answered with a disclaimer and a
+    # caveat rather than escalated — the answer is grounded in live data and
+    # web sources the governed library does not hold.
+    assert resolve_route(RISK_MEDIUM, CONF_INSUFFICIENT).route == ROUTE_LLM
+    assert resolve_route(RISK_HIGH, CONF_INSUFFICIENT).route == ROUTE_LLM
+    assert resolve_route(RISK_HIGH, CONF_INSUFFICIENT).disclaimer_required
 
 
 # ── 4. A genuinely different signal (stale sources) still triggers clarification ──

@@ -6,6 +6,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
+import { cleanMathText, normaliseLatexDelimiters, wrapDisplayLineBreaks } from "@/lib/math-delimiters";
+import { indianiseRupeeAmounts } from "@/lib/number-format";
 import type { Root } from "mdast";
 import { CheckCircle2, Copy, Download, Table2 } from "lucide-react";
 import type { CalculationResult, VerifiedChartSpec, VisualizationSpec } from "@/lib/api";
@@ -29,6 +31,7 @@ import {
   tableRowsToTsv,
   writeImageToClipboard,
   writeTextToClipboard,
+  REF_MARKER,
 } from "@/lib/presentation";
 
 // echarts-for-react touches the DOM (canvas), so load it client-only.
@@ -169,18 +172,73 @@ function VisualizationRenderer({ viz: rawViz }: { viz: VisualizationSpec }) {
   }
 }
 
-/** KaTeX cannot render some typography the model inserts inside math. */
+
+/**
+ * Safety net: strip any inline citation markers the model still slips into the
+ * answer text (e.g. "[REF-1]", "[REF-2, REF-5]", "[1]"). Sources are shown in
+ * the separate Sources panel, so the answer body should read cleanly. Also
+ * tidies up the leftover spaces/punctuation the removal leaves behind.
+ */
+function stripInlineRefs(text: string): string {
+  return text
+    .replace(REF_MARKER, "")
+    .replace(/[ \t]+([.,;:])/g, "$1")
+    .replace(/[ \t]{2,}/g, " ");
+}
+
 function normaliseMathUnicode() {
   return (tree: Root) => {
-    type MathNode = { type: string; value?: string; children?: MathNode[] };
+    type MathNode = {
+      type: string;
+      value?: string;
+      children?: MathNode[];
+      data?: { hChildren?: HastNode[] };
+    };
+    type HastNode = { type: string; value?: string; children?: HastNode[] };
+    const cleanHast = (display: boolean) => (node: HastNode) => {
+      if (node.type === "text" && node.value) {
+        const cleaned = cleanMathText(node.value);
+        node.value = display ? wrapDisplayLineBreaks(cleaned) : cleaned;
+      }
+      node.children?.forEach(cleanHast(display));
+    };
     const visit = (node: MathNode) => {
       if ((node.type === "inlineMath" || node.type === "math") && node.value) {
-        node.value = node.value.replace(/[\u00a0\u202f]/g, " ").replace(/[\u2013\u2014]/g, "-");
+        const cleaned = cleanMathText(node.value);
+        node.value = node.type === "math" ? wrapDisplayLineBreaks(cleaned) : cleaned;
+        // mdast-util-math copies the formula into data.hChildren while
+        // parsing (display maths nests it as pre > code > text), and
+        // rehype-katex renders THAT copy — cleaning only node.value left
+        // KaTeX warning on every render.
+        node.data?.hChildren?.forEach(cleanHast(node.type === "math"));
       }
       node.children?.forEach(visit);
     };
     visit(tree as MathNode);
   };
+}
+
+/** Put the ₹ sign back into rendered formulas. KaTeX has no metrics for ₹, so
+ * cleanMathText() hands it "Rs. " to keep the console free of warnings; the
+ * reader should still see the same ₹ the prose uses. Only the visual
+ * .katex-html output changes — the MathML copy is left for screen readers. */
+function restoreRupeeInFormulas() {
+  type HastElement = {
+    type: string;
+    value?: string;
+    properties?: { className?: unknown };
+    children?: HastElement[];
+  };
+  const swap = (node: HastElement) => {
+    if (node.type === "text" && node.value) node.value = node.value.replace(/\bRs\.\s?/g, "₹");
+    node.children?.forEach(swap);
+  };
+  const visit = (node: HastElement) => {
+    const classes = node.properties?.className;
+    if (Array.isArray(classes) && classes.includes("katex-html")) swap(node);
+    else node.children?.forEach(visit);
+  };
+  return (tree: unknown) => visit(tree as HastElement);
 }
 
 /** A pipe-delimited table row: `| a | b |`, with optional leading spaces. */
@@ -535,6 +593,17 @@ function chartPalette(): string[] {
   ];
 }
 
+/** Five times the smallest of ECharts' own nice steps (1, 2, 3, 5 or 10 × a
+ *  power of ten) that is at least value/5 — a spoke maximum that splits into
+ *  five readable ticks. */
+function niceRadarMax(value: number): number {
+  if (!(value > 0)) return 1;
+  const raw = value / 5;
+  const power = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 3, 5, 10].map((f) => f * power).find((candidate) => candidate >= raw) ?? 10 * power;
+  return Number((step * 5).toPrecision(12));
+}
+
 function buildChartOption(spec: ChartSpec): Record<string, unknown> {
   const ink = cssVar("--ink", "#17211f");
   const muted = cssVar("--muted", "#667673");
@@ -623,7 +692,13 @@ function buildChartOption(spec: ChartSpec): Record<string, unknown> {
       tooltip: { trigger: "item" },
       legend: { bottom: 0, textStyle: { color: muted } },
       radar: {
-        indicator: (spec.indicators ?? []).map((i) => ({ name: i.name, max: i.max })),
+        // ECharts shares one split count across the spokes; a maximum like 18
+        // or 2.2 does not divide into readable ticks and it warns on every
+        // resize. Each maximum is rounded up to five "nice" steps.
+        indicator: (spec.indicators ?? []).map((i, index) => ({
+          name: i.name,
+          max: niceRadarMax(Math.max(i.max ?? 0, ...(spec.series ?? []).map((s) => Number(s.data?.[index] ?? 0)))),
+        })),
         axisName: { color: muted },
         axisLine: { lineStyle: { color: line } },
         splitLine: { lineStyle: { color: line } },
@@ -957,7 +1032,7 @@ function MarkdownTable(props: ComponentPropsWithoutRef<"table">) {
   return (
     <div className="my-3">
       <div className="overflow-x-auto">
-        <table ref={ref} className="w-full border-collapse text-left text-xs" {...props} />
+        <table ref={ref} className="w-full border-collapse text-left text-sm leading-6" {...props} />
       </div>
       <div className="mt-1.5 flex justify-end">
         <FigureToolbar
@@ -983,28 +1058,51 @@ function MarkdownTable(props: ComponentPropsWithoutRef<"table">) {
 // (the container it sits in, e.g. Ask Kriton's response card, is theme-aware
 // and goes dark — hardcoded dark-mode-unaware text here used to render
 // dark-on-dark).
+// Typography follows the ChatGPT / Claude reading scale: 16px body on a 28px
+// line, headings stepping 22/20/18/16px with more space above than below,
+// muted list markers, tables ruled horizontally only, and code at 0.875em so
+// it sits in the text rather than shrinking below it.
 const mdComponents = {
-  p: (props: ComponentPropsWithoutRef<"p">) => <p className="mb-3 last:mb-0" {...props} />,
-  ul: (props: ComponentPropsWithoutRef<"ul">) => <ul className="mb-3 list-disc space-y-1 pl-5" {...props} />,
-  ol: (props: ComponentPropsWithoutRef<"ol">) => <ol className="mb-3 list-decimal space-y-1 pl-5" {...props} />,
+  p: (props: ComponentPropsWithoutRef<"p">) => <p className="mb-4 last:mb-0" {...props} />,
+  ul: (props: ComponentPropsWithoutRef<"ul">) => (
+    <ul className="mb-4 list-disc space-y-1.5 pl-6 marker:text-muted last:mb-0" {...props} />
+  ),
+  ol: (props: ComponentPropsWithoutRef<"ol">) => (
+    <ol className="mb-4 list-decimal space-y-1.5 pl-6 marker:text-muted last:mb-0" {...props} />
+  ),
+  // Nested lists sit tight under their parent item instead of adding a gap.
+  li: (props: ComponentPropsWithoutRef<"li">) => (
+    <li className="pl-1 [&>ol]:mb-0 [&>ol]:mt-1.5 [&>p]:mb-2 [&>ul]:mb-0 [&>ul]:mt-1.5" {...props} />
+  ),
   strong: (props: ComponentPropsWithoutRef<"strong">) => <strong className="font-semibold text-ink" {...props} />,
   a: (props: ComponentPropsWithoutRef<"a">) => (
-    <a className="text-brand underline" target="_blank" rel="noreferrer" {...props} />
+    <a className="text-brand underline underline-offset-2" target="_blank" rel="noreferrer" {...props} />
   ),
+  blockquote: (props: ComponentPropsWithoutRef<"blockquote">) => (
+    <blockquote className="my-4 border-l-4 border-line pl-4 text-muted [&>p]:mb-2" {...props} />
+  ),
+  hr: (props: ComponentPropsWithoutRef<"hr">) => <hr className="my-6 border-line" {...props} />,
   table: (props: ComponentPropsWithoutRef<"table">) => <MarkdownTable {...props} />,
-  thead: (props: ComponentPropsWithoutRef<"thead">) => <thead className="bg-soft" {...props} />,
+  thead: (props: ComponentPropsWithoutRef<"thead">) => <thead {...props} />,
   th: (props: ComponentPropsWithoutRef<"th">) => (
-    <th className="border border-line px-3 py-2 font-semibold text-ink" {...props} />
+    <th className="border-b-2 border-line px-3 py-2 text-left font-semibold text-ink" {...props} />
   ),
   td: (props: ComponentPropsWithoutRef<"td">) => (
-    <td className="border border-line px-3 py-2 align-top text-ink" {...props} />
+    <td className="border-b border-line px-3 py-2 align-top text-ink" {...props} />
+  ),
+  pre: (props: ComponentPropsWithoutRef<"pre">) => (
+    <pre
+      className="my-4 overflow-x-auto rounded-xl bg-soft p-4 text-[13px] leading-6 [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-[13px]"
+      {...props}
+    />
   ),
   code: (props: ComponentPropsWithoutRef<"code">) => (
-    <code className="rounded bg-soft px-1 py-0.5 text-[12px] text-ink" {...props} />
+    <code className="rounded bg-soft px-1.5 py-0.5 font-mono text-[0.875em] text-ink" {...props} />
   ),
-  h1: (props: ComponentPropsWithoutRef<"h1">) => <h3 className="mb-2 mt-3 text-base font-bold text-ink" {...props} />,
-  h2: (props: ComponentPropsWithoutRef<"h2">) => <h3 className="mb-2 mt-3 text-sm font-bold text-ink" {...props} />,
-  h3: (props: ComponentPropsWithoutRef<"h3">) => <h4 className="mb-1 mt-2 text-sm font-semibold text-ink" {...props} />,
+  h1: (props: ComponentPropsWithoutRef<"h1">) => <h2 className="mb-3 mt-8 text-[22px] leading-8 font-semibold text-ink first:mt-0" {...props} />,
+  h2: (props: ComponentPropsWithoutRef<"h2">) => <h3 className="mb-3 mt-7 text-xl leading-7 font-semibold text-ink first:mt-0" {...props} />,
+  h3: (props: ComponentPropsWithoutRef<"h3">) => <h4 className="mb-2 mt-6 text-lg leading-7 font-semibold text-ink first:mt-0" {...props} />,
+  h4: (props: ComponentPropsWithoutRef<"h4">) => <h5 className="mb-2 mt-5 text-base leading-7 font-semibold text-ink first:mt-0" {...props} />,
 };
 
 function VerifiedCalculation({ result }: { result: CalculationResult }) {
@@ -1057,30 +1155,30 @@ export function AnswerRenderer({
 }) {
   const segments = parseSegments(text);
   return (
-    <div className={`w-full min-w-0 text-sm leading-7 text-ink ${className ?? ""}`}>
-      {segments.map((seg, i) => {
-        if (seg.type === "mermaid") return <MermaidDiagram key={i} code={seg.content} />;
-        if (seg.type === "chart") return <ChartRenderer key={i} code={seg.content} />;
-        // Diagram fences were already split out above, so anything mermaid or
-        // chart shaped left in a text segment is a stray and gets dropped by
-        // the sanitizer rather than dumped as raw syntax.
-        const cleaned = normaliseMarkdownTables(sanitizeAnswerMarkdown(seg.content));
-        const renderMath = hasDisplayMath(cleaned);
-        return (
+    <div className={`kriton-answer min-w-0 text-base leading-7 text-ink [overflow-wrap:anywhere] ${className ?? ""}`}>
+      {segments.map((seg, i) =>
+        seg.type === "mermaid" ? (
+          <MermaidDiagram key={i} code={seg.content} />
+        ) : seg.type === "chart" ? (
+          <ChartRenderer key={i} code={seg.content} />
+        ) : (
           <ReactMarkdown
             key={i}
-            remarkPlugins={renderMath ? [remarkGfm, [remarkMath, ANSWER_MATH_OPTIONS], normaliseMathUnicode] : [remarkGfm]}
-            rehypePlugins={renderMath ? [rehypeKatex] : []}
+            // A single "$" is always a currency sign in a finance answer ("$480,000 is
+            // **$288,000**" rendered as a broken formula); maths uses $$…$$ or \(…\).
+            remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }], normaliseMathUnicode]}
+            rehypePlugins={[rehypeKatex, restoreRupeeInFormulas]}
             components={mdComponents}
           >
-            {cleaned}
+            {normaliseMarkdownTables(stripInlineRefs(normaliseLatexDelimiters(indianiseRupeeAmounts(seg.content))))}
           </ReactMarkdown>
-        );
-      })}
+        ),
+      )}
       {visualization && <VisualizationRenderer viz={visualization} />}
       {secondaryVisualizations?.map((viz) => <VisualizationRenderer key={viz.id} viz={viz} />)}
       {calculationResult && <VerifiedCalculation result={calculationResult} />}
-      {verifiedCharts.map((chart) => (
+      {verifiedCharts.filter((chart) => chart.type !== "kpi" &&
+        !(chart.calculation_id === "live_observations" && segments.some((segment) => segment.type === "chart"))).map((chart) => (
         <div key={chart.chart_id}>
           <div className="mb-[-0.5rem] text-[11px] font-semibold text-brand">Verified data</div>
           <ChartRenderer code={verifiedChartCode(chart)} />

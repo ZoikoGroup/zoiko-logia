@@ -101,6 +101,18 @@ class Settings(BaseSettings):
     # provider retry policies must not add up beyond this request-level budget.
     LIVE_DATA_TIMEOUT_SECONDS: float = 12.0
 
+    # ── Agent mode (governed tool-calling loop) ─────────────────────────
+    # Off by default. When on (and Groq is the answering provider), the model
+    # fetches live figures through registered tools as it needs them instead
+    # of every question pre-fetching all connectors; any agent failure falls
+    # back to the standard composition path. See model_gateway/agent.py.
+    KRITON_AGENT_MODE: bool = False
+    AGENT_MAX_STEPS: int = 8
+    AGENT_MAX_TOOL_CALLS: int = 12
+    # Must leave headroom under ASK_KRITON_TIMEOUT_SECONDS for retrieval
+    # before composition and validation after it.
+    AGENT_MAX_SECONDS: float = 75.0
+
     @property
     def is_sqlite(self) -> bool:
         return self.DATABASE_URL.startswith("sqlite")
