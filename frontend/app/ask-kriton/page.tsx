@@ -178,19 +178,47 @@ function KritonPanel({
   );
 }
 
-/** Outcome caption under "Kriton". For an answered turn this reports the
- * citations the answer actually carries, rather than claiming it is source
- * grounded on the strength of the route alone — retrieval fails soft, so an
- * unreachable SearXNG produces a confident-looking answer with no provenance
- * behind it at all. */
-function routeLabel(route: string | null, citationCount: number, nextActionType?: string, computed = false) {
-  // A provider/composition failure travels the refusal route, but it is not a
-  // policy decision — saying "policy blocked" sent users looking for a rule.
-  if (nextActionType === "composition_failed") return "Not answered — please try again";
-  if (route !== "LLM") return ROUTE_LABELS[route ?? ""] ?? route;
-  if (citationCount === 0 && computed) return "Answered — from figures in this conversation";
-  if (citationCount === 0) return "Answered — model knowledge, no sources retrieved";
-  return `Answered — grounded in ${citationCount} source${citationCount === 1 ? "" : "s"}`;
+function externalSourceUrl(rawUrl?: string | null): string | null {
+  if (!rawUrl) return null;
+  try {
+    const url = new URL(rawUrl);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function SourceButton({ citation }: { citation: SourceCitation }) {
+  const href = externalSourceUrl(citation.url);
+  const content = (
+    <>
+      <BookOpen size={13} className="mt-0.5 shrink-0 text-brand" />
+      <span className="min-w-0 flex-1 truncate">{citation.title || "Untitled source"}</span>
+      {href && <ExternalLink size={12} className="mt-0.5 shrink-0 opacity-70 group-hover:opacity-100" />}
+    </>
+  );
+
+  if (!href) {
+    return (
+      <div
+        className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-xs leading-5 text-muted"
+        title="No external link is available for this source"
+      >
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-xs leading-5 text-muted hover:bg-soft hover:text-brand"
+    >
+      {content}
+    </a>
+  );
 }
 
 /** One answer as a self-contained markdown document — the *export*, as opposed
@@ -554,9 +582,15 @@ function ConversationTurn({
     (l) => l !== "This response is for educational purposes only. Consult a qualified professional.",
   ) ?? [];
   const citationCount = result?.answer?.citations.length ?? 0;
-  const routeLabel = route === "LLM"
+  // A provider/composition failure travels the refusal route, but it is not a
+  // policy decision — saying "policy blocked" sent users looking for a rule.
+  const routeLabel = result?.next_action?.type === "composition_failed"
+    ? "Not answered — please try again"
+    : route === "LLM"
     ? citationCount > 0
       ? "Answered — source grounded"
+      : result?.answer?.computed_from_question
+        ? "Answered — from figures in this conversation"
       : result?.visualization
         ? "Answered — structured from your input"
         : "Answered — no cited sources"
@@ -630,12 +664,7 @@ function ConversationTurn({
                   {outcomeStyle && <span className={`h-2 w-2 rounded-full ${outcomeStyle.dot}`} />}
                   {outcomeStyle && <span className={`text-xs font-semibold ${outcomeStyle.text}`}>{outcomeStyle.label}</span>}
                 </div>
-                <p className="mt-0.5 text-xs text-muted">
-                  {routeLabel(
-                    route, result.answer?.citations.length ?? 0, result.next_action?.type,
-                    result.answer?.computed_from_question ?? false,
-                  )}
-                </p>
+                <p className="mt-0.5 text-xs text-muted">{routeLabel}</p>
               </div>
               <div className="flex items-center gap-2">
                 <Link
@@ -917,8 +946,8 @@ export default function AskKritonPage() {
     }));
     setConversations((prev) => {
       const next = isNew
-        ? [{ id: convId, title: questions[0].slice(0, 80), turns: newTurns, createdAt: now, updatedAt: now, pinned: false }, ...prev]
-        : prev.map((c) => (c.id === convId ? { ...c, updatedAt: now, turns: [...c.turns, ...newTurns] } : c));
+        ? [{ id: convId, title: questions[0].slice(0, 80), turns: newTurns, createdAt: now, updatedAt: now, pinned: false, documentIds }, ...prev]
+        : prev.map((c) => (c.id === convId ? { ...c, updatedAt: now, documentIds, turns: [...c.turns, ...newTurns] } : c));
       persistConversations(next);
       return next;
     });
@@ -942,12 +971,17 @@ export default function AskKritonPage() {
         token,
         {
           query: turn.submittedQuery,
+          previous_query: completedTurns.at(-1)?.submittedQuery.trim() || undefined,
           jurisdiction,
           mode,
           clarification_cycle: questions.length === 1 ? clarificationCycleFor(priorConversation) : 0,
           conversation_id: convId,
           conversation_history: conversationHistory(completedTurns),
-          document_ids: turnAttachments.map((a) => a.documentId),
+          document_ids: documentIds,
+          // An attached file defines the entity/source scope for this chat.
+          // Do not silently replace a document miss with same-name web results
+          // (for example, another company called "Apex").
+          source_scope: documentIds.length ? "DOCUMENTS_ONLY" : "WEB_ONLY",
           task_context: {
             engagement_id: engagementId || null,
             jurisdiction: jurisdiction || null,
