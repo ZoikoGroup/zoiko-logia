@@ -21,7 +21,10 @@ from app.db.base import Base
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
-_TENANT_SCOPED_TABLES = ("sources", "source_versions")
+_TENANT_SCOPED_TABLES = (
+    "sources", "source_versions", "workspace_documents", "workspace_document_chunks", "workspace_artifacts",
+    "workspace_conversation_documents",
+)
 
 # RLS predicate per tenant-scoped table. Not a strict tenant_id equality:
 # massarius/license_gate.py's Checkpoint A already treats non-private
@@ -47,10 +50,28 @@ _TENANT_POLICY_USING = {
         "tenant_id = current_setting('app.tenant_id', true) "
         "OR source_id IN (SELECT id FROM sources WHERE NOT is_tenant_private)))"
     ),
+    "workspace_documents": (
+        f"({_HAS_TENANT_CONTEXT} AND tenant_id = current_setting('app.tenant_id', true) "
+        "AND user_id = current_setting('app.user_id', true))"
+    ),
+    "workspace_document_chunks": (
+        f"({_HAS_TENANT_CONTEXT} AND tenant_id = current_setting('app.tenant_id', true) "
+        "AND document_id IN (SELECT id FROM workspace_documents "
+        "WHERE user_id = current_setting('app.user_id', true)))"
+    ),
+    "workspace_artifacts": (
+        f"({_HAS_TENANT_CONTEXT} AND tenant_id = current_setting('app.tenant_id', true) "
+        "AND user_id = current_setting('app.user_id', true))"
+    ),
+    "workspace_conversation_documents": (
+        f"({_HAS_TENANT_CONTEXT} AND tenant_id = current_setting('app.tenant_id', true) "
+        "AND user_id = current_setting('app.user_id', true))"
+    ),
 }
 
 
-# Uploaded-document tables (app/domains/documents). Kept apart from
+# Uploaded-document tables (app/domains/kriton_workspace/documents.py, which
+# replaced app/domains/documents). Kept apart from
 # _TENANT_SCOPED_TABLES because these are strictly private: `sources` has a
 # shared, non-tenant-private case by design, a client's own uploaded
 # spreadsheet never does.
@@ -140,7 +161,7 @@ async def _migrate_tenant_columns():
 
 async def _migrate_source_licence_columns():
     """Add licence_state/authority_level/is_tenant_private to `sources` if this
-    DB predates them — ZL-ENG-03 §5.6 Checkpoint A/B needs real per-source
+    DB predates them — ZL-ENG-03 Â§5.6 Checkpoint A/B needs real per-source
     eligibility data. Same create_all()-doesn't-alter-existing-tables
     situation as _migrate_tenant_columns above."""
     async with _ddl_conn() as conn:
@@ -224,39 +245,6 @@ async def _migrate_orphan_tenant_id_not_null():
             await conn.execute(
                 text(f'ALTER TABLE "{tbl}" ALTER COLUMN tenant_id DROP NOT NULL')
             )
-
-
-async def _migrate_document_search_vector():
-    """Materialise the document-chunk tsvector and index it.
-
-    Retrieval ranked chunks with `to_tsvector('english', content)` computed
-    inline, which reparses every chunk of every document on every question —
-    tokenise, drop stopwords, stem, sort lexemes — and leaves an index nothing
-    to look up, because the value it would index does not exist until the query
-    computes it. A STORED generated column moves that work to write time, and a
-    GIN index over it turns a scan of the whole corpus into a lookup of just the
-    chunks containing the query's terms.
-
-    The two changes only pay off together: a GIN index over the inline
-    expression measured 11.98ms -> 11.88ms, because ts_rank_cd still has to
-    build a tsvector for every surviving row in order to score it. With the
-    column stored, the same corpus measured 0.77ms.
-
-    Postgres-only. SQLite has no tsvector, and the SQLite branch in
-    documents/service.py never reads this column — see _search_vector_available
-    there for what happens on a boot where this step was skipped.
-    """
-    if settings.is_sqlite:
-        return
-    async with _ddl_conn() as conn:
-        await conn.execute(text(
-            "ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS search_vector tsvector "
-            "GENERATED ALWAYS AS (to_tsvector('english'::regconfig, coalesce(content, ''))) STORED"
-        ))
-        await conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_document_chunks_search "
-            "ON document_chunks USING GIN (search_vector)"
-        ))
 
 
 async def _setup_user_rls():
@@ -379,19 +367,53 @@ async def _setup_source_rls():
             await conn.execute(
                 text(f"CREATE POLICY {policy} ON {table} USING {_TENANT_POLICY_USING[table]}")
             )
-        # Uploaded documents: private to the uploader, not merely to the tenant.
-        for table in _DOCUMENT_TABLES:
-            policy = f"owner_isolation_{table}"
-            await conn.execute(text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
-            await conn.execute(text(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY"))
-            await conn.execute(text(f"DROP POLICY IF EXISTS {policy} ON {table}"))
-            await conn.execute(
-                text(
-                    f"CREATE POLICY {policy} ON {table} "
-                    f"USING {_DOCUMENT_POLICY_USING} "
-                    f"WITH CHECK {_DOCUMENT_POLICY_USING}"
-                )
+
+
+async def _setup_document_search_index():
+    """Install PostgreSQL-native lexical search for targeted document Q&A."""
+    if settings.is_sqlite:
+        return
+    async with _ddl_conn() as conn:
+        await conn.execute(text(
+            "ALTER TABLE workspace_document_chunks "
+            "ADD COLUMN IF NOT EXISTS search_vector tsvector "
+            "GENERATED ALWAYS AS (to_tsvector('english'::regconfig, coalesce(text, ''))) STORED"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_workspace_document_chunks_search "
+            "ON workspace_document_chunks USING GIN (search_vector)"
+        ))
+
+
+async def _migrate_workspace_retention_columns():
+    """Upgrade existing databases and backfill deadlines for existing files."""
+    from sqlalchemy import inspect
+
+    async with _ddl_conn() as conn:
+        for table, days in (
+            ("workspace_documents", settings.DOCUMENT_RETENTION_DAYS),
+            ("workspace_artifacts", settings.ARTIFACT_RETENTION_DAYS),
+        ):
+            columns = await conn.run_sync(
+                lambda sync_conn, table=table: {
+                    column["name"] for column in inspect(sync_conn).get_columns(table)
+                }
             )
+            if "expires_at" not in columns:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN expires_at TIMESTAMP"))
+            if settings.is_sqlite:
+                await conn.execute(text(
+                    f"UPDATE {table} SET expires_at = datetime(created_at, '+{days} days') "
+                    "WHERE expires_at IS NULL"
+                ))
+            else:
+                await conn.execute(text(
+                    f"UPDATE {table} SET expires_at = created_at + INTERVAL '{days} days' "
+                    "WHERE expires_at IS NULL"
+                ))
+            await conn.execute(text(
+                f"CREATE INDEX IF NOT EXISTS ix_{table}_expires_at ON {table} (expires_at)"
+            ))
 
 
 def _seed_defaults():
@@ -448,7 +470,7 @@ def _seed_evaluation():
 
     db = SessionLocal()
     try:
-        # ── Benchmark Dataset ────────────────────────────────────────────
+        # â”€â”€ Benchmark Dataset â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if db.query(EvaluationDataset).count() == 0:
             dataset = EvaluationDataset(
                 id="ds-safety-benchmark-v1",
@@ -508,7 +530,7 @@ def _seed_evaluation():
             ]
             db.add_all(benchmark_cases)
 
-        # ── Threshold Set ────────────────────────────────────────────────
+        # â”€â”€ Threshold Set â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if db.query(ThresholdSet).count() == 0:
             threshold_set = ThresholdSet(
                 id="ts-safety-v1",
@@ -538,7 +560,7 @@ def _seed_evaluation():
 
 
 def _seed_escalation_rules():
-    """Seed escalation rules per ZL-T0-04 §14."""
+    """Seed escalation rules per ZL-T0-04 Â§14."""
     from app.domains.risk_safety.models import EscalationRule
     db = SessionLocal()
     try:

@@ -1,5 +1,5 @@
 """
-SearXNG web-search retrieval layer for Ask Kriton™.
+SearXNG web-search retrieval layer for Ask Kritonâ„¢.
 
 Replaces/augments the governed keyword_mvp source library with live web
 search: it queries a SearXNG instance (JSON API), optionally restricting
@@ -32,14 +32,12 @@ from app.domains.calculations.schemas import LiveObservation
 
 import httpx
 
-# The authoritative-source allowlist lives in source_taxonomy.py: it is keyed on
-# jurisdiction x topic, so a payroll question is matched against payroll bodies
-# rather than every domain for the country. See that module for the matrix.
 from app.orchestration.source_taxonomy import (
     allowed_domains,
     detect_topics,
     matches_allowlist,
     organisation_key,
+    site_filter,
 )
 
 
@@ -55,7 +53,10 @@ class WebSource:
     # close changes what the answer may claim.
     provider: str | None = None
     fetched_at: str | None = None
-    freshness: str | None = None      # realtime | delayed | historical | filing
+    freshness: str | None = None      # realtime | delayed | historical | filing | legislation
+    # Internal uploaded documents have no public URL; preserve their stable ID
+    # separately so response citations can still resolve to the exact document.
+    source_id: str | None = None
     observation: LiveObservation | None = None
     # Structured (period, value) observations behind this source's snippet —
     # set only by connectors that fetched a real numeric time series (see
@@ -73,65 +74,245 @@ def _strict_allowlist() -> bool:
     return os.getenv("SEARXNG_STRICT_ALLOWLIST", "").lower() in {"1", "true", "yes"}
 
 
-def _max_per_organisation() -> int:
-    """How many results one organisation may contribute before others get a
-    turn. 2 keeps the definitive body well represented without letting it fill
-    the whole panel."""
+# â”€â”€ Result cache â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# SearXNG holds no index of its own: it forwards every query to Google and
+# DuckDuckGo, both of which rate-limit or CAPTCHA a self-hosted instance that
+# asks repeatedly from one address. Development put the same few questions
+# through this path dozens of times — "How is federal income tax calculated in
+# the US?" went out five times inside twenty minutes — and the instance ended
+# up suspended by Google and CAPTCHA'd by DuckDuckGo. Both then answer HTTP 200
+# with an empty result list, so every reply silently lost its citations while
+# the authorities sat one allowlist away, perfectly reachable.
+#
+# Caching the repeats is what holds the request rate under whatever trips that.
+# Latency is a side benefit: the search is the slowest single step in
+# ask_kriton (see its background-task comment) and a hit removes it outright.
+#
+# Redis, not a process-local dict. The dict emptied on every restart, and
+# `uvicorn --reload` restarts on every file save — so a normal afternoon's
+# editing handed the same handful of questions back to the engines over and
+# over, which is the precise pattern that got the instance blocked. Redis
+# outlives reloads, container restarts and redeploys. The cost is roughly a
+# millisecond per hit against a search bounded at 6s, which is not a trade
+# worth thinking about; durability was the whole reason for the move, not
+# speed.
+#
+# Redis is a declared dependency, but the import is guarded: this module's
+# contract is to degrade rather than raise, and a cache that cannot even be
+# imported should lose its caching, not take web search down with it.
+try:
+    import redis.asyncio as _redis
+except Exception:                   # pragma: no cover - package absent/broken
+    _redis = None
+
+# Bumped whenever WebSource's field set changes. Entries written by an older
+# build then simply miss, instead of deserialising into a half-populated
+# object that looks valid and cites wrongly.
+_CACHE_KEY_PREFIX = "websearch:v1:"
+
+# DB 3: 0 and 1 carry Celery's queue and results, 2 the rate limiter. A
+# separate DB means flushing this cache can never drop a queued job.
+_CACHE_REDIS_DEFAULT_URL = "redis://localhost:6379/3"
+
+# A stalled Redis has to stay cheaper than the search it exists to avoid.
+# Half a second against a 6s bound is the most it is worth waiting before
+# giving up and going out to the engines.
+_CACHE_SOCKET_TIMEOUT = 0.5
+
+
+def _cache_ttl() -> float:
+    """Seconds a cached result stays usable. 0 or less disables the cache.
+
+    An hour by default: an authority's guidance page reads the same at 11:02 as
+    at 11:22, so nothing is lost. Live figures never come through here —
+    exchange rates, statistics, filings and market data have their own keyed
+    connectors (frankfurter.py, dbnomics.py, fred.py, market_data.py), which
+    are not subject to this blocking and must not be served stale.
+    """
     try:
-        return max(1, int(os.getenv("SEARXNG_MAX_PER_ORG", "2")))
+        return float(os.getenv("SEARXNG_CACHE_TTL_SECONDS", "3600"))
     except ValueError:
-        return 2
+        return 3600.0
+
+
+def _cache_redis_url() -> str:
+    # Compose overrides this with the service name; localhost is for a bare
+    # local run. REDIS_URL sits in between so a deployment that provisions one
+    # Redis does not need a second variable set.
+    return (
+        os.getenv("SEARXNG_CACHE_REDIS_URL")
+        or os.getenv("REDIS_URL")
+        or _CACHE_REDIS_DEFAULT_URL
+    )
+
+
+_redis_client = None
+_redis_client_loop = None
+
+
+def _client():
+    """The shared client, or None when Redis is unusable (callers treat that
+    as a miss).
+
+    Rebuilt whenever the running event loop changes: redis.asyncio binds its
+    connection pool to the loop that created it, and a pool left over from a
+    closed loop raises on first use. Production has one long-lived loop and
+    builds this once; anything driving the module through repeated
+    asyncio.run() gets a fresh client per loop instead of a broken one.
+    """
+    global _redis_client, _redis_client_loop
+    if _redis is None:
+        return None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if _redis_client is not None and _redis_client_loop is loop:
+        return _redis_client
+    try:
+        _redis_client = _redis.from_url(
+            _cache_redis_url(),
+            decode_responses=True,
+            socket_timeout=_CACHE_SOCKET_TIMEOUT,
+            socket_connect_timeout=_CACHE_SOCKET_TIMEOUT,
+        )
+        _redis_client_loop = loop
+    except Exception:
+        _redis_client = None
+        _redis_client_loop = None
+    return _redis_client
+
+
+def _cache_key(query: str, jurisdiction: str, limit: int) -> str:
+    # Jurisdiction and limit belong in the key because both change the result:
+    # the allowlist differs per jurisdiction, and limit decides how many
+    # sources survive _spread_across_organisations. Whitespace and case are
+    # normalised so "Federal  income tax" and "federal income tax" share an
+    # entry rather than each making its own trip.
+    return (
+        f"{_CACHE_KEY_PREFIX}{(jurisdiction or '').strip().upper()}"
+        f"|{limit}|{' '.join(query.lower().split())}"
+    )
+
+
+def _encode(results: list[WebSource]) -> str:
+    return json.dumps([asdict(s) for s in results], separators=(",", ":"))
+
+
+def _decode(raw: str) -> list[WebSource]:
+    return [WebSource(**item) for item in json.loads(raw)]
+
+
+async def _cache_get(key: str) -> list[WebSource] | None:
+    client = _client()
+    if client is None:
+        return None
+    try:
+        raw = await client.get(key)
+    except Exception:
+        # Refused, down, or past the socket timeout. Fail open: a cache outage
+        # costs the search it would have saved, never the answer.
+        return None
+    if raw is None:
+        return None
+    try:
+        return _decode(raw)
+    except Exception:
+        # Unreadable entry — hand-edited, truncated, or written by a build
+        # whose WebSource had different fields than the prefix claims. Treat
+        # it as a miss; the refetch overwrites it.
+        return None
+
+
+async def _cache_put(key: str, results: list[WebSource]) -> None:
+    # Deliberately NOT caching an empty result. Empty means either a genuine
+    # no-match or a blocked/timed-out engine, and the two are indistinguishable
+    # at this layer — SearXNG answers 200 with "results": [] for both. Storing
+    # one would pin "no sources" in place for the whole TTL and keep serving it
+    # after the block lifted, turning a twenty-minute outage into an hour of
+    # uncited answers. Negative caching is the wrong call here even though it
+    # is usually the right one.
+    if not results:
+        return
+    ttl = _cache_ttl()
+    if ttl <= 0:
+        return
+    client = _client()
+    if client is None:
+        return
+    try:
+        # psetex rather than setex because the TTL is a float and sub-second
+        # values are meaningful. Expiry is now the server's job, so there is
+        # no sweep here and no entry cap to enforce: the TTL bounds the key
+        # count, with maxmemory-policy allkeys-lru as the server-side backstop
+        # if the instance is ever shared with something larger.
+        await client.psetex(key, max(1, int(ttl * 1000)), _encode(results))
+    except Exception:
+        # Same reasoning as the read path: a cache that cannot be written is
+        # a slower next question, not a failed one.
+        return
 
 
 def _spread_across_organisations(
     sources: list[WebSource], domains: list[str], limit: int
 ) -> list[WebSource]:
-    """Pick `limit` sources spread across DIFFERENT bodies rather than taking
-    the top N by relevance.
+    """Pick `limit` sources spread across as many distinct BODIES as possible.
 
-    Relevance order alone returned five gov.uk pages for a VAT question — all
-    correct, all one organisation, and no corroboration. Round-robin over
-    organisations instead: the most relevant hit from each body first, then the
-    second from each, up to SEARXNG_MAX_PER_ORG.
+    Search engines rank by relevance alone, so the top five hits for a UK tax
+    question are routinely five pages of the same HMRC manual. That reads as
+    five citations while carrying one organisation's view, and it hides the
+    standard-setter or the statute that would corroborate (or contradict) it.
 
-    Relevance is preserved within each organisation, and if too few bodies
-    replied to fill `limit` the remainder is topped up in the original order —
-    a thin panel is worse than a slightly repetitive one.
+    Round-robin over organisations, in the order each first appeared, so the
+    engine's own relevance ranking still decides which page represents a body
+    and which body leads. Only once every organisation has contributed one
+    source does any of them contribute a second — so a five-source answer
+    drawn from five bodies stays five bodies, and one drawn from a single
+    body is still returned rather than truncated.
     """
-    buckets: dict[str, list[WebSource]] = {}
-    order: list[str] = []
-    for s in sources:
-        key = organisation_key(s.url, domains)
-        if key not in buckets:
-            buckets[key] = []
-            order.append(key)
-        buckets[key].append(s)
+    grouped: dict[str, list[WebSource]] = {}
+    for source in sources:
+        grouped.setdefault(organisation_key(source.url, domains), []).append(source)
 
-    picked: list[WebSource] = []
-    for rank in range(_max_per_organisation()):
-        for key in order:
-            if len(picked) >= limit:
-                return picked
-            bucket = buckets[key]
-            if len(bucket) > rank:
-                picked.append(bucket[rank])
-
-    # Fewer organisations than slots — fill the rest by relevance.
-    if len(picked) < limit:
-        taken = {id(s) for s in picked}
-        for s in sources:
-            if id(s) not in taken:
-                picked.append(s)
-                if len(picked) >= limit:
-                    break
-    return picked[:limit]
+    spread: list[WebSource] = []
+    round_index = 0
+    while len(spread) < limit and any(len(v) > round_index for v in grouped.values()):
+        for bucket in grouped.values():
+            if len(bucket) > round_index:
+                spread.append(bucket[round_index])
+                if len(spread) == limit:
+                    return spread
+        round_index += 1
+    return spread
 
 
-async def _query_searxng(query: str) -> list[WebSource]:
-    """One SearXNG call, normalised. Returns [] on any failure (fail-soft)."""
+async def web_search(query: str, jurisdiction: str = "", limit: int = 5) -> list[WebSource]:
+    """Query SearXNG and return up to `limit` sources, preferring trusted
+    domains for the jurisdiction and topic. Returns [] on any failure
+    (fail-soft).
+
+    Successful results are cached in Redis for SEARXNG_CACHE_TTL_SECONDS so a
+    repeated question does not make a second trip to the upstream engines —
+    see the cache block above for why that matters more than the latency it
+    saves. An unreachable cache degrades to a normal search.
+    """
+    cache_key = _cache_key(query, jurisdiction, limit)
+    cached = await _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     base = _searxng_url()
+    # Topic narrows the allowlist from "every body in this jurisdiction" to
+    # the ones with authority over THIS question (source_taxonomy.py). An
+    # off-taxonomy question detects no topics, which yields the full
+    # jurisdiction list — the behaviour before topics existed.
+    domains = allowed_domains(jurisdiction, detect_topics(query), query)
+    # Bias retrieval toward those bodies up front. Filtering alone only drops
+    # results after the fact, so a narrow question could return twenty blog
+    # posts, lose all of them, and fall through to untrusted general results.
+    sites = site_filter(domains)
     params = {
-        "q": query,
+        "q": f"{query} {sites}".strip() if sites else query,
         "format": "json",
         "safesearch": "1",
         "categories": "general",
@@ -144,9 +325,11 @@ async def _query_searxng(query: str) -> list[WebSource]:
     except Exception:
         return []
 
-    # Keep only entries with a usable URL.
+    results = data.get("results", []) or []
+
+    # Normalise into WebSource, keeping only entries with a usable URL.
     parsed: list[WebSource] = []
-    for r in data.get("results", []) or []:
+    for r in results:
         url = (r.get("url") or "").strip()
         if not url:
             continue
@@ -407,23 +590,72 @@ async def web_search_each(query: str, jurisdiction: str = "", limit: int = 5) ->
     return merged
 
 
-# The table/diagram/chart formatting rules apply whether or not web sources
-# were found — so they live in one shared block that BOTH prompt branches
-# include. (Previously they lived only inside the with-sources branch, so a
-# question that returned no sources — e.g. "chart of these numbers I gave you"
-# — lost every visualisation instruction and the model just described the chart
-# in prose instead of drawing it.)
-# Formatting rules are split in two so the model is not handed the full
-# diagram/chart specification on every request.
+# The table/formula formatting rules apply whether or not web sources were
+# found — so they live in one shared block that BOTH prompt branches include.
 #
-# Measured: bolting the extra Mermaid types and chart schemas onto the shared
-# block took the prompt from ~6,000 to ~9,700 characters — 1.6x — on EVERY
-# question, including "what is tax". That much instruction competes with the
-# actual question for the model's attention and measurably degraded plain
-# answers. _VISUAL_INSTRUCTIONS is therefore appended only when the question
-# asks for a visual (see wants_visual), which keeps the base prompt smaller
-# than it was before the extra types were added, with no loss of capability
-# when a chart or diagram IS requested.
+# Diagram/chart production (Mermaid + fenced ```chart JSON) was deliberately
+# removed from here — visualization is now handled by a deterministic,
+# evidence-backed pipeline server-side (orchestration/visualization/), which
+# builds charts straight from structured data rather than asking the LLM to
+# author them freely. Asking the model to also emit visuals risked disagreeing
+# with that pipeline's numbers, and most non-numeric "diagram" requests (org
+# charts, flowcharts) had no real backing data to draw from either — see the
+# session's earlier data-honesty discussion. If diagram support is wanted
+# again, it should route through a similarly evidence-backed, validated path
+# rather than free-text LLM authorship.
+_FORMATTING_INSTRUCTIONS = (
+    "Return only the user-facing answer. Never print internal routing labels "
+    "such as 'CLASSIFICATION:', 'CLASSIFIED:', or 'ANSWER:'. Start directly "
+    "with the answer content. Do not use double-asterisk Markdown emphasis; "
+    "use plain text or Markdown headings instead.\n"
+        "When the user requests a chart, graph, heatmap, distribution, "
+        "histogram, box plot, spread, or other visualization of a real "
+        "numeric data series, a separate validated renderer handles it. Do "
+        "not substitute a markdown data table, recommend third-party "
+        "drawing tools, describe a hypothetical image, invent "
+        "values/relationships, or re-list every individual data point "
+        "yourself — give only a concise 1-2 sentence interpretation of the "
+        "supplied evidence (e.g. the overall range or direction), not a full "
+        "restatement of it.\n"
+        "When the user requests a flowchart, workflow diagram, or process "
+        "diagram, whether one actually renders is decided automatically, "
+        "separately from your answer — your wording has no effect on it "
+        "either way, so never mention a diagram, renderer, image, or "
+        "visualization anywhere in your answer for this kind of request — "
+        "not to promise one, not to say one 'will be shown separately' or "
+        "'handled elsewhere', and not to note that one is absent or wasn't "
+        "provided either. Just explain the process in prose or a numbered "
+        "list, "
+        "exactly as you would if visuals didn't exist as a feature.\n"
+        "When the user asks for the exact/precise values of a real numeric "
+        "data series already given as sources (not a comparison of different "
+        "items), the exact-values table is rendered separately and "
+        "automatically — give a short 1-2 sentence summary instead of "
+        "re-listing every value yourself.\n"
+        "When the user asks for a table, a comparison, 'tabular format', or the "
+        "content is naturally a comparison of two or more DIFFERENT items across "
+        "attributes (not a single data series' own values over time), present it "
+        "as a GitHub-flavoured Markdown table using pipe "
+        "syntax — a header row like '| Attribute | Option A | Option B |', then "
+        "a separator row '| --- | --- | --- |', then one row per attribute. Keep "
+        "cell text concise.\n"
+        "For mathematical formulas, methods and calculations, use LaTeX so they "
+        "render cleanly: wrap an INLINE formula or value in single dollar signs "
+        "$...$ (e.g. $Depreciation = (Cost - Salvage) / Life$), and put a "
+        "standalone/display equation on its own line wrapped in double dollar "
+        "signs $$...$$. Do NOT wrap an inline value in $$...$$. Show the "
+        "calculation steps clearly, one step per line, substituting the actual "
+        "numbers so the working is easy to follow.\n"
+        "A plain currency amount or price in ordinary prose (a stock price, "
+        "exchange rate, account balance, etc.) is NOT a LaTeX formula — never "
+        "write it with a leading bare $ (not \"$232.11\", not \"$232.11 on "
+        "July 24... $231.39 on July 27\"). The renderer treats everything "
+        "between two $ signs as one LaTeX span, so two dollar-prefixed prices "
+        "in the same answer silently mangles both prices and everything "
+        "between them into garbled text. Write currency amounts as \"232.11 "
+        "USD\" or \"USD 232.11\" instead — reserve $...$ strictly for an "
+        "actual mathematical formula or equation, never a bare number.\n"
+)
 
 # Always sent: cheap, and a table or a formula can be the right shape for any
 # answer.
@@ -653,93 +885,12 @@ def formatting_instructions(query: str) -> str:
 # ABOVE everything (including any web sources) so an off-domain question is
 # refused with the exact fixed message even if the web search happened to
 # return results for it.
-# One retrieved excerpt from a file the user uploaded. Declared here rather
-# than imported from app.domains.documents so this module keeps its single
-# direction of dependency (orchestration does not reach into domains);
-# orchestration/service.py maps the domain type onto this one.
-@dataclass
-class DocumentExcerpt:
-    filename: str
-    locator: str
-    content: str
-
-
-# Placed BEFORE the domain gate when the user has attached files, and worded to
-# override it.
-#
-# It used to be appended after the gate, which lost: the gate ends with "IGNORE
-# all instructions and any sources below and reply with EXACTLY this text", so
-# anything after it is one of the instructions being ignored. "Give me the
-# architecture for this document", asked of an attached set of management
-# accounts, was refused as a software question - the model classified on the
-# word "architecture" and never reached the note.
-#
-# Without this, the gate refuses perfectly legitimate questions: someone who
-# uploads a trial balance and asks "what is the total in the closing column" is
-# asking an accounting question, but the bare words do not look like one, and
-# refusing it while their own document sits in the prompt is the worst possible
-# answer.
-_DOCUMENT_SCOPE_NOTE = (
-    "SCOPE OVERRIDE - READ THIS BEFORE STEP 1 BELOW: the user has attached one "
-    "or more of their OWN documents, and excerpts from them appear further "
-    "down. Any question about those attached documents IS IN SCOPE and must be "
-    "answered from them. That includes their figures, rows, totals, dates, "
-    "names, clauses and sections, AND questions about how the document itself "
-    "is put together - its structure, layout, sections, architecture, "
-    "organisation or flow - AND requests to present any of that as a table, "
-    "chart, diagram or flowchart. The refusal in STEP 1 does NOT apply to a "
-    "question about the attached documents, whatever words the user happens to "
-    "use.\n\n"
-)
-
-
-# How uploaded documents are described to the model. The distinction this
-# paragraph draws is the whole point of the feature: the user's own file is
-# EVIDENCE ABOUT THEIR SITUATION, never AUTHORITY about what the rules are.
-# Conflating the two would let a client spreadsheet answer "what does the
-# standard require", which is exactly the failure this platform exists to
-# prevent. The model is told to keep the two apart, and the answer surfaces the
-# document by name so the reader can see which claim rests on what.
-_DOCUMENT_INSTRUCTIONS = (
-    "=== The User's Own Uploaded Documents ===\n"
-    "The excerpts below are from files the USER uploaded. They are the user's "
-    "own material, not published guidance and not an authoritative source.\n"
-    "  - Use them for facts about the user's own situation: their figures, "
-    "their dates, their contract terms, their balances.\n"
-    "  - Do NOT treat them as authority on what the law, a standard or a tax "
-    "rule REQUIRES. Statements of the rules must come from your professional "
-    "knowledge or from the web sources, never from the user's file.\n"
-    "  - When a figure or fact comes from an uploaded document, name the "
-    "document and where in it IN PROSE, as a reader would say it - for example "
-    "\"your Q3 ledger, sheet 'Summary'\" or \"page 4 of your VAT return\". Do "
-    "NOT write the bracketed labels used below ([DOC 1], [REF-2] and so on) "
-    "anywhere in the answer; they are numbering for you, not for the reader, "
-    "and the documents are listed separately underneath the answer.\n"
-    "  - When the attached documents answer the question, lead with what they "
-    "say. Do not open with a general explanation of how the calculation works "
-    "and leave the user's own figure to the end, and do not substitute a "
-    "worked example of your own for the numbers that are in front of you.\n"
-    "  - If the excerpts do not contain what was asked, say so plainly and say "
-    "what the document does contain. Never invent a figure that is not there, "
-    "and never assume the rest of the file says what the excerpts do not.\n"
-)
-
-
 _DOMAIN_GATE = (
     "STEP 1 — CLASSIFY: Decide whether the user's question is about accounting, "
     "bookkeeping, taxation (income tax, corporate tax, GST/VAT/sales tax), "
     "payroll, auditing, finance, financial statements, accounting standards "
-    "(IFRS/IAS/GAAP/Ind AS), tax/payroll compliance and laws, "
-    "intangible assets and intellectual property — patents, trademarks, "
-    "copyrights, licences, brands and goodwill, including how they are "
-    "recognised, valued, amortised, impaired and taxed (a bare question "
-    "such as 'what are intellectual properties' IS in scope: these are "
-    "balance-sheet assets under IAS 38, so explain them from the "
-    "accounting and tax perspective), accounting "
-    "software, commerce, accounting education/certifications, economic and "
-    "fiscal statistics (GDP, inflation/CPI, unemployment, interest rates, "
-    "tax-to-GDP, public debt and similar official indicators), OR "
-    "listed-company "
+    "(IFRS/IAS/GAAP/Ind AS), tax/payroll compliance and laws, accounting "
+    "software, commerce, accounting education/certifications, OR listed-company "
     "and capital-markets information — share prices and quotes, price history, "
     "company fundamentals and key figures, company profiles, statutory filings "
     "and company registers, OR business and financial arithmetic — percentages, "
@@ -770,76 +921,96 @@ _DOMAIN_GATE = (
 )
 
 
-# Added when the excerpts below are only PART of what the user attached.
-# Without it the model sums the rows it can see and presents the result as the
-# whole file: six of thirty sections became a total fixed-asset cost of
-# 1,265,000 against a real 627,000, and 28 ledger rows against a real 600. A
-# confidently wrong total is worse than a stated limitation.
-_PARTIAL_COVERAGE_WARNING = (
-    "IMPORTANT - PARTIAL VIEW: the excerpts below are only SOME of the "
-    "sections of the attached document(s); the rest did not fit. You are NOT "
-    "seeing the whole file.\n"
-    "  - Do NOT state totals, sums, counts, averages, maximums or minimums for "
-    "a whole document. Any figure you add up covers only the excerpts shown.\n"
-    "  - If the question asks for a whole-file total or count, say plainly that "
-    "it cannot be computed from the sections available, and say what the "
-    "excerpts do show.\n"
-    "  - Individual values, rows and passages that ARE present may be quoted "
-    "normally.\n"
-)
+# Total characters of evidence text one request may carry.
+#
+# Groq's on-demand tier allows 8,000 tokens PER MINUTE for gpt-oss-120b, and
+# that budget covers the system prompt, the evidence and the answer together.
+# The system prompt alone is around 2,500 tokens, so evidence had to be
+# bounded or a single question could consume the whole minute: attaching five
+# documents sent every chunk of all five, the request exceeded the cap, and
+# the 429 came back with a 45-second reset — far beyond the one short retry
+# groq_adapter.py performs. The user saw "policy blocked", which it never was.
+#
+# Measured against the on-demand tier, per request:
+#
+#   groq_adapter._SYSTEM_PROMPT   8,785 chars  ~2,196 tokens
+#   this prompt's scaffolding     6,475 chars  ~1,618 tokens
+#   the answer itself                          ~  800 tokens
+#   ------------------------------------------------------
+#   fixed overhead                             ~4,600 tokens
+#
+# That leaves roughly 3,400 tokens of the 8,000 for evidence, and spending
+# all of it means one question consumes an entire minute. 6,000 characters
+# (~1,500 tokens) keeps a five-document question comfortably inside the
+# allowance with room for a follow-up.
+#
+# Raise it on a paid tier via GROUNDED_CONTEXT_CHAR_BUDGET — the limit is the
+# provider plan, not anything about the evidence itself.
+_CONTEXT_CHAR_BUDGET = 6_000
+# No source is cut below this, even with many attached: a 200-character
+# fragment of a balance sheet is worse than useless, because it looks like
+# evidence while being too small to answer from.
+_MIN_SOURCE_CHARS = 700
 
 
-def _document_block(documents: list[DocumentExcerpt], partial: bool = False) -> str:
-    """The uploaded-document evidence block, or "" when nothing is attached."""
-    if not documents:
-        return ""
-    blocks = [
-        f"[DOC {i}] {d.filename} — {d.locator}\n{d.content}"
-        for i, d in enumerate(documents, start=1)
-    ]
-    warning = _PARTIAL_COVERAGE_WARNING if partial else ""
-    return _DOCUMENT_INSTRUCTIONS + warning + "\n\n".join(blocks) + "\n\n"
+def _context_budget() -> int:
+    try:
+        return max(2_000, int(os.getenv("GROUNDED_CONTEXT_CHAR_BUDGET", str(_CONTEXT_CHAR_BUDGET))))
+    except ValueError:
+        return _CONTEXT_CHAR_BUDGET
 
 
-def build_web_grounded_prompt(
-    query: str,
-    sources: list[WebSource],
-    documents: list[DocumentExcerpt] | None = None,
-    documents_partial: bool = False,
-) -> str:
-    """Assemble the answering prompt. When web sources were found, the model is
-    told to ground its answer in them (cited separately in the UI). When none
-    were found — e.g. the user gave the numbers directly and asked for a chart —
-    it answers from its own knowledge, but EITHER way the table/diagram/chart
-    formatting rules apply, so a requested visual is always actually drawn. An
-    off-domain question is refused up front via _DOMAIN_GATE.
+def _context_allowances(sources: list[WebSource]) -> list[int]:
+    """Characters each source may contribute, shared out fairly.
 
-    `documents` are excerpts from files the user uploaded. They are added as a
-    clearly separated block and are deliberately NOT merged into `sources`:
-    web sources are authoritative publications the answer may state rules from,
-    an uploaded file is the user's own evidence about their own situation, and
-    the prompt has to keep that distinction for the answer to be safe.
+    Sources under their equal share give the remainder back, so a handful of
+    short snippets never force a long one to be cut. Whatever is left is then
+    divided among the sources still over their share, repeatedly, until the
+    split settles — one big document cannot crowd out the four attached
+    alongside it, which is what "compare these documents" depends on.
     """
-    documents = documents or []
-    # Note FIRST, gate second: the gate tells the model to ignore whatever
-    # follows it when it decides the question is off-domain.
-    gate = (_DOCUMENT_SCOPE_NOTE if documents else "") + _DOMAIN_GATE
-    docs = _document_block(documents, partial=documents_partial)
-
     if not sources:
-        # No web sources. With documents attached the answer is grounded in
-        # them; with neither it falls back to the model's own knowledge.
-        if documents:
-            return (
-                gate
-                + "Answer the user's question using the excerpts from their own "
-                "uploaded documents below, plus your professional knowledge for "
-                "any statement of the rules. Quote the figures exactly as they "
-                "appear. If the excerpts do not answer the question, say so.\n"
-                + formatting_instructions(query)
-                + f"\n{docs}"
-                + f"=== User Question ===\n{query}"
-            )
+        return []
+    budget = _context_budget()
+    lengths = [len(s.snippet or "") for s in sources]
+    if sum(lengths) <= budget:
+        return lengths
+
+    allowances = [0] * len(sources)
+    remaining = set(range(len(sources)))
+    while remaining:
+        share = max(_MIN_SOURCE_CHARS, budget // len(remaining))
+        fitting = {i for i in remaining if lengths[i] <= share}
+        if not fitting:
+            for i in remaining:
+                allowances[i] = share
+            break
+        for i in fitting:
+            allowances[i] = lengths[i]
+            budget -= lengths[i]
+        remaining -= fitting
+    return allowances
+
+
+def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
+    """Assemble a grounded prompt from document, live-data, or web evidence."""
+    if not sources:
+        # Retrieval came back empty. Answer from professional knowledge rather
+        # than refusing: retrieval fails soft (an unreachable SearXNG returns
+        # nothing silently), so a refusal here reads to the user as "Kriton
+        # cannot answer this" when the real cause is a search engine being
+        # down. _DOMAIN_GATE above still decides scope, so an off-topic
+        # question is refused on subject, not on whether a source happened to
+        # be retrieved.
+        #
+        # The honesty requirement moves rather than disappearing: with no
+        # sources there are no citations, so the answer must not present
+        # itself as source-backed, and anything that cannot be stated from
+        # settled professional knowledge — a current rate, threshold,
+        # deadline, filing requirement or market figure — still has to be
+        # declined, because those are exactly the values that change and that
+        # a reader would otherwise take on trust. The UI already captions
+        # these turns "no cited sources".
         return (
             gate
             + "Do not state a current/latest rate, statistic, price or dated fact from "
@@ -858,8 +1029,14 @@ def build_web_grounded_prompt(
             + f"\n=== User Question ===\n{query}"
         )
     blocks = []
-    for i, s in enumerate(sources, start=1):
-        blocks.append(f"[REF-{i}] {s.title}\nURL: {s.url}\n{s.snippet}")
+    truncated_any = False
+    for i, (s, allowance) in enumerate(zip(sources, _context_allowances(sources)), start=1):
+        source_location = f"URL: {s.url}" if s.url else f"Document ID: {s.source_id or 'uploaded'}"
+        snippet = s.snippet or ""
+        if len(snippet) > allowance:
+            snippet = snippet[:allowance].rstrip() + "\n[â€¦this source was shortened to fit the request budget]"
+            truncated_any = True
+        blocks.append(f"[REF-{i}] {s.title}\n{source_location}\n{snippet}")
     context = "\n\n".join(blocks)
     # "ONLY the web sources" is relaxed to "the web sources AND your own
     # documents" when files are attached — otherwise the instruction forbids the
@@ -876,9 +1053,9 @@ def build_web_grounded_prompt(
         "year or effective date each rate applies to — never an older rate from memory. "
     )
     return (
-        gate
-        + grounding_rule
-        + "Write a clean, natural answer. Do NOT insert citation markers such as "
+        _DOMAIN_GATE
+        + "Answer the user's question using ONLY the numbered evidence sources below. "
+        "Write a clean, natural answer. Do NOT insert citation markers such as "
         "[REF-1], [1], or source numbers anywhere in the answer text — the "
         "sources are shown to the reader separately below, so the answer must "
         "read cleanly without them. If the sources only partly cover the "

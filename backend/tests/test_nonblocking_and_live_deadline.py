@@ -25,15 +25,15 @@ async def test_live_data_has_one_total_deadline_and_keeps_completed_sources(monk
     async def failed(_query):
         raise RuntimeError("provider unavailable")
 
-    monkeypatch.setattr(live_data, "fetch_fx", fast)
-    monkeypatch.setattr(live_data, "fetch_stats", slow)
+    monkeypatch.setattr(live_data, "fetch_sec_facts", fast)
+    monkeypatch.setattr(live_data, "_find_two_series", slow)
     monkeypatch.setattr(live_data, "fetch_market_sources", failed)
     monkeypatch.setattr(live_data.settings, "LIVE_DATA_TIMEOUT_SECONDS", 0.03)
 
     started = time.monotonic()
     result = await live_data.fetch_live_data("query")
 
-    assert result == [source]
+    assert result.sources == [source]
     assert time.monotonic() - started < 0.2
     assert cancelled.is_set()
 

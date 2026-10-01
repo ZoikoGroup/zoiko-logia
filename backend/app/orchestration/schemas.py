@@ -10,7 +10,11 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal, Optional, List
 from pydantic import BaseModel, ConfigDict, Field
-from app.domains.calculations.schemas import CalculationResult, LiveObservation, VerifiedChartSpec
+from app.domains.calculations.schemas import (
+    LiveObservation,
+    VerifiedChartSpec,
+    CalculationResult as DeterministicCalculationResult,
+)
 
 
 # ── F0 task context ─────────────────────────────────────────────────────────
@@ -115,6 +119,9 @@ class WorkflowPlan(BaseModel):
     reason_codes: List[str] = Field(default_factory=list)
     steps: List[CapabilityStep] = Field(default_factory=list)
 
+from app.orchestration.visualization.spec import VisualizationSpec
+from app.orchestration.calculations.schemas import CalculationResult
+
 
 # ── Request ──────────────────────────────────────────────────────────────────
 
@@ -128,6 +135,11 @@ class AskKritonRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     query: str
+    document_ids: List[str] = Field(default_factory=list)
+    source_scope: Literal["WEB_ONLY", "DOCUMENTS_ONLY", "DOCUMENTS_THEN_WEB", "COMBINED"] = "DOCUMENTS_THEN_WEB"
+    # Immediately preceding user query. conversation_id is correlation, not
+    # server-side chat memory; this context is still treated as untrusted.
+    previous_query: Optional[str] = Field(default=None, max_length=2000)
     jurisdiction: str = ""
     mode: str = "Workflow"
     # Round-tripped by the client across a clarification exchange so
@@ -352,7 +364,7 @@ class ComposedAnswer(BaseModel):
     citations: List[SourceCitation] = Field(default_factory=list)
     limitations: List[str] = Field(default_factory=list)
     calculation_widget: Optional[CalculationWidget] = None
-    calculation_result: Optional[CalculationResult] = None
+    calculation_result: Optional[DeterministicCalculationResult] = None
     verified_charts: List[VerifiedChartSpec] = Field(default_factory=list)
     observations: List[LiveObservation] = Field(default_factory=list)
     # No citations, but the figures are the question's or the conversation's
@@ -362,6 +374,14 @@ class ComposedAnswer(BaseModel):
     prompt_id: str = "inline"
     prompt_name: str = "Inline RAG Prompt"
     output_text: str = ""  # alias for text, retained for backward compat
+
+
+class GeneratedArtifactPublic(BaseModel):
+    id: str
+    filename: str
+    mime_type: str
+    download_url: str
+    expires_at: Optional[str] = None
 
 
 # ── Safety State — §12 ───────────────────────────────────────────────────────
@@ -397,7 +417,36 @@ class AskKritonResponse(BaseModel):
     source_bundle: Optional[SourceBundle] = None
     answer: Optional[ComposedAnswer] = None
     next_action: Optional[NextAction] = None
+    artifacts: List[GeneratedArtifactPublic] = Field(default_factory=list)
+    artifact_error: Optional[str] = None
     effective_context: Optional[TaskContext] = None
     context_decision: Optional[ContextDecision] = None
     workflow_plan: Optional[WorkflowPlan] = None
     audit_reference: AuditReference
+    # Additive field — deterministic, evidence-backed visualization decided by
+    # orchestration/visualization/orchestrator.py. Only ever set on "answered"
+    # outcomes, after safety/validation has already approved the text answer
+    # (see service.py) — never a substitute for or bypass of that gate. None
+    # on every response this pipeline can't back with real (non-fabricated)
+    # evidence; existing clients that don't read this field are unaffected.
+    visualization: Optional[VisualizationSpec] = None
+    # Complementary visuals (spec §17) — a genuinely different lens on the
+    # SAME evidence as `visualization` (e.g. current-value KPI alongside a
+    # trend line), never a redundant alternate chart type. Empty list when
+    # none apply; each entry independently validated before being attached
+    # (see orchestrator.py's _build_complementary_specs docstring).
+    secondary_visualizations: List[VisualizationSpec] = Field(default_factory=list)
+    # Present only when trusted local code, rather than a model, handled a
+    # self-contained calculation. Additive for backward-compatible clients.
+    calculation: Optional[CalculationResult] = None
+
+
+# ── Frontend visualization-interaction telemetry ─────────────────────────────
+
+class VisualizationTelemetryEvent(BaseModel):
+    event: str
+    category: str
+    visualization_id: Optional[str] = None
+    visualization_type: Optional[str] = None
+    renderer: Optional[str] = None
+    detail: dict = Field(default_factory=dict)

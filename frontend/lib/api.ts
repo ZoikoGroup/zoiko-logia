@@ -534,10 +534,13 @@ export async function getReplayManifest(token: string, correlationId: string): P
   return res.json();
 }
 
-// ── Ask Kriton™ — ZL-ENG-02 §12 Canonical Response Contract ────────────────
+// â”€â”€ Ask Kritonâ„¢ — ZL-ENG-02 Â§12 Canonical Response Contract â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export type AskKritonRequest = {
   query: string;
+  source_scope?: "WEB_ONLY" | "DOCUMENTS_ONLY" | "DOCUMENTS_THEN_WEB" | "COMBINED";
+  /** Immediately preceding user query, used to resolve contextual follow-ups. */
+  previous_query?: string;
   jurisdiction?: string;
   mode?: string;
   clarification_cycle?: number;
@@ -641,6 +644,7 @@ export type OutcomeType =
 
 export type RouteType =
   | "LLM"
+  | "CALCULATION"
   | "REFUSAL"
   | "CLARIFICATION"
   | "HUMAN_REVIEW"
@@ -656,9 +660,11 @@ export type ConfidenceState =
   | "stale_sources"
   | "restricted_sources";
 
-/** §12 SafetyState — frontend renders from this, not by parsing answer text */
+/** Â§12 SafetyState — frontend renders from this, not by parsing answer text */
+export type RiskLevel = "ZERO" | "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
+
 export type SafetyState = {
-  risk_level: "ZERO" | "LOW" | "MEDIUM" | "HIGH" | "RESTRICTED";
+  risk_level: RiskLevel;
   policy_state: "allowed" | "blocked" | "needs_more_context";
   disclaimer_required: boolean;
   refusal_text?: string;
@@ -669,7 +675,7 @@ export type NextAction = {
   message: string;
 };
 
-/** §12 — opaque audit reference; never exposes internal hashes */
+/** Â§12 — opaque audit reference; never exposes internal hashes */
 export type AuditReference = {
   audit_chain_id: string;
 };
@@ -685,10 +691,10 @@ export type SourceSummary = {
   status: string;
 };
 
-/** §7.2 SourceBundle — six confidence states */
+/** Â§7.2 SourceBundle — six confidence states */
 export type SourceBundle = {
   source_bundle_id: string;
-  retrieval_method: string;             // "keyword_mvp" (not RAG until §7 criteria met)
+  retrieval_method: string;             // "keyword_mvp" (not RAG until Â§7 criteria met)
   eligible_source_count: number;
   excluded_source_count: number;
   sources: SourceSummary[];
@@ -704,19 +710,19 @@ export type SourceCitation = {
   ref_id: string;
   source_id: string;
   title: string;
-  /** External URL, internal doc link, or null. Null for an uploaded document —
-   *  there is no public link to the user's own file. */
+  /** External URL, internal doc link, or null. */
   url: string | null;
-  /** The genuine retrieved snippet this citation was grounded in. */
-  evidence_preview?: string | null;
-  /** Provenance, for connectors that know their own origin and currency
-   *  (market data, and uploaded documents). Absent for a plain web hit. */
+  /** Exact supporting excerpt — not yet returned by the backend. */
+  evidence_preview?: string;
+  /** Which connector produced this source (e.g. "finnhub", "companies_house").
+   * Absent for plain web-search hits, which have no named provider. */
   provider?: string | null;
+  /** ISO timestamp of when the backend fetched it. */
   fetched_at?: string | null;
-  /** realtime | delayed | historical | filing | user_upload. "user_upload"
-   *  marks a citation that came from a file the user attached, which the panel
-   *  must present as their own evidence rather than as a published source. */
-  freshness?: string | null;
+  /** How current the figure is. The distinction between a live tick, a delayed
+   * quote and yesterday's close changes what an answer may claim, so it is
+   * shown rather than left for the reader to assume. */
+  freshness?: "realtime" | "delayed" | "historical" | "filing" | null;
 };
 
 // ---- The answer itself ----
@@ -843,7 +849,7 @@ export type PresentationChart = {
   domain: "general" | "accounting" | "audit" | "tax";
   summary_mode: "latest" | "total" | "average";
   // Optional — chart-selection alternatives, telemetry, and personalization
-  // metadata layered on across v3–v10; never required for rendering.
+  // metadata layered on across v3â€“v10; never required for rendering.
   alternatives?: PresentationChartType[];
   original_chart_type?: PresentationChartType | null;
   fallback_note?: string | null;
@@ -890,7 +896,146 @@ export type ComposedAnswer = {
   output_text?: string;
 };
 
-/** §12 Canonical response contract — frontend renders from route/outcome ONLY */
+/**
+ * Deterministic, evidence-backed visualization decided server-side by
+ * orchestration/visualization/orchestrator.py — never LLM-authored, never
+ * executable code. Only ever set on "answered" outcomes. See that module's
+ * docstring for current scope: LINE/BAR/KPI (statistical), EVIDENCE_GRAPH
+ * (renderer=GRAPH_ADAPTER, resolves to Cytoscape or G6), PROCESS_FLOW
+ * (renderer=FLOW_ADAPTER, resolves to X6 or Mermaid). Graph/flow specs are only ever
+ * populated from entities/relationships the USER explicitly supplied in
+ * their own query text (see backend/app/orchestration/extraction.py) —
+ * never fabricated.
+ */
+export type VisualizationEncodingField = {
+  field: string;
+  type: "temporal" | "quantitative" | "nominal" | "ordinal";
+  unit?: string | null;
+};
+
+export type VisualizationDataPoint = { x: string; y: number };
+
+export type VisualizationGraphNode = { id: string; label: string; type: string };
+export type VisualizationGraphEdge = { source: string; target: string; type: string; directed: boolean };
+export type VisualizationHeatmapCell = { x: string; y: string; value: number };
+export type VisualizationBoxSummary = {
+  label: string;
+  minimum: number;
+  q1: number;
+  median: number;
+  q3: number;
+  maximum: number;
+  outliers: number[];
+};
+export type VisualizationScatterPoint = { label: string; x: number; y: number };
+/** DONUT only — value is always a band midpoint (e.g. Companies House PSC
+ * "25-50%" ownership), never an exact filed percentage; is_estimated flags
+ * that per slice rather than spec-wide, so a future exact-percentage source
+ * could mix in real slices without every slice appearing falsely precise. */
+export type VisualizationDonutSlice = { label: string; value: number; is_estimated: boolean };
+/** CANDLESTICK only — one real trading-period bar, never synthesized. */
+export type VisualizationOHLCBar = {
+  dimension: string; open: number; high: number; low: number; close: number; volume: number | null;
+};
+/** GROUPED_BAR only — one labeled series; `variant === "STACKED_BAR_CHART"`
+ * flips the frontend to stacked rendering of the SAME series data. */
+export type VisualizationNamedSeries = { name: string; data: VisualizationDataPoint[] };
+
+export type VisualizationSpec = {
+  version: string;
+  id: string;
+  type:
+    | "LINE" | "BAR" | "HISTOGRAM" | "BOX" | "SCATTER" | "KPI" | "EVIDENCE_GRAPH" | "HEATMAP"
+    | "PROCESS_FLOW" | "TABLE" | "DONUT" | "CANDLESTICK" | "GROUPED_BAR" | "GAUGE";
+  family: string;
+  capability_id?: string | null;
+  canonical?: string | null;
+  variant?: string | null;
+  /** Same-family fallback types the backend would degrade to if this one
+   * failed — real, backend-declared alternatives for the "View" menu. */
+  fallback_order: string[];
+  domain_context?: {
+    domain: string;
+    subdomain: string;
+    intent?: string | null;
+  };
+  renderer: "RECHARTS" | "ECHARTS" | "KPI_TILE" | "GRAPH_ADAPTER" | "FLOW_ADAPTER" | "TABLE_ADAPTER";
+  title?: string | null;
+  summary?: string | null;
+  unit?: string | null;
+  encoding?: { x: VisualizationEncodingField; y: VisualizationEncodingField } | null;
+  data: VisualizationDataPoint[];
+  value?: number | null;
+  label?: string | null;
+  /** GAUGE only — the target `value` is measured against, and its label.
+   * Both are stated in the question; the dial never invents a benchmark. */
+  target?: number | null;
+  target_label?: string | null;
+  nodes: VisualizationGraphNode[];
+  edges: VisualizationGraphEdge[];
+  /** PROCESS_FLOW only — true routes to X6, false to Mermaid. Meaningless for other types. */
+  interactive: boolean;
+  /** Optional explicit graph/flow engine requested by the user. */
+  graph_engine?: "auto" | "cytoscape" | "g6" | null;
+  flow_engine?: "mermaid" | "x6" | null;
+  cells: VisualizationHeatmapCell[];
+  /** BOX only — real min/Q1/median/Q3/max computed from the same values HISTOGRAM bins. */
+  box?: VisualizationBoxSummary | null;
+  /** SCATTER only — real paired values from two independently-fetched, period-aligned series. */
+  scatter: VisualizationScatterPoint[];
+  correlation_coefficient?: number | null;
+  /** DONUT only — real, named holders and their percent share. */
+  donut: VisualizationDonutSlice[];
+  /** CANDLESTICK only — real OHLC trading bars. */
+  candlestick: VisualizationOHLCBar[];
+  /** GROUPED_BAR only — real, period-aligned series (reinterprets the same
+   * pair SCATTER uses when explicitly requested as a bar chart). */
+  series: VisualizationNamedSeries[];
+  /** TABLE only — real rows, column order given by `columns`. */
+  columns: string[];
+  rows: Record<string, string>[];
+  sources: string[];
+};
+
+export type GeneratedArtifact = {
+  id: string;
+  filename: string;
+  mime_type: string;
+  download_url: string;
+  expires_at?: string | null;
+};
+
+/** Deterministic accounting-formula result — the self-contained calculation
+ * engine's own record, returned alongside the composed answer rather than
+ * inside it. Distinct from `CalculationResult` above, which is the verified
+ * single-operation record carried on `ComposedAnswer.calculation_result`. */
+export type FormulaCalculationResult = {
+  matched: boolean;
+  status: "success" | "undefined" | "clarification_required" | "not_matched";
+  formula_ids: string[];
+  formula_version: string;
+  inputs: Array<{
+    name: string;
+    value: string;
+    display_value: string;
+    kind: "money" | "percentage" | "number" | "years" | "units";
+    currency?: string | null;
+    source_type: "user";
+    source_location: string;
+  }>;
+  outputs: Array<{
+    name: string;
+    value?: string | null;
+    display_value?: string | null;
+    kind: "money" | "percentage" | "ratio" | "number" | "units";
+  }>;
+  steps: string[];
+  verification_status: "passed" | "not_run";
+  error_code?: string | null;
+  message: string;
+};
+
+/** Â§12 Canonical response contract — frontend renders from route/outcome ONLY */
 export type AskKritonResponse = {
   query_id: string;
   correlation_id: string;
@@ -901,12 +1046,33 @@ export type AskKritonResponse = {
   source_bundle: SourceBundle | null;
   answer: ComposedAnswer | null;
   next_action: NextAction | null;
+  artifacts: GeneratedArtifact[];
+  artifact_error?: string | null;
   effective_context?: TaskContext | null;
   context_decision?: ContextDecision | null;
   workflow_plan?: WorkflowPlan | null;
   /** Opaque — never expose audit_chain_id internals to UI rendering logic */
   audit_reference: AuditReference;
+  visualization?: VisualizationSpec | null;
+  /** Complementary visuals (spec Â§17) — a different lens on the SAME
+   * evidence as `visualization` (e.g. current-value KPI beside a trend
+   * line), never a redundant alternate chart type. */
+  secondary_visualizations?: VisualizationSpec[];
+  calculation?: FormulaCalculationResult | null;
 };
+
+export async function downloadKritonArtifact(token: string, artifact: GeneratedArtifact): Promise<void> {
+  const res = await authedFetch(artifact.download_url, token);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = artifact.filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
 
 export async function askKriton(
   token: string,
@@ -926,7 +1092,7 @@ export async function askKriton(
     });
     return res.json();
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
+    if (error instanceof Error && error.name === "AbortError") {
       throw new ApiError(408, "Kriton did not finish within two minutes. Please try again.");
     }
     if (error instanceof TypeError) {
@@ -988,7 +1154,7 @@ export async function askKritonStream(
     }
     throw new ApiError(502, "Kriton's response stream ended before completion.");
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
+    if (error instanceof Error && error.name === "AbortError") {
       throw new ApiError(408, "Kriton's response connection timed out. Please try again.");
     }
     if (error instanceof TypeError) {
@@ -1018,24 +1184,16 @@ export type SavedAnswerCreateRequest = {
   tags?: string[];
 };
 
-/** `status` is the real ingestion outcome, not just "the bytes arrived":
- *  "ready" means the file was parsed, chunked and is now searchable;
- *  "failed" means it was not, and `failure_reason` says why (a scanned PDF, a
- *  password-protected file, an empty spreadsheet). The UI must not show a
- *  success tick for "failed" — the user would then ask questions about a
- *  document that contributes nothing to the answer. */
-export type AttachmentUploadResult = {
-  document_id: string;
+export type AttachmentUploadResult = { document_id: string; filename: string; chunk_count: number; status: string };
+export type WorkspaceDocument = {
+  id: string;
   filename: string;
-  status: "ready" | "failed" | "pending";
+  mime_type: string;
+  status: string;
+  processing_error: string | null;
   chunk_count: number;
-  char_count: number;
-  failure_reason: string | null;
-};
-
-export type AttachmentSummary = AttachmentUploadResult & {
-  size_bytes: number;
-  created_at: string | null;
+  created_at: string;
+  expires_at?: string | null;
 };
 
 /** XHR (not fetch) because upload progress events need `xhr.upload.onprogress`. */
@@ -1077,9 +1235,14 @@ export function uploadKritonAttachment(
   });
 }
 
-export async function listKritonAttachments(token: string, engagementId?: string): Promise<AttachmentSummary[]> {
+export async function listKritonAttachments(token: string, engagementId?: string): Promise<WorkspaceDocument[]> {
   const query = engagementId ? `?engagement_id=${encodeURIComponent(engagementId)}` : "";
   const res = await authedFetch(`/kriton-workspace/attachments${query}`, token);
+  return res.json();
+}
+
+export async function getKritonAttachment(token: string, documentId: string): Promise<WorkspaceDocument> {
+  const res = await authedFetch(`/kriton-workspace/attachments/${encodeURIComponent(documentId)}`, token);
   return res.json();
 }
 

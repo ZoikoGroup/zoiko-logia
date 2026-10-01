@@ -6,10 +6,18 @@ own retry policy and four different ways of missing a rate limit.
 
 Retry policy, deliberately narrow:
   - 429 and 5xx and transport failures  → retried with exponential backoff
-  - 401/403                             → never retried; a rejected key stays rejected
-  - 4xx other than 429                  → never retried; the request is wrong
+  - 401                                → never retried; a rejected key stays rejected
+  - 403                                → never retried, and classified as
+                                          ProviderForbidden, NOT ProviderAuthError
+  - 4xx other than 429/401/403           → never retried; the request is wrong
 Blind retrying of auth failures is how an account gets locked and how a
 rate-limit breach becomes a rate-limit ban.
+
+401 and 403 are deliberately different classes. Measured live against Finnhub on
+2026-09-30: an invalid key and a missing key both return 401, while a valid key
+calling an endpoint outside its plan returns 403 with "You don't have access to
+this resource." Folding the two together reported a plan restriction as a
+credential rejection, which is an instruction to rotate a key that works.
 """
 from __future__ import annotations
 
@@ -23,6 +31,7 @@ import httpx
 from app.domains.market_data.schemas import (
     ProviderAuthError,
     ProviderBadResponse,
+    ProviderForbidden,
     ProviderRateLimited,
     ProviderUnavailable,
 )
@@ -94,9 +103,22 @@ async def request_json(
 
         status = response.status_code
 
-        if status in (401, 403):
-            # Never retried — see module docstring.
-            raise ProviderAuthError(provider, f"authentication rejected (HTTP {status})")
+        if status == 401:
+            # The one unambiguous rejection. Never retried - see module docstring.
+            raise ProviderAuthError(provider, "authentication rejected (HTTP 401)")
+
+        if status == 403:
+            # Deliberately NOT ProviderAuthError. Measured against Finnhub on
+            # 2026-09-30, an invalid or missing key is a 401, while a valid key
+            # calling an endpoint outside its plan gets a 403 carrying
+            # {"error":"You don't have access to this resource."} — an
+            # entitlement/c-coverage fact, not a bad credential. Calling that an
+            # authentication failure would tell an operator to rotate a working
+            # key. Never retried either way, because neither reading changes on
+            # a retry, and it stays a plain ProviderError so the chain falls
+            # through to the next provider exactly as it did when 403 was
+            # folded into the auth branch.
+            raise ProviderForbidden(provider, "access to this endpoint refused (HTTP 403)")
 
         if status == 429:
             retry_after = _retry_after_seconds(response)

@@ -12,11 +12,14 @@ Two jobs, both pure functions of the query and the environment:
      table, not scattered if-statements, so changing priority is a data edit
      and the whole policy is readable in one place.
 
-Provider set: Twelve Data serves every market intent (quotes, history,
-fundamentals, profiles, symbol search). Company filings have no provider here —
-that data (UK Companies House / US SEC statutory records) is not something a
-market price API carries — so the filings intent resolves to no provider and
-the connector stays silent for it, falling back to the web-grounded answer.
+Priority rationale, not arbitrary:
+  - UK filings go to Companies House alone. It is the statutory register; no
+    other provider here can supply UK filing history, and none should be
+    consulted as a "fallback" for it.
+  - Alpha Vantage is last for every market intent. Its free tier is roughly 25
+    calls per day — viable as a backstop, not as a primary.
+  - Polygon leads history (deep, adjusted aggregates) but not quotes, where its
+    free tier only reaches the previous close.
 """
 from __future__ import annotations
 
@@ -24,6 +27,8 @@ import os
 import re
 from typing import Optional
 
+from app.orchestration.number_words import SPELLED_NUMBER_PATTERN, find_first_spelled_number
+from app.domains.market_data.providers.alpha_vantage import AlphaVantageProvider
 from app.domains.market_data.providers.base import (
     CAP_FILINGS,
     CAP_FUNDAMENTALS,
@@ -33,7 +38,11 @@ from app.domains.market_data.providers.base import (
     CAP_SEARCH,
     BaseStockProvider,
 )
-from app.domains.market_data.providers.twelve_data import TwelveDataProvider
+from app.domains.market_data.providers.companies_house import CompaniesHouseProvider
+from app.domains.market_data.providers.finnhub import FinnhubProvider
+from app.domains.market_data.providers.index_quote import IndexQuoteProvider
+from app.domains.market_data.providers.polygon import PolygonProvider
+from app.domains.market_data.providers.yahoo_equity import YahooEquityProvider
 
 # ── Intents ──────────────────────────────────────────────────────────────────
 INTENT_QUOTE = "stock_quote"
@@ -42,6 +51,7 @@ INTENT_FUNDAMENTALS = "stock_fundamentals"
 INTENT_PROFILE = "stock_company_profile"
 INTENT_FILINGS = "company_filings"
 INTENT_LOOKUP = "company_lookup"
+INTENT_INDEX = "index_quote"
 
 INTENT_CAPABILITY = {
     INTENT_QUOTE: CAP_QUOTE,
@@ -50,6 +60,11 @@ INTENT_CAPABILITY = {
     INTENT_PROFILE: CAP_PROFILE,
     INTENT_FILINGS: CAP_FILINGS,
     INTENT_LOOKUP: CAP_SEARCH,
+    # An index is a quote-shaped question about a market benchmark rather than
+    # a company. The providers below serve it with the same quote/history
+    # endpoints they use for equities, so it reuses those capabilities rather
+    # than declaring new ones.
+    INTENT_INDEX: CAP_QUOTE,
 }
 
 # Order matters: the first pattern that matches wins, so the specific intents
@@ -65,10 +80,33 @@ _INTENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         ),
     ),
     (
+        # An index question is tested before QUOTE and before the educational
+        # bail-out below, because "What is the S&P 500?" contains "what is"
+        # and would otherwise be classified as a definitional question and
+        # sent to the web rather than to a quote provider — which is why every
+        # index question in the live audit returned nothing at all.
+        #
+        # "index" alone is too broad to anchor on (it also means a price index
+        # or a database index), so the pattern requires either one of the
+        # recognised benchmark names or the word index next to a market word.
+        INTENT_INDEX,
+        re.compile(
+            r"\b(?:s\s*&\s*p\s*500|sp\s?x?500|sp500|ftse\s*100|footsie|"
+            r"tsx\s*(?:composite|60)|asx\s*200|iseq|euronext|dax|nikkei|"
+            r"nifty|sensex|shanghai|sse\s*(?:composite|index)|bombay|"
+            r"hang\s*seng|smi|ibex|randstad|bel\s*20|stoxx\s*600|"
+            r"(?:s\s*&\s*p|dow\s+jones|nasdaq)\s*[\w-]*|cac\s*40|msci\s*\w*)\b"
+            r"|\b(?:index|indices)\b(?=[^.?]*\b(?:level|value|point|performance|"
+            r"today|close|chart|history|year|since|at)\b)"
+            r"|\b(?:level|value|performance)\s+of\s+the\s+\w+\s+index\b",
+            re.I,
+        ),
+    ),
+    (
         INTENT_HISTORY,
         re.compile(
             r"\b(history|historical|over the (last|past)|price (chart|trend|history)|"
-            r"ohlc|candles?|last \d+ (day|days|week|weeks|month|months|year|years))\b",
+            rf"ohlc|candles?|last (?:\d+|{SPELLED_NUMBER_PATTERN}) (day|days|week|weeks|month|months|year|years))\b",
             re.I,
         ),
     ),
@@ -109,6 +147,21 @@ _EDUCATIONAL = re.compile(
     re.I,
 )
 
+# Macro-statistical words that collide with stock-fundamentals vocabulary.
+# "US government revenue" is a treasury aggregate, not a question about a
+# company whose name coincidentally matches — but FUNDAMENTALS fires on the
+# bare word "revenue", and the provider search then resolves "government
+# revenue" to some company and attaches its fundamentals as provenance. When
+# the question names one of the supported countries AND a macro metric, it is
+# a statistical question and belongs to the web-grounded path unless a
+# specific company is also named.
+_MACRO_METRIC = re.compile(
+    r"\b(?:gdp|gross domestic product|inflation|cpi|consumer price(?: index)?|hicp|"
+    r"unemployment|jobless|deficit|surplus|revenue|receipts|government debt|national debt|"
+    r"tax(?:ation|es| revenue)?|trade (?:balance|deficit|surplus)|current account|retail sales)\b",
+    re.I,
+)
+
 
 def detect_intent(query: str) -> Optional[str]:
     """The market-data intent of a question, or None when it has none.
@@ -116,7 +169,18 @@ def detect_intent(query: str) -> Optional[str]:
     Returns None for educational questions even when they contain a metric
     word, so "how is revenue recognised under IFRS 15?" stays with the normal
     web-grounded path instead of trying to look up a company's revenue.
+
+    An index question is resolved BEFORE the educational check, deliberately.
+    "What is the S&P 500?" is a question about the value of a benchmark, and
+    the educational rule would otherwise read the "what is" and decline to
+    route it — which is precisely the confirmed bug where all five indices
+    returned no data. The distinction that matters is whether an index is
+    NAMED: "what is an index" stays educational, "what is the S&P 500" does
+    not.
     """
+    for intent, pattern in _INTENT_PATTERNS:
+        if intent == INTENT_INDEX and pattern.search(query):
+            return INTENT_INDEX
     if _EDUCATIONAL.search(query):
         # "Apple's revenue" is a lookup; "how is revenue recognised" is not.
         # Only bail out when the educational phrasing is not paired with an
@@ -125,45 +189,127 @@ def detect_intent(query: str) -> Optional[str]:
             return None
     for intent, pattern in _INTENT_PATTERNS:
         if pattern.search(query):
+            if intent in (INTENT_FUNDAMENTALS, INTENT_PROFILE, INTENT_QUOTE):
+                refused = _macro_question_refusal(query)
+                if refused:
+                    return None
             return intent
     return None
 
 
+def _macro_question_refusal(query: str) -> bool:
+    """True when a query that matched a market intent is really a macro-stat
+    question that market data must not answer.
+
+    Fires on the combination the wrong-data bug needs: a supported country plus
+    a macro-statistic word ("US government revenue", "Canada GDP"), no explicit
+    ticker, and no well-known company name. Without the company check,
+    "Apple's government revenue would be..." would be wrongly refused; with it,
+    the guard only fires when there is genuinely no company to attach the
+    figures to.
+    """
+    if not _MACRO_METRIC.search(query or ""):
+        return False
+    from app.orchestration.country_scope import names_country
+    if not any(names_country(query or "", iso2) for iso2 in ("US", "GB", "IE", "CA", "AU", "DE", "FR", "JP", "IN", "CN")):
+        return False
+    from app.domains.market_data.identity import find_ticker, known_ticker_for_name
+    if find_ticker(query or "") or known_ticker_for_name(query or "")[0]:
+        return False
+    return True
+
+
 # ── Providers ────────────────────────────────────────────────────────────────
 
-_SPAN = re.compile(r"\b(?:last|past)\s+(\d{1,3})\s*(day|week|month|year)s?\b", re.I)
+# \d{1,3} OR a spelled-out number ("the last twenty days") in the count
+# group — see number_words.py's docstring for why this needed a shared fix.
+_SPAN = re.compile(rf"\b(?:last|past)\s+(\d{{1,3}}|{SPELLED_NUMBER_PATTERN})\s*(day|week|month|year)s?\b", re.I)
 _SPAN_MULTIPLIER = {"day": 1, "week": 5, "month": 21, "year": 252}  # trading days
 
 
+_MAX_BARS = 400
+_TRADING_DAYS_PER = {"week": 5, "month": 21}   # for converting a daily count
+
+
+def _requested_trading_days(query: str, default: int) -> int:
+    """The span in trading days, uncapped. 0 means "no span was stated"."""
+    match = _SPAN.search(query)
+    if not match:
+        return default
+    raw_count = match.group(1)
+    count = int(raw_count) if raw_count.isdigit() else find_first_spelled_number(raw_count)
+    if count is None:
+        return default
+    return max(1, count * _SPAN_MULTIPLIER.get(match.group(2).lower(), 1))
+
+
 def requested_bars(query: str, default: int = 30) -> int:
-    """How many bars a question is asking for.
+    """How many DAILY bars a question is asking for.
 
     "the last 30 days" means 30 calendar days, which is about 21 trading bars —
     but over-fetching slightly and showing the caller everything is better than
     silently truncating a month to ten points, which is what a fixed default
     did. Capped so a stray "last 999 years" cannot ask a provider for a decade.
+
+    Prefer requested_history_window() for history requests: this function can
+    only answer in daily bars, so anything past the cap comes back truncated.
     """
-    match = _SPAN.search(query)
-    if not match:
-        return default
-    count = int(match.group(1))
-    return max(1, min(count * _SPAN_MULTIPLIER.get(match.group(2).lower(), 1), 400))
+    return min(_requested_trading_days(query, default), _MAX_BARS)
+
+
+def requested_history_window(query: str, default: int = 30) -> tuple[str, int]:
+    """(interval, bars) covering the WHOLE span the question asked for.
+
+    Daily bars cannot express a long span: ten years is ~2,520 trading days,
+    and clamping that to the 400-bar ceiling quietly returned about eighteen
+    months while the answer text still said "10 years" — the truncation was
+    invisible to the reader and the chart was simply wrong about its own
+    period. Coarsening the interval fixes it honestly: ten years is 120
+    monthly bars, comfortably inside the cap and genuinely ten years.
+
+    Daily is kept wherever it fits, so short spans are unchanged. Providers
+    already accept these interval keys (polygon.py's _INTERVAL_TO_AGG,
+    alpha_vantage.py's _SERIES_FUNCTION); nothing new is requested of them.
+    """
+    trading_days = _requested_trading_days(query, default)
+    if trading_days <= _MAX_BARS:
+        return "1d", trading_days
+    weeks = -(-trading_days // _TRADING_DAYS_PER["week"])      # ceil
+    if weeks <= _MAX_BARS:
+        return "1w", weeks
+    months = -(-trading_days // _TRADING_DAYS_PER["month"])
+    return "1mo", min(months, _MAX_BARS)
 
 
 def all_providers() -> list[BaseStockProvider]:
-    return [TwelveDataProvider()]
+    return [
+        CompaniesHouseProvider(), FinnhubProvider(), PolygonProvider(),
+        AlphaVantageProvider(), IndexQuoteProvider(), YahooEquityProvider(),
+    ]
 
 
 _DEFAULT_PRIORITY: dict[str, tuple[str, ...]] = {
-    INTENT_QUOTE: ("twelve_data",),
-    INTENT_HISTORY: ("twelve_data",),
-    INTENT_FUNDAMENTALS: ("twelve_data",),
-    INTENT_PROFILE: ("twelve_data",),
-    # Filings are UK/US statutory records a market-price API does not carry, so
-    # this intent has no provider — providers_for() returns [] and the connector
-    # stays silent, falling back to the normal web-grounded answer.
-    INTENT_FILINGS: (),
-    INTENT_LOOKUP: ("twelve_data",),
+    # yahoo_equity sits last among the market-data providers and before Alpha
+    # Vantage, whose free tier is ~25 calls a day. The key-gated providers lead
+    # because where they work they are the better source — Finnhub carries the
+    # ADR fundamentals Yahoo does not — but each of them is US-shaped, and
+    # verified live they fail differently: Finnhub answers a local listing with
+    # 403, Polygon's failure stopped the fallback chain entirely (see
+    # identity.has_foreign_exchange_suffix), and Alpha Vantage has thin
+    # non-US coverage. yahoo_equity is keyless and serves all ten countries, so
+    # it is what a 7203.T or 600519.SS question actually lands on.
+    INTENT_QUOTE: ("finnhub", "polygon", "yahoo_equity", "alpha_vantage"),
+    INTENT_HISTORY: ("polygon", "yahoo_equity", "alpha_vantage"),
+    INTENT_FUNDAMENTALS: ("finnhub", "alpha_vantage"),
+    INTENT_PROFILE: ("finnhub", "polygon", "alpha_vantage"),
+    INTENT_FILINGS: ("companies_house",),
+    INTENT_LOOKUP: ("companies_house", "finnhub", "polygon", "yahoo_equity", "alpha_vantage"),
+    # The key-gated market providers cannot serve index levels — Finnhub's
+    # free tier zeroes or 403s them, Alpha Vantage rejects ^-symbols, Polygon
+    # has no index series — so the index path belongs to the keyless Yahoo chart
+    # adapter alone. It refuses any non-^ ticker, so this entry can never leak
+    # into ordinary stock quotes.
+    INTENT_INDEX: ("index_quote",),
 }
 
 

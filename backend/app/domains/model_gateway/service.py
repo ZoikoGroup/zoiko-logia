@@ -20,6 +20,10 @@ from app.domains.model_gateway.providers.groq_adapter import (
 from app.domains.model_gateway.tool_registry import ToolRegistry, build_default_registry
 from app.domains.model_gateway.providers.google_adapter import GeminiAdapter
 from app.domains.model_gateway.providers.openai_adapter import OpenAIAdapter
+from app.core.config import get_settings
+
+
+_provider_slots = asyncio.Semaphore(max(1, get_settings().MODEL_PROVIDER_CONCURRENCY))
 
 logger = logging.getLogger(__name__)
 # A chart request now costs two Groq round trips instead of one (propose the
@@ -40,9 +44,9 @@ def _select_adapter():
     row) — this is a flat "first configured provider wins" default until a
     real per-model routing decision is wired to run_test_prompt's caller.
 
-    Gemini is preferred for answering when configured (far more reliable at
-    emitting the ```chart / ```mermaid blocks than Llama), with Groq as the
-    fallback — see _complete_with_fallback.
+    Gemini is preferred for answering when configured (generally higher
+    answer quality than Llama), with Groq as the fallback — see
+    _complete_with_fallback.
     """
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
         return GeminiAdapter()
@@ -56,13 +60,25 @@ def _select_adapter():
 async def _try_complete(adapter, prompt: str, model: str | None) -> str:
     """Call an adapter's complete(), passing an optional per-call model
     override. Adapters whose complete() takes no `model` argument (the mock)
-    raise TypeError — fall back to the no-arg form for them."""
-    if model:
-        try:
-            return await adapter.complete(prompt, model=model)
-        except TypeError:
-            return await adapter.complete(prompt)
-    return await adapter.complete(prompt)
+    raise TypeError — fall back to the no-arg form for them. The call is left
+    unbounded here; _complete_with_fallback wraps it in _PROVIDER_TIMEOUT_SECONDS."""
+    async with _provider_slots:
+        if model:
+            try:
+                return await adapter.complete(prompt, model=model)
+            except TypeError:
+                return await adapter.complete(prompt)
+        return await adapter.complete(prompt)
+
+
+def _invalid_output(output: str | None) -> bool:
+    return not output or not output.strip() or output.lstrip().startswith("[Error")
+
+
+_PROVIDER_FAILURE_MESSAGE = (
+    "Kriton is temporarily unable to reach the language model provider. "
+    "Please try again in a moment."
+)
 
 
 async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
@@ -70,7 +86,14 @@ async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
     fails (network blip, quota, bad model id — adapters fail soft with an
     "[Error…]" string), transparently fall back to Groq so the user still gets
     an answer. The `model` override is a Groq-specific fast-model name, so it is
-    only forwarded when Groq is the one actually answering."""
+    only forwarded when Groq is the one actually answering.
+
+    If every attempted provider still failed (e.g. Groq itself hit a rate
+    limit with no further fallback configured), the raw "[Error…]" string —
+    which can include internal account/org identifiers and provider-internal
+    rate-limit detail — must never reach the composed answer. This is the one
+    choke point every caller goes through, so it's the one place that can
+    catch that and swap in a clean, generic message instead."""
     adapter = _select_adapter()
     is_gemini = isinstance(adapter, GeminiAdapter)
     # A Gemini answer must not receive a Groq model id — only pass `model`
@@ -81,11 +104,16 @@ async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
                 _try_complete(provider, prompt, selected_model),
                 timeout=_PROVIDER_TIMEOUT_SECONDS,
             )
-        except TimeoutError as exc:
-            logger.warning("%s answer generation timed out after %ss", type(provider).__name__, _PROVIDER_TIMEOUT_SECONDS)
-            raise RuntimeError(f"{type(provider).__name__} timed out") from exc
-        if not output or output.startswith("[Error"):
-            raise RuntimeError(f"{type(provider).__name__} failed to generate an answer")
+        except TimeoutError:
+            logger.warning(
+                "%s answer generation timed out after %ss",
+                type(provider).__name__,
+                _PROVIDER_TIMEOUT_SECONDS,
+            )
+            return ""
+        if _invalid_output(output):
+            logger.warning("%s failed to generate an answer", type(provider).__name__)
+            return ""
         return output
 
     try:
@@ -100,7 +128,19 @@ async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
         if not (is_gemini and os.environ.get("GROQ_API_KEY")):
             raise
         logger.warning("Gemini answer generation failed; trying Groq")
-        return await bounded_complete(GroqAdapter(), model)
+        output = await bounded_complete(GroqAdapter(), model)
+    if _invalid_output(output):
+        # Every provider available has failed (a provider that only returned a
+        # timeout or an "[Error…]" string). Raise rather than return text: a
+        # return value here is contractually an ANSWER, and a failure sentinel
+        # written as text can slip into a composed answer downstream. Callers
+        # that surface text to users (run_test_prompt, run_grounded_completion)
+        # translate this into the clean user-safe message themselves.
+        raise RuntimeError(
+            "Repeated provider failures: failed to generate an answer "
+            f"(last provider: {type(adapter).__name__})"
+        )
+    return output
 
 
 async def list_models(db: AsyncSession) -> list[ModelDefinition]:
@@ -156,9 +196,15 @@ async def run_grounded_completion(input_text: str, model: str | None = None) -> 
     """Direct provider completion with no approved-prompt-template row —
     the fallback used by orchestration when no PromptTemplate is seeded yet,
     so web-grounded answering still works out of the box. Returns the model
-    output text. Provider failures raise after the bounded Groq fallback,
-    allowing orchestration to return its composition-failed outcome."""
-    return await _complete_with_fallback(input_text, model)
+    output text (adapters fail soft, returning an error string rather than
+    raising). Uses the preferred provider with Groq fallback."""
+    try:
+        return await _complete_with_fallback(input_text, model)
+    except RuntimeError:
+        # The gateway raises once every provider has failed; its callers that
+        # hand text to users translate that into the one clean, generic
+        # message (never the raw provider "[Error…]" string).
+        return _PROVIDER_FAILURE_MESSAGE
 
 
 class AgentUnavailable(RuntimeError):
@@ -244,7 +290,12 @@ async def run_test_prompt(
     # optional per-call `model` override (a Groq fast-model name for low-risk
     # questions) is only applied when Groq actually answers — see
     # _complete_with_fallback.
-    output = await _complete_with_fallback(full_prompt, model)
+    try:
+        output = await _complete_with_fallback(full_prompt, model)
+    except RuntimeError:
+        # Every provider failed — the prompt-studio test run surfaces the
+        # clean user-safe message, not the raw provider error.
+        output = _PROVIDER_FAILURE_MESSAGE
 
     # Store a hash of the output, not the raw text, per the privacy-by-design
     # doctrine (Section 9): raw prompt/output retention depends on risk class,

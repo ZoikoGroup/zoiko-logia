@@ -59,6 +59,9 @@ async def provision(
             token_tenant_id=claims.tenant_id, token_role=claims.role,
         )
     except supabase_admin.SupabaseNotConfiguredError:
+        # Defensive: provisioning commits the local profile row before the
+        # (best-effort) app_metadata sync, so this should no longer happen —
+        # kept so a future regression 503s loudly instead of half-creating.
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Supabase admin API not configured — set SUPABASE_URL / "

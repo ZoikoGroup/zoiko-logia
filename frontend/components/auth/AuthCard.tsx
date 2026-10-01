@@ -114,7 +114,7 @@ function SignInPanel({ active, onSwitchToSignup }: { active: boolean; onSwitchTo
       await signInWithPassword(email, password);
       router.push("/");
     } catch (err) {
-      setError(err instanceof AuthError ? err.message : "Could not reach the server. Please try again.");
+      setError(err instanceof AuthError ? err.message : "Something went wrong while signing you in. Please try again.");
     } finally {
       setSubmitting(false);
     }

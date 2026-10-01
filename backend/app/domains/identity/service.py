@@ -1,11 +1,36 @@
 import logging
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import supabase_admin
 from app.domains.identity.models import Role, Tenant, User
 from app.domains.identity.schemas import ProvisionRequest, UserCreateRequest
+import logging
+
+log = logging.getLogger("uvicorn.error")
+
+
+def _sync_app_metadata_best_effort(user_id: str, tenant_id: str, role: str) -> None:
+    """Best-effort stamp of tenant_id/role into the Supabase user's
+    app_metadata so future-issued tokens carry it (see database.py's
+    _identity_from_request). The local DB row is the source of truth for
+    get_current_user, so a missing/misconfigured service-role key must not
+    brick provisioning — without this, login 503s right after the profile
+    row is committed whenever SUPABASE_SERVICE_ROLE_KEY is absent."""
+    try:
+        supabase_admin.update_app_metadata(user_id, tenant_id, role)
+    except supabase_admin.SupabaseNotConfiguredError:
+        log.warning(
+            "app_metadata sync skipped: SUPABASE_SERVICE_ROLE_KEY unset. "
+            "Provisioning proceeded; tokens will not carry tenant_id/role "
+            "until the service-role key is configured."
+        )
+    except Exception:
+        log.warning(
+            "app_metadata sync skipped for user %s: admin API call failed.", user_id,
+        )
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +71,7 @@ async def create_user(db: AsyncSession, tenant_id: str, payload: UserCreateReque
     db.add(user)
     await db.commit()
     await db.refresh(user)
-    supabase_admin.update_app_metadata(user.id, tenant_id, payload.role)
+    _sync_app_metadata_best_effort(user.id, tenant_id, payload.role)
     return user
 
 
@@ -100,9 +125,34 @@ async def provision_profile(
         is_active=True,
     )
     db.add(user)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # A users row already holds this email under a DIFFERENT id — the
+        # lookup above is by auth id, but the uniqueness constraint is on
+        # email. This is what a re-registration looks like: the Supabase auth
+        # user behind the original row was deleted, signing up again minted a
+        # fresh auth id, and the id lookup can no longer find the row that
+        # still owns the address.
+        #
+        # Deliberately NOT auto-adopting that row. Claiming it would hand the
+        # new sign-up whatever tenant and data the old one had, on the
+        # strength of a matching email — an account-linking policy, and one
+        # that cuts straight across the tenant isolation this service exists
+        # to enforce. Re-linking is an administrative act with a human behind
+        # it, so this reports the conflict and stops.
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "An account already exists for this email address under a "
+                "different sign-in identity. An administrator needs to re-link "
+                "or remove the existing profile before this address can be "
+                "registered again."
+            ),
+        ) from exc
     await db.refresh(user)
-    supabase_admin.update_app_metadata(user.id, user.tenant_id, user.role)
+    _sync_app_metadata_best_effort(user.id, user.tenant_id, user.role)
     return user
 
 

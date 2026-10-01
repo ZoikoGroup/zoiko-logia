@@ -54,10 +54,13 @@ def scope_idempotency_key(
     return f"{scope}:{key}"
 
 
-async def check_idempotency(db: AsyncSession, key: str, tenant_id: str) -> Optional[dict]:
+async def check_idempotency(
+    db: AsyncSession, key: str, tenant_id: str, request_hash: str | None = None
+) -> Optional[dict]:
     """
-    Returns the cached terminal response if the idempotency key was already used
-    for this tenant within the TTL window. Returns None if this is a fresh request.
+    Return the durable terminal response for this tenant/key. When a request hash
+    is supplied, it prevents a client from accidentally reusing one key for
+    different input.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=_IDEMPOTENCY_TTL_SECONDS)
     result = await db.execute(select(IdempotencyRecord).where(
@@ -66,9 +69,14 @@ async def check_idempotency(db: AsyncSession, key: str, tenant_id: str) -> Optio
         IdempotencyRecord.created_at > cutoff,
     ))
     row = result.scalar_one_or_none()
-    if row and row.response_json.get("status") != _RUNNING:
-        return row.response_json
-    return None
+    if row is None or row.response_json.get("status") == _RUNNING:
+        return None
+    envelope = row.response_json
+    if request_hash is not None and "request_hash" in envelope:
+        if envelope["request_hash"] != request_hash:
+            raise ValueError("Idempotency-Key was already used for a different request")
+        return envelope.get("response")
+    return envelope
 
 
 async def claim_idempotency(db: AsyncSession, key: str, tenant_id: str) -> bool:
@@ -96,15 +104,32 @@ async def claim_idempotency(db: AsyncSession, key: str, tenant_id: str) -> bool:
 
 
 async def store_idempotency(
-    db: AsyncSession, key: str, tenant_id: str, response: dict
+    db: AsyncSession,
+    key: str,
+    tenant_id: str,
+    request_hash: Optional[str] = None,
+    response: Optional[dict] = None,
 ) -> None:
-    """Stage a terminal response for the final audit transaction."""
+    """Persist a terminal response so every API worker sees the same result."""
+    # Callers that do not hash the request pass the response in its place.
+    if response is None:
+        request_hash, response = None, request_hash
     result = await db.execute(select(IdempotencyRecord).where(
         IdempotencyRecord.tenant_id == tenant_id,
         IdempotencyRecord.idempotency_key == key,
     ))
-    row = result.scalar_one()
-    row.response_json = response
+    record = result.scalar_one_or_none()
+    if request_hash is None:
+        envelope = response
+    else:
+        envelope = {"request_hash": request_hash, "response": response}
+    if record is None:
+        db.add(IdempotencyRecord(
+            tenant_id=tenant_id, idempotency_key=key, response_json=envelope,
+        ))
+    else:
+        record.response_json = envelope
+    await db.commit()
 
 
 async def abandon_idempotency(db: AsyncSession, key: str, tenant_id: str) -> None:

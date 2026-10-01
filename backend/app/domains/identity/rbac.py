@@ -3,7 +3,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import get_db, session_is_sqlite
 from app.core.supabase_auth import verify_token
 from app.domains.identity.models import User
 from app.domains.identity.permissions import user_has_permission

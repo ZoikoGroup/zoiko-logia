@@ -53,7 +53,30 @@ class ProviderNotConfigured(ProviderError):
 
 
 class ProviderAuthError(ProviderError):
-    """401/403. Never retried: a rejected key is rejected consistently."""
+    """401. Never retried: a rejected key is rejected consistently."""
+
+
+class ProviderForbidden(ProviderError):
+    """403. Never retried, and NOT evidence that the credential is wrong.
+
+    Verified live against Finnhub on 2026-09-30:
+      invalid key  -> HTTP 401 {"error":"Invalid API key."}
+      missing key  -> HTTP 401
+      valid key, endpoint not on the plan
+                   -> HTTP 403 {"error":"You don't have access to this resource."}
+
+    So a 403 from this provider family means "this credential cannot use this
+    endpoint", which is a plan/entitlement or coverage fact, not an
+    authentication failure. Reporting it as one is the specific false claim
+    this class exists to prevent: an operator reading
+    "authentication rejected (HTTP 403)" would rotate a perfectly good key.
+
+    Kept a sibling of ProviderAuthError rather than a subclass so that any
+    `except ProviderAuthError` in the codebase keeps meaning exactly one thing.
+    Like ProviderAuthError it is a plain ProviderError, so
+    service.fetch_for_intent still treats it as "this provider cannot serve
+    this" and moves to the next provider instead of stopping the chain.
+    """
 
 
 class ProviderRateLimited(ProviderError):
@@ -96,6 +119,8 @@ class EntityRef:
     cik: str = ""                 # SEC (US)
     exchange: str = ""
     country: str = ""
+    company_status: str = ""
+    company_type: str = ""
 
     def has_any_id(self) -> bool:
         return bool(self.ticker or self.company_number or self.cik)
@@ -166,6 +191,31 @@ class FinancialMetric:
     fiscal_period: str = ""
     filing_date: str = ""
     currency: str = ""
+    source_url: str = ""
+
+
+@dataclass
+class OwnershipStake:
+    """One persons-with-significant-control (PSC) entry from Companies House —
+    a real, named shareholder and their declared band of control, never an
+    exact percentage (the statutory filing itself only ever states a band).
+
+    min_percent/max_percent are None when the PSC's natures_of_control carry
+    no ownership-of-shares band at all (e.g. voting-rights-only or
+    right-to-appoint-directors entries) — those are real control facts but
+    not a share-of-the-whole figure, so callers building a composition view
+    must skip stakes with no percent band rather than inventing one.
+    """
+    name: str
+    kind: str                                  # individual|corporate-entity|legal-person|super-secure ...-with-significant-control
+    provider: str
+    nature_of_control: list[str] = field(default_factory=list)
+    min_percent: Optional[float] = None
+    max_percent: Optional[float] = None
+    notified_on: str = ""
+    ceased: bool = False
+    company_number: str = ""
+    company_name: str = ""
     source_url: str = ""
 
 

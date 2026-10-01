@@ -5,6 +5,8 @@ text therefore never enters ranking or model context.
 """
 from __future__ import annotations
 
+import asyncio
+import os
 import re
 import uuid
 from datetime import date
@@ -21,7 +23,27 @@ from app.orchestration.routing_matrix import (
     CONF_CONFLICTING, CONF_INSUFFICIENT, CONF_LIMITED, CONF_RESTRICTED, CONF_SUFFICIENT,
 )
 
+_CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    "tax": ["tax"],
+    "audit": ["audit", "going concern"],
+    "payroll-compliance": ["payroll", "employment"],
+    "internal-policies": ["internal policy", "firm policy"],
+    "education-content": ["exam", "study", "cpd", "syllabus"],
+}
+_DEFAULT_CATEGORY = "standards"
+
+# Word-boundary patterns, built from _CATEGORY_KEYWORDS above — plain substring
+# matching let "employment" match inside "unemployment", so e.g. "UK
+# unemployment" was miscategorized as payroll-compliance instead of falling
+# through to the general "standards" category, which could starve it of
+# eligible governed sources and wrongly force a clarification route.
+_CATEGORY_KEYWORD_PATTERNS: dict[str, list[re.Pattern[str]]] = {
+    category: [re.compile(rf"\b{re.escape(keyword)}\b") for keyword in keywords]
+    for category, keywords in _CATEGORY_KEYWORDS.items()
+}
+
 INDEX_VERSION = "source-passages-lexical-v1"
+# Sources with these statuses are eligible for retrieval
 _ELIGIBLE_STATUSES = {"ACTIVE", "APPROVED"}
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_-]+", re.I)
 _STOP_WORDS = {
@@ -79,7 +101,7 @@ def build_retrieval_plan(*, jurisdiction: str, framework: str, top_k: int = 8) -
 
 
 async def _candidate_versions(
-    db: AsyncSession, *, tenant_id: str,
+    db: AsyncSession, *, tenant_id: str, category: str | None = None,
 ) -> list[tuple[Source, SourceVersion]]:
     """Load candidate metadata only, choosing the newest approved version."""
     result = await db.execute(
@@ -88,6 +110,7 @@ async def _candidate_versions(
         .where(
             SourceVersion.status.in_(_ELIGIBLE_STATUSES),
             or_(Source.is_tenant_private.is_(False), Source.tenant_id == tenant_id),
+            *([Source.category == category] if category else []),
         )
         .order_by(Source.id, SourceVersion.created_at.desc())
     )

@@ -10,8 +10,18 @@ import { cleanMathText, normaliseLatexDelimiters, wrapDisplayLineBreaks } from "
 import { indianiseRupeeAmounts } from "@/lib/number-format";
 import type { Root } from "mdast";
 import { CheckCircle2, Copy, Download, Table2 } from "lucide-react";
-import type { CalculationResult, VerifiedChartSpec } from "@/lib/api";
+import type { CalculationResult, VerifiedChartSpec, VisualizationSpec } from "@/lib/api";
 import { cssVar } from "@/lib/css-var";
+import { ANSWER_MATH_OPTIONS, hasDisplayMath, sanitizeAnswerMarkdown } from "@/lib/answer-markdown";
+import { GraphRendererAdapter } from "@/components/visualization/GraphRendererAdapter";
+import { FlowRendererAdapter } from "@/components/visualization/FlowRendererAdapter";
+import { GraphErrorBoundary, RelationshipTableFallback } from "@/components/visualization/GraphErrorBoundary";
+// Aliased: the local ChartRenderer below draws a ```chart fenced block, while
+// this one draws a typed VisualizationSpec. Both are kept.
+import { ChartRenderer as SpecChartRenderer } from "@/components/visualization/charts/ChartRenderer";
+import { ChartErrorBoundary } from "@/components/visualization/charts/ChartErrorBoundary";
+import { checkChartValidity, normalizeVisualizationSpec } from "@/components/visualization/charts/chartValidity";
+import { familyFor } from "@/components/visualization/registry";
 import {
   canvasElementToPngBlob,
   downloadBlob,
@@ -26,7 +36,6 @@ import {
 
 // echarts-for-react touches the DOM (canvas), so load it client-only.
 const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false });
-
 /**
  * Renders a Kriton answer. Text is rendered as Markdown (so tables, bullet
  * lists, bold, and headings display properly, like ChatGPT). A fenced
@@ -40,6 +49,24 @@ type Segment =
   | { type: "text"; content: string }
   | { type: "mermaid"; content: string }
   | { type: "chart"; content: string };
+function KpiTile({ viz }: { viz: VisualizationSpec }) {
+  if (viz.value == null) return null;
+  return (
+    <section className="my-4 min-w-0 overflow-hidden rounded-2xl border border-line bg-panel shadow-sm">
+      <header className="flex items-center justify-between p-3 sm:p-4">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted">{viz.label ?? "Metric"}</p>
+        <span className="rounded-full bg-soft px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">KPI</span>
+      </header>
+      <div className="border-t border-line p-3 sm:p-4">
+      <p className="mt-1 text-2xl font-bold text-ink">
+        {viz.value.toLocaleString()}
+        {viz.unit && <span className="ml-1 text-base font-semibold text-muted">{viz.unit}</span>}
+      </p>
+      {viz.summary && <p className="mt-2 text-xs leading-5 text-muted">{viz.summary}</p>}
+      </div>
+    </section>
+  );
+}
 
 /**
  * Safety net: strip any inline citation markers the model still slips into the
@@ -1004,11 +1031,20 @@ function verifiedChartCode(chart: VerifiedChartSpec): string {
 export function AnswerRenderer({
   text,
   className,
+  visualization,
+  secondaryVisualizations,
   calculationResult,
   verifiedCharts = [],
 }: {
   text: string;
   className?: string;
+  /** Deterministic, evidence-backed visual from the response's top-level
+   * `visualization` field. */
+  visualization?: VisualizationSpec | null;
+  /** Complementary visuals (spec §17) — a different lens on the SAME
+   * evidence as `visualization`, rendered after it. */
+  secondaryVisualizations?: VisualizationSpec[] | null;
+  /** Verified single-operation calculation carried on the composed answer. */
   calculationResult?: CalculationResult | null;
   verifiedCharts?: VerifiedChartSpec[];
 }) {
@@ -1031,8 +1067,10 @@ export function AnswerRenderer({
           >
             {normaliseMarkdownTables(stripInlineRefs(normaliseLatexDelimiters(indianiseRupeeAmounts(seg.content))))}
           </ReactMarkdown>
-        ),
-      )}
+        );
+      })}
+      {visualization && <VisualizationRenderer viz={visualization} />}
+      {secondaryVisualizations?.map((viz) => <VisualizationRenderer key={viz.id} viz={viz} />)}
       {calculationResult && <VerifiedCalculation result={calculationResult} />}
       {verifiedCharts.filter((chart) => chart.type !== "kpi" &&
         !(chart.calculation_id === "live_observations" && segments.some((segment) => segment.type === "chart"))).map((chart) => (
