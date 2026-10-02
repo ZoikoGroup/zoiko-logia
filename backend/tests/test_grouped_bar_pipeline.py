@@ -6,6 +6,8 @@ requested as a bar chart rather than a scatter plot. Same precedent as
 BOX vs HISTOGRAM (explicit-request-gated, scored above the default). Mirrors
 the style of test_correlation_scatter_pipeline.py.
 """
+import pytest
+
 from app.orchestration.data_shape import classify_data_shape, XY_NUMERIC
 from app.orchestration.evidence import EvidenceModel, Observation
 from app.orchestration.intent_classifier import classify_intent, CORRELATION
@@ -98,6 +100,31 @@ def test_orchestrator_builds_stacked_bar_variant():
     result = VisualizationOrchestrator().decide(evidence, shape, plan, spec_id="viz-gb-2", query=query)
     assert result.spec.type == "GROUPED_BAR"
     assert result.spec.variant == "STACKED_BAR_CHART"
+
+
+@pytest.mark.parametrize(
+    "wording, variant",
+    [
+        ("100% stacked bar chart", "HUNDRED_PERCENT_STACKED_BAR"),
+        ("stacked horizontal bar chart", "STACKED_HORIZONTAL_BAR"),
+        ("100% stacked horizontal bar chart", "HUNDRED_PERCENT_STACKED_HORIZONTAL_BAR"),
+    ],
+)
+def test_orchestrator_builds_every_stacked_variant(wording, variant):
+    # Only grouped and stacked used to count as a grouped-bar request, so
+    # these three were routed but never scored and drew nothing at all.
+    query = f"Show the correlation between UK inflation and US inflation as a {wording}"
+    evidence = _paired_evidence()
+    intent = classify_intent(query)
+    shape = classify_data_shape(evidence, intent)
+    plan = plan_response(query, intent, shape)
+    assert plan.requested_chart_variant == variant
+
+    result = VisualizationOrchestrator().decide(evidence, shape, plan, spec_id="viz-gb-5", query=query)
+    assert result.spec is not None
+    assert result.spec.type == "GROUPED_BAR"
+    assert result.spec.variant == variant
+    assert VisualizationValidator().validate(result.spec).passed
 
 
 def test_plain_correlation_query_still_defaults_to_scatter():

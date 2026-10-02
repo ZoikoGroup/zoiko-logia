@@ -25,6 +25,8 @@ from pydantic import BaseModel, Field
 
 from app.orchestration.evidence import EvidenceModel, Observation
 from app.orchestration.response_planner import ResponsePlan
+from app.orchestration.chart_tables import build_chart_table_spec, is_chart_table
+from app.orchestration.kroki_diagrams import KROKI_CAPABILITIES, downgrade_if_unrenderable
 from app.orchestration.visualization.capabilities import ROUTABLE_CAPABILITIES
 from app.orchestration.visualization.registry import fallbacks_for, renderer_for, renderer_supports
 from app.orchestration.visualization.rules import score_candidates
@@ -661,6 +663,8 @@ def _build_spec_for_type(
         elif selected_type == "SCATTER":
             return _build_scatter_spec(evidence, spec_id)
         elif selected_type == "TABLE":
+            if is_chart_table(evidence):
+                return build_chart_table_spec(evidence, spec_id)
             return _build_table_spec(evidence, spec_id)
         elif selected_type == "KPI":
             return _build_kpi_spec(evidence, spec_id)
@@ -689,6 +693,16 @@ def _build_spec_for_type(
         # Building the spec must never raise into the caller — a failed
         # visual degrades to no visual, not a broken answer (spec §19/§29).
         return None
+
+
+# Every variant drawn as GROUPED_BAR, read from the capability table rather
+# than listed by hand. A hand-written pair (grouped + stacked) left the 100%
+# and horizontal stacked variants routable but never scored, so asking for
+# one drew nothing at all.
+_GROUPED_BAR_VARIANTS = frozenset(
+    capability.variant for capability in ROUTABLE_CAPABILITIES
+    if capability.selected_type == "GROUPED_BAR"
+)
 
 
 class VisualizationOrchestrator:
@@ -722,7 +736,7 @@ class VisualizationOrchestrator:
             explicit_heatmap_request=plan.explicit_heatmap_request,
             explicit_box_request=plan.requested_chart_variant == "BOX_PLOT",
             composition_count=len(evidence.composition),
-            explicit_grouped_bar_request=plan.requested_chart_variant in ("GROUPED_BAR_CHART", "STACKED_BAR_CHART"),
+            explicit_grouped_bar_request=plan.requested_chart_variant in _GROUPED_BAR_VARIANTS,
             ohlc_count=len(evidence.ohlc),
         )
         if not ranked:
@@ -784,6 +798,8 @@ class VisualizationOrchestrator:
                 built_spec.capability_id = route.capability_id
                 built_spec.canonical = route.canonical
                 built_spec.variant = route.variant
+                if route.capability_id in KROKI_CAPABILITIES:
+                    downgrade_if_unrenderable(built_spec)
             else:
                 # A fallback substitution was never routed through a
                 # capability decision — it's a plain type-level degrade, not

@@ -31,6 +31,8 @@ from app.orchestration.intent_classifier import (
     explicit_amount_pairs,
     explicit_target_pair,
 )
+from app.orchestration.chart_tables import extract_chart_table
+from app.orchestration.kroki_diagrams import extract_kroki_graph
 
 _MAX_LABEL_LEN = 60
 _MAX_NODES = 40  # sanity cap — a query listing more than this is almost
@@ -199,12 +201,27 @@ def extract_relation_clauses(query: str) -> ExtractedGraph | None:
     return ExtractedGraph(nodes=nodes, edges=edges)
 
 
+def extract_kroki_diagram(query: str) -> ExtractedGraph | None:
+    """Steps, messages, tasks or entities from an explicitly named Kroki
+    diagram (swimlane, BPMN, sequence, Gantt, ERD) — see kroki_diagrams.py.
+    The readers below cannot parse these: ":" is not a label character for
+    the arrow chain, and "has many" is not a relation verb."""
+    graph = extract_kroki_graph(query)
+    if graph is None:
+        return None
+    nodes, edges = graph
+    return ExtractedGraph(nodes=nodes, edges=[ExtractedEdge(source=s, target=t, type=k) for s, t, k in edges])
+
+
 def extract_graph(query: str) -> ExtractedGraph | None:
     """Relation clauses take priority — they carry a real relationship type,
     which is strictly more informative than an arrow chain's generic "next"/
-    "related_to". Falls back to an arrow chain when no typed clause is found."""
+    "related_to". Falls back to an arrow chain when no typed clause is found.
+    A named Kroki diagram whose whole payload parses is checked first: the
+    other readers would otherwise pick up a fragment of it."""
     return (
-        extract_relation_clauses(query)
+        extract_kroki_diagram(query)
+        or extract_relation_clauses(query)
         or extract_arrow_statements(query)
         or extract_arrow_chain(query)
         or extract_stage_list(query)
@@ -305,6 +322,13 @@ def extract_user_visual_evidence(query: str, intent: str) -> EvidenceModel:
     distributions. Invalid/ambiguous input returns empty evidence so the
     established text fallback remains in control.
     """
+    # A named multi-value chart (Pareto, funnel, Sankey, ...) — chart_tables.py.
+    # First, because its payload would otherwise be misread by the branches
+    # below (a funnel's stage counts as a numeric sample, for example).
+    chart_table = extract_chart_table(query)
+    if chart_table is not None:
+        return chart_table
+
     # An actual-versus-target pair needs no colon and no visual intent word:
     # the literal "target" (or budget/goal/plan) is specific enough on its own,
     # and the question is almost never phrased as a dataset. Checked first

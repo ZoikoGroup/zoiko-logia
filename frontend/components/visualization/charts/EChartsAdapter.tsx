@@ -5,6 +5,7 @@ import { useEffect, useRef } from "react";
 import { cssVar } from "@/lib/css-var";
 import type { VisualizationSpec } from "@/lib/api";
 import { chartPalette } from "./palette";
+import { buildExtraChartOption } from "./extraCharts";
 
 // echarts-for-react touches the DOM (canvas), so load it client-only.
 const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false });
@@ -283,6 +284,9 @@ function buildGaugeOption(viz: VisualizationSpec): Record<string, unknown> {
 }
 
 export function buildEChartsOption(viz: VisualizationSpec): Record<string, unknown> {
+  // Pareto, funnel, Sankey, sunburst, bullet, ... — see extraCharts.ts.
+  const extra = buildExtraChartOption(viz);
+  if (extra) return extra;
   if (viz.type === "HEATMAP") return buildHeatmapOption(viz);
   if (viz.type === "BOX") return buildBoxplotOption(viz);
   if (viz.type === "SCATTER") return buildScatterOption(viz);

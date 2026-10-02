@@ -27,8 +27,12 @@ found via live testing:
 from app.orchestration.intent_classifier import (
     classify_intent, CORRELATION, DISTRIBUTION, RELATIONSHIP, NETWORK, PRECISE_DATA, TREND,
 )
+from app.orchestration.data_shape import classify_data_shape
 from app.orchestration.dbnomics import _split_correlation_subjects
-from app.orchestration.response_planner import detect_explicit_heatmap_request
+from app.orchestration.evidence import Entity, EvidenceModel, Relationship
+from app.orchestration.extraction import extract_graph
+from app.orchestration.response_planner import detect_explicit_heatmap_request, plan_response
+from app.orchestration.visualization.orchestrator import VisualizationOrchestrator
 from app.orchestration.service import _structured_visual_query_is_in_domain
 
 
@@ -62,6 +66,28 @@ def test_relationship_between_entities_still_classified_as_relationship():
 
 def test_ownership_chain_classified_as_graph_intent():
     assert classify_intent("Show the ownership chain: Holdco owns Opco; Opco owns Propco.") == NETWORK
+
+
+def test_relationship_network_classified_as_graph_intent():
+    # Had no "of/diagram/graph" after "network", so it classified as FACT
+    # and the supplied entities were never drawn.
+    q = "Show the relationship network: Control A mitigates Risk One; Control B mitigates Risk Two."
+    assert classify_intent(q) == NETWORK
+
+
+def test_relationship_network_draws_an_evidence_graph():
+    q = "Show the relationship network: Control A mitigates Risk One; Control B mitigates Risk Two."
+    intent = classify_intent(q)
+    graph = extract_graph(q)
+    evidence = EvidenceModel(
+        subject=q[:80],
+        entities=[Entity(id=node, name=node) for node in graph.nodes],
+        relationships=[Relationship(source_id=e.source, target_id=e.target, type=e.type) for e in graph.edges],
+    )
+    shape = classify_data_shape(evidence, intent)
+    plan = plan_response(q, intent, shape)
+    result = VisualizationOrchestrator().decide(evidence, shape, plan, "spec", q)
+    assert result.selected == "EVIDENCE_GRAPH"
 
 
 def test_bare_matrix_of_classified_as_relationship():
