@@ -34,3 +34,13 @@ engines:
     disabled: true
   - name: brave
     disabled: true
+  # Off by default upstream. With only google cse and duckduckgo doing web
+  # search, both rate-limiting this instance at once left every query with 0
+  # results and every answer without sources. More engines share the load, so
+  # one suspended engine no longer empties the result list. (Qwant was tried
+  # too: it serves a CAPTCHA, the same failure that took Startpage down above.
+  # Yahoo fails with a parsing error on this SearXNG version.)
+  - name: bing
+    disabled: false
+  - name: mojeek
+    disabled: false
