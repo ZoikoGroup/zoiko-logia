@@ -25,6 +25,8 @@ from __future__ import annotations
 import re
 from urllib.parse import urlsplit
 
+from app.orchestration.source_catalogue import catalogue_domains
+
 # ── Topics ──────────────────────────────────────────────────────────────────
 # Deliberately seven. The eighteen-odd categories people name in conversation
 # collapse into these: "tax authorities", "taxation bodies", "income tax
@@ -274,6 +276,10 @@ def allowed_domains(
                 for d in _TRUSTED_DOMAINS[key].get(topic, []):
                     if d not in domains:          # preserve order, drop dupes
                         domains.append(d)
+    # Wider coverage from source_catalogue.py, after the bodies above.
+    for d in catalogue_domains(keys, topics, query):
+        if d not in domains:
+            domains.append(d)
     return domains
 
 
