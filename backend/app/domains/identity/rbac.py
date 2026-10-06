@@ -69,6 +69,9 @@ async def get_current_user(
             text("SELECT set_config('app.tenant_id', :tenant_id, false)"),
             {"tenant_id": user.tenant_id or ""},
         )
+        # Committed so a later rollback in the request cannot revert the
+        # corrected tenant to the claim's (see get_db in app/core/database.py).
+        await db.commit()
 
     return user
 

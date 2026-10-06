@@ -41,9 +41,12 @@ def upgrade() -> None:
     """Upgrade schema."""
     op.add_column('users', sa.Column('first_name', sa.String(), nullable=False, server_default=''))
     op.add_column('users', sa.Column('last_name', sa.String(), nullable=False, server_default=''))
-    op.add_column('users', sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.text('now()')))
-    op.add_column('users', sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.text('now()')))
+    op.add_column('users', sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.current_timestamp()))
+    op.add_column('users', sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.current_timestamp()))
     op.drop_column('users', 'hashed_password')
+
+    if op.get_bind().dialect.name != 'postgresql':
+        return
 
     op.execute('ALTER TABLE users ENABLE ROW LEVEL SECURITY')
     op.execute('ALTER TABLE users FORCE ROW LEVEL SECURITY')

@@ -120,6 +120,16 @@ class SourcePassage(Base):
     source_version_id: Mapped[str] = mapped_column(ForeignKey("source_versions.id"), nullable=False, index=True)
     locator: Mapped[str] = mapped_column(String, nullable=False)
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    # The document section the passage sits under ("4.2 Who can submit"),
+    # shown in citations and used in ranking.
+    heading: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # Tax procedure the passage is about (app/orchestration/procedures.py:
+    # "refund", "registration", …; "general" when not procedure-specific).
+    # Evidence about another procedure is filtered out at retrieval.
+    procedure: Mapped[str] = mapped_column(String, nullable=False, default="general")
+    # embedding vector(384) exists on PostgreSQL only (pgvector), added by
+    # main._migrate_source_passage_retrieval_columns and read with raw SQL in
+    # retrieve.py, so the ORM and the SQLite test database never need pgvector.
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
     language: Mapped[str] = mapped_column(String, nullable=False, default="en")

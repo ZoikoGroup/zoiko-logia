@@ -27,6 +27,13 @@ MODEL_MANAGE = "model.manage"        # model & prompt registry: list, approve, t
 AUDIT_CORRECT = "audit.correct"      # issue compensating events (ledger corrections)
 SAFETY_READ = "safety.read"
 SAFETY_MANAGE = "safety.manage"
+REVIEW_READ = "review.read"          # list Ask Kriton review cases (escalations, user-reported answers)
+REVIEW_RESOLVE = "review.resolve"    # approve / correct / reject a review case; corrections become gold cases
+# Evaluation datasets, thresholds, runs and release promotion. Previously gated
+# by the review permissions, so granting a reviewer the review queue would also
+# have let them promote a release.
+EVALUATION_READ = "evaluation.read"
+EVALUATION_MANAGE = "evaluation.manage"
 
 ALL_PERMISSIONS = frozenset({
     SOURCE_READ,
@@ -36,6 +43,8 @@ ALL_PERMISSIONS = frozenset({
     MODEL_MANAGE,
     AUDIT_CORRECT,
     SAFETY_READ, SAFETY_MANAGE,
+    REVIEW_READ, REVIEW_RESOLVE,
+    EVALUATION_READ, EVALUATION_MANAGE,
 })
 
 # ── Role → permission matrix (approved product mapping) ─────────────────────
@@ -50,6 +59,8 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
         SUPPORT_READ, SUPPORT_MANAGE,
         MODEL_MANAGE, AUDIT_CORRECT,
         SAFETY_READ, SAFETY_MANAGE,
+        REVIEW_READ, REVIEW_RESOLVE,
+        EVALUATION_READ, EVALUATION_MANAGE,
     }),
     # "Source licensing" (seed description).
     "Source Admin": frozenset({SOURCE_READ, SOURCE_MANAGE}),
@@ -58,9 +69,18 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     # "Jurisdiction rollout" — needs the jurisdiction/source readiness views.
     "Jurisdiction Lead": frozenset({SOURCE_READ}),
     # "Risk policy, Evaluation gates, Model & prompt registry".
-    "Risk Admin": frozenset({MODEL_MANAGE, SAFETY_READ, SAFETY_MANAGE}),
+    # Review queue: provisional assignment — confirm who the reviewers are.
+    "Risk Admin": frozenset({
+        MODEL_MANAGE, SAFETY_READ, SAFETY_MANAGE, REVIEW_READ, REVIEW_RESOLVE,
+        EVALUATION_READ, EVALUATION_MANAGE,
+    }),
+    # Subject-matter reviewer: works the review queue only — reads cases and
+    # their evidence, and approves/corrects/rejects them (an approval or
+    # correction becomes a gold evaluation case). Deliberately nothing else:
+    # no source, model, safety or audit-ledger permissions.
+    "SME Reviewer": frozenset({REVIEW_READ, REVIEW_RESOLVE}),
     # "Read-only access for audit purposes" — reads, never writes.
-    "System Auditor": frozenset({SOURCE_READ, SUPPORT_READ, SAFETY_READ}),
+    "System Auditor": frozenset({SOURCE_READ, SUPPORT_READ, SAFETY_READ, REVIEW_READ, EVALUATION_READ}),
 }
 
 

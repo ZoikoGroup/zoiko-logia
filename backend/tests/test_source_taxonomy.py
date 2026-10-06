@@ -12,6 +12,9 @@ Two separable concerns are covered here:
 
 Pure and offline: no SearXNG instance and no network are involved.
 """
+import pytest
+
+
 from app.orchestration.source_taxonomy import (
     ACCOUNTING,
     AUDIT,
@@ -182,3 +185,52 @@ def test_site_filter_is_capped_so_engines_do_not_drop_the_query():
 def test_site_filter_is_empty_when_there_is_nothing_to_bias_with():
     # Callers concatenate unconditionally, so this must be "" not None.
     assert site_filter([]) == ""
+
+
+@pytest.mark.parametrize("query, domain", [
+    ("What is the standard VAT rate in Saudi Arabia?", "zatca.gov.sa"),
+    ("Singapore GST rate in 2026?", "iras.gov.sg"),
+    ("Australian GST registration threshold?", "ato.gov.au"),
+    ("Ireland VAT standard rate?", "revenue.ie"),
+])
+def test_named_countries_reach_their_tax_authority_not_only_the_oecd(query, domain):
+    from app.orchestration.source_taxonomy import allowed_domains, detect_topics
+    assert domain in allowed_domains("", detect_topics(query), query)
+
+
+def test_northern_ireland_is_the_uk_not_ireland():
+    from app.orchestration.source_taxonomy import detect_jurisdictions
+    assert "IRELAND" not in detect_jurisdictions("VAT on goods moved into Northern Ireland from the EU")
+    assert detect_jurisdictions("Moving goods from Northern Ireland to Ireland") == ["IRELAND"]
+
+
+def test_india_only_gst_terms_reach_indian_authorities():
+    from app.orchestration.source_taxonomy import allowed_domains, detect_jurisdictions, detect_topics
+    q = "What is the late fee for filing GSTR-3B late?"
+    assert "cbic.gov.in" in allowed_domains("", detect_topics(q), q)
+    assert detect_jurisdictions("What is the GST rate in Australia?") == ["AUSTRALIA"]
+
+
+@pytest.mark.parametrize("question, jurisdiction", [
+    ("What is the TDS rate on professional fees under section 194J?", "INDIA"),
+    ("What are the income tax slabs under the new regime for FY 2025-26?", "INDIA"),
+    ("What does CARO 2020 require auditors to report?", "INDIA"),
+    ("What is the current RBI repo rate?", "INDIA"),
+    ("What is the 2026 Social Security wage base?", "US"),
+    ("What does FRS 102 Section 1A require for small companies?", "UK"),
+])
+def test_country_specific_institutions_imply_their_country(question, jurisdiction):
+    from app.orchestration.source_taxonomy import detect_jurisdictions
+    assert detect_jurisdictions(question) == [jurisdiction]
+
+
+@pytest.mark.parametrize("question, expected", [
+    ("If I received an advance before the GST rate changed, which rate applies?", ["INDIA"]),
+    ("VAT threshold?", ["UK"]),
+    ("What is the GST rate in Australia?", ["AUSTRALIA"]),
+    ("What is the VAT rate in UAE?", ["UAE"]),
+    ("Compare VAT and GST", []),
+])
+def test_bare_vat_and_gst_follow_the_knowledge_base_default(question, expected):
+    from app.orchestration.source_taxonomy import detect_jurisdictions
+    assert detect_jurisdictions(question) == expected

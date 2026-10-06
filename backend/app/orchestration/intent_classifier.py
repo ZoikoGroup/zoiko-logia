@@ -61,7 +61,10 @@ FACT = "FACT"
 GRAPH_INTENTS = frozenset({EVIDENCE_ANALYSIS, RELATIONSHIP, NETWORK, DEPENDENCY, LINEAGE})
 
 _PROCESS_HINTS = re.compile(
+    # "Diagram the UK VAT registration decision: … → must register; …" was
+    # classified as a fact question and answered in prose with no diagram.
     r"\b(process|workflow|procedure|steps? (to|for|in)|approval flow|"
+    r"decision (?:tree|diagram|flow|chart|process)|diagram (?:the|a|an|of)\b[^.:]{0,60}\bdecision|"
     r"flowchart|flow diagram|interactive flow|interactive diagram|swim[\s-]?lanes?|sequence diagram|bpmn|gantt|"
     r"activity diagram|timing diagram|"
     r"process flow|process diagram|mermaid (?:flowchart|flow|diagram)|x6 (?:workflow|flow|diagram)|"
@@ -76,7 +79,10 @@ _EVIDENCE_ANALYSIS_HINTS = re.compile(
 )
 
 _RELATIONSHIP_HINTS = re.compile(
-    r"\b(relationship between|how (are|is) .* (connected|related)|"
+    # "Show an org chart: CFO manages …" was classified as a fact question
+    # and answered "the sources provided do not state this".
+    r"\b(org(?:anis|aniz)?(?:ation(?:al)?)? ?chart|reporting (?:lines?|structure)|hierarchy chart|"
+    r"relationship between|how (are|is) .* (connected|related)|"
     r"connection between|how .* relate|ownership structure|"
     # An ER diagram draws entities and their relationships; so do these UML
     # structure diagrams (and a state diagram's states and transitions).
@@ -143,12 +149,17 @@ _EXPLICIT_PERCENT_VALUE = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?\s*%")
 _CURRENCY_MARKER = r"(?:[$£€¥₹]|\b(?:usd|gbp|eur|inr|jpy)\b\s*)"
 _AMOUNT_SCALES = {"k": 1e3, "thousand": 1e3, "m": 1e6, "million": 1e6,
                   "b": 1e9, "bn": 1e9, "billion": 1e9}
+# Western (120,000) and Indian (1,20,000 / 12,34,567) digit grouping. Only
+# the Western form was accepted, so "salaries ₹1,20,000" was read as ₹1 and a
+# donut chart showed salaries at 0.00125% of an ₹80,001 total. The lookahead
+# never stops part-way through a grouped number.
+_GROUPED_NUMBER = r"(?:\d{1,3}(?:,\d{2})*(?:,\d{3})+|\d+)(?:\.\d+)?(?![\d,]*\d)"
 _EXPLICIT_AMOUNT_PAIR = re.compile(
     r"(?:^|[,;.]|\band\b)\s*(?:and\s+)?"
     r"(?P<label>[A-Za-z][\w &/().'’-]{0,59}?)"
     r"\s*(?::|=|–|—|-)?\s*"
     rf"{_CURRENCY_MARKER}\s*"
-    r"(?P<value>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+    rf"(?P<value>{_GROUPED_NUMBER})"
     r"\s*(?P<scale>k|bn|b|m|thousand|million|billion)?(?![\w])",
     re.I,
 )
@@ -185,7 +196,7 @@ def explicit_amount_pairs(text: str) -> list[tuple[str, float]]:
 # targets are routinely stated bare ("revenue 8.2m against a target of 10m"),
 # and the target keyword already supplies the specificity the marker provides
 # there.
-_PLAIN_NUMBER = r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?"
+_PLAIN_NUMBER = _GROUPED_NUMBER
 _SCALE_SUFFIX = r"k|bn|b|m|thousand|million|billion"
 _TARGET_PAIR = re.compile(
     rf"(?P<label>[A-Za-z][\w &/().'’-]{{0,59}}?)\s*(?::|=|–|—|-|of|was|is|at)?\s*"

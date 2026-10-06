@@ -26,6 +26,10 @@ from app.domains.identity.permissions import (
     SUPPORT_READ,
     SAFETY_READ,
     SAFETY_MANAGE,
+    REVIEW_READ,
+    REVIEW_RESOLVE,
+    EVALUATION_READ,
+    EVALUATION_MANAGE,
     permissions_for_role,
     user_has_permission,
 )
@@ -44,6 +48,8 @@ SEEDED_ROLES = {
     "Jurisdiction Lead",
     "Risk Admin",
     "System Auditor",
+    # The role escalation rules route high-risk cases to (main.py).
+    "SME Reviewer",
 }
 
 
@@ -52,7 +58,10 @@ def _user(role: str) -> User:
 
 
 async def test_permissions_declared_exactly_once_in_registry() -> None:
-    declared = {SOURCE_READ, SOURCE_MANAGE, SUPPORT_READ, SUPPORT_MANAGE, MODEL_MANAGE, AUDIT_CORRECT, SAFETY_READ, SAFETY_MANAGE}
+    declared = {
+        SOURCE_READ, SOURCE_MANAGE, SUPPORT_READ, SUPPORT_MANAGE, MODEL_MANAGE, AUDIT_CORRECT,
+        SAFETY_READ, SAFETY_MANAGE, REVIEW_READ, REVIEW_RESOLVE, EVALUATION_READ, EVALUATION_MANAGE,
+    }
     assert ALL_PERMISSIONS == declared
     # Every permission a role carries must be a declared one — a mistyped
     # permission would otherwise silently deny forever (unknown permission).
@@ -65,13 +74,28 @@ async def test_role_matrix_matches_approved_mapping() -> None:
     assert ROLE_PERMISSIONS["Admin"] == ALL_PERMISSIONS
     assert ROLE_PERMISSIONS["Governance Ops Lead"] == frozenset({
         SOURCE_READ, SOURCE_MANAGE, SUPPORT_READ, SUPPORT_MANAGE, MODEL_MANAGE, AUDIT_CORRECT,
-        SAFETY_READ, SAFETY_MANAGE,
+        SAFETY_READ, SAFETY_MANAGE, REVIEW_READ, REVIEW_RESOLVE, EVALUATION_READ, EVALUATION_MANAGE,
     })
     assert ROLE_PERMISSIONS["Source Admin"] == frozenset({SOURCE_READ, SOURCE_MANAGE})
     assert ROLE_PERMISSIONS["Syllabus Admin"] == frozenset()
     assert ROLE_PERMISSIONS["Jurisdiction Lead"] == frozenset({SOURCE_READ})
-    assert ROLE_PERMISSIONS["Risk Admin"] == frozenset({MODEL_MANAGE, SAFETY_READ, SAFETY_MANAGE})
-    assert ROLE_PERMISSIONS["System Auditor"] == frozenset({SOURCE_READ, SUPPORT_READ, SAFETY_READ})
+    assert ROLE_PERMISSIONS["Risk Admin"] == frozenset({
+        MODEL_MANAGE, SAFETY_READ, SAFETY_MANAGE, REVIEW_READ, REVIEW_RESOLVE, EVALUATION_READ, EVALUATION_MANAGE,
+    })
+    assert ROLE_PERMISSIONS["System Auditor"] == frozenset({
+        SOURCE_READ, SUPPORT_READ, SAFETY_READ, REVIEW_READ, EVALUATION_READ,
+    })
+    assert ROLE_PERMISSIONS["SME Reviewer"] == frozenset({REVIEW_READ, REVIEW_RESOLVE})
+
+
+async def test_sme_reviewer_works_the_queue_but_cannot_run_or_promote_evaluations() -> None:
+    sme = _user("SME Reviewer")
+    assert await require_permission(REVIEW_READ)(sme)
+    assert await require_permission(REVIEW_RESOLVE)(sme)
+    for denied in (EVALUATION_MANAGE, EVALUATION_READ, SOURCE_MANAGE, MODEL_MANAGE, SAFETY_MANAGE, AUDIT_CORRECT):
+        with pytest.raises(HTTPException) as exc:
+            await require_permission(denied)(sme)
+        assert exc.value.status_code == 403
 
 
 async def test_unknown_role_denies_everything() -> None:
@@ -87,6 +111,7 @@ async def test_write_permissions_require_more_than_read() -> None:
         perms = permissions_for_role(role)
         assert SUPPORT_MANAGE not in perms
         assert SOURCE_MANAGE not in perms
+        assert REVIEW_RESOLVE not in perms
     for perms in ROLE_PERMISSIONS.values():
         if SOURCE_MANAGE in perms:
             assert SOURCE_READ in perms

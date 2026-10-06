@@ -559,7 +559,7 @@ function MermaidDiagram({ code }: { code: string }) {
 // component maps the spec deterministically onto an ECharts option, so the
 // chart always renders correctly from whatever data was provided.
 type ChartSpec = {
-  type?: "bar" | "line" | "pie" | "sankey" | "scatter" | "radar" | "heatmap" | "candlestick";
+  type?: "bar" | "line" | "area" | "waterfall" | "pie" | "sankey" | "scatter" | "radar" | "heatmap" | "candlestick";
   title?: string;
   categories?: string[];
   /** Bar charts only: stacks the series when they are parts of one total. */
@@ -774,8 +774,67 @@ function buildChartOption(spec: ChartSpec): Record<string, unknown> {
     };
   }
 
-  // bar / line (default)
-  const isLine = spec.type === "line";
+  if (spec.type === "waterfall") {
+    // series[0].data: the starting amount, then signed changes; a final value
+    // equal to the running total is drawn as a total bar from zero. Built as
+    // an invisible "base" stacked under each visible step, so every bar
+    // starts where the previous one ended.
+    const values = spec.series?.[0]?.data ?? [];
+    const base: (number | string)[] = [];
+    const step: { value: number; itemStyle: { color: string } }[] = [];
+    const up = cssVar("--ok", "#31a06a");
+    const down = cssVar("--bad", "#e2725b");
+    const total = cssVar("--brand", "#16799a");
+    let running = 0;
+    values.forEach((value, index) => {
+      const isEndTotal = index === values.length - 1 && index > 0 && Math.abs(value - running) < 1e-9;
+      if (index === 0 || isEndTotal) {
+        base.push(Math.min(0, value));
+        step.push({ value: Math.abs(value), itemStyle: { color: total } });
+        running = value;
+        return;
+      }
+      const next = running + value;
+      base.push(Math.min(running, next));
+      step.push({ value: Math.abs(value), itemStyle: { color: value >= 0 ? up : down } });
+      running = next;
+    });
+    return {
+      color,
+      title,
+      tooltip: {
+        trigger: "axis",
+        formatter: (items: { dataIndex: number }[]) => {
+          const index = items?.[0]?.dataIndex ?? 0;
+          return `${spec.categories?.[index] ?? ""}: ${values[index]}`;
+        },
+      },
+      grid: { left: 8, right: 24, top: title ? 48 : 24, bottom: 32, containLabel: true },
+      xAxis: { type: "category", data: spec.categories ?? [], axisLabel: { color: muted, interval: 0 } },
+      yAxis: { type: "value", axisLabel: { color: muted }, splitLine: { lineStyle: { color: line } } },
+      series: [
+        { type: "bar", stack: "waterfall", data: base, itemStyle: { color: "transparent" }, tooltip: { show: false } },
+        {
+          type: "bar",
+          stack: "waterfall",
+          name: spec.series?.[0]?.name,
+          data: step,
+          barMaxWidth: 54,
+          label: {
+            show: true,
+            position: "top",
+            color: ink,
+            fontSize: 11,
+            formatter: (p: { dataIndex: number }) => String(values[p.dataIndex]),
+          },
+        },
+      ],
+    };
+  }
+
+  // bar / line / area (default)
+  const isArea = spec.type === "area";
+  const isLine = spec.type === "line" || isArea;
   const isStacked = !isLine && !!spec.stacked;
   const categoryCount = spec.categories?.length ?? 0;
   return {
@@ -819,6 +878,7 @@ function buildChartOption(spec: ChartSpec): Record<string, unknown> {
           ? undefined
           : { show: true, position: "top", color: ink, fontSize: 11 },
       ...(isLine ? { symbolSize: 7, lineStyle: { width: 3 } } : {}),
+      ...(isArea ? { areaStyle: { opacity: 0.25 } } : {}),
     })),
   };
 }

@@ -19,7 +19,8 @@ export type RoleCode =
   | "Syllabus Admin"
   | "Jurisdiction Lead"
   | "Risk Admin"
-  | "System Auditor";
+  | "System Auditor"
+  | "SME Reviewer";
 
 export const ROLES: RoleCode[] = [
   "CFO",
@@ -45,6 +46,8 @@ export const BACKEND_ROLES: readonly string[] = [
   "Jurisdiction Lead",
   "Risk Admin",
   "System Auditor",
+  // Works the review queue only (backend permissions: review.read, review.resolve).
+  "SME Reviewer",
 ];
 
 export const DEFAULT_ROLE: RoleCode = "Admin";

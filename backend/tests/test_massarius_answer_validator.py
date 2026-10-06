@@ -4,6 +4,8 @@ the invalid answer, including the internal_reasoning_only non-exposure case."""
 import os
 import sys
 
+import pytest
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.domains.massarius.answer_validator import validate_answer, validate_answer_or_raise
@@ -170,3 +172,45 @@ def test_ordinary_accounting_words_are_not_unhedged_certainty():
 def test_real_certainty_claims_still_need_hedging():
     result = validate_answer("This is definitely the correct treatment.", _EMPTY_BUNDLE, ungrounded_answer_allowed=True)
     assert not result.passed and result.degraded_route == "HUMAN_REVIEW"
+
+
+def test_advice_wording_quoted_from_the_cited_source_is_not_a_prohibited_claim():
+    # Reported in the UK VAT evaluation: "how long do I have to register?" was
+    # refused because the answer restated HMRC's own "You must register…".
+    answer = "You must register for VAT within 30 days of the end of the month your turnover went over £90,000."
+    hmrc = "You must register if your total taxable turnover for the last 12 months goes over £90,000."
+    assert validate_answer(
+        answer, _EMPTY_BUNDLE, ungrounded_answer_allowed=True, evidence_text=hmrc, user_specific=True,
+    ).passed
+    # On a user-specific question, the same wording without that backing is blocked.
+    result = validate_answer(answer, _EMPTY_BUNDLE, ungrounded_answer_allowed=True, user_specific=True)
+    assert not result.passed and any("Prohibited-claim" in f for f in result.failures)
+
+
+def test_directive_wording_in_a_general_answer_is_not_personal_advice():
+    # UK VAT evaluation: "How do penalty points work for late VAT returns?" was
+    # refused for "you must submit…". A general question describes the rule;
+    # only a question about the asker's own or a client's matter is advice.
+    answer = "You must submit a VAT return every quarter; each late return earns a penalty point."
+    assert validate_answer(answer, _EMPTY_BUNDLE, ungrounded_answer_allowed=True).passed
+    assert not validate_answer(answer, _EMPTY_BUNDLE, ungrounded_answer_allowed=True, user_specific=True).passed
+
+
+@pytest.mark.parametrize("claim", [
+    "I certify that the return is correct.",
+    "This is tax advice for your situation.",
+    "As your accountant, I recommend this treatment.",
+])
+def test_other_professional_claims_are_blocked_on_every_question(claim):
+    result = validate_answer(claim, _EMPTY_BUNDLE, ungrounded_answer_allowed=True)
+    assert not result.passed and any("Prohibited-claim" in f for f in result.failures)
+
+
+def test_only_directive_wording_is_curable_by_a_general_guidance_rewrite():
+    from app.domains.massarius.answer_validator import is_directive_failure
+
+    directive = validate_answer("You must register for VAT within 30 days.", _EMPTY_BUNDLE,
+                                ungrounded_answer_allowed=True, user_specific=True)
+    assert all(is_directive_failure(f) for f in directive.failures)
+    certify = validate_answer("I certify that the return is correct.", _EMPTY_BUNDLE, ungrounded_answer_allowed=True)
+    assert not any(is_directive_failure(f) for f in certify.failures)

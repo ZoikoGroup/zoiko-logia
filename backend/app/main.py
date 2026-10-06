@@ -1,6 +1,9 @@
 import asyncio
+import hashlib
+import inspect
 import logging
 import os
+import warnings
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -10,7 +13,9 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import ProgrammingError, SAWarning, SQLAlchemyError
+from sqlalchemy.schema import CreateIndex, CreateTable
 
 from app.api.v1.router import api_v1_router
 from app.core.config import get_settings
@@ -385,6 +390,58 @@ async def _setup_document_search_index():
         ))
 
 
+async def _migrate_source_passage_retrieval_columns():
+    """Governed-passage retrieval columns: heading and procedure on every
+    database, and on PostgreSQL the pgvector embedding with an HNSW index for
+    the semantic half of hybrid retrieval (retrieve.py)."""
+    from sqlalchemy import inspect
+
+    async with _ddl_conn() as conn:
+        def passage_columns(sync_conn) -> set[str]:
+            # SQLAlchemy does not know pgvector's "vector" type; listing the
+            # column names is all that is needed here.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SAWarning)
+                return {column["name"] for column in inspect(sync_conn).get_columns("source_passages")}
+
+        columns = await conn.run_sync(passage_columns)
+        if "heading" not in columns:
+            await conn.execute(text("ALTER TABLE source_passages ADD COLUMN heading VARCHAR NOT NULL DEFAULT ''"))
+        if "procedure" not in columns:
+            await conn.execute(text(
+                "ALTER TABLE source_passages ADD COLUMN procedure VARCHAR NOT NULL DEFAULT 'general'"
+            ))
+        if settings.is_sqlite:
+            return
+        installed = await conn.execute(text("SELECT 1 FROM pg_extension WHERE extname = 'vector'"))
+        if not installed.scalar():
+            raise RuntimeError("Enable pgvector as a database administrator before running database setup")
+        if "embedding" not in columns:
+            await conn.execute(text("ALTER TABLE source_passages ADD COLUMN embedding vector(384)"))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_source_passages_embedding "
+            "ON source_passages USING hnsw (embedding vector_cosine_ops)"
+        ))
+
+
+async def _migrate_review_loop_columns():
+    """Review loop: the draft a reviewer judges and where the case came from;
+    the key facts a reviewed answer turns into evaluation checks."""
+    from sqlalchemy import inspect
+
+    async with _ddl_conn() as conn:
+        for table, column, ddl in (
+            ("review_cases", "draft_answer", "TEXT NOT NULL DEFAULT ''"),
+            ("review_cases", "source", "VARCHAR NOT NULL DEFAULT 'escalation'"),
+            ("benchmark_cases", "key_facts", "JSON"),
+        ):
+            columns = await conn.run_sync(
+                lambda sync_conn, table=table: {c["name"] for c in inspect(sync_conn).get_columns(table)}
+            )
+            if column not in columns:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+
+
 async def _migrate_workspace_retention_columns():
     """Upgrade existing databases and backfill deadlines for existing files."""
     from sqlalchemy import inspect
@@ -678,10 +735,97 @@ async def _with_ddl_retry(step, attempts: int = 5):
             await asyncio.sleep(delay)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Lifecycle events: create tables, seed, and dispose of engine."""
-    _require_supabase_config()
+# By name, resolved when startup runs, so a step replaced after import (tests
+# patch them) is the one that actually runs.
+_SCHEMA_MIGRATIONS = (
+    "_migrate_tenant_columns", "_migrate_source_licence_columns", "_migrate_user_profile_columns",
+    "_migrate_orphan_tenant_id_not_null", "_migrate_workspace_retention_columns",
+    "_migrate_source_passage_retrieval_columns", "_migrate_review_loop_columns",
+    "_setup_document_search_index",
+)
+_SEEDS = ("_seed_defaults", "_seed_evaluation", "_seed_escalation_rules", "_seed_incidents")
+
+
+def _step(name: str):
+    return globals()[name]
+
+
+def _startup_fingerprint() -> str:
+    """What the setup steps below would apply: every table definition plus the
+    migration and seed code. Equal to the stored value means this database
+    already holds exactly that, so the steps can be skipped; any change to a
+    model, migration or seed changes it and the steps run again."""
+    # The generated PostgreSQL DDL, not repr(table): a repr embeds Python-side
+    # defaults as "<function _uuid at 0x…>", which differs in every process.
+    dialect = postgresql.dialect()
+    digest = hashlib.sha256()
+    for table in sorted(Base.metadata.tables.values(), key=lambda t: t.name):
+        digest.update(str(CreateTable(table).compile(dialect=dialect)).encode())
+        for index in sorted(table.indexes, key=lambda i: i.name or ""):
+            digest.update(str(CreateIndex(index).compile(dialect=dialect)).encode())
+    for name in (*_SCHEMA_MIGRATIONS, *_SEEDS):
+        try:
+            digest.update(inspect.getsource(_step(name)).encode())
+        except (OSError, TypeError):
+            digest.update(name.encode())  # replaced by a stub: source unavailable
+    return digest.hexdigest()
+
+
+_FINGERPRINT_READ_ATTEMPTS = 4
+
+
+async def _stored_fingerprint() -> str | None:
+    """The recorded setup fingerprint; None only when none was ever recorded.
+
+    A connection fault used to read as "never set up": one slow connection to
+    the database at boot stopped the service with "Database setup is
+    required", and under --reload it stayed down, timing out every request,
+    until a file changed. Faults are retried, then reported as what they are."""
+    last_error: Exception | None = None
+    for attempt in range(_FINGERPRINT_READ_ATTEMPTS):
+        try:
+            async with async_engine.connect() as conn:
+                row = (await conn.execute(text(
+                    "SELECT fingerprint FROM app_startup_state WHERE key = 'schema'"
+                ))).first()
+            return row[0] if row else None
+        except ProgrammingError:
+            # First boot: the state table does not exist yet, so run setup.
+            return None
+        except Exception as exc:  # noqa: BLE001 — connection faults are retried
+            last_error = exc
+            if attempt + 1 < _FINGERPRINT_READ_ATTEMPTS:
+                await asyncio.sleep(2 * (attempt + 1))
+    raise RuntimeError(
+        f"Database unreachable during startup ({type(last_error).__name__}); "
+        "check DATABASE_URL and the network, then restart."
+    ) from last_error
+
+
+async def _store_fingerprint(fingerprint: str) -> None:
+    try:
+        await _write_fingerprint(fingerprint)
+    except Exception as exc:
+        # Not recording it only means the next boot runs setup again.
+        print(f"WARNING: could not record applied startup state ({type(exc).__name__}: {exc}).")
+
+
+async def _write_fingerprint(fingerprint: str) -> None:
+    async with async_engine.begin() as conn:
+        await conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS app_startup_state "
+            "(key VARCHAR(32) PRIMARY KEY, fingerprint VARCHAR(64) NOT NULL)"
+        ))
+        await conn.execute(text("DELETE FROM app_startup_state WHERE key = 'schema'"))
+        await conn.execute(
+            text("INSERT INTO app_startup_state (key, fingerprint) VALUES ('schema', :fingerprint)"),
+            {"fingerprint": fingerprint},
+        )
+
+
+async def _apply_schema_and_seeds() -> bool:
+    """Create tables, run the idempotent migrations and seed defaults. True
+    when every step succeeded, so the result may be recorded as applied."""
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     # Each schema migration is idempotent and already applied on the first
@@ -689,31 +833,51 @@ async def lifespan(app: FastAPI):
     # (overlapping deploys), skip that step with a warning rather than let it
     # hang — the service still binds its port and comes up, and the step retries
     # cleanly on the next boot once the lock is free.
-    for _label, _step in (
-        ("migrate_tenant_columns", _migrate_tenant_columns),
-        ("migrate_source_licence_columns", _migrate_source_licence_columns),
-        ("migrate_user_profile_columns", _migrate_user_profile_columns),
-        ("migrate_orphan_tenant_id_not_null", _migrate_orphan_tenant_id_not_null),
-        ("migrate_workspace_retention_columns", _migrate_workspace_retention_columns),
-        ("setup_source_rls", _setup_source_rls),
-        ("setup_document_search_index", _setup_document_search_index),
-        ("setup_user_rls", _setup_user_rls),
-    ):
+    complete = True
+    for name in _SCHEMA_MIGRATIONS:
         try:
-            await _step()
+            await _step(name)()
         except Exception as exc:
-            print(f"WARNING: startup step {_label} skipped ({type(exc).__name__}: {exc}). "
+            complete = False
+            print(f"WARNING: startup step {name.lstrip('_')} skipped ({type(exc).__name__}: {exc}). "
                   "Service will still start; step retries on next boot.")
-    # Security policies are required before any request can be served.
-    await _with_ddl_retry(_setup_source_rls)
-    await _with_ddl_retry(_setup_user_rls)
-    _seed_defaults()
-    _seed_evaluation()
-    _seed_escalation_rules()
-    _seed_incidents()
-    await _warm_up_ml_models()
-    yield
-    await async_engine.dispose()
+    for name in _SEEDS:
+        _step(name)()
+    return complete
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Serve only an explicitly prepared database; never execute startup DDL."""
+    _require_supabase_config()
+    try:
+        if await _stored_fingerprint() != _startup_fingerprint():
+            raise RuntimeError("Database setup is required. Run python scripts/setup_database.py before starting the application.")
+        await _verify_security_policies()
+        await _warm_up_ml_models()
+        yield
+    finally:
+        await async_engine.dispose()
+
+
+async def _verify_security_policies() -> None:
+    """Read-only startup check: missing RLS fails before accepting requests."""
+    if settings.is_sqlite:
+        return
+    expected = {table: f"tenant_isolation_{table}" for table in _TENANT_SCOPED_TABLES}
+    expected.update({"users": "users_self_or_tenant_admin", "review_cases": "tenant_isolation_review_cases",
+                     "answer_feedback": "tenant_isolation_answer_feedback",
+                     "query_answer_records": "tenant_isolation_query_answer_records"})
+    async with async_engine.connect() as conn:
+        rows = (await conn.execute(text("""
+            SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity, p.polname
+            FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN pg_policy p ON p.polrelid = c.oid
+            WHERE n.nspname = 'public'
+        """))).all()
+    applied = {(table, policy) for table, enabled, forced, policy in rows if enabled and forced}
+    if any((table, policy) not in applied for table, policy in expected.items()):
+        raise RuntimeError("Required database security policies are missing. Run scripts/setup_database.py.")
 
 
 def create_app() -> FastAPI:
@@ -760,6 +924,16 @@ def create_app() -> FastAPI:
             content={"detail": "Kriton could not reach its database in time. Please try again."},
             headers={"Retry-After": "5"},
         )
+
+    @app.get("/health/version", tags=["Health"])
+    async def health_version() -> dict[str, str]:
+        from pathlib import Path
+        revision = os.getenv("APP_REVISION", "unknown")
+        if revision == "unknown":
+            revision_file = Path(__file__).resolve().parents[1] / "release_revision.txt"
+            revision = revision_file.read_text().strip() if revision_file.exists() else os.getenv("RAILWAY_GIT_COMMIT_SHA", "unknown")
+        from app.domains.evaluation.gold_set_contamination import runtime_config_hash
+        return {"revision": revision, "config_hash": runtime_config_hash(Path(__file__).resolve().parent)}
 
     @app.get("/health/live", tags=["Health"])
     async def health_live() -> dict[str, str]:

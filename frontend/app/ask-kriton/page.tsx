@@ -7,8 +7,8 @@ import {
   BookOpen,
   Bookmark,
   BriefcaseBusiness,
+  Check,
   CheckCircle2,
-  ChevronDown,
   Copy,
   Download,
   Loader2,
@@ -18,15 +18,13 @@ import {
   History,
   Lightbulb,
   PenLine,
-  RotateCcw,
+  RefreshCw,
   Share2,
-  ShieldAlert,
-  ShieldCheck,
-  ShieldOff,
   Sparkles,
   X,
 } from "lucide-react";
 import { AnswerRenderer } from "@/components/AnswerRenderer";
+import { AnswerFeedback } from "@/components/ask-kriton/AnswerFeedback";
 import { conversationHistory, splitQuestions } from "@/lib/kriton-conversation";
 import {
   askKritonStream,
@@ -39,7 +37,6 @@ import {
   type AskKritonResponse,
   type SourceCitation,
   type TaskType,
-  type RiskLevel,
   type WorkspaceDocument,
 } from "@/lib/api";
 import {
@@ -80,14 +77,6 @@ const TASK_TYPES: Array<{ value: TaskType; label: string }> = [
   { value: "document_evidence_extraction", label: "Document extraction" },
   { value: "reconciliation", label: "Reconciliation" },
 ];
-
-const RISK_STYLES: Record<RiskLevel, { badge: string; icon: typeof ShieldCheck; label: string }> = {
-  ZERO: { badge: "border-line bg-soft text-muted", icon: ShieldCheck, label: "Zero risk" },
-  LOW: { badge: "border-ok/30 bg-ok/10 text-ok", icon: ShieldCheck, label: "Low risk" },
-  MEDIUM: { badge: "border-info/30 bg-info/10 text-info", icon: ShieldCheck, label: "Medium risk" },
-  HIGH: { badge: "border-warn/30 bg-warn/10 text-warn", icon: ShieldAlert, label: "High risk" },
-  RESTRICTED: { badge: "border-bad/30 bg-bad/10 text-bad", icon: ShieldOff, label: "Restricted — blocked" },
-};
 
 const ROUTE_LABELS: Record<string, string> = {
   // LLM is deliberately absent; the per-turn label below uses actual citation
@@ -222,37 +211,6 @@ function SourceButton({ citation }: { citation: SourceCitation }) {
   );
 }
 
-/** One answer as a self-contained markdown document — the *export*, as opposed
- * to Copy. Where Copy gives the response body alone (what you paste into an
- * email), this restates the references and the governance metadata so an
- * exported answer stays attributable once it leaves the app. */
-function answerAsMarkdown(question: string, result: AskKritonResponse) {
-  const answer = result.answer;
-  if (!answer) return "";
-  const parts = [`# ${question.trim()}`, "", answerBodyOnly(answer.text)];
-
-  const visibleLimitations = answer.limitations.filter(
-    (l) => l !== "This response is for educational purposes only. Consult a qualified professional.",
-  );
-  if (visibleLimitations.length) {
-    parts.push("", "## Limitations", "", ...visibleLimitations.map((l) => `- ${l}`));
-  }
-  if (answer.citations.length) {
-    parts.push("", "## Sources", "");
-    parts.push(
-      ...answer.citations.map((c) => `- ${c.ref_id}: ${c.title}${c.url ? ` — ${c.url}` : ""}`),
-    );
-  }
-  parts.push(
-    "",
-    "---",
-    `Risk: ${result.safety.risk_level} Â· Route: ${result.route} Â· ` +
-      `Confidence: ${result.confidence_state.replaceAll("_", " ")} Â· ` +
-      `Jurisdiction: ${result.source_bundle?.jurisdiction || "Any"}`,
-  );
-  return parts.join("\n");
-}
-
 /** A whole thread as one markdown transcript — every question with its answer,
  * in order. Turns that never produced an answer (refused, escalated, still
  * loading, errored) are kept and labelled rather than dropped: a transcript
@@ -316,15 +274,6 @@ function ResponseActions({
     }
   }
 
-  function downloadAnswer() {
-    try {
-      downloadTextFile(answerAsMarkdown(question, result), safeDownloadName(question, "md"));
-      flash("download", "done");
-    } catch {
-      flash("download", "error");
-    }
-  }
-
   async function downloadArtifact(artifact: AskKritonResponse["artifacts"][number]) {
     const token = getAuthToken();
     if (!token) {
@@ -367,54 +316,63 @@ function ResponseActions({
     }
   }
 
-  const actions = [
-    { key: "copy", label: "Copy answer", doneLabel: "Copied", icon: Copy, onClick: copyAnswer, title: "Copy the answer text" },
-    { key: "download", label: "Download .md", doneLabel: "Downloaded", icon: Download, onClick: downloadAnswer, title: "Download the complete response as Markdown" },
-    { key: "save", label: "Save", doneLabel: "Saved", icon: Bookmark, onClick: saveAnswer, title: "Save this answer in Kriton" },
-    ...(onReuse
-      ? [{ key: "reuse", label: "Reuse prompt", doneLabel: "Reuse prompt", icon: RotateCcw, onClick: onReuse, title: "Put this prompt back in the composer" }]
-      : []),
+  // Icon-only, assistant-style: the action is named by its tooltip and
+  // aria-label; a check mark confirms it worked.
+  const copyAction = { key: "copy", icon: Copy, onClick: copyAnswer, title: "Copy" };
+  const trailingActions = [
+    { key: "save", icon: Bookmark, onClick: saveAnswer, title: "Save answer" },
+    ...(onReuse ? [{ key: "reuse", icon: RefreshCw, onClick: onReuse, title: "Ask again" }] : []),
   ];
+
+  function iconButton({ key, icon: Icon, onClick, title }: (typeof trailingActions)[number]) {
+    const state = status[key] ?? "idle";
+    return (
+      <button
+        key={key}
+        type="button"
+        onClick={onClick}
+        title={state === "done" ? `${title} — done` : title}
+        aria-label={title}
+        disabled={state === "busy"}
+        className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition disabled:opacity-50 ${
+          state === "error"
+            ? "bg-bad/10 text-bad"
+            : state === "done"
+              ? "text-ok"
+              : "text-muted hover:bg-soft hover:text-ink"
+        }`}
+      >
+        {state === "busy" ? (
+          <Loader2 size={16} className="animate-spin" />
+        ) : state === "done" ? (
+          <Check size={16} />
+        ) : (
+          <Icon size={16} />
+        )}
+      </button>
+    );
+  }
 
   return (
     <div className="mt-4">
       <div className="flex flex-wrap items-center gap-0.5" aria-label="Response actions">
-      {actions.map(({ key, label, doneLabel, icon: Icon, onClick, title }) => {
-        const state = status[key] ?? "idle";
-        return (
-          <button
-            key={key}
-            type="button"
-            onClick={onClick}
-            title={title}
-            aria-label={title}
-            disabled={state === "busy"}
-            className={`inline-flex h-8 min-w-8 items-center justify-center gap-1.5 rounded-lg px-2 text-[11px] font-semibold transition disabled:opacity-50 ${
-              state === "error"
-                ? "bg-bad/10 text-bad"
-                : state === "done"
-                  ? "bg-ok/10 text-ok"
-                  : "text-muted hover:bg-soft hover:text-ink"
-            }`}
-          >
-            {state === "busy" ? (
-              <Loader2 size={16} className="animate-spin" />
-            ) : state === "done" ? (
-              <CheckCircle2 size={16} />
-            ) : (
-              <Icon size={16} />
-            )}
-            <span>{state === "done" ? doneLabel : label}</span>
-          </button>
-        );
-      })}
+      {iconButton(copyAction)}
+      {result.answer && (
+        <AnswerFeedback queryId={result.query_id} question={question} answerText={result.answer.text} />
+      )}
+      {trailingActions.map(iconButton)}
       {result.answer && result.answer.citations.length > 0 && (
         <details className="group/sources basis-full sm:basis-auto">
-          <summary className="flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-muted transition hover:bg-soft hover:text-ink">
-            <BookOpen size={15} />
+          <summary
+            title={`Sources (${result.answer.citations.length})`}
+            aria-label={`Sources (${result.answer.citations.length})`}
+            className="inline-flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-muted transition hover:bg-soft hover:text-ink group-open/sources:bg-soft group-open/sources:text-ink [&::-webkit-details-marker]:hidden"
+          >
+            <BookOpen size={16} />
             Sources
-            <span className="rounded-full bg-soft px-1.5 py-0.5 text-[10px]">{uniqueCitations(result.answer.citations).length}</span>
-            <ChevronDown size={13} className="transition-transform group-open/sources:rotate-180" />
+            <span className="min-w-[18px] rounded-full bg-brand/15 px-1.5 text-center text-[10px] font-bold leading-[18px] text-brand">
+              {result.answer.citations.length}
+            </span>
           </summary>
           <div className="mt-1 w-full min-w-0 rounded-xl border border-line bg-panel p-2 shadow-lg sm:w-[420px]">
             <div className="max-h-56 overscroll-contain overflow-y-auto pr-1 [scrollbar-gutter:stable]">
@@ -573,12 +531,9 @@ function ConversationTurn({
   const { submittedQuery, result, error, errorStatus, loading } = turn;
   const followUps = useMemo(() => getFollowUpSuggestions(result, submittedQuery), [result, submittedQuery]);
   const safety = result?.safety ?? null;
-  const riskLevel = (safety?.risk_level ?? "LOW") as RiskLevel;
-  const style = safety ? RISK_STYLES[riskLevel] : null;
   const route = result?.route ?? null;
   const outcome = result?.outcome ?? null;
   const outcomeStyle = outcome ? OUTCOME_STYLES[outcome] : null;
-  const bundle = result?.source_bundle ?? null;
   const visibleLimitations = result?.answer?.limitations.filter(
     (l) => l !== "This response is for educational purposes only. Consult a qualified professional.",
   ) ?? [];
@@ -744,19 +699,6 @@ function ConversationTurn({
                 onFollowUp={onFollowUp ? (question) => onFollowUp(question, submittedQuery) : undefined}
               />
             </div>
-
-            {/* Governed-evidence details only mean something when governed
-                sources were used; "0 eligible · 63 excluded · unknown sources"
-                under every answer read as an error. The risk level stays. */}
-            {bundle && bundle.eligible_source_count > 0 ? (
-              <p className="mt-4 border-t border-line pt-3 text-[11px] text-muted">
-                {bundle.eligible_source_count} eligible
-                {bundle.excluded_source_count > 0 ? ` · ${bundle.excluded_source_count} excluded` : ""} · {result.confidence_state.replaceAll("_", " ")} confidence
-                {bundle.jurisdiction ? ` · ${bundle.jurisdiction}` : " · Any jurisdiction"} · {bundle.freshness_state} sources · {style?.label ?? "Unknown risk"}
-              </p>
-            ) : style ? (
-              <p className="mt-4 border-t border-line pt-3 text-[11px] text-muted">{style.label}</p>
-            ) : null}
           </article>
         </div>
       )}

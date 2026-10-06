@@ -30,8 +30,22 @@ from app.domains.massarius.errors import ValidationFailed
 from app.orchestration.schemas import SourceBundle, ValidationResult
 
 # ── 1. Prohibited professional claim patterns (reused from composition_validator.py) ──
+# Directive wording ("you must register", "you should pay") is personal
+# advice only when the question is about the asker's own or a client's
+# matter (risk HIGH). In a general question it describes the rule: "how long
+# do I have to register for VAT?" and "how do penalty points work?" were both
+# refused for restating HMRC's own wording. Checked only for user-specific
+# questions; the claims below are blocked whatever the question.
+_DIRECTIVE = re.compile(r"you\s+(should|must|need\s+to)\s+(file|register|pay|submit|declare)", re.IGNORECASE)
+
+def is_directive_failure(failure: str) -> bool:
+    """A validation failure raised only by directive wording on a
+    user-specific question — curable by restating the answer as general
+    guidance, unlike the other prohibited claims."""
+    return failure.startswith("Prohibited-claim detected") and _DIRECTIVE.pattern in failure
+
+
 _PROHIBITED_PATTERNS = [
-    r"you\s+(should|must|need\s+to)\s+(file|register|pay|submit|declare)",
     r"(your|the\s+company('s)?)\s+(tax\s+(liability|return)|audit\s+opinion)",
     r"i\s+(confirm|certify|guarantee|assure)\s+(that\s+)?",
     # Kriton CLAIMING its answer is professional advice/an opinion. "this is"
@@ -42,6 +56,10 @@ _PROHIBITED_PATTERNS = [
     r"(sign|signature|signed)\s+(off|on)\s+(by|as)",
 ]
 _PROHIBITED = [re.compile(p, re.IGNORECASE) for p in _PROHIBITED_PATTERNS]
+
+
+def _normalise_for_match(text: str) -> str:
+    return " ".join(re.sub(r"[\u2018\u2019]", "'", text or "").lower().split())
 
 # ── 4. Authority ceiling — absolute-authority language a non-primary source can't back ──
 _AUTHORITY_OVERREACH_PATTERNS = [
@@ -78,6 +96,8 @@ def validate_answer_or_raise(
     disclaimer_required: bool = False,
     external_source_count: int = 0,
     ungrounded_answer_allowed: bool = False,
+    evidence_text: str = "",
+    user_specific: bool = False,
 ) -> None:
     """
     Run all seven Checkpoint C checks. Raises ValidationFailed listing every
@@ -123,9 +143,16 @@ def validate_answer_or_raise(
             f"which are not present in eligible_sources."
         )
 
-    # 3. Prohibited-claim scan
-    for pattern in _PROHIBITED:
-        if pattern.search(answer_text):
+    # 3. Prohibited-claim scan. A phrase the cited evidence itself contains is
+    # the law being quoted, not advice being given: HMRC's own guidance says
+    # "You must register if…", and an answer restating it was refused as a
+    # professional sign-off. Wording with no such backing is still blocked.
+    evidence = _normalise_for_match(evidence_text)
+    for pattern in [_DIRECTIVE, *_PROHIBITED] if user_specific else _PROHIBITED:
+        if any(
+            _normalise_for_match(match.group(0)) not in evidence
+            for match in pattern.finditer(answer_text)
+        ):
             failures.append(
                 f"Prohibited-claim detected: answer contains professional-advice language "
                 f"matching pattern '{pattern.pattern}'."
@@ -189,6 +216,8 @@ def validate_answer(
     disclaimer_required: bool = False,
     external_source_count: int = 0,
     ungrounded_answer_allowed: bool = False,
+    evidence_text: str = "",
+    user_specific: bool = False,
 ) -> ValidationResult:
     """Call-site-friendly wrapper: same checks as validate_answer_or_raise(),
     but returns a ValidationResult instead of raising — matches the
@@ -200,6 +229,8 @@ def validate_answer(
             disclaimer_required=disclaimer_required,
             external_source_count=external_source_count,
             ungrounded_answer_allowed=ungrounded_answer_allowed,
+            evidence_text=evidence_text,
+            user_specific=user_specific,
         )
     except ValidationFailed as exc:
         return ValidationResult(passed=False, failures=exc.failures, degraded_route=exc.degraded_route)

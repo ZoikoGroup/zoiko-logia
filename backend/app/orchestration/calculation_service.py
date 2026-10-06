@@ -16,7 +16,7 @@ from app.domains.calculations.schemas import (
     CalculationResult, LiveObservation, NumericInput, VerifiedChartSeries, VerifiedChartSpec,
 )
 
-_NUMBER = r"(?:[$£€]\s*)?([0-9][0-9,]*(?:\.[0-9]+)?)"
+_NUMBER = r"(?:[$£€₹]\s*)?([0-9][0-9,]*(?:\.[0-9]+)?)"
 _EXPLICIT = re.compile(
     r"(?:calculate|compute|evaluate|what\s+is)\s+([0-9$£€,\.\s()+\-*/x×÷]+)", re.IGNORECASE
 )
@@ -75,6 +75,11 @@ _LOAN_PRINCIPAL = re.compile(rf"\b(?:loan|borrow(?:ed|ing)?|principal|mortgage)\
 _PRINCIPAL_THEN_LOAN = re.compile(rf"{_MONEY}\s+(?:home\s+|car\s+|personal\s+)?(?:loan|mortgage)\b", re.I)
 _ANNUAL_RATE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*%", re.I)
 _TERM = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*(years?|yrs?|months?)\b", re.I)
+# "18% GST on ₹50,000", "20% of 5,000": a percentage of a stated amount.
+_PERCENT_OF = re.compile(
+    rf"([0-9]+(?:\.[0-9]+)?)\s*%\s*(gst|vat|tds|tax|discount|commission|interest|tip)?\s*(?:on|of)\s+{_MONEY}",
+    re.I,
+)
 _SCALE = {"lakh": Decimal(100_000), "lac": Decimal(100_000), "crore": Decimal(10_000_000),
           "million": Decimal(1_000_000), "m": Decimal(1_000_000)}
 
@@ -163,40 +168,75 @@ _REVENUE_LABEL = r"revenue|(?<!of )sales"
 
 
 def _number_for_label(query: str, labels: str) -> Decimal | None:
-    match = re.search(rf"(?:{labels})(?:\s+(?:is|of))?\s*[:=]?\s*{_NUMBER}", query, re.IGNORECASE)
+    match = re.search(rf"(?:{labels})(?:\s+(?:is|are|of))?\s*[:=]?\s*{_NUMBER}", query, re.IGNORECASE)
     return Decimal(match.group(1).replace(",", "")) if match else None
 
 
 _FINANCE_FORMULA = re.compile(
     r"\b(?:compound(?:ed|ing)?|future value|present value|emi|cagr|simple interest|annuity|npv|irr|"
     r"(?:net |gross |operating )?(?:profit )?margin|break[- ]?even|payback|depreciation|"
-    r"monthly (?:payment|instal+ment)|markup|mark-up|percentage (?:change|increase|decrease))\b",
+    r"monthly (?:payment|instal+ment)|markup|mark-up|percentage (?:change|increase|decrease)|"
+    # Checking the user's own figures: "Subtotal ₹10,000, tax ₹1,800, total
+    # ₹11,500 — check the arithmetic" was treated as a tax question, sent
+    # to web search and answered "the sources provided do not state this".
+    r"(?:check|verify|recheck|validate)\s+(?:the\s+|my\s+|this\s+)?(?:arithmetic|maths?|math|totals?|sums?|calculations?)|"
+    r"reconcile|add(?:s)?\s+up)\b",
     re.I,
 )
 # Something the question expects to be LOOKED UP, not computed from its own
 # figures: a current or statutory rate, a threshold, a provision.
 _NEEDS_LOOKUP = re.compile(
-    r"\b(?:current|currently|today|latest|prevailing|this year'?s|repo|rbi|federal reserve|bank rate|"
+    # "current" alone, not "current assets/liabilities/ratio": a ratio question
+    # was taken for a rate lookup, so its calculations were refused as uncited.
+    r"\b(?:current(?!\s+(?:assets?|liabilit(?:y|ies)|ratio|account|portion))|currently|today|latest|prevailing|this year'?s|repo|rbi|federal reserve|bank rate|"
     r"tax (?:rate|slab|bracket)s?|slabs?|thresholds?|limits?|gst rate|vat rate|according to|as per|"
     r"under section|act|rules?|standard|ifrs|ind as|gaap)\b",
     re.I,
 )
 
 
-def is_self_contained_calculation(query: str) -> bool:
+_ACCOUNTING_CURRENT = re.compile(
+    r"\bcurrent\s+(?:and\s+quick\s+)?(?:assets?|liabilit(?:y|ies)|ratios?|account|portion)\b", re.I,
+)
+
+
+def needs_lookup(query: str) -> bool:
+    """The question asks for something that must be looked up — a current or
+    statutory rate, slab, threshold or provision — rather than computed."""
+    # Accounting uses of "current" are labels on the user's own figures, not
+    # a request for today's rate ("Current and quick ratio?").
+    text = _ACCOUNTING_CURRENT.sub(" ", query or "")
+    return bool(_NEEDS_LOOKUP.search(text))
+
+
+def is_self_contained_calculation(query: str, history=()) -> bool:
     """Every input is in the question and nothing needs looking up — "invest
     $10,000 at 8% compounded annually for 10 years". Web search adds nothing
     to such a question: it returned unrelated World Bank reports that were
     then cited as the answer's sources."""
-    if _NEEDS_LOOKUP.search(query):
+    if needs_lookup(query):
         return False
-    if build_calculation(query) is not None:
+    # history: a follow-up ("if cost of sales rose 10%…") whose other inputs
+    # are earlier in the conversation is just as self-contained.
+    if build_calculation(query, history) is not None:
         return True
-    numbers = re.findall(r"\d[\d,]*(?:\.\d+)?", query)
-    return len(numbers) >= 2 and bool(_FINANCE_FORMULA.search(query))
+    # "Revenue is zero and expenses are ₹15,000" states two figures; with
+    # "zero" uncounted it went to web search and cited unrelated reports.
+    numbers = re.findall(r"\d[\d,]*(?:\.\d+)?|\b(?:zero|nil)\b", query, re.I)
+    if len(numbers) >= 2 and _FINANCE_FORMULA.search(query):
+        return True
+    # A chart of figures the message supplies ("Waterfall chart: revenue 500,
+    # cost of sales −300, … tax −20") is built from them. Read as a tax
+    # question, it ran a web search, required citations for the user's own
+    # numbers and answered "the sources provided do not state this".
+    from app.orchestration.response_planner import detect_explicit_visual_request
+    return len(numbers) >= 3 and detect_explicit_visual_request(query)
 
 
 def build_calculation(query: str, history=()) -> DeterministicCalculation | None:
+    from app.orchestration.calculations.engine import asks_several_questions
+    if asks_several_questions(query):
+        return None
     expression: str | None = None
     formula_name = "Arithmetic calculation"
     inputs: list[WidgetInput] = []
@@ -242,6 +282,18 @@ def build_calculation(query: str, history=()) -> DeterministicCalculation | None
             _widget_input("annual_rate", "Annual interest rate", annual_rate, "percent"),
             _widget_input("months", "Term", Decimal(months), "months"),
         ]
+    elif (percent_of := _PERCENT_OF.search(query)) is not None:
+        rate, label = Decimal(percent_of.group(1)), (percent_of.group(2) or "").upper()
+        amount = Decimal(percent_of.group(3).replace(",", ""))
+        amount *= _SCALE.get((percent_of.group(4) or "").lower().rstrip("s"), Decimal(1))
+        expression = f"{amount} * {rate} / 100"
+        formula_name = f"{label} amount" if label else "Percentage of amount"
+        operation = "percentage"
+        output_unit = "currency"
+        inputs = [
+            _widget_input("amount", "Amount", amount, "currency"),
+            _widget_input("rate", f"{label} rate" if label else "Rate", rate, "percent"),
+        ]
     elif revenue is not None and sales_cost is not None and re.search(r"\b(?:gross profit|margin)\b", query, re.I):
         if revenue == 0:
             return None
@@ -272,7 +324,8 @@ def build_calculation(query: str, history=()) -> DeterministicCalculation | None
             _widget_input("actual", "Actual", actual, "currency"),
             _widget_input("budget", "Budget", budget, "currency"),
         ]
-    elif cost is not None and residual is not None and life is not None and re.search(r"depreciat", query, re.I):
+    elif (cost is not None and residual is not None and life is not None and re.search(r"depreciat", query, re.I)
+          and cost > residual and life > 0):
         expression = f"({cost} - {residual}) / {life}"
         formula_name = "Straight-line depreciation"
         operation = "straight_line_depreciation"
@@ -283,7 +336,10 @@ def build_calculation(query: str, history=()) -> DeterministicCalculation | None
         ]
     else:
         match = _EXPLICIT.search(query)
-        if match:
+        # An expression needs an operator between operands: "What is 18% GST
+        # on ₹50,000?" otherwise became the "calculation" 18 = 18, shown in a
+        # Verified calculation box beside the real answer (₹9,000).
+        if match and re.search(r"[\d)]\s*[+\-*/x×÷]\s*[\d(]", match.group(1)):
             expression = match.group(1).strip().rstrip("?. ")
     if not expression:
         return None
@@ -388,7 +444,10 @@ def _normalise_arithmetic(text: str) -> str:
     text = re.sub(r"[\u2010-\u2015\u2212]", "-", text)          # unicode dashes / minus sign
     # "10% ×" -> (10/100); also inside brackets and sums, so "\\frac{63.75\\%}{3}
     # = 21.75\\%" (really 21.25%) is checked instead of skipped.
-    return re.sub(r"(\d(?:[\d,]*\d)?(?:\.\d+)?)\s*%(?=\s*[*×/÷)+\-])", r"(\1/100)", text)
+    text = re.sub(r"(\d(?:[\d,]*\d)?(?:\.\d+)?)\s*%(?=\s*[*×/÷)+\-])", r"(\1/100)", text)
+    # "× 12% =" as well: "₹40,000 × 12% = ₹2,400" (really ₹4,800) was never
+    # checked, because the % sat between the expression and its "=".
+    return re.sub(r"([*×/÷]\s*)(\d(?:[\d,]*\d)?(?:\.\d+)?)\s*%", r"\1(\2/100)", text)
 
 
 _DEBIT_HEADER = re.compile(r"\b(dr|debit)\b", re.I)
@@ -461,6 +520,13 @@ def validate_answer_calculations(answer_text: str) -> list[str]:
     for match in _EQUATION.finditer(normalized):
         expression = match.group("expression").strip()
         if not any(operator in expression for operator in "+-*/×÷"):
+            continue
+        # Powers are outside what this checker evaluates, and the match
+        # starts after the exponent: "(150,000 ÷ 100,000)^(1/3) − 1 =
+        # 0.144714" (a correct CAGR) was judged as "(1/3) − 1 = -0.67", and
+        # that one false mismatch replaced a whole nine-part answer.
+        line_start = normalized.rfind("\n", 0, match.start()) + 1
+        if re.search(r"\^|\*\*", normalized[line_start:match.end()]):
             continue
         try:
             expected = _evaluate(expression)

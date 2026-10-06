@@ -76,16 +76,11 @@ def upgrade() -> None:
             postgresql_where=sa.text("content_hash <> ''"),
             sqlite_where=sa.text("content_hash <> ''"),
         )
-    if "fk_source_versions_translation" not in existing_fks:
-        op.create_foreign_key(
-            "fk_source_versions_translation", "source_versions", "source_versions",
-            ["translation_of_version_id"], ["id"],
-        )
-    if "fk_source_versions_superseded" not in existing_fks:
-        op.create_foreign_key(
-            "fk_source_versions_superseded", "source_versions", "source_versions",
-            ["superseded_by_version_id"], ["id"],
-        )
+    with op.batch_alter_table("source_versions") as batch:
+        if "fk_source_versions_translation" not in existing_fks:
+            batch.create_foreign_key("fk_source_versions_translation", "source_versions", ["translation_of_version_id"], ["id"])
+        if "fk_source_versions_superseded" not in existing_fks:
+            batch.create_foreign_key("fk_source_versions_superseded", "source_versions", ["superseded_by_version_id"], ["id"])
 
     rights_created = _create_table_if_missing(
         existing_tables,

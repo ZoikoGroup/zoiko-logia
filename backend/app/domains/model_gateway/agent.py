@@ -27,7 +27,7 @@ import hashlib
 import json
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Literal
 
 from app.domains.model_gateway.tool_registry import ToolRegistry, ToolResult
@@ -108,12 +108,22 @@ _TOOL_PARENTHETICAL = re.compile(
 _TOOL_NAME_IN_PROSE = re.compile(rf"`?\b({_TOOL_NAMES})\b`?")
 _TOOL_PLAIN_NAME = {
     "calculate": "exact calculation", "render_chart": "the chart",
+    "search_knowledge_base": "the knowledge base",
     "get_exchange_rate": "the ECB reference rates", "get_economic_indicator": "World Bank data",
     "get_market_data": "market data",
 }
 
 
+# The model narrating its own machinery: "(No chart is displayed here as tool
+# calls have been halted.)" reached a reader. Sentences about tool calls,
+# limits or budgets are removed; they describe nothing the reader asked about.
+_TOOL_META_SENTENCE = re.compile(
+    r"\(?[^.()\n]*\btool[- ]?(?:calls?|limits?|budget|use)\b[^.()\n]*[.)]?\)?\.?", re.I,
+)
+
+
 def _strip_tool_plumbing(text: str) -> str:
+    text = _TOOL_META_SENTENCE.sub("", text)
     lines: list[str] = []
     in_fence = False
     for line in text.split("\n"):
@@ -253,6 +263,8 @@ _NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 # A figure may be charted in another unit than it was stated in: "₹4.2L" as
 # 420000, $716,924,000,000 as 716.92 (billions).
 _SCALES = (1.0, 1e2, 1e3, 1e5, 1e6, 1e7, 1e9, 1e12)
+_RUNNING_TOTAL_SPAN = 24
+_RUNNING_TOTAL_MAX_NUMBERS = 400
 
 
 def _chart_values(spec: dict) -> list[float]:
@@ -280,14 +292,29 @@ def unverified_chart_values(raw_arguments: str | None, evidence: str) -> list[fl
         return []
     if not isinstance(spec, dict):
         return []
-    known = [float(token.replace(",", "")) for token in _NUMBER.findall(evidence)]
-    known = [value * scale for value in known for scale in _SCALES] + [value / scale for value in known for scale in _SCALES]
+    # "−5" (typographic minus) is a negative figure as much as "-5".
+    stated = [float(token.replace(",", "")) for token in _NUMBER.findall(evidence.replace("−", "-"))]
+    # Running totals of consecutive stated figures are derived only from
+    # them: cumulative sign-ups (100, 250, 380 …) and a waterfall's steps
+    # (500, 200, 80, 60) were rejected as invented, the model retried until
+    # the tool limit and the answer said "tool calls have been halted".
+    running: list[float] = []
+    if len(stated) <= _RUNNING_TOTAL_MAX_NUMBERS:
+        for start in range(len(stated)):
+            total = 0.0
+            for value in stated[start:start + _RUNNING_TOTAL_SPAN]:
+                total += value
+                running.append(total)
+    base = stated + running
+    known = [value * scale for value in base for scale in _SCALES] + [value / scale for value in base for scale in _SCALES]
 
     def found(value: float) -> bool:
         if value == 0:
             return True
         tolerance = max(abs(value) * 0.002, 0.006)
-        return any(abs(value - k) <= tolerance for k in known)
+        # Sign-insensitive: a loss stated as "−5" may be plotted as -5 or
+        # described as a 5 loss; the magnitude is what must be sourced.
+        return any(abs(abs(value) - abs(k)) <= tolerance for k in known)
 
     return [value for value in _chart_values(spec) if not found(float(value))]
 
@@ -354,6 +381,7 @@ async def run_agent(
     on_tool_start: ToolStartHook | None = None,
     on_tool_done: ToolDoneHook | None = None,
     chart_requested: bool = False,
+    source_ref_offset: int = 0,
 ) -> AgentOutcome:
     deadline = time.monotonic() + limits.max_seconds
     # Apply to every generation, including forced-final and recovery calls.
@@ -366,7 +394,9 @@ async def run_agent(
         "why, and no source gives the cause, say the retrieved data does not establish it — "
         "otherwise do not mention causes at all. Do not fill this gap with plausible "
         "stories about stimulus, spending, tax receipts, interest costs or GDP growth. "
-        "A debt-to-GDP ratio alone does not establish how either debt or GDP changed."
+        "A debt-to-GDP ratio alone does not establish how either debt or GDP changed. "
+        "Cite factual claims with the exact [REF-N] identifiers supplied with source evidence, "
+        "including references attached to tool results. Never invent or renumber them."
     )
     reminded_chart = False
     reminded_working = False
@@ -485,6 +515,12 @@ async def run_agent(
             elif key in fresh and key not in recorded:
                 result, duration_ms = fresh[key]
                 recorded.add(key)
+                if result.sources:
+                    reference_text = "\n\n".join(
+                        f"[REF-{source_ref_offset + len(outcome.sources) + i + 1}] {source.title}\nURL: {source.url}\n{source.snippet}"
+                        for i, source in enumerate(result.sources)
+                    )
+                    result = replace(result, content=result.content + "\n\nSource evidence:\n" + reference_text)
                 executed[key] = result
                 outcome.sources.extend(result.sources)
                 outcome.artifacts.extend(result.artifacts)

@@ -1,0 +1,392 @@
+{
+ "version": "uk-vat-1",
+ "notes": "Phase 1 knowledge-base evaluation: UK VAT questions whose answers are stated in the GOV.UK/HMRC guidance ingested by scripts/ingest_govuk.py. Run before and after ingestion (run_baseline_eval.py --only uk_vat) to measure the knowledge base. Facts as published on GOV.UK on 2026-10-01.",
+ "cases": [
+  {
+   "id": "vat-reg-threshold",
+   "category": "rates_thresholds",
+   "question": "What is the UK VAT registration threshold?",
+   "outcome": "answered",
+   "must_contain": [
+    "90,000"
+   ]
+  },
+  {
+   "id": "vat-dereg-threshold",
+   "category": "rates_thresholds",
+   "question": "Below what turnover can a business deregister from VAT in the UK?",
+   "outcome": "answered",
+   "must_contain": [
+    "88,000"
+   ]
+  },
+  {
+   "id": "vat-register-deadline",
+   "category": "procedure",
+   "question": "If my UK turnover goes over the VAT threshold, how long do I have to register?",
+   "outcome": "answered",
+   "must_contain": [
+    "30 days"
+   ]
+  },
+  {
+   "id": "vat-voluntary",
+   "category": "procedure",
+   "question": "Can I register for VAT in the UK if my turnover is below the threshold?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "voluntar"
+   ]
+  },
+  {
+   "id": "vat-rates",
+   "category": "rates_thresholds",
+   "question": "What are the UK VAT rates?",
+   "outcome": "answered",
+   "must_contain": [
+    "20%",
+    "5%"
+   ],
+   "must_contain_any": [
+    "zero",
+    "0%"
+   ],
+   "expected_source_urls": [
+    "https://www.gov.uk/vat-rates"
+   ],
+   "expect_citations": true
+  },
+  {
+   "id": "vat-domestic-fuel",
+   "category": "rates_thresholds",
+   "question": "What VAT rate applies to domestic fuel and power in the UK?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "5%",
+    "5 percent",
+    "5 per cent"
+   ],
+   "must_contain": [
+    "zero"
+   ],
+   "note": "GOV.UK VAT Notice 701/19 (updated 8 Sep 2026): reduced rate 5%, plus a temporary zero rate on domestic electricity in Great Britain from 1 Oct 2026 to 31 Mar 2027."
+  },
+  {
+   "id": "vat-child-car-seats",
+   "category": "rates_thresholds",
+   "question": "What is the VAT rate on children's car seats in the UK?",
+   "outcome": "answered",
+   "must_contain": [
+    "5%"
+   ]
+  },
+  {
+   "id": "vat-children-clothes",
+   "category": "rates_thresholds",
+   "question": "Do children's clothes have VAT in the UK?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "zero-rated",
+    "zero rated",
+    "0%"
+   ]
+  },
+  {
+   "id": "vat-hot-takeaway",
+   "category": "rates_thresholds",
+   "question": "Is hot takeaway food zero-rated for VAT in the UK?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "standard-rated",
+    "standard rated",
+    "20%"
+   ]
+  },
+  {
+   "id": "vat-return-deadline",
+   "category": "procedure",
+   "question": "What is the deadline for submitting a UK VAT return and paying the VAT?",
+   "outcome": "answered",
+   "must_contain": [
+    "7 days"
+   ],
+   "must_contain_any": [
+    "1 calendar month",
+    "one calendar month"
+   ]
+  },
+  {
+   "id": "vat-return-frequency",
+   "category": "procedure",
+   "question": "How often do UK businesses usually submit VAT returns?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "3 months",
+    "three months",
+    "quarter"
+   ]
+  },
+  {
+   "id": "vat-who-submits",
+   "category": "procedure",
+   "question": "Who can submit a VAT return for my business in the UK?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "agent",
+    "accountant"
+   ],
+   "must_not_contain": [
+    "power of attorney",
+    "claimant",
+    "handwritten"
+   ]
+  },
+  {
+   "id": "vat-mtd-software",
+   "category": "procedure",
+   "question": "Do I need special software to file VAT returns in the UK?",
+   "outcome": "answered",
+   "must_contain": [
+    "Making Tax Digital"
+   ],
+   "must_contain_any": [
+    "compatible software",
+    "software"
+   ]
+  },
+  {
+   "id": "vat-digital-records",
+   "category": "procedure",
+   "question": "What records must I keep digitally under Making Tax Digital for VAT?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "digital records",
+    "digitally"
+   ]
+  },
+  {
+   "id": "vat-records-years",
+   "category": "rates_thresholds",
+   "question": "How long must I keep VAT records in the UK?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "6 years",
+    "six years"
+   ],
+   "expected_source_urls": [
+    "https://www.gov.uk/charge-reclaim-record-vat"
+   ],
+   "expect_citations": true,
+   "note": "gov.uk/vat-record-keeping now 301-redirects to /charge-reclaim-record-vat; the retention rule is on its 'Keeping VAT records' page."
+  },
+  {
+   "id": "vat-invoice-contents",
+   "category": "procedure",
+   "question": "What must a valid UK VAT invoice include?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "VAT registration number"
+   ]
+  },
+  {
+   "id": "vat-reclaim",
+   "category": "procedure",
+   "question": "Can a VAT-registered business reclaim VAT on business purchases in the UK?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "reclaim"
+   ]
+  },
+  {
+   "id": "vat-frs-join",
+   "category": "rates_thresholds",
+   "question": "What is the turnover limit to join the VAT Flat Rate Scheme?",
+   "outcome": "answered",
+   "must_contain": [
+    "150,000"
+   ],
+   "expected_source_urls": [
+    "https://www.gov.uk/vat-flat-rate-scheme"
+   ],
+   "expect_citations": true
+  },
+  {
+   "id": "vat-frs-leave",
+   "category": "rates_thresholds",
+   "question": "When must a business leave the VAT Flat Rate Scheme?",
+   "outcome": "answered",
+   "must_contain": [
+    "230,000"
+   ],
+   "expected_source_urls": [
+    "https://www.gov.uk/vat-flat-rate-scheme"
+   ],
+   "expect_citations": true
+  },
+  {
+   "id": "vat-frs-limited-cost",
+   "category": "rates_thresholds",
+   "question": "What flat rate percentage does a limited cost trader use?",
+   "outcome": "answered",
+   "must_contain": [
+    "16.5%"
+   ],
+   "expected_source_urls": [
+    "https://www.gov.uk/vat-flat-rate-scheme"
+   ],
+   "expect_citations": true
+  },
+  {
+   "id": "vat-cash-accounting",
+   "category": "rates_thresholds",
+   "question": "What is the turnover limit for the VAT Cash Accounting Scheme?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "1.35 million",
+    "1,350,000"
+   ],
+   "expected_source_urls": [
+    "https://www.gov.uk/vat-cash-accounting-scheme"
+   ],
+   "expect_citations": true
+  },
+  {
+   "id": "vat-annual-accounting",
+   "category": "procedure",
+   "question": "How many VAT returns do I submit under the Annual Accounting Scheme?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "one VAT return",
+    "1 VAT return",
+    "one return",
+    "once a year"
+   ],
+   "expected_source_urls": [
+    "https://www.gov.uk/vat-annual-accounting-scheme"
+   ],
+   "expect_citations": true
+  },
+  {
+   "id": "vat-late-submission-points",
+   "category": "penalties",
+   "question": "How do penalty points work for late VAT returns if I file quarterly?",
+   "outcome": "answered",
+   "must_contain": [
+    "4"
+   ],
+   "must_contain_any": [
+    "£200",
+    "200"
+   ]
+  },
+  {
+   "id": "vat-late-payment",
+   "category": "penalties",
+   "question": "What penalty applies if I pay my VAT 20 days late?",
+   "outcome": "answered",
+   "must_contain": [
+    "3%"
+   ],
+   "note": "GOV.UK (2026-10-01): first late payment penalty 3% of the VAT owed at day 15. Was 2% before April 2025; the first version of this case wrongly expected 2%."
+  },
+  {
+   "id": "vat-reverse-charge",
+   "category": "procedure",
+   "question": "Under the VAT domestic reverse charge for construction, who accounts for the VAT?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "customer",
+    "contractor",
+    "recipient"
+   ]
+  },
+  {
+   "id": "vat-refund-non-uk-form",
+   "category": "refunds",
+   "question": "Which form does a non-UK business use to claim a refund of UK VAT?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "VAT65A",
+    "VAT 65A"
+   ],
+   "must_not_contain": [
+    "VAT126",
+    "VAT 126"
+   ]
+  },
+  {
+   "id": "vat-refund-non-uk-deadline",
+   "category": "refunds",
+   "question": "What is the deadline for a non-UK business to claim a UK VAT refund?",
+   "outcome": "answered",
+   "must_contain": [
+    "31 December"
+   ]
+  },
+  {
+   "id": "vat-refund-unregistered-org",
+   "category": "refunds",
+   "question": "Which form does a UK organisation that is not registered for VAT use to claim a VAT refund?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "VAT126",
+    "VAT 126"
+   ]
+  },
+  {
+   "id": "vat-mtd-agent-steps",
+   "category": "procedure",
+   "question": "As an accountant, what do I need to do before I can submit VAT returns for a client under Making Tax Digital?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "authorise",
+    "authorisation",
+    "agent services account"
+   ],
+   "must_not_contain": [
+    "power of attorney"
+   ]
+  },
+  {
+   "id": "vat-restaurant",
+   "category": "rates_thresholds",
+   "question": "Must a UK restaurant charge VAT on food eaten on its premises?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "standard-rated",
+    "standard rated",
+    "20%",
+    "must always charge VAT"
+   ]
+  },
+  {
+   "id": "vat-cash-accounting-leave",
+   "category": "rates_thresholds",
+   "question": "At what turnover must a business leave the VAT Cash Accounting Scheme?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "1.6 million",
+    "1,600,000"
+   ],
+   "note": "From the held-out set. Known failure: answers merge HMRC's '£1.35m in the last 3 months → pay straight away' rule into the exit rule and omit the £1.6m exit threshold; claim verification judges each sentence defensible.",
+   "expected_source_urls": [
+    "https://www.gov.uk/vat-cash-accounting-scheme"
+   ],
+   "expect_citations": true
+  },
+  {
+   "id": "vat-sanitary",
+   "category": "rates_thresholds",
+   "question": "What VAT rate applies to women's sanitary products in the UK?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "zero-rated",
+    "zero rated",
+    "0%",
+    "zero percent",
+    "zero per cent"
+   ],
+   "note": "From the held-out set. VAT Notice 700 §29.3.14 still describes these as reduced-rated; Notice 701/18 (ingested) gives the zero rate from 1 January 2021."
+  }
+ ]
+}

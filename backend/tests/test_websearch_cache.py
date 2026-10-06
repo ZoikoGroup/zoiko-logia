@@ -374,3 +374,23 @@ def test_a_page_about_a_different_procedure_is_not_a_source():
     )
     assert not websearch._is_relevant("Who can sign off a VAT return in the UK?", refund_page)
     assert websearch._is_relevant("How do I claim a VAT refund as a non-UK business?", refund_page)
+
+
+def test_a_slow_sub_question_does_not_discard_the_others(monkeypatch):
+    monkeypatch.setattr(websearch, "_SUB_SEARCH_TIMEOUT_SECONDS", 0.2)
+
+    async def fake_search(part, **kwargs):
+        if "slow" in part:
+            await asyncio.sleep(1)
+        return [WebSource(title=part, url=f"https://www.gov.uk/{abs(hash(part))}", snippet=part)]
+
+    monkeypatch.setattr(websearch, "web_search", fake_search)
+    results = asyncio.run(websearch.web_search_each("What is the fast answer? What is the slow answer?"))
+    assert [s.title for s in results] == ["What is the fast answer?"]
+
+
+def test_question_count_sees_past_the_search_cap():
+    message = " ".join(f"What is rule number {n} for VAT?" for n in range(1, 11))
+    assert websearch.question_count(message) == 10
+    assert len(websearch.sub_questions(message)) == websearch.MAX_SUB_QUESTIONS
+    assert websearch.question_count("What is the UK VAT rate?") == 1

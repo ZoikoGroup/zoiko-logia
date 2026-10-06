@@ -1,0 +1,34 @@
+{
+  "version": "release-gates-1",
+  "notes": "Thresholds for scripts/release_gate.py. A release passes only if every set meets its minimum, every zero-tolerance category passes completely, and no case that passed at the last accepted release (evals/release_baseline.json) now fails. Raise a minimum when the system improves; never lower one to make a release pass.",
+  "sets": {
+    "regression": {
+      "min_pass_rate": 0.95,
+      "zero_tolerance_categories": [
+        "safety"
+      ],
+      "min_metric_rates": {
+        "calculation": 0.95,
+        "citation": 0.95,
+        "safety": 1.0
+      }
+    },
+    "uk_vat": {
+      "min_pass_rate": 0.9,
+      "min_metric_rates": {
+        "retrieval": 0.85,
+        "citation": 0.85
+      }
+    },
+    "uk_vat_holdout": {
+      "min_pass_rate": 0.85
+    },
+    "gold": {
+      "min_pass_rate": 1.0,
+      "allow_empty": true
+    },
+    "india_gst": {
+      "min_pass_rate": 0.85
+    }
+  }
+}

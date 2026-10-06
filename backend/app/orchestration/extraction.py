@@ -92,6 +92,28 @@ def extract_arrow_chain(query: str) -> ExtractedGraph | None:
     return ExtractedGraph(nodes=nodes, edges=edges)
 
 
+def _arrow_statement(statement: str) -> ExtractedGraph | None:
+    """One "condition → outcome" statement whose labels hold amounts:
+    "turnover over £90,000 in 12 months → must register" was rejected by the
+    chain pattern's label characters (no £ or comma), so a three-branch VAT
+    decision kept only its last branch. The lead-in before a colon
+    ("Diagram the UK VAT registration decision:") is not a label."""
+    text = statement.strip().rstrip(".!?")
+    head, colon, tail = text.partition(":")
+    if colon and not _ARROW_SPLIT.search(head):
+        text = tail
+    if not _ARROW_SPLIT.search(text):
+        return None
+    parts = [part.strip() for part in _ARROW_SPLIT.split(text)]
+    if len(parts) < 2 or any(
+        not part or len(part) > _MAX_LABEL_LEN or not re.search(r"[A-Za-z]", part) for part in parts
+    ):
+        return None
+    nodes = list(dict.fromkeys(parts))
+    edges = [ExtractedEdge(source=parts[i], target=parts[i + 1], type="next") for i in range(len(parts) - 1)]
+    return ExtractedGraph(nodes=nodes, edges=edges)
+
+
 def extract_arrow_statements(query: str) -> ExtractedGraph | None:
     """Merge semicolon/newline-separated arrow statements such as
     ``A -> B; B -> C`` without inferring any unstated edge."""
@@ -99,7 +121,7 @@ def extract_arrow_statements(query: str) -> ExtractedGraph | None:
     seen: set[str] = set()
     edges: list[ExtractedEdge] = []
     for statement in re.split(r"[;\n]+", query or "")[:_MAX_NODES]:
-        graph = extract_arrow_chain(statement.strip())
+        graph = extract_arrow_chain(statement.strip()) or _arrow_statement(statement)
         if graph is None:
             continue
         for node in graph.nodes:
@@ -180,10 +202,65 @@ _RELATION_CLAUSE = re.compile(
 )
 
 
+_COUNT_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+                "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+_LIST_CLAUSE = re.compile(
+    r"^\s*([A-Z][\w&-]*(?:\s+[A-Z][\w&-]*){0,3})\s+(%s)\s+(.+?)\s*$"
+    % "|".join(re.escape(v) for v in _RELATION_VERBS),
+)
+
+
+def _targets(text: str) -> list[str] | None:
+    """"Finance Manager and Tax Manager", "two Accountants", "one Tax
+    Analyst" -> node names. A count of n makes n numbered nodes, so nothing
+    is added that the message did not state; anything else is refused."""
+    names: list[str] = []
+    for item in re.split(r"\s*,\s*(?:and\s+)?|\s+and\s+", text.strip()):
+        match = re.fullmatch(r"(?:(\d{1,2}|%s)\s+)?([A-Z][\w&-]*(?:\s+[A-Z][\w&-]*){0,3})"
+                             % "|".join(_COUNT_WORDS), item.strip(), re.I)
+        if not match or not match.group(2)[0].isupper():
+            return None
+        count_text, name = match.group(1), match.group(2)
+        count = int(count_text) if count_text and count_text.isdigit() else _COUNT_WORDS.get((count_text or "one").lower(), 1)
+        if count > 1:
+            singular = re.sub(r"s$", "", name)
+            names += [f"{singular} {n}" for n in range(1, count + 1)]
+        else:
+            names.append(name)
+    return names or None
+
+
+def extract_relation_lists(query: str) -> ExtractedGraph | None:
+    """"CFO manages Finance Manager and Tax Manager; Finance Manager manages
+    two Accountants; …" — one relation per clause, each with one or more
+    targets. The single-target clause pattern kept only "CFO manages
+    Finance Manager", so the org chart was never drawn."""
+    body = query or ""
+    if ":" in body:
+        body = body.split(":", 1)[1]
+    nodes: list[str] = []
+    edges: list[ExtractedEdge] = []
+    for clause in re.split(r"[;\n]+|\.\s+", body):
+        match = _LIST_CLAUSE.match(clause.strip().rstrip("."))
+        if not match:
+            continue
+        source, verb, targets = match.group(1), match.group(2), _targets(match.group(3))
+        if targets is None:
+            return None
+        for name in (source, *targets):
+            if name not in nodes:
+                nodes.append(name)
+        edges += [ExtractedEdge(source=source, target=t, type=verb.replace(" ", "_")) for t in targets]
+    return ExtractedGraph(nodes=nodes[:_MAX_NODES], edges=edges[:_MAX_NODES]) if len(edges) >= 2 else None
+
+
 def extract_relation_clauses(query: str) -> ExtractedGraph | None:
     """Finds "A <relation-verb> B" clauses using a fixed verb vocabulary.
     Returns None if none matched — never infers a relationship type that
     wasn't stated."""
+    listed = extract_relation_lists(query)
+    if listed is not None:
+        return listed
     q = query or ""
     matches = list(_RELATION_CLAUSE.finditer(q))
     if not matches:

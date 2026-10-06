@@ -168,9 +168,11 @@ def build_default_registry() -> ToolRegistry:
     from app.domains.model_gateway.tools.chart_tool import RENDER_CHART_TOOL
     from app.domains.model_gateway.tools.economic_tool import ECONOMIC_INDICATOR_TOOL
     from app.domains.model_gateway.tools.fx_tool import EXCHANGE_RATE_TOOL
+    from app.domains.model_gateway.tools.kb_tool import KNOWLEDGE_BASE_TOOL
     from app.domains.model_gateway.tools.market_tool import MARKET_DATA_TOOL
 
     registry = ToolRegistry()
-    for spec in (EXCHANGE_RATE_TOOL, ECONOMIC_INDICATOR_TOOL, MARKET_DATA_TOOL, CALCULATE_TOOL, RENDER_CHART_TOOL):
+    for spec in (KNOWLEDGE_BASE_TOOL, EXCHANGE_RATE_TOOL, ECONOMIC_INDICATOR_TOOL, MARKET_DATA_TOOL,
+                 CALCULATE_TOOL, RENDER_CHART_TOOL):
         registry.register(spec)
     return registry

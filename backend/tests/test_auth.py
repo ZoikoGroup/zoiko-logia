@@ -21,6 +21,8 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
+
+from tests.db_guard import integration_db_allowed, require_isolated_database
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives import serialization
 import jwt
@@ -383,7 +385,7 @@ async def _count_visible_users(user_id: str, tenant_id: str) -> list[str]:
 
 @pytest.mark.integration
 @pytest.mark.skipif(
-    os.getenv("RUN_DB_INTEGRATION_TESTS") != "1",
+    not integration_db_allowed(),
     reason="set RUN_DB_INTEGRATION_TESTS=1 with an isolated Postgres database",
 )
 async def test_non_admin_cannot_read_another_users_row() -> None:

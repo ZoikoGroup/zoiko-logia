@@ -267,6 +267,51 @@ async def fetch_fx_rates(base_cur: str, quote_curs: list[str], amount: float = 1
     return [_build_source(match) for match in await _fetch_matches(base_cur, quote_curs, amount)]
 
 
+async def fetch_fx_history(base_cur: str, quote_cur: str, months: int) -> WebSource | None:
+    """Month-end ECB reference rates for the last `months` months, crossed
+    through the EUR table like _fetch_matches. "Chart the USD to INR exchange
+    rate over the last 12 months" was answered "unable to retrieve a
+    historical series": only the latest rate was ever fetched. Each month
+    keeps its last published rate, and every value is in the snippet, so the
+    chart check can verify each plotted point. None on any failure."""
+    from datetime import date, timedelta
+
+    months = max(1, min(int(months), 60))
+    end = date.today()
+    start = (end.replace(day=1) - timedelta(days=31 * (months - 1))).replace(day=1)
+    symbols = sorted({base_cur, quote_cur} - {"EUR"})
+    url = f"{_frankfurter_base()}/{start.isoformat()}..{end.isoformat()}"
+    if symbols:
+        url += f"?symbols={','.join(symbols)}"
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            daily = resp.json().get("rates") or {}
+    except Exception:
+        return None
+    month_end: dict[str, float] = {}
+    for day in sorted(daily):
+        per_euro = {"EUR": 1.0, **{code: float(value) for code, value in daily[day].items()}}
+        if per_euro.get(base_cur) and quote_cur in per_euro:
+            month_end[day[:7]] = per_euro[quote_cur] / per_euro[base_cur]
+    series = [(month, round(rate, 4)) for month, rate in sorted(month_end.items())][-months:]
+    if len(series) < 2:
+        return None
+    listing = "; ".join(f"{month}: {rate:g}" for month, rate in series)
+    return WebSource(
+        title=f"Frankfurter — {base_cur}/{quote_cur} month-end exchange rates ({series[0][0]} to {series[-1][0]})",
+        url=f"{_frankfurter_base()}/{start.isoformat()}..{end.isoformat()}?base={base_cur}&symbols={quote_cur}",
+        snippet=(
+            f"ECB reference rates (Frankfurter), last published rate of each month, "
+            f"{quote_cur} per 1 {base_cur}: {listing}."
+        ),
+        provider="Frankfurter (ECB reference rates)",
+        freshness="daily",
+        series=series,
+    )
+
+
 async def _find_rate(query: str) -> RateMatch | None:
     """The single matched rate for a two-currency question, or None. The sole
     source of truth both fetch_fx() and the structured evidence path build

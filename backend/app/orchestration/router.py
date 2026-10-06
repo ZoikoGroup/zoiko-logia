@@ -15,8 +15,10 @@ import json
 import logging
 from contextlib import suppress
 
-from typing import Optional
+from datetime import datetime
+from typing import Literal, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from pydantic import BaseModel, Field
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
@@ -25,7 +27,10 @@ from app.core.database import get_db, get_sync_db
 from app.core.rate_limit import limiter
 from app.core.supabase_auth import verify_token
 from app.domains.identity.models import User
-from app.domains.identity.rbac import get_current_user
+from app.domains.identity.permissions import REVIEW_READ, REVIEW_RESOLVE
+from app.domains.identity.rbac import get_current_user, require_permission
+from app.orchestration import review
+from app.orchestration.audit_events import audit_answer_feedback, audit_review_resolved
 from app.orchestration.schemas import AskKritonRequest, AskKritonResponse, TaskSpec, VisualizationTelemetryEvent
 from app.orchestration.service import ask_kriton
 from app.orchestration.visualization.frontend_telemetry import log_frontend_interaction
@@ -253,3 +258,142 @@ async def post_ask_stream(
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
     )
+
+
+# ── Review loop: feedback, review queue, gold cases (app/orchestration/review.py) ──
+
+class AnswerFeedbackIn(BaseModel):
+    query_id: str = Field(min_length=1, max_length=100)
+    rating: Literal["up", "down"]
+    reasons: list[str] = Field(default_factory=list, max_length=9)
+    comment: str = Field(default="", max_length=2000)
+    # The question and the answer the user saw: answers are not stored
+    # server-side, and the reviewer needs both to correct it.
+    question: str = Field(default="", max_length=4000)
+    answer_text: str = Field(default="", max_length=20000)
+
+
+class AnswerFeedbackOut(BaseModel):
+    id: str
+    rating: str
+    review_case_id: Optional[str] = None
+
+
+class ReviewCaseOut(BaseModel):
+    id: str
+    query_id: str
+    question: str
+    draft_answer: str
+    reason: str
+    risk_level: str
+    source: str
+    status: str
+    created_at: datetime
+    reviewer_decision: Optional[str] = None
+    review_note: str = ""
+    resolved_at: Optional[datetime] = None
+
+
+class ReviewQueueOut(BaseModel):
+    cases: list[ReviewCaseOut]
+    counts: dict[str, int]
+
+
+class ReviewResolutionIn(BaseModel):
+    decision: Literal["approved", "corrected", "rejected", "needs_evidence"]
+    note: str = Field(default="", max_length=4000)
+    corrected_answer: str = Field(default="", max_length=20000)
+    # Facts a correct answer must state ("£90,000", "VAT65A"); they become the
+    # evaluation checks for this question.
+    key_facts: list[str] = Field(default_factory=list, max_length=10)
+    category: Literal["retrieval", "citation", "calculation", "jurisdiction", "freshness", "reasoning", "safety", "off_domain", "missing_context", "visualization"] = "reasoning"
+
+
+class ReviewResolutionOut(BaseModel):
+    case: ReviewCaseOut
+    gold_case_id: Optional[str] = None
+
+
+def _case_out(case) -> ReviewCaseOut:
+    return ReviewCaseOut(
+        id=case.id, query_id=case.query_id, question=case.query_text, draft_answer=case.draft_answer,
+        reason=case.reason, risk_level=case.risk_level, source=case.source, status=case.status,
+        created_at=case.created_at, reviewer_decision=case.reviewer_decision,
+        review_note=case.review_note, resolved_at=case.resolved_at,
+    )
+
+
+@router.post("/feedback", response_model=AnswerFeedbackOut, status_code=201)
+@limiter.limit("60/minute", key_func=_user_key)
+async def post_answer_feedback(
+    request: Request,
+    payload: AnswerFeedbackIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> AnswerFeedbackOut:
+    """Rate an answer. A thumbs-down opens a review case for a reviewer."""
+    try:
+        feedback = await review.record_feedback(
+            db, tenant_id=current_user.tenant_id, user_id=current_user.id, query_id=payload.query_id,
+            rating=payload.rating, reasons=payload.reasons, comment=payload.comment.strip(),
+            question=payload.question, answer_text=payload.answer_text,
+        )
+    except review.ReviewError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    await audit_answer_feedback(
+        db, query_id=payload.query_id, tenant_id=current_user.tenant_id, actor_id=current_user.id,
+        rating=feedback.rating, reasons=feedback.reasons, review_case_id=feedback.review_case_id,
+    )
+    return AnswerFeedbackOut(id=feedback.id, rating=feedback.rating, review_case_id=feedback.review_case_id)
+
+
+@router.get("/review-cases", response_model=ReviewQueueOut)
+async def get_review_cases(
+    status_filter: Literal["open", "needs_evidence", "resolved", "all"] = "open",
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission(REVIEW_READ)),
+) -> ReviewQueueOut:
+    cases = await review.list_review_cases(
+        db, tenant_id=current_user.tenant_id, status=status_filter, limit=max(1, min(limit, 200)),
+    )
+    return ReviewQueueOut(
+        cases=[_case_out(case) for case in cases],
+        counts=await review.review_counts(db, tenant_id=current_user.tenant_id),
+    )
+
+
+@router.post("/review-cases/{case_id}/resolve", response_model=ReviewResolutionOut)
+async def resolve_review_case(
+    case_id: str,
+    payload: ReviewResolutionIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission(REVIEW_RESOLVE)),
+) -> ReviewResolutionOut:
+    """Approve, correct or reject. Approved and corrected answers become gold
+    evaluation cases."""
+    try:
+        case, gold = await review.resolve_review_case(
+            db, tenant_id=current_user.tenant_id, case_id=case_id, reviewer_id=current_user.id,
+            decision=payload.decision, note=payload.note, corrected_answer=payload.corrected_answer,
+            key_facts=payload.key_facts, category=payload.category,
+        )
+    except review.ReviewError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT if "already" in str(exc) else 422, detail=str(exc))
+    await audit_review_resolved(
+        db, query_id=case.query_id, correlation_id=case.correlation_id, tenant_id=current_user.tenant_id,
+        actor_id=current_user.id, review_case_id=case.id, decision=payload.decision,
+        gold_case_id=gold.id if gold else None,
+    )
+    return ReviewResolutionOut(case=_case_out(case), gold_case_id=gold.id if gold else None)
+
+
+@router.get("/review-cases/{case_id}/evidence")
+async def get_review_evidence(
+    case_id: str, db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission(REVIEW_READ)),
+) -> list[dict]:
+    try:
+        return await review.review_evidence(db, tenant_id=current_user.tenant_id, case_id=case_id)
+    except review.ReviewError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))

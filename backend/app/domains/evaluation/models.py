@@ -1,8 +1,13 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base
+
+
+def _utcnow_naive() -> datetime:
+    # The columns are timezone-naive UTC; datetime.utcnow() is deprecated.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class EvaluationDataset(Base):
@@ -13,7 +18,8 @@ class EvaluationDataset(Base):
     version = Column(String, nullable=False)
     status = Column(String, default="ACTIVE")  # PROPOSED, ACTIVE, RETIRED, QUARANTINED
     domain = Column(String, nullable=False)    # accounting, tax, safety, etc.
-    created_at = Column(DateTime, default=datetime.utcnow)
+    tenant_id = Column(String, nullable=True, index=True)
+    created_at = Column(DateTime, default=_utcnow_naive)
 
     cases = relationship("BenchmarkCase", back_populates="dataset", cascade="all, delete-orphan")
 
@@ -29,7 +35,12 @@ class BenchmarkCase(Base):
     source_refs = Column(JSON, nullable=True)     # list of expected source_version_ids
     risk_scope = Column(String, nullable=False)    # LOW, MEDIUM, HIGH, RESTRICTED
     jurisdiction = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    # Facts a correct answer must state, written by the reviewer who approved
+    # or corrected it; scripts/run_baseline_eval.py --only gold checks them.
+    key_facts = Column(JSON, nullable=True)
+    tenant_id = Column(String, nullable=True, index=True)
+    category = Column(String, nullable=False, default="reasoning")
+    created_at = Column(DateTime, default=_utcnow_naive)
 
     dataset = relationship("EvaluationDataset", back_populates="cases")
 
@@ -45,7 +56,7 @@ class ThresholdSet(Base):
     zero_tolerance_metrics = Column(JSON, nullable=True)# list: metrics requiring 100% pass (e.g. pii_leak)
     owner = Column(String, nullable=False)
     approver = Column(String, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow_naive)
 
 
 class EvaluationRun(Base):
@@ -58,7 +69,7 @@ class EvaluationRun(Base):
     config_hash = Column(String, nullable=False)       # Hash of settings/prompts under evaluation
     status = Column(String, default="RUNNING")         # RUNNING, COMPLETED, FAILED
     metrics_summary = Column(JSON, nullable=True)      # dict: metric -> value
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow_naive)
 
     result_pack = relationship("ResultPack", back_populates="run", uselist=False, cascade="all, delete-orphan")
 
@@ -73,7 +84,7 @@ class ResultPack(Base):
     contamination_scan_status = Column(String, default="PASSED") # PASSED, FAILED
     zero_tolerance_passed = Column(Boolean, default=True)
     promotion_eligible = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow_naive)
 
     run = relationship("EvaluationRun", back_populates="result_pack")
     authorizations = relationship("PromotionAuthorization", back_populates="result_pack", cascade="all, delete-orphan")
@@ -88,6 +99,6 @@ class PromotionAuthorization(Base):
     decision = Column(String, nullable=False)          # APPROVED, REJECTED
     approver_id = Column(String, nullable=False)
     residual_risk_accepted = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow_naive)
 
     result_pack = relationship("ResultPack", back_populates="authorizations")

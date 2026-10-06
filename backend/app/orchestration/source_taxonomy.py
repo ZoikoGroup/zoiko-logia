@@ -189,6 +189,23 @@ _TRUSTED_DOMAINS: dict[str, dict[str, list[str]]] = {
         ECONOMY: ["mospi.gov.in", "rbi.org.in", "indiabudget.gov.in"],
         ACADEMIC: ["icai.org"],
     },
+    # Tax authorities only: other topics fall back to the GLOBAL bodies. With
+    # no entry, "What is the standard VAT rate in Saudi Arabia?" was searched
+    # on oecd.org alone, whose reports do not state current rates, and the
+    # answer either escalated or said the sources did not state it.
+    "SAUDI_ARABIA": {TAX: ["zatca.gov.sa", "mof.gov.sa"], ECONOMY: ["stats.gov.sa", "sama.gov.sa"]},
+    "BAHRAIN": {TAX: ["nbr.gov.bh"]},
+    "OMAN": {TAX: ["taxoman.gov.om"]},
+    "QATAR": {TAX: ["gta.gov.qa"]},
+    "SINGAPORE": {TAX: ["iras.gov.sg", "mof.gov.sg"], ECONOMY: ["singstat.gov.sg", "mas.gov.sg"]},
+    "MALAYSIA": {TAX: ["customs.gov.my", "hasil.gov.my"]},
+    "AUSTRALIA": {TAX: ["ato.gov.au", "legislation.gov.au"], ECONOMY: ["abs.gov.au", "rba.gov.au"]},
+    "NEW_ZEALAND": {TAX: ["ird.govt.nz"], ECONOMY: ["stats.govt.nz", "rbnz.govt.nz"]},
+    "CANADA": {TAX: ["canada.ca"], ECONOMY: ["statcan.gc.ca", "bankofcanada.ca"]},
+    "IRELAND": {TAX: ["revenue.ie", "gov.ie"], ECONOMY: ["cso.ie", "centralbank.ie"]},
+    "GERMANY": {TAX: ["bundesfinanzministerium.de"], ECONOMY: ["destatis.de", "bundesbank.de"]},
+    "FRANCE": {TAX: ["impots.gouv.fr", "economie.gouv.fr", "service-public.gouv.fr"], ECONOMY: ["insee.fr", "banque-france.fr"]},
+    "SOUTH_AFRICA": {TAX: ["sars.gov.za"], ECONOMY: ["statssa.gov.za", "resbank.co.za"]},
 }
 
 
@@ -208,12 +225,53 @@ def _jurisdiction_key(jurisdiction: str) -> str:
 # time so "united states" wins over "us", and "\b" anchors so the "us" in
 # "business" or the "in" in "india" never match.
 _JURISDICTION_ALIASES: dict[str, tuple[str, ...]] = {
-    "US": ("united states", "u.s.a.", "u.s.", "usa", "us", "america", "american", "federal"),
-    "UK": ("united kingdom", "great britain", "britain", "british", "england", "uk"),
-    "INDIA": ("india", "indian", "bharat"),
+    # Institutions, forms and regimes that exist only in one country: "What
+    # is the 2026 Social Security wage base?", "TDS under section 194J",
+    # "CARO 2020", "FRS 102" and "RBI repo rate" name no country and were
+    # searched on ilo.org / oecd.org / iaasb.org / ifrs.org / imf.org.
+    "US": ("united states", "u.s.a.", "u.s.", "usa", "us", "america", "american", "federal",
+           "irs", "fica", "social security", "medicare", "w-2", "1099", "us gaap", "fasb", "pcaob"),
+    "UK": ("united kingdom", "great britain", "britain", "british", "england", "uk",
+           "hmrc", "paye", "national insurance", "frs 102", "frs 105", "frc", "companies house",
+           # "What is the Employment Allowance for 2026?" was answered from
+           # Spanish tax law. UK-only payroll and tax terms:
+           "employment allowance", "statutory sick pay", "ssp", "statutory maternity pay",
+           "national minimum wage", "national living wage", "self assessment", "p60", "p45", "p11d",
+           "making tax digital", "mtd"),
+    # Terms only India's GST and number system use: "What is the late fee for
+    # filing GSTR-3B late?" names no country and was searched on IMF pages.
+    # Plain "GST" is not one — Australia, Singapore and others levy it too.
+    "INDIA": ("india", "indian", "bharat", "gstr", "cgst", "sgst", "igst", "utgst",
+              "gstin", "cbic", "lakh", "lakhs", "crore", "crores",
+              "tds", "tcs", "itr", "cbdt", "ind as", "caro", "icai", "rbi", "sebi", "epf", "epfo",
+              "esic", "new tax regime", "old tax regime", "new regime", "old regime"),
     "EU": ("european union", "eurozone", "euro area", "eu"),
     "UAE": ("united arab emirates", "uae", "dubai", "abu dhabi", "emirates"),
+    "SAUDI_ARABIA": ("saudi arabia", "saudi", "ksa"),
+    "BAHRAIN": ("bahrain",),
+    "OMAN": ("oman",),
+    "QATAR": ("qatar",),
+    "SINGAPORE": ("singapore",),
+    "MALAYSIA": ("malaysia", "malaysian"),
+    "AUSTRALIA": ("australia", "australian"),
+    "NEW_ZEALAND": ("new zealand",),
+    "CANADA": ("canada", "canadian"),
+    "IRELAND": ("republic of ireland", "ireland", "irish"),
+    "GERMANY": ("germany", "german"),
+    "FRANCE": ("france", "french"),
+    "SOUTH_AFRICA": ("south africa", "south african"),
 }
+# Terms more than one country uses, counted only when the question names no
+# other country: "corporation tax" alone is the UK's, but "Irish corporation
+# tax" is Ireland's alone.
+# Bare "VAT"/"GST" follow the same rule as the knowledge base's own inference
+# (retrieve.infer_jurisdiction): among the corpora Kriton holds they mean the
+# UK and India. A GST question naming no country was searched on the open web
+# and cited Canadian GST/HST pages beside the Indian GST Council FAQ.
+_WEAK_ALIASES: dict[str, tuple[str, ...]] = {"UK": ("corporation tax", "vat"), "INDIA": ("gst",)}
+# Text before an alias that means a different jurisdiction: Northern Ireland
+# is part of the UK, and HMRC guidance mentions it constantly.
+_ALIAS_EXCLUDED_PREFIXES: dict[str, tuple[str, ...]] = {"IRELAND": ("northern ",)}
 
 
 def detect_jurisdictions(query: str) -> list[str]:
@@ -233,12 +291,22 @@ def detect_jurisdictions(query: str) -> list[str]:
     hits: list[tuple[int, str]] = []
     for key, aliases in _JURISDICTION_ALIASES.items():
         best: int | None = None
+        excluded = _ALIAS_EXCLUDED_PREFIXES.get(key, ())
         for alias in sorted(aliases, key=len, reverse=True):
-            m = re.search(rf"\b{re.escape(alias)}\b", lowered)
-            if m and (best is None or m.start() < best):
-                best = m.start()
+            for m in re.finditer(rf"\b{re.escape(alias)}\b", lowered):
+                if any(lowered[:m.start()].endswith(prefix) for prefix in excluded):
+                    continue
+                if best is None or m.start() < best:
+                    best = m.start()
+                break
         if best is not None:
             hits.append((best, key))
+    if not hits:
+        weak = [key for key, aliases in _WEAK_ALIASES.items()
+                if any(re.search(rf"\b{re.escape(alias)}\b", lowered) for alias in aliases)]
+        # Both "VAT" and "GST" with no country stays ambiguous.
+        if len(weak) == 1:
+            hits.append((0, weak[0]))
     return [key for _, key in sorted(hits)]
 
 
