@@ -101,7 +101,7 @@ export const NAV_SECTIONS: NavL1Section[] = [
     allowedRoles: ACCOUNTING_WORKFLOWS,
     items: [
       { label: "Workpapers", slug: "workpapers", allowedRoles: ACCOUNTING_WORKFLOWS, icon: FolderKanban },
-      { label: "Review Tasks", slug: "review-tasks", allowedRoles: ACCOUNTING_WORKFLOWS, icon: ClipboardCheck },
+      { label: "Review Tasks", slug: "review-tasks", allowedRoles: [...ACCOUNTING_WORKFLOWS, "SME Reviewer"], icon: ClipboardCheck },
       { label: "Evidence Packs", slug: "evidence-packs", allowedRoles: ACCOUNTING_WORKFLOWS, icon: Paperclip },
       { label: "Reports & Insights", slug: "reports-insights", allowedRoles: ACCOUNTING_WORKFLOWS, icon: BarChart3 },
       { label: "Compliance Calendar", slug: "compliance-calendar", allowedRoles: ACCOUNTING_WORKFLOWS, icon: CalendarClock },
