@@ -990,7 +990,7 @@ async def ask_kriton(
                     "retrieval.web",
                     web_search_each(effective_query, jurisdiction=request.jurisdiction, limit=5),
                 ),
-                timeout=12.0,
+                timeout=25.0,
             )
         )
         if needs_web else None
