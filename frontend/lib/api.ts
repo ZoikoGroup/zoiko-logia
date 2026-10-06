@@ -1322,3 +1322,85 @@ export async function updateDraft(token: string, id: string, payload: DraftUpdat
   });
   return res.json();
 }
+
+// ── Review loop: answer feedback and the review queue ───────────────────────
+
+export type FeedbackReason =
+  | "wrong_answer" | "wrong_calculation" | "wrong_source" | "outdated" | "wrong_jurisdiction"
+  | "missing_evidence" | "missing_citation" | "poor_explanation" | "other";
+
+export type AnswerFeedbackRequest = {
+  query_id: string;
+  rating: "up" | "down";
+  reasons: FeedbackReason[];
+  comment: string;
+  question: string;
+  answer_text: string;
+};
+
+export async function submitAnswerFeedback(
+  token: string,
+  payload: AnswerFeedbackRequest,
+): Promise<{ id: string; rating: string; review_case_id: string | null }> {
+  const res = await authedFetch("/orchestration/feedback", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+
+export type ReviewCase = {
+  id: string;
+  query_id: string;
+  question: string;
+  draft_answer: string;
+  reason: string;
+  risk_level: string;
+  source: "escalation" | "user_feedback" | string;
+  status: "open" | "needs_evidence" | "resolved" | string;
+  created_at: string;
+  reviewer_decision: "approved" | "corrected" | "rejected" | "needs_evidence" | null;
+  review_note: string;
+  resolved_at: string | null;
+};
+
+export async function listReviewCases(
+  token: string,
+  status: "open" | "needs_evidence" | "resolved" | "all" = "open",
+): Promise<{ cases: ReviewCase[]; counts: Record<string, number> }> {
+  const res = await authedFetch(`/orchestration/review-cases?status_filter=${status}`, token);
+  return res.json();
+}
+
+export async function resolveReviewCase(
+  token: string,
+  caseId: string,
+  payload: {
+    decision: "approved" | "corrected" | "rejected" | "needs_evidence";
+    note: string;
+    corrected_answer: string;
+    key_facts: string[];
+    category?: string;
+  },
+): Promise<{ case: ReviewCase; gold_case_id: string | null }> {
+  const res = await authedFetch(`/orchestration/review-cases/${caseId}/resolve`, token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+
+
+export type ReviewEvidence = {
+  bundle_id: string; passage_id: string; source_version_id: string;
+  title: string; locator: string; url: string | null;
+  effective_from: string | null; effective_to: string | null;
+  content: string | null; withheld_reason: string | null;
+};
+
+export async function getReviewEvidence(token: string, caseId: string): Promise<ReviewEvidence[]> {
+  const res = await authedFetch(`/orchestration/review-cases/${encodeURIComponent(caseId)}/evidence`, token);
+  return res.json();
+}
