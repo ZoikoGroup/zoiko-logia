@@ -14,9 +14,21 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r requirements.txt
 
+# The knowledge-base embedding model (~130 MB, app/domains/source_library/
+# embeddings.py), baked in so a deploy never depends on a Hugging Face
+# download at request time. Keep in step with EMBEDDING_MODEL.
+RUN python -c "from transformers import AutoModel, AutoTokenizer; \
+AutoTokenizer.from_pretrained('BAAI/bge-small-en-v1.5'); AutoModel.from_pretrained('BAAI/bge-small-en-v1.5')"
+
 COPY app app
 COPY scripts scripts
 COPY data data
+COPY alembic alembic
+COPY alembic.ini alembic.ini
+COPY evals evals
+COPY release_revision.txt release_revision.txt
+ARG APP_REVISION=unknown
+ENV APP_REVISION=$APP_REVISION
 
 EXPOSE 8010
 

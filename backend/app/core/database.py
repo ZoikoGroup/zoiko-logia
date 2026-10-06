@@ -48,6 +48,21 @@ def session_is_sqlite(session) -> bool:
         return False
 
 
+async def restore_request_identity(session, *, tenant_id: str, user_id: str) -> None:
+    """Re-apply the request's RLS identity and commit it.
+
+    A database timeout cancels the in-flight query, and the cancelled
+    connection is replaced from the pool — one that still carries an earlier
+    request's app.tenant_id. Every RLS write after that is checked against
+    the wrong tenant ("new row violates row-level security policy"). Call
+    this after any rollback that recovers from such a failure."""
+    if session_is_sqlite(session):
+        return
+    await session.execute(text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id})
+    await session.execute(text("SELECT set_config('app.user_id', :user_id, false)"), {"user_id": user_id})
+    await session.commit()
+
+
 def _normalize_scheme(url: str) -> str:
     """postgres:// is a legacy alias for postgresql:// — normalize it first
     so the two driver-specific helpers below only need to handle one scheme."""
@@ -228,6 +243,13 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
                 await session.execute(
                     text("SELECT set_config('app.user_id', :user_id, false)"), {"user_id": user_id}
                 )
+                # Committed, so the identity outlives any later rollback in
+                # this request. A session-level setting made inside a
+                # transaction is undone if that transaction rolls back: the
+                # governed-retrieval timeout handler's rollback erased
+                # app.tenant_id, and the answer record insert then failed RLS
+                # ("new row violates row-level security policy") with a 503.
+                await session.commit()
             yield session
     finally:
         await connection.close()

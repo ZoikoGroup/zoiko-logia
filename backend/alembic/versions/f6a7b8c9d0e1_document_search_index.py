@@ -9,6 +9,8 @@ depends_on = None
 
 
 def upgrade():
+    if op.get_bind().dialect.name != "postgresql":
+        return
     op.execute(
         "ALTER TABLE workspace_document_chunks ADD COLUMN IF NOT EXISTS search_vector tsvector "
         "GENERATED ALWAYS AS (to_tsvector('english'::regconfig, coalesce(text, ''))) STORED"
@@ -20,5 +22,7 @@ def upgrade():
 
 
 def downgrade():
+    if op.get_bind().dialect.name != "postgresql":
+        return
     op.execute("DROP INDEX IF EXISTS ix_workspace_document_chunks_search")
     op.execute("ALTER TABLE workspace_document_chunks DROP COLUMN IF EXISTS search_vector")

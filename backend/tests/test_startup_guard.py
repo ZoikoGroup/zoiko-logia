@@ -55,37 +55,27 @@ def test_strict_mode_passes_when_configured(monkeypatch) -> None:
     _require_supabase_config()  # must not raise
 
 
-@pytest.mark.parametrize("failed_step", ["_setup_source_rls", "_setup_user_rls", None])
-async def test_startup_requires_security_policies_and_never_creates_accounts(monkeypatch, failed_step):
-    from contextlib import asynccontextmanager
-    from unittest.mock import AsyncMock, Mock
+@pytest.mark.parametrize("policies_valid", [True, False])
+async def test_startup_requires_security_policies_without_writing_schema(monkeypatch, policies_valid):
+    from unittest.mock import Mock
     from app import main
-
-    @asynccontextmanager
-    async def connection():
-        yield Mock(run_sync=AsyncMock())
-
-    monkeypatch.setattr(main, "async_engine", Mock(begin=connection, dispose=AsyncMock()))
     monkeypatch.setattr(main, "_require_supabase_config", Mock())
-    for name in (
-        "_migrate_tenant_columns", "_migrate_source_licence_columns",
-        "_migrate_user_profile_columns", "_migrate_orphan_tenant_id_not_null",
-        "_setup_document_search_index", "_setup_source_rls", "_setup_user_rls",
-        "_warm_up_ml_models",
-    ):
-        monkeypatch.setattr(main, name, AsyncMock(side_effect=RuntimeError("policy failed") if name == failed_step else None))
-    for name in ("_seed_defaults", "_seed_evaluation", "_seed_escalation_rules", "_seed_incidents"):
-        monkeypatch.setattr(main, name, Mock())
-    create_user = Mock(side_effect=AssertionError("Startup must not create auth accounts"))
-    monkeypatch.setattr("app.core.supabase_admin.create_user", create_user)
-    if failed_step:
-        with pytest.raises(RuntimeError, match="policy failed"):
-            async with main.lifespan(main.app):
-                pytest.fail("Application served with missing security policies")
-    else:
+    monkeypatch.setattr(main, "_stored_fingerprint", AsyncMock(return_value="current"))
+    monkeypatch.setattr(main, "_startup_fingerprint", Mock(return_value="current"))
+    monkeypatch.setattr(main, "_verify_security_policies", AsyncMock(
+        side_effect=None if policies_valid else RuntimeError("policy missing")))
+    monkeypatch.setattr(main, "_warm_up_ml_models", AsyncMock())
+    monkeypatch.setattr(main, "async_engine", Mock(dispose=AsyncMock()))
+    writes = AsyncMock(side_effect=AssertionError("startup must not run DDL"))
+    monkeypatch.setattr(main, "_apply_schema_and_seeds", writes)
+    if policies_valid:
         async with main.lifespan(main.app):
             pass
-    create_user.assert_not_called()
+    else:
+        with pytest.raises(RuntimeError, match="policy missing"):
+            async with main.lifespan(main.app):
+                pytest.fail("Application served without policies")
+    writes.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -118,3 +108,32 @@ async def test_other_database_errors_still_stop_startup(monkeypatch):
 
     with pytest.raises(OperationalError):
         await main._with_ddl_retry(broken_policy)
+
+
+@pytest.mark.parametrize("stored_matches", [True, False])
+async def test_startup_checks_setup_state_and_never_runs_migrations(monkeypatch, stored_matches):
+    from unittest.mock import Mock
+    from app import main
+    monkeypatch.setattr(main, "async_engine", Mock(dispose=AsyncMock()))
+    monkeypatch.setattr(main, "_require_supabase_config", Mock())
+    monkeypatch.setattr(main, "_startup_fingerprint", Mock(return_value="current"))
+    monkeypatch.setattr(main, "_stored_fingerprint", AsyncMock(return_value="current" if stored_matches else "old"))
+    monkeypatch.setattr(main, "_verify_security_policies", AsyncMock())
+    monkeypatch.setattr(main, "_warm_up_ml_models", AsyncMock())
+    writes = AsyncMock()
+    monkeypatch.setattr(main, "_apply_schema_and_seeds", writes)
+    if stored_matches:
+        async with main.lifespan(main.app):
+            pass
+    else:
+        with pytest.raises(RuntimeError, match="setup_database"):
+            async with main.lifespan(main.app):
+                pytest.fail("Unprepared database was served")
+    writes.assert_not_called()
+
+
+def test_startup_fingerprint_is_stable_and_tracks_the_schema():
+    from app import main
+
+    assert main._startup_fingerprint() == main._startup_fingerprint()
+    assert len(main._startup_fingerprint()) == 64

@@ -62,12 +62,16 @@ def upgrade() -> None:
     )
     op.create_index("ix_engagement_grants_tenant_id", "engagement_grants", ["tenant_id"])
     op.create_index("ix_engagement_grants_membership_id", "engagement_grants", ["membership_id"])
-    op.add_column("user_documents", sa.Column("engagement_id", sa.String(), nullable=True))
-    op.create_foreign_key("fk_user_documents_engagement", "user_documents", "engagements", ["engagement_id"], ["id"])
-    op.create_index("ix_user_documents_engagement_id", "user_documents", ["engagement_id"])
-    op.add_column("document_chunks", sa.Column("engagement_id", sa.String(), nullable=True))
-    op.create_foreign_key("fk_document_chunks_engagement", "document_chunks", "engagements", ["engagement_id"], ["id"])
-    op.create_index("ix_document_chunks_engagement_id", "document_chunks", ["engagement_id"])
+    # Older deployed databases retain these legacy document tables. New
+    # installations use workspace_documents and do not have them.
+    existing_tables = set(sa.inspect(op.get_bind()).get_table_names())
+    for table in ("user_documents", "document_chunks"):
+        if table not in existing_tables:
+            continue
+        with op.batch_alter_table(table) as batch:
+            batch.add_column(sa.Column("engagement_id", sa.String(), nullable=True))
+            batch.create_foreign_key(f"fk_{table}_engagement", "engagements", ["engagement_id"], ["id"])
+            batch.create_index(f"ix_{table}_engagement_id", ["engagement_id"])
 
     if op.get_bind().dialect.name == "postgresql":
         for table in ("engagements", "engagement_memberships", "engagement_grants"):
@@ -86,6 +90,8 @@ def upgrade() -> None:
             "AND status = 'active' AND revoked_at IS NULL)))"
         )
         for table in ("user_documents", "document_chunks"):
+            if table not in existing_tables:
+                continue
             op.execute(f"DROP POLICY IF EXISTS owner_isolation_{table} ON {table}")
             op.execute(
                 f"CREATE POLICY owner_isolation_{table} ON {table} "
