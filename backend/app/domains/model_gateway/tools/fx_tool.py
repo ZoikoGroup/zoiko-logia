@@ -9,7 +9,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.domains.model_gateway.tool_registry import ToolResult, ToolSpec
-from app.orchestration.frankfurter import fetch_fx_rates
+from app.orchestration.frankfurter import fetch_fx_history, fetch_fx_rates
 
 TOOL_NAME = "get_exchange_rate"
 
@@ -23,6 +23,11 @@ class ExchangeRateArgs(BaseModel):
         description="ISO-4217 codes to convert TO, e.g. [\"INR\", \"EUR\"].",
     )
     amount: float = Field(default=1.0, gt=0, le=1e12, description="Amount of the base currency to convert.")
+    months: int = Field(
+        default=0, ge=0, le=60,
+        description="For a history or trend, the number of past months of month-end rates to return "
+                    "(e.g. 12). Leave 0 for the latest rate only.",
+    )
 
     @field_validator("base")
     @classmethod
@@ -55,6 +60,15 @@ def _iso_code(value: str) -> str:
 
 
 async def _handle(args: ExchangeRateArgs) -> ToolResult:
+    if args.months:
+        history = [source for quote in args.quotes
+                   if (source := await fetch_fx_history(args.base, quote, args.months))]
+        if not history:
+            return ToolResult.failure(
+                "no_data",
+                f"No exchange-rate history available for {args.base} to {', '.join(args.quotes)}. Do not guess rates.",
+            )
+        return ToolResult(ok=True, content="\n".join(source.snippet for source in history), sources=tuple(history))
     sources = await fetch_fx_rates(args.base, args.quotes, args.amount)
     if not sources:
         return ToolResult.failure(
@@ -74,8 +88,9 @@ EXCHANGE_RATE_TOOL = ToolSpec(
     version="1.0",
     description=(
         "Get the latest official ECB reference exchange rate between currencies, and "
-        "optionally convert an amount. Use for any currency conversion or exchange-rate "
-        "question instead of relying on memory."
+        "optionally convert an amount; or, with months set, the month-end rates for that "
+        "many past months (for a trend or chart). Use for any currency conversion or "
+        "exchange-rate question instead of relying on memory."
     ),
     args_model=ExchangeRateArgs,
     handler=_handle,

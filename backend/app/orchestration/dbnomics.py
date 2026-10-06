@@ -880,11 +880,18 @@ def _series_is_country(series_name: str, country: str | None) -> bool:
 
 
 def countries_in_query(query: str) -> list[str]:
-    """Return distinct canonical country labels in their query order."""
+    """Return distinct canonical country labels in their query order.
+
+    Bare ISO codes match in capitals only, exactly as in _country_in_query:
+    matched case-insensitively, the word "in" named India in nearly every
+    question ("…accounting in brief", "show it in a bar chart")."""
     lowered = query.lower()
     matches: list[tuple[int, str]] = []
     for alias in sorted(_CPI_COUNTRIES, key=len, reverse=True):
-        match = re.search(rf"\b{re.escape(alias)}\b", lowered)
+        if alias in _CASE_SENSITIVE_ALIASES:
+            match = re.search(rf"\b{re.escape(alias.upper())}\b", query)
+        else:
+            match = re.search(rf"\b{re.escape(alias)}\b", lowered)
         if match:
             matches.append((match.start(), _CPI_COUNTRIES[alias]))
     ordered: list[str] = []

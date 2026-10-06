@@ -226,10 +226,28 @@ async def audit_composition_rejected(db, *, query_id, correlation_id, tenant_id,
     await _emit(db, "composition_rejected", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"failures": failures, "degraded_route": degraded_route}, replay_relevance="REQUIRED")
 
+async def audit_release_check_degraded(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                       failures: list[str], removed: int):
+    """A non-high-risk answer released with unverified statements removed (or
+    flagged unverified) instead of being escalated to human review."""
+    await _emit(db, "release_check_degraded", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"failures": failures, "removed_statements": removed}, replay_relevance="REQUIRED")
+
 async def audit_human_review_created(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                       review_case_id: str):
     await _emit(db, "human_review_created", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"review_case_id": review_case_id}, replay_relevance="REQUIRED")
+
+async def audit_answer_feedback(db, *, query_id, tenant_id, actor_id, rating: str, reasons: list[str],
+                                review_case_id: str | None):
+    await _emit(db, "answer_feedback_received", query_id, query_id, tenant_id, f"feedback-{query_id}", actor_id,
+                {"rating": rating, "reasons": reasons, "review_case_id": review_case_id})
+
+async def audit_review_resolved(db, *, query_id, correlation_id, tenant_id, actor_id, review_case_id: str,
+                                decision: str, gold_case_id: str | None):
+    await _emit(db, "human_review_resolved", query_id, correlation_id, tenant_id, f"review-{review_case_id}",
+                actor_id, {"review_case_id": review_case_id, "decision": decision, "gold_case_id": gold_case_id},
+                replay_relevance="REQUIRED")
 
 async def audit_refusal_returned(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id, reason: str):
     await _emit(db, "refusal_returned", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,

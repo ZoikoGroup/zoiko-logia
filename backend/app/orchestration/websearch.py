@@ -35,6 +35,7 @@ from app.domains.calculations.schemas import LiveObservation
 
 import httpx
 
+from app.orchestration.procedures import names_another_procedure
 from app.orchestration.source_taxonomy import (
     allowed_domains,
     detect_topics,
@@ -67,6 +68,9 @@ class WebSource:
     # from the fetched data when eligible, instead of relying on the model to
     # correctly re-parse the numbers back out of its own prose or a tool call.
     series: list[tuple[str, float]] | None = None
+    # False for a governed passage whose licence allows use but not verbatim
+    # display ("summarise"): it stays citable, with no quoted preview.
+    preview_allowed: bool = True
 
 
 logger = logging.getLogger(__name__)
@@ -498,30 +502,11 @@ def _is_relevant(query: str, source: WebSource) -> bool:
     kept when its title shares a meaningful word with the question, or its
     title and snippet together share two."""
     wanted = _terms(query)
-    if _names_another_procedure(query, source.title):
+    # A page about a different procedure on the same tax (a VAT refund page
+    # for a VAT-return question) — see app/orchestration/procedures.py.
+    if names_another_procedure(query, source.title):
         return False
     return bool(wanted & _terms(source.title)) or len(wanted & _terms(f"{source.title} {source.snippet}")) >= 2
-
-
-# A page about a DIFFERENT procedure on the same tax. "Who can sign off a VAT
-# return?" retrieved "Refunds of UK VAT for non-UK businesses", and the answer
-# carried that page's claimant-signature and power-of-attorney rules over to
-# VAT returns — even with a prompt rule against it. Such a page is dropped
-# unless the question itself is about that procedure.
-_PROCEDURES = {
-    "refund": r"\b(?:refunds?|repayments?|reclaim\w*|claim(?:ing)? (?:vat|tax|gst) back)\b",
-    "registration": r"\b(?:register|registration|deregist\w*|cancel\w*)\b",
-    "penalty": r"\b(?:penalt\w*|surcharges?)\b",
-    "appeal": r"\b(?:appeals?|tribunals?|disputes?)\b",
-    "exemption": r"\b(?:exempt\w*|zero[- ]rat\w*)\b",
-}
-
-
-def _names_another_procedure(query: str, title: str) -> bool:
-    return any(
-        re.search(pattern, title, re.I) and not re.search(pattern, query, re.I)
-        for pattern in _PROCEDURES.values()
-    )
 
 
 _EMPTY_RETRY_DELAY_SECONDS = 1.5
@@ -598,7 +583,7 @@ async def _tavily_results(query: str, domains: list[str]) -> list[dict] | None:
                         for r in results
                     ]
     except Exception as exc:
-        logger.warning("Tavily search failed (%s); falling back to SearXNG", type(exc).__name__)
+        logger.warning("Tavily search failed (%s); trying the next provider", type(exc).__name__)
         return None
     return []
 
@@ -636,6 +621,8 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pa
         "safesearch": "1",
         "categories": "general",
     }
+    # Tavily returns None when it is not configured or failed; SearXNG
+    # (self-hosted) is then the backup.
     results = await _tavily_results(query, domains)
     if results is None:
         results = await _searxng_results(base, params)
@@ -700,8 +687,21 @@ _QUESTION_BOUNDARY = re.compile(r"(?<=\?)\s+")
 MAX_SUB_QUESTIONS = 8
 _SOURCES_PER_SUB_QUESTION = 3
 # The public engines behind SearXNG throttle bursts (see web_search), so the
-# per-question searches run a few at a time rather than all at once.
+# per-question searches run a few at a time rather than all at once. The
+# hosted API (Tavily) takes a burst, so every part runs at once: six
+# questions three at a time took 12s, reached the orchestrator's 12s web
+# search limit, and the answer lost all fifteen sources it had found.
 _SUB_SEARCH_CONCURRENCY = 3
+_HOSTED_SUB_SEARCH_CONCURRENCY = 6
+# Each part's own deadline, inside the orchestrator's 12s: a slow part
+# returns nothing instead of discarding the parts that finished.
+_SUB_SEARCH_TIMEOUT_SECONDS = 10.0
+
+
+def question_count(query: str) -> int:
+    """How many separate questions a message asks (before the search cap)."""
+    parts = [part.strip() for part in _QUESTION_BOUNDARY.split((query or "").strip()) if part.strip()]
+    return max(1, len([part for part in parts if len(part.split()) >= 3]))
 
 
 def sub_questions(query: str) -> list[str]:
@@ -715,14 +715,22 @@ async def web_search_each(query: str, jurisdiction: str = "", limit: int = 5) ->
     """web_search for a single question; for a message with several questions,
     one search per question (bounded concurrency), merged without duplicates
     so every part of the answer has sources of its own."""
-    parts = sub_questions(query)
+    parts = evidence_search_queries(query)
     if len(parts) == 1:
         return await web_search(query, jurisdiction=jurisdiction, limit=limit)
-    gate = asyncio.Semaphore(_SUB_SEARCH_CONCURRENCY)
+    hosted = bool(_tavily_key())
+    gate = asyncio.Semaphore(_HOSTED_SUB_SEARCH_CONCURRENCY if hosted else _SUB_SEARCH_CONCURRENCY)
 
     async def search(part: str) -> list[WebSource]:
         async with gate:
-            return await web_search(part, jurisdiction=jurisdiction, limit=_SOURCES_PER_SUB_QUESTION, read_pages=1)
+            try:
+                return await asyncio.wait_for(
+                    web_search(part, jurisdiction=jurisdiction, limit=_SOURCES_PER_SUB_QUESTION, read_pages=1),
+                    timeout=_SUB_SEARCH_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Sub-question search timed out; other parts keep their sources")
+                return []
 
     merged: list[WebSource] = []
     seen: set[str] = set()
@@ -732,6 +740,22 @@ async def web_search_each(query: str, jurisdiction: str = "", limit: int = 5) ->
                 seen.add(source.url)
                 merged.append(source)
     return merged
+
+
+def evidence_search_queries(query: str) -> list[str]:
+    """Cover the decision rules, not just an application form or narrow FAQ."""
+    if re.search(r"\b(?:india|indian)\b", query, re.I) and re.search(r"\bgst\b", query, re.I):
+        if re.search(r"\bregistration\b", query, re.I):
+            return [query,
+                "India GST registration aggregate turnover thresholds goods services state notification 10/2019 current",
+                "India CGST Act section 23 persons not liable registration section 24 compulsory registration notification exceptions"]
+        if re.search(r"\b(?:export|exports|outside india|foreign|overseas|us client|uk client|abroad)\b", query, re.I):
+            # "Billing a US client — do I charge GST?" found the registration
+            # threshold but not the zero-rating rule for exported services.
+            return [query, "India IGST Act section 16 zero rated supply export of services letter of undertaking LUT without payment of IGST"]
+        if re.search(r"\b(?:input tax credit|itc)\b", query, re.I):
+            return [query, "India CGST section 16 input tax credit conditions tax paid return furnished section 17 blocked credits current"]
+    return sub_questions(query)
 
 
 # The table/formula formatting rules apply whether or not web sources were
@@ -752,6 +776,13 @@ _FORMATTING_INSTRUCTIONS = (
     "such as 'CLASSIFICATION:', 'CLASSIFIED:', or 'ANSWER:'. Start directly "
     "with the answer content. Do not use double-asterisk Markdown emphasis; "
     "use plain text or Markdown headings instead.\n"
+    # "0.144714 → rounded to 0.14 (14 %)" presented a 14.47% CAGR as 14%.
+    "Give percentages and rates to two decimal places (for example 14.47%), never "
+    "rounded to a whole number unless the value is a whole number.\n"
+    # "The standard GST rate in Malaysia is 6%" — GST was abolished in 2018.
+    "If the evidence shows a tax, rate or rule was abolished, replaced or superseded, "
+    "say so and give what replaced it if the evidence states it; never present a past "
+    "rate as current.\n"
         "When the user requests a chart, graph, heatmap, distribution, "
         "histogram, box plot, spread, or other visualization of a real "
         "numeric data series, a separate validated renderer handles it. Do "
@@ -805,6 +836,22 @@ _FORMATTING_INSTRUCTIONS = (
 # Always sent: cheap, and a table or a formula can be the right shape for any
 # answer.
 _CORE_FORMATTING = (
+        # Restored from Naresh-new (1f69f7e, 22b0e4d, 188a6ad); lost when main's
+        # rewrite of this block was merged.
+        "If the message contains several questions or tasks, answer EVERY one, in "
+        "order, each under its own short heading — including any chart or table it "
+        "asks for; never answer only the first or skip one. If the user supplies "
+        "their own answer (e.g. '… → 36%'), work the question out independently, "
+        "show the working, and say whether their answer is correct — never reply "
+        "with a bare 'correct'.\n"
+        "For EVERY calculation, however simple, show the working step by step "
+        "(inputs, formula, each intermediate result, final answer) — never state only "
+        "the result. Write thousands separators as commas, never spaces: Indian "
+        "grouping for every rupee amount, whether written ₹ or INR (₹10,92,600 / "
+        "10,92,600 INR), and international grouping otherwise ($1,092,600).\n"
+        "Lead with the direct answer or result. Use concise paragraphs, and only add "
+        "## headings when the answer needs sections. Never print internal subject-matter "
+        "classification labels.\n"
         "When the user asks for a table, a comparison, 'tabular format', or the "
         "content is naturally a comparison of two or more items across "
         "attributes, present it as a GitHub-flavoured Markdown table using pipe "
@@ -922,6 +969,12 @@ _VISUAL_INSTRUCTIONS = (
         '- candlestick: {"type":"candlestick","title":"Share price",'
         '"categories":["2024-01","2024-02"],"ohlc":[[10,14,9,15],[14,12,11,16]]}'
         " — each row is [open, close, low, high]\n"
+        '- area: {"type":"area","title":"Cumulative customers","categories":'
+        '["Jan","Feb"],"series":[{"name":"Customers","data":[100,250]}]}\n'
+        '- waterfall: {"type":"waterfall","title":"Revenue to net profit",'
+        '"categories":["Revenue","Cost of sales","Net profit"],"series":'
+        '[{"name":"£k","data":[500,-300,200]}]} — first value is the start, '
+        "then signed changes; a last value equal to the running total is the total bar\n"
         "Use 'line' for trends over time, 'bar' for comparisons across "
         "categories, stacked bar for part-to-whole across categories, "
         "'pie' for parts of a single whole, 'sankey' for flows, "
@@ -940,7 +993,7 @@ _VISUAL_INSTRUCTIONS = (
         "or a graph and the needed values are available, output a ```chart "
         "line block.\n"
         "WHEN THE USER NAMES A CHART TYPE, USE THAT TYPE. If they ask for a pie "
-        "chart, bar chart, scatter, radar, heatmap or candlestick, emit that "
+        "chart, bar chart, area chart, waterfall chart, scatter, radar, heatmap or candlestick, emit that "
         "type — do not silently substitute another and do not answer in prose "
         "only. The single exception is data the type genuinely cannot show: a "
         "pie needs parts of one positive whole, so if any value is negative or "
@@ -1205,11 +1258,11 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
     return (
         _DOMAIN_GATE
         + "Answer the user's question using ONLY the numbered evidence sources below. "
-        "Write a clean, natural answer. Do NOT insert citation markers such as "
-        "[REF-1], [1], or source numbers anywhere in the answer text — the "
-        "sources are shown to the reader separately below, so the answer must "
-        "read cleanly without them. Format the answer clearly with short "
-        "paragraphs or bullet points where helpful.\n"
+        "Write a clean, natural answer. Cite each factual claim or paragraph with its "
+        "supporting [REF-N] source identifier from the evidence below. Cite table rows "
+        "that state rates, thresholds or deadlines too. Never invent or renumber a "
+        "reference. The cited passage must support the claim for the same jurisdiction, "
+        "date and purpose. Format the answer clearly with short paragraphs or bullet points.\n"
         # Retrieval returns whatever ranked highest, which is not the same as
         # material that answers the question. Refusing outright whenever the
         # top hits missed the point left in-scope questions unanswered while

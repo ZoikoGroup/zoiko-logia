@@ -15,6 +15,7 @@ are retrieve.py and license_gate.py's jobs) or risk classification
 its output).
 """
 from __future__ import annotations
+import hashlib
 
 from app.domains.massarius.license_gate import LicenceCheckResult
 from sqlalchemy import select
@@ -71,6 +72,7 @@ def build_bundle(preliminary: SourceBundle, licence_result: LicenceCheckResult) 
         sources=licence_result.eligible,
         exclusion_reasons=exclusion_reasons,
         jurisdiction=preliminary.jurisdiction,
+        as_of=preliminary.as_of,
         authority_level=preliminary.authority_level,
         freshness_state=preliminary.freshness_state,
         licence_state=preliminary.licence_state,
@@ -148,7 +150,9 @@ async def load_bundle_passage_text(db: AsyncSession, bundle: SourceBundle) -> li
     loaded: list[tuple[str, str, str]] = []
     for selection in sorted(bundle.passages, key=lambda item: item.rank):
         passage = by_id.get(selection.passage_id)
-        if passage is None or passage.content_hash != selection.content_hash:
+        if (passage is None or passage.source_version_id != selection.source_version_id
+                or passage.content_hash != selection.content_hash
+                or hashlib.sha256(passage.content.encode()).hexdigest() != selection.content_hash):
             raise ValueError(f"Evidence passage integrity check failed: {selection.passage_id}")
         loaded.append((selection.passage_id, selection.locator, passage.content))
     return loaded

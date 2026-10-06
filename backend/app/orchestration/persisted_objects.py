@@ -36,6 +36,8 @@ async def create_review_case(
     reason: str,
     query_text: str = "",
     assigned_queue: str = "accounting_review",
+    draft_answer: str = "",
+    source: str = "escalation",
 ) -> ReviewCase:
     """
     Persist a review case for HUMAN_REVIEW route — §11.1.
@@ -51,6 +53,8 @@ async def create_review_case(
         confidence_state=confidence_state,
         reason=reason,
         assigned_queue=assigned_queue,
+        draft_answer=redact_for_external_exposure(draft_answer).redacted_text if draft_answer else "",
+        source=source,
         policy_version=POLICY_VERSION,
         classifier_version=CLASSIFIER_VERSION,
     )

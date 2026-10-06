@@ -33,6 +33,9 @@ from app.orchestration.fred import _definition_for_query, _fred_base
 
 BACKEND = Path(__file__).resolve().parents[1]
 ENV_FILE = BACKEND / ".env"
+# These audit a developer's local backend/.env against the tracked template.
+# CI has no .env (and must not), so there is nothing to audit there.
+requires_local_env = pytest.mark.skipif(not ENV_FILE.exists(), reason="no local backend/.env to audit (CI)")
 EXAMPLE_FILE = BACKEND / ".env.example"
 
 
@@ -87,11 +90,13 @@ def test_env_example_has_no_duplicate_variable():
     assert dups == {}, f"duplicate variable(s) in backend/.env.example: {dups}"
 
 
+@requires_local_env
 def test_fred_is_configured_exactly_once():
     rows = [n for _, n in _active_assignments(ENV_FILE) if n.startswith("FRED_")]
     assert sorted(rows) == ["FRED_API_BASE_URL", "FRED_API_KEY"]
 
 
+@requires_local_env
 def test_removed_twelve_data_config_is_absent():
     """The Twelve Data adapter was reverted (commit 4be63d6) but its key and
     realtime flag stayed in backend/.env. No code read either one, so a live
@@ -121,6 +126,7 @@ def test_fred_is_documented_in_env_example_with_a_placeholder():
     assert _line_for(EXAMPLE_FILE, "FRED_API_BASE_URL") is not None
 
 
+@requires_local_env
 def test_env_example_contains_no_live_secret():
     """backend/.env.example must never carry a real credential. Compared by
     VALUE against backend/.env and reported only as a boolean."""
@@ -160,6 +166,7 @@ def test_every_live_data_url_var_is_documented_in_env_example():
     assert missing == [], f"live-data URL(s) missing from .env.example: {missing}"
 
 
+@requires_local_env
 def test_env_and_env_example_declare_the_same_variable_names():
     """The two files are meant to carry the same variable NAMES and to differ
     only in values (real credential vs placeholder/blank).

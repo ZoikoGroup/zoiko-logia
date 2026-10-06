@@ -101,6 +101,7 @@ def test_default_registry_exposes_every_tool_to_every_caller() -> None:
     registry = build_default_registry()
     assert registry.names() == [
         "calculate", "get_economic_indicator", "get_exchange_rate", "get_market_data", "render_chart",
+        "search_knowledge_base",
     ]
     schemas = registry.function_schemas(NO_PERMISSIONS)
     assert {s["function"]["name"] for s in schemas} == set(registry.names())

@@ -1,0 +1,93 @@
+name: CI
+
+# Unit tests run on every pull request and push to main; they use SQLite and
+# stub every external service (Groq, Tavily, embeddings, claim verification),
+# so they need no secrets. The release gate evaluates a deployed environment
+# with live model and search calls. promote.yml runs it automatically on staging;
+# the manual job below also supports on-demand evaluation.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_gate:
+        description: "Run the release gate against BASELINE_API_URL"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DATABASE_URL: sqlite+aiosqlite:///./ci.db
+      EMBEDDING_PROVIDER: none
+      CLAIM_VERIFICATION: "off"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q -p no:cacheprovider
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit -p .
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  release-gate:
+    # On demand only: live models, search and the target environment's
+    # database. See backend/scripts/release_gate.py.
+    if: github.event_name == 'workflow_dispatch' && inputs.release_gate
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      BASELINE_API_URL: ${{ secrets.BASELINE_API_URL }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      EVAL_EMAIL: ${{ secrets.EVAL_EMAIL }}
+      EVAL_PASSWORD: ${{ secrets.EVAL_PASSWORD }}
+      EVAL_TENANT_ID: ${{ secrets.EVAL_TENANT_ID }}
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - run: python scripts/release_gate.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gate-report
+          path: backend/evals/reports/release-gate-*.md

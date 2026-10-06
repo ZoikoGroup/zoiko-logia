@@ -1,0 +1,219 @@
+{
+  "version": "uk-vat-holdout-1",
+  "notes": "HELD OUT: UK VAT questions written after retrieval tuning on uk_vat_questions.json, run to measure accuracy on questions nothing was tuned against. Do not adjust thresholds, chunking or prompts to fix a case here without first moving that case into uk_vat_questions.json and writing a replacement. Facts as published by HMRC on GOV.UK, 2026-10-02. Moved to uk_vat_questions.json after being studied (2026-10-02): ho-cash-accounting-leave, replaced by ho-non-uk-registration. Moved after being studied (2026-10-03): ho-sanitary (Notice 701/18 ingested because of it), replaced by ho-gift-limit.",
+  "cases": [
+    {
+      "id": "ho-adult-clothing",
+      "category": "rates_thresholds",
+      "question": "What VAT rate applies to adult clothing in the UK?",
+      "outcome": "answered",
+      "must_contain_any": [
+        "20%",
+        "standard rate",
+        "standard-rated"
+      ]
+    },
+    {
+      "id": "ho-books",
+      "category": "rates_thresholds",
+      "question": "Is VAT charged on printed books in the UK?",
+      "outcome": "answered",
+      "must_contain_any": [
+        "zero-rated",
+        "zero rated",
+        "0%"
+      ]
+    },
+    {
+      "id": "ho-mobility-aids",
+      "category": "rates_thresholds",
+      "question": "What VAT rate applies to installing mobility aids in the home of someone aged 60 or over?",
+      "outcome": "answered",
+      "must_contain_any": [
+        "5%",
+        "reduced rate"
+      ]
+    },
+    {
+      "id": "ho-stamps",
+      "category": "rates_thresholds",
+      "question": "Is there VAT on postage stamps in the UK?",
+      "outcome": "answered",
+      "must_contain_any": [
+        "exempt"
+      ]
+    },
+    {
+      "id": "ho-insurance",
+      "category": "rates_thresholds",
+      "question": "Is insurance subject to VAT in the UK?",
+      "outcome": "answered",
+      "must_contain_any": [
+        "exempt"
+      ]
+    },
+    {
+      "id": "ho-bad-debt",
+      "category": "procedure",
+      "question": "How long must a debt be outstanding before I can claim VAT bad debt relief?",
+      "outcome": "answered",
+      "must_contain_any": [
+        "6 months",
+        "six months"
+      ]
+    },
+    {
+      "id": "ho-pre-registration",
+      "category": "procedure",
+      "question": "How far back can I reclaim VAT on goods and services bought before I registered for VAT?",
+      "outcome": "answered",
+      "must_contain_any": [
+        "4 years",
+        "four years"
+      ],
+      "must_contain": [
+        "6 months"
+      ]
+    },
+    {
+      "id": "ho-invoice-deadline",
+      "category": "procedure",
+      "question": "Within how many days must a VAT invoice be issued?",
+      "outcome": "answered",
+      "must_contain": [
+        "30 days"
+      ]
+    },
+    {
+      "id": "ho-simplified-invoice",
+      "category": "rates_thresholds",
+      "question": "Up to what value can a business issue a simplified VAT invoice?",
+      "outcome": "answered",
+      "must_contain": [
+        "250"
+      ]
+    },
+    {
+      "id": "ho-annual-interim",
+      "category": "procedure",
+      "question": "How are payments made under the VAT Annual Accounting Scheme?",
+      "outcome": "answered",
+      "must_contain_any": [
+        "9 monthly",
+        "nine monthly",
+        "3 quarterly",
+        "three quarterly",
+        "interim",
+        "advance payment",
+        "advance payments"
+      ]
+    },
+    {
+      "id": "ho-frs-first-year",
+      "category": "rates_thresholds",
+      "question": "Is there a discount on the flat rate percentage in a business's first year of VAT registration?",
+      "outcome": "answered",
+      "must_contain_any": [
+        "1%",
+        "1 percentage point",
+        "one percentage point"
+      ]
+    },
+    {
+      "id": "ho-points-monthly",
+      "category": "penalties",
+      "question": "How many penalty points trigger a VAT late submission penalty for monthly filers?",
+      "outcome": "answered",
+      "must_contain": [
+        "5"
+      ]
+    },
+    {
+      "id": "ho-points-annual",
+      "category": "penalties",
+      "question": "How many penalty points trigger a VAT late submission penalty for annual filers?",
+      "outcome": "answered",
+      "must_contain": [
+        "2"
+      ]
+    },
+    {
+      "id": "ho-late-interest",
+      "category": "penalties",
+      "question": "What interest rate does HMRC charge on late VAT payments?",
+      "outcome": "answered",
+      "must_contain_any": [
+        "4%",
+        "base rate"
+      ]
+    },
+    {
+      "id": "ho-mtd-exemption",
+      "category": "procedure",
+      "question": "Can a business be exempt from Making Tax Digital for VAT?",
+      "outcome": "answered",
+      "must_contain_any": [
+        "religious",
+        "digitally excluded",
+        "age",
+        "disability",
+        "remote"
+      ]
+    },
+    {
+      "id": "ho-mtd-who",
+      "category": "procedure",
+      "question": "Which businesses must follow Making Tax Digital for VAT?",
+      "outcome": "answered",
+      "must_contain_any": [
+        "all VAT-registered",
+        "all VAT registered",
+        "every VAT-registered",
+        "April 2022"
+      ]
+    },
+    {
+      "id": "ho-reverse-charge-end-user",
+      "category": "procedure",
+      "question": "Does the VAT domestic reverse charge for construction apply when the customer is an end user?",
+      "outcome": "answered",
+      "must_contain_any": [
+        "end user",
+        "end-user"
+      ]
+    },
+    {
+      "id": "ho-children-shoes",
+      "category": "rates_thresholds",
+      "question": "What VAT rate applies to children's shoes in the UK?",
+      "outcome": "answered",
+      "must_contain_any": [
+        "zero-rated",
+        "zero rated",
+        "0%"
+      ]
+    },
+    {
+      "id": "ho-non-uk-registration",
+      "category": "rates_thresholds",
+      "question": "Is there a VAT registration threshold for a business based outside the UK that supplies goods to UK customers?",
+      "outcome": "answered",
+      "must_contain_any": [
+        "regardless",
+        "no threshold",
+        "any amount",
+        "whatever the value",
+        "from the first"
+      ]
+    },
+    {
+      "id": "ho-gift-limit",
+      "category": "rates_thresholds",
+      "question": "Up to what value can a business give gifts to the same person in a year without accounting for VAT?",
+      "outcome": "answered",
+      "must_contain": [
+        "50"
+      ]
+    }
+  ]
+}

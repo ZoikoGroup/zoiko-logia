@@ -202,3 +202,49 @@ async def test_explicitly_denied_unrelated_source_does_not_restrict(retrieval_db
         framework="IFRS", tenant_id="tenant-a",
     )
     assert bundle.confidence_state == "insufficient"
+
+async def test_historical_as_of_selects_the_applicable_registered_version(retrieval_db):
+    from datetime import date, datetime, timezone
+    source, old, _ = await _source(retrieval_db, title="Tax threshold", text="Tax registration threshold is 100.")
+    old.effective_from = date(2024, 1, 1)
+    old.created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    current = SourceVersion(tenant_id="tenant-a", source_id=source.id, status="APPROVED", version_label="2025",
+        submitted_by="maker", approved_by="checker", effective_from=date(2025, 1, 1),
+        created_at=datetime(2025, 1, 1, tzinfo=timezone.utc), content_hash="new")
+    retrieval_db.add(current)
+    await retrieval_db.flush()
+    old.superseded_by_version_id = current.id
+    for operation in ("retrieval", "model_transmission", "display"):
+        retrieval_db.add(SourceRight(tenant_id="tenant-a", source_version_id=current.id, operation=operation,
+                                     decision="allow", rights_version=1, reason_code="ALLOW"))
+    text = "Tax registration threshold is 200."
+    retrieval_db.add(SourcePassage(tenant_id="tenant-a", source_version_id=current.id, locator="paragraph 1",
+        sequence=1, content=text, content_hash=hashlib.sha256(text.encode()).hexdigest()))
+    await retrieval_db.flush()
+    historical = await build_source_bundle(retrieval_db, query="tax registration threshold", jurisdiction="GB",
+        framework="IFRS", tenant_id="tenant-a", effective_date=date(2024, 6, 1))
+    assert historical.sources[0].version_id == old.id
+    assert historical.as_of == date(2024, 6, 1)
+    present = await build_source_bundle(retrieval_db, query="tax registration threshold", jurisdiction="GB",
+        framework="IFRS", tenant_id="tenant-a", effective_date=date(2025, 6, 1))
+    assert present.sources[0].version_id == current.id
+
+
+async def test_reviewer_replay_withholds_revoked_display_rights(retrieval_db):
+    from app.orchestration import review
+    from app.orchestration.persisted_objects import create_review_case
+    _, version, passage = await _source(retrieval_db, title="IFRS 15", text="Revenue performance obligation rules.")
+    preliminary = await build_source_bundle(retrieval_db, query="revenue performance obligation", jurisdiction="GB",
+        framework="IFRS", tenant_id="tenant-a")
+    decision = await license_gate.check_eligibility(retrieval_db, preliminary.sources, tenant_id="tenant-a", jurisdiction="GB", framework="IFRS")
+    final = bundle_builder.build_bundle(preliminary, decision)
+    await bundle_builder.persist_bundle(retrieval_db, bundle=final, tenant_id="tenant-a", query_id="review-evidence")
+    case = await create_review_case(retrieval_db, tenant_id="tenant-a", query_id="review-evidence", correlation_id="c",
+        risk_level="LOW", confidence_state="limited", reason="r")
+    evidence = await review.review_evidence(retrieval_db, tenant_id="tenant-a", case_id=case.id)
+    assert evidence[0]["content"] == passage.content
+    retrieval_db.add(SourceRight(tenant_id="tenant-a", source_version_id=version.id, operation="display",
+                                decision="deny", rights_version=2, reason_code="REVOKED_DISPLAY"))
+    await retrieval_db.commit()
+    evidence = await review.review_evidence(retrieval_db, tenant_id="tenant-a", case_id=case.id)
+    assert evidence[0]["content"] is None and evidence[0]["withheld_reason"] == "REVOKED_DISPLAY"

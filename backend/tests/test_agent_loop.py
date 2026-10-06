@@ -84,7 +84,9 @@ async def test_tool_result_is_fed_back_and_evidence_collected() -> None:
     assert [s.url for s in outcome.sources] == ["https://example.com/gdp"]
     assert len(done) == 1 and done[0].ok and done[0].source_count == 1 and len(done[0].arguments_hash) == 32
     tool_message = client.requests[1]["messages"][-1]
-    assert tool_message == {"role": "tool", "tool_call_id": "c1", "content": "value for gdp"}
+    assert tool_message["role"] == "tool" and tool_message["tool_call_id"] == "c1"
+    assert tool_message["content"].startswith("value for gdp")
+    assert "[REF-1] Source gdp" in tool_message["content"]
 
 
 async def test_identical_call_is_never_executed_twice() -> None:

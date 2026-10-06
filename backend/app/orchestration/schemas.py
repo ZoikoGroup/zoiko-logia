@@ -234,6 +234,11 @@ class SourceSummary(BaseModel):
     jurisdiction_scope: str
     version_label: str
     status: str
+    source_url: Optional[str] = None
+    authority_level: str = "secondary"
+    publisher: str = ""
+    effective_from: Optional[date] = None
+    effective_to: Optional[date] = None
 
 
 SourceDisplayState = Literal["show", "summarise", "internal_reasoning_only"]
@@ -262,6 +267,7 @@ class SourceBundle(BaseModel):
     passages: List[EvidencePassage] = Field(default_factory=list)
     excluded_evidence: List[ExcludedEvidence] = Field(default_factory=list)
     conflict_version_ids: List[str] = Field(default_factory=list)
+    as_of: Optional[date] = None
     manifest_version: Literal["1.0"] = "1.0"
 
 

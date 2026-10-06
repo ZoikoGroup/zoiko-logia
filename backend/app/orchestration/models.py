@@ -68,6 +68,45 @@ class ReviewCase(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
+    # The answer the reviewer is asked to judge: the draft the validator
+    # rejected (escalation) or the answer a user marked wrong (user_feedback).
+    # Without it a reviewer saw only the question, so nothing could be
+    # approved or corrected and the queue was never worked.
+    draft_answer: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source: Mapped[str] = mapped_column(String, nullable=False, default="escalation")
+
+
+class AnswerFeedback(Base):
+    """A user's rating of one Ask Kriton answer. A thumbs-down also opens a
+    review case, so wrong answers reach a reviewer and, once corrected,
+    become evaluation cases."""
+
+    __tablename__ = "answer_feedback"
+    __table_args__ = (
+        CheckConstraint("rating IN ('up', 'down')", name="ck_answer_feedback_rating"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    query_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    rating: Mapped[str] = mapped_column(String, nullable=False)
+    reasons: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    comment: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    review_case_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class QueryAnswerRecord(Base):
+    """Server-owned answer/evidence used by feedback; tenant/user scoped."""
+    __tablename__ = "query_answer_records"
+    query_id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    answer_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    external_evidence: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class EvidenceBundleManifest(Base):

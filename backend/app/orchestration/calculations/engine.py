@@ -26,6 +26,7 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "cost_of_sales": ("cost of sales", "cost_of_sales", "cogs", "cost"),
     "gross_profit": ("gross profit", "gross_profit"),
     "operating_expenses": ("operating expenses", "operating expense", "opex"),
+    "expenses": ("expenses", "total expenses"),
     "operating_profit": ("operating profit", "operating income", "ebit"),
     "net_amount": ("net amount", "net value", "net invoice", "net"),
     "gross_amount": ("gross amount", "gross total", "invoice total", "total including vat"),
@@ -38,9 +39,10 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "total_liabilities": ("total liabilities", "liabilities", "debt"),
     "equity": ("shareholders equity", "shareholders' equity", "equity"),
     "total_assets": ("total assets",),
-    "asset_cost": ("asset cost", "cost of the asset", "asset costs"),
+    # "a $20,000 asset", "machine costing" — the value usually precedes the noun.
+    "asset_cost": ("asset cost", "cost of the asset", "asset costs", "asset", "machine", "equipment"),
     "residual_value": ("residual value", "salvage value"),
-    "useful_life": ("useful life", "asset life"),
+    "useful_life": ("useful life", "asset life", "year life", "years life", "year useful life"),
     "selling_price": ("selling price", "sale price", "price per unit"),
     "variable_cost": ("variable cost", "variable cost per unit"),
     "fixed_costs": ("fixed costs", "fixed cost"),
@@ -62,9 +64,14 @@ def _find_value(query: str, aliases: tuple[str, ...], *, percentage: bool = Fals
     alias_pattern = "|".join(re.escape(alias) for alias in sorted(aliases, key=len, reverse=True))
     currency = r"(?P<symbol>[£$€₹])?\s*(?:(?P<code>GBP|USD|EUR|INR|AED)\s*)?"
     suffix = r"\s*%" if percentage else ""
+    # A percentage may sit a few plain words after its label: "VAT at a
+    # supplied rate of 20%" asked for the VAT rate it had just been given.
+    # Words only, so the gap can never step over a different figure.
+    gap = r"(?:\s+[a-z]+){0,4}?" if percentage else ""
     patterns = [
-        re.compile(rf"\b(?:{alias_pattern})\b\s*(?:is|are|of|at|=|:)?\s*{currency}(?P<number>{_NUMBER_TEXT}){suffix}", re.I),
-        re.compile(rf"{currency}(?P<number>{_NUMBER_TEXT}){suffix}\s*(?:for|of|as)?\s*\b(?:{alias_pattern})\b", re.I),
+        re.compile(rf"\b(?:{alias_pattern})\b{gap}\s*(?:is|are|of|at|=|:)?\s*{currency}(?P<number>{_NUMBER_TEXT}){suffix}", re.I),
+        # [\s-]*: a hyphenated "5-year life" or "10-year term" labels its number.
+        re.compile(rf"{currency}(?P<number>{_NUMBER_TEXT}){suffix}[\s-]*(?:for|of|as)?\s*\b(?:{alias_pattern})\b", re.I),
     ]
     for pattern in patterns:
         match = pattern.search(query)
@@ -98,7 +105,9 @@ def _currency(inputs: list[CalculationInput]) -> str | None:
 def _money(value: Decimal, currency: str | None) -> str:
     quantized = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     symbol = {"GBP": "£", "USD": "$", "EUR": "€", "INR": "₹"}.get(currency or "", f"{currency} " if currency else "")
-    return f"{symbol}{quantized:,.2f}"
+    # The sign leads the symbol: "-₹20,000.00", not "₹-20,000.00".
+    sign = "-" if quantized < 0 else ""
+    return f"{sign}{symbol}{abs(quantized):,.2f}"
 
 
 def _percent(value: Decimal) -> str:
@@ -137,10 +146,25 @@ def _clarify(formula: str, inputs: list[CalculationInput], missing: list[str]) -
     )
 
 
+def asks_several_questions(query: str) -> bool:
+    """Two or more separate questions that each carry figures ("…ratio? …
+    Debt-to-equity? …"). Labels are read across the whole message, so
+    "Cost £80" from one question became the depreciable cost in another and
+    a negative depreciation was shown as a Verified calculation. Such
+    messages go to the model, whose every arithmetic line is re-checked by
+    validate_answer_calculations. One calculation plus a lookup question
+    ("18% GST on ₹50,000? Also, the UK VAT rate?") is unaffected."""
+    segments = [segment for segment in (query or "").split("?") if segment.strip()]
+    return sum(1 for segment in segments if re.search(r"\d", segment)) >= 2
+
+
 def calculate_from_query(query: str) -> CalculationResult:
     """Recognize and execute supported self-contained accounting calculations."""
     q = query or ""
-    if not _CALCULATION_HINT.search(q):
+    # Several questions in one message: labels would be read across all of
+    # them (one question's "cost" used in another's formula). Not matched,
+    # so the model answers each and every arithmetic line is re-checked.
+    if not _CALCULATION_HINT.search(q) or asks_several_questions(q):
         return CalculationResult()
 
     wants_gross_margin = bool(re.search(r"\bgross (?:profit )?margin\b", q, re.I))
@@ -150,6 +174,15 @@ def calculate_from_query(query: str) -> CalculationResult:
         cost = _input(q, "cost_of_sales")
         supplied_profit = _input(q, "gross_profit")
         inputs = [item for item in (revenue, cost, supplied_profit) if item]
+        if not revenue and (
+            re.search(r"\bfrom\b[^.?]*\d[^.?]*\bto\b[^.?]*\d", q, re.I)
+            or re.search(r"\bmargin\b[^.?]*\d+(?:\.\d+)?\s*%", q, re.I)
+        ):
+            # The figures are there in a shape this extractor does not read:
+            # "revenue grew from £2.4m to £2.9m but gross margin fell from 38%
+            # to 33%" was answered "please provide revenue". The model answers
+            # it instead, and every arithmetic line is still re-checked.
+            return CalculationResult()
         if not revenue:
             return _clarify("gross_margin" if wants_gross_margin else "gross_profit", inputs, ["revenue"])
         profit = supplied_profit.value if supplied_profit else (revenue.value - cost.value if cost else None)
@@ -163,6 +196,13 @@ def calculate_from_query(query: str) -> CalculationResult:
         formulas = ["gross_profit"]
         if not supplied_profit:
             steps.append(f"Gross profit = {_money(revenue.value, currency)} − {_money(cost.value, currency)} = {_money(profit, currency)}")
+        elif not cost and re.search(r"\b(?:cost of sales|cost of goods sold|cogs)\b", q, re.I):
+            # "Revenue £180,000, gross profit £72,000. What is the cost of
+            # sales and gross margin?" was answered with the margin only.
+            cost_of_sales = revenue.value - profit
+            formulas.append("cost_of_sales")
+            outputs.append(CalculationOutput(name="cost_of_sales", value=cost_of_sales, display_value=_money(cost_of_sales, currency), kind="money"))
+            steps.append(f"Cost of sales = {_money(revenue.value, currency)} − {_money(profit, currency)} = {_money(cost_of_sales, currency)}")
         if wants_gross_margin:
             if revenue.value == 0:
                 return _undefined("gross_margin", inputs, "Gross margin is undefined because revenue is zero; division by zero is not permitted.")
@@ -171,6 +211,27 @@ def calculate_from_query(query: str) -> CalculationResult:
             outputs.append(CalculationOutput(name="gross_margin", value=margin, display_value=_percent(margin), kind="percentage"))
             steps.append(f"Gross margin = {_money(profit, currency)} ÷ {_money(revenue.value, currency)} × 100 = {_percent(margin)}")
         return _success(formulas, inputs, outputs, steps)
+
+    if re.search(r"\bprofit\b", q, re.I) and not re.search(r"\b(?:tax|gst|vat|registration)\b", q, re.I):
+        revenue, expenses = _input(q, "revenue"), _input(q, "expenses")
+        if revenue and expenses:
+            inputs = [revenue, expenses]
+            if not _same_currency(inputs):
+                return CalculationResult(matched=True, status="clarification_required", inputs=inputs,
+                    error_code="CURRENCY_MISMATCH", message="Revenue and expenses must use the same currency.")
+            profit = revenue.value - expenses.value
+            currency = _currency(inputs)
+            outputs = [CalculationOutput(name="profit", value=profit, display_value=_money(profit, currency), kind="money")]
+            steps = [f"Profit = {_money(revenue.value, currency)} − {_money(expenses.value, currency)} = {_money(profit, currency)}"]
+            formulas = ["profit"]
+            if re.search(r"\bmargin\b", q, re.I):
+                if revenue.value == 0:
+                    return _undefined("profit_margin", inputs, "Profit margin is undefined when revenue is zero.")
+                margin = profit / revenue.value * Decimal("100")
+                outputs.append(CalculationOutput(name="profit_margin", value=margin, display_value=_percent(margin), kind="percentage"))
+                steps.append(f"Profit margin = {_money(profit, currency)} ÷ {_money(revenue.value, currency)} × 100 = {_percent(margin)}")
+                formulas.append("profit_margin")
+            return _success(formulas, inputs, outputs, steps)
 
     if re.search(r"\bvat\b", q, re.I) and re.search(r"\b(calculate|compute|gross total|vat amount|reverse vat)\b", q, re.I):
         net = _input(q, "net_amount")

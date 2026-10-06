@@ -34,7 +34,10 @@ class _Series(BaseModel):
 
 
 class BarLineChart(BaseModel):
-    type: Literal["bar", "line"]
+    # "area": a line filled to the axis (cumulative totals). "waterfall": one
+    # series — a starting amount, then signed changes, optionally ending on
+    # the running total. Both were drawn as plain line/bar before.
+    type: Literal["bar", "line", "area", "waterfall"]
     title: str
     categories: list[str]
     series: list[_Series] = Field(min_length=1)
@@ -149,9 +152,12 @@ CHART_TOOL_SCHEMA = {
             "properties": {
                 "type": {
                     "type": "string",
-                    "enum": ["bar", "line", "pie", "sankey", "scatter", "radar", "heatmap", "candlestick"],
+                    "enum": ["bar", "line", "area", "waterfall", "pie", "sankey", "scatter", "radar", "heatmap", "candlestick"],
                     "description": (
-                        "'line' for a trend over time; 'bar' for comparisons across categories "
+                        "'line' for a trend over time; 'area' for a cumulative or filled trend; "
+                        "'waterfall' for a bridge from a starting amount through signed changes to a "
+                        "result (one series: start, then each change, optionally the final total); "
+                        "'bar' for comparisons across categories "
                         "(add stacked=true when the series are parts of a total); 'pie' for parts "
                         "of a single whole; 'sankey' for a flow between stages; 'scatter' for "
                         "correlation between two measures; 'radar' for comparing several ratios on "

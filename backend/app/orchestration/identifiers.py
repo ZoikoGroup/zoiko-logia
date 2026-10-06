@@ -14,6 +14,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from fastapi.encoders import jsonable_encoder
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
@@ -123,6 +124,9 @@ async def store_idempotency(
         envelope = response
     else:
         envelope = {"request_hash": request_hash, "response": response}
+    # Source metadata contains dates; callers may supply a Python-mode model
+    # dump. Normalize nested values at the JSON persistence boundary.
+    envelope = jsonable_encoder(envelope)
     if record is None:
         db.add(IdempotencyRecord(
             tenant_id=tenant_id, idempotency_key=key, response_json=envelope,

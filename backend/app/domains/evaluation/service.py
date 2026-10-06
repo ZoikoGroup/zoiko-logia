@@ -2,8 +2,9 @@ import uuid
 import time
 import re
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from typing import List
 
 from app.domains.evaluation.models import (
@@ -30,7 +31,7 @@ PII_RE = re.compile(r"\b(\d{3}-\d{2}-\d{4}|\d{4}-\d{4}-\d{4}-\d{4}|[A-Za-z0-9._%
 SECRET_RE = re.compile(r"\b(api[-_]?key|secret[-_]?key|private[-_]?key)\b", re.IGNORECASE)
 
 
-async def create_dataset(db: AsyncSession, payload: EvaluationDatasetCreate) -> EvaluationDataset:
+async def create_dataset(db: AsyncSession, payload: EvaluationDatasetCreate, *, tenant_id: str | None = None) -> EvaluationDataset:
     res = await db.execute(select(EvaluationDataset).where(EvaluationDataset.id == payload.id))
     existing = res.scalars().first()
     if existing:
@@ -44,6 +45,7 @@ async def create_dataset(db: AsyncSession, payload: EvaluationDatasetCreate) -> 
         version=payload.version,
         status=payload.status or "ACTIVE",
         domain=payload.domain,
+        tenant_id=tenant_id,
     )
     db.add(dataset)
     await db.flush()
@@ -52,6 +54,7 @@ async def create_dataset(db: AsyncSession, payload: EvaluationDatasetCreate) -> 
         case = BenchmarkCase(
             id=case_data.id,
             dataset_id=dataset.id,
+            tenant_id=tenant_id,
             query_text=case_data.query_text,
             gold_answer=case_data.gold_answer,
             source_refs=case_data.source_refs,
@@ -61,12 +64,11 @@ async def create_dataset(db: AsyncSession, payload: EvaluationDatasetCreate) -> 
         db.add(case)
 
     await db.commit()
-    await db.refresh(dataset)
-    return dataset
+    return await get_dataset(db, dataset.id, tenant_id=tenant_id)
 
 
-async def get_dataset(db: AsyncSession, dataset_id: str) -> EvaluationDataset:
-    res = await db.execute(select(EvaluationDataset).where(EvaluationDataset.id == dataset_id))
+async def get_dataset(db: AsyncSession, dataset_id: str, *, tenant_id: str | None = None) -> EvaluationDataset:
+    res = await db.execute(select(EvaluationDataset).options(selectinload(EvaluationDataset.cases)).where(EvaluationDataset.id == dataset_id, or_(EvaluationDataset.tenant_id.is_(None), EvaluationDataset.tenant_id == tenant_id)))
     dataset = res.scalars().first()
     if not dataset:
         raise HTTPException(
@@ -115,10 +117,11 @@ async def execute_evaluation_run(
     db: AsyncSession,
     dataset_id: str,
     threshold_set_id: str,
-    config_hash: str
+    config_hash: str,
+    tenant_id: str | None = None,
 ) -> tuple[EvaluationRun, ResultPack]:
     # 1. Fetch dependencies
-    await get_dataset(db, dataset_id)  # 404s on an unknown dataset
+    await get_dataset(db, dataset_id, tenant_id=tenant_id)  # 404s on an unknown dataset
     ts = await get_threshold_set(db, threshold_set_id)
 
     # 2. Query actual cases from the database

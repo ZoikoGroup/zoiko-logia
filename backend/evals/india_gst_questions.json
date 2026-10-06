@@ -1,0 +1,176 @@
+{
+ "version": "india-gst-1",
+ "notes": "India GST after the September 2025 rate changes. Every expected value is quoted from the GST Council's FAQs on GST rate changes (gstcouncil.gov.in/sites/default/files/2025-09/faq_0.pdf), ingested by scripts/ingest_official.py. Run before and after ingestion: run_baseline_eval.py --only india_gst.",
+ "cases": [
+  {
+   "id": "gst-effective-date",
+   "category": "freshness",
+   "question": "From what date do the new GST rates recommended at the 56th GST Council meeting apply?",
+   "outcome": "answered",
+   "must_contain": [
+    "22"
+   ],
+   "must_contain_any": [
+    "September 2025",
+    "September, 2025",
+    "22.09.2025"
+   ]
+  },
+  {
+   "id": "gst-registration-threshold",
+   "category": "rates_thresholds",
+   "question": "Did the September 2025 GST changes alter the registration threshold for goods under the CGST Act?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "no change",
+    "not changed",
+    "unchanged",
+    "has not changed",
+    "did not change",
+    "did not modify",
+    "not modified",
+    "not alter",
+    "did not alter"
+   ]
+  },
+  {
+   "id": "gst-ambulance",
+   "category": "rates_thresholds",
+   "question": "What GST rate applies to vehicles supplied as ambulances after the 2025 rate changes?",
+   "outcome": "answered",
+   "must_contain": [
+    "18%"
+   ]
+  },
+  {
+   "id": "gst-renewable",
+   "category": "rates_thresholds",
+   "question": "What is the GST rate on renewable energy devices after the 2025 changes?",
+   "outcome": "answered",
+   "must_contain": [
+    "5%"
+   ]
+  },
+  {
+   "id": "gst-ac-dishwasher",
+   "category": "rates_thresholds",
+   "question": "What GST rate applies to air conditioners and dishwashers in India now?",
+   "outcome": "answered",
+   "must_contain": [
+    "18%"
+   ]
+  },
+  {
+   "id": "gst-televisions",
+   "category": "rates_thresholds",
+   "question": "What GST rate applies to large televisions in India after the 2025 changes?",
+   "outcome": "answered",
+   "must_contain": [
+    "18%"
+   ]
+  },
+  {
+   "id": "gst-hotel-7500",
+   "category": "rates_thresholds",
+   "question": "What GST rate applies to hotel rooms costing up to Rs 7,500 per night?",
+   "outcome": "answered",
+   "must_contain": [
+    "5%"
+   ],
+   "must_contain_any": [
+    "without ITC",
+    "without input tax credit",
+    "no ITC",
+    "no input tax credit",
+    "without entitlement to input tax credit",
+    "without the right to claim input tax credit",
+    "not eligible for input tax credit"
+   ]
+  },
+  {
+   "id": "gst-salon-gym",
+   "category": "rates_thresholds",
+   "question": "What GST rate applies to salons, gyms and yoga services after September 2025?",
+   "outcome": "answered",
+   "must_contain": [
+    "5%"
+   ],
+   "must_contain_any": [
+    "without ITC",
+    "without input tax credit",
+    "no ITC",
+    "no input tax credit",
+    "without entitlement to input tax credit",
+    "without the right to claim input tax credit",
+    "not eligible for input tax credit"
+   ]
+  },
+  {
+   "id": "gst-ipl-tickets",
+   "category": "rates_thresholds",
+   "question": "What GST rate applies to tickets for IPL matches?",
+   "outcome": "answered",
+   "must_contain": [
+    "40%"
+   ]
+  },
+  {
+   "id": "gst-sports-tickets-500",
+   "category": "rates_thresholds",
+   "question": "Is GST charged on tickets to recognised sporting events costing up to Rs 500?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "exempt",
+    "no GST",
+    "not taxable"
+   ]
+  },
+  {
+   "id": "gst-gta",
+   "category": "rates_thresholds",
+   "question": "What GST rate applies to goods transport agency (GTA) services after the 2025 changes?",
+   "outcome": "answered",
+   "must_contain": [
+    "5%",
+    "18%"
+   ]
+  },
+  {
+   "id": "gst-job-work-leather",
+   "category": "rates_thresholds",
+   "question": "What is the GST rate on job work services for hides, skins and leather after the 2025 changes?",
+   "outcome": "answered",
+   "must_contain": [
+    "5%"
+   ]
+  },
+  {
+   "id": "gst-residuary-job-work",
+   "category": "rates_thresholds",
+   "question": "What GST rate applies to residuary job work services after the 2025 changes?",
+   "outcome": "answered",
+   "must_contain": [
+    "18%"
+   ]
+  },
+  {
+   "id": "gst-offshore-oil-gas",
+   "category": "rates_thresholds",
+   "question": "What GST rate applies to works contracts for offshore oil and gas exploration after the 2025 changes?",
+   "outcome": "answered",
+   "must_contain": [
+    "18%"
+   ]
+  },
+  {
+   "id": "gst-advances",
+   "category": "procedure",
+   "question": "If I received an advance before the GST rate changed but supply happens after, which rate applies?",
+   "outcome": "answered",
+   "must_contain_any": [
+    "time of supply",
+    "Section 14"
+   ]
+  }
+ ]
+}
