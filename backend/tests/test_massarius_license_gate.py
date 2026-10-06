@@ -14,10 +14,12 @@ import uuid
 
 import pytest
 
+from tests.db_guard import integration_db_allowed, require_isolated_database
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
-        os.getenv("RUN_DB_INTEGRATION_TESTS") != "1",
+        not integration_db_allowed(),
         reason="set RUN_DB_INTEGRATION_TESTS=1 with an isolated test database",
     ),
 ]
@@ -131,4 +133,5 @@ async def main():
 
 
 if __name__ == "__main__":
+    require_isolated_database()
     asyncio.run(main())

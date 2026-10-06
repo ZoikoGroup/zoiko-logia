@@ -25,6 +25,8 @@ import os
 
 import pytest
 
+from tests.db_guard import integration_db_allowed, require_isolated_database
+
 from sqlalchemy import text
 
 from app.core.config import get_settings
@@ -35,7 +37,7 @@ settings = get_settings()
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
-        os.getenv("RUN_DB_INTEGRATION_TESTS") != "1" or settings.is_sqlite,
+        not integration_db_allowed() or settings.is_sqlite,
         reason="set RUN_DB_INTEGRATION_TESTS=1 with an isolated Postgres database",
     ),
 ]
