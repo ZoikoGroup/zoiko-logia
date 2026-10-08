@@ -179,8 +179,8 @@ async def test_audit_ledger_is_verified_and_a_broken_chain_is_a_critical_excepti
     assert intact["ledger"]["state"] == "verified" and intact["ledger"]["eventsChecked"] == 3
     assert not any(e["title"].startswith("Audit ledger") for e in intact["exceptions"])
 
-    # verify_chain recomputes chain hashes from the stored payload_hash, so a
-    # rewritten payload_hash is what it detects.
+    # The chain hash covers the stored payload_hash, so a rewritten
+    # payload_hash is what the check detects.
     tampered = (await db.execute(select(AuditEvent).where(AuditEvent.subject_id == "1"))).scalar_one()
     tampered.payload_hash = "0" * 64
     await db.commit()
@@ -189,6 +189,51 @@ async def test_audit_ledger_is_verified_and_a_broken_chain_is_a_critical_excepti
     assert broken["ledger"]["state"] == "broken"
     alert = next(e for e in broken["exceptions"] if e["title"] == "Audit ledger chain verification failed")
     assert alert["severity"] == "Critical" and alert["domain"] == AUDIT_INCIDENT
+
+
+async def test_ledger_check_reads_only_the_recent_window_and_catches_a_broken_link(db, monkeypatch):
+    from sqlalchemy import select
+
+    from app.domains.audit_ledger.event_envelope import record_event_async
+    from app.domains.audit_ledger.models import AuditEvent
+    from app.domains.governance_dashboard import service
+
+    monkeypatch.setattr(service, "LEDGER_WINDOW", 3)
+    user = _user()
+    db.add(user)
+    await db.commit()
+    for n in range(5):
+        await record_event_async(db, tenant_id="t1", event_name="test.event", emitting_service="test",
+                                 actor_id=user.id, subject_type="thing", subject_id=str(n), payload={"n": n})
+
+    view = await build_governance_dashboard(db, user, NOW)
+    assert view["ledger"]["eventsChecked"] == 3 and view["ledger"]["state"] == "verified"
+
+    # Re-pointing an event's link (with a self-consistent hash would need the
+    # secret-free recompute; a bad link alone must still be caught).
+    event = (await db.execute(select(AuditEvent).where(AuditEvent.subject_id == "4"))).scalar_one()
+    event.previous_chain_hash = "f" * 64
+    await db.commit()
+    assert (await build_governance_dashboard(db, user, NOW))["ledger"]["state"] == "broken"
+
+
+async def test_a_failed_ledger_read_reports_unavailable_not_a_crash(db, monkeypatch):
+    from app.domains.governance_dashboard import service
+
+    user = _user()
+    db.add(user)
+    await db.commit()
+    real_execute = db.execute
+
+    async def flaky_execute(statement, *args, **kwargs):
+        if "audit_events" in str(statement):
+            raise TimeoutError("statement timeout")
+        return await real_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db, "execute", flaky_execute)
+    view = await service.build_governance_dashboard(db, user, NOW)
+    assert view["ledger"]["state"] == "unavailable"
+    assert view["governanceSummary"]["overallState"] in {"no_open_exceptions", "attention_required"}
 
 
 async def test_roles_without_a_permission_see_restricted_domains(db):

@@ -51,8 +51,8 @@ describe("Governance Dashboard", () => {
   it("shows the real audit ledger verification result", async () => {
     api.get.mockResolvedValue(base);
     const { unmount } = render(<GovernanceDashboard />);
-    expect(await screen.findByText("Ledger chain verified")).toBeInTheDocument();
-    expect(screen.getByText("12 audit events checked")).toBeInTheDocument();
+    expect(await screen.findByText("Recent ledger chain verified")).toBeInTheDocument();
+    expect(screen.getByText(/Latest 12 audit events checked/)).toBeInTheDocument();
     unmount();
     api.get.mockResolvedValue({ ...base, auditIncidentSummary: { ...base.auditIncidentSummary, ledgerState: "broken" } });
     render(<GovernanceDashboard />);

@@ -26,7 +26,8 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domains.audit_ledger.service import verify_tenant_chain
+from app.domains.audit_ledger.chain_integrity import verify_event_self_consistency
+from app.domains.audit_ledger.models import AuditEvent
 from app.domains.evaluation.models import EvaluationRun, PromotionAuthorization, ResultPack
 from app.domains.identity.models import User
 from app.domains.identity.permissions import (
@@ -58,6 +59,11 @@ _DOMAINS = [
 ]
 
 LICENCE_WARNING_DAYS = 30
+# The dashboard checks the most recent part of the audit chain on every load.
+# A full-chain read (GET /audit/chain-verify) is O(all events) and timed out
+# against a hosted database at ~126k events, so it stays an on-demand check.
+LEDGER_WINDOW = 500
+LEDGER_MARGIN = 50
 EXCEPTION_LIMIT = 8
 DECISION_LIMIT = 6
 RELEASE_RUNS = 3
@@ -149,6 +155,41 @@ async def _incident_exceptions(db: AsyncSession, user: User) -> tuple[list[dict]
                                     f"{incident.source} · {incident.containment_status}",
                                     incident.opened_at, "/incident-response"))
     return found, counts
+
+
+async def _recent_ledger(db: AsyncSession, user: User) -> dict:
+    """Verify the tenant's latest LEDGER_WINDOW audit events: each event's own
+    chain hash, and that each links to an event that exists. Reads only the
+    hash columns. Fails soft: a slow or failed read reports "unavailable".
+
+    Links are matched by hash, not by position: events written in the same
+    instant share an ingested_at, so time order alone can put a pair the
+    wrong way round and report a break that is not there. LEDGER_MARGIN older
+    events are read as well, so the oldest checked events can find theirs."""
+    tenant_id = user.tenant_id
+    try:
+        # A savepoint, so a failed read rolls back only itself: a full
+        # rollback would also expire the request's loaded user row.
+        async with db.begin_nested():
+            rows = (await db.execute(
+                select(AuditEvent.id, AuditEvent.event_name, AuditEvent.payload_hash,
+                       AuditEvent.previous_chain_hash, AuditEvent.chain_hash)
+                .where(AuditEvent.tenant_id == tenant_id)
+                .order_by(AuditEvent.ingested_at.desc()).limit(LEDGER_WINDOW + LEDGER_MARGIN)
+            )).all()
+    except Exception:  # noqa: BLE001 - a ledger read must not take the dashboard down
+        return {"state": "unavailable", "eventsChecked": 0, "firstBrokenEventId": None}
+    checked = rows[:LEDGER_WINDOW]
+    passed, broken = verify_event_self_consistency(checked)
+    if passed:
+        known = {row.chain_hash for row in rows}
+        # Every checked event must link to a read event, or be the start of
+        # the chain (no previous hash). The margin keeps the oldest checked
+        # events' predecessors inside the read.
+        dangling = [e for e in checked if e.previous_chain_hash is not None and e.previous_chain_hash not in known]
+        if dangling:
+            passed, broken = False, dangling[0].id
+    return {"state": "verified" if passed else "broken", "eventsChecked": len(checked), "firstBrokenEventId": broken}
 
 
 def _visible_sources(tenant_id: str):
@@ -286,18 +327,11 @@ async def build_governance_dashboard(db: AsyncSession, user: User, now: datetime
             .where(ReviewCase.tenant_id == user.tenant_id, ReviewCase.status.in_(_OPEN_REVIEW))
         )).scalar_one()
 
-    # The tenant's audit chain, verified the same way as GET /audit/chain-verify.
-    chain = await verify_tenant_chain(db, user.tenant_id)
-    ledger = {
-        "state": "verified" if chain["passed"] else "broken",
-        "eventsChecked": chain["events_checked"],
-        "firstBrokenEventId": chain["first_broken_event_id"],
-        "verifiedAt": now.isoformat(),
-    }
-    if not chain["passed"]:
-        exceptions.append(_exception(chain["first_broken_event_id"] or "audit-chain", "Critical", AUDIT_INCIDENT,
+    ledger = {**await _recent_ledger(db, user), "window": LEDGER_WINDOW, "verifiedAt": now.isoformat()}
+    if ledger["state"] == "broken":
+        exceptions.append(_exception(ledger["firstBrokenEventId"] or "audit-chain", "Critical", AUDIT_INCIDENT,
                                      "Audit ledger chain verification failed",
-                                     f"First broken event: {chain['first_broken_event_id']}", None, "/audit-logs"))
+                                     f"First broken event: {ledger['firstBrokenEventId']}", None, "/audit-logs"))
 
     exceptions.sort(key=lambda e: (_SEVERITY_ORDER.get(e["severity"], 9), e["openedAt"] or ""))
     decisions, decision_total = await _decisions(db, user, eligible_packs)

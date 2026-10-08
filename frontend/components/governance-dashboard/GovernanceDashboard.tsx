@@ -19,7 +19,7 @@ type GovernanceData = {
   releaseReadiness: Release[];
   accountabilitySummary: { mandatoryReviews: number; overdueReviews: number; boundaryEscalations: number };
   sourceGovernanceSummary: { state: string; licenseStates: Record<string, number>; expiringWithin30Days: number; expired?: number };
-  auditIncidentSummary: { ledgerState: string; ledgerEventsChecked?: number; openIncidentCounts: Record<string, number>; escalationCounts: Record<string, number> };
+  auditIncidentSummary: { ledgerState: string; ledgerEventsChecked?: number; ledgerWindow?: number;openIncidentCounts: Record<string, number>; escalationCounts: Record<string, number> };
 };
 
 const OPTIONS = { environment: "PRODUCTION", jurisdiction: "US", windowDays: 30 };
@@ -147,8 +147,8 @@ export function GovernanceDashboard() {
                 <div className="mt-4 space-y-2 text-sm text-muted"><p>{plural(sources?.expiringWithin30Days ?? 0, "licence expires", "licences expire")} within 30 days</p><p>{plural(sources?.expired ?? 0, "licence has", "licences have")} expired</p><p>Licence states: {Object.keys(sources?.licenseStates ?? {}).length ? Object.entries(sources!.licenseStates).map(([state, count]) => `${count} ${state}`).join(" · ") : "no sources on file"}</p></div>
               </section>
               <section className="rounded-2xl border border-line bg-panel p-5">
-                <div className="flex items-center justify-between"><h2 className="text-lg font-bold text-ink">Audit / incident readiness</h2>{data.auditIncidentSummary.ledgerState === "verified" ? <span className="inline-flex items-center gap-1 text-sm text-ok"><CheckCircle2 size={15} />Ledger chain verified</span> : <span className="inline-flex items-center gap-1 text-sm text-bad"><CircleAlert size={15} />Ledger chain broken</span>}</div>
-                <div className="mt-4 space-y-2 text-sm text-muted"><p>{plural(data.auditIncidentSummary.ledgerEventsChecked ?? 0, "audit event", "audit events")} checked</p><p>{incidents.critical ?? 0} critical / {incidents.high ?? 0} high open incidents</p><p>{plural(Object.values(escalations).reduce((a, b) => a + b, 0), "escalation", "escalations")} open{Object.keys(escalations).length ? ` (${Object.entries(escalations).map(([s, n]) => `${n} ${s.toLowerCase().replace("_", " ")}`).join(", ")})` : ""}</p><p>{plural(data.accountabilitySummary.overdueReviews, "escalation is", "escalations are")} past SLA</p></div>
+                <div className="flex items-center justify-between"><h2 className="text-lg font-bold text-ink">Audit / incident readiness</h2>{data.auditIncidentSummary.ledgerState === "verified" ? <span className="inline-flex items-center gap-1 text-sm text-ok"><CheckCircle2 size={15} />Recent ledger chain verified</span> : data.auditIncidentSummary.ledgerState === "broken" ? <span className="inline-flex items-center gap-1 text-sm text-bad"><CircleAlert size={15} />Ledger chain broken</span> : <span className="inline-flex items-center gap-1 text-sm text-warn"><CircleAlert size={15} />Ledger check unavailable</span>}</div>
+                <div className="mt-4 space-y-2 text-sm text-muted"><p>Latest {plural(data.auditIncidentSummary.ledgerEventsChecked ?? 0, "audit event", "audit events")} checked{data.auditIncidentSummary.ledgerWindow ? ` (up to ${data.auditIncidentSummary.ledgerWindow}; full check on Audit Logs)` : ""}</p><p>{incidents.critical ?? 0} critical / {incidents.high ?? 0} high open incidents</p><p>{plural(Object.values(escalations).reduce((a, b) => a + b, 0), "escalation", "escalations")} open{Object.keys(escalations).length ? ` (${Object.entries(escalations).map(([s, n]) => `${n} ${s.toLowerCase().replace("_", " ")}`).join(", ")})` : ""}</p><p>{plural(data.accountabilitySummary.overdueReviews, "escalation is", "escalations are")} past SLA</p></div>
               </section>
             </div>
           </>
