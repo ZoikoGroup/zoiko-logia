@@ -24,7 +24,6 @@ import {
   UsersRound,
 } from "lucide-react";
 import { useRole } from "@/components/shell/RoleProvider";
-import { useAuth } from "@/hooks/useAuth";
 import { getAuthToken, getCommandCenter, switchCommandCenterContext } from "@/lib/api";
 
 // Shape returned by GET /api/v1/command-center (backend/app/domains/command_center).
@@ -103,7 +102,6 @@ function PanelEmpty({ freshness, empty }: { freshness?: Freshness; empty: string
 
 export function CommandCenter() {
   const { role } = useRole();
-  const { user, profile } = useAuth();
   const [newOpen, setNewOpen] = useState(false);
   const [assuranceOpen, setAssuranceOpen] = useState(false);
   const [data, setData] = useState<CommandCenterData | null>(null);
@@ -113,7 +111,6 @@ export function CommandCenter() {
   const [contextOpen, setContextOpen] = useState(false);
   const [contextError, setContextError] = useState("");
   const hasReviewAuthority = ["CFO", "Controller", "Audit Partner", "Finance Manager", "AI Governance Lead", "Admin"].includes(role);
-  const firstName = (profile?.full_name || user?.user_metadata?.full_name || "").split(" ")[0];
 
   useEffect(() => {
     const controller = new AbortController();
@@ -176,7 +173,7 @@ export function CommandCenter() {
         <header className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
           <div>
             <p className="mb-1 text-sm font-medium text-brand">Command Center</p>
-            <h1 id="command-center-title" className="text-3xl font-semibold tracking-tight text-ink">{greeting()}{firstName ? `, ${firstName}` : ""}.</h1>
+            <h1 id="command-center-title" className="text-3xl font-semibold tracking-tight text-ink">{greeting()}.</h1>
             <p className="mt-2 max-w-2xl text-[15px] leading-6 text-muted">{summary ? <>{summary.attentionCount} {summary.attentionCount === 1 ? "item needs" : "items need"} attention. {hasReviewAuthority ? `${summary.reviewCount} ${summary.reviewCount === 1 ? "review awaits" : "reviews await"} a decision. ` : ""}{summary.deadlineCount} {summary.deadlineCount === 1 ? "deadline falls" : "deadlines fall"} within the next 14 days.</> : loading ? "Loading your workspace…" : ""}</p>
             {error && <p className="mt-2 text-sm text-bad">{error}</p>}
           </div>

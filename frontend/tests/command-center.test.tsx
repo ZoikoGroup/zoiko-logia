@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const api = vi.hoisted(() => ({ get: vi.fn(), switchContext: vi.fn() }));
 vi.mock("@/lib/api", () => ({ getAuthToken: () => "token", getCommandCenter: api.get, switchCommandCenterContext: api.switchContext }));
 vi.mock("@/components/shell/RoleProvider", () => ({ useRole: () => ({ role: "Admin", roleReady: true, setRole: () => {} }) }));
-vi.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ user: null, profile: { full_name: "Naresh Maruthi" } }) }));
 vi.mock("next/link", () => ({ default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a> }));
 import { CommandCenter } from "@/components/command-center/CommandCenter";
 
@@ -34,7 +33,7 @@ describe("Command Center", () => {
     expect(screen.getByText("What is the VAT late payment penalty?")).toBeInTheDocument();
     expect(screen.getByText("Q2 compliance summary")).toBeInTheDocument();
     expect(screen.getByText("Zoiko Finance")).toBeInTheDocument();
-    expect(screen.getByText(/, Naresh\./)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(/^Good (morning|afternoon|evening)\.$/);
     expect(screen.queryByText("IFRS 15 matter requires human review")).not.toBeInTheDocument();
     expect(api.get).toHaveBeenCalledWith("token", { jurisdiction: "US", framework: "US-GAAP", period: "FY2026" }, expect.anything());
   });
