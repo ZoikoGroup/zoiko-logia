@@ -18,16 +18,11 @@ export function Sidebar({
   const pathname = usePathname();
   const router = useRouter();
   const { role, roleReady } = useRole();
-  const { signOut, user, profile } = useAuth();
-  // Prefer the provisioned profile's name (the real DB row) over Supabase's
-  // user_metadata, which is only what the signup form stashed and can drift
-  // once a tenant admin edits the profile.
-  const displayName = profile?.full_name || user?.user_metadata?.full_name || user?.email || "User";
-  const initials = (profile?.full_name || user?.user_metadata?.full_name || user?.email || "U")
-    .split(/\s|@/)
-    .slice(0, 2)
-    .map((part: string) => part[0]?.toUpperCase())
-    .join("");
+  const { signOut } = useAuth();
+  // The identity card shows the product name, not the signed-in person's;
+  // the role is still shown beneath it.
+  const displayName = "ZoikoLogia";
+  const initials = "ZL";
   const [expanded, setExpanded] = useState<Set<string>>(new Set(["overview"]));
   const [identityOpen, setIdentityOpen] = useState(false);
 
