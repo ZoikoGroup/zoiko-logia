@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.domains.audit_ledger.event_envelope import record_event_async
+from app.domains.command_center.service import build_command_center
 from app.domains.identity.models import Tenant, User
 from app.domains.identity.rbac import get_current_user
 
@@ -61,9 +62,9 @@ async def get_command_center(
 ) -> dict:
     """Return one tenant- and permission-bound operational view model.
 
-    This endpoint intentionally returns empty professional collections until
-    their authoritative services contain records. Absence of evidence never
-    becomes an invented healthy count or assurance claim.
+    Each panel is read from its authoritative service (see service.py) and is
+    empty until that service holds records. Absence of evidence never becomes
+    an invented healthy count or assurance claim.
     """
     tenant_name = (await db.execute(select(Tenant.name).where(Tenant.id == current_user.tenant_id))).scalar_one_or_none()
     now = datetime.now(timezone.utc)
@@ -88,7 +89,7 @@ async def get_command_center(
         },
     )
 
-    unavailable = {"state": "unavailable", "failedReason": "The authoritative service has not completed its first assessment."}
+    panels = await build_command_center(db, current_user, now)
     return {
         "contextToken": context_token,
         "activeContext": {
@@ -98,11 +99,9 @@ async def get_command_center(
             "periodId": period.lower(), "periodLabel": period, "boundaryType": "workspace",
             "roleId": current_user.role, "permissionSetVersion": permission_version,
         },
-        "professionalSummary": {
-            "attentionCount": 0, "reviewCount": 0, "deadlineCount": 0,
-            "summaryGeneratedAt": now.isoformat(), "dataFreshnessState": "current",
-        },
-        "attentionItems": [], "activeMatters": [], "deadlines": [], "reviewQueue": [], "recentWork": [],
+        "professionalSummary": panels["professionalSummary"],
+        "attentionItems": panels["attentionItems"], "activeMatters": panels["activeMatters"],
+        "deadlines": panels["deadlines"], "reviewQueue": panels["reviewQueue"], "recentWork": panels["recentWork"],
         "assuranceStatus": {
             "overallState": "unknown",
             "controls": {
@@ -114,10 +113,5 @@ async def get_command_center(
             "lastEvaluatedAt": now.isoformat(), "policyVersion": "not-assessed",
             "exceptionIds": [],
         },
-        "moduleFreshness": {
-            "attentionItems": dict(unavailable), "activeMatters": dict(unavailable),
-            "deadlines": dict(unavailable), "reviewQueue": dict(unavailable),
-            "recentWork": dict(unavailable),
-            "assuranceStatus": {"state": "current"},
-        },
+        "moduleFreshness": {**panels["moduleFreshness"], "assuranceStatus": {"state": "current"}},
     }
