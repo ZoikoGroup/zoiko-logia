@@ -49,12 +49,12 @@ class SecurityIncidentOut(BaseModel):
 
 class IncidentActionRequest(BaseModel):
     action: str  # Contain, Escalate
-    actor: str
+    actor: str = ""  # ignored: the timeline records the authenticated user
     note: str
 
 
 class IncidentCloseRequest(BaseModel):
-    resolver: str
+    resolver: str = ""  # ignored: the timeline records the authenticated user
     resolution_note: str
 
 
