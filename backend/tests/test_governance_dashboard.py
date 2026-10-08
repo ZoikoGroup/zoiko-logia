@@ -162,6 +162,35 @@ async def test_blocked_release_gate_and_unsigned_eligible_release(db):
     assert any(d["kind"] == "RELEASE" and d["id"] == "pack-ok" for d in panels["decisions"])
 
 
+async def test_audit_ledger_is_verified_and_a_broken_chain_is_a_critical_exception(db):
+    from sqlalchemy import select
+
+    from app.domains.audit_ledger.event_envelope import record_event_async
+    from app.domains.audit_ledger.models import AuditEvent
+
+    user = _user()
+    db.add(user)
+    await db.commit()
+    for n in range(3):
+        await record_event_async(db, tenant_id="t1", event_name="test.event", emitting_service="test",
+                                 actor_id=user.id, subject_type="thing", subject_id=str(n), payload={"n": n})
+
+    intact = await build_governance_dashboard(db, user, NOW)
+    assert intact["ledger"]["state"] == "verified" and intact["ledger"]["eventsChecked"] == 3
+    assert not any(e["title"].startswith("Audit ledger") for e in intact["exceptions"])
+
+    # verify_chain recomputes chain hashes from the stored payload_hash, so a
+    # rewritten payload_hash is what it detects.
+    tampered = (await db.execute(select(AuditEvent).where(AuditEvent.subject_id == "1"))).scalar_one()
+    tampered.payload_hash = "0" * 64
+    await db.commit()
+
+    broken = await build_governance_dashboard(db, user, NOW)
+    assert broken["ledger"]["state"] == "broken"
+    alert = next(e for e in broken["exceptions"] if e["title"] == "Audit ledger chain verification failed")
+    assert alert["severity"] == "Critical" and alert["domain"] == AUDIT_INCIDENT
+
+
 async def test_roles_without_a_permission_see_restricted_domains(db):
     user = _user("Source Admin")          # source.read / source.manage only
     db.add_all([user, _escalation("hidden", sla=NAIVE_NOW - timedelta(days=1))])

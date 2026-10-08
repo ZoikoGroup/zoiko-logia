@@ -15,7 +15,7 @@ const base = {
   exceptions: [], decisions: [], releaseReadiness: [],
   accountabilitySummary: { mandatoryReviews: 0, overdueReviews: 0, boundaryEscalations: 0 },
   sourceGovernanceSummary: { state: "no_open_exceptions", licenseStates: {}, expiringWithin30Days: 0, expired: 0 },
-  auditIncidentSummary: { openIncidentCounts: { critical: 0, high: 0 }, escalationCounts: {} },
+  auditIncidentSummary: { ledgerState: "verified", ledgerEventsChecked: 12, openIncidentCounts: { critical: 0, high: 0 }, escalationCounts: {} },
 };
 
 beforeEach(() => {
@@ -46,6 +46,17 @@ describe("Governance Dashboard", () => {
     expect(screen.queryByText("Effective")).not.toBeInTheDocument();
     expect(screen.getAllByText("Not assessed").length).toBeGreaterThan(0);
     expect(screen.getByText(/Partial governance view: Jurisdiction & Provider Coverage/)).toBeInTheDocument();
+  });
+
+  it("shows the real audit ledger verification result", async () => {
+    api.get.mockResolvedValue(base);
+    const { unmount } = render(<GovernanceDashboard />);
+    expect(await screen.findByText("Ledger chain verified")).toBeInTheDocument();
+    expect(screen.getByText("12 audit events checked")).toBeInTheDocument();
+    unmount();
+    api.get.mockResolvedValue({ ...base, auditIncidentSummary: { ...base.auditIncidentSummary, ledgerState: "broken" } });
+    render(<GovernanceDashboard />);
+    expect(await screen.findByText("Ledger chain broken")).toBeInTheDocument();
   });
 
   it("explains a 403 for roles without access", async () => {

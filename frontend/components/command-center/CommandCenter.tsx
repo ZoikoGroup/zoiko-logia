@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 import { useRole } from "@/components/shell/RoleProvider";
 import { useAuth } from "@/hooks/useAuth";
-import { getAuthToken, getCommandCenter } from "@/lib/api";
+import { getAuthToken, getCommandCenter, switchCommandCenterContext } from "@/lib/api";
 
 // Shape returned by GET /api/v1/command-center (backend/app/domains/command_center).
 type Freshness = { state: string; failedReason?: string };
@@ -38,6 +38,7 @@ type Deadline = { id: string; title: string; context: string; dueAt: string | nu
 type ReviewItem = { id: string; title: string; riskLevel: string; reason: string; source: string; status: string; createdAt: string | null; href: string };
 type RecentItem = { id: string; kind: "saved_answer" | "draft"; title: string; subtitle: string; at: string | null; href: string };
 type CommandCenterData = {
+  contextToken: string;
   activeContext: { workspaceName: string; jurisdictionCode: string; frameworkCode: string; periodLabel: string };
   professionalSummary: { attentionCount: number; reviewCount: number; deadlineCount: number };
   attentionItems: AttentionItem[];
@@ -49,7 +50,14 @@ type CommandCenterData = {
   moduleFreshness: Record<string, Freshness>;
 };
 
-const DEFAULT_CONTEXT = { jurisdiction: "US", framework: "US-GAAP", period: "FY2026" };
+type Context = { jurisdiction: string; framework: string; period: string };
+const DEFAULT_CONTEXT: Context = { jurisdiction: "US", framework: "US-GAAP", period: "FY2026" };
+// The combinations POST /command-center/context accepts (command_center/router.py).
+const CONTEXT_CHOICES = {
+  jurisdiction: [["US", "United States"], ["GB", "United Kingdom"]],
+  framework: [["US-GAAP", "US GAAP"], ["IFRS", "IFRS"]],
+  period: [["FY2026", "FY2026"], ["FY2025", "FY2025"]],
+} as const;
 
 const ATTENTION_ICON = { escalation: AlertTriangle, incident: Siren, source_licence: CircleAlert } as const;
 
@@ -101,31 +109,62 @@ export function CommandCenter() {
   const [data, setData] = useState<CommandCenterData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [context, setContext] = useState<Context>(DEFAULT_CONTEXT);
+  const [contextOpen, setContextOpen] = useState(false);
+  const [contextError, setContextError] = useState("");
   const hasReviewAuthority = ["CFO", "Controller", "Audit Partner", "Finance Manager", "AI Governance Lead", "Admin"].includes(role);
   const firstName = (profile?.full_name || user?.user_metadata?.full_name || "").split(" ")[0];
 
   useEffect(() => {
     const controller = new AbortController();
-    getCommandCenter(getAuthToken(), DEFAULT_CONTEXT, controller.signal)
-      .then((result) => setData(result as unknown as CommandCenterData))
+    getCommandCenter(getAuthToken(), context, controller.signal)
+      .then((result) => { setData(result as unknown as CommandCenterData); setError(""); })
       .catch((err) => { if (err?.name !== "AbortError") setError("Could not load the Command Center from the server."); })
       .finally(() => setLoading(false));
     return () => controller.abort();
-  }, []);
+  }, [context]);
+
+  async function changeContext(next: Context) {
+    setContextError("");
+    try {
+      await switchCommandCenterContext(getAuthToken(), { ...next, previous_context_token: data?.contextToken ?? "" });
+      setContextOpen(false);
+      setContext(next);
+    } catch (err) {
+      setContextError((err instanceof Error && err.message) || "That accounting context is not available.");
+    }
+  }
 
   const summary = data?.professionalSummary;
   const freshness = data?.moduleFreshness ?? {};
   const assuranceOk = data?.assuranceStatus.overallState === "ok";
-  const context = data?.activeContext;
+  const activeContext = data?.activeContext;
 
   return (
     <main className="flex-1 overflow-y-auto p-4 lg:p-6" aria-labelledby="command-center-title">
       <div className="mx-auto max-w-[1500px] space-y-5">
         <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-line bg-panel p-2.5 shadow-sm">
-          <button className="flex min-h-12 min-w-[280px] flex-1 items-center justify-between gap-4 rounded-xl px-3 text-left hover:bg-soft" aria-label="Change accounting context">
-            <span className="min-w-0"><span className="block truncate text-sm font-semibold text-ink">{context?.workspaceName ?? "Current workspace"}</span><span className="block truncate text-xs text-muted">{context ? `${context.jurisdictionCode} · ${context.frameworkCode} · ${context.periodLabel}` : "Loading context…"}</span></span>
-            <ChevronDown size={17} className="shrink-0 text-muted" />
-          </button>
+          <div className="relative min-w-[280px] flex-1">
+            <button onClick={() => setContextOpen((v) => !v)} aria-expanded={contextOpen} className="flex min-h-12 w-full items-center justify-between gap-4 rounded-xl px-3 text-left hover:bg-soft" aria-label="Change accounting context">
+              <span className="min-w-0"><span className="block truncate text-sm font-semibold text-ink">{activeContext?.workspaceName ?? "Current workspace"}</span><span className="block truncate text-xs text-muted">{activeContext ? `${activeContext.jurisdictionCode} · ${activeContext.frameworkCode} · ${activeContext.periodLabel}` : "Loading context…"}</span></span>
+              <ChevronDown size={17} className="shrink-0 text-muted" />
+            </button>
+            {contextOpen && (
+              <div className="absolute left-0 top-full z-20 mt-2 w-80 space-y-3 rounded-xl border border-line bg-panel p-4 shadow-xl">
+                <p className="font-semibold text-ink">Accounting context</p>
+                {(Object.keys(CONTEXT_CHOICES) as (keyof Context)[]).map((field) => (
+                  <label key={field} className="block text-xs font-semibold capitalize text-muted">
+                    {field}
+                    <select value={context[field]} onChange={(e) => void changeContext({ ...context, [field]: e.target.value })} className="mt-1 block w-full rounded-lg border border-line bg-panel px-2 py-1.5 text-sm font-normal normal-case text-ink">
+                      {CONTEXT_CHOICES[field].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                    </select>
+                  </label>
+                ))}
+                {contextError && <p className="text-xs text-bad" role="alert">{contextError}</p>}
+                <p className="text-xs text-muted">Each change is recorded in the audit ledger.</p>
+              </div>
+            )}
+          </div>
           <div className="hidden h-8 w-px bg-line sm:block" />
           {data?.assuranceStatus.controls.boundary_enforcement === "ok" && <span className="flex min-h-11 items-center gap-2 rounded-xl px-3 text-sm font-medium text-ink"><ShieldCheck size={17} className="text-brand" /> Workspace boundary enforced</span>}
           <div className="relative">

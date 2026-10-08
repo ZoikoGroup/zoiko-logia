@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.domains.audit_ledger.event_envelope import record_event_async
 from app.domains.command_center.service import build_command_center
+from app.domains.command_center.workspace import build_my_workspace
 from app.domains.identity.models import Tenant, User
 from app.domains.identity.rbac import get_current_user
 
@@ -50,6 +51,15 @@ async def switch_command_center_context(
         },
     )
     return {"accepted": True, "boundaryType": "workspace"}
+
+
+@router.get("/my-workspace")
+async def get_my_workspace(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """The signed-in user's recent activity and pending tasks (see workspace.py)."""
+    return await build_my_workspace(db, current_user)
 
 
 @router.get("")

@@ -26,6 +26,7 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domains.audit_ledger.service import verify_tenant_chain
 from app.domains.evaluation.models import EvaluationRun, PromotionAuthorization, ResultPack
 from app.domains.identity.models import User
 from app.domains.identity.permissions import (
@@ -285,6 +286,19 @@ async def build_governance_dashboard(db: AsyncSession, user: User, now: datetime
             .where(ReviewCase.tenant_id == user.tenant_id, ReviewCase.status.in_(_OPEN_REVIEW))
         )).scalar_one()
 
+    # The tenant's audit chain, verified the same way as GET /audit/chain-verify.
+    chain = await verify_tenant_chain(db, user.tenant_id)
+    ledger = {
+        "state": "verified" if chain["passed"] else "broken",
+        "eventsChecked": chain["events_checked"],
+        "firstBrokenEventId": chain["first_broken_event_id"],
+        "verifiedAt": now.isoformat(),
+    }
+    if not chain["passed"]:
+        exceptions.append(_exception(chain["first_broken_event_id"] or "audit-chain", "Critical", AUDIT_INCIDENT,
+                                     "Audit ledger chain verification failed",
+                                     f"First broken event: {chain['first_broken_event_id']}", None, "/audit-logs"))
+
     exceptions.sort(key=lambda e: (_SEVERITY_ORDER.get(e["severity"], 9), e["openedAt"] or ""))
     decisions, decision_total = await _decisions(db, user, eligible_packs)
 
@@ -323,6 +337,7 @@ async def build_governance_dashboard(db: AsyncSession, user: User, now: datetime
         },
         "sourceGovernance": source_summary,
         "incidents": {"openIncidentCounts": incident_counts, "escalationCounts": escalation_stats["byStatus"]},
+        "ledger": ledger,
         "moduleFreshness": {
             "exceptions": dict(current), "decisions": dict(current), "domainStates": dict(current),
             "releaseReadiness": dict(current) if _can(user, EVALUATION_READ) else {"state": "RESTRICTED"},

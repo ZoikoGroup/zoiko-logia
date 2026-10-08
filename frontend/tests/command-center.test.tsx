@@ -1,7 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const api = vi.hoisted(() => ({ get: vi.fn() }));
-vi.mock("@/lib/api", () => ({ getAuthToken: () => "token", getCommandCenter: api.get }));
+const api = vi.hoisted(() => ({ get: vi.fn(), switchContext: vi.fn() }));
+vi.mock("@/lib/api", () => ({ getAuthToken: () => "token", getCommandCenter: api.get, switchCommandCenterContext: api.switchContext }));
 vi.mock("@/components/shell/RoleProvider", () => ({ useRole: () => ({ role: "Admin", roleReady: true, setRole: () => {} }) }));
 vi.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ user: null, profile: { full_name: "Naresh Maruthi" } }) }));
 vi.mock("next/link", () => ({ default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a> }));
@@ -17,6 +17,7 @@ const base = {
 
 beforeEach(() => {
   api.get.mockReset();
+  api.switchContext.mockReset();
 });
 
 describe("Command Center", () => {
@@ -44,6 +45,26 @@ describe("Command Center", () => {
     expect(await screen.findByText("Nothing needs your attention right now.")).toBeInTheDocument();
     expect(screen.getByText("Your role cannot see this panel.")).toBeInTheDocument();
     expect(screen.getByText("Assurance not fully assessed")).toBeInTheDocument();
+  });
+
+  it("switches the accounting context through the backend and reloads", async () => {
+    api.get.mockResolvedValue(base);
+    api.switchContext.mockResolvedValue({ accepted: true, boundaryType: "workspace" });
+    render(<CommandCenter />);
+    fireEvent.click(await screen.findByRole("button", { name: "Change accounting context" }));
+    fireEvent.change(screen.getByLabelText("framework"), { target: { value: "IFRS" } });
+    await waitFor(() => expect(api.switchContext).toHaveBeenCalledWith("token", { jurisdiction: "US", framework: "IFRS", period: "FY2026", previous_context_token: "t" }));
+    await waitFor(() => expect(api.get).toHaveBeenLastCalledWith("token", { jurisdiction: "US", framework: "IFRS", period: "FY2026" }, expect.anything()));
+  });
+
+  it("keeps the context and explains when a switch is refused", async () => {
+    api.get.mockResolvedValue(base);
+    api.switchContext.mockRejectedValue(new Error("The requested accounting context is not available"));
+    render(<CommandCenter />);
+    fireEvent.click(await screen.findByRole("button", { name: "Change accounting context" }));
+    fireEvent.change(screen.getByLabelText("jurisdiction"), { target: { value: "GB" } });
+    expect(await screen.findByRole("alert")).toHaveTextContent("The requested accounting context is not available");
+    expect(api.get).toHaveBeenCalledTimes(1);
   });
 
   it("reports a load failure", async () => {
