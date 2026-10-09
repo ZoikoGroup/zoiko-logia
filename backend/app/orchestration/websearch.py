@@ -482,7 +482,12 @@ a an and are as at be been but by can could did do does for from had has have ho
 may me might my no not of on or our should so than that the their them then there these they this those to
 was we were what when where which who whom why will with would you your about after before also any each
 just like more most much only other over same some such very year years per one two three uk us usa india
+under between within without upon among against through during above below across along around beyond
+section sections act rule rules explain describe difference differ
 """.split())
+# "under", "section" and "act" matched dictionary pages ("UNDER Definition &
+# Meaning") to "Under Section 44AB of the Income-tax Act…", and those pages
+# were cited as the answer's sources.
 
 
 def _terms(text: str) -> set[str]:
@@ -497,6 +502,18 @@ _HISTORY_PAGE = re.compile(r"\b(?:previous changes|historic(?:al)? (?:rates|chan
 _ASKS_ABOUT_HISTORY = re.compile(
     r"\b(?:previous(?:ly)?|historic(?:al)?|history|used to|old|former(?:ly)?|before|in (?:19|20)\d\d|(?:19|20)\d\d)\b", re.I,
 )
+
+
+_QUERY_FILLER = re.compile(
+    r"\b(?:what|how|why|when|where|which|who|does|do|did|is|are|was|were|can|could|should|would|"
+    r"the|a|an|of|in|on|for|to|and|or|under|between|differ|difference|from|with|by|its|their|"
+    r"explain|describe|tell|me|please|terms|requirement|requirements)\b", re.I)
+
+
+def _keyword_query(query: str) -> str:
+    """The question without filler words: "How does Section 44AD differ from
+    Section 44ADA?" -> "Section 44AD Section 44ADA"."""
+    return " ".join(_QUERY_FILLER.sub(" ", re.sub(r"[?,.;:()]", " ", query or "")).split())
 
 
 def _is_relevant(query: str, source: WebSource) -> bool:
@@ -635,25 +652,40 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pa
     # Tavily returns None when it is not configured or failed; SearXNG
     # (self-hosted) is then the backup.
     results = await _tavily_results(query, domains)
-    if results is None:
+    used_backup = results is None
+    if used_backup:
         results = await _searxng_results(base, params)
 
-    # Normalise into WebSource, keeping only entries with a usable URL that
-    # are actually about the question.
-    parsed: list[WebSource] = []
-    for r in results:
-        url = (r.get("url") or "").strip()
-        if not url:
-            continue
-        source = WebSource(
-            title=(r.get("title") or url)[:200],
-            url=url,
-            snippet=(r.get("content") or "").strip(),
-        )
-        if _is_relevant(query, source):
-            parsed.append(source)
+    def relevant(raw: list[dict]) -> list[WebSource]:
+        """Entries with a usable URL that are actually about the question."""
+        found: list[WebSource] = []
+        for r in raw:
+            url = (r.get("url") or "").strip()
+            if not url:
+                continue
+            source = WebSource(
+                title=(r.get("title") or url)[:200],
+                url=url,
+                snippet=(r.get("content") or "").strip(),
+            )
+            if _is_relevant(query, source):
+                found.append(source)
+        return found
 
+    parsed = relevant(results)
     trusted = [s for s in parsed if matches_allowlist(s.url, domains)]
+    # The public engines behind the backup match a full question poorly:
+    # "Under Section 44AB of the Income-tax Act…" returned dictionary pages
+    # for "under", and "How does Section 44AD differ from Section 44ADA?"
+    # nothing usable. With no trusted result, one retry with only the key
+    # terms, restricted to the same official sites.
+    keywords = _keyword_query(query)
+    if used_backup and not trusted and keywords and keywords.lower() != query.lower():
+        retry = await _searxng_results(base, {**params, "q": f"{keywords} {sites}".strip() if sites else keywords})
+        retry_parsed = relevant(retry)
+        retry_trusted = [s for s in retry_parsed if matches_allowlist(s.url, domains)]
+        if retry_trusted or not parsed:
+            parsed, trusted = retry_parsed, retry_trusted
 
     if trusted:
         selected = _spread_across_organisations(trusted, domains, limit)

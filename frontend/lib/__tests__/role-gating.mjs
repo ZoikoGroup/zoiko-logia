@@ -13,7 +13,9 @@ import {
   BACKEND_ROLES,
   DEFAULT_ROLE,
   ROLES,
+  canPreviewRoles,
   isKnownRole,
+  resolveDisplayRole,
   resolveEffectiveRole,
 } from "../roles.ts";
 
@@ -50,6 +52,15 @@ check(
   ROLES.length === 9 && !ROLES.includes("Source Admin") && !ROLES.includes("System Auditor"),
   JSON.stringify(ROLES)
 );
+
+// ── "Viewing as": a signed-in Admin can preview, nobody can raise a role ─────
+check("signed-in Admin previews the chosen role", resolveDisplayRole("Admin", "Learner", true) === "Learner");
+check("signed-in Admin can switch back to Admin", resolveDisplayRole("Admin", "Admin", true) === "Admin");
+check("signed-in non-Admin cannot preview Admin", resolveDisplayRole("SME Reviewer", "Admin", true) === "SME Reviewer");
+check("signed-in Learner stays Learner", resolveDisplayRole("Learner", "CFO", true) === "Learner");
+check("no session keeps demo behaviour", resolveDisplayRole("Tax Director", "Tax Director", false) === "Tax Director");
+check("only Admins (or no session) get the switcher",
+  canPreviewRoles("Admin", true) && !canPreviewRoles("SME Reviewer", true) && canPreviewRoles("CFO", false));
 
 console.log(failed ? `\n${failed} FAILURE(S)` : "\nALL PASS");
 process.exit(failed ? 1 : 0);

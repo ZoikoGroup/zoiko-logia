@@ -58,6 +58,11 @@ _TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "exemption", "allowance", "tax relief", "tax credit", "tax return",
         "self assessment", "transfer pricing", "double taxation", "hmrc",
         "irs", "cbdt", "cbic", "input credit", "reverse charge",
+        # Indian income-tax provisions named only by number ("How does Section
+        # 44AD differ from Section 44ADA?") carried no topic, so the search
+        # was spread over every Indian body and found nothing.
+        "44ab", "44ad", "44ada", "44ae", "115jb", "presumptive", "minimum alternate tax",
+        "turnover", "f&o", "futures and options",
     ),
     ACCOUNTING: (
         "ifrs", "ias", "gaap", "ind as", "accounting standard", "asc",
@@ -180,7 +185,7 @@ _TRUSTED_DOMAINS: dict[str, dict[str, list[str]]] = {
         ACADEMIC: [],
     },
     "INDIA": {
-        TAX: ["incometax.gov.in", "cbic.gov.in", "cbic-gst.gov.in", "gst.gov.in",
+        TAX: ["incometax.gov.in", "incometaxindia.gov.in", "cbic.gov.in", "cbic-gst.gov.in", "gst.gov.in",
               "gstcouncil.gov.in", "indiacode.nic.in"],
         ACCOUNTING: ["icai.org", "mca.gov.in"],
         AUDIT: ["icai.org", "cag.gov.in"],
@@ -245,7 +250,14 @@ _JURISDICTION_ALIASES: dict[str, tuple[str, ...]] = {
     "INDIA": ("india", "indian", "bharat", "gstr", "cgst", "sgst", "igst", "utgst",
               "gstin", "cbic", "lakh", "lakhs", "crore", "crores",
               "tds", "tcs", "itr", "cbdt", "ind as", "caro", "icai", "rbi", "sebi", "epf", "epfo",
-              "esic", "new tax regime", "old tax regime", "new regime", "old regime"),
+              "esic", "new tax regime", "old tax regime", "new regime", "old regime",
+              # Indian income-tax and company law: "Under Section 44AB of the
+              # Income-tax Act…" named no country and was searched on OECD
+              # and IFAC sites only, so every answer said "not stated".
+              "income-tax act", "income tax act, 1961", "income-tax act, 1961", "companies act, 2013",
+              "companies act 2013", "44ab", "44ad", "44ada", "44ae", "115jb", "115bab", "115baa",
+              "form 3ca", "form 3cb", "form 3cd", "3cd", "form 26as", "26as", "minimum alternate tax",
+              "tax audit report", "presumptive taxation", "income tax department", "f&o"),
     "EU": ("european union", "eurozone", "euro area", "eu"),
     "UAE": ("united arab emirates", "uae", "dubai", "abu dhabi", "emirates"),
     "SAUDI_ARABIA": ("saudi arabia", "saudi", "ksa"),

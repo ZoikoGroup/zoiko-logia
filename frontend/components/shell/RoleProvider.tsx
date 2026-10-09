@@ -1,12 +1,17 @@
 "use client";
 
 import { createContext, useContext, useSyncExternalStore, ReactNode } from "react";
-import { RoleCode, DEFAULT_ROLE, ROLE_COOKIE, resolveEffectiveRole } from "@/lib/roles";
+import { RoleCode, DEFAULT_ROLE, ROLE_COOKIE, canPreviewRoles, resolveDisplayRole, resolveEffectiveRole } from "@/lib/roles";
 import { useAuth } from "@/hooks/useAuth";
 import { readCookie, subscribeCookies, writeCookie } from "@/lib/cookie-store";
 
 type RoleContextValue = {
+  /** The role the UI renders as: the real role, or an Admin's preview choice. */
   role: RoleCode;
+  /** The signed-in user's verified role (or the demo role with no session). */
+  realRole: RoleCode;
+  /** Whether the "Viewing as" switcher may change the displayed role. */
+  canPreview: boolean;
   /** False while a signed-in user's real role is still being fetched —
    * role-gated UI should wait rather than render the fail-closed fallback. */
   roleReady: boolean;
@@ -43,7 +48,12 @@ export function RoleProvider({ children }: { children: ReactNode }) {
   // cookie role. While the profile is still loading the role is not yet
   // known: stay fail-closed (never the Admin demo default) and report
   // roleReady=false so the nav waits instead of flashing the Learner menu.
-  const role = resolveEffectiveRole(profile?.role, demoRole, Boolean(session));
+  const realRole = resolveEffectiveRole(profile?.role, demoRole, Boolean(session));
+  // A signed-in Admin previews the switcher's choice; nobody else can change
+  // their role this way (see resolveDisplayRole). The backend still enforces
+  // the real role on every request.
+  const role = resolveDisplayRole(realRole, demoRole, Boolean(session));
+  const canPreview = canPreviewRoles(realRole, Boolean(session));
   // Only the first fetch blocks: a background re-fetch (e.g. on the hourly
   // TOKEN_REFRESHED) keeps showing the profile already loaded.
   const roleReady = !loading && !(session && profileLoading && !profile);
@@ -52,7 +62,9 @@ export function RoleProvider({ children }: { children: ReactNode }) {
     writeCookie(ROLE_COOKIE, next, 60 * 60 * 24 * 7);
   }
 
-  return <RoleContext.Provider value={{ role, roleReady, setRole }}>{children}</RoleContext.Provider>;
+  return (
+    <RoleContext.Provider value={{ role, realRole, canPreview, roleReady, setRole }}>{children}</RoleContext.Provider>
+  );
 }
 
 export function useRole(): RoleContextValue {

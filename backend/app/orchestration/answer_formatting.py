@@ -157,3 +157,14 @@ def latex_to_plain(text: str) -> str:
             line = line.replace("$$", "")
         out.append(line)
     return "\n".join(out)
+
+
+_PLACEHOLDER = re.compile(
+    r"^\s*\[(?:the\s+)?(?:chart|graph|table|diagram|visual(?:isation|ization)?|image)(?:\s+\w+){0,3}\]\s*$",
+    re.I | re.M)
+
+
+def remove_visual_placeholders(text: str) -> str:
+    """A line such as "[The chart below]" is the model marking where a chart
+    goes; the chart is rendered on its own, so the marker was shown as text."""
+    return re.sub(r"\n{3,}", "\n\n", _PLACEHOLDER.sub("", text or ""))
