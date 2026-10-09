@@ -73,6 +73,16 @@ async def test_an_unreadable_verdict_is_unverified(monkeypatch, payload):
     assert result.contradicted == [] and not result.ran
 
 
+@pytest.mark.parametrize("wrap", [lambda v: v, lambda v: {"verdicts": v}])
+async def test_a_bare_or_renamed_verdict_list_is_still_read(monkeypatch, wrap):
+    _fake_groq(monkeypatch, wrap([
+        {"claim": 1, "verdict": "supported", "evidence_says": ""},
+        {"claim": 2, "verdict": "supported", "evidence_says": ""},
+    ]), [])
+    result = await cv.verify_claims(cv.extract_claims(ANSWER), EVIDENCE)
+    assert result.ran and result.supported == 2
+
+
 async def test_verification_is_skipped_without_evidence_key_or_when_disabled(monkeypatch):
     calls = []
     _fake_groq(monkeypatch, {"results": []}, calls)
@@ -204,3 +214,39 @@ async def test_verifier_redacts_all_external_inputs(monkeypatch):
     await cv.verify_claims(['Contact alice@example.com for the rate.'], ['[REF-1] bob@example.com publishes it.'], 'Email charlie@example.com?')
     content = calls[0]['messages'][1]['content']
     assert all(address not in content for address in ('alice@example.com', 'bob@example.com', 'charlie@example.com'))
+
+
+async def test_a_fact_deep_in_a_long_source_reaches_the_verifier(monkeypatch):
+    """The verifier saw each source's first 1,500 characters only; the 10%
+    rate at character 2,600 of a cited ATO page was judged "not in evidence"."""
+    calls = []
+    _fake_groq(monkeypatch, {"results": [{"claim": 1, "verdict": "supported", "evidence_says": ""}]}, calls)
+    page = "[REF-2] GST when you sell to Australia. " + "Menu. Home. Contact us. " * 120 + "The Australian GST rate is 10%. " + "Footer. " * 50
+    await cv.verify_claims(["The Australian GST rate is 10% [REF-2]."], [page], "Australian GST rate?")
+    sent = calls[0]["messages"][1]["content"]
+    assert "The Australian GST rate is 10%" in sent and "[REF-2]" in sent
+
+
+def test_cited_source_survives_context_budget_after_many_unrelated_sources():
+    unrelated = [f'[REF-{i}] ' + ('Unrelated filing rules apply to other taxes. ' * 80) for i in range(1, 17)]
+    official = '[REF-17] The current standard GST rate is 10%.'
+    block = cv._evidence_block([*unrelated, official], '| Australia | 10% | [REF-17] |')
+    assert official in block
+    assert block.startswith('[E17] [REF-17]')
+    assert len(block) < cv._MAX_EVIDENCE_CHARS + 500
+
+
+def test_multiple_cited_references_are_retained_without_renumbering():
+    evidence = [f'[REF-{i}] ' + ('Unrelated material. ' * 100) for i in range(1, 16)]
+    evidence += ['[REF-16] Standard VAT rate is 20%.', '[REF-17] Current GST rate is 9%.']
+    block = cv._evidence_block(evidence, 'UK 20% [REF-16]. Singapore 9% [REF-17].')
+    assert '[E16] [REF-16] Standard VAT rate is 20%.' in block
+    assert '[E17] [REF-17] Current GST rate is 9%.' in block
+
+
+def test_all_cited_sources_share_budget_instead_of_late_citations_being_dropped():
+    evidence = [f'[REF-{i}] ' + ('Standard rate is 10%. Other unrelated rules apply. ' * 80) for i in range(1, 13)]
+    focus = ' '.join(f'Country {i} standard rate [REF-{i}]' for i in range(1, 13))
+    block = cv._evidence_block(evidence, focus)
+    for i in range(1, 13):
+        assert f'[E{i}] [REF-{i}] ' in block

@@ -280,3 +280,11 @@ async def audit_response_returned(db, *, query_id, correlation_id, tenant_id, au
     await _emit(db, "response_returned", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"latency_ms": round(latency_ms, 2), "stage_metrics": stage_metrics or {}},
                 restore_tenant_context=False)
+
+
+async def audit_release_check_completed(db, *, query_id, correlation_id, tenant_id,
+                                        audit_chain_id, actor_id, passed: bool, requires_authority: bool):
+    await _emit(db, "release_check_completed", query_id, correlation_id, tenant_id,
+                audit_chain_id, actor_id,
+                {"passed": passed, "requires_authority": requires_authority},
+                replay_relevance="REQUIRED")

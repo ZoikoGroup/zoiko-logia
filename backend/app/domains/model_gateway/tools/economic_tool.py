@@ -11,7 +11,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from app.domains.model_gateway.tool_registry import ToolResult, ToolSpec
 from app.orchestration.dbnomics import canonical_country, fetch_indicator_sources, supported_countries
@@ -41,6 +41,17 @@ IndicatorKey = Literal[
 ]
 
 
+_INDICATOR_ALIASES = {
+    "gdp_growth_rate": "gdp_growth", "real_gdp_growth": "gdp_growth", "economic_growth": "gdp_growth",
+    "gdp_usd": "gdp", "nominal_gdp": "gdp", "gdp_per_head": "gdp_per_capita",
+    "cpi": "inflation", "inflation_rate": "inflation", "consumer_price_inflation": "inflation",
+    "unemployment_rate": "unemployment", "jobless_rate": "unemployment",
+    "tax_to_gdp": "tax_revenue_pct_gdp", "tax_revenue": "tax_revenue_pct_gdp",
+    "debt_to_gdp": "government_debt_pct_gdp", "government_debt": "government_debt_pct_gdp", "public_debt": "government_debt_pct_gdp",
+    "exports": "exports_pct_gdp", "imports": "imports_pct_gdp",
+}
+
+
 class EconomicIndicatorArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -58,6 +69,24 @@ class EconomicIndicatorArgs(BaseModel):
         ),
     )
     _unsupported: list[str] = PrivateAttr(default_factory=list)
+
+    # Near-miss arguments failed 23 calls in a week ("invalid_arguments") and
+    # the agent retried or gave up. Common synonyms and shapes are mapped to
+    # what the source supports instead.
+    @field_validator("indicator", mode="before")
+    @classmethod
+    def _indicator_alias(cls, value):
+        key = str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
+        return _INDICATOR_ALIASES.get(key, key)
+
+    @field_validator("years", mode="before")
+    @classmethod
+    def _years_shape(cls, value):
+        if isinstance(value, list):  # [2021, 2022, 2023] means "these 3 years"
+            value = len(value) or None
+        if isinstance(value, (int, float)) and value > 20:
+            return 20  # the source keeps 20 years; the answer says so
+        return value
 
     @model_validator(mode="after")
     def _canonical_countries(self) -> "EconomicIndicatorArgs":

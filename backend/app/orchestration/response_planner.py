@@ -50,7 +50,7 @@ FINANCIAL_FAMILY = "FINANCIAL"
 # Section 22 — explicit visual requests, scoped to the visual families this
 # pipeline can actually satisfy with real, non-fabricated data.
 _EXPLICIT_CHART_HINTS = re.compile(
-    r"\b(make (a|it a)?\s*chart|show (this |it )?as a chart|as a (line|bar) chart|"
+    r"\b(create a chart|make (a|it a)?\s*chart|show (this |it )?as a chart|as a (line|bar) chart|"
     # "chart", "graph" and "plot" are interchangeable to users — the same
     # widening applied to _CHART_VARIANTS below, for the same reason.
     r"(?:line|bar|column)\s*(?:chart|graph|plot)|"
@@ -79,7 +79,7 @@ _EXPLICIT_GRAPH_HINTS = re.compile(
     re.I,
 )
 _EXPLICIT_FLOW_HINTS = re.compile(
-    r"\b(show this as a flowchart|as a flowchart|flow diagram|process flow|process diagram|"
+    r"\b(create a flowchart|create a diagram|show this as a flowchart|as a flowchart|flow diagram|process flow|process diagram|"
     r"as a workflow|interactive workflow|mermaid (?:flowchart|flow|diagram)|x6 (?:workflow|flow|diagram))\b",
     re.I,
 )

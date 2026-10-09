@@ -53,6 +53,13 @@ _ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
+_CURRENCY_MISMATCH_MESSAGE = (
+    "These amounts are in different currencies. Tell me which currency each is in (for example, "
+    "whether $ means US, Canadian or Australian dollars) and I can convert them at the latest "
+    "dated exchange rate, or give me the rate you want me to use."
+)
+
+
 def _decimal(raw: str) -> Decimal | None:
     try:
         return Decimal(raw.replace(",", ""))
@@ -158,14 +165,195 @@ def asks_several_questions(query: str) -> bool:
     return sum(1 for segment in segments if re.search(r"\d", segment)) >= 2
 
 
+
+def expense_scenario(query: str):
+    """An explicitly revised expense amount, regardless of the lead-in wording."""
+    return re.search(
+        r"\b(?:expenses\s+(?:increase|rise|decrease|fall|change)(?:s|d)?\s+to|"
+        r"(?:change|set|increase|reduce)\s+(?:(?:the|my|those)\s+)?expenses\s+to)\s*"
+        r"(?P<symbol>[₹£$€])?\s*(?:(?P<code>GBP|USD|EUR|INR|AED)\s*)?"
+        r"(?P<amount>\d[\d,]*(?:\.\d+)?)", query or "", re.I,
+    )
+
+
 def calculate_from_query(query: str) -> CalculationResult:
     """Recognize and execute supported self-contained accounting calculations."""
     q = query or ""
+    from app.orchestration.calculations.batches import calculate_numbered_batch, has_numbered_questions
+    batch = calculate_numbered_batch(q)
+    if batch is not None:
+        return batch
+    if has_numbered_questions(q):
+        # An unsupported batch must never become one calculation using labels
+        # borrowed from different questions.
+        return CalculationResult()
+    # The combined GST rate supplied by the user is an immutable input.
+    # Do not search for a different statutory percentage for this calculation.
+    if (re.search(r'\bcgst\b', q, re.I) and re.search(r'\bsgst\b', q, re.I)
+            and re.search(r'\bintra[-‑ ]state\b', q, re.I)):
+        amounts = list(re.finditer(r'₹\s*(-?\d[\d,]*(?:\.\d+)?)', q))
+        amount = amounts[0] if len(amounts) == 1 else None
+        rates = re.findall(r'(-?\d+(?:\.\d+)?)\s*%', q)
+        if amount and len(rates) == 1 and not re.search(r'\beach\b|per component', q, re.I):
+            value, rate = _decimal(amount.group(1)), _decimal(rates[0])
+            if value < 0 or not 0 <= rate <= 100:
+                return CalculationResult(matched=True, status='clarification_required', error_code='INVALID_PERCENTAGE', message='Supply a non-negative taxable value and a GST rate between zero and one hundred percent.')
+            half = rate / 2
+            tax = value * half / 100
+            return _success(['cgst_sgst_split'], [], [
+                CalculationOutput(name=name, value=number, display_value=_money(number, 'INR'), kind='money')
+                for name, number in [('cgst', tax), ('sgst', tax), ('total_gst', tax*2)]
+            ], [f'CGST = {value:f} × {half:f} ÷ 100 = {tax:f}',
+                f'SGST = {value:f} × {half:f} ÷ 100 = {tax:f}'])
+    # Tax inside a tax-inclusive price: "£1,200 includes 20% UK VAT" is
+    # 1,200 × 20 ÷ 120 = £200, not 20% of £1,200. Answered through web search,
+    # the agent and the fact-check it took 49 s here and timed out (504) for
+    # the user; it is arithmetic on the user's own figures.
+    inclusive = re.search(
+        r'([₹£$€])\s*(\d[\d,]*(?:\.\d+)?)\b[^.?!]*?\b(?:includ(?:es|ing|ed)|inclusive\s+of|incl\.?)\s+'
+        r'(\d+(?:\.\d+)?)\s*%\s*(?:\w+\s+){0,2}?(vat|gst)\b', q, re.I)
+    if inclusive and len(re.findall(r'[₹£$€]\s*\d', q)) == 1 and len(re.findall(r'\d+(?:\.\d+)?\s*%', q)) == 1:
+        symbol, amount, rate, tax_name = inclusive.groups()
+        gross, rate = _decimal(amount), _decimal(rate)
+        if gross >= 0 and 0 < rate <= 100:
+            currency = {'₹': 'INR', '£': 'GBP', '$': 'USD', '€': 'EUR'}[symbol]
+            tax = gross * rate / (100 + rate)
+            net = gross - tax
+            label = tax_name.upper()
+            return _success([f'{tax_name.lower()}_from_inclusive_price'], [], [
+                CalculationOutput(name=f'{label} included', value=tax, display_value=_money(tax, currency), kind='money'),
+                CalculationOutput(name='Price before ' + label, value=net, display_value=_money(net, currency), kind='money'),
+            ], [f'{label} = {gross:f} × {rate:f} ÷ (100 + {rate:f}) = {tax:f}',
+                f'Price before {label} = {gross:f} − {tax:f} = {net:f}'])
     # Several questions in one message: labels would be read across all of
     # them (one question's "cost" used in another's formula). Not matched,
     # so the model answers each and every arithmetic line is re-checked.
-    if not _CALCULATION_HINT.search(q) or asks_several_questions(q):
+    subscription_request = bool(re.search(r"\b(?:subscription|plan)\b", q, re.I) and re.search(r"\b(?:monthly|per month)\b", q, re.I) and re.search(r"\b(?:annually|annual|per year)\b", q, re.I))
+    if (not _CALCULATION_HINT.search(q) and not subscription_request) or asks_several_questions(q):
         return CalculationResult()
+
+    # Subscription break-even is a time comparison, not contribution per unit.
+    if re.search(r"\bsubscriptions?\b", q, re.I) or subscription_request:
+        monthly = re.search(r"[₹£$€]?\s*(\d[\d,]*(?:\.\d+)?)\s*(?:monthly|per month)", q, re.I)
+        annual = re.search(r"[₹£$€]?\s*(\d[\d,]*(?:\.\d+)?)\s*(?:annually|per year)", q, re.I)
+        if monthly and annual:
+            m, a = _decimal(monthly.group(1)), _decimal(annual.group(1))
+            symbols = set(re.findall(r"[₹£$€]", q))
+            if len(symbols) > 1 or m <= 0 or a < 0:
+                return CalculationResult()
+            currency = _CURRENCY_SYMBOLS.get(next(iter(symbols), ""))
+            number_words = {"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10,"eleven":11,"twelve":12}
+            period = re.search(r"\b(?:for|over)\s+(\d+|" + "|".join(number_words) + r")\s*(?:[- ]month(?:s)?|month(?:s)?)\b", q, re.I)
+            if period:
+                months = Decimal(number_words[period.group(1).lower()]) if period.group(1).lower() in number_words else Decimal(period.group(1))
+                if months <= 0 or months > 1200:
+                    return CalculationResult(matched=True, status="clarification_required", error_code="INVALID_PERIOD", message="Please provide a comparison period between 1 and 1200 months.")
+                # Annual commitments are paid in whole years; no invented prorating.
+                years = (months / 12).to_integral_value(rounding="ROUND_CEILING")
+                monthly_cost, annual_cost = m*months, a*years
+                return _success(["subscription_period"], [], [
+                    CalculationOutput(name="comparison_months",value=months,display_value=f"{months:f} months"),
+                    CalculationOutput(name="monthly_plan_cost",value=monthly_cost,display_value=_money(monthly_cost,currency),kind="money"),
+                    CalculationOutput(name="annual_plan_commitment_cost",value=annual_cost,display_value=_money(annual_cost,currency),kind="money"),
+                    CalculationOutput(name="annual_plan_savings",value=monthly_cost-annual_cost,display_value=_money(monthly_cost-annual_cost,currency),kind="money"),
+                ], [f"Monthly plan = {m:f} × {months:f} = {monthly_cost:f}", f"Annual plan requires {years:f} whole annual payment(s); no cancellation refund or prorating assumed."])
+            return _success(["subscription_comparison"], [], [
+                CalculationOutput(name="monthly_plan_annual_cost", value=m*12, display_value=_money(m*12, currency), kind="money"),
+                CalculationOutput(name="annual_plan_cost", value=a, display_value=_money(a, currency), kind="money"),
+                CalculationOutput(name="annual_savings", value=m*12-a, display_value=_money(m*12-a, currency), kind="money"),
+                CalculationOutput(name="break_even_months", value=a/m, display_value=f"{a/m:f} months"),
+            ], [f"Annual monthly-plan cost = {m:f} × 12 = {m*12:f}", f"Savings = {m*12:f} − {a:f} = {m*12-a:f}", f"Equal cost at {a:f} ÷ {m:f} = {a/m:f} months"])
+        # Do not ask for manufacturing inputs for an unrelated comparison.
+        return CalculationResult()
+
+    # A multi-part income statement must not stop at the first formula.
+    if re.search(r"\boperating profit\b|profit[- ]and[- ]loss", q, re.I):
+        revenue, cost, opex = _input(q, "revenue"), _input(q, "cost_of_sales"), _input(q, "operating_expenses")
+        if revenue and cost and opex:
+            inputs = [revenue, cost, opex]
+            if not _same_currency(inputs):
+                return CalculationResult(matched=True, status="clarification_required", error_code="CURRENCY_MISMATCH", message=_CURRENCY_MISMATCH_MESSAGE)
+            c = _currency(inputs)
+            gross = revenue.value-cost.value
+            operating = gross-opex.value
+            outputs = [CalculationOutput(name=name, value=value, display_value=_money(value,c), kind="money") for name,value in (("revenue",revenue.value),("cost_of_sales",cost.value),("gross_profit",gross),("operating_expenses",opex.value),("operating_profit",operating))]
+            if re.search(r"\bmargins?\b", q, re.I):
+                if revenue.value == 0:
+                    outputs += [CalculationOutput(name=name, display_value="Undefined: revenue is zero", kind="percentage") for name in ("gross_margin","operating_margin")]
+                else:
+                    outputs += [CalculationOutput(name=name,value=value/revenue.value*100,display_value=_percent(value/revenue.value*100),kind="percentage") for name,value in (("gross_margin",gross),("operating_margin",operating))]
+            return _success(["income_statement"], inputs, outputs, [f"Gross profit = {_money(revenue.value,c)} − {_money(cost.value,c)} = {_money(gross,c)}", f"Operating profit = {_money(gross,c)} − {_money(opex.value,c)} = {_money(operating,c)}"])
+
+    # Both scenarios are calculated separately, rather than dropping the second.
+    scenario = expense_scenario(q)
+    if scenario and (revenue := _input(q, "revenue")) and (expenses := _input(q, "expenses")):
+        revised_currency = (scenario.group("code") or _CURRENCY_SYMBOLS.get(scenario.group("symbol") or ""))
+        currencies = {item.currency for item in (revenue, expenses) if item.currency}
+        if revised_currency:
+            currencies.add(revised_currency.upper())
+        if len(currencies) > 1:
+            return CalculationResult(matched=True, status="clarification_required", error_code="CURRENCY_MISMATCH", message="Revenue and both expense scenarios must use the same currency. Please supply converted amounts and the conversion rate before comparing them.")
+        c = next(iter(currencies), None)
+        outputs = []
+        for prefix, amount in (("original",expenses.value),("revised",_decimal(scenario.group("amount")))):
+            profit = revenue.value-amount
+            outputs.append(CalculationOutput(name=prefix+"_profit",value=profit,display_value=_money(profit,c),kind="money"))
+            outputs.append(CalculationOutput(name=prefix+"_profit_margin",value=profit/revenue.value*100 if revenue.value else None,display_value=_percent(profit/revenue.value*100) if revenue.value else "Undefined: revenue is zero",kind="percentage"))
+        return _success(["profit_scenarios"], [revenue,expenses], outputs, [])
+
+    # Explicit supplied rates need arithmetic, not tax-source retrieval.
+    rate_pattern = r"(?<![\d.])([+\-−]?\s*\d+(?:\.\d+)?)\s*%"
+    rate_matches = list(re.finditer(rate_pattern, q))
+    amount_matches = list(re.finditer(r"\b(?:tax on|tax of|and on)\s*([₹£$€])?\s*(\d[\d,]*(?:\.\d+)?)", q, re.I))
+    if rate_matches and amount_matches and not re.search(r"\b(?:official|statutory|current|latest|threshold|registration)\b", q, re.I):
+        tax_rates, discounts = [], []
+        for match in rate_matches:
+            value = _decimal(re.sub(r"\s+", "", match.group(1)).replace("−", "-"))
+            before, after = q[max(0,match.start()-45):match.start()], q[match.end():match.end()+30]
+            labelled_discount = re.search(r"discount(?:\s+(?:rate|of|at|is|a))*\s*$", before, re.I) or re.match(r"\s*(?:discount|off)\b", after, re.I)
+            unrelated = re.search(r"(?:profit margin|margin|interest|commission|markup)(?:\s+(?:rate|of|at|is))*\s*$", before, re.I) or re.match(r"\s*(?:profit margin|margin|interest|commission|markup)\b", after, re.I)
+            if labelled_discount:
+                discounts.append(value)
+            elif not unrelated:
+                tax_rates.append((match,value))
+        if not tax_rates:
+            return CalculationResult()
+        if any(value < 0 for _,value in tax_rates) or any(value < 0 or value > 100 for value in discounts):
+            return CalculationResult(matched=True,status="clarification_required",error_code="INVALID_PERCENTAGE",message="Tax rates cannot be negative; discounts must be between 0% and 100%. Please confirm the intended rates.")
+        if len(discounts)>1 or (discounts and len(amount_matches)>1):
+            return CalculationResult(matched=True,status="clarification_required",error_code="AMBIGUOUS_INPUTS",message="Please specify the discount and tax rate for each amount.")
+        pairs = []
+        if len(amount_matches) == 1:
+            pairs = [(amount_matches[0],value) for _,value in tax_rates]
+        else:
+            # Each stated amount gets only the rate in its own clause.
+            for index,amount_match in enumerate(amount_matches):
+                stop = amount_matches[index+1].start() if index+1<len(amount_matches) else len(q)
+                rates = [value for match,value in tax_rates if amount_match.end() <= match.start() < stop]
+                if len(rates)!=1:
+                    return CalculationResult(matched=True,status="clarification_required",error_code="AMBIGUOUS_INPUTS",message="Please specify which tax rate applies to each amount.")
+                pairs.append((amount_match,rates[0]))
+            if len(pairs)!=len(tax_rates):
+                return CalculationResult()
+        outputs, steps = [], []
+        for index,(amount_match,rate) in enumerate(pairs):
+            amount = _decimal(amount_match.group(2))
+            currency = _CURRENCY_SYMBOLS.get(amount_match.group(1) or "")
+            prefix = f"scenario_{index+1}_" if len(pairs)>1 else ""
+            if discounts:
+                original = amount
+                amount *= 1-discounts[0]/100
+                outputs.append(CalculationOutput(name="discounted_amount",value=amount,display_value=_money(amount,currency),kind="money"))
+                steps.append(f"Discounted amount = {original:f} × (1 − {discounts[0]:f} ÷ 100) = {amount:f}")
+            tax = amount*rate/100
+            if len(pairs)>1:
+                outputs.append(CalculationOutput(name=prefix+"tax_rate",value=rate,display_value=_percent(rate),kind="percentage"))
+            outputs.extend([
+                CalculationOutput(name=prefix+"tax",value=tax,display_value=_money(tax,currency),kind="money"),
+                CalculationOutput(name=prefix+"total_including_tax",value=amount+tax,display_value=_money(amount+tax,currency),kind="money"),
+            ])
+            steps.append(f"Tax at {rate:f}% = {amount:f} × {rate:f} ÷ 100 = {tax:f}")
+        return _success(["supplied_tax"], [], outputs, steps)
 
     wants_gross_margin = bool(re.search(r"\bgross (?:profit )?margin\b", q, re.I))
     wants_gross_profit = bool(re.search(r"\bgross profit\b", q, re.I))
@@ -189,7 +377,7 @@ def calculate_from_query(query: str) -> CalculationResult:
         if profit is None:
             return _clarify("gross_margin" if wants_gross_margin else "gross_profit", inputs, ["gross_profit or cost_of_sales"])
         if not _same_currency(inputs):
-            return CalculationResult(matched=True, status="clarification_required", formula_ids=["gross_margin"], inputs=inputs, error_code="CURRENCY_MISMATCH", message="Revenue, cost and profit must use the same currency.")
+            return CalculationResult(matched=True, status="clarification_required", formula_ids=["gross_margin"], inputs=inputs, error_code="CURRENCY_MISMATCH", message=_CURRENCY_MISMATCH_MESSAGE)
         currency = _currency(inputs)
         outputs = [CalculationOutput(name="gross_profit", value=profit, display_value=_money(profit, currency), kind="money")]
         steps = []
@@ -218,7 +406,7 @@ def calculate_from_query(query: str) -> CalculationResult:
             inputs = [revenue, expenses]
             if not _same_currency(inputs):
                 return CalculationResult(matched=True, status="clarification_required", inputs=inputs,
-                    error_code="CURRENCY_MISMATCH", message="Revenue and expenses must use the same currency.")
+                    error_code="CURRENCY_MISMATCH", message=_CURRENCY_MISMATCH_MESSAGE)
             profit = revenue.value - expenses.value
             currency = _currency(inputs)
             outputs = [CalculationOutput(name="profit", value=profit, display_value=_money(profit, currency), kind="money")]
@@ -348,5 +536,6 @@ def calculation_markdown(result: CalculationResult) -> str:
     lines.extend(f"- {step}" for step in result.steps)
     if result.outputs:
         lines.append("\n### Result")
-        lines.extend(f"- {item.name.replace('_', ' ').title()}: **{item.display_value}**" for item in result.outputs)
+        lines.extend(["| Item | Value |", "| --- | --- |"] )
+        lines.extend(f"| {item.name.replace('_', ' ').title()} | {item.display_value} |" for item in result.outputs)
     return "\n".join(lines)

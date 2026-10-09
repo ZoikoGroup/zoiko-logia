@@ -20,7 +20,7 @@ const props = { queryId: "q-1", question: "What is the UK VAT threshold?", answe
 
 describe("answer feedback", () => {
   beforeEach(() => {
-    submitAnswerFeedback.mockReset().mockResolvedValue({ id: "f1", rating: "down", review_case_id: "rc1" });
+    submitAnswerFeedback.mockReset().mockResolvedValue({ id: "f1", rating: "down", review_case_id: null, self_correction_started: true });
   });
 
   it("sends a thumbs-up straight away", async () => {
@@ -32,10 +32,10 @@ describe("answer feedback", () => {
     }));
   });
 
-  it("asks what was wrong before sending a thumbs-down to a reviewer", async () => {
+  it("asks what was wrong before starting a checked correction", async () => {
     render(<AnswerFeedback {...props} />);
     fireEvent.click(screen.getByLabelText("Report a problem with this answer"));
-    const send = screen.getByRole("button", { name: /send to reviewer/i });
+    const send = screen.getByRole("button", { name: /send feedback/i });
     expect(send).toBeDisabled(); // nothing chosen yet
 
     fireEvent.click(screen.getByRole("button", { name: "Outdated" }));
@@ -45,7 +45,7 @@ describe("answer feedback", () => {
     expect(send).toBeEnabled();
     fireEvent.click(send);
 
-    await screen.findByText(/sent to a reviewer/i);
+    await screen.findByText(/re-checking this answer/i);
     expect(submitAnswerFeedback).toHaveBeenCalledWith("token", {
       query_id: "q-1",
       rating: "down",
@@ -56,10 +56,41 @@ describe("answer feedback", () => {
     });
   });
 
+  it("acknowledges saved feedback without promising unconditional reuse", async () => {
+    submitAnswerFeedback.mockResolvedValue({ id: "f1", rating: "up", learned: true });
+    render(<AnswerFeedback {...props} />);
+    fireEvent.click(screen.getByLabelText("This answer was helpful"));
+    await screen.findByText(/saved this for future checks/i);
+  });
+
+  it("does not promise a correction when none was started", async () => {
+    submitAnswerFeedback.mockResolvedValue({ id: "f1", rating: "down", self_correction_started: false });
+    render(<AnswerFeedback {...props} />);
+    fireEvent.click(screen.getByLabelText("Report a problem with this answer"));
+    fireEvent.click(screen.getByRole("button", { name: "Outdated" }));
+    fireEvent.click(screen.getByRole("button", { name: /send feedback/i }));
+    await screen.findByText("Thanks for reporting this");
+  });
+
   it("shows the error when sending fails", async () => {
     submitAnswerFeedback.mockRejectedValue(new Error("network"));
     render(<AnswerFeedback {...props} />);
     fireEvent.click(screen.getByLabelText("This answer was helpful"));
     await waitFor(() => expect(screen.getByText("Could not send feedback.")).toBeInTheDocument());
   });
+  it("shows immediate progress on a slow thumbs-up without opening the problem panel", async () => {
+    let finish!: (value: unknown) => void;
+    submitAnswerFeedback.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    render(<AnswerFeedback {...props} />);
+    const up = screen.getByLabelText("This answer was helpful");
+    fireEvent.click(up);
+    expect(screen.getByRole("status")).toHaveTextContent("Saving feedback");
+    expect(up).toBeDisabled();
+    expect(screen.queryByText("What was wrong?")).not.toBeInTheDocument();
+    fireEvent.click(up);
+    expect(submitAnswerFeedback).toHaveBeenCalledTimes(1);
+    finish({ id: "f1", rating: "up", learned: false });
+    await screen.findByText("Thanks for the feedback");
+  });
+
 });

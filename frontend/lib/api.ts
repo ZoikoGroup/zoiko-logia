@@ -1341,7 +1341,13 @@ export type AnswerFeedbackRequest = {
 export async function submitAnswerFeedback(
   token: string,
   payload: AnswerFeedbackRequest,
-): Promise<{ id: string; rating: string; review_case_id: string | null }> {
+): Promise<{
+  id: string;
+  rating: string;
+  review_case_id: string | null;
+  learned?: boolean;
+  self_correction_started?: boolean;
+}> {
   const res = await authedFetch("/orchestration/feedback", token, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

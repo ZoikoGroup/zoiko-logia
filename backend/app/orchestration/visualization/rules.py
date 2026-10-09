@@ -89,7 +89,7 @@ def score_candidates(
     # grouped/stacked bar being a much less familiar default for a paired-
     # numeric question than a scatter plot.
     if (
-        data_shape == XY_NUMERIC and intent == CORRELATION
+        (data_shape == XY_NUMERIC and intent == CORRELATION or data_shape == CHART_TABLE)
         and explicit_grouped_bar_request and observation_count >= _MIN_GROUPED_BAR_POINTS
     ):
         add_score("GROUPED_BAR", 0.95)

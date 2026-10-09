@@ -206,7 +206,11 @@ def needs_lookup(query: str) -> bool:
     # Accounting uses of "current" are labels on the user's own figures, not
     # a request for today's rate ("Current and quick ratio?").
     text = _ACCOUNTING_CURRENT.sub(" ", query or "")
-    return bool(_NEEDS_LOOKUP.search(text))
+    requested_fx = re.search(
+        r'\b(?:find|fetch|get|look\s+up|retrieve)\b[^.?]*\b(?:exchange|fx|conversion|currency)\s+rates?\b',
+        text, re.I,
+    )
+    return bool(_NEEDS_LOOKUP.search(text) or requested_fx)
 
 
 def is_self_contained_calculation(query: str, history=()) -> bool:
@@ -515,6 +519,10 @@ def _journal_balance_failures(answer_text: str) -> list[str]:
 
 def validate_answer_calculations(answer_text: str) -> list[str]:
     """Return failures only for simple equations we can verify with certainty."""
+    from app.orchestration.answer_formatting import latex_to_plain
+    # "10{,}000 \times 1.1025 = 10{,}025" was unreadable here, and a wrong
+    # compound-interest result ($10,025 for $11,025) was released.
+    answer_text = latex_to_plain(answer_text)
     failures: list[str] = []
     normalized = _normalise_arithmetic(answer_text.replace("\\times", "*").replace("\\div", "/"))
     for match in _EQUATION.finditer(normalized):
@@ -525,8 +533,12 @@ def validate_answer_calculations(answer_text: str) -> list[str]:
         # starts after the exponent: "(150,000 ÷ 100,000)^(1/3) − 1 =
         # 0.144714" (a correct CAGR) was judged as "(1/3) − 1 = -0.67", and
         # that one false mismatch replaced a whole nine-part answer.
+        # Only this step of a chain counts: in "FV = 10,000 × (1 + 0.05)^2 =
+        # 10,000 × 1.1025 = 10,025" the power in the first step hid the wrong
+        # final step ($10,025 for $11,025) from the check.
         line_start = normalized.rfind("\n", 0, match.start()) + 1
-        if re.search(r"\^|\*\*", normalized[line_start:match.end()]):
+        step_start = max(line_start, normalized.rfind("=", line_start, match.start()) + 1)
+        if re.search(r"\^|\*\*", normalized[step_start:match.end()]):
             continue
         try:
             expected = _evaluate(expression)
