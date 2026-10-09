@@ -29,20 +29,6 @@ from app.domains.support_incident.service import (
 router = APIRouter(prefix="/support", tags=["support"])
 
 
-def _actor_label(user: User) -> str:
-    """Who acted, from the authenticated user. The request body's actor and
-    resolver fields are ignored: a client-supplied name would let anyone
-    write any identity into the incident's audit timeline."""
-    return f"{user.full_name or user.email} ({user.role})"
-
-
-def _require_unresolved(db: Session, tenant_id: str, incident_id: str) -> None:
-    # A resolved incident is final; containing it again would silently reopen it.
-    incident = get_incident(db, tenant_id, incident_id)
-    if incident and incident.containment_status == "RESOLVED":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Incident is already resolved")
-
-
 @router.get("/tickets", response_model=list[TicketPublic])
 def get_tickets(
     db: Session = Depends(get_sync_db),
@@ -114,8 +100,7 @@ def post_incident_action(
     db: Session = Depends(get_sync_db),
     actor: User = Depends(require_permission(SUPPORT_MANAGE)),
 ):
-    _require_unresolved(db, actor.tenant_id, incident_id)
-    incident = update_incident(db, actor.tenant_id, incident_id, payload.action, _actor_label(actor), payload.note)
+    incident = update_incident(db, actor.tenant_id, incident_id, payload.action, payload.actor, payload.note)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
     return incident
@@ -128,8 +113,7 @@ def post_incident_close(
     db: Session = Depends(get_sync_db),
     actor: User = Depends(require_permission(SUPPORT_MANAGE)),
 ):
-    _require_unresolved(db, actor.tenant_id, incident_id)
-    incident = close_incident(db, actor.tenant_id, incident_id, _actor_label(actor), payload.resolution_note)
+    incident = close_incident(db, actor.tenant_id, incident_id, payload.resolver, payload.resolution_note)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
     return incident

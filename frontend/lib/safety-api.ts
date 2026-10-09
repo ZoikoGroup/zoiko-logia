@@ -89,10 +89,8 @@ export async function validateOutput(text: string): Promise<{
   };
 }
 
-// strict = true throws on failure instead of returning an empty result, so a
-// page can tell "no cases" apart from "could not load" (default unchanged).
-export async function getEscalations(strict = false): Promise<Escalation[]> {
-  const remote = await tryBackend<Escalation[]>("/escalations", undefined, strict);
+export async function getEscalations(): Promise<Escalation[]> {
+  const remote = await tryBackend<Escalation[]>("/escalations");
   return remote ?? [];
 }
 
@@ -132,12 +130,12 @@ export async function actOnEscalation(
   }, true);
 }
 
-export async function getEscalationStats(strict = false): Promise<EscalationStats | null> {
-  return tryBackend<EscalationStats>("/escalations/stats", undefined, strict);
+export async function getEscalationStats(): Promise<EscalationStats | null> {
+  return tryBackend<EscalationStats>("/escalations/stats");
 }
 
-export async function getSafetyOverrides(activeOnly = true, strict = false): Promise<SafetyOverride[]> {
-  const remote = await tryBackend<SafetyOverride[]>(`/overrides?active_only=${activeOnly}`, undefined, strict);
+export async function getSafetyOverrides(activeOnly = true): Promise<SafetyOverride[]> {
+  const remote = await tryBackend<SafetyOverride[]>(`/overrides?active_only=${activeOnly}`);
   return remote || [];
 }
 

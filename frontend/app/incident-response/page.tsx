@@ -7,21 +7,11 @@ import { Pill } from "@/components/governance/Pill";
 import {
   SecurityIncident,
   IncidentStats,
-  IncidentApiError,
   getIncidents,
   getIncidentStats,
   updateIncident,
   closeIncident,
 } from "@/lib/incident-api";
-
-function describeError(err: unknown, fallback: string): string {
-  if (err instanceof IncidentApiError) {
-    if (err.status === 403) return "Your role does not have permission for this.";
-    if (err.status === 409) return "This incident is already resolved.";
-    if (err.status === 0) return err.message;
-  }
-  return fallback;
-}
 
 const SEVERITY_TONE: Record<string, "bad" | "warn" | "neutral"> = {
   Critical: "bad",
@@ -40,10 +30,8 @@ export default function IncidentResponsePage() {
   const [stats, setStats] = useState<IncidentStats | null>(null);
   const [selectedIncident, setSelectedIncident] = useState<SecurityIncident | null>(null);
   const [error, setError] = useState("");
-  const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [actionNote, setActionNote] = useState("");
-  const [actionError, setActionError] = useState("");
 
   // State is only set in the promise callbacks, so the initial load can run
   // from the effect without a synchronous setState (react-hooks rule).
@@ -52,35 +40,27 @@ export default function IncidentResponsePage() {
       .then(([resIncidents, resStats]) => {
         setIncidents(resIncidents);
         setStats(resStats);
-        setError("");
       })
-      .catch((err) => setError(describeError(err, "Could not load incidents from the server.")))
-      .finally(() => setLoaded(true));
+      .catch(() => setError("Could not load incidents from the server."));
 
   useEffect(() => {
     void refreshData();
   }, []);
 
-  const selectIncident = (incident: SecurityIncident) => {
-    setSelectedIncident(incident);
-    setActionError("");
-  };
-
   const handleAction = async (action: string) => {
     if (!selectedIncident) return;
     setLoading(true);
-    setActionError("");
     try {
       if (action === "CLOSE") {
-        await closeIncident(selectedIncident.id, actionNote || "Incident resolved via dashboard.");
+        await closeIncident(selectedIncident.id, "Security Admin", actionNote || "Incident resolved via dashboard.");
       } else {
-        await updateIncident(selectedIncident.id, action, actionNote || `Action ${action} triggered.`);
+        await updateIncident(selectedIncident.id, action, "Security Admin", actionNote || `Action ${action} triggered.`);
       }
       setSelectedIncident(null);
       setActionNote("");
       await refreshData();
-    } catch (err) {
-      setActionError(describeError(err, "The action failed. Nothing was changed."));
+    } catch {
+      alert("Failed to perform action");
     } finally {
       setLoading(false);
     }
@@ -99,12 +79,12 @@ export default function IncidentResponsePage() {
         <Card title="Contained">
           <div className="text-3xl font-medium mt-2 text-warn">{stats?.contained || 0}</div>
         </Card>
-        <Card title="Critical / High (all time)">
+        <Card title="Critical / High">
           <div className="text-3xl font-medium mt-2 text-bad">
             {stats?.critical || 0} / {stats?.high || 0}
           </div>
         </Card>
-        <Card title="Resolved">
+        <Card title="Resolved (30d)">
           <div className="text-3xl font-medium mt-2 text-ok">{stats?.resolved || 0}</div>
         </Card>
       </div>
@@ -128,7 +108,7 @@ export default function IncidentResponsePage() {
                   <tr
                     key={incident.id}
                     className={`border-b border-line cursor-pointer hover:bg-neutral-50 ${selectedIncident?.id === incident.id ? "bg-neutral-50" : ""}`}
-                    onClick={() => selectIncident(incident)}
+                    onClick={() => setSelectedIncident(incident)}
                   >
                     <td className="py-3 text-xs font-mono text-muted">{incident.id}</td>
                     <td className="py-3 text-ink font-medium">{incident.title}</td>
@@ -146,7 +126,7 @@ export default function IncidentResponsePage() {
                 {incidents.length === 0 && (
                   <tr>
                     <td colSpan={5} className="py-8 text-center text-muted text-sm">
-                      {!loaded ? "Loading incidents…" : error ? "Incidents could not be shown." : "No incidents found."}
+                      No incidents found.
                     </td>
                   </tr>
                 )}
@@ -227,7 +207,6 @@ export default function IncidentResponsePage() {
                         Resolve Incident
                       </button>
                     </div>
-                    {actionError && <p className="text-xs text-bad mt-2" role="alert">{actionError}</p>}
                   </div>
                 )}
               </div>

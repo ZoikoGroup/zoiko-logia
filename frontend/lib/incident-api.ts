@@ -35,20 +35,9 @@ export type IncidentStats = {
   high: number;
 };
 
-/** A failed request, with the HTTP status (0 when the server was unreachable). */
-export class IncidentApiError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
-  }
-}
-
-// Errors are thrown, not swallowed: returning an empty list on failure made a
-// 403 or a server outage look like "No incidents found", and a failed action
-// look like it had worked.
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  let res: Response;
+async function tryBackend<T>(path: string, options?: RequestInit): Promise<T | null> {
   try {
-    res = await fetch(`${BACKEND}${path}`, {
+    const res = await fetch(`${BACKEND}${path}`, {
       ...options,
       headers: {
         "Content-Type": "application/json",
@@ -56,35 +45,42 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
         ...options?.headers,
       },
     });
+    if (!res.ok) return null;
+    return (await res.json()) as T;
   } catch {
-    throw new IncidentApiError(0, "The server could not be reached.");
+    return null;
   }
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new IncidentApiError(res.status, body?.detail ?? `Request failed (${res.status})`);
-  }
-  return (await res.json()) as T;
 }
 
 export async function getIncidents(status?: string): Promise<SecurityIncident[]> {
-  return request<SecurityIncident[]>(status ? `?status=${encodeURIComponent(status)}` : "");
+  const url = status ? `/?status=${status}` : "";
+  const remote = await tryBackend<SecurityIncident[]>(url);
+  return remote ?? [];
 }
 
-export async function getIncidentStats(): Promise<IncidentStats> {
-  return request<IncidentStats>("/stats");
+export async function getIncidentStats(): Promise<IncidentStats | null> {
+  return tryBackend<IncidentStats>("/stats");
 }
 
-// The backend records the signed-in user as the actor, so none is sent.
-export async function updateIncident(incidentId: string, action: string, note: string): Promise<SecurityIncident> {
-  return request<SecurityIncident>(`/${incidentId}/action`, {
+export async function updateIncident(
+  incidentId: string,
+  action: string,
+  actor: string,
+  note: string
+): Promise<SecurityIncident | null> {
+  return tryBackend<SecurityIncident>(`/${incidentId}/action`, {
     method: "POST",
-    body: JSON.stringify({ action, note }),
+    body: JSON.stringify({ action, actor, note }),
   });
 }
 
-export async function closeIncident(incidentId: string, resolutionNote: string): Promise<SecurityIncident> {
-  return request<SecurityIncident>(`/${incidentId}/close`, {
+export async function closeIncident(
+  incidentId: string,
+  resolver: string,
+  resolutionNote: string
+): Promise<SecurityIncident | null> {
+  return tryBackend<SecurityIncident>(`/${incidentId}/close`, {
     method: "POST",
-    body: JSON.stringify({ resolution_note: resolutionNote }),
+    body: JSON.stringify({ resolver, resolution_note: resolutionNote }),
   });
 }
