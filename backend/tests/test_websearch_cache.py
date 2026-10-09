@@ -125,13 +125,15 @@ def test_empty_results_are_never_cached(monkeypatch, fake_redis):
 
     async def run():
         await websearch.web_search("a question nothing matches")
+        first = len(calls)
         await websearch.web_search("a question nothing matches")
+        return first
 
-    asyncio.run(run())
+    first = asyncio.run(run())
 
-    # Each search retries an empty answer once (a throttled engine), and the
-    # second search goes upstream again rather than reading a cached empty.
-    assert len(calls) == 4, "an empty result was cached, freezing the outage in"
+    # The second search goes upstream again, exactly as the first did
+    # (including its retries), rather than reading a cached empty.
+    assert first >= 2 and len(calls) == 2 * first, "an empty result was cached, freezing the outage in"
     assert not fake_redis.store
 
 
@@ -145,11 +147,13 @@ def test_untrusted_fallback_results_are_never_cached(monkeypatch, fake_redis):
 
     async def run():
         await websearch.web_search("What is the due date for GSTR-3B for monthly filers?")
+        first = len(calls)
         await websearch.web_search("What is the due date for GSTR-3B for monthly filers?")
+        return first
 
-    asyncio.run(run())
+    first = asyncio.run(run())
 
-    assert len(calls) == 2, "an untrusted-only result was cached"
+    assert first >= 1 and len(calls) == 2 * first, "an untrusted-only result was cached"
     assert not fake_redis.store
 
 

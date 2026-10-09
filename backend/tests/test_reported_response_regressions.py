@@ -443,3 +443,40 @@ def test_layout_only_latex_commands_are_removed():
 
     assert "\\" not in latex_to_plain(r"\displaystyle (£100,000) ÷ (£25,000) = 4")
     assert "\\" not in latex_to_plain(r"\textstyle 2 \quad 3")
+
+
+def test_a_flowchart_decision_keeps_both_branches():
+    """"Approved? Yes → Dispatch → Invoice; No → Reject order" lost the Yes
+    branch and drew "No" as a step."""
+    from app.orchestration.extraction import extract_graph
+
+    g = extract_graph("Draw a flowchart: Customer order → Credit check → Approved? Yes → Dispatch → Invoice; No → Reject order.")
+    assert g.nodes == ["Customer order", "Credit check", "Approved", "Dispatch", "Invoice", "Reject order"]
+    assert ("Approved", "Yes", "Dispatch") in [(e.source, e.type, e.target) for e in g.edges]
+    assert ("Approved", "No", "Reject order") in [(e.source, e.type, e.target) for e in g.edges]
+    plain = extract_graph("Draw a flowchart: Receive invoice → Check PO → Approve → Pay")
+    assert [e.type for e in plain.edges] == ["next", "next", "next"]
+
+
+def test_indian_income_tax_questions_search_indian_tax_sites():
+    """Section 44AB/44AD and MAT questions named no country and were searched
+    on OECD and IFAC sites only."""
+    from app.orchestration.source_taxonomy import allowed_domains, detect_jurisdictions, detect_topics
+
+    for q in ("Under Section 44AB of the Income-tax Act, when is a tax audit mandatory?",
+              "How does Section 44AD differ from Section 44ADA?",
+              "Why does the Income-tax Act levy MAT on companies?"):
+        assert detect_jurisdictions(q) == ["INDIA"]
+        assert "incometaxindia.gov.in" in allowed_domains("", detect_topics(q), q)
+
+
+def test_backup_search_keywords_drop_filler_words():
+    from app.orchestration.websearch import _keyword_query
+
+    assert _keyword_query("How does Section 44AD differ from Section 44ADA?") == "Section 44AD Section 44ADA"
+
+
+def test_chart_placeholder_lines_are_removed():
+    from app.orchestration.answer_formatting import remove_visual_placeholders
+
+    assert remove_visual_placeholders("Trend below.\n\n[The chart below]\n\nDone [REF-1].") == "Trend below.\n\nDone [REF-1]."

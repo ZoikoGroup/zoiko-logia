@@ -114,9 +114,72 @@ def _arrow_statement(statement: str) -> ExtractedGraph | None:
     return ExtractedGraph(nodes=nodes, edges=edges)
 
 
+_BRANCH = re.compile(r"^\s*(yes|no|true|false|approved|rejected|pass|fail)\s*[:,]?\s*(?:-->|->|→)\s*(.+)$", re.I)
+
+
+def extract_decision_flow(query: str) -> ExtractedGraph | None:
+    """A flow with a decision: "Order → Credit check → Approved? Yes →
+    Dispatch → Invoice; No → Reject order". The chain reader stopped at the
+    "?", dropping the Yes branch, and read "No" as a step. A label ending in
+    "?" is the decision; segments starting "Yes"/"No" (or similar) are
+    branches from it, labelled on their edges. Nothing unstated is added."""
+    text = re.sub(r"^.*?:\s*(?=[^:]*(?:-->|->|→))", "", query or "", count=1)
+    if "?" not in text or not re.search(r"(?:^|[;\n?])\s*(?:yes|no)\b", text, re.I):
+        return None
+    nodes: list[str] = []
+    edges: list[ExtractedEdge] = []
+
+    def node(label: str) -> str | None:
+        label = label.strip().strip(".!").strip()
+        if not label or len(label) > _MAX_LABEL_LEN or not re.search(r"[A-Za-z]", label):
+            return None
+        if label not in nodes:
+            nodes.append(label)
+        return label
+
+    def chain(start: str | None, parts: list[str], first_type: str = "next") -> str | None:
+        previous, edge_type = start, first_type
+        for part in parts:
+            current = node(part)
+            if current is None:
+                return None
+            if previous is not None:
+                edges.append(ExtractedEdge(source=previous, target=current, type=edge_type))
+            previous, edge_type = current, "next"
+        return previous
+
+    decision: str | None = None
+    for statement in re.split(r"[;\n]+", text):
+        # "A → B → Decision? Yes → C" holds the decision and its first branch.
+        pieces = re.split(r"(?<=\?)\s+", statement.strip())
+        for piece in pieces:
+            piece = piece.strip()
+            if not piece:
+                continue
+            branch = _BRANCH.match(piece)
+            if branch and decision:
+                label, rest = branch.groups()
+                if chain(decision, _ARROW_SPLIT.split(rest), label.capitalize()) is None:
+                    return None
+                continue
+            parts = [part for part in _ARROW_SPLIT.split(piece.rstrip("?")) if part.strip()]
+            last = chain(None, parts)
+            if last is None:
+                return None
+            if piece.endswith("?"):
+                decision = last
+    branch_labels = {edge.type for edge in edges} - {"next"}
+    if len(nodes) < 3 or not decision or not branch_labels or len(nodes) > _MAX_NODES:
+        return None
+    return ExtractedGraph(nodes=nodes, edges=edges)
+
+
 def extract_arrow_statements(query: str) -> ExtractedGraph | None:
     """Merge semicolon/newline-separated arrow statements such as
     ``A -> B; B -> C`` without inferring any unstated edge."""
+    decision_flow = extract_decision_flow(query)
+    if decision_flow is not None:
+        return decision_flow
     nodes: list[str] = []
     seen: set[str] = set()
     edges: list[ExtractedEdge] = []
