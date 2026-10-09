@@ -180,7 +180,8 @@ _TRUSTED_DOMAINS: dict[str, dict[str, list[str]]] = {
         ACADEMIC: [],
     },
     "INDIA": {
-        TAX: ["incometax.gov.in", "cbic.gov.in", "gst.gov.in"],
+        TAX: ["incometax.gov.in", "cbic.gov.in", "cbic-gst.gov.in", "gst.gov.in",
+              "gstcouncil.gov.in", "indiacode.nic.in"],
         ACCOUNTING: ["icai.org", "mca.gov.in"],
         AUDIT: ["icai.org", "cag.gov.in"],
         PAYROLL: ["epfindia.gov.in", "esic.gov.in", "labour.gov.in"],
@@ -274,7 +275,7 @@ _WEAK_ALIASES: dict[str, tuple[str, ...]] = {"UK": ("corporation tax", "vat"), "
 _ALIAS_EXCLUDED_PREFIXES: dict[str, tuple[str, ...]] = {"IRELAND": ("northern ",)}
 
 
-def detect_jurisdictions(query: str) -> list[str]:
+def detect_jurisdictions(query: str, *, infer_from_tax_terms: bool = True) -> list[str]:
     """Jurisdiction keys a question names, in the order they appear.
 
     The selector in the composer is one value and defaults to "Any", which
@@ -302,6 +303,8 @@ def detect_jurisdictions(query: str) -> list[str]:
         if best is not None:
             hits.append((best, key))
     if not hits:
+        if not infer_from_tax_terms:
+            return []
         weak = [key for key, aliases in _WEAK_ALIASES.items()
                 if any(re.search(rf"\b{re.escape(alias)}\b", lowered) for alias in aliases)]
         # Both "VAT" and "GST" with no country stays ambiguous.

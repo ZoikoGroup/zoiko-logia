@@ -493,6 +493,12 @@ def _terms(text: str) -> set[str]:
     }
 
 
+_HISTORY_PAGE = re.compile(r"\b(?:previous changes|historic(?:al)? (?:rates|changes|information)|archived?|superseded|withdrawn)\b", re.I)
+_ASKS_ABOUT_HISTORY = re.compile(
+    r"\b(?:previous(?:ly)?|historic(?:al)?|history|used to|old|former(?:ly)?|before|in (?:19|20)\d\d|(?:19|20)\d\d)\b", re.I,
+)
+
+
 def _is_relevant(query: str, source: WebSource) -> bool:
     """A result must be about the question, not merely hosted by a trusted body.
 
@@ -505,6 +511,11 @@ def _is_relevant(query: str, source: WebSource) -> bool:
     # A page about a different procedure on the same tax (a VAT refund page
     # for a VAT-return question) — see app/orchestration/procedures.py.
     if names_another_procedure(query, source.title):
+        return False
+    # A page recording superseded rules (HMRC "VCAS9450 - Previous changes")
+    # states old figures as plainly as current ones: a "when must I leave
+    # cash accounting?" answer gave the old £437,500 tolerance as the rule.
+    if _HISTORY_PAGE.search(source.title) and not _ASKS_ABOUT_HISTORY.search(query):
         return False
     return bool(wanted & _terms(source.title)) or len(wanted & _terms(f"{source.title} {source.snippet}")) >= 2
 
@@ -674,7 +685,13 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pa
             )
         except asyncio.TimeoutError:
             pass
-    await _cache_put(cache_key, selected)
+    # Only results with a trusted source are cached. Untrusted fallback
+    # results are what a degraded moment produces: with Tavily timing out,
+    # SearXNG answered "What is the due date for GSTR-3B?" with dictionary
+    # pages for "due", and caching them served that junk (filtered to no
+    # sources downstream) for the whole TTL.
+    if trusted:
+        await _cache_put(cache_key, selected)
     return selected
 
 
@@ -711,21 +728,62 @@ def sub_questions(query: str) -> list[str]:
     return parts[:MAX_SUB_QUESTIONS] if len(parts) >= 2 else [query]
 
 
+async def _uk_vat_rules_source() -> list[WebSource]:
+    """Read the official decision rules, not a ranked snippet of their introduction."""
+    url = "https://www.gov.uk/register-for-vat"
+    try:
+        async with httpx.AsyncClient(timeout=4.0, follow_redirects=False,
+                                     headers={"User-Agent":"KritonResearch/1.0"}) as client:
+            markup = await asyncio.wait_for(_read_html(client, url), timeout=5.0)
+        text = _html_to_text(markup)
+        start = text.find("You must register if either")
+        if start < 0:
+            return []
+        rules = _uk_vat_registration_excerpt(text[start:start+8000])
+        return [WebSource(title="HMRC: When to register for VAT", url=url,
+                          snippet=rules, provider="GOV.UK (HMRC)", freshness="current")]
+    except Exception:
+        return []
+
+
+def _uk_vat_registration_excerpt(text: str) -> str:
+    """Keep both domestic triggers and deadlines together in the verifier budget.
+
+    Ranking the whole page dropped the short prospective deadline while
+    retaining unrelated Northern Ireland and overseas-business rules.
+    These are verbatim sentences, never generated or remembered tax facts.
+    """
+    flattened = " ".join(text.split())
+    passages = []
+    for pattern in (
+        r"You must register if your total taxable turnover for the last 12 months[^.]*\.",
+        r"You have to register within 30 days[^.]*\.",
+        r"You must register if you realise that your total taxable turnover[^.]*\.",
+        r"You (?:must|have to) register by the end of (?:that|the) 30[- ]day period[^.]*\.",
+    ):
+        match = re.search(pattern, flattened, re.I)
+        if not match:
+            return text
+        passages.append(match.group(0))
+    return "\n".join(passages)
+
+
 async def web_search_each(query: str, jurisdiction: str = "", limit: int = 5) -> list[WebSource]:
     """web_search for a single question; for a message with several questions,
     one search per question (bounded concurrency), merged without duplicates
     so every part of the answer has sources of its own."""
     parts = evidence_search_queries(query)
-    if len(parts) == 1:
-        return await web_search(query, jurisdiction=jurisdiction, limit=limit)
     hosted = bool(_tavily_key())
     gate = asyncio.Semaphore(_HOSTED_SUB_SEARCH_CONCURRENCY if hosted else _SUB_SEARCH_CONCURRENCY)
 
     async def search(part: str) -> list[WebSource]:
+        from app.orchestration.source_taxonomy import detect_jurisdictions
+        named = detect_jurisdictions(part)
+        part_jurisdiction = named[0] if len(named) == 1 else jurisdiction
         async with gate:
             try:
                 return await asyncio.wait_for(
-                    web_search(part, jurisdiction=jurisdiction, limit=_SOURCES_PER_SUB_QUESTION, read_pages=1),
+                    web_search(part, jurisdiction=part_jurisdiction, limit=limit if len(parts) == 1 else _SOURCES_PER_SUB_QUESTION, read_pages=1),
                     timeout=_SUB_SEARCH_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
@@ -734,7 +792,17 @@ async def web_search_each(query: str, jurisdiction: str = "", limit: int = 5) ->
 
     merged: list[WebSource] = []
     seen: set[str] = set()
-    for group in await asyncio.gather(*(search(part) for part in parts)):
+    from app.orchestration.input_requirements import uk_vat_rules_requested
+    from app.orchestration.official_evidence import official_sources
+    from app.orchestration.source_taxonomy import detect_jurisdictions
+    searches = [search(part) for part in parts]
+    searches.insert(0, official_sources(query))
+    if uk_vat_rules_requested(query) or (
+        'UK' in detect_jurisdictions(query) and re.search(r'\bvat\b', query, re.I)
+        and re.search(r'\b(?:threshold|register|registration)\b', query, re.I)
+    ):
+        searches.insert(0, _uk_vat_rules_source())
+    for group in await asyncio.gather(*searches):
         for source in group:
             if source.url not in seen:
                 seen.add(source.url)
@@ -744,15 +812,43 @@ async def web_search_each(query: str, jurisdiction: str = "", limit: int = 5) ->
 
 def evidence_search_queries(query: str) -> list[str]:
     """Cover the decision rules, not just an application form or narrow FAQ."""
-    if re.search(r"\b(?:india|indian)\b", query, re.I) and re.search(r"\bgst\b", query, re.I):
+    if re.search(r"\b(?:vat|gst)\b", query, re.I) and re.search(r"\brates?\b", query, re.I) and not re.search(r"\bregistration\b", query, re.I):
+        from app.orchestration.source_taxonomy import detect_jurisdictions
+        countries = detect_jurisdictions(query)
+        if len(countries) > 1:
+            # Research rates separately from the supplied calculation amounts:
+            # '1,000' otherwise ranked import/customs limits above general rates.
+            years = re.findall(r'\b(?:19|20)\d{2}\b', query)
+            period = ' '.join(years) if years else 'current'
+            if not years and re.search(r'\b(?:historical|last year|previous year)\b', query, re.I):
+                return sub_questions(query)
+            return [f"{country.replace('_', ' ')} {period} standard VAT GST rate official tax authority"
+                    for country in countries]
+    if re.search(r"\bregistration\b", query, re.I):
+        markets = [("Australia", "Australia ATO GST registration current projected GST turnover 75000 150000 exceptions"),
+                   ("Singapore", "Singapore IRAS domestic compulsory GST registration retrospective prospective taxable turnover 1 million"),
+                   ("UK", "UK HMRC VAT registration taxable turnover rolling 12 months next 30 days threshold")]
+        found = [term for name,term in markets if re.search(r"\b" + ("(?:uk|united kingdom)" if name == "UK" else name) + r"\b", query, re.I)]
+        if len(found) > 1:
+            return found
+        from app.orchestration.input_requirements import uk_vat_rules_requested
+        if uk_vat_rules_requested(query):
+            return [query, "site:gov.uk/register-for-vat taxable turnover last 12 months expected next 30 days",
+                    "site:gov.uk/register-for-vat register within 30 days end month effective date next 30 day period"]
+    if re.search(r"\b(?:india|indian|bangalore|bengaluru|karnataka)\b", query, re.I) and re.search(r"\bgst\b", query, re.I):
+        india_parts = [query]
         if re.search(r"\bregistration\b", query, re.I):
-            return [query,
+            india_parts += [
                 "India GST registration aggregate turnover thresholds goods services state notification 10/2019 current",
-                "India CGST Act section 23 persons not liable registration section 24 compulsory registration notification exceptions"]
+                "India CGST Act section 23 section 24 compulsory registration interstate services exemption notification 10/2017 Integrated Tax"]
         if re.search(r"\b(?:export|exports|outside india|foreign|overseas|us client|uk client|abroad)\b", query, re.I):
             # "Billing a US client — do I charge GST?" found the registration
             # threshold but not the zero-rating rule for exported services.
-            return [query, "India IGST Act section 16 zero rated supply export of services letter of undertaking LUT without payment of IGST"]
+            india_parts += ["India IGST Act section 16 zero rated supply export of services letter of undertaking LUT without payment of IGST",
+                            "India IGST Act section 2(6) export of services conditions supplier recipient place of supply payment foreign exchange Indian rupees RBI",
+                            "India DGFT services exports IEC necessary only Foreign Trade Policy benefits specified services technology"]
+        if len(india_parts) > 1:
+            return india_parts
         if re.search(r"\b(?:input tax credit|itc)\b", query, re.I):
             return [query, "India CGST section 16 input tax credit conditions tax paid return furnished section 17 blocked credits current"]
     return sub_questions(query)
@@ -772,6 +868,17 @@ def evidence_search_queries(query: str) -> list[str]:
 # again, it should route through a similarly evidence-backed, validated path
 # rather than free-text LLM authorship.
 _FORMATTING_INSTRUCTIONS = (
+    "Markdown table rows must have the same number of cells as their header. "
+    "Put citations inside a cell or add a Sources column to both the header and every row. "
+    "Write percentage rates with a percent sign; label calculated amounts with their local currency. "
+    "Keep missing-evidence rows inside the table with complete pipe delimiters. "
+    "Answer every requested part, including every country, scenario and table column. "
+    "Distinguish general domestic registration from special overseas-vendor and low-value-goods rules. "
+    "A customs value limit is not a business turnover registration threshold. Preserve AND/OR conditions exactly. "
+    "Never infer an unconditional exemption from turnover alone when country, period or exceptions are missing. "
+    "For ordinary credit sales, do not assume a significant financing component or interest accrual. "
+    "For illustrative cash flow, include all stated cash payments and state which expenses were paid in cash. "
+    "Reducing-balance and double-declining balance are not synonyms; double-declining is one variant. "
     "Return only the user-facing answer. Never print internal routing labels "
     "such as 'CLASSIFICATION:', 'CLASSIFIED:', or 'ANSWER:'. Start directly "
     "with the answer content. Do not use double-asterisk Markdown emphasis; "
@@ -780,6 +887,9 @@ _FORMATTING_INSTRUCTIONS = (
     "Give percentages and rates to two decimal places (for example 14.47%), never "
     "rounded to a whole number unless the value is a whole number.\n"
     # "The standard GST rate in Malaysia is 6%" — GST was abolished in 2018.
+    "For export-of-services qualification give the actual statutory conditions, not an LUT as a substitute. "
+    "Do not make a goods-export checklist mandatory for service exporters. Distinguish IGST-paid refunds from unutilised ITC refunds under LUT/bond. "
+    "For compulsory-registration questions explain mandatory categories and relevant exemptions separately from turnover thresholds. "
     "If the evidence shows a tax, rate or rule was abolished, replaced or superseded, "
     "say so and give what replaced it if the evidence states it; never present a past "
     "rate as current.\n"
@@ -1163,6 +1273,49 @@ def _context_budget() -> int:
         return _CONTEXT_CHAR_BUDGET
 
 
+_EXCERPT_CHUNK = 300
+_EXCERPT_PIECE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def _focused_excerpt(text: str, query: str, allowance: int) -> str:
+    """The sentences of a long source most about the question, in page order.
+
+    Cutting at the allowance kept only the start of a page: "The Australian
+    GST rate is 10%" sat at character 2,600 of an ATO page cut at ~1,500, and
+    the rate was answered "not stated" with the page cited beside it. A
+    sentence scores by the question's terms it shares, plus one for a figure
+    when the question asks for a rate, threshold, date or amount."""
+    wanted = _terms(query)
+    wants_figure = bool(re.search(r"\b(?:rate|threshold|limit|how much|when|date|deadline|amount|percent)", query, re.I))
+    pieces = []
+    for piece in _EXCERPT_PIECE.split(text):
+        piece = piece.strip()
+        # A table or list flattened without full stops is one huge "sentence":
+        # longer than the allowance it would be dropped whole, and rate tables
+        # are exactly where the answer is. Chunk it at word boundaries.
+        while len(piece) > _EXCERPT_CHUNK:
+            cut = piece.rfind(" ", 0, _EXCERPT_CHUNK)
+            cut = cut if cut > _EXCERPT_CHUNK // 2 else _EXCERPT_CHUNK
+            pieces.append(piece[:cut].strip())
+            piece = piece[cut:].strip()
+        if piece:
+            pieces.append(piece)
+    scored = sorted(
+        range(len(pieces)),
+        key=lambda i: (-(len(wanted & _terms(pieces[i]))
+                         + (1 if wants_figure and re.search(r"\d", pieces[i]) else 0)), i),
+    )
+    keep, used = set(), 0
+    for i in scored:
+        if used + len(pieces[i]) + 1 > allowance:
+            continue
+        keep.add(i)
+        used += len(pieces[i]) + 1
+    if not keep:
+        return text[:allowance].rstrip()
+    return " ".join(pieces[i] for i in sorted(keep))
+
+
 def _context_allowances(sources: list[WebSource]) -> list[int]:
     """Characters each source may contribute, shared out fairly.
 
@@ -1246,7 +1399,7 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
         source_location = f"URL: {s.url}" if s.url else f"Document ID: {s.source_id or 'uploaded'}"
         snippet = s.snippet or ""
         if len(snippet) > allowance:
-            snippet = snippet[:allowance].rstrip() + "\n[â€¦this source was shortened to fit the request budget]"
+            snippet = _focused_excerpt(snippet, query, allowance) + "\n[…this source was shortened to fit the request budget]"
             truncated_any = True
         blocks.append(f"[REF-{i}] {s.title}\n{source_location}\n{snippet}")
     context = "\n\n".join(blocks)
@@ -1273,6 +1426,12 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
         # question. Only the uncovered part falls back to professional
         # knowledge, and it must be visibly marked as such so a reader is
         # never left guessing which half was sourced.
+        "Never replace an explicitly supplied calculation rate or amount with a rate found in a source. "
+        "For ordinary UK corporation-tax questions, assume non-ring-fence profits unless the question "
+        "explicitly names oil/gas extraction or ring-fence profits; retain associated-company and period assumptions. "
+        "For current threshold/rate questions, an old announcement of a freeze does not establish today's figure. "
+        "Prefer a directly retrieved current authority page over an older secondary announcement. "
+        "If a named tax has been abolished, explain the replacement system when supported by evidence. "
         "When sources disagree, prefer official government, tax-authority, regulator "
         "and standard-setter sources and the most recent period, and state the tax "
         "year or effective date each rate applies to — never an older rate from memory. "

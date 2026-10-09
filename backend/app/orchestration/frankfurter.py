@@ -150,6 +150,57 @@ def _frankfurter_base() -> str:
     return os.getenv("FRANKFURTER_API_BASE_URL", "https://api.frankfurter.dev/v1").rstrip("/")
 
 
+_FRANKFURTER = "Frankfurter (ECB reference rates)"
+# Keyless backup for the latest rate only: Frankfurter timed out for every
+# request on 2026-10-06 and FX questions were answered "the sources do not
+# state this". open.er-api.com publishes one daily table, also keyless.
+_FALLBACK = "ExchangeRate-API (open access)"
+
+
+def _fallback_url() -> str:
+    return os.getenv("FX_FALLBACK_API_URL", "https://open.er-api.com/v6/latest/EUR")
+
+
+async def _latest_per_euro(symbols: list[str], on: str | None = None) -> tuple[dict[str, float], str, str, str] | None:
+    """(rates per 1 EUR, date, provider, base url) from Frankfurter, or from the
+    fallback when Frankfurter fails. None when both fail.
+
+    With `on` (YYYY-MM-DD), the ECB rate published for that date; Frankfurter
+    answers a weekend or holiday with the previous business day's rate, and
+    the returned date says which. The fallback has no history, so a dated
+    request never falls back."""
+    base = _frankfurter_base()
+    endpoint = on or "latest"
+    url = f"{base}/{endpoint}?symbols={','.join(symbols)}" if symbols else f"{base}/{endpoint}"
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+        return ({"EUR": 1.0, **{code: float(value) for code, value in (data.get("rates") or {}).items()}},
+                data.get("date", ""), _FRANKFURTER, base)
+    except Exception:  # noqa: BLE001 — try the fallback
+        if on:
+            return None
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            resp = await client.get(_fallback_url())
+            resp.raise_for_status()
+            data = resp.json()
+        if data.get("result") != "success":
+            return None
+        rates = {code: float(value) for code, value in (data.get("rates") or {}).items()}
+        updated = str(data.get("time_last_update_utc") or "")
+        try:
+            from email.utils import parsedate_to_datetime
+            updated = parsedate_to_datetime(updated).date().isoformat()
+        except (TypeError, ValueError):
+            pass
+        return {"EUR": 1.0, **rates}, updated, _FALLBACK, "https://open.er-api.com/v6/latest"
+    except Exception:  # noqa: BLE001 — fail soft like the primary
+        return None
+
+
 def _find_currency_mentions(query: str) -> list[tuple[str, bool]]:
     """(code, is_supported) for every currency named, in the order written.
 
@@ -204,6 +255,8 @@ class RateMatch:
     converted: float
     date: str
     url: str
+    provider: str = _FRANKFURTER
+    requested: str | None = None  # a past reference date the question asked for
 
 
 async def _find_rates(query: str) -> list[RateMatch]:
@@ -222,28 +275,21 @@ async def _find_rates(query: str) -> list[RateMatch]:
     if len(codes) < 2:
         return []
 
-    return await _fetch_matches(codes[0], codes[1:], _find_amount(query))
+    return await _fetch_matches(codes[0], codes[1:], _find_amount(query), requested_rate_date(query))
 
 
-async def _fetch_matches(base_cur: str, quote_curs: list[str], amount: float = 1.0) -> list[RateMatch]:
+async def _fetch_matches(base_cur: str, quote_curs: list[str], amount: float = 1.0,
+                         on: str | None = None) -> list[RateMatch]:
     """One request for the ECB's own EUR-based rates, crossed here. Asking
     Frankfurter for base=INR returns rates cut to ~4 significant digits
     (1 INR = 0.01042 USD), so ₹25,00,000 came out as $26,050 instead of
     $26,045.73; the EUR table carries the ECB's full published precision."""
     if not quote_curs:
         return []
-    base = _frankfurter_base()
-    symbols = sorted({base_cur, *quote_curs} - {"EUR"})
-    url = f"{base}/latest?symbols={','.join(symbols)}" if symbols else f"{base}/latest"
-    try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            data = resp.json()
-        per_euro = {"EUR": 1.0, **{code: float(value) for code, value in (data.get("rates") or {}).items()}}
-        date = data.get("date", "")
-    except Exception:
+    latest = await _latest_per_euro(sorted({base_cur, *quote_curs} - {"EUR"}), on)
+    if latest is None:
         return []
+    per_euro, date, provider, base = latest
     if not per_euro.get(base_cur):
         return []
 
@@ -255,16 +301,21 @@ async def _fetch_matches(base_cur: str, quote_curs: list[str], amount: float = 1
         matches.append(RateMatch(
             base_cur=base_cur, quote_cur=quote_cur, rate=rate,
             amount=amount, converted=amount * rate, date=date,
-            url=f"{base}/latest?base={base_cur}&symbols={quote_cur}",
+            url=(f"{base}/{on or 'latest'}?base={base_cur}&symbols={quote_cur}" if provider == _FRANKFURTER
+                 else f"{base}/{base_cur}"),
+            provider=provider,
+            requested=on,
         ))
     return matches
 
 
-async def fetch_fx_rates(base_cur: str, quote_curs: list[str], amount: float = 1.0) -> list[WebSource]:
+async def fetch_fx_rates(base_cur: str, quote_curs: list[str], amount: float = 1.0,
+                         on: str | None = None) -> list[WebSource]:
     """Structured entry point: one WebSource per quote currency, from already
     known ISO codes — what the get_exchange_rate tool calls with the model's
-    typed arguments. Fails soft to [] like fetch_fx()."""
-    return [_build_source(match) for match in await _fetch_matches(base_cur, quote_curs, amount)]
+    typed arguments. `on` asks for a historical reference date. Fails soft to
+    [] like fetch_fx()."""
+    return [_build_source(match) for match in await _fetch_matches(base_cur, quote_curs, amount, on)]
 
 
 async def fetch_fx_history(base_cur: str, quote_cur: str, months: int) -> WebSource | None:
@@ -321,23 +372,31 @@ async def _find_rate(query: str) -> RateMatch | None:
 
 
 def _build_source(match: RateMatch) -> WebSource:
+    label = "Live ECB reference rate (Frankfurter)" if match.provider == _FRANKFURTER else f"Live rate from {match.provider}"
+    if match.requested:
+        label = "ECB reference rate (Frankfurter)"
     snippet = (
-        f"Live ECB reference rate (Frankfurter), {match.date}: "
+        f"{label}, {match.date}: "
         f"1 {match.base_cur} = {match.rate:.8g} {match.quote_cur}. "
         f"{match.amount:.15g} {match.base_cur} = {match.converted:.2f} {match.quote_cur}."
     )
+    if match.requested:
+        snippet += (f" Requested reference date {match.requested}; the ECB published no rate that day, so this "
+                    f"is the rate for the previous business day, {match.date}." if match.date != match.requested
+                    else f" Requested reference date {match.requested}.")
+    freshness = "historical" if match.requested else "daily"
     return WebSource(
-        title=f"Frankfurter — {match.base_cur}/{match.quote_cur} exchange rate ({match.date})",
+        title=f"{match.provider.split(' (')[0]} — {match.base_cur}/{match.quote_cur} exchange rate ({match.date})",
         url=match.url,
         snippet=snippet,
-        provider="Frankfurter (ECB reference rates)",
-        freshness="daily",
+        provider=match.provider,
+        freshness=freshness,
         observation=LiveObservation(
             observation_id=f"obs_{uuid.uuid4().hex}",
             indicator=f"{match.base_cur}/{match.quote_cur} exchange rate",
             value=f"{match.rate:.8g}", unit=f"{match.quote_cur} per {match.base_cur}",
-            period=match.date, provider="Frankfurter (ECB reference rates)",
-            source_url=match.url, freshness="daily",
+            period=match.date, provider=match.provider,
+            source_url=match.url, freshness=freshness,
         ),
     )
 
@@ -377,10 +436,45 @@ def unsupported_currency_note(query: str) -> WebSource | None:
     )
 
 
+_MONTHS = {m: i for i, m in enumerate(
+    ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), start=1)}
+_DATE_DMY = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]{3})[a-z]*\.?,?\s+(\d{4})\b", re.I)
+_DATE_MDY = re.compile(r"\b([a-z]{3})[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b", re.I)
+_DATE_ISO = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+
+
+def requested_rate_date(query: str) -> str | None:
+    """The past date a question asks a rate for ("the USD/INR rate for 31
+    December 2024"), as YYYY-MM-DD; None for none, or for today or later."""
+    from datetime import date
+
+    candidates = []
+    for match in _DATE_ISO.finditer(query or ""):
+        candidates.append((int(match.group(1)), int(match.group(2)), int(match.group(3))))
+    for match in _DATE_DMY.finditer(query or ""):
+        if match.group(2).lower() in _MONTHS:
+            candidates.append((int(match.group(3)), _MONTHS[match.group(2).lower()], int(match.group(1))))
+    for match in _DATE_MDY.finditer(query or ""):
+        if match.group(1).lower() in _MONTHS:
+            candidates.append((int(match.group(3)), _MONTHS[match.group(1).lower()], int(match.group(2))))
+    for year, month, day in candidates:
+        try:
+            when = date(year, month, day)
+        except ValueError:
+            continue
+        if when < date.today():
+            return when.isoformat()
+    return None
+
+
 async def fetch_fx(query: str) -> list[WebSource]:
     """Return one WebSource per base/target currency pair when the question
     names two or more supported currencies; otherwise the explicit "not
-    published" note, or []."""
+    published" note, or [].
+
+    A question naming a past date gets the ECB rate for that date: "the
+    USD/INR reference rate for 31 December 2024" was answered from a company
+    filing's noon-buying rate found by web search instead."""
     matches = await _find_rates(query)
     if matches:
         return [_build_source(match) for match in matches]

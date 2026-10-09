@@ -148,7 +148,11 @@ MULTI = (
 def test_several_questions_are_not_forced_through_one_formula():
     from app.orchestration.calculation_service import build_calculation
     assert build_calculation(MULTI) is None
-    assert calculate_from_query(MULTI).status != "success"
+    # Each problem is now solved with its own inputs (it used to be refused).
+    result = calculate_from_query(MULTI)
+    assert [(o.name, o.display_value) for o in result.outputs] == [
+        ("Question 9 markup", "25.00%"), ("Question 9 margin", "20.00%"),
+        ("Question 15 annual depreciation", "£9,000.00")]
 
 
 def test_depreciation_needs_cost_above_residual():

@@ -696,3 +696,67 @@ async def test_agent_final_answer_uses_measured_peak():
     assert "maximum is 216.33 in 2021" in outcome.text
     assert "steadily" not in outcome.text
     assert "both increases and decreases" in outcome.text
+
+
+async def test_the_retrieved_data_row_cites_its_source() -> None:
+    """An uncited "Retrieved data" row was pruned by the release check,
+    leaving an empty table under the answer."""
+    from app.orchestration.schemas import LiveObservation
+
+    async def rate(args: _LookupArgs) -> ToolResult:
+        source = WebSource(
+            title="Frankfurter — GBP/EUR", url="https://api.frankfurter.dev/v1/latest", snippet="2026-10-06: 1 GBP = 1.178 EUR",
+            observation=LiveObservation(
+                observation_id="obs_1", indicator="GBP/EUR exchange rate", value="1.178", unit="EUR per GBP",
+                period="2026-10-06", provider="Frankfurter", source_url="https://api.frankfurter.dev/v1/latest",
+                freshness="daily",
+            ),
+        )
+        return ToolResult(ok=True, content="1 GBP = 1.178 EUR", sources=(source,))
+
+    registry = ToolRegistry()
+    registry.register(ToolSpec(
+        name="get_exchange_rate", version="1.0", description="Rate.", args_model=_LookupArgs, handler=rate,
+        data_source="test", risk_level="low", timeout_seconds=1.0,
+    ))
+    client = ScriptedClient([_reply(tool_calls=[_call("get_exchange_rate", {"key": "GBP"})]),
+                             _reply("10,000 GBP = 11,780 EUR [REF-7].")])
+    outcome = await run_agent(
+        client, model="m", system_prompt="sys", user_prompt="convert", registry=registry,
+        granted_permissions=frozenset(), limits=AgentLimits(), source_ref_offset=6,
+    )
+    assert "| GBP/EUR exchange rate — reference date | 2026-10-06 [REF-7] |" in outcome.text
+
+
+async def test_latest_fx_request_cannot_finish_without_lookup_reminder():
+    executed = []
+    registry = ToolRegistry()
+    async def fx(args):
+        executed.append(args.key)
+        return ToolResult(ok=True, content='Dated current rate')
+    registry.register(ToolSpec(name='get_exchange_rate', version='1.0', description='FX',
+                              args_model=_LookupArgs, handler=fx, data_source='test',
+                              risk_level='low', timeout_seconds=1.0))
+    client = ScriptedClient([_reply('Historical filing rate is 85.55.'),
+                            _reply(tool_calls=[_call('get_exchange_rate', {'key': 'USD/INR'})]),
+                            _reply('Latest rate retrieved.')])
+    outcome = await _run(client, registry, latest_fx_required=True)
+    assert executed == ['USD/INR'] and outcome.text == 'Latest rate retrieved.'
+    assert 'months=0' in client.requests[1]['messages'][-1]['content']
+
+
+def test_a_variance_derived_from_two_stated_figures_is_not_invented() -> None:
+    """Budget-vs-actual variance charts were rejected as invented figures."""
+    from app.domains.model_gateway.agent import unverified_chart_values
+
+    q = "Budget vs actual (£): sales 200,000 vs 185,000; materials 80,000 vs 86,000. Chart the variance."
+    assert unverified_chart_values(json.dumps({"series": [{"name": "v", "data": [-15000, 6000, -7.5]}]}), q) == []
+    assert unverified_chart_values(json.dumps({"series": [{"name": "v", "data": [123456]}]}), q) == [123456]
+
+
+def test_indicator_synonyms_and_year_shapes_are_accepted() -> None:
+    from app.domains.model_gateway.tools.economic_tool import EconomicIndicatorArgs
+
+    args = EconomicIndicatorArgs(indicator="CPI", countries=["India"], years=[2021, 2022, 2023])
+    assert args.indicator == "inflation" and args.years == 3
+    assert EconomicIndicatorArgs(indicator="gdp growth rate", countries=["UK"], years=30).years == 20

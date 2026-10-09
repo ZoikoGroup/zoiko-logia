@@ -99,7 +99,9 @@ KNOWLEDGE_BASE_TOOL = ToolSpec(
         "with licence and version checks (for example UK VAT notices and GOV.UK guidance) — "
         "for passages on one specific point. Use it when the evidence already provided does "
         "not cover a part of the question. Prefer it to memory for any rule, rate, threshold "
-        "or deadline it may cover."
+        "or deadline it may cover. It holds tax and accounting rules only: never use it for "
+        "exchange rates, prices, market or economic data (use the data tools), or for "
+        "arithmetic on the user's own figures."
     ),
     args_model=KnowledgeBaseArgs,
     handler=_handle,

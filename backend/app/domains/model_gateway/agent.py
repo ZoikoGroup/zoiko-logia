@@ -69,7 +69,9 @@ AGENT_TOOL_INSTRUCTIONS = (
     "working you show, write each input exactly as it went into `calculate` — the product "
     "of the numbers shown must equal the result shown; never show rounded inputs beside a "
     "result computed from unrounded ones (10,713.29 × 95.99 is not 1,028,315.04). Whenever "
-    "you use an exchange rate, state its date as the tool gave it. When you compare or "
+    "you use an exchange rate, state its date as the tool gave it. Take every exchange rate from "
+    "get_exchange_rate (with as_of for a rate on a specific past date), never from a web page or "
+    "a company filing in the evidence. When you compare or "
     "convert a statistic, state the year of each figure. Do not add a currency symbol the "
     "question did not use. When you "
     "explain WHY a figure moved, only state causes that the sources or tool results give; "
@@ -265,6 +267,7 @@ _NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 _SCALES = (1.0, 1e2, 1e3, 1e5, 1e6, 1e7, 1e9, 1e12)
 _RUNNING_TOTAL_SPAN = 24
 _RUNNING_TOTAL_MAX_NUMBERS = 400
+_PAIRWISE_MAX_NUMBERS = 60
 
 
 def _chart_values(spec: dict) -> list[float]:
@@ -305,7 +308,19 @@ def unverified_chart_values(raw_arguments: str | None, evidence: str) -> list[fl
             for value in stated[start:start + _RUNNING_TOTAL_SPAN]:
                 total += value
                 running.append(total)
-    base = stated + running
+    # A variance (actual − budget) and its percentage are derived from two
+    # stated figures as directly as a running total: "Budget vs actual …
+    # chart the variance" was rejected as invented 26 times in a week, and
+    # the agent spent its tool budget retrying.
+    derived: list[float] = []
+    if len(stated) <= _PAIRWISE_MAX_NUMBERS:
+        for a in stated:
+            for b in stated:
+                if a != b:
+                    derived.append(b - a)
+                    if a:
+                        derived.append((b - a) / a * 100)
+    base = stated + running + derived
     known = [value * scale for value in base for scale in _SCALES] + [value / scale for value in base for scale in _SCALES]
 
     def found(value: float) -> bool:
@@ -381,6 +396,7 @@ async def run_agent(
     on_tool_start: ToolStartHook | None = None,
     on_tool_done: ToolDoneHook | None = None,
     chart_requested: bool = False,
+    latest_fx_required: bool = False,
     source_ref_offset: int = 0,
 ) -> AgentOutcome:
     deadline = time.monotonic() + limits.max_seconds
@@ -399,6 +415,7 @@ async def run_agent(
         "including references attached to tool results. Never invent or renumber them."
     )
     reminded_chart = False
+    reminded_fx = False
     reminded_working = False
     tools = registry.function_schemas(granted_permissions)
     messages: list[dict] = [
@@ -429,7 +446,13 @@ async def run_agent(
                 source for (name, _), result in executed.items()
                 if name == "get_economic_indicator" and result.ok for source in result.sources
             ])
-        # Include actual retrieval periods even when the model omits them.
+        # Include actual retrieval periods even when the model omits them,
+        # cited: an uncited row was pruned by the release check, leaving an
+        # empty "Retrieved data" table under the answer.
+        def cite(source) -> str:
+            index = next((i for i, s in enumerate(outcome.sources) if s is source), None)
+            return f" [REF-{source_ref_offset + index + 1}]" if index is not None else ""
+
         periods = []
         for (name, _), result in executed.items():
             if not result.ok:
@@ -441,12 +464,12 @@ async def run_agent(
                     year = max(common)
                     if year not in text:
                         label = result.sources[0].title.split("—")[0].strip()
-                        periods.append((label + " — latest common available year", year))
+                        periods.append((label + " — latest common available year", year + cite(result.sources[0])))
             elif name == "get_exchange_rate":
                 for source in result.sources:
                     obs = source.observation
                     if obs and obs.period and obs.period not in text:
-                        periods.append((obs.indicator + " — reference date", obs.period))
+                        periods.append((obs.indicator + " — reference date", obs.period + cite(source)))
         if periods:
             text += "\n\n| Retrieved data | Period |\n| --- | --- |\n"
             text += "\n".join(f"| {label.replace('|', '/')} | {period} |" for label, period in dict.fromkeys(periods))
@@ -580,6 +603,18 @@ async def run_agent(
             continue
         message = response.choices[0].message
         if not message.tool_calls:
+            if latest_fx_required and not reminded_fx and step < limits.max_steps and not any(
+                call.tool == 'get_exchange_rate' for call in outcome.tool_calls
+            ):
+                reminded_fx = True
+                messages.append({'role': 'assistant', 'content': message.content or ''})
+                messages.append({'role': 'user', 'content': (
+                    'This request explicitly requires the latest available exchange rate. '
+                    'Call get_exchange_rate with months=0 before answering. Historical rates '
+                    'in company filings cannot satisfy this request. If the lookup fails, '
+                    'say the latest rate could not be retrieved; do not substitute an old rate.'
+                )})
+                continue
             outcome.stop_reason = "final_answer"
             failures = validate_answer_calculations(message.content or "")
             if failures and not reminded_working and step < limits.max_steps:

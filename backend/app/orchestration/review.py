@@ -269,22 +269,39 @@ async def record_answer(db: AsyncSession, *, query_id: str, tenant_id: str, user
     await db.commit()
 
 
-def external_evidence_snapshot(sources: list) -> list[dict]:
-    """External snippets are explicitly labelled, never registered passages."""
+def external_evidence_snapshot(sources: list, *, citations: list | None = None) -> list[dict]:
+    """Bind exact external snippets to their own refs, even for repeated URLs.
+
+    A governed passage at the same URL must not overwrite a web snippet's
+    citation. Older callers without citations retain unbound review snapshots.
+    """
     import hashlib
     from app.orchestration.redaction import redact_for_external_exposure
     evidence = []
     seen = set()
     for source in sources:
         url = source.url or ""
-        if url in seen or not url.startswith("https://") or source.provider == "uploaded_document":
+        if not url.startswith("https://") or source.provider == "uploaded_document":
             continue
-        seen.add(url)
-        evidence.append({
-            "bundle_id": "external", "passage_id": hashlib.sha256(url.encode()).hexdigest()[:16],
-            "source_version_id": "external_snapshot", "title": source.title, "locator": url,
-            "url": url, "effective_from": None, "effective_to": None,
-            "content": redact_for_external_exposure(source.snippet or "").redacted_text,
-            "withheld_reason": None,
-        })
+        matches = [citation for citation in citations or []
+                   if citation.url == url
+                   and citation.source_id == (source.source_id or url)
+                   and citation.provider != "Governed source register"
+                   and citation.evidence_preview == ((source.snippet or "")[:240].strip() or None)]
+        refs = [citation.ref_id for citation in matches] or [None]
+        for ref in refs:
+            key = (url, ref)
+            if key in seen:
+                continue
+            seen.add(key)
+            item = {
+                "bundle_id": "external", "passage_id": hashlib.sha256(url.encode()).hexdigest()[:16],
+                "source_version_id": "external_snapshot", "title": source.title, "locator": url,
+                "url": url, "effective_from": None, "effective_to": None,
+                "content": redact_for_external_exposure(source.snippet or "").redacted_text,
+                "withheld_reason": None,
+            }
+            if ref:
+                item["ref_id"] = ref
+            evidence.append(item)
     return evidence

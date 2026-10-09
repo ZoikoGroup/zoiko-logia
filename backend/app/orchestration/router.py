@@ -29,7 +29,7 @@ from app.core.supabase_auth import verify_token
 from app.domains.identity.models import User
 from app.domains.identity.permissions import REVIEW_READ, REVIEW_RESOLVE
 from app.domains.identity.rbac import get_current_user, require_permission
-from app.orchestration import review
+from app.orchestration import learned_answers, review
 from app.orchestration.audit_events import audit_answer_feedback, audit_review_resolved
 from app.orchestration.schemas import AskKritonRequest, AskKritonResponse, TaskSpec, VisualizationTelemetryEvent
 from app.orchestration.service import ask_kriton
@@ -277,6 +277,10 @@ class AnswerFeedbackOut(BaseModel):
     id: str
     rating: str
     review_case_id: Optional[str] = None
+    # Self-learning (learned_answers.py): a verified answer kept on thumbs-up,
+    # a background re-answer started on thumbs-down.
+    learned: bool = False
+    self_correction_started: bool = False
 
 
 class ReviewCaseOut(BaseModel):
@@ -331,7 +335,10 @@ async def post_answer_feedback(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnswerFeedbackOut:
-    """Rate an answer. A thumbs-down opens a review case for a reviewer."""
+    """Rate an answer. Kriton learns from it with no reviewer needed: a
+    thumbs-up keeps a fact-checked answer for the same question next time, a
+    thumbs-down retires it and re-answers the question in the background (see
+    learned_answers.py). A thumbs-down also opens an optional review case."""
     try:
         feedback = await review.record_feedback(
             db, tenant_id=current_user.tenant_id, user_id=current_user.id, query_id=payload.query_id,
@@ -344,7 +351,23 @@ async def post_answer_feedback(
         db, query_id=payload.query_id, tenant_id=current_user.tenant_id, actor_id=current_user.id,
         rating=feedback.rating, reasons=feedback.reasons, review_case_id=feedback.review_case_id,
     )
-    return AnswerFeedbackOut(id=feedback.id, rating=feedback.rating, review_case_id=feedback.review_case_id)
+    learned = started = False
+    try:
+        if feedback.rating == "up":
+            learned = await learned_answers.learn_from_upvote(
+                db, tenant_id=current_user.tenant_id, user_id=current_user.id, query_id=payload.query_id,
+            )
+        elif feedback.rating == "down":
+            started = await learned_answers.correct_after_downvote(
+                db, _run_with_deadline, tenant_id=current_user.tenant_id, user_id=current_user.id,
+                role=current_user.role, query_id=payload.query_id, reasons=feedback.reasons,
+                comment=feedback.comment or "",
+            )
+    except Exception:  # noqa: BLE001 — the rating itself is already stored
+        logger.exception("Learning from feedback on %s failed", payload.query_id)
+        await db.rollback()
+    return AnswerFeedbackOut(id=feedback.id, rating=feedback.rating, review_case_id=feedback.review_case_id,
+                             learned=learned, self_correction_started=started)
 
 
 @router.get("/review-cases", response_model=ReviewQueueOut)

@@ -144,7 +144,7 @@ class AnswerVerification:
 
 
 async def verify_for_release(answer: str, *, question: str, evidence: list[str],
-                             requires_authority: bool) -> AnswerVerification:
+                             requires_authority: bool, chart_artifacts: list[str] | None = None) -> AnswerVerification:
     """Only a complete, supported verdict releases authoritative model prose.
 
     This runs after every corrective rewrite. Self-contained calculations and
@@ -154,7 +154,9 @@ async def verify_for_release(answer: str, *, question: str, evidence: list[str],
     """
     if not requires_authority:
         return AnswerVerification(True)
-    pairs = _release_claim_pairs(answer)
+    from app.orchestration.answer_formatting import verified_chart_presentation
+    pairs = [(original, claim) for original, claim in _release_claim_pairs(answer)
+             if not verified_chart_presentation(original, answer, chart_artifacts or [])]
     if not pairs:
         # An answer that only says the evidence is missing makes no claim to
         # verify. Released, it tells the reader so, as the governed-answer
@@ -177,8 +179,51 @@ async def verify_for_release(answer: str, *, question: str, evidence: list[str],
     rejected: list[str] = []
     cited = []
     for original, claim in pairs:
+        if (re.search(r'\bcomposition\b', claim, re.I)
+                and re.search(r'monthly\s+output\s+tax\s+liability|output\s+tax\s+liability[^.]{0,60}per\s+month', claim, re.I)):
+            rejected.append(original)
+            failures.append('Monthly output-tax liability for a registration procedure was mislabelled as composition-scheme eligibility')
+            continue
+        if (re.search(r'\bgst\b', question, re.I)
+                and re.search(r'\b(?:india|indian|bangalore|bengaluru)\b', question, re.I)
+                and re.search(r'\b(?:registration|register|threshold)\b', question, re.I)
+                and not re.search(r'10\s*lakhs?|10,00,000', question, re.I)
+                and re.search(r'\bservices\b[^.\n]{0,100}?(?:10\s*lakhs?|10,00,000)|(?:10\s*lakhs?|10,00,000)[^.\n]{0,100}?\bservices\b', claim, re.I)
+                and not re.search(r'\b(?:states?|manipur|mizoram|nagaland|tripura|special[- ]category)\b', claim, re.I)):
+            rejected.append(original)
+            failures.append('A state-specific service registration threshold was stated without its state condition')
+            continue
+        if (re.search(r'\bcorporation tax\b', question, re.I)
+                and (re.search(r'\b(?:ordinary|non[-‑ ]ring[-‑ ]fence)\b', question, re.I) or not re.search(r'\b(?:ring[-‑ ]fence|oil|gas)\b', question, re.I))
+                and re.search(r'\bring[-‑ ]fence\b', claim, re.I)
+                and not re.search(r'\b(?:only|not|except|oil|gas)\b', claim, re.I)):
+            rejected.append(original)
+            failures.append('A special ring-fence rate was applied to an ordinary-company question')
+            continue
+        if (re.search(r'\b(?:export|exports|us client|foreign)\b', question, re.I)
+                and re.search(r'without (?:charging|payment of|paying) IGST', claim, re.I)
+                and re.search(r'refund of (?:the )?IGST paid', claim, re.I)
+                and not re.search(r'alternativ|instead|if.*pay|with payment', claim, re.I)):
+            rejected.append(original)
+            failures.append('Export without IGST payment was conflated with a refund of IGST paid')
+            continue
+        if (re.search(r'\bgst\b', question, re.I) and re.search(r'registration', question, re.I)
+                and re.search(r'inter[-‑ ]state', claim, re.I) and re.search(r'\bservices\b', claim, re.I)
+                and re.search(r'regardless of turnover|irrespective of turnover', claim, re.I)
+                and not re.search(r'exempt|except|unless|subject to|notification', claim, re.I)):
+            rejected.append(original)
+            failures.append('Inter-state service registration omitted turnover exemptions')
+            continue
         refs = set(re.findall(r"\[(REF-\d+)\]", claim))
         if refs and refs <= available:
+            from app.orchestration.derived_tax_rows import split_tax_row
+            derived = split_tax_row(claim, answer, question)
+            if derived is not None:
+                claim, calculation_error = derived
+                if calculation_error:
+                    rejected.append(original)
+                    failures.append(calculation_error)
+                    continue
             cited.append((original, claim, refs))
         else:
             rejected.append(original)
@@ -233,8 +278,11 @@ def release_claims(answer: str) -> list[str]:
 # re-checks every such line and escalates a wrong one. Requiring a citation
 # for it made the model answer nine calculations with "the sources provided
 # do not state this".
+# A currency code may follow a figure or lead a result ("10,000 GBP × 0.20 =
+# 2,000 GBP", "= EUR 11,781.34").
 _ARITHMETIC_LINE = re.compile(
-    r"[\d)]\s*[%]?\s*[+\-−–*/×÷x^]\s*[(₹£$€]?\s*[\d(][^=\n]*=\s*[-−]?\s*[₹£$€]?\s*[\d(]"
+    r"[\d)]\s*[%]?\s*(?:[A-Z]{3}\s*)?[+\-−–*/×÷x^]\s*[(₹£$€]?\s*(?:[A-Z]{3}\s*)?[\d(][^=\n]*="
+    r"\s*[-−]?\s*[₹£$€]?\s*(?:[A-Z]{3}\s*)?[\d(]"
 )
 _STATED_FACT = re.compile(r"\b(?:is|are|was|were|applies|apply|must|charged|rate of)\b", re.I)
 
@@ -269,6 +317,45 @@ def is_evidence_gap_statement(text: str) -> bool:
     return bool(_GAP_STATEMENT.search(text)) and not _SPECIFIC_VALUE.search(text)
 
 
+_VISUAL_POINTER = re.compile(
+    r"^(?:the|this|a)\s+(?:\w+\s+){0,3}(?:chart|graph|plot|table|diagram|flowchart|visual(?:isation|ization)?)\b"
+    r"[^.]*\b(?:below|above|attached|following)\b", re.I,
+)
+
+
+def _is_visual_pointer(piece: str) -> bool:
+    """"The chart below visualises the converted amounts." points at the
+    rendered chart and states no fact; checked as a claim it failed the
+    release check and the rewrite discarded a correct answer. A pointer that
+    carries a figure is still checked."""
+    return bool(_VISUAL_POINTER.search(piece.strip())) and not _SPECIFIC_VALUE.search(piece)
+
+
+def _row_label_refs(row: str, lines: list[str]) -> str:
+    """A comparison table often restates figures cited just above it
+    ("Australia – 10% [REF-7]" then "| Australia | 10% | 100 | 1,100 |").
+    Checked without a citation every row was removed, leaving an empty table;
+    the row is checked against the references of the cited lines that name
+    its label instead."""
+    cells = [cell.strip(" *_") for cell in row.strip().strip("|").split("|")]
+    label = cells[0] if cells else ""
+    if len(label) < 3 or not re.search(r"[A-Za-z]", label):
+        return ""
+    refs: list[str] = []
+    from app.orchestration.source_taxonomy import detect_jurisdictions
+    countries = detect_jurisdictions(label, infer_from_tax_terms=False)
+    in_fence = False
+    for other in lines:
+        if other.strip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        same_country = len(countries) == 1 and countries[0] in detect_jurisdictions(other, infer_from_tax_terms=False)
+        if in_fence or other.strip().startswith("|") or not (label.lower() in other.lower() or same_country):
+            continue
+        refs += re.findall(r"\[REF-\d+\]", other)
+    return " ".join(dict.fromkeys(refs))
+
+
 def _release_claim_pairs(answer: str) -> list[tuple[str, str]]:
     """(verbatim text, text as checked) for every claim. A sentence without
     its own citation is checked against its paragraph's references."""
@@ -297,9 +384,11 @@ def _release_claim_pairs(answer: str) -> list[tuple[str, str]]:
         ):
             continue
         paragraph_refs = " ".join(dict.fromkeys(re.findall(r"\[REF-\d+\]", line)))
+        if line.startswith("|") and not paragraph_refs:
+            paragraph_refs = _row_label_refs(line, lines)
         for piece in ([line] if line.startswith("|") else claim_verification.sentences(line)):
             piece = claim_verification.without_leading_heading(piece.strip()).strip(" -*•")
-            if is_evidence_gap_statement(piece) or _is_pure_arithmetic(piece):
+            if is_evidence_gap_statement(piece) or _is_pure_arithmetic(piece) or _is_visual_pointer(piece):
                 continue
             inline_heading = claim_verification._LEADING_HEADING.match(line)
             context = inline_heading.group(1).strip("*_ ") if inline_heading else heading
@@ -344,20 +433,15 @@ class ReleaseDecision:
 
 def decide_release_failure(answer: str, check: AnswerVerification, *, risk_level: str,
                            validation_passed: bool) -> ReleaseDecision:
-    """What to do with an answer whose claim check failed after pruning.
+    """Only independently reverified prose may survive a failed check.
 
-    Only the defined high-risk class (the asker's own or a client's matter),
-    or an answer that already failed another validation, escalates to human
-    review: the queue is understaffed and every failed check was going there.
-    Otherwise every unverified statement is removed and the rest released
-    with a note; if the checker itself was unavailable the answer is kept and
-    flagged unverified. Nothing unverified is ever shown unflagged."""
+    The caller already attempts correction and reverified pruning. Remaining
+    failures become an evidence gap; a verifier outage cannot release claims.
+    Existing safety and high-risk escalation policies remain in force.
+    """
     if risk_level == "HIGH" or not validation_passed:
         return ReleaseDecision(escalate=True, text=answer)
-    if check.rejected_claims:
-        text = prune_rejected_claims(answer, check.rejected_claims)
-        if not release_claims(text) and not is_evidence_gap_statement(text):
-            text = "The sources provided do not establish an answer to this."
-        return ReleaseDecision(escalate=False, text=text, note=_UNVERIFIED_REMOVED_NOTE)
-    return ReleaseDecision(escalate=False, text=answer, note=_UNVERIFIED_ANSWER_NOTE)
-
+    return ReleaseDecision(
+        escalate=False, text="The sources provided do not establish an answer to this.",
+        note="I could not verify an answer against the available evidence. Please try again.",
+    )

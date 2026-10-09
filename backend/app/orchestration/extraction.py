@@ -75,7 +75,7 @@ _ARROW_CHAIN = re.compile(
 def extract_arrow_chain(query: str) -> ExtractedGraph | None:
     """Finds the first "A -> B -> C" style chain in the query. Returns None
     if none is present — never guesses at implicit ordering."""
-    q = query or ""
+    q = re.sub(r"^\s*create a flowchart showing\s+", "", query or "", flags=re.I)
     match = _ARROW_CHAIN.search(q)
     if not match:
         return None
@@ -296,13 +296,23 @@ def extract_graph(query: str) -> ExtractedGraph | None:
     "related_to". Falls back to an arrow chain when no typed clause is found.
     A named Kroki diagram whose whole payload parses is checked first: the
     other readers would otherwise pick up a fragment of it."""
-    return (
+    graph = (
         extract_kroki_diagram(query)
         or extract_relation_clauses(query)
         or extract_arrow_statements(query)
         or extract_arrow_chain(query)
         or extract_stage_list(query)
     )
+    # Explicitly requested exception branches on a supplied invoice chain.
+    # These are illustrative workflow loops, not organisation-specific policy.
+    if graph and re.search(r"\binvoice\b", query, re.I):
+        stages = {node.casefold():node for node in graph.nodes}
+        for phrase, stage, label in ((r"disputed invoices?", "verification", "Disputed invoice"), (r"missing approvals?", "approval", "Missing approval")):
+            if re.search(phrase, query, re.I) and stage in stages:
+                graph.nodes.append(label)
+                graph.edges.extend([ExtractedEdge(source=stages[stage],target=label,type="exception"),ExtractedEdge(source=label,target=stages[stage],type="resolve and retry")])
+    return graph
+
 
 
 # User-authored chart data is trusted only as quoted input, never inferred

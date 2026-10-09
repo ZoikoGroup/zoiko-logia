@@ -206,6 +206,9 @@ def score(case: dict, result: dict) -> list[str]:
     any_of = case.get("must_contain_any", [])
     if any_of and not any(_normalised(needle).lower() in lowered for needle in any_of):
         failures.append(f"content: missing any of {any_of}")
+    for alternatives in case.get('must_contain_groups', []):
+        if not any(_normalised(needle).lower() in lowered for needle in alternatives):
+            failures.append(f'content: missing required topic (any of {alternatives})')
     raw_lowered = _reply_text(result).lower()
     for needle in case.get("must_not_contain", []):
         # Raw text first: formatting needles ("\n****", "【") are what the
