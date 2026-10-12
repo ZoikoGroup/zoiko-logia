@@ -2,8 +2,13 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const PUBLIC_PATHS = ["/login", "/signup", "/auth/callback", "/auth/forgot-password", "/auth/reset-password"];
+// /auth/accept-invite is public because the invite session arrives in the URL
+// fragment, which the server never sees; the page establishes it client-side.
+const PUBLIC_PATHS = [
+  "/login", "/signup", "/auth/callback", "/auth/forgot-password", "/auth/reset-password", "/auth/accept-invite",
+];
 const REDIRECT_IF_AUTHED_PATHS = ["/login", "/signup"];
+const MFA_PATH = "/auth/mfa";
 
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -50,6 +55,21 @@ export async function proxy(request: NextRequest) {
 
   if (user && REDIRECT_IF_AUTHED_PATHS.includes(pathname)) {
     return NextResponse.redirect(new URL("/", request.url));
+  }
+
+  // Two-step verification: an account with a verified authenticator app must
+  // complete the challenge (aal1 → aal2) before reaching any app page. The
+  // backend enforces aal2 independently for privileged actions; this keeps
+  // the half-signed-in session out of the UI altogether.
+  if (user && !isPublic) {
+    const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+    const challengePending = aal?.nextLevel === "aal2" && aal.currentLevel !== "aal2";
+    if (challengePending && pathname !== MFA_PATH) {
+      return NextResponse.redirect(new URL(MFA_PATH, request.url));
+    }
+    if (!challengePending && pathname === MFA_PATH) {
+      return NextResponse.redirect(new URL("/", request.url));
+    }
   }
 
   return response;

@@ -6,7 +6,7 @@ import {
   ShieldAlert, Scale, CheckSquare, Cpu, UserCheck,
   AlertTriangle, History, Siren, ScrollText, LifeBuoy,
   Bell, Building2, Plug, Activity,
-  Lock, Users, Building, GitBranch, Settings, CreditCard,
+  Lock, Users, Building, GitBranch, Settings, CreditCard, Bot,
 } from "lucide-react";
 import { RoleCode } from "./roles";
 import { ADVISOR } from "./advisor";
@@ -43,6 +43,10 @@ const ALL_BACKEND: RoleCode[] = [
   "Syllabus Admin",
   "Jurisdiction Lead",
   "Risk Admin",
+  // Review queue only (backend: review.read + review.resolve). Listed here so
+  // the base sections render for it; section gating below opens Accounting
+  // Workflows to it, where item gating leaves just Review Tasks.
+  "SME Reviewer",
 ];
 
 const ALL: RoleCode[] = [
@@ -98,7 +102,10 @@ export const NAV_SECTIONS: NavL1Section[] = [
   {
     id: "accounting-workflows",
     label: "Accounting Workflows",
-    allowedRoles: ACCOUNTING_WORKFLOWS,
+    // Sections filter before items, so a role that can open any item here
+    // must be on the section too — otherwise Review Tasks never renders for
+    // the SME Reviewer.
+    allowedRoles: [...ACCOUNTING_WORKFLOWS, "SME Reviewer"],
     items: [
       { label: "Workpapers", slug: "workpapers", allowedRoles: ACCOUNTING_WORKFLOWS, icon: FolderKanban },
       { label: "Review Tasks", slug: "review-tasks", allowedRoles: [...ACCOUNTING_WORKFLOWS, "SME Reviewer"], icon: ClipboardCheck },
@@ -183,10 +190,14 @@ export const NAV_SECTIONS: NavL1Section[] = [
   {
     id: "administration",
     label: "Administration",
-    allowedRoles: ADMINISTRATION,
+    // Every real role can request break-glass access, so the section admits
+    // them all; item gating keeps everything else Admin-only.
+    allowedRoles: ALL_BACKEND,
     items: [
       { label: "Roles & Permissions", slug: "roles-permissions", allowedRoles: ADMINISTRATION, icon: Lock },
       { label: "Users & Teams", slug: "users-teams", allowedRoles: ADMINISTRATION, icon: Users },
+      { label: "Service Accounts", slug: "service-accounts", allowedRoles: ADMINISTRATION, icon: Bot },
+      { label: "Break-glass Access", slug: "break-glass", allowedRoles: ALL_BACKEND, icon: Siren },
       { label: "Entities/Clients", slug: "entities-clients", allowedRoles: ADMINISTRATION, icon: Building },
       { label: "Release Gates", slug: "release-gates", allowedRoles: ADMINISTRATION, icon: GitBranch },
       { label: "Tenant Settings", slug: "tenant-settings", allowedRoles: ADMINISTRATION, icon: Settings },

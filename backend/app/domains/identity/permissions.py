@@ -84,10 +84,40 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
 }
 
 
+# Roles an Admin may assign through POST /users or PATCH /users/{id}/role.
+# Exactly the roles this registry knows: assigning anything else (the demo
+# personas such as "CFO" the frontend switcher shows) would create an account
+# that silently carries zero permissions.
+ASSIGNABLE_ROLES: frozenset[str] = frozenset(ROLE_PERMISSIONS)
+
+# Privileged permissions that require step-up authentication (an MFA-verified
+# session) when settings.MFA_REQUIRED_FOR_PRIVILEGED is on. Every write that
+# changes governed state is here; the *.read permissions are not.
+STEP_UP_PERMISSIONS: frozenset[str] = frozenset({
+    SOURCE_MANAGE,
+    SUPPORT_MANAGE,
+    MODEL_MANAGE,
+    AUDIT_CORRECT,
+    SAFETY_MANAGE,
+    REVIEW_RESOLVE,
+    EVALUATION_MANAGE,
+})
+
+
 def permissions_for_role(role: str) -> frozenset[str]:
     """Permissions a role carries. Unknown roles get none — deny by default."""
     return ROLE_PERMISSIONS.get(role, frozenset())
 
 
 def user_has_permission(user: User, permission: str) -> bool:
-    return permission in permissions_for_role(user.role)
+    """Role permissions plus any granted by an active, approved break-glass
+    grant (loaded per request by rbac.get_current_user)."""
+    return (
+        permission in permissions_for_role(user.role)
+        or permission in getattr(user, "break_glass_permissions", frozenset())
+    )
+
+
+# Roles a service account may hold. Admin is excluded: administration needs a
+# person, and an API key must never be able to manage users, keys or grants.
+SERVICE_ACCOUNT_ROLES: frozenset[str] = ASSIGNABLE_ROLES - {"Admin"}

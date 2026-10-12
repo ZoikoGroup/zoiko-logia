@@ -6,7 +6,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import supabase_admin
-from app.domains.identity.models import Role, Tenant, User
+from app.core.config import get_settings
+from app.domains.identity.models import Role, ServiceAccount, Tenant, User
 from app.domains.identity.schemas import ProvisionRequest, UserCreateRequest
 
 log = logging.getLogger("uvicorn.error")
@@ -46,16 +47,26 @@ async def list_roles(db: AsyncSession) -> list[Role]:
 
 
 async def list_users(db: AsyncSession, tenant_id: str) -> list[User]:
-    result = await db.execute(select(User).where(User.tenant_id == tenant_id))
+    """People in the tenant. Service accounts also have a users row (it
+    carries their role) but are managed on their own page, not here."""
+    service_accounts = select(ServiceAccount.id).where(ServiceAccount.tenant_id == tenant_id)
+    result = await db.execute(
+        select(User).where(User.tenant_id == tenant_id, User.id.not_in(service_accounts))
+    )
     return list(result.scalars().all())
 
 
 async def create_user(db: AsyncSession, tenant_id: str, payload: UserCreateRequest) -> User:
-    """Admin-created teammate: creates the Supabase auth user first (service
-    role, auto-confirmed — this isn't the public sign-up flow, so there's
-    no email-verification step to wait on), then the local profile row
-    keyed by the id Supabase assigned."""
-    auth_user = supabase_admin.create_user(payload.email, payload.password, email_confirm=True)
+    """Admin-created teammate: creates the Supabase auth user first, then the
+    local profile row keyed by the id Supabase assigned. Without a password the
+    user is invited by email and chooses their own on /auth/accept-invite, so
+    no Admin ever knows it; with one, the account is confirmed immediately."""
+    if payload.password:
+        auth_user = supabase_admin.create_user(payload.email, payload.password, email_confirm=True)
+    else:
+        auth_user = supabase_admin.invite_user(
+            payload.email, redirect_to=f"{get_settings().FRONTEND_URL.rstrip('/')}/auth/accept-invite",
+        )
     first_name, _, last_name = payload.full_name.partition(" ")
 
     user = User(
@@ -122,6 +133,15 @@ async def provision_profile(
                 )
         return existing
 
+    # Invite-only deployments: an unknown sign-up must not be handed a brand
+    # new tenant with itself as Admin. Admin-created users already have a row
+    # (POST /users), so they took the `existing` branch above.
+    if not get_settings().ALLOW_PUBLIC_SIGNUP:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sign-up is by invitation only. Ask your administrator to create your account.",
+        )
+
     tenant = Tenant(name=payload.company_name or "")
     db.add(tenant)
     await db.flush()
@@ -177,6 +197,61 @@ async def set_user_active(db: AsyncSession, user_id: str, tenant_id: str, is_act
     await db.commit()
     await db.refresh(user)
     return user
+
+
+async def reset_user_mfa(db: AsyncSession, user_id: str, tenant_id: str, *, actor_id: str) -> int | None:
+    """Remove every MFA factor of a tenant user (lost authenticator) and end
+    their sessions, so the next sign-in starts fresh. Returns the number of
+    factors removed, or None when the user is not in this tenant."""
+    result = await db.execute(select(User).where(User.id == user_id, User.tenant_id == tenant_id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        return None
+    if user.id == actor_id:
+        raise AccountChangeError("You cannot reset your own two-step verification. Ask another administrator.")
+    factors = supabase_admin.list_mfa_factors(user.id)
+    for factor in factors:
+        supabase_admin.delete_mfa_factor(user.id, factor["id"])
+    try:
+        supabase_admin.revoke_all_sessions(user.id)
+    except Exception as exc:  # noqa: BLE001 — factors are already gone; sessions expire on their own
+        log.warning("Session revocation after MFA reset failed for %s (%s)", user.id, type(exc).__name__)
+    return len(factors)
+
+
+class AccountChangeError(Exception):
+    """A role change the governance rules refuse (self-change, last Admin)."""
+
+
+async def set_user_role(
+    db: AsyncSession, user_id: str, tenant_id: str, role: str, *, actor_id: str,
+) -> tuple[User, str] | None:
+    """Change a tenant user's role. Returns (user, previous_role), or None when
+    the user is not in this tenant. Refuses an Admin changing their own role
+    (separation of duties — and the classic way to lock a tenant out) and any
+    change that would leave the tenant with no active Admin."""
+    result = await db.execute(select(User).where(User.id == user_id, User.tenant_id == tenant_id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        return None
+    if user.id == actor_id:
+        raise AccountChangeError("You cannot change your own role. Ask another administrator.")
+    previous = user.role
+    if previous == "Admin" and role != "Admin":
+        admins = await db.execute(
+            select(User.id).where(
+                User.tenant_id == tenant_id, User.role == "Admin", User.is_active.is_(True), User.id != user.id,
+            )
+        )
+        if admins.first() is None:
+            raise AccountChangeError("This is the tenant's last active administrator; assign another Admin first.")
+    user.role = role
+    await db.commit()
+    await db.refresh(user)
+    # Tokens carry role in app_metadata; the users row stays the authority for
+    # every permission check, so a failed stamp only delays the claim refresh.
+    _sync_app_metadata_best_effort(user.id, tenant_id, role)
+    return user, previous
 
 
 async def update_own_profile(

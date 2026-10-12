@@ -37,7 +37,7 @@ AUTH_EVENTS = {
     "auth.provisioned",
     "auth.profile_updated",
     "auth.sessions_revoked",
-    "auth.mfa_enroll_attempted",
+    "auth.mfa_enrolled",
     "auth.user_created",
     "auth.user_activation_changed",
 }
@@ -116,15 +116,14 @@ async def test_router_auth_events_never_carry_secrets(audit_db, monkeypatch) -> 
     (the only things allowed to write auth events) and assert none of their
     payload keys could carry a password/token/credential — the UserCreateRequest
     password and provision data are inputs, never ledger contents."""
-    from fastapi import HTTPException
-
     from app.domains.identity.router import (
-        mfa_enroll,
+        mfa_enrolled,
         patch_me,
         patch_user,
+        patch_user_role,
         sign_out_all_sessions,
     )
-    from app.domains.identity.schemas import ProfileUpdateRequest
+    from app.domains.identity.schemas import ProfileUpdateRequest, UserRoleUpdateRequest
 
     db = audit_db
     admin = await get_user_by_id(db, "admin-1")
@@ -143,14 +142,13 @@ async def test_router_auth_events_never_carry_secrets(audit_db, monkeypatch) -> 
         admin,
     )
     await patch_user(created.id, UserActiveUpdateRequest(is_active=False), db, admin)
+    await patch_user_role(created.id, UserRoleUpdateRequest(role="System Auditor"), db, admin)
     await sign_out_all_sessions(db, admin)
-    try:
-        await mfa_enroll(db, admin)
-    except HTTPException:
-        pass
+    admin.auth_aal = "aal2"
+    await mfa_enrolled(db, admin)
 
     rows = (await db.execute(select(AuditEvent))).scalars().all()
-    assert len(rows) == 6
+    assert len(rows) == 7
     for row in rows:
         keys = {str(k).lower() for k in row.payload}
         for key in keys:

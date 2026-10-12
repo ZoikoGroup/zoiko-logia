@@ -4,19 +4,23 @@ import { usePathname } from "next/navigation";
 import { ReactNode, useState } from "react";
 import { Sidebar } from "./Sidebar";
 import { AppHeader } from "./AppHeader";
+import { ImpersonationBanner } from "@/components/shell/ImpersonationBanner";
 
 export function AppChrome({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
-  if (
-    pathname === "/login" ||
-    pathname === "/signup" ||
-    pathname === "/ask-kriton" ||
-    pathname === "/auth/forgot-password" ||
-    pathname === "/auth/reset-password"
-  ) {
+  if (pathname.startsWith("/auth/") || pathname === "/login" || pathname === "/signup") {
     return <>{children}</>;
+  }
+
+  if (pathname === "/ask-kriton") {
+    return (
+      <>
+        {children}
+        <ImpersonationBanner />
+      </>
+    );
   }
 
   return (
@@ -26,6 +30,7 @@ export function AppChrome({ children }: { children: ReactNode }) {
         <AppHeader onMenuClick={() => setMobileNavOpen(true)} />
         {children}
       </div>
+      <ImpersonationBanner />
     </>
   );
 }
