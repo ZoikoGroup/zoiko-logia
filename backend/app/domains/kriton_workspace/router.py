@@ -279,3 +279,66 @@ async def patch_draft(
 ) -> DraftPublic:
     row = await update_draft(db, current_user.id, draft_id, payload)
     return DraftPublic.model_validate(row)
+
+
+# Drafts & Reports: delete, sources and export (see draft_tools.py). Imported
+# here so the draft additions stay in one block.
+@router.delete("/drafts/{draft_id}", status_code=204)
+async def remove_draft(
+    draft_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    from app.domains.kriton_workspace.draft_tools import delete_draft
+
+    row = await delete_draft(db, current_user.tenant_id, current_user.id, draft_id)
+    await record_event_async(
+        db,
+        tenant_id=current_user.tenant_id,
+        event_name="kriton_workspace.draft_deleted",
+        emitting_service="kriton_workspace",
+        actor_id=current_user.id,
+        subject_type="draft",
+        subject_id=draft_id,
+        payload={"title": row.title, "status": row.status},
+    )
+    return Response(status_code=204)
+
+
+@router.get("/drafts/{draft_id}/sources")
+async def get_draft_sources(
+    draft_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    from app.domains.kriton_workspace.draft_tools import draft_sources
+
+    return await draft_sources(db, current_user.tenant_id, current_user.id, draft_id)
+
+
+@router.get("/drafts/{draft_id}/export")
+async def export_draft_file(
+    draft_id: str,
+    format: str = "docx",
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    from app.domains.kriton_workspace.draft_tools import export_draft
+
+    content, filename, mime_type, title = await export_draft(
+        db, current_user.tenant_id, current_user.id, draft_id, format.lower(),
+    )
+    await record_event_async(
+        db,
+        tenant_id=current_user.tenant_id,
+        event_name="kriton_workspace.draft_exported",
+        emitting_service="kriton_workspace",
+        actor_id=current_user.id,
+        subject_type="draft",
+        subject_id=draft_id,
+        payload={"title": title, "format": format.lower()},
+    )
+    return Response(
+        content=content, media_type=mime_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
