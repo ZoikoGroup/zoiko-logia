@@ -16,18 +16,23 @@ import {
 } from "lucide-react";
 import {
   AuthError,
-  signInWithGoogle,
+  ENABLED_OAUTH_PROVIDERS,
+  OAUTH_PROVIDER_LABELS,
+  PUBLIC_SIGNUP_ENABLED,
+  signInWithOAuthProvider,
   signInWithPassword,
   signUp,
   validateSignUp,
   type FieldErrors,
+  type OAuthProvider,
 } from "@/services/auth.service";
 import { BrandMark } from "@/components/layout/AppHeader";
 
 type Mode = "signin" | "signup";
 
 export function AuthCard({ initialMode }: { initialMode: Mode }) {
-  const [mode, setMode] = useState<Mode>(initialMode);
+  // Invite-only deployments never show the sign-up form, even at /signup.
+  const [mode, setMode] = useState<Mode>(PUBLIC_SIGNUP_ENABLED ? initialMode : "signin");
 
   return (
     <main className="min-h-screen w-full bg-bg text-ink">
@@ -76,8 +81,13 @@ export function AuthCard({ initialMode }: { initialMode: Mode }) {
           <div className="relative w-full max-w-md">
             <div className="relative overflow-hidden rounded-2xl border border-line bg-panel shadow-[0_18px_50px_rgba(11,95,122,0.10)]">
               <div className="grid">
-                <SignInPanel active={mode === "signin"} onSwitchToSignup={() => setMode("signup")} />
-                <SignUpPanel active={mode === "signup"} onSwitchToSignin={() => setMode("signin")} />
+                <SignInPanel
+                  active={mode === "signin"}
+                  onSwitchToSignup={PUBLIC_SIGNUP_ENABLED ? () => setMode("signup") : undefined}
+                />
+                {PUBLIC_SIGNUP_ENABLED && (
+                  <SignUpPanel active={mode === "signup"} onSwitchToSignin={() => setMode("signin")} />
+                )}
               </div>
             </div>
           </div>
@@ -96,7 +106,7 @@ function panelClassName(active: boolean, direction: "left" | "right") {
   ].join(" ");
 }
 
-function SignInPanel({ active, onSwitchToSignup }: { active: boolean; onSwitchToSignup: () => void }) {
+function SignInPanel({ active, onSwitchToSignup }: { active: boolean; onSwitchToSignup?: () => void }) {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -104,31 +114,18 @@ function SignInPanel({ active, onSwitchToSignup }: { active: boolean; onSwitchTo
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [googleSubmitting, setGoogleSubmitting] = useState(false);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
     setSubmitting(true);
     try {
-      await signInWithPassword(email, password);
-      router.push("/");
+      const { mfaRequired } = await signInWithPassword(email, password);
+      router.push(mfaRequired ? "/auth/mfa" : "/");
     } catch (err) {
       setError(err instanceof AuthError ? err.message : "Something went wrong while signing you in. Please try again.");
     } finally {
       setSubmitting(false);
-    }
-  }
-
-  async function handleGoogle() {
-    setError("");
-    setGoogleSubmitting(true);
-    try {
-      await signInWithGoogle();
-      // Browser navigates away to Google — no further local state change needed.
-    } catch (err) {
-      setError(err instanceof AuthError ? err.message : "Could not start Google sign-in.");
-      setGoogleSubmitting(false);
     }
   }
 
@@ -221,24 +218,7 @@ function SignInPanel({ active, onSwitchToSignup }: { active: boolean; onSwitchTo
           {submitting ? "Signing in..." : "Sign in"}
         </button>
 
-        <div className="flex items-center gap-3 py-0.5">
-          <div className="h-px flex-1 bg-line" />
-          <span className="text-xs font-medium uppercase tracking-wide text-muted">or continue with</span>
-          <div className="h-px flex-1 bg-line" />
-        </div>
-
-        <div className="grid grid-cols-1 gap-3">
-          <button
-            type="button"
-            onClick={handleGoogle}
-            disabled={googleSubmitting}
-            tabIndex={active ? 0 : -1}
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-line bg-soft text-sm font-semibold text-ink transition-colors hover:bg-line/40 disabled:opacity-60"
-          >
-            <GoogleIcon />
-            {googleSubmitting ? "Redirecting..." : "Google"}
-          </button>
-        </div>
+        <OAuthButtons active={active} onError={setError} />
       </form>
 
       <p className="mt-3 text-center text-xs leading-5 text-muted">
@@ -252,17 +232,23 @@ function SignInPanel({ active, onSwitchToSignup }: { active: boolean; onSwitchTo
         </button>
       </p>
 
-      <p className="mt-3 text-center text-sm text-muted">
-        Don&apos;t have an account?{" "}
-        <button
-          type="button"
-          onClick={onSwitchToSignup}
-          tabIndex={active ? 0 : -1}
-          className="font-semibold text-brand hover:underline"
-        >
-          Create one free.
-        </button>
-      </p>
+      {onSwitchToSignup ? (
+        <p className="mt-3 text-center text-sm text-muted">
+          Don&apos;t have an account?{" "}
+          <button
+            type="button"
+            onClick={onSwitchToSignup}
+            tabIndex={active ? 0 : -1}
+            className="font-semibold text-brand hover:underline"
+          >
+            Create one free.
+          </button>
+        </p>
+      ) : (
+        <p className="mt-3 text-center text-sm text-muted">
+          Access is by invitation. Ask your administrator for an account.
+        </p>
+      )}
     </div>
   );
 }
@@ -279,7 +265,6 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
   const [formError, setFormError] = useState("");
   const [success, setSuccess] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [googleSubmitting, setGoogleSubmitting] = useState(false);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -298,17 +283,6 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
       setFormError(err instanceof AuthError ? err.message : "Could not create your account. Please try again.");
     } finally {
       setSubmitting(false);
-    }
-  }
-
-  async function handleGoogle() {
-    setFormError("");
-    setGoogleSubmitting(true);
-    try {
-      await signInWithGoogle();
-    } catch (err) {
-      setFormError(err instanceof AuthError ? err.message : "Could not start Google sign-in.");
-      setGoogleSubmitting(false);
     }
   }
 
@@ -463,24 +437,7 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
           {!submitting && <ArrowRight size={16} />}
         </button>
 
-        <div className="flex items-center gap-3 py-0.5">
-          <div className="h-px flex-1 bg-line" />
-          <span className="text-xs font-medium uppercase tracking-wide text-muted">or continue with</span>
-          <div className="h-px flex-1 bg-line" />
-        </div>
-
-        <div className="grid grid-cols-1 gap-3">
-          <button
-            type="button"
-            onClick={handleGoogle}
-            disabled={googleSubmitting}
-            tabIndex={active ? 0 : -1}
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-line bg-soft text-sm font-semibold text-ink transition-colors hover:bg-line/40 disabled:opacity-60"
-          >
-            <GoogleIcon />
-            {googleSubmitting ? "Redirecting..." : "Google"}
-          </button>
-        </div>
+        <OAuthButtons active={active} onError={setFormError} />
       </form>
 
       <div className="mt-5 flex items-center justify-center gap-1.5">
@@ -501,6 +458,62 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
         </button>
       </p>
     </div>
+  );
+}
+
+/** SSO buttons for the providers enabled in NEXT_PUBLIC_AUTH_PROVIDERS; renders
+ * nothing (not even the divider) when none are. */
+function OAuthButtons({ active, onError }: { active: boolean; onError: (message: string) => void }) {
+  const [pending, setPending] = useState<OAuthProvider | null>(null);
+  if (ENABLED_OAUTH_PROVIDERS.length === 0) return null;
+
+  async function start(provider: OAuthProvider) {
+    onError("");
+    setPending(provider);
+    try {
+      await signInWithOAuthProvider(provider);
+      // The browser navigates away to the provider; nothing further here.
+    } catch (err) {
+      onError(err instanceof AuthError ? err.message : `Could not start ${OAUTH_PROVIDER_LABELS[provider]} sign-in.`);
+      setPending(null);
+    }
+  }
+
+  return (
+    <>
+      <div className="flex items-center gap-3 py-0.5">
+        <div className="h-px flex-1 bg-line" />
+        <span className="text-xs font-medium uppercase tracking-wide text-muted">or continue with</span>
+        <div className="h-px flex-1 bg-line" />
+      </div>
+
+      <div className={`grid gap-3 ${ENABLED_OAUTH_PROVIDERS.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
+        {ENABLED_OAUTH_PROVIDERS.map((provider) => (
+          <button
+            key={provider}
+            type="button"
+            onClick={() => start(provider)}
+            disabled={pending !== null}
+            tabIndex={active ? 0 : -1}
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-line bg-soft text-sm font-semibold text-ink transition-colors hover:bg-line/40 disabled:opacity-60"
+          >
+            {provider === "google" ? <GoogleIcon /> : <MicrosoftIcon />}
+            {pending === provider ? "Redirecting..." : OAUTH_PROVIDER_LABELS[provider]}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function MicrosoftIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+      <path fill="#F25022" d="M1 1h10.5v10.5H1z" />
+      <path fill="#7FBA00" d="M12.5 1H23v10.5H12.5z" />
+      <path fill="#00A4EF" d="M1 12.5h10.5V23H1z" />
+      <path fill="#FFB900" d="M12.5 12.5H23V23H12.5z" />
+    </svg>
   );
 }
 

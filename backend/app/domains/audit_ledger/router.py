@@ -67,7 +67,7 @@ async def get_event(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AuditEventPublic:
-    event = await audit_service.get_event(db, event_id)
+    event = await audit_service.get_event(db, event_id, current_user.tenant_id)
     if event is None:
         raise HTTPException(status_code=404, detail="Audit event not found")
     return AuditEventPublic.model_validate({**event.__dict__, "source": "audit_ledger"})
@@ -100,7 +100,7 @@ async def get_replay_manifest(
         )
         if not decision.allowed:
             raise HTTPException(status_code=403, detail=decision.reason_code)
-    manifest = await audit_service.get_replay_manifest(db, sync_db, correlation_id)
+    manifest = await audit_service.get_replay_manifest(db, sync_db, correlation_id, current_user.tenant_id)
     return ReplayManifest.model_validate(manifest)
 
 
@@ -119,7 +119,7 @@ async def get_compensating_events(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[CompensatingEventPublic]:
-    rows = await audit_service.list_compensating_events(db, corrects_event_id)
+    rows = await audit_service.list_compensating_events(db, current_user.tenant_id, corrects_event_id)
     return [CompensatingEventPublic.model_validate(r) for r in rows]
 
 
@@ -131,7 +131,7 @@ async def post_compensate_event(
     actor: User = Depends(require_permission(AUDIT_CORRECT)),
 ) -> CompensatingEventPublic:
     try:
-        row = await audit_service.issue_compensating_event(db, event_id, actor.id, payload)
+        row = await audit_service.issue_compensating_event(db, event_id, actor.id, actor.tenant_id, payload)
     except CompensatingEventError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     return CompensatingEventPublic.model_validate(row)

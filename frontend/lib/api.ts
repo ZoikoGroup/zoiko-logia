@@ -1,5 +1,6 @@
 import { supabase } from "@/lib/supabase";
 import { getCurrentAccessToken } from "@/lib/session-token";
+import { clearImpersonation, getImpersonation, impersonationHeaders } from "@/lib/impersonation";
 import type { GovernanceDashboardViewModel } from "@/lib/governance-dashboard-types";
 import type { CommandCenterViewModel } from "@/lib/command-center-types";
 
@@ -48,14 +49,22 @@ export async function provisionProfile(accessToken: string, payload: ProvisionRe
   return res.json();
 }
 
+/** While an Admin is viewing as someone, this returns that user's profile, so
+ * the role-gated navigation renders exactly what they would see. */
 export async function getMe(token: string): Promise<UserPublic> {
   const res = await fetch(`${API_URL}/auth/me`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}`, ...impersonationHeaders() },
     // Bounded so an unreachable backend can't hold the role-gated nav on its
     // loading state indefinitely; a timeout falls back like any other failure.
     signal: AbortSignal.timeout(8000),
   });
 
+  if (res.status === 403 && getImpersonation()) {
+    // The view-as session ended or expired server-side: drop it and fall
+    // back to the Admin's own profile.
+    clearImpersonation();
+    return getMe(token);
+  }
   if (!res.ok) {
     throw new ApiError(res.status, "Could not fetch current user");
   }
@@ -84,16 +93,30 @@ export type UserListItem = {
 
 export type UserCreateRequest = {
   email: string;
-  password: string;
+  /** Omit to invite the user by email; they choose their own password. */
+  password?: string;
   full_name: string;
   role: string;
 };
 
-async function authedFetch(path: string, token: string, init?: RequestInit): Promise<Response> {
+export type UserCreatedResponse = UserListItem & { invited: boolean };
+
+const IMPERSONATION_ENDED = "This impersonation session has ended.";
+
+async function authedFetch(
+  path: string,
+  token: string,
+  init?: RequestInit,
+  { asSelf = false }: { asSelf?: boolean } = {},
+): Promise<Response> {
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
     headers: {
       ...(init?.headers ?? {}),
+      // Every call made while viewing as someone carries the session, so the
+      // backend answers as that user and refuses writes. Only the call that
+      // ends the session itself is made as the Admin (asSelf).
+      ...(asSelf ? {} : impersonationHeaders()),
       Authorization: `Bearer ${token}`,
     },
   });
@@ -106,6 +129,9 @@ async function authedFetch(path: string, token: string, init?: RequestInit): Pro
   }
   if (!res.ok) {
     const body = await res.json().catch(() => null);
+    if (res.status === 403 && body?.detail === IMPERSONATION_ENDED) {
+      clearImpersonation();
+    }
     throw new ApiError(res.status, body?.detail ?? `Request to ${path} failed`);
   }
   return res;
@@ -157,7 +183,7 @@ export async function listUsers(token: string): Promise<UserListItem[]> {
   return res.json();
 }
 
-export async function createUser(token: string, payload: UserCreateRequest): Promise<UserListItem> {
+export async function createUser(token: string, payload: UserCreateRequest): Promise<UserCreatedResponse> {
   const res = await authedFetch("/users", token, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -173,6 +199,183 @@ export async function setUserActive(token: string, id: string, isActive: boolean
     body: JSON.stringify({ is_active: isActive }),
   });
   return res.json();
+}
+
+/** Admin-only. The backend refuses a role outside the permission registry,
+ * an Admin changing their own role, and demoting the last active Admin. */
+export async function setUserRole(token: string, id: string, role: string): Promise<UserListItem> {
+  const res = await authedFetch(`/users/${id}/role`, token, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ role }),
+  });
+  return res.json();
+}
+
+export type MfaStatus = {
+  required_for_privileged: boolean;
+  privileged_role: boolean;
+  current_aal: string;
+};
+
+export async function getMfaStatus(token: string): Promise<MfaStatus> {
+  const res = await authedFetch("/auth/mfa/status", token);
+  return res.json();
+}
+
+/** Audit hook after a factor is verified; the backend accepts it only from
+ * a session that is already aal2. */
+export async function recordMfaEnrolled(token: string): Promise<void> {
+  await authedFetch("/auth/mfa/enrolled", token, { method: "POST" });
+}
+
+/** Revokes every session the user holds, on every device, server-side. */
+export async function signOutAllSessions(token: string): Promise<void> {
+  await authedFetch("/auth/sign-out-all-sessions", token, { method: "POST" });
+}
+
+/** Admin-only: removes a user's authenticator apps and ends their sessions. */
+export async function resetUserMfa(token: string, userId: string): Promise<void> {
+  await authedFetch(`/users/${userId}/mfa/reset`, token, { method: "POST" });
+}
+
+// ── Elevated-access governance ──────────────────────────────────────────────
+
+export type ImpersonationSession = {
+  id: string;
+  target_user_id: string;
+  target_name: string;
+  target_email: string;
+  target_role: string;
+  reason: string;
+  started_at: string;
+  expires_at: string;
+  ended_at: string | null;
+};
+
+export async function startImpersonation(
+  token: string,
+  payload: { target_user_id: string; reason: string; minutes: number },
+): Promise<ImpersonationSession> {
+  const res = await authedFetch("/auth/impersonation", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }, { asSelf: true });
+  return res.json();
+}
+
+export async function endImpersonation(token: string, sessionId: string): Promise<void> {
+  await authedFetch(`/auth/impersonation/${sessionId}/end`, token, { method: "POST" }, { asSelf: true });
+}
+
+export type BreakGlassGrant = {
+  id: string;
+  user_id: string;
+  user_name: string;
+  permissions: string[];
+  reason: string;
+  duration_minutes: number;
+  status: "requested" | "active" | "expired" | "revoked" | "rejected";
+  requested_at: string;
+  approved_by: string | null;
+  activated_at: string | null;
+  expires_at: string | null;
+  ended_at: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_notes: string | null;
+  needs_review: boolean;
+};
+
+export async function listBreakGlassPermissions(token: string): Promise<string[]> {
+  return (await authedFetch("/break-glass/permissions", token)).json();
+}
+
+export async function listBreakGlass(token: string): Promise<BreakGlassGrant[]> {
+  return (await authedFetch("/break-glass", token)).json();
+}
+
+export async function requestBreakGlass(
+  token: string,
+  payload: { permissions: string[]; reason: string; duration_minutes: number },
+): Promise<BreakGlassGrant> {
+  const res = await authedFetch("/break-glass", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+
+export async function actOnBreakGlass(
+  token: string,
+  grantId: string,
+  action: "approve" | "reject" | "revoke" | "review",
+  notes?: string,
+): Promise<BreakGlassGrant> {
+  const res = await authedFetch(`/break-glass/${grantId}/${action}`, token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: action === "review" ? JSON.stringify({ notes }) : undefined,
+  });
+  return res.json();
+}
+
+export type ServiceAccountKey = {
+  id: string;
+  key_prefix: string;
+  created_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  last_used_at: string | null;
+};
+
+export type ServiceAccount = {
+  id: string;
+  name: string;
+  description: string;
+  role: string;
+  owner_user_id: string;
+  owner_name: string;
+  is_active: boolean;
+  created_at: string;
+  keys: ServiceAccountKey[];
+};
+
+export async function listServiceAccounts(token: string): Promise<ServiceAccount[]> {
+  return (await authedFetch("/service-accounts", token)).json();
+}
+
+export async function createServiceAccount(
+  token: string,
+  payload: { name: string; description: string; role: string; owner_user_id: string },
+): Promise<ServiceAccount> {
+  const res = await authedFetch("/service-accounts", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+
+/** The returned `key` is shown once and never retrievable again. */
+export async function issueServiceAccountKey(
+  token: string,
+  accountId: string,
+  expiresInDays: number,
+): Promise<{ key: string; key_info: ServiceAccountKey }> {
+  const res = await authedFetch(`/service-accounts/${accountId}/keys`, token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expires_in_days: expiresInDays }),
+    cache: "no-store",
+  });
+  return res.json();
+}
+
+export async function revokeServiceAccountKey(token: string, accountId: string, keyId: string): Promise<void> {
+  await authedFetch(`/service-accounts/${accountId}/keys/${keyId}/revoke`, token, { method: "POST" });
 }
 
 export type Ticket = {
@@ -1341,7 +1544,13 @@ export type AnswerFeedbackRequest = {
 export async function submitAnswerFeedback(
   token: string,
   payload: AnswerFeedbackRequest,
-): Promise<{ id: string; rating: string; review_case_id: string | null }> {
+): Promise<{
+  id: string;
+  rating: string;
+  review_case_id: string | null;
+  learned?: boolean;
+  self_correction_started?: boolean;
+}> {
   const res = await authedFetch("/orchestration/feedback", token, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

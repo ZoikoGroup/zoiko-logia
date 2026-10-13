@@ -6,6 +6,8 @@ to rupees" works without the literal codes ever appearing in the question.
 """
 from __future__ import annotations
 
+from datetime import date
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.domains.model_gateway.tool_registry import ToolResult, ToolSpec
@@ -27,6 +29,12 @@ class ExchangeRateArgs(BaseModel):
         default=0, ge=0, le=60,
         description="For a history or trend, the number of past months of month-end rates to return "
                     "(e.g. 12). Leave 0 for the latest rate only.",
+    )
+
+    as_of: date | None = Field(
+        default=None,
+        description="A past reference date (YYYY-MM-DD) when the user asks for the rate on a specific date. "
+                    "Leave empty for the latest rate.",
     )
 
     @field_validator("base")
@@ -69,7 +77,8 @@ async def _handle(args: ExchangeRateArgs) -> ToolResult:
                 f"No exchange-rate history available for {args.base} to {', '.join(args.quotes)}. Do not guess rates.",
             )
         return ToolResult(ok=True, content="\n".join(source.snippet for source in history), sources=tuple(history))
-    sources = await fetch_fx_rates(args.base, args.quotes, args.amount)
+    sources = await fetch_fx_rates(args.base, args.quotes, args.amount,
+                                   args.as_of.isoformat() if args.as_of else None)
     if not sources:
         return ToolResult.failure(
             "no_data",
@@ -87,8 +96,11 @@ EXCHANGE_RATE_TOOL = ToolSpec(
     name=TOOL_NAME,
     version="1.0",
     description=(
-        "Get the latest official ECB reference exchange rate between currencies, and "
-        "optionally convert an amount; or, with months set, the month-end rates for that "
+        "Get the latest dated exchange rate between currencies via Frankfurter (ECB), "
+        "or an explicitly identified fallback provider if that service is unavailable. "
+        "Preserve the actual provider and reference date; do not label fallback rates as ECB rates. "
+        "optionally convert an amount; with as_of set, the rate published for that past date; "
+        "or, with months set, the month-end rates for that "
         "many past months (for a trend or chart). Use for any currency conversion or "
         "exchange-rate question instead of relying on memory."
     ),
@@ -96,5 +108,6 @@ EXCHANGE_RATE_TOOL = ToolSpec(
     handler=_handle,
     data_source="Frankfurter (ECB reference rates)",
     risk_level="low",
-    timeout_seconds=8.0,
+    # Both the primary and fallback have six-second network timeouts.
+    timeout_seconds=14.0,
 )

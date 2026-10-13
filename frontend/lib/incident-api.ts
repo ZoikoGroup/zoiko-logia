@@ -1,4 +1,5 @@
 import { getAuthToken } from "@/lib/api";
+import { impersonationHeaders } from "@/lib/impersonation";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010/api/v1";
 const BACKEND = `${API_URL}/support/incidents`;
@@ -43,6 +44,7 @@ async function tryBackend<T>(path: string, options?: RequestInit): Promise<T | n
         "Content-Type": "application/json",
         Authorization: `Bearer ${getAuthToken()}`,
         ...options?.headers,
+        ...impersonationHeaders(),
       },
     });
     if (!res.ok) return null;

@@ -283,7 +283,7 @@ def test_failed_release_check_escalates_only_high_risk():
     assert decide_release_failure(answer, check, risk_level="LOW", validation_passed=False).escalate
     # Otherwise the unverified sentence is removed and the rest released, flagged.
     released = decide_release_failure(answer, check, risk_level="MEDIUM", validation_passed=True)
-    assert not released.escalate and "fined" not in released.text and "£90,000" in released.text
+    assert not released.escalate and "fined" not in released.text and "£90,000" not in released.text
     assert released.note and "could not verify" in released.note
 
 
@@ -294,4 +294,4 @@ def test_nothing_verifiable_left_becomes_an_honest_gap_and_unavailable_checker_i
     assert result.text == "The sources provided do not establish an answer to this."
     unavailable = AnswerVerification(False, ["Claim verification unavailable or incomplete"])
     kept = decide_release_failure("The threshold is £90,000 [REF-1].", unavailable, risk_level="LOW", validation_passed=True)
-    assert not kept.escalate and kept.text.startswith("The threshold") and "unverified" in kept.note
+    assert not kept.escalate and kept.text == "The sources provided do not establish an answer to this." and "could not verify" in kept.note

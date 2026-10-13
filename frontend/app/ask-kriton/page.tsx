@@ -542,6 +542,10 @@ function ConversationTurn({
   // policy decision — saying "policy blocked" sent users looking for a rule.
   const routeLabel = result?.next_action?.type === "composition_failed"
     ? "Not answered — please try again"
+    : visibleLimitations.some((limitation) => limitation.includes("No factual answer was verified"))
+      ? "Not answered — insufficient evidence"
+    : visibleLimitations.some((limitation) => limitation.includes("Incomplete answer"))
+      ? "Partially answered — missing information"
     : route === "LLM"
     ? citationCount > 0
       ? "Answered — source grounded"

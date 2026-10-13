@@ -20,6 +20,7 @@ async def issue_compensating_event(
     db: AsyncSession,
     *,
     corrects_event_id: str,
+    tenant_id: str,
     correction_type: str,
     correction_reason: str,
     issued_by: str,
@@ -29,7 +30,9 @@ async def issue_compensating_event(
     effective_for_replay: bool = True,
 ) -> CompensatingEvent:
     original = await db.get(AuditEvent, corrects_event_id)
-    if original is None:
+    # Another tenant's event is reported exactly like a missing one, so the
+    # endpoint can't be used to probe which event ids exist elsewhere.
+    if original is None or original.tenant_id != tenant_id:
         raise CompensatingEventError("corrects_event_id does not refer to an existing event")
 
     if issued_by == approver_id:

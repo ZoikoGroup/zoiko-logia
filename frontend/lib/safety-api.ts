@@ -5,6 +5,7 @@
  */
 
 import { getCurrentAccessToken } from "@/lib/session-token";
+import { impersonationHeaders } from "@/lib/impersonation";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010/api/v1";
 const BACKEND = `${API_URL}/safety`;
@@ -48,6 +49,7 @@ async function tryBackend<T>(path: string, options?: RequestInit, required = fal
       headers: {
         ...options?.headers,
         "Content-Type": "application/json",
+        ...impersonationHeaders(),
         Authorization: `Bearer ${getCurrentAccessToken()}`,
       },
     });

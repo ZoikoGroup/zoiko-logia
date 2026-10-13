@@ -420,6 +420,8 @@ def _build_grouped_bar_spec(evidence: EvidenceModel, spec_id: str) -> Visualizat
     (dbnomics.py's _find_two_series) as two named bar series over the
     shared periods — not a new data source, a second honest way to look at
     data already fetched."""
+    if is_chart_table(evidence) and evidence.dimensions[1] == "budget_actual":
+        return build_chart_table_spec(evidence, spec_id)
     x_name = evidence.subject or "Series A"
     y_name = evidence.secondary_subject or "Series B"
     series = [

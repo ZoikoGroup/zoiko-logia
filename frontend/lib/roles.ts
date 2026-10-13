@@ -87,3 +87,24 @@ export function resolveEffectiveRole(
   }
   return demoRole;
 }
+
+/** The role the screen renders as. A signed-in Admin may preview any other
+ * role from the "Viewing as" switcher: Admin already holds every permission,
+ * so a preview can only show less, and the backend keeps enforcing the real
+ * role on every request. Before this, the switcher wrote the cookie but a
+ * signed-in user's real role always won, so choosing a role did nothing.
+ * Every other signed-in role stays locked to itself: the switcher must never
+ * raise a role. */
+export function resolveDisplayRole(
+  realRole: RoleCode,
+  demoRole: RoleCode,
+  signedIn: boolean,
+): RoleCode {
+  if (!signedIn) return realRole;
+  return realRole === "Admin" && isKnownRole(demoRole) ? demoRole : realRole;
+}
+
+/** Whether this user may use the "Viewing as" switcher at all. */
+export function canPreviewRoles(realRole: RoleCode, signedIn: boolean): boolean {
+  return !signedIn || realRole === "Admin";
+}

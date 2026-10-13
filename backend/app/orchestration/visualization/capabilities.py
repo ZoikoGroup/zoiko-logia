@@ -266,8 +266,8 @@ ROUTABLE_CAPABILITIES: tuple[VisualizationCapability, ...] = (
     # candidates for a distribution question.
     VisualizationCapability(
         "grouped_bar_chart", "Grouped Bar Chart", "COMPARISON", "BAR",
-        "GROUPED_BAR_CHART", "GROUPED_BAR", ALL_DOMAINS, ("CORRELATION",),
-        ("XY_NUMERIC",), "ECHARTS", minimum_observations=2, priority=0.96,
+        "GROUPED_BAR_CHART", "GROUPED_BAR", ALL_DOMAINS, ("CORRELATION", "__EXPLICIT_VISUAL__"),
+        ("XY_NUMERIC", "CHART_TABLE"), "ECHARTS", minimum_observations=2, priority=0.96,
         requested_variant="GROUPED_BAR_CHART", fallbacks=("SCATTER", "TABLE", "TEXT"),
     ),
     VisualizationCapability(

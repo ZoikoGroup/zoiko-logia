@@ -125,13 +125,35 @@ def test_empty_results_are_never_cached(monkeypatch, fake_redis):
 
     async def run():
         await websearch.web_search("a question nothing matches")
+        first = len(calls)
         await websearch.web_search("a question nothing matches")
+        return first
 
-    asyncio.run(run())
+    first = asyncio.run(run())
 
-    # Each search retries an empty answer once (a throttled engine), and the
-    # second search goes upstream again rather than reading a cached empty.
-    assert len(calls) == 4, "an empty result was cached, freezing the outage in"
+    # The second search goes upstream again, exactly as the first did
+    # (including its retries), rather than reading a cached empty.
+    assert first >= 2 and len(calls) == 2 * first, "an empty result was cached, freezing the outage in"
+    assert not fake_redis.store
+
+
+def test_untrusted_fallback_results_are_never_cached(monkeypatch, fake_redis):
+    """With Tavily timing out, the backup engine answered a GSTR-3B question
+    with dictionary pages; cached, they were served for the whole TTL."""
+    calls: list[int] = []
+    junk = [{"title": "DUE | meaning", "url": "https://dictionary.example.org/due",
+             "content": "Due date for GSTR-3B monthly filers: dictionary meaning of due."}]
+    _fake_searxng(monkeypatch, junk, calls)
+
+    async def run():
+        await websearch.web_search("What is the due date for GSTR-3B for monthly filers?")
+        first = len(calls)
+        await websearch.web_search("What is the due date for GSTR-3B for monthly filers?")
+        return first
+
+    first = asyncio.run(run())
+
+    assert first >= 1 and len(calls) == 2 * first, "an untrusted-only result was cached"
     assert not fake_redis.store
 
 
@@ -394,3 +416,35 @@ def test_question_count_sees_past_the_search_cap():
     assert websearch.question_count(message) == 10
     assert len(websearch.sub_questions(message)) == websearch.MAX_SUB_QUESTIONS
     assert websearch.question_count("What is the UK VAT rate?") == 1
+
+
+def test_history_pages_are_kept_out_unless_the_question_asks_about_the_past():
+    """HMRC's "Previous changes" page gave an old £437,500 tolerance as the
+    current cash-accounting exit rule."""
+    from app.orchestration.websearch import WebSource, _is_relevant
+
+    page = WebSource(title="VCAS9450 - Cash accounting scheme: Previous changes - HMRC internal manual",
+                     url="https://www.gov.uk/hmrc-internal-manuals/vat-cash-accounting-scheme/vcas9450",
+                     snippet="If a business exceeds the £437,500 tolerance it must leave the cash accounting scheme.")
+    assert not _is_relevant("When must a business leave the VAT Cash Accounting Scheme?", page)
+    assert _is_relevant("What was the cash accounting scheme exit tolerance in 2006?", page)
+
+
+def test_a_shortened_source_keeps_the_sentence_that_answers_the_question():
+    """"The Australian GST rate is 10%" sat past the cut of a long ATO page,
+    and the rate was answered "not stated" beside a citation of that page."""
+    from app.orchestration.websearch import WebSource, build_web_grounded_prompt
+
+    long_page = ("Menu. Home. Contact us. " * 120) + "The Australian GST rate is 10%. " + ("Footer links. " * 120)
+    sources = [WebSource(title=f"ATO page {n}", url=f"https://www.ato.gov.au/{n}", snippet=long_page) for n in range(8)]
+    prompt = build_web_grounded_prompt("Australian GST rate and registration threshold?", sources)
+    assert prompt.count("The Australian GST rate is 10%") == 8
+    assert "â€" not in prompt
+
+
+def test_a_rate_table_without_full_stops_survives_shortening():
+    from app.orchestration.websearch import _focused_excerpt
+
+    table = " | ".join(f"Item {n} | value {n}" for n in range(200)) + " | Profits over £250,000 | Main rate 25% | " + " | ".join(f"Row {n}" for n in range(200))
+    page = "Intro sentence. " * 5 + table
+    assert "Main rate 25%" in _focused_excerpt(page, "What is the UK corporation tax main rate?", 800)

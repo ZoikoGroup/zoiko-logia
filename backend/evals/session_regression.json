@@ -344,8 +344,9 @@
    "category": "uk_vat",
    "question": "When must a business leave the VAT Cash Accounting Scheme?",
    "outcome": "answered",
-   "must_contain": [
-    "1.6 million"
+   "must_contain_any": [
+    "1.6 million",
+    "1,600,000"
    ],
    "must_not_contain": [
     "【",
@@ -545,7 +546,13 @@
     "\n****",
     "₹-",
     "£-"
-   ]
+   ],
+   "must_contain": [
+    "services",
+    "goods",
+    "40"
+   ],
+   "note": "Check the general goods/services thresholds and state conditions; merely mentioning 20 lakh can conceal an incorrect services threshold."
   },
   {
    "id": "india-gstr3b-due",
@@ -911,7 +918,18 @@
    "must_contain": [
     "20 lakh"
    ],
-   "note": "Known gap: search does not surface the IGST s.16 zero-rating rule; needs India knowledge-base sources. Must not invent a GST rate."
+   "note": "Requires service registration threshold and conditional export zero-rating/LUT treatment; a threshold-only answer is incomplete.",
+   "must_contain_any": [
+    "zero-rated",
+    "zero rated",
+    "zero‑rated"
+   ],
+   "must_contain_groups": [
+    [
+     "LUT",
+     "letter of undertaking"
+    ]
+   ]
   },
   {
    "id": "scn-gst-composition",

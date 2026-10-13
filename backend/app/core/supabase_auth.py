@@ -43,6 +43,10 @@ class SupabaseClaims(BaseModel):
     email: str | None = None
     tenant_id: str = ""
     role: str = ""
+    # Authenticator assurance level Supabase stamps on every access token:
+    # "aal1" after a password/OAuth sign-in, "aal2" once a verified MFA factor
+    # has been challenged in this session. Absent → treated as the weaker aal1.
+    aal: str = "aal1"
 
 
 def verify_token(token: str) -> SupabaseClaims | None:
@@ -91,4 +95,5 @@ def verify_token(token: str) -> SupabaseClaims | None:
         email=payload.get("email"),
         tenant_id=app_metadata.get("tenant_id", ""),
         role=app_metadata.get("role", ""),
+        aal=payload.get("aal") or "aal1",
     )

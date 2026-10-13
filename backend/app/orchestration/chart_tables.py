@@ -36,7 +36,7 @@ from datetime import date
 from app.orchestration.data_shape import CHART_TABLE
 from app.orchestration.evidence import EvidenceModel, Observation
 from app.orchestration.response_planner import detect_requested_chart_variant
-from app.orchestration.visualization.spec import VisualizationSpec
+from app.orchestration.visualization.spec import VisualizationSpec, NamedSeries, VisualizationDataPoint
 
 PARETO, FUNNEL, STREAM, BUBBLE, PARALLEL, SANKEY, CALENDAR = (
     "pareto", "funnel", "stream", "bubble", "parallel", "sankey", "calendar",
@@ -44,6 +44,7 @@ PARETO, FUNNEL, STREAM, BUBBLE, PARALLEL, SANKEY, CALENDAR = (
 
 # requested chart variant (response_planner.py) -> table kind
 _KINDS = {
+    "GROUPED_BAR_CHART": "budget_actual",
     "PARETO_CHART": PARETO,
     "FUNNEL_CHART": FUNNEL,
     "STREAMGRAPH": STREAM,
@@ -207,6 +208,24 @@ def extract_chart_table(query: str) -> EvidenceModel | None:
         return None
     subject = _subject(prefix)
 
+    if kind == "budget_actual":
+        # Slash order is accepted only when the user names budget then actual.
+        if not re.search(r"budget\s+and\s+actual", prefix, re.I):
+            return None
+        payload = re.split(r"\.\s+(?:Show|Include|Calculate)\b", payload, maxsplit=1, flags=re.I)[0]
+        pattern = re.compile(rf"\s*({_LABEL})\s*{_AMOUNT}\s*/\s*{_AMOUNT}\s*", re.I)
+        matches = _items(payload, pattern)
+        if not matches or len(matches) < 2:
+            return None
+        cells = []
+        for m in matches:
+            label = m.group(1).strip()
+            budget, actual = _amount(m.group(2),m.group(3)), _amount(m.group(4),m.group(5))
+            cells.extend([(label,"Budget",budget),(label,"Actual",actual),(label,"Variance",actual-budget)])
+        if len({c[0].casefold() for c in cells}) != len(matches):
+            return None
+        return _evidence(kind, "Budget and actual expenses", cells, "Category")
+
     if kind in (PARETO, FUNNEL):
         pairs = _labelled(payload)
         if not pairs:
@@ -266,6 +285,12 @@ def build_chart_table_spec(evidence: EvidenceModel, spec_id: str) -> Visualizati
         row[observation.measure] = _cell(observation.value)
     rows = list(rows_by_label.values())
     columns = [key, *measures]
+
+    if kind == "budget_actual":
+        return VisualizationSpec(id=spec_id, type="GROUPED_BAR", family="COMPARISON", renderer="RECHARTS", title=evidence.subject,
+            summary="Budget and actual amounts supplied by the user; variance is actual minus budget.",
+            series=[NamedSeries(name=measure, data=[VisualizationDataPoint(x=row[key],y=float(row[measure])) for row in rows]) for measure in ("Budget","Actual")],
+            columns=columns, rows=rows, sources=evidence.sources)
 
     if kind == SANKEY:
         columns = ["From", "To", "Amount"]

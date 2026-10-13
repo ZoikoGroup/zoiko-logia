@@ -113,3 +113,42 @@ def update_app_metadata(user_id: str, tenant_id: str, role: str) -> dict:
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def invite_user(email: str, redirect_to: str) -> dict:
+    """Create the auth user and email them an invitation link (GoTrue
+    /invite, the call supabase-js admin.inviteUserByEmail makes). The user
+    chooses their own password on the page the link opens, so an Admin never
+    handles it. Returns the created auth user."""
+    _require_configured()
+    resp = httpx.post(
+        f"{settings.SUPABASE_URL}/auth/v1/invite",
+        headers=_headers(),
+        params={"redirect_to": redirect_to},
+        json={"email": email},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def list_mfa_factors(user_id: str) -> list[dict]:
+    _require_configured()
+    resp = httpx.get(
+        f"{settings.SUPABASE_URL}/auth/v1/admin/users/{user_id}/factors",
+        headers=_headers(),
+        timeout=15,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    return body if isinstance(body, list) else body.get("factors", [])
+
+
+def delete_mfa_factor(user_id: str, factor_id: str) -> None:
+    _require_configured()
+    resp = httpx.delete(
+        f"{settings.SUPABASE_URL}/auth/v1/admin/users/{user_id}/factors/{factor_id}",
+        headers=_headers(),
+        timeout=15,
+    )
+    resp.raise_for_status()

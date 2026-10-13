@@ -7,8 +7,9 @@ needs beyond sign-in:
   2. POST /auth/sign-out-all-sessions — server-side revocation of every
      session via the Supabase Admin API (skipped when not configured), 204,
      audit event either way;
-  3. POST /auth/mfa/enroll — deliberately a 501 stub (MFA pending a product
-     decision); the attempt is still audited;
+  3. MFA — GET /auth/mfa/status reports the policy and this session's
+     assurance level; POST /auth/mfa/enrolled audits an enrolment only when
+     the token already proves an MFA challenge (aal2);
   4. /auth/provision binding — first creation earns exactly one audit event
      (idempotent re-provisions on every login stay quiet), and provisioning
      can never claim an existing tenant on someone else's behalf.
@@ -28,7 +29,7 @@ from app.db.base import Base
 from app.core.supabase_auth import SupabaseClaims
 from app.domains.audit_ledger.models import AuditEvent
 from app.domains.identity.models import Tenant, User
-from app.domains.identity.router import mfa_enroll, patch_me, provision, sign_out_all_sessions
+from app.domains.identity.router import mfa_enrolled, mfa_status, patch_me, provision, sign_out_all_sessions
 from app.domains.identity.schemas import ProfileUpdateRequest, ProvisionRequest
 from app.domains.identity.service import get_user_by_id, update_own_profile
 
@@ -183,26 +184,47 @@ async def test_sign_out_all_emits_sessions_revoked_event(lifecycle_db, monkeypat
     assert event.tenant_id == "tenant-1"
 
 
-# ── POST /auth/mfa/enroll (stub) ─────────────────────────────────────────────
+# ── MFA status / enrolment audit ─────────────────────────────────────────────
 
-async def test_mfa_enroll_is_not_implemented(lifecycle_db) -> None:
+async def test_mfa_status_reports_policy_and_session_level(lifecycle_db, monkeypatch) -> None:
+    db = lifecycle_db
+    monkeypatch.setattr("app.domains.identity.router.get_settings", lambda: _Settings(mfa=True))
+    admin = await get_user_by_id(db, "user-1")
+    admin.auth_aal = "aal2"
+    status_ = await mfa_status(admin)
+    assert status_.required_for_privileged is True
+    assert status_.privileged_role is True
+    assert status_.current_aal == "aal2"
+
+    staff = await get_user_by_id(db, "user-2")  # "Accountant" carries no permissions
+    assert (await mfa_status(staff)).privileged_role is False
+
+
+async def test_mfa_enrolled_requires_an_aal2_session(lifecycle_db) -> None:
     db = lifecycle_db
     current = await get_user_by_id(db, "user-1")
+    current.auth_aal = "aal1"
     with pytest.raises(HTTPException) as exc:
-        await mfa_enroll(db, current)
-    assert exc.value.status_code == 501
+        await mfa_enrolled(db, current)
+    assert exc.value.status_code == 409
+    assert await _first_event(db, "auth.mfa_enrolled") is None
 
 
-async def test_mfa_enroll_attempt_is_audited(lifecycle_db) -> None:
+async def test_mfa_enrolled_is_audited_for_aal2_session(lifecycle_db) -> None:
     db = lifecycle_db
     current = await get_user_by_id(db, "user-1")
-    try:
-        await mfa_enroll(db, current)
-    except HTTPException:
-        pass
-    event = await _first_event(db, "auth.mfa_enroll_attempted")
+    current.auth_aal = "aal2"
+    response = await mfa_enrolled(db, current)
+    assert response.status_code == 204
+    event = await _first_event(db, "auth.mfa_enrolled")
     assert event is not None
-    assert event.payload.get("rejected_reason") == "not_implemented"
+    assert event.actor_id == "user-1"
+    assert event.payload == {"factor_type": "totp"}
+
+
+class _Settings:
+    def __init__(self, *, mfa: bool) -> None:
+        self.MFA_REQUIRED_FOR_PRIVILEGED = mfa
 
 
 # ── /auth/provision binding ──────────────────────────────────────────────────

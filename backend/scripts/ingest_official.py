@@ -10,7 +10,11 @@ Each document is fetched over verified TLS only, split by its own structure
 stores GOV.UK pages: an approved, versioned, rights-recorded source whose
 changed content supersedes the old version.
 
-Phase 1 India GST corpus. Deliberately NOT included:
+Covers the India GST corpus and the UAE VAT basics. Each publisher has its
+own rights gate (OfficialDocument.rights_env): a document is written only
+after that publisher's reproduction rights are approved.
+
+Deliberately NOT included:
   * CBIC's taxinformation.cbic.gov.in (rate notifications as amended): its
     server sends an incomplete certificate chain, and fetching governed
     evidence with certificate checks disabled would let a tampered connection
@@ -53,6 +57,17 @@ GST_COUNCIL = govuk.Publisher(
 )
 
 
+UAE_GOVERNMENT = govuk.Publisher(
+    name="UAE Government (u.ae)",
+    jurisdiction_scope="United Arab Emirates,AE,UAE",
+    reason_code="AE_GOV_PUBLICATION",
+    terms=(
+        "UAE Government official portal content. Reproduction for internal reference relied on; "
+        "confirm with legal before production use."
+    ),
+)
+
+
 @dataclass(frozen=True)
 class OfficialDocument:
     url: str
@@ -60,6 +75,9 @@ class OfficialDocument:
     publisher: govuk.Publisher
     published: datetime
     procedure: str = "general"
+    # "faq_pdf": numbered questions; "pdf": paragraphs; "html": h2/h3 sections.
+    kind: str = "faq_pdf"
+    rights_env: str = "GST_INGESTION_RIGHTS_APPROVED"
 
 
 DOCUMENTS: list[OfficialDocument] = [
@@ -70,19 +88,43 @@ DOCUMENTS: list[OfficialDocument] = [
         # Changes recommended at the 56th GST Council meeting, effective 22 September 2025.
         published=datetime(2025, 9, 22, tzinfo=timezone.utc),
     ),
+    # The registration thresholds (₹40/20/10 lakh by supply type and State):
+    # no governed source stated them, so "What is the GST registration
+    # threshold in India?" was answered "the sources do not state this".
+    OfficialDocument(
+        url="https://gstcouncil.gov.in/sites/default/files/e-version-gst-flyers/Registration_under_GST_Law_new.pdf",
+        title="Registration under GST Law (GST Council flyer)",
+        publisher=GST_COUNCIL,
+        published=datetime(2019, 4, 1, tzinfo=timezone.utc),
+        kind="pdf",
+    ),
+    # The UAE VAT rate and registration threshold; the FTA's own pages carry
+    # the rate only inside a calculator widget.
+    OfficialDocument(
+        url="https://u.ae/en/information-and-services/finance-and-investment/taxation/vat/valueaddedtaxvat",
+        title="Value added tax (VAT) — The Official Portal of the UAE Government",
+        publisher=UAE_GOVERNMENT,
+        published=datetime(2018, 1, 1, tzinfo=timezone.utc),
+        kind="html",
+        rights_env="UAE_INGESTION_RIGHTS_APPROVED",
+    ),
 ]
 
 _QUESTION = re.compile(r"(?m)^\s*(\d{1,3})\.\s+(?=\S)")
 
 
-def _pdf_text(url: str) -> str:
+def _get(url: str) -> httpx.Response:
     # verify=True is httpx's default and is relied on: see the module docstring.
     ca_bundle = os.getenv("OFFICIAL_DOCUMENT_CA_BUNDLE")
     verified_tls = ssl.create_default_context(cafile=ca_bundle) if ca_bundle else True
     response = httpx.get(url, timeout=60, follow_redirects=True, verify=verified_tls,
                          headers={"User-Agent": "Mozilla/5.0 (compatible; KritonResearch/1.0)"})
     response.raise_for_status()
-    reader = PdfReader(io.BytesIO(response.content))
+    return response
+
+
+def _pdf_text(url: str) -> str:
+    reader = PdfReader(io.BytesIO(_get(url).content))
     text = "\n".join(page.extract_text() or "" for page in reader.pages)
     # A browser print of a web page carries its header/footer on every page
     # ("9/9/25, 12:53 PM Press Release:Press Information Bureau https://… 8/10");
@@ -116,12 +158,34 @@ def split_numbered_questions(text: str, title: str, url: str) -> list:
     return passages
 
 
+def split_paragraphs(text: str, title: str, url: str) -> list:
+    """A document without numbered questions: passages of whole lines, each
+    headed by the document title."""
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    body = "\n".join(line for line in lines if line)
+    return [
+        govuk.Passage(locator=f"{url}#p{index + 1}", heading=title, content=f"{title} — {piece}")
+        for index, piece in enumerate(govuk._split_long(body)) if len(piece) >= 40
+    ]
+
+
+_MAIN = re.compile(r"<main\b[^>]*>(.*?)</main>", re.S | re.I)
+
+
 def fetch(document: OfficialDocument):
-    text = _pdf_text(document.url)
+    if document.kind == "html":
+        html = _get(document.url).text
+        main = _MAIN.search(html)
+        text = main.group(1) if main else html
+        passages = govuk._sections(text, document.url, "", document.title)
+    else:
+        text = _pdf_text(document.url)
+        split = split_numbered_questions if document.kind == "faq_pdf" else split_paragraphs
+        passages = split(text, document.title, document.url)
     return govuk.Document(
         path=document.url, title=document.title, url=document.url, updated=document.published,
         body_hash=hashlib.sha256(f"chunker:{govuk.CHUNKER_VERSION}\n{text}".encode()).hexdigest(),
-        passages=split_numbered_questions(text, document.title, document.url),
+        passages=passages,
     )
 
 
@@ -130,8 +194,6 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="fetch and split only; write nothing")
     parser.add_argument("--user-email", default="dashboard@zoikologia.com")
     args = parser.parse_args()
-    if not args.dry_run and os.getenv("GST_INGESTION_RIGHTS_APPROVED", "").lower() != "true":
-        parser.error("GST_INGESTION_RIGHTS_APPROVED=true is required after source rights approval")
 
     embedder, user_id = None, ""
     if not args.dry_run:
@@ -144,6 +206,9 @@ def main() -> None:
 
     failures = 0
     for document in DOCUMENTS:
+        if not args.dry_run and os.getenv(document.rights_env, "").lower() != "true":
+            print(f"SKIP  {document.title}: set {document.rights_env}=true after source rights approval")
+            continue
         try:
             fetched = fetch(document)
         except Exception as exc:  # noqa: BLE001 — one bad document must not stop the rest

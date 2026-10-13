@@ -16,3 +16,6 @@ evals/reports/
 logs/
 data/workspace_documents/
 data/workspace_artifacts/
+
+# Private training datasets, candidate checkpoints and reports
+training_runs/
