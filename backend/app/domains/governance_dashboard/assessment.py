@@ -90,24 +90,63 @@ def _visible_sources(tenant_id: str):
     return (Source.is_tenant_private.is_(False)) | (Source.tenant_id == tenant_id)
 
 
-async def _sources(db: AsyncSession, a: Assessment, tenant_id: str, today: date) -> None:
-    rows = (await db.execute(
-        select(SourceVersion.status, func.count())
-        .join(Source, Source.id == SourceVersion.source_id)
-        .where(_visible_sources(tenant_id))
-        .group_by(SourceVersion.status)
-    )).all()
-    by_status = {status: count for status, count in rows}
-    # Approved/expired counts cover every source this tenant can use, but
-    # "awaiting approval" is only this tenant's own submissions: a shared
-    # source proposed by another tenant is not this tenant's decision.
-    pending = (await db.execute(
-        select(func.count()).select_from(SourceVersion)
-        .where(SourceVersion.tenant_id == tenant_id, SourceVersion.status == "PROPOSED")
-    )).scalar_one()
-    approved = sum(by_status.get(s, 0) for s in APPROVED_VERSION)
-    total = sum(by_status.values())
-    if total == 0:
+def _count(model, *conditions):
+    return select(func.count()).select_from(model).where(*conditions).scalar_subquery()
+
+
+def _version_count(tenant_id: str, *conditions):
+    return (select(func.count()).select_from(SourceVersion).join(Source, Source.id == SourceVersion.source_id)
+            .where(_visible_sources(tenant_id), *conditions).scalar_subquery())
+
+
+async def _snapshot(db: AsyncSession, tenant_id: str, today: date, now: datetime) -> dict[str, int]:
+    """Every count the assessment needs, in ONE round trip. Detail rows are
+    then fetched only for sections that have something to list, so a quiet
+    tenant costs a handful of queries instead of ~28 — which matters when the
+    database is a network hop away (each round trip is 100–250 ms remotely)."""
+    now_naive = now.astimezone(timezone.utc).replace(tzinfo=None)  # risk_safety stores naive UTC
+    open_incident = (SecurityIncident.tenant_id == tenant_id, SecurityIncident.containment_status != "RESOLVED")
+    counts = {
+        "versions_total": _version_count(tenant_id),
+        "versions_approved": _version_count(tenant_id, SourceVersion.status.in_(APPROVED_VERSION)),
+        "versions_expired": _version_count(tenant_id, SourceVersion.status == "EXPIRED"),
+        "versions_withdrawn": _version_count(tenant_id, SourceVersion.status == "WITHDRAWN"),
+        "versions_expiring": _version_count(
+            tenant_id, SourceVersion.status.in_(APPROVED_VERSION), SourceVersion.effective_to.is_not(None),
+            SourceVersion.effective_to <= today + timedelta(days=EXPIRY_WARNING_DAYS)),
+        # Only this tenant's own submissions await its approval: a shared source
+        # proposed by another tenant is not this tenant's decision.
+        "pending_own": _count(SourceVersion, SourceVersion.tenant_id == tenant_id, SourceVersion.status == "PROPOSED"),
+        "licences_total": _count(Source, _visible_sources(tenant_id)),
+        "licences_permitted": _count(Source, _visible_sources(tenant_id), Source.licence_state == "permitted"),
+        "licences_restricted": _count(Source, _visible_sources(tenant_id), Source.licence_state == "restricted"),
+        "licences_unknown": _count(Source, _visible_sources(tenant_id),
+                                   (Source.licence_state == "unknown") | (Source.licence_state.is_(None))),
+        "escalations_open": _count(EscalationCase, EscalationCase.tenant_id == tenant_id,
+                                   EscalationCase.status.in_(OPEN_ESCALATION)),
+        "escalations_actionable": _count(EscalationCase, EscalationCase.tenant_id == tenant_id,
+                                         EscalationCase.status.in_((EscalationStatus.PENDING, EscalationStatus.UNDER_REVIEW))),
+        "escalations_past_sla": _count(EscalationCase, EscalationCase.tenant_id == tenant_id,
+                                       EscalationCase.status.in_(OPEN_ESCALATION),
+                                       EscalationCase.sla_deadline < now_naive),
+        "reviews_open": _count(ReviewCase, ReviewCase.tenant_id == tenant_id, ReviewCase.status.in_(OPEN_REVIEW)),
+        "incidents_open": _count(SecurityIncident, *open_incident),
+        **{f"incidents_{level}": _count(SecurityIncident, *open_incident, func.lower(SecurityIncident.severity) == level)
+           for level in ("critical", "high", "medium", "low", "informational")},
+        "break_glass_unreviewed": _count(BreakGlassGrant, BreakGlassGrant.tenant_id == tenant_id,
+                                         BreakGlassGrant.status.in_(("expired", "revoked")),
+                                         BreakGlassGrant.reviewed_at.is_(None)),
+        "break_glass_requested": _count(BreakGlassGrant, BreakGlassGrant.tenant_id == tenant_id,
+                                        BreakGlassGrant.status == "requested"),
+    }
+    row = (await db.execute(select(*(query.label(name) for name, query in counts.items())))).one()
+    return dict(row._mapping)
+
+
+async def _sources(db: AsyncSession, a: Assessment, snap: dict, tenant_id: str, today: date) -> None:
+    pending = snap["pending_own"]
+    approved = snap["versions_approved"]
+    if snap["versions_total"] == 0:
         a.domains.append(_domain("source_approval", "Source approval health", "not_assessed",
                                  "No sources registered yet", [], "/source-library",
                                  "Register and approve sources in the Source Library to assess this."))
@@ -116,28 +155,27 @@ async def _sources(db: AsyncSession, a: Assessment, tenant_id: str, today: date)
             "source_approval", "Source approval health", "attention" if pending else "effective",
             f"{pending} version(s) awaiting approval" if pending else "No versions awaiting approval",
             [("Approved / active", approved), ("Awaiting approval", pending),
-             ("Expired", by_status.get("EXPIRED", 0)), ("Withdrawn", by_status.get("WITHDRAWN", 0))],
+             ("Expired", snap["versions_expired"]), ("Withdrawn", snap["versions_withdrawn"])],
             "/source-library",
         ))
 
-    licence_rows = (await db.execute(
-        select(Source.licence_state, func.count()).where(_visible_sources(tenant_id)).group_by(Source.licence_state)
-    )).all()
-    licences = {state or "unknown": count for state, count in licence_rows}
-    expiring = list((await db.execute(
-        select(SourceVersion, Source.title)
-        .join(Source, Source.id == SourceVersion.source_id)
-        .where(
-            _visible_sources(tenant_id),
-            SourceVersion.status.in_(APPROVED_VERSION),
-            SourceVersion.effective_to.is_not(None),
-            SourceVersion.effective_to <= today + timedelta(days=EXPIRY_WARNING_DAYS),
-        )
-        .order_by(SourceVersion.effective_to)
-    )).all())
+    expiring = []
+    if snap["versions_expiring"]:
+        expiring = list((await db.execute(
+            select(SourceVersion, Source.title)
+            .join(Source, Source.id == SourceVersion.source_id)
+            .where(
+                _visible_sources(tenant_id),
+                SourceVersion.status.in_(APPROVED_VERSION),
+                SourceVersion.effective_to.is_not(None),
+                SourceVersion.effective_to <= today + timedelta(days=EXPIRY_WARNING_DAYS),
+            )
+            .order_by(SourceVersion.effective_to)
+        )).all())
     lapsed = [(v, t) for v, t in expiring if v.effective_to < today]
-    unknown = licences.get("unknown", 0)
-    if not licences:
+    unknown = snap["licences_unknown"]
+    licences = {"permitted": snap["licences_permitted"], "restricted": snap["licences_restricted"]}
+    if not snap["licences_total"]:
         a.domains.append(_domain("licence_status", "Licence status", "not_assessed", "No sources registered yet",
                                  [], "/source-licensing", "No licensed sources to assess."))
     else:
@@ -189,43 +227,52 @@ async def _risk_policy(db: AsyncSession, a: Assessment) -> None:
                                "Risk Admin", "/risk-policy", ref=policy.id, opened=_aware(policy.created_at)))
 
 
-async def _escalations(db: AsyncSession, a: Assessment, tenant_id: str, now: datetime) -> None:
-    cases = list((await db.execute(
-        select(EscalationCase).where(EscalationCase.tenant_id == tenant_id, EscalationCase.status.in_(OPEN_ESCALATION))
-    )).scalars().all())
-    over = [c for c in cases if c.sla_deadline and _aware(c.sla_deadline) < now]
-    open_reviews = (await db.execute(
-        select(func.count()).select_from(ReviewCase).where(ReviewCase.tenant_id == tenant_id, ReviewCase.status.in_(OPEN_REVIEW))
-    )).scalar_one()
-    state = "critical" if over else ("attention" if cases or open_reviews else "effective")
+async def _escalations(db: AsyncSession, a: Assessment, snap: dict, tenant_id: str, now: datetime) -> None:
+    open_count, past_count, open_reviews = snap["escalations_open"], snap["escalations_past_sla"], snap["reviews_open"]
+    over = []
+    if past_count:
+        over = list((await db.execute(
+            select(EscalationCase).where(
+                EscalationCase.tenant_id == tenant_id, EscalationCase.status.in_(OPEN_ESCALATION),
+                EscalationCase.sla_deadline < now.astimezone(timezone.utc).replace(tzinfo=None),
+            ).order_by(EscalationCase.sla_deadline).limit(MAX_ALERTS_PER_KIND)
+        )).scalars().all())
+    state = "critical" if past_count else ("attention" if open_count or open_reviews else "effective")
     a.domains.append(_domain(
         "escalation_sla", "Escalation SLA", state,
-        f"{len(over)} escalation(s) past SLA" if over else f"{len(cases)} open, none past SLA" if cases else "No open escalations",
-        [("Open escalations", len(cases)), ("Past SLA", len(over)), ("Open review cases", open_reviews)],
+        f"{past_count} escalation(s) past SLA" if past_count
+        else f"{open_count} open, none past SLA" if open_count else "No open escalations",
+        [("Open escalations", open_count), ("Past SLA", past_count), ("Open review cases", open_reviews)],
         "/escalation-queue",
     ))
-    for case in sorted(over, key=lambda c: _aware(c.sla_deadline))[:MAX_ALERTS_PER_KIND]:
+    for case in over:
         a.alerts.append(_alert("escalation", "high", "Escalation SLA",
                                f"Escalation {case.id} ({case.topic}, {case.risk_level.value}) is past its SLA",
                                case.reviewer_role or "Risk Admin", "/escalation-queue", ref=case.id,
                                due=_aware(case.sla_deadline), opened=_aware(case.created_at)))
 
 
-async def _incidents(db: AsyncSession, a: Assessment, tenant_id: str) -> dict[str, int]:
-    open_incidents = list((await db.execute(
-        select(SecurityIncident).where(SecurityIncident.tenant_id == tenant_id, SecurityIncident.containment_status != "RESOLVED")
-    )).scalars().all())
-    counts = {s: 0 for s in ["critical", "high", "medium", "low", "informational"]}
-    for incident in open_incidents:
-        counts[incident.severity.lower() if incident.severity.lower() in counts else "high"] += 1
+async def _incidents(db: AsyncSession, a: Assessment, snap: dict, tenant_id: str) -> dict[str, int]:
+    levels = ["critical", "high", "medium", "low", "informational"]
+    counts = {level: snap[f"incidents_{level}"] for level in levels}
+    # An unrecognised severity label is counted as high, never dropped.
+    counts["high"] += snap["incidents_open"] - sum(counts.values())
+    open_incidents = []
+    if snap["incidents_open"]:
+        open_incidents = list((await db.execute(
+            select(SecurityIncident).where(SecurityIncident.tenant_id == tenant_id,
+                                           SecurityIncident.containment_status != "RESOLVED")
+            .order_by(SecurityIncident.opened_at.desc()).limit(MAX_ALERTS_PER_KIND)
+        )).scalars().all())
     severe = counts["critical"] + counts["high"]
     a.domains.append(_domain(
-        "incidents", "Security incidents", "critical" if severe else ("attention" if open_incidents else "effective"),
-        f"{len(open_incidents)} open incident(s)" if open_incidents else "No open incidents",
+        "incidents", "Security incidents",
+        "critical" if severe else ("attention" if snap["incidents_open"] else "effective"),
+        f"{snap['incidents_open']} open incident(s)" if snap["incidents_open"] else "No open incidents",
         [("Critical", counts["critical"]), ("High", counts["high"]), ("Medium", counts["medium"]), ("Low", counts["low"])],
         "/incident-response",
     ))
-    for incident in open_incidents[:MAX_ALERTS_PER_KIND]:
+    for incident in open_incidents:
         severity = incident.severity.lower()
         a.alerts.append(_alert("incident", "critical" if severity == "critical" else "high" if severity == "high" else "medium",
                                "Security incidents", f"{incident.title} ({incident.containment_status.lower()})",
@@ -250,13 +297,16 @@ async def _ledger(db: AsyncSession, a: Assessment, tenant_id: str) -> bool:
     return passed
 
 
-async def _break_glass(db: AsyncSession, a: Assessment, tenant_id: str) -> None:
+async def _break_glass(db: AsyncSession, a: Assessment, snap: dict, tenant_id: str) -> None:
+    if not snap["break_glass_unreviewed"]:
+        return
     grants = list((await db.execute(
         select(BreakGlassGrant).where(BreakGlassGrant.tenant_id == tenant_id,
                                       BreakGlassGrant.status.in_(("expired", "revoked")),
                                       BreakGlassGrant.reviewed_at.is_(None))
+        .limit(MAX_ALERTS_PER_KIND)
     )).scalars().all())
-    for grant in grants[:MAX_ALERTS_PER_KIND]:
+    for grant in grants:
         a.alerts.append(_alert("break-glass", "medium", "Elevated access",
                                "Ended break-glass grant awaiting post-use review", "Admin", "/break-glass",
                                ref=grant.id, opened=_aware(grant.ended_at)))
@@ -270,11 +320,12 @@ def _not_built(a: Assessment) -> None:
                              "/tenant-settings", "Localisation administration is not built yet."))
 
 
-async def _work_queue(db: AsyncSession, a: Assessment, viewer: User) -> None:
+async def _work_queue(db: AsyncSession, a: Assessment, snap: dict, viewer: User) -> None:
     """Pending decisions the viewer may act on — role-filtered, as the spec
-    requires — with their own submissions flagged (maker-checker)."""
+    requires — with their own submissions flagged (maker-checker). Each list
+    is only queried when the snapshot shows it has entries."""
     tenant_id = viewer.tenant_id
-    if user_has_permission(viewer, SOURCE_MANAGE):
+    if snap["pending_own"] and user_has_permission(viewer, SOURCE_MANAGE):
         rows = (await db.execute(
             select(SourceVersion, Source.title)
             .join(Source, Source.id == SourceVersion.source_id)
@@ -287,7 +338,7 @@ async def _work_queue(db: AsyncSession, a: Assessment, viewer: User) -> None:
                             "title": f"Approve “{title}” {version.version_label}",
                             "submittedAt": _iso(_aware(version.created_at)), "drilldownTarget": "/source-library",
                             "blockedReason": "You submitted this — a second approver is required" if own else None})
-    if user_has_permission(viewer, REVIEW_RESOLVE):
+    if snap["reviews_open"] and user_has_permission(viewer, REVIEW_RESOLVE):
         rows = (await db.execute(
             select(ReviewCase).where(ReviewCase.tenant_id == tenant_id, ReviewCase.status.in_(OPEN_REVIEW))
             .order_by(ReviewCase.created_at).limit(MAX_QUEUE_ITEMS)
@@ -297,7 +348,7 @@ async def _work_queue(db: AsyncSession, a: Assessment, viewer: User) -> None:
                             "title": (case.query_text or "Kriton answer awaiting review")[:120],
                             "submittedAt": _iso(_aware(case.created_at)), "drilldownTarget": "/review-tasks",
                             "blockedReason": None})
-    if user_has_permission(viewer, SAFETY_MANAGE):
+    if snap["escalations_actionable"] and user_has_permission(viewer, SAFETY_MANAGE):
         rows = (await db.execute(
             select(EscalationCase).where(EscalationCase.tenant_id == tenant_id,
                                          EscalationCase.status.in_((EscalationStatus.PENDING, EscalationStatus.UNDER_REVIEW)))
@@ -308,7 +359,7 @@ async def _work_queue(db: AsyncSession, a: Assessment, viewer: User) -> None:
                             "title": f"{case.topic} — {case.risk_level.value} risk",
                             "submittedAt": _iso(_aware(case.created_at)), "drilldownTarget": "/escalation-queue",
                             "blockedReason": None})
-    if viewer.role == "Admin":
+    if snap["break_glass_requested"] and viewer.role == "Admin":
         rows = (await db.execute(
             select(BreakGlassGrant).where(BreakGlassGrant.tenant_id == tenant_id, BreakGlassGrant.status == "requested")
             .order_by(BreakGlassGrant.requested_at).limit(MAX_QUEUE_ITEMS)
@@ -325,12 +376,17 @@ async def release_readiness(db: AsyncSession, a: Assessment, *, ledger_ok: bool)
     """Release gates from measured evidence (QA Test Plan & Release Gate spec):
     every gate is passed, blocked or explicitly not assessed — never assumed."""
     incident_counts = a.incident_counts
-    run = (await db.execute(select(EvaluationRun).order_by(EvaluationRun.created_at.desc()).limit(1))).scalars().first()
-    if run is None:
+    # Latest run with its newest result pack, in one round trip.
+    latest = (await db.execute(
+        select(EvaluationRun, ResultPack)
+        .outerjoin(ResultPack, ResultPack.run_id == EvaluationRun.id)
+        .order_by(EvaluationRun.created_at.desc(), ResultPack.created_at.desc())
+        .limit(1)
+    )).first()
+    if latest is None:
         a.release.append({"gate": "Evaluation", "state": "blocked", "reason": "No evaluation run has been recorded."})
     else:
-        pack = (await db.execute(select(ResultPack).where(ResultPack.run_id == run.id)
-                                 .order_by(ResultPack.created_at.desc()).limit(1))).scalars().first()
+        run, pack = latest
         if pack is None or not pack.promotion_eligible:
             why = []
             if pack is not None and pack.contamination_scan_status != "PASSED":
@@ -375,14 +431,15 @@ async def release_readiness(db: AsyncSession, a: Assessment, *, ledger_ok: bool)
 async def assess(db: AsyncSession, viewer: User, *, now: datetime | None = None) -> Assessment:
     now = now or datetime.now(timezone.utc)
     a = Assessment()
-    await _sources(db, a, viewer.tenant_id, now.date())
+    snap = await _snapshot(db, viewer.tenant_id, now.date(), now)
+    await _sources(db, a, snap, viewer.tenant_id, now.date())
     await _risk_policy(db, a)
-    await _escalations(db, a, viewer.tenant_id, now)
-    a.incident_counts = await _incidents(db, a, viewer.tenant_id)
+    await _escalations(db, a, snap, viewer.tenant_id, now)
+    a.incident_counts = await _incidents(db, a, snap, viewer.tenant_id)
     ledger_ok = await _ledger(db, a, viewer.tenant_id)
-    await _break_glass(db, a, viewer.tenant_id)
+    await _break_glass(db, a, snap, viewer.tenant_id)
     _not_built(a)
-    await _work_queue(db, a, viewer)
+    await _work_queue(db, a, snap, viewer)
     await release_readiness(db, a, ledger_ok=ledger_ok)
     a.alerts.sort(key=lambda x: (SEVERITY_ORDER.index(x["severity"]), x["dueAt"] or "9999"))
     return a

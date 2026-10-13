@@ -42,17 +42,43 @@ def _snippet(text: str, limit: int = 110) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-async def _recent_work(db: AsyncSession, user: User) -> tuple[list[dict], dict[str, int]]:
+async def _personal_snapshot(db: AsyncSession, user: User) -> dict[str, int]:
+    """All the user's counts plus their workspace name in ONE round trip;
+    lists are then fetched only when non-empty (see assessment._snapshot)."""
+    def count(model, *conditions):
+        return select(func.count()).select_from(model).where(*conditions).scalar_subquery()
+
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    own_q = (QueryAnswerRecord.tenant_id == user.tenant_id, QueryAnswerRecord.user_id == user.id)
+    queries = {
+        "questions_total": count(QueryAnswerRecord, *own_q),
+        "questions_week": count(QueryAnswerRecord, *own_q, QueryAnswerRecord.created_at >= week_ago),
+        "saved": count(SavedAnswer, SavedAnswer.tenant_id == user.tenant_id, SavedAnswer.user_id == user.id),
+        "drafts": count(Draft, Draft.tenant_id == user.tenant_id, Draft.user_id == user.id),
+        "matters": count(EngagementMembership, EngagementMembership.tenant_id == user.tenant_id,
+                         EngagementMembership.user_id == user.id, EngagementMembership.status == "active",
+                         EngagementMembership.revoked_at.is_(None)),
+        "grants": count(BreakGlassGrant, BreakGlassGrant.tenant_id == user.tenant_id, BreakGlassGrant.user_id == user.id,
+                        BreakGlassGrant.status.in_(("requested", "active"))),
+    }
+    row = (await db.execute(select(
+        *(q.label(name) for name, q in queries.items()),
+        select(Tenant.name).where(Tenant.id == user.tenant_id).scalar_subquery().label("tenant_name"),
+    ))).one()
+    return dict(row._mapping)
+
+
+async def _recent_work(db: AsyncSession, user: User, snap: dict) -> tuple[list[dict], dict[str, int]]:
     scope = dict(tenant_id=user.tenant_id, user_id=user.id)
     questions = (await db.execute(
         select(QueryAnswerRecord).filter_by(**scope).order_by(QueryAnswerRecord.created_at.desc()).limit(RECENT_PER_KIND)
-    )).scalars().all()
+    )).scalars().all() if snap["questions_total"] else []
     saved = (await db.execute(
         select(SavedAnswer).filter_by(**scope).order_by(SavedAnswer.created_at.desc()).limit(RECENT_PER_KIND)
-    )).scalars().all()
+    )).scalars().all() if snap["saved"] else []
     drafts = (await db.execute(
         select(Draft).filter_by(**scope).order_by(Draft.updated_at.desc()).limit(RECENT_PER_KIND)
-    )).scalars().all()
+    )).scalars().all() if snap["drafts"] else []
 
     items = (
         [{"id": f"question:{q.query_id}", "kind": "Kriton question", "title": _snippet(q.question),
@@ -63,16 +89,7 @@ async def _recent_work(db: AsyncSession, user: User) -> tuple[list[dict], dict[s
             "at": _iso(d.updated_at), "href": "/drafts-reports"} for d in drafts]
     )
     items.sort(key=lambda item: item["at"] or "", reverse=True)
-
-    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
-    counts = {
-        "questionsLast7Days": (await db.execute(
-            select(func.count()).select_from(QueryAnswerRecord).filter_by(**scope)
-            .where(QueryAnswerRecord.created_at >= week_ago)
-        )).scalar_one(),
-        "savedAnswers": (await db.execute(select(func.count()).select_from(SavedAnswer).filter_by(**scope))).scalar_one(),
-        "drafts": (await db.execute(select(func.count()).select_from(Draft).filter_by(**scope))).scalar_one(),
-    }
+    counts = {"questionsLast7Days": snap["questions_week"], "savedAnswers": snap["saved"], "drafts": snap["drafts"]}
     return items, counts
 
 
@@ -106,10 +123,11 @@ async def _my_break_glass(db: AsyncSession, user: User) -> list[dict]:
 
 async def build_home(db: AsyncSession, user: User) -> dict:
     now = datetime.now(timezone.utc)
-    tenant_name = (await db.execute(select(Tenant.name).where(Tenant.id == user.tenant_id))).scalar_one_or_none()
-    recent, counts = await _recent_work(db, user)
-    matters = await _matters(db, user)
-    grants = await _my_break_glass(db, user)
+    snap = await _personal_snapshot(db, user)
+    tenant_name = snap["tenant_name"]
+    recent, counts = await _recent_work(db, user, snap)
+    matters = await _matters(db, user) if snap["matters"] else []
+    grants = await _my_break_glass(db, user) if snap["grants"] else []
 
     governance = user.role != "Learner"
     attention, queue, deadlines, assurance = [], [], [], None
