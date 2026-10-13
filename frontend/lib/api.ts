@@ -143,12 +143,11 @@ async function authedFetch(
 
 export async function getGovernanceDashboard(
   token: string,
-  options: { environment: string; jurisdiction: string; windowDays: number },
+  options: { environment: string; windowDays: number },
   signal?: AbortSignal,
 ): Promise<GovernanceDashboardViewModel> {
   const query = new URLSearchParams({
     environment: options.environment,
-    jurisdiction: options.jurisdiction,
     window_days: String(options.windowDays),
   });
   const res = await authedFetch(`/governance-dashboard?${query}`, token, { signal });
