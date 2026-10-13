@@ -37,6 +37,15 @@ export const listPracticeBanks = () => request<PracticeBank[]>("/banks");
 export const drawPracticeQuestions = (bankId: string, count = 5) =>
   request<PracticeQuestion[]>(`/${encodeURIComponent(bankId)}/questions?count=${count}`);
 
+/** Remove one of the user's own CPD entries (audited by the backend). */
+export async function deleteCPDEntry(entryId: string): Promise<void> {
+  const res = await fetch(`${API_URL}/learning/cpd/${encodeURIComponent(entryId)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${getAuthToken()}`, ...impersonationHeaders() },
+  });
+  if (!res.ok) throw new Error(`Could not delete this CPD entry (${res.status})`);
+}
+
 export const checkPracticeAnswer = (bankId: string, questionId: string, answer: string) =>
   request<PracticeResult>(`/${encodeURIComponent(bankId)}/check`, {
     method: "POST",
