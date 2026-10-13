@@ -48,7 +48,16 @@ export const BACKEND_ROLES: readonly string[] = [
   "System Auditor",
   // Works the review queue only (backend permissions: review.read, review.resolve).
   "SME Reviewer",
+  // Student / trainee: individual ("Myself") sign-ups, or trainees a company
+  // Admin adds. No governance permissions; learns, asks Kriton, logs CPD.
+  "Learner",
 ];
+
+/** Where a role lands after signing in. Learners go straight to their
+ * learning workspace instead of the governance Command Center. */
+export function homePathFor(role: string | null | undefined): string {
+  return role === "Learner" ? "/learning-practice" : "/";
+}
 
 export const DEFAULT_ROLE: RoleCode = "Admin";
 

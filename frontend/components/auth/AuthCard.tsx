@@ -9,20 +9,24 @@ import {
   Building2,
   Eye,
   EyeOff,
+  GraduationCap,
   LockKeyhole,
   Mail,
   ShieldCheck,
   User,
 } from "lucide-react";
 import {
+  ADULT_ONLY_MESSAGE,
   AuthError,
   ENABLED_OAUTH_PROVIDERS,
   OAUTH_PROVIDER_LABELS,
   PUBLIC_SIGNUP_ENABLED,
+  rememberSignupChoice,
   signInWithOAuthProvider,
   signInWithPassword,
   signUp,
   validateSignUp,
+  type AccountType,
   type FieldErrors,
   type OAuthProvider,
 } from "@/services/auth.service";
@@ -120,8 +124,8 @@ function SignInPanel({ active, onSwitchToSignup }: { active: boolean; onSwitchTo
     setError("");
     setSubmitting(true);
     try {
-      const { mfaRequired } = await signInWithPassword(email, password);
-      router.push(mfaRequired ? "/auth/mfa" : "/");
+      const { mfaRequired, home } = await signInWithPassword(email, password);
+      router.push(mfaRequired ? "/auth/mfa" : home);
     } catch (err) {
       setError(err instanceof AuthError ? err.message : "Something went wrong while signing you in. Please try again.");
     } finally {
@@ -265,11 +269,27 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
   const [formError, setFormError] = useState("");
   const [success, setSuccess] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // Company stays the default: it is what sign-up always did, and a company
+  // owner who misses the toggle would otherwise land as a Learner.
+  const [accountType, setAccountType] = useState<AccountType>("company");
+  const [adultConfirmed, setAdultConfirmed] = useState(false);
+  const isCompany = accountType === "company";
+
+  /** Runs before an OAuth redirect: the form can't travel through Google, so
+   * the workspace choice is remembered for /auth/callback instead. */
+  function prepareOAuthSignup(): boolean {
+    if (!isCompany && !adultConfirmed) {
+      setFieldErrors({ adultConfirmed: ADULT_ONLY_MESSAGE });
+      return false;
+    }
+    rememberSignupChoice({ accountType, adultConfirmed });
+    return true;
+  }
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setFormError("");
-    const fields = { firstName, lastName, email, companyName: company, password };
+    const fields = { accountType, firstName, lastName, email, companyName: company, password, adultConfirmed };
     const errors = validateSignUp(fields);
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) return;
@@ -315,6 +335,40 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
         </p>
       </div>
 
+      <div role="radiogroup" aria-label="Who is this account for?" className="mb-3">
+        <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">I&apos;m signing up for</p>
+        <div className="grid grid-cols-2 gap-2">
+          {[
+            { value: "individual" as const, label: "Myself", hint: "Learn & practise", icon: GraduationCap },
+            { value: "company" as const, label: "My company", hint: "Invite your team", icon: Building2 },
+          ].map(({ value, label, hint, icon: Icon }) => {
+            const selected = accountType === value;
+            return (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                tabIndex={active ? 0 : -1}
+                onClick={() => {
+                  setAccountType(value);
+                  setFieldErrors({});
+                }}
+                className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors ${
+                  selected ? "border-brand bg-brand/10" : "border-line bg-soft hover:bg-line/40"
+                }`}
+              >
+                <Icon size={16} className={selected ? "text-brand" : "text-muted"} />
+                <span>
+                  <span className="block text-sm font-semibold text-ink">{label}</span>
+                  <span className="block text-[11px] text-muted">{hint}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <form onSubmit={handleSubmit} className="space-y-2">
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -357,7 +411,7 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
 
         <div>
           <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
-            Work Email
+            {isCompany ? "Work Email" : "Email"}
           </label>
           <div className="relative">
             <Mail size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
@@ -365,7 +419,7 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="sarah@company.com"
+              placeholder={isCompany ? "sarah@company.com" : "sarah@gmail.com"}
               autoComplete="email"
               tabIndex={active ? 0 : -1}
               className="h-9 w-full rounded-lg border border-line bg-soft pl-10 pr-3 text-sm text-ink placeholder:text-muted outline-none focus:border-brand"
@@ -374,24 +428,26 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
           {fieldErrors.email && <p className="mt-1 text-xs font-medium text-bad">{fieldErrors.email}</p>}
         </div>
 
-        <div>
-          <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
-            Company Name
-          </label>
-          <div className="relative">
-            <Building2 size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-            <input
-              type="text"
-              value={company}
-              onChange={(e) => setCompany(e.target.value)}
-              placeholder="Acme Corp"
-              autoComplete="organization"
-              tabIndex={active ? 0 : -1}
-              className="h-9 w-full rounded-lg border border-line bg-soft pl-10 pr-3 text-sm text-ink placeholder:text-muted outline-none focus:border-brand"
-            />
+        {isCompany && (
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
+              Company Name
+            </label>
+            <div className="relative">
+              <Building2 size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+              <input
+                type="text"
+                value={company}
+                onChange={(e) => setCompany(e.target.value)}
+                placeholder="Acme Corp"
+                autoComplete="organization"
+                tabIndex={active ? 0 : -1}
+                className="h-9 w-full rounded-lg border border-line bg-soft pl-10 pr-3 text-sm text-ink placeholder:text-muted outline-none focus:border-brand"
+              />
+            </div>
+            {fieldErrors.companyName && <p className="mt-1 text-xs font-medium text-bad">{fieldErrors.companyName}</p>}
           </div>
-          {fieldErrors.companyName && <p className="mt-1 text-xs font-medium text-bad">{fieldErrors.companyName}</p>}
-        </div>
+        )}
 
         <div>
           <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
@@ -421,6 +477,22 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
           {fieldErrors.password && <p className="mt-1 text-xs font-medium text-bad">{fieldErrors.password}</p>}
         </div>
 
+        {!isCompany && (
+          <div>
+            <label className="flex items-start gap-2 text-xs text-ink">
+              <input
+                type="checkbox"
+                checked={adultConfirmed}
+                onChange={(e) => setAdultConfirmed(e.target.checked)}
+                tabIndex={active ? 0 : -1}
+                className="mt-0.5 h-4 w-4 rounded border-line accent-brand"
+              />
+              I confirm I am 18 or older. Personal accounts are for adult learners.
+            </label>
+            {fieldErrors.adultConfirmed && <p className="mt-1 text-xs font-medium text-bad">{fieldErrors.adultConfirmed}</p>}
+          </div>
+        )}
+
         {formError && (
           <p className="rounded-lg border border-bad/25 bg-bad/10 px-3 py-2 text-xs font-medium text-bad">
             {formError}
@@ -437,7 +509,7 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
           {!submitting && <ArrowRight size={16} />}
         </button>
 
-        <OAuthButtons active={active} onError={setFormError} />
+        <OAuthButtons active={active} onError={setFormError} beforeStart={prepareOAuthSignup} />
       </form>
 
       <div className="mt-5 flex items-center justify-center gap-1.5">
@@ -463,12 +535,22 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
 
 /** SSO buttons for the providers enabled in NEXT_PUBLIC_AUTH_PROVIDERS; renders
  * nothing (not even the divider) when none are. */
-function OAuthButtons({ active, onError }: { active: boolean; onError: (message: string) => void }) {
+function OAuthButtons({
+  active,
+  onError,
+  beforeStart,
+}: {
+  active: boolean;
+  onError: (message: string) => void;
+  /** Return false to stop before redirecting (e.g. a required checkbox). */
+  beforeStart?: () => boolean;
+}) {
   const [pending, setPending] = useState<OAuthProvider | null>(null);
   if (ENABLED_OAUTH_PROVIDERS.length === 0) return null;
 
   async function start(provider: OAuthProvider) {
     onError("");
+    if (beforeStart && !beforeStart()) return;
     setPending(provider);
     try {
       await signInWithOAuthProvider(provider);

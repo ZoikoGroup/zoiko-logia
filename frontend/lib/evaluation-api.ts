@@ -4,6 +4,9 @@
  * Calls the configured backend (NEXT_PUBLIC_API_URL, same as lib/api.ts).
  */
 
+import { impersonationHeaders } from "@/lib/impersonation";
+import { getCurrentAccessToken } from "@/lib/session-token";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010/api/v1";
 const BACKEND = `${API_URL}/evaluation`;
 
@@ -77,9 +80,16 @@ export type EvaluationRunResult = {
 
 async function tryBackend<T>(path: string, options?: RequestInit): Promise<T | null> {
   try {
+    // Every evaluation route requires evaluation.read/manage, so the call
+    // must carry the session (it previously sent none and always failed).
     const res = await fetch(`${BACKEND}${path}`, {
-      headers: { "Content-Type": "application/json" },
       ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options?.headers ?? {}),
+        ...impersonationHeaders(),
+        Authorization: `Bearer ${getCurrentAccessToken()}`,
+      },
     });
     if (!res.ok) return null;
     return (await res.json()) as T;

@@ -1,5 +1,6 @@
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
-import { ApiError, provisionProfile, recordMfaEnrolled } from "@/lib/api";
+import { ApiError, provisionProfile, recordMfaEnrolled, type UserPublic } from "@/lib/api";
+import { homePathFor } from "@/lib/roles";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // >=8 chars, at least one uppercase, one lowercase, one digit.
@@ -9,23 +10,35 @@ const PASSWORD_RE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
 // ["gmail.com", "zoikogroup.com"]. Leave empty to allow any domain.
 const ALLOWED_EMAIL_DOMAINS: string[] = [];
 
+/** "individual": a private workspace for one person, who becomes a Learner.
+ * "company": a company workspace whose first user is the Admin. */
+export type AccountType = "individual" | "company";
+
 export type SignUpFields = {
+  accountType: AccountType;
   firstName: string;
   lastName: string;
   email: string;
   companyName: string;
   password: string;
+  /** Individuals only: under-18 learners need guardian-consent controls that
+   * don't exist yet, so individual accounts are adults only for now. */
+  adultConfirmed: boolean;
 };
 
 export type FieldErrors = Partial<Record<keyof SignUpFields, string>>;
 
+export const ADULT_ONLY_MESSAGE = "Please confirm you are 18 or older to create a personal account.";
+
 export function validateSignUp(fields: SignUpFields): FieldErrors {
   const errors: FieldErrors = {};
+  const isCompany = fields.accountType === "company";
   if (!fields.firstName.trim()) errors.firstName = "First name is required.";
   if (!fields.lastName.trim()) errors.lastName = "Last name is required.";
-  if (!fields.companyName.trim()) errors.companyName = "Company name is required.";
+  if (isCompany && !fields.companyName.trim()) errors.companyName = "Company name is required.";
+  if (!isCompany && !fields.adultConfirmed) errors.adultConfirmed = ADULT_ONLY_MESSAGE;
   if (!fields.email.trim()) {
-    errors.email = "Work email is required.";
+    errors.email = isCompany ? "Work email is required." : "Email is required.";
   } else if (!EMAIL_RE.test(fields.email)) {
     errors.email = "Enter a valid email address.";
   } else if (ALLOWED_EMAIL_DOMAINS.length > 0) {
@@ -58,10 +71,14 @@ export async function signUp(fields: SignUpFields): Promise<void> {
     email: fields.email,
     password: fields.password,
     options: {
+      // Survives email verification, then reaches /auth/provision on the
+      // first sign-in (provisionAndRefresh).
       data: {
         first_name: fields.firstName,
         last_name: fields.lastName,
-        company_name: fields.companyName,
+        company_name: fields.accountType === "company" ? fields.companyName : "",
+        account_type: fields.accountType,
+        adult_confirmed: fields.accountType === "individual" && fields.adultConfirmed,
       },
     },
   });
@@ -89,7 +106,10 @@ export async function signUp(fields: SignUpFields): Promise<void> {
  * next backend call carries the tenant_id/role /auth/provision just wrote
  * into app_metadata. Resolves with whether the account still owes an MFA
  * challenge — the caller then routes to /auth/mfa instead of the app. */
-export async function signInWithPassword(email: string, password: string): Promise<{ mfaRequired: boolean }> {
+export async function signInWithPassword(
+  email: string,
+  password: string,
+): Promise<{ mfaRequired: boolean; home: string }> {
   if (!isSupabaseConfigured()) {
     throw new AuthError(
       "Sign-in is unavailable — Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL " +
@@ -111,8 +131,9 @@ export async function signInWithPassword(email: string, password: string): Promi
     throw new AuthError("Sign-in did not create a session. Please try again.");
   }
 
+  let role: string;
   try {
-    await provisionAndRefresh(data.session.access_token, data.user.user_metadata ?? {});
+    role = (await provisionAndRefresh(data.session.access_token, data.user.user_metadata ?? {})).role;
   } catch (err) {
     // Provisioning fails for two very different reasons, and the UI must not
     // squash them into one:
@@ -150,7 +171,7 @@ export async function signInWithPassword(email: string, password: string): Promi
     }
     throw err;
   }
-  return { mfaRequired: await mfaChallengeRequired() };
+  return { mfaRequired: await mfaChallengeRequired(), home: homePathFor(role) };
 }
 
 // ── Single sign-on ──────────────────────────────────────────────────────────
@@ -203,18 +224,60 @@ export async function signInWithOAuthProvider(provider: OAuthProvider): Promise<
   }
 }
 
-/** Called from the /auth/callback page after an OAuth redirect completes.
- * Google sign-in has no email-verification gate, so this is the only
- * provisioning point for that path. */
-export async function provisionAndRefresh(accessToken: string, metadata: Record<string, unknown>): Promise<void> {
-  await provisionProfile(accessToken, {
-    first_name: typeof metadata.first_name === "string" ? metadata.first_name : (typeof metadata.given_name === "string" ? metadata.given_name : ""),
-    last_name: typeof metadata.last_name === "string" ? metadata.last_name : (typeof metadata.family_name === "string" ? metadata.family_name : ""),
-    company_name: typeof metadata.company_name === "string" ? metadata.company_name : "",
+// OAuth sign-up can't carry form data through the provider redirect, so the
+// "Myself / My company" choice made on the sign-up card waits here until
+// /auth/callback provisions the account. Per tab; consumed once.
+const PENDING_SIGNUP_KEY = "zoiko_pending_signup";
+
+type SignupChoice = { accountType: AccountType; adultConfirmed: boolean };
+
+export function rememberSignupChoice(choice: SignupChoice): void {
+  try {
+    sessionStorage.setItem(PENDING_SIGNUP_KEY, JSON.stringify(choice));
+  } catch {
+    // Storage unavailable: the account is provisioned with the default type.
+  }
+}
+
+function takeSignupChoice(): SignupChoice | null {
+  try {
+    const raw = sessionStorage.getItem(PENDING_SIGNUP_KEY);
+    sessionStorage.removeItem(PENDING_SIGNUP_KEY);
+    return raw ? (JSON.parse(raw) as SignupChoice) : null;
+  } catch {
+    return null;
+  }
+}
+
+function text(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+/** Provisions the backend profile (idempotent: only the first call creates
+ * anything) and refreshes the session so the next call carries tenant/role.
+ * Used after password sign-in, OAuth (/auth/callback) and invitations. The
+ * workspace type comes from sign-up metadata (email sign-up) or the choice
+ * remembered before an OAuth redirect; with neither, it stays "company",
+ * the original behaviour. */
+export async function provisionAndRefresh(
+  accessToken: string,
+  metadata: Record<string, unknown>,
+): Promise<UserPublic> {
+  const pending = takeSignupChoice();
+  const [fullFirst, ...fullRest] = text(metadata.full_name || metadata.name).split(" ");
+  const accountType: AccountType =
+    pending?.accountType ?? (metadata.account_type === "individual" ? "individual" : "company");
+  const profile = await provisionProfile(accessToken, {
+    first_name: text(metadata.first_name) || text(metadata.given_name) || fullFirst,
+    last_name: text(metadata.last_name) || text(metadata.family_name) || fullRest.join(" "),
+    company_name: text(metadata.company_name),
+    account_type: accountType,
+    adult_confirmed: pending?.adultConfirmed ?? metadata.adult_confirmed === true,
   });
   // The token used above pre-dates /auth/provision writing app_metadata —
   // refresh so the next backend call already carries tenant_id/role.
   await supabase.auth.refreshSession();
+  return profile;
 }
 
 export async function signOut(): Promise<void> {

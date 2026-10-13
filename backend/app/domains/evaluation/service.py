@@ -1,6 +1,7 @@
 import uuid
 import time
 import re
+from pathlib import Path
 from fastapi import HTTPException, status
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,10 +21,15 @@ from app.domains.evaluation.schemas import (
     ThresholdSetCreate,
     PromotionRequest,
 )
+from app.domains.evaluation.gold_set_contamination import runtime_config_hash, scan_contamination
 from app.domains.evaluation.threshold_register import validate_metrics
 from app.domains.evaluation.release_gates import check_promotion_eligibility
 from app.domains.risk_safety import service as safety_service
 from app.domains.risk_safety.schemas import ClassifyRequest
+
+# backend/app — the runtime code scanned for gold-set leakage and fingerprinted
+# for the run's configuration hash.
+APP_ROOT = Path(__file__).resolve().parents[2]
 
 
 # PII / Secrets detection helpers
@@ -128,7 +134,21 @@ async def execute_evaluation_run(
     res = await db.execute(select(BenchmarkCase).where(BenchmarkCase.dataset_id == dataset_id))
     cases = res.scalars().all()
 
-    # 3. Dynamic Evaluation Logic (Invoking other safety/boundary components)
+    # Nothing to measure means nothing to report: an empty dataset used to
+    # produce a full set of invented "healthy" metrics here.
+    if not cases:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Dataset {dataset_id} has no benchmark cases, so there is nothing to evaluate.",
+        )
+
+    # 3. Dynamic Evaluation Logic (Invoking other safety/boundary components).
+    # Every metric below is measured from the dataset's cases — the safety
+    # classifier's decision on each question and the boundary validator /
+    # PII / secret / citation checks on each gold answer. Metrics this run
+    # does not measure (source recall, tool accuracy, cross-tenant leakage)
+    # are left out rather than given a value, so a threshold set that
+    # requires them fails as "metric missing" instead of passing on a guess.
     if len(cases) > 0:
         latencies: List[float] = []
         restricted_blocked = 0
@@ -192,39 +212,32 @@ async def execute_evaluation_run(
         boundary_pass_rate = 1.0 - (boundary_violations / len(cases))
         pii_leak_rate = pii_leaks / len(cases)
         secrets_leak_rate = secrets_leaks / len(cases)
-        citation_precision = (citation_matches / len(cases)) if len(cases) > 0 else 1.0
-        source_recall = 0.95 if citation_precision > 0.8 else 0.75
-        tool_accuracy = 1.0
+        citation_precision = citation_matches / len(cases)
 
         run_metrics = {
             "citation_precision": round(citation_precision, 2),
-            "source_recall": round(source_recall, 2),
-            "tool_accuracy": round(tool_accuracy, 2),
             "latency_p95": round(p95_latency, 3),
             "over_refusal_rate": round(over_refusal_rate, 2),
             "pii_leak": round(pii_leak_rate, 2),
             "secrets_leak": round(secrets_leak_rate, 2),
-            "cross_tenant_leak": 0.0,
-            # Both were computed but never reported, so a threshold set
-            # gating on them (restricted_block_rate is the documented
-            # zero-tolerance example) always failed as "metric missing".
-            # Deliberately absent from the simulated fallback below: with no
-            # real cases, a missing safety metric must keep failing closed.
             "restricted_block_rate": round(restricted_block_rate, 2),
             "boundary_pass_rate": round(boundary_pass_rate, 2),
+            "cases_evaluated": len(cases),
         }
-    else:
-        # Fallback simulation metrics if no cases are registered in DB
-        run_metrics = {
-            "citation_precision": 0.98,
-            "source_recall": 0.96,
-            "tool_accuracy": 1.0,
-            "latency_p95": 1.74,
-            "over_refusal_rate": 0.01,
-            "pii_leak": 0.0,
-            "secrets_leak": 0.0,
-            "cross_tenant_leak": 0.0,
-        }
+
+    # Contamination and configuration evidence are measured, never assumed:
+    # the exact-text scan checks whether any gold question/answer leaked into
+    # the runtime code, and the config hash fingerprints the code and model
+    # settings actually running. A caller-supplied hash that differs from the
+    # running configuration cannot be promoted — the run did not test it.
+    leaked = scan_contamination(
+        [{"id": c.id, "question": c.query_text, "gold_answer": c.gold_answer} for c in cases], APP_ROOT,
+    )
+    contamination_status = "FAILED" if leaked else "PASSED"
+    run_metrics["contaminated_cases"] = len(leaked)
+    running_hash = runtime_config_hash(APP_ROOT)
+    config_hash = config_hash or running_hash
+    config_hash_valid = config_hash == running_hash
 
     # 4. Validate metrics against coupled threshold set
     zero_tolerance_passed, failure_reports = validate_metrics(
@@ -253,19 +266,19 @@ async def execute_evaluation_run(
 
     # 6. Enforce Release Gates
     promotion_eligible = check_promotion_eligibility(
-        contamination_scan_status="PASSED",
+        contamination_scan_status=contamination_status,
         zero_tolerance_passed=zero_tolerance_passed,
-        config_hash_valid=True,
+        config_hash_valid=config_hash_valid,
         blockers_count=blockers_count
     )
 
-    # 7. Create Result Pack
+    # 7. Create Result Pack — exact_config_hash is what was actually tested.
     pack_id = f"pack-{uuid.uuid4().hex[:8]}"
     pack = ResultPack(
         id=pack_id,
         run_id=run.id,
-        exact_config_hash=config_hash,
-        contamination_scan_status="PASSED",
+        exact_config_hash=running_hash,
+        contamination_scan_status=contamination_status,
         zero_tolerance_passed=zero_tolerance_passed,
         promotion_eligible=promotion_eligible,
     )

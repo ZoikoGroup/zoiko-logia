@@ -108,10 +108,10 @@ function MetricRow({
 // ─── Page ────────────────────────────────────────────────────────────────────
 
 export default function EvaluationGatesPage() {
-  const [configHash, setConfigHash] = useState("sha256-kriton-v2026.07.08-prod");
+  const [configHash, setConfigHash] = useState("");
   const [datasetId, setDatasetId] = useState(DEFAULT_DATASET_ID);
   const [thresholdId, setThresholdId] = useState(DEFAULT_THRESHOLD_ID);
-  const [approverId, setApproverId] = useState("qa-lead@zoiko.ai");
+  const [approverId, setApproverId] = useState("");
 
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<EvaluationRunResult | null>(null);
@@ -209,8 +209,11 @@ export default function EvaluationGatesPage() {
                   value={configHash}
                   onChange={(e) => setConfigHash(e.target.value)}
                   className="w-full rounded-lg border border-line bg-soft/40 px-3 py-2 text-xs text-ink font-mono focus:outline-none focus:ring-2 focus:ring-brand/40 transition-all"
-                  placeholder="sha256-..."
+                  placeholder="Leave empty to evaluate the configuration that is running now"
                 />
+                <p className="text-[10px] text-muted">
+                  A hash that differs from the running configuration is recorded but cannot be promoted.
+                </p>
               </div>
             </div>
 
@@ -328,7 +331,7 @@ export default function EvaluationGatesPage() {
                     <button
                       id="approve-release-btn"
                       onClick={() => handlePromote("APPROVED")}
-                      disabled={!eligible || promoting}
+                      disabled={!eligible || promoting || !approverId.trim()}
                       className="flex items-center gap-1.5 rounded-xl bg-ok px-4 py-2.5 text-xs font-bold text-white hover:bg-ok/90 active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-ok/20"
                     >
                       {promoting ? <Loader2 size={12} className="animate-spin" /> : <Unlock size={12} />}
@@ -337,7 +340,7 @@ export default function EvaluationGatesPage() {
                     <button
                       id="reject-release-btn"
                       onClick={() => handlePromote("REJECTED")}
-                      disabled={promoting}
+                      disabled={promoting || !approverId.trim()}
                       className="flex items-center gap-1.5 rounded-xl border border-bad/40 bg-bad/10 px-4 py-2.5 text-xs font-bold text-bad hover:bg-bad/20 active:scale-95 transition-all disabled:opacity-40"
                     >
                       <Lock size={12} />

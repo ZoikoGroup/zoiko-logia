@@ -70,7 +70,9 @@ class ThresholdSetOut(ThresholdSetCreate):
 class EvaluationRunCreate(BaseModel):
     dataset_id: str
     threshold_set_id: str
-    config_hash: str
+    # Empty → the run fingerprints the configuration actually running. A
+    # supplied hash that differs from it makes the result pack ineligible.
+    config_hash: str = ""
 
 
 class EvaluationRunOut(BaseModel):
