@@ -154,13 +154,8 @@ export async function getGovernanceDashboard(
   return res.json();
 }
 
-export async function getCommandCenter(
-  token: string,
-  context: { jurisdiction: string; framework: string; period: string },
-  signal?: AbortSignal,
-): Promise<CommandCenterViewModel> {
-  const query = new URLSearchParams(context);
-  const res = await authedFetch(`/command-center?${query}`, token, { signal });
+export async function getCommandCenter(token: string, signal?: AbortSignal): Promise<CommandCenterViewModel> {
+  const res = await authedFetch("/command-center", token, { signal });
   return res.json();
 }
 
