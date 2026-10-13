@@ -20,6 +20,10 @@ export type ProvisionRequest = {
   first_name?: string;
   last_name?: string;
   company_name?: string;
+  /** Only used on the first call: "individual" → private Learner workspace,
+   * "company" (default) → company workspace with the caller as Admin. */
+  account_type?: "individual" | "company";
+  adult_confirmed?: boolean;
 };
 
 export class ApiError extends Error {

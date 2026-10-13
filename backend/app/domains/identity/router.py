@@ -89,7 +89,7 @@ async def provision(
             actor_id=user.id,
             subject_type="user_account",
             subject_id=user.id,
-            payload={"first_time": True, "company_name": payload.company_name},
+            payload={"first_time": True, "company_name": payload.company_name, "account_type": payload.account_type},
         )
     return UserPublic.model_validate(user)
 

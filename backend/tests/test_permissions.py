@@ -50,6 +50,8 @@ SEEDED_ROLES = {
     "System Auditor",
     # The role escalation rules route high-risk cases to (main.py).
     "SME Reviewer",
+    # Individual ("Myself") sign-ups and trainees.
+    "Learner",
 }
 
 
@@ -86,6 +88,7 @@ async def test_role_matrix_matches_approved_mapping() -> None:
         SOURCE_READ, SUPPORT_READ, SAFETY_READ, REVIEW_READ, EVALUATION_READ,
     })
     assert ROLE_PERMISSIONS["SME Reviewer"] == frozenset({REVIEW_READ, REVIEW_RESOLVE})
+    assert ROLE_PERMISSIONS["Learner"] == frozenset()
 
 
 async def test_sme_reviewer_works_the_queue_but_cannot_run_or_promote_evaluations() -> None:
