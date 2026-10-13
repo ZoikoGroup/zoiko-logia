@@ -27,6 +27,16 @@ from app.orchestration.models import QueryAnswerRecord
 
 EXPORT_FORMATS = ("docx", "pdf", "md")
 _UNSAFE_FILENAME = re.compile(r"[^A-Za-z0-9._ -]+")
+# Kriton's inline citation markers ("[REF-7]"). Their numbers index the
+# answer's citation list, not the de-duplicated Sources list an export
+# carries, so they would point at the wrong entry or at none.
+_REF_MARKER = re.compile(r"\s?\[REF-\d+\]")
+# Characters the PDF fonts cannot draw (rendered as a filled box).
+_EXPORT_CHARS = str.maketrans({"‐": "-", "‑": "-", " ": " ", " ": " "})
+
+
+def clean_for_export(text: str) -> str:
+    return _REF_MARKER.sub("", text).translate(_EXPORT_CHARS)
 
 
 async def _owned_draft(db: AsyncSession, tenant_id: str, user_id: str, draft_id: str) -> Draft:
@@ -92,6 +102,7 @@ async def export_draft(db: AsyncSession, tenant_id: str, user_id: str, draft_id:
     draft = await _owned_draft(db, tenant_id, user_id, draft_id)
     if not (draft.content or "").strip():
         raise HTTPException(status_code=422, detail="The draft is empty")
-    narrative = _with_sources(draft.content, await draft_sources(db, tenant_id, user_id, draft_id))
-    content, extension, mime_type = await asyncio.to_thread(_render, format_name, draft.title, narrative, {}, "")
+    narrative = _with_sources(clean_for_export(draft.content), await draft_sources(db, tenant_id, user_id, draft_id))
+    title = clean_for_export(draft.title)
+    content, extension, mime_type = await asyncio.to_thread(_render, format_name, title, narrative, {}, "")
     return content, export_filename(draft.title, extension), mime_type, draft.title

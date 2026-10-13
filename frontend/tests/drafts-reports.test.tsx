@@ -46,6 +46,15 @@ describe("Drafts & Reports", () => {
     expect(within(preview).getByRole("table")).toBeInTheDocument();
   });
 
+  it("leaves citation markers out of the preview but keeps them in the text", async () => {
+    api.list.mockResolvedValue([{ ...memo, content: "The threshold is £90,000[REF-1]." }]);
+    render(<DraftsReportsPage />);
+    fireEvent.click(await screen.findByText("VAT memo"));
+    expect(screen.getByPlaceholderText("Draft content…")).toHaveValue("The threshold is £90,000[REF-1].");
+    fireEvent.click(screen.getByRole("tab", { name: /Preview/ }));
+    expect(within(screen.getByTestId("draft-preview")).getByText("The threshold is £90,000.")).toBeInTheDocument();
+  });
+
   it("saves unsaved edits before exporting", async () => {
     render(<DraftsReportsPage />);
     fireEvent.click(await screen.findByText("VAT memo"));

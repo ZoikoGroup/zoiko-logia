@@ -47,6 +47,13 @@ const MARKDOWN_COMPONENTS = {
   code: (props: React.ComponentProps<"code">) => <code className="rounded bg-soft px-1 py-0.5 text-[13px]" {...props} />,
 };
 
+// Kriton's inline citation markers ("[REF-7]") index the answer's citation
+// list, not the Sources shown here, so the preview (like the exports) leaves
+// them out. The editable text keeps them.
+function withoutCitationMarkers(text: string): string {
+  return text.replace(/\s?\[REF-\d+\]/g, "");
+}
+
 export default function DraftsReportsPage() {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [loading, setLoading] = useState(true);
@@ -300,7 +307,7 @@ export default function DraftsReportsPage() {
                 ) : (
                   <div className="min-h-[18rem] rounded-lg border border-line px-4 py-2 text-sm" data-testid="draft-preview">
                     {editContent.trim() ? (
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{editContent}</ReactMarkdown>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{withoutCitationMarkers(editContent)}</ReactMarkdown>
                     ) : (
                       <p className="py-6 text-center text-muted">Nothing to preview yet.</p>
                     )}

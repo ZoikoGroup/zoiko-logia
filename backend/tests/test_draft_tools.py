@@ -103,6 +103,15 @@ async def test_export_endpoint_returns_an_attachment(db):
     assert response.headers["content-disposition"] == 'attachment; filename="VAT memo client A.md"'
 
 
+async def test_export_drops_citation_markers_and_undrawable_characters(db):
+    draft = await db.get(Draft, "d1")
+    draft.content = "The threshold is £90,000 in a 12‑month period[REF-1]. Register once exceeded [REF-7]."
+    await db.commit()
+    content, *_ = await export_draft(db, "t1", "u1", "d1", "md")
+    text = content.decode("utf-8")
+    assert "12-month period. Register once exceeded." in text and "REF-" not in text
+
+
 def test_export_filename_strips_unsafe_characters():
     assert export_filename('Q2 / "final" <memo>', "pdf") == "Q2  final memo.pdf"
     assert export_filename("///", "md") == "draft.md"
