@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -66,3 +67,35 @@ async def get_cpd_summary_endpoint(
 ) -> CPDSummaryOut:
     summary = await get_cpd_summary(db, current_user.id)
     return CPDSummaryOut.model_validate(summary)
+
+
+# Practice quizzes (see practice.py). A finished quiz is logged through the
+# existing POST /learning/cpd, so it needs no endpoint of its own.
+class PracticeAnswerRequest(BaseModel):
+    question_id: str = Field(..., max_length=100)
+    answer: str = Field("", max_length=4000)
+
+
+@router.get("/practice/banks")
+async def get_practice_banks(current_user: User = Depends(get_current_user)) -> list[dict]:
+    from app.domains.learning_cpd.practice import list_banks
+
+    return list_banks()
+
+
+@router.get("/practice/{bank_id}/questions")
+async def get_practice_questions(
+    bank_id: str, count: int = 5, current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    from app.domains.learning_cpd.practice import draw_questions
+
+    return draw_questions(bank_id, count)
+
+
+@router.post("/practice/{bank_id}/check")
+async def post_practice_answer(
+    bank_id: str, payload: PracticeAnswerRequest, current_user: User = Depends(get_current_user),
+) -> dict:
+    from app.domains.learning_cpd.practice import check_answer
+
+    return check_answer(bank_id, payload.question_id, payload.answer)

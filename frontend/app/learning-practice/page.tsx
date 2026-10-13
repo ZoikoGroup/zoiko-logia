@@ -6,6 +6,7 @@ import { PageShell } from "@/components/governance/PageShell";
 import { Pill } from "@/components/governance/Pill";
 import { PanelHeader, PANEL_CLASS } from "@/components/governance/PanelHeader";
 import { ADVISOR } from "@/lib/advisor";
+import { PracticeQuiz } from "@/components/learning/PracticeQuiz";
 import {
   askKriton,
   createCPDEntry,
@@ -146,6 +147,8 @@ export default function LearningPracticePage() {
         )}
       </div>
 
+      <PracticeQuiz onLogged={loadCPD} />
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
         <div className={PANEL_CLASS}>
           <PanelHeader icon={Compass} tone="warn" title="Continue Pathway" />
@@ -157,6 +160,23 @@ export default function LearningPracticePage() {
                   {p.body} — {p.qualification} — {p.module}
                 </div>
                 <div className="text-xs text-ink mt-1">{p.learning_outcome}</div>
+                {/* Progress without a new table: a topic counts as studied
+                    once CPD time is logged against it. */}
+                <div className="mt-1.5">
+                  {cpdEntries.some((e) => e.topic === p.topic) ? (
+                    <Pill tone="ok">Studied ✓</Pill>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setCpdTopic(p.topic);
+                        document.getElementById("cpd-minutes")?.focus();
+                      }}
+                      className="text-xs font-semibold text-brand hover:underline"
+                    >
+                      Log study time
+                    </button>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
@@ -203,6 +223,7 @@ export default function LearningPracticePage() {
           <div>
             <label className="block text-[11px] text-muted font-medium mb-1">Minutes</label>
             <input
+              id="cpd-minutes"
               type="number"
               min={1}
               max={600}
