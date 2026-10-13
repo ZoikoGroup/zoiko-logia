@@ -40,10 +40,3 @@ export const ALERTS: Alert[] = [
 ];
 
 // [gate, status]; Passed→ok, Partial→warn, Pending→neutral
-export const RELEASE_GATES: [string, "Passed" | "Partial" | "Pending"][] = [
-  ["Rights & licensing sign-off", "Passed"],
-  ["Risk policy approval", "Passed"],
-  ["Evaluation gate thresholds met", "Partial"],
-  ["Audit event coverage", "Pending"],
-  ["Rollback point verified", "Pending"],
-];
