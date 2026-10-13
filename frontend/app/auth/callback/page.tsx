@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { ApiError } from "@/lib/api";
+import { homePathFor } from "@/lib/roles";
 import { mfaChallengeRequired, provisionAndRefresh } from "@/services/auth.service";
 
 /** OAuth (Google / Microsoft) lands here after Supabase's redirect. The browser client
@@ -41,12 +42,13 @@ export default function AuthCallbackPage() {
 
     async function complete(accessToken: string, metadata: Record<string, unknown>) {
       try {
-        await provisionAndRefresh(accessToken, metadata);
+        const profile = await provisionAndRefresh(accessToken, metadata);
         const needsMfa = await mfaChallengeRequired();
-        if (!cancelled) router.replace(needsMfa ? "/auth/mfa" : "/");
+        if (!cancelled) router.replace(needsMfa ? "/auth/mfa" : homePathFor(profile.role));
       } catch (err) {
-        if (err instanceof ApiError && err.status === 403) {
-          // Invite-only deployment refusing an unknown OAuth sign-up.
+        if (err instanceof ApiError && (err.status === 403 || err.status === 422)) {
+          // Refused sign-up (invite-only deployment, or a personal account
+          // without the adult confirmation): show why, drop the session.
           await supabase.auth.signOut();
           if (!cancelled) setError(err.message);
           return;

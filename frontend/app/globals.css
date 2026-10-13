@@ -13,6 +13,10 @@
 
 /* Zoiko brand palette — light governance-surface theme */
 :root {
+  /* Tells the browser which palette native controls (select option lists,
+     date pickers, scrollbars) must use; without it they stayed light in dark
+     mode and the light theme text became unreadable on them. */
+  color-scheme: light;
   --bg: #f7f8fa;
   --panel: #ffffff;
   --ink: #151922;
@@ -61,6 +65,7 @@
    overridden in both directions once the header toggle sets data-theme. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --bg: #0f1216;
     --panel: #171b21;
     --ink: #e7eaee;
@@ -90,6 +95,7 @@
   }
 }
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #0f1216;
   --panel: #171b21;
   --ink: #e7eaee;
@@ -116,6 +122,13 @@
   --kriton-bg-end: #090e13;
   --kriton-glow: rgba(47, 156, 194, 0.14);
   --kriton-sidebar: rgba(14, 20, 27, 0.94);
+}
+
+/* Option lists are drawn by the browser; give them the theme's own colours
+   too, for browsers that ignore color-scheme on native popups. */
+select option {
+  background-color: var(--panel);
+  color: var(--ink);
 }
 
 @theme inline {

@@ -142,7 +142,25 @@ async def provision_profile(
             detail="Sign-up is by invitation only. Ask your administrator to create your account.",
         )
 
-    tenant = Tenant(name=payload.company_name or "")
+    full_name = f"{payload.first_name} {payload.last_name}".strip()
+    if payload.account_type == "individual":
+        if not payload.adult_confirmed:
+            # Under-18 learners need the age-status and guardian-consent
+            # controls (Privacy spec §9, PRD "Minor learners") before any data
+            # is collected; until those exist, individual sign-up is adults only.
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Individual accounts are currently for adults only. Please confirm you are 18 or older.",
+            )
+        # A private workspace of one: same tenant isolation as a company, but
+        # its only user learns rather than administers.
+        tenant_name = f"{full_name or email.split('@')[0]} (personal)"
+        role = "Learner"
+    else:
+        tenant_name = payload.company_name or ""
+        role = "Admin"
+
+    tenant = Tenant(name=tenant_name)
     db.add(tenant)
     await db.flush()
 
@@ -152,8 +170,8 @@ async def provision_profile(
         email=email,
         first_name=payload.first_name,
         last_name=payload.last_name,
-        full_name=f"{payload.first_name} {payload.last_name}".strip(),
-        role="Admin",
+        full_name=full_name,
+        role=role,
         is_active=True,
     )
     db.add(user)

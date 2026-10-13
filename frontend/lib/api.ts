@@ -20,6 +20,10 @@ export type ProvisionRequest = {
   first_name?: string;
   last_name?: string;
   company_name?: string;
+  /** Only used on the first call: "individual" → private Learner workspace,
+   * "company" (default) → company workspace with the caller as Admin. */
+  account_type?: "individual" | "company";
+  adult_confirmed?: boolean;
 };
 
 export class ApiError extends Error {
@@ -139,25 +143,19 @@ async function authedFetch(
 
 export async function getGovernanceDashboard(
   token: string,
-  options: { environment: string; jurisdiction: string; windowDays: number },
+  options: { environment: string; windowDays: number },
   signal?: AbortSignal,
 ): Promise<GovernanceDashboardViewModel> {
   const query = new URLSearchParams({
     environment: options.environment,
-    jurisdiction: options.jurisdiction,
     window_days: String(options.windowDays),
   });
   const res = await authedFetch(`/governance-dashboard?${query}`, token, { signal });
   return res.json();
 }
 
-export async function getCommandCenter(
-  token: string,
-  context: { jurisdiction: string; framework: string; period: string },
-  signal?: AbortSignal,
-): Promise<CommandCenterViewModel> {
-  const query = new URLSearchParams(context);
-  const res = await authedFetch(`/command-center?${query}`, token, { signal });
+export async function getCommandCenter(token: string, signal?: AbortSignal): Promise<CommandCenterViewModel> {
+  const res = await authedFetch("/command-center", token, { signal });
   return res.json();
 }
 

@@ -14,7 +14,9 @@ def normalise(text: str) -> str:
 
 
 def scan_contamination(cases: list[dict], runtime_root: Path) -> list[str]:
-    texts = [normalise(p.read_text()) for p in runtime_root.rglob("*.py")]
+    # Explicit UTF-8: the platform default (cp1252 on Windows) cannot decode
+    # the source files and crashed the scan there.
+    texts = [normalise(p.read_text(encoding="utf-8")) for p in runtime_root.rglob("*.py")]
     leaked = []
     for case in cases:
         # Ignore tiny generic phrases which are not distinctive gold examples.

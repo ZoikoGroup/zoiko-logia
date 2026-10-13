@@ -81,6 +81,11 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     "SME Reviewer": frozenset({REVIEW_READ, REVIEW_RESOLVE}),
     # "Read-only access for audit purposes" — reads, never writes.
     "System Auditor": frozenset({SOURCE_READ, SUPPORT_READ, SAFETY_READ, REVIEW_READ, EVALUATION_READ}),
+    # Student / Trainee (PRD): asks Kriton, learns, practises and logs CPD —
+    # all of which need only an authenticated session, never a governance
+    # permission. The role an individual ("Myself") sign-up receives, and one
+    # a company Admin can assign to trainees.
+    "Learner": frozenset(),
 }
 
 

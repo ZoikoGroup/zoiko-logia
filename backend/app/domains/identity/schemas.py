@@ -1,5 +1,6 @@
 import re
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
@@ -25,10 +26,21 @@ class ProvisionRequest(BaseModel):
     """Body for POST /auth/provision. Email comes from the verified Supabase
     token, never trusted from here. Fields are optional so a Google
     first-sign-in (which supplies its own name via the token/OAuth profile)
-    can call this with an empty body."""
+    can call this with an empty body.
+
+    account_type only matters on the very first call, when it decides what
+    the new workspace is:
+      * "company" (default — the original behaviour): a company workspace
+        whose first user is its Admin and invites the team;
+      * "individual": a private one-person workspace whose user is a Learner.
+    The client choosing it is safe because "individual" can only ever lower
+    privilege. Individuals must confirm they are adults: under-18 learners
+    need the minors/guardian-consent controls the Privacy spec requires first."""
     first_name: str = ""
     last_name: str = ""
     company_name: str = ""
+    account_type: Literal["company", "individual"] = "company"
+    adult_confirmed: bool = False
 
 
 class ProfileUpdateRequest(BaseModel):
