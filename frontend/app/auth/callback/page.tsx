@@ -3,9 +3,10 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import { provisionAndRefresh } from "@/services/auth.service";
+import { ApiError } from "@/lib/api";
+import { mfaChallengeRequired, provisionAndRefresh } from "@/services/auth.service";
 
-/** Google OAuth lands here after Supabase's redirect. The browser client
+/** OAuth (Google / Microsoft) lands here after Supabase's redirect. The browser client
  * auto-exchanges the URL's auth code for a session on load
  * (detectSessionInUrl, on by default) — this page just waits for that,
  * provisions the local profile on first-ever login (no email-verification
@@ -41,8 +42,15 @@ export default function AuthCallbackPage() {
     async function complete(accessToken: string, metadata: Record<string, unknown>) {
       try {
         await provisionAndRefresh(accessToken, metadata);
-        if (!cancelled) router.replace("/");
-      } catch {
+        const needsMfa = await mfaChallengeRequired();
+        if (!cancelled) router.replace(needsMfa ? "/auth/mfa" : "/");
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 403) {
+          // Invite-only deployment refusing an unknown OAuth sign-up.
+          await supabase.auth.signOut();
+          if (!cancelled) setError(err.message);
+          return;
+        }
         if (!cancelled) setError("Could not complete sign-in. Please try again.");
       }
     }

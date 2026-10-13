@@ -868,6 +868,10 @@ async def _verify_security_policies() -> None:
     expected.update({"users": "users_self_or_tenant_admin", "review_cases": "tenant_isolation_review_cases",
                      "answer_feedback": "tenant_isolation_answer_feedback",
                      "query_answer_records": "tenant_isolation_query_answer_records"})
+    # Elevated-access governance (migration r7k8l9m0n1o2). service_account_keys
+    # is deliberately absent: keys are looked up by hash before a tenant is known.
+    expected.update({table: f"tenant_isolation_{table}"
+                     for table in ("impersonation_sessions", "break_glass_grants", "service_accounts")})
     async with async_engine.connect() as conn:
         rows = (await conn.execute(text("""
             SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity, p.polname
@@ -887,6 +891,19 @@ def create_app() -> FastAPI:
         version="1.0.0",
         lifespan=lifespan
     )
+
+    @app.middleware("http")
+    async def impersonation_is_read_only(request, call_next):
+        # Admin "view as" sessions (identity/governance.py) may only read. One
+        # gate here covers every router, sync or async, present or future —
+        # a write can never run under another user's identity. Registered
+        # before CORSMiddleware so CORS still wraps this response.
+        if request.headers.get("x-impersonation-session") and request.method not in {"GET", "HEAD", "OPTIONS"}:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Viewing as another user is read-only. End the session to make changes."},
+            )
+        return await call_next(request)
 
     app.add_middleware(
         CORSMiddleware,

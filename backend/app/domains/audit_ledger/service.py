@@ -45,9 +45,9 @@ def _ledger_event_to_dict(e: AuditEvent) -> dict:
 
 
 def _safety_event_to_dict(e: SafetyEvent) -> dict:
-    # SafetyEvent predates the generic ledger and isn't chain-hashed or
-    # tenant-scoped as a first-class column yet, so it's merged in read-only,
-    # honestly labeled with source="risk_safety_ledger" and no chain_hash.
+    # SafetyEvent predates the generic ledger and isn't chain-hashed, so it's
+    # merged in read-only, honestly labeled with source="risk_safety_ledger"
+    # and no chain_hash.
     payload = e.payload or {}
     return {
         "id": f"safety-{e.id}",
@@ -56,7 +56,7 @@ def _safety_event_to_dict(e: SafetyEvent) -> dict:
         "event_time": e.timestamp,
         "ingested_at": e.timestamp,
         "emitting_service": "risk_safety",
-        "tenant_id": payload.get("tenant_id") or "GLOBAL_CONTROL",
+        "tenant_id": e.tenant_id,
         "actor_type": "system",
         "actor_id": payload.get("reviewer_id") or payload.get("user_id"),
         "subject_type": "query",
@@ -84,13 +84,21 @@ async def list_events(
     subject_type: Optional[str] = None,
     subject_id: Optional[str] = None,
     correlation_id: Optional[str] = None,
-    tenant_id: Optional[str] = None,
+    tenant_id: str,
     limit: int = 100,
 ) -> list[dict]:
     """Unified, time-ordered view across the native ledger and risk_safety's
     existing event log — this is what "every governed action" means in
-    practice until every domain writes to the same table."""
-    query = select(AuditEvent).order_by(AuditEvent.ingested_at.desc()).limit(limit)
+    practice until every domain writes to the same table.
+
+    tenant_id is mandatory and applied to BOTH sources: neither table has a
+    row-level security policy, so this filter is the only tenant boundary."""
+    query = (
+        select(AuditEvent)
+        .where(AuditEvent.tenant_id == tenant_id)
+        .order_by(AuditEvent.ingested_at.desc())
+        .limit(limit)
+    )
     if event_name:
         query = query.where(AuditEvent.event_name == event_name)
     if subject_type:
@@ -99,13 +107,11 @@ async def list_events(
         query = query.where(AuditEvent.subject_id == subject_id)
     if correlation_id:
         query = query.where(AuditEvent.correlation_id == correlation_id)
-    if tenant_id:
-        query = query.where(AuditEvent.tenant_id == tenant_id)
     result = await db.execute(query)
     merged = [_ledger_event_to_dict(e) for e in result.scalars().all()]
 
     if subject_type in (None, "query"):
-        safety_query = sync_db.query(SafetyEvent)
+        safety_query = sync_db.query(SafetyEvent).filter(SafetyEvent.tenant_id == tenant_id)
         if event_name:
             safety_query = safety_query.filter(SafetyEvent.event_type == event_name)
         if subject_id:
@@ -130,14 +136,26 @@ async def list_events(
     return merged[:limit]
 
 
-async def get_event(db: AsyncSession, event_id: str) -> Optional[AuditEvent]:
-    return await db.get(AuditEvent, event_id)
+async def get_event(db: AsyncSession, event_id: str, tenant_id: str) -> Optional[AuditEvent]:
+    """A single ledger event, only when it belongs to the caller's tenant —
+    another tenant's event reads exactly like a missing one (404)."""
+    result = await db.execute(
+        select(AuditEvent).where(AuditEvent.id == event_id, AuditEvent.tenant_id == tenant_id)
+    )
+    return result.scalar_one_or_none()
 
 
 async def list_compensating_events(
-    db: AsyncSession, corrects_event_id: Optional[str] = None
+    db: AsyncSession, tenant_id: str, corrects_event_id: Optional[str] = None
 ) -> list[CompensatingEvent]:
-    query = select(CompensatingEvent).order_by(CompensatingEvent.created_at.desc())
+    # compensating_events has no tenant column; it inherits the tenant of the
+    # ledger event it corrects.
+    query = (
+        select(CompensatingEvent)
+        .join(AuditEvent, AuditEvent.id == CompensatingEvent.corrects_event_id)
+        .where(AuditEvent.tenant_id == tenant_id)
+        .order_by(CompensatingEvent.created_at.desc())
+    )
     if corrects_event_id:
         query = query.where(CompensatingEvent.corrects_event_id == corrects_event_id)
     result = await db.execute(query)
@@ -145,11 +163,12 @@ async def list_compensating_events(
 
 
 async def issue_compensating_event(
-    db: AsyncSession, event_id: str, issued_by: str, payload: CompensatingEventCreate
+    db: AsyncSession, event_id: str, issued_by: str, tenant_id: str, payload: CompensatingEventCreate
 ) -> CompensatingEvent:
     return await compensating_events_module.issue_compensating_event(
         db,
         corrects_event_id=event_id,
+        tenant_id=tenant_id,
         correction_type=payload.correction_type,
         correction_reason=payload.correction_reason,
         issued_by=issued_by,
@@ -174,5 +193,5 @@ async def verify_tenant_chain(db: AsyncSession, tenant_id: str) -> dict:
     }
 
 
-async def get_replay_manifest(db: AsyncSession, sync_db: Session, correlation_id: str) -> dict:
-    return await build_replay_manifest(db, sync_db, correlation_id)
+async def get_replay_manifest(db: AsyncSession, sync_db: Session, correlation_id: str, tenant_id: str) -> dict:
+    return await build_replay_manifest(db, sync_db, correlation_id, tenant_id)

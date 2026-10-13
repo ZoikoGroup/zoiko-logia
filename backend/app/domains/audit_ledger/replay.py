@@ -44,17 +44,21 @@ def _manifest_hash(manifest: dict) -> str:
     return hashlib.sha256(json.dumps(manifest, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
-async def build_replay_manifest(db: AsyncSession, sync_db: Session, correlation_id: str) -> dict:
+async def build_replay_manifest(
+    db: AsyncSession, sync_db: Session, correlation_id: str, tenant_id: str,
+) -> dict:
+    # Both sources are filtered to the caller's tenant: correlation ids are
+    # not secret, and neither table has a row-level security policy.
     result = await db.execute(
         select(AuditEvent)
-        .where(AuditEvent.correlation_id == correlation_id)
+        .where(AuditEvent.correlation_id == correlation_id, AuditEvent.tenant_id == tenant_id)
         .order_by(AuditEvent.event_time.asc())
     )
     ledger_events = list(result.scalars().all())
 
     safety_events = (
         sync_db.query(SafetyEvent)
-        .filter(SafetyEvent.query_id == correlation_id)
+        .filter(SafetyEvent.query_id == correlation_id, SafetyEvent.tenant_id == tenant_id)
         .order_by(SafetyEvent.timestamp.asc())
         .all()
     )

@@ -53,6 +53,34 @@ class Settings(BaseSettings):
     # frontend-only work.
     REQUIRE_SUPABASE_CONFIG: bool = False
 
+    # Step-up authentication (Privacy & Security spec §5): when true, every
+    # privileged action — the Admin-only endpoints and the *.manage /
+    # review.resolve / audit.correct permissions (see
+    # identity/permissions.py STEP_UP_PERMISSIONS) — requires a session that
+    # completed an MFA challenge (token aal == "aal2"). Off by default so local
+    # development keeps working before anyone has enrolled a factor; staging
+    # and production should turn it on once admins have enrolled.
+    MFA_REQUIRED_FOR_PRIVILEGED: bool = False
+
+    # Self-service sign-up. When true (the current behaviour), the first
+    # /auth/provision call from an unknown Supabase user creates a new tenant
+    # with that user as its Admin. When false the platform is invite-only:
+    # only users an Admin created through POST /users can provision, and an
+    # unknown sign-up is refused instead of being handed a fresh Admin tenant.
+    ALLOW_PUBLIC_SIGNUP: bool = True
+
+    # Where Supabase invitation emails land; the page sets the password and
+    # finishes provisioning. Must be in Supabase Auth → URL Configuration.
+    FRONTEND_URL: str = "http://localhost:3000"
+
+    # Governance ceilings for elevated access (identity/governance.py).
+    IMPERSONATION_MAX_MINUTES: int = 60
+    BREAK_GLASS_MAX_MINUTES: int = 240
+    # Break-glass uses at or above this count within 30 days are flagged for
+    # security review (break_glass_repeated_use_detected).
+    BREAK_GLASS_REPEAT_THRESHOLD: int = 3
+    SERVICE_KEY_MAX_DAYS: int = 365
+
     # ── LLM Providers ───────────────────────────────────────────────────
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""

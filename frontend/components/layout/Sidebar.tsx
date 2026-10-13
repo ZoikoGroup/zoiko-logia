@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ChevronDown, HelpCircle, LogOut, Palette, UserRound, X } from "lucide-react";
+import { ChevronDown, HelpCircle, LogOut, Palette, ShieldCheck, UserRound, X } from "lucide-react";
 import { NAV_SECTIONS, isVisible, navHref } from "@/lib/nav";
 import { useRole } from "@/components/shell/RoleProvider";
 import { useAuth } from "@/hooks/useAuth";
@@ -130,6 +130,7 @@ export function Sidebar({
       <div className="pt-3 mt-1 border-t border-line">
         {identityOpen && <div className="mb-2 space-y-0.5 rounded-xl border border-line bg-panel p-1.5 shadow-lg">
           <Link href="/my-workspace" className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-ink hover:bg-soft"><UserRound size={15} /> Profile & My Workspace</Link>
+          <Link href="/account/security" className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-ink hover:bg-soft"><ShieldCheck size={15} /> Account security</Link>
           <Link href="/tenant-settings" className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-ink hover:bg-soft"><Palette size={15} /> Appearance & accessibility</Link>
           <Link href="/support-tickets" className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-ink hover:bg-soft"><HelpCircle size={15} /> Help</Link>
           <button onClick={handleLogout} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-bad hover:bg-bad/10"><LogOut size={15} /> Log out</button>
