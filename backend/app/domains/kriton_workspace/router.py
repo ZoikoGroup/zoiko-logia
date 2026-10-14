@@ -396,3 +396,139 @@ async def get_compliance_calendar(
     from app.domains.kriton_workspace.compliance_calendar import upcoming_deadlines
 
     return upcoming_deadlines(date.today(), days, jurisdiction)
+
+
+# Workpapers: client job files with a maker-checker sign-off (see workpapers.py).
+from pydantic import BaseModel as _WorkpaperBody  # noqa: E402 - kept with the workpaper block
+
+from app.domains.kriton_workspace import workpaper_models  # noqa: E402,F401 - registers the tables at startup
+
+
+class WorkpaperCreateRequest(_WorkpaperBody):
+    title: str
+    period: str = ""
+    engagement_id: str | None = None
+    reviewer_id: str | None = None
+
+
+class WorkpaperUpdateRequest(_WorkpaperBody):
+    title: str | None = None
+    period: str | None = None
+    notes: str | None = None
+    engagement_id: str | None = None
+    reviewer_id: str | None = None
+
+
+class WorkpaperReviewRequest(_WorkpaperBody):
+    decision: str  # sign_off | return
+    note: str = ""
+
+
+class WorkpaperItemRequest(_WorkpaperBody):
+    kind: str  # saved_answer | draft | document
+    item_id: str
+    note: str = ""
+
+
+async def _audit_workpaper(db: AsyncSession, user: User, event: str, workpaper_id: str, payload: dict) -> None:
+    await record_event_async(
+        db, tenant_id=user.tenant_id, event_name=f"workpaper.{event}", emitting_service="kriton_workspace",
+        actor_id=user.id, subject_type="workpaper", subject_id=workpaper_id, payload=payload,
+    )
+
+
+@router.get("/workpapers")
+async def get_workpapers(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)) -> list[dict]:
+    from app.domains.kriton_workspace import workpapers
+
+    return await workpapers.list_workpapers(db, current_user)
+
+
+@router.get("/workpapers/reviewers")
+async def get_workpaper_reviewers(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)) -> list[dict]:
+    from app.domains.kriton_workspace import workpapers
+
+    return await workpapers.reviewers(db, current_user)
+
+
+@router.post("/workpapers")
+async def post_workpaper(payload: WorkpaperCreateRequest, db: AsyncSession = Depends(get_db),
+                         current_user: User = Depends(get_current_user)) -> dict:
+    from app.domains.kriton_workspace import workpapers
+
+    wp = await workpapers.create_workpaper(db, current_user, payload.title, payload.period,
+                                           payload.engagement_id, payload.reviewer_id)
+    await _audit_workpaper(db, current_user, "created", wp.id, {"title": wp.title, "engagement_id": wp.engagement_id})
+    return await workpapers.summary(db, wp, current_user, with_items=True)
+
+
+@router.get("/workpapers/{workpaper_id}")
+async def get_workpaper(workpaper_id: str, db: AsyncSession = Depends(get_db),
+                        current_user: User = Depends(get_current_user)) -> dict:
+    from app.domains.kriton_workspace import workpapers
+
+    return await workpapers.summary(db, await workpapers._get(db, current_user, workpaper_id), current_user, with_items=True)
+
+
+@router.patch("/workpapers/{workpaper_id}")
+async def patch_workpaper(workpaper_id: str, payload: WorkpaperUpdateRequest, db: AsyncSession = Depends(get_db),
+                          current_user: User = Depends(get_current_user)) -> dict:
+    from app.domains.kriton_workspace import workpapers
+
+    changes = payload.model_dump(exclude_unset=True)
+    wp = await workpapers.update_workpaper(db, current_user, workpaper_id, changes)
+    await _audit_workpaper(db, current_user, "updated", wp.id, {"fields": sorted(changes)})
+    return await workpapers.summary(db, wp, current_user, with_items=True)
+
+
+@router.post("/workpapers/{workpaper_id}/submit")
+async def submit_workpaper(workpaper_id: str, db: AsyncSession = Depends(get_db),
+                           current_user: User = Depends(get_current_user)) -> dict:
+    from app.domains.kriton_workspace import workpapers
+
+    wp = await workpapers.submit(db, current_user, workpaper_id)
+    await _audit_workpaper(db, current_user, "submitted", wp.id, {"reviewer_id": wp.reviewer_id})
+    return await workpapers.summary(db, wp, current_user, with_items=True)
+
+
+@router.post("/workpapers/{workpaper_id}/review")
+async def review_workpaper(workpaper_id: str, payload: WorkpaperReviewRequest, db: AsyncSession = Depends(get_db),
+                           current_user: User = Depends(get_current_user)) -> dict:
+    from app.domains.kriton_workspace import workpapers
+
+    wp = await workpapers.review(db, current_user, workpaper_id, payload.decision, payload.note)
+    await _audit_workpaper(db, current_user, "signed_off" if wp.status == "signed_off" else "returned",
+                           wp.id, {"note": wp.review_note})
+    return await workpapers.summary(db, wp, current_user, with_items=True)
+
+
+@router.post("/workpapers/{workpaper_id}/items")
+async def add_workpaper_item(workpaper_id: str, payload: WorkpaperItemRequest, db: AsyncSession = Depends(get_db),
+                             current_user: User = Depends(get_current_user)) -> dict:
+    from app.domains.kriton_workspace import workpapers
+
+    row = await workpapers.add_item(db, current_user, workpaper_id, payload.kind, payload.item_id, payload.note)
+    await _audit_workpaper(db, current_user, "item_added", workpaper_id, {"kind": row.kind, "item_id": row.item_id})
+    return await workpapers.summary(db, await workpapers._get(db, current_user, workpaper_id), current_user, with_items=True)
+
+
+@router.delete("/workpapers/{workpaper_id}/items/{row_id}")
+async def remove_workpaper_item(workpaper_id: str, row_id: str, db: AsyncSession = Depends(get_db),
+                                current_user: User = Depends(get_current_user)) -> dict:
+    from app.domains.kriton_workspace import workpapers
+
+    row = await workpapers.remove_item(db, current_user, workpaper_id, row_id)
+    await _audit_workpaper(db, current_user, "item_removed", workpaper_id, {"kind": row.kind, "item_id": row.item_id})
+    return await workpapers.summary(db, await workpapers._get(db, current_user, workpaper_id), current_user, with_items=True)
+
+
+@router.get("/workpapers/{workpaper_id}/evidence-pack")
+async def download_workpaper_pack(workpaper_id: str, db: AsyncSession = Depends(get_db),
+                                  current_user: User = Depends(get_current_user)) -> Response:
+    from app.domains.kriton_workspace import workpapers
+
+    content, filename, manifest = await workpapers.workpaper_pack(db, current_user, workpaper_id)
+    await _audit_workpaper(db, current_user, "pack_exported", workpaper_id,
+                           {"evidence_packs": len(manifest["evidencePacks"])})
+    return Response(content=content, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
