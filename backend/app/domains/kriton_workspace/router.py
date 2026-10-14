@@ -342,3 +342,15 @@ async def export_draft_file(
         content=content, media_type=mime_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# Reports & Insights: tenant usage aggregates (see insights.py).
+@router.get("/insights")
+async def get_insights(
+    window_days: int = 30,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    from app.domains.kriton_workspace.insights import build_insights
+
+    return await build_insights(db, current_user, window_days)
