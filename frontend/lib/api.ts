@@ -1,8 +1,9 @@
+import { fetchWithSession } from "@/lib/auth-fetch";
 import { supabase } from "@/lib/supabase";
 import { getCurrentAccessToken } from "@/lib/session-token";
 import { clearImpersonation, getImpersonation, impersonationHeaders } from "@/lib/impersonation";
 import type { GovernanceDashboardViewModel } from "@/lib/governance-dashboard-types";
-import type { CommandCenterViewModel } from "@/lib/command-center-types";
+import type { CommandCenterViewModel, MyWorkspaceViewModel } from "@/lib/command-center-types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010/api/v1";
 
@@ -56,7 +57,7 @@ export async function provisionProfile(accessToken: string, payload: ProvisionRe
 /** While an Admin is viewing as someone, this returns that user's profile, so
  * the role-gated navigation renders exactly what they would see. */
 export async function getMe(token: string): Promise<UserPublic> {
-  const res = await fetch(`${API_URL}/auth/me`, {
+  const res = await fetchWithSession(`${API_URL}/auth/me`, token, {
     headers: { Authorization: `Bearer ${token}`, ...impersonationHeaders() },
     // Bounded so an unreachable backend can't hold the role-gated nav on its
     // loading state indefinitely; a timeout falls back like any other failure.
@@ -113,7 +114,7 @@ async function authedFetch(
   init?: RequestInit,
   { asSelf = false }: { asSelf?: boolean } = {},
 ): Promise<Response> {
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetchWithSession(`${API_URL}${path}`, token, {
     ...init,
     headers: {
       ...(init?.headers ?? {}),
@@ -121,7 +122,6 @@ async function authedFetch(
       // backend answers as that user and refuses writes. Only the call that
       // ends the session itself is made as the Admin (asSelf).
       ...(asSelf ? {} : impersonationHeaders()),
-      Authorization: `Bearer ${token}`,
     },
   });
   if (res.status === 401 && typeof window !== "undefined") {
@@ -143,19 +143,42 @@ async function authedFetch(
 
 export async function getGovernanceDashboard(
   token: string,
-  options: { environment: string; windowDays: number },
+  options: { environment: string; jurisdiction: string; windowDays: number },
   signal?: AbortSignal,
+  fresh = false,
 ): Promise<GovernanceDashboardViewModel> {
   const query = new URLSearchParams({
     environment: options.environment,
+    jurisdiction: options.jurisdiction,
     window_days: String(options.windowDays),
+    ...(fresh ? { fresh: "1" } : {}),
   });
   const res = await authedFetch(`/governance-dashboard?${query}`, token, { signal });
   return res.json();
 }
 
-export async function getCommandCenter(token: string, signal?: AbortSignal): Promise<CommandCenterViewModel> {
-  const res = await authedFetch("/command-center", token, { signal });
+export type GateState = "passed" | "blocked" | "partial" | "not_assessed";
+export type ReleaseGate = { gate: string; state: GateState; reason: string };
+
+/** Release gate states measured from live evidence (Release Gates page). */
+export async function getReleaseReadiness(token: string, signal?: AbortSignal): Promise<ReleaseGate[]> {
+  const res = await authedFetch("/governance-dashboard/release-readiness", token, { signal });
+  return res.json();
+}
+
+export async function getCommandCenter(
+  token: string,
+  context: { jurisdiction: string; framework: string; period: string },
+  signal?: AbortSignal,
+  fresh = false,
+): Promise<CommandCenterViewModel> {
+  const query = new URLSearchParams({ ...context, ...(fresh ? { fresh: "1" } : {}) });
+  const res = await authedFetch(`/command-center?${query}`, token, { signal });
+  return res.json();
+}
+
+export async function getMyWorkspace(token: string, signal?: AbortSignal, fresh = false): Promise<MyWorkspaceViewModel> {
+  const res = await authedFetch(`/command-center/workspace${fresh ? "?fresh=1" : ""}`, token, { signal });
   return res.json();
 }
 
@@ -448,13 +471,13 @@ export type TopicMapNode = {
   standards_summary: string;
 };
 
-export async function listSyllabusPathways(token: string): Promise<SyllabusPathway[]> {
-  const res = await authedFetch("/learning/pathways", token);
+export async function listSyllabusPathways(token: string, signal?: AbortSignal): Promise<SyllabusPathway[]> {
+  const res = await authedFetch("/learning/pathways", token, { signal });
   return res.json();
 }
 
-export async function listTopicMapNodes(token: string): Promise<TopicMapNode[]> {
-  const res = await authedFetch("/learning/topics", token);
+export async function listTopicMapNodes(token: string, signal?: AbortSignal): Promise<TopicMapNode[]> {
+  const res = await authedFetch("/learning/topics", token, { signal });
   return res.json();
 }
 
@@ -496,6 +519,9 @@ export async function getCPDSummary(token: string): Promise<CPDSummary> {
 }
 
 export type SourceVersion = {
+  file_path?: string | null;
+  source_url?: string | null;
+  quality_state?: string;
   id: string;
   version_label: string;
   status: string;
@@ -528,6 +554,8 @@ export type SourceCreateRequest = {
   effective_from?: string;
   effective_to?: string;
   file?: File | null;
+  rights?: Record<string, boolean>;
+  terms_reference?: string;
 };
 
 export type ExpiringSource = {
@@ -551,9 +579,9 @@ export type JurisdictionSummary = {
   categories: JurisdictionCategorySummary[];
 };
 
-export async function listSources(token: string, category?: string): Promise<Source[]> {
+export async function listSources(token: string, category?: string, signal?: AbortSignal): Promise<Source[]> {
   const query = category ? `?category=${encodeURIComponent(category)}` : "";
-  const res = await authedFetch(`/sources${query}`, token);
+  const res = await authedFetch(`/sources${query}`, token, { signal });
   return res.json();
 }
 
@@ -567,6 +595,8 @@ export async function createSource(token: string, payload: SourceCreateRequest):
   form.set("note", payload.note ?? "");
   if (payload.effective_from) form.set("effective_from", payload.effective_from);
   if (payload.effective_to) form.set("effective_to", payload.effective_to);
+  form.set("rights_json", JSON.stringify(payload.rights ?? {}));
+  form.set("terms_reference", payload.terms_reference ?? "");
   if (payload.file) form.set("file", payload.file);
   const res = await authedFetch("/sources", token, {
     method: "POST",
@@ -575,13 +605,13 @@ export async function createSource(token: string, payload: SourceCreateRequest):
   return res.json();
 }
 
-export async function getExpiringSource(token: string): Promise<ExpiringSource | null> {
-  const res = await authedFetch("/sources/expiring", token);
+export async function getExpiringSource(token: string, signal?: AbortSignal): Promise<ExpiringSource | null> {
+  const res = await authedFetch("/sources/expiring", token, { signal });
   return res.json();
 }
 
-export async function getJurisdictionSummary(token: string): Promise<JurisdictionSummary[]> {
-  const res = await authedFetch("/sources/jurisdiction-summary", token);
+export async function getJurisdictionSummary(token: string, signal?: AbortSignal): Promise<JurisdictionSummary[]> {
+  const res = await authedFetch("/sources/jurisdiction-summary", token, { signal });
   return res.json();
 }
 
@@ -640,6 +670,58 @@ export async function runTestPrompt(token: string, promptId: string, inputText: 
     body: JSON.stringify({ prompt_id: promptId, input_text: inputText }),
   });
   return res.json();
+}
+
+export type RuntimeModel = {
+  role: string;
+  provider: string;
+  model: string;
+  setting: string;
+  source: string;
+  provider_approved: boolean;
+  key_configured: boolean;
+  active: boolean;
+  used_by: string;
+};
+
+export type RegistryOverview = {
+  active_adapter: string;
+  approved_providers: string[];
+  runtime_models: RuntimeModel[];
+  registry_matches: Record<string, string[]>;
+  unused_registry_models: string[];
+  prompt_count: number;
+  usage: {
+    by_provider: { provider: string; runs: number; last_run: string | null }[];
+    by_prompt: Record<string, { runs: number; last_run: string | null }>;
+  };
+};
+
+export type SystemInstruction = {
+  name: string;
+  used_by: string;
+  sha256: string;
+  characters: number;
+  text: string;
+};
+
+export type RegistryChange = {
+  time: string | null;
+  kind: "prompt_approved";
+  summary: string;
+  actor: string | null;
+};
+
+export async function getRegistryOverview(token: string): Promise<RegistryOverview> {
+  return (await authedFetch("/model-gateway/registry", token)).json();
+}
+
+export async function getSystemInstructions(token: string): Promise<SystemInstruction[]> {
+  return (await authedFetch("/model-gateway/system-instructions", token)).json();
+}
+
+export async function getRegistryChangeHistory(token: string): Promise<RegistryChange[]> {
+  return (await authedFetch("/model-gateway/change-history", token)).json();
 }
 
 export type AuditEvent = {
@@ -1089,6 +1171,7 @@ export type ComposedAnswer = {
   observations?: LiveObservation[];
   /** No citations, but the figures are the question's or conversation's own, computed or charted exactly. */
   computed_from_question?: boolean;
+  response_kind?: "calculation" | "chart" | "chart_explanation" | null;
   presentation?: AnswerPresentation | null;
   response_mode?: "concise" | "educational" | "analytical" | "calculation" | "workflow" | "compound";
   /** Preferred, ordered rendering path — not yet returned by the backend. */
@@ -1574,9 +1657,26 @@ export type ReviewCase = {
 
 export async function listReviewCases(
   token: string,
-  status: "open" | "needs_evidence" | "resolved" | "all" = "open",
+  status: "open" | "needs_evidence" | "resolved" | "released" | "all" = "open",
 ): Promise<{ cases: ReviewCase[]; counts: Record<string, number> }> {
   const res = await authedFetch(`/orchestration/review-cases?status_filter=${status}`, token);
+  return res.json();
+}
+
+/** received → triaged (ZL-ENG-AGT-01 §08.3). */
+export async function triageReviewCase(token: string, caseId: string, note = ""): Promise<ReviewCase> {
+  const res = await authedFetch(`/orchestration/review-cases/${caseId}/triage`, token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ note }),
+  });
+  return res.json();
+}
+
+/** Re-test an approved answer and release it for reuse. Must be done by a
+ * different reviewer from the one who approved it. */
+export async function releaseReviewedAnswer(token: string, caseId: string): Promise<{ case: ReviewCase; gold_case_id: string | null }> {
+  const res = await authedFetch(`/orchestration/review-cases/${caseId}/release`, token, { method: "POST" });
   return res.json();
 }
 
@@ -1609,5 +1709,11 @@ export type ReviewEvidence = {
 
 export async function getReviewEvidence(token: string, caseId: string): Promise<ReviewEvidence[]> {
   const res = await authedFetch(`/orchestration/review-cases/${encodeURIComponent(caseId)}/evidence`, token);
+  return res.json();
+}
+
+export type SourceBundleRecord = { id: string; created_at: string; confidence_state: string; jurisdiction: string; sources: { id: string; title: string }[]; };
+export async function listSourceBundles(token: string, signal?: AbortSignal): Promise<SourceBundleRecord[]> {
+  const res = await authedFetch("/sources/bundles", token, { signal });
   return res.json();
 }

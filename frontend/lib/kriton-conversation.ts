@@ -10,7 +10,7 @@ const MAX_HISTORY_MESSAGES = 12;
 /** Earlier answers replayed so "show the same data as a line chart" has the
  * data: live figures live in the answer, not in the question that asked. */
 const ANSWERS_REPLAYED = 2;
-const ANSWER_CHARS = 1500;
+const ANSWER_CHARS = 4000;
 /** Several figures, not just a year or one number in a sentence. */
 const FIGURES = /\d[\d,.]*/g;
 
@@ -25,6 +25,21 @@ function answersToReplay(recent: Turn[]): Set<Turn> {
   return new Set(withFigures.slice(-ANSWERS_REPLAYED));
 }
 
+/** Preserve a complete chart block instead of cutting JSON mid-dataset.
+ * The API bounds each message to 4,000 characters; oversized charts are
+ * omitted whole so the backend cannot accidentally reuse a partial series. */
+function replayAnswer(answer: string): string {
+  const charts = [...answer.matchAll(/```chart\s*\n[\s\S]*?```/g)];
+  if (charts.length) {
+    const chart = charts.at(-1)![0];
+    if (chart.length <= ANSWER_CHARS) return chart;
+    return "The previous chart dataset exceeds the conversation context limit. Ask the user to supply the dataset again; do not infer missing observations.";
+  }
+  // A truncated table would appear complete to the chart parser.
+  if (answer.length <= ANSWER_CHARS) return answer;
+  return "The preceding answer exceeds the conversation context limit. Ask for the relevant dataset rather than treating a truncated table as complete.";
+}
+
 export function conversationHistory(turns: Turn[]): ConversationMessage[] {
   // Document-derived answers are not replayed as evidence on a later turn.
   // A document must be selected and authorized again before being consulted.
@@ -36,7 +51,7 @@ export function conversationHistory(turns: Turn[]): ConversationMessage[] {
     messages.push({ role: "user", content: turn.submittedQuery.slice(0, 4000) });
     const answer = turn.result?.answer?.text?.trim();
     if (answer && replayed.has(turn)) {
-      messages.push({ role: "assistant", content: answer.slice(0, ANSWER_CHARS) });
+      messages.push({ role: "assistant", content: replayAnswer(answer) });
     }
   });
   return messages;

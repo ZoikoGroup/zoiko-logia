@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
@@ -38,7 +39,7 @@ MAX_RESULT_CHARS = 6000
 
 RiskLevel = Literal["low", "medium", "high"]
 ErrorCode = Literal[
-    "unknown_tool", "permission_denied", "invalid_arguments", "timeout", "no_data", "tool_error",
+    "unknown_tool", "permission_denied", "write_action_blocked", "invalid_arguments", "timeout", "no_data", "tool_error",
     # Set by the agent loop, not by execute():
     "duplicate_call", "budget_exhausted", "unverified_figures",
 ]
@@ -56,6 +57,10 @@ class ToolResult:
     # (e.g. a validated ```chart fence) — never retyped by the model.
     artifacts: tuple[str, ...] = ()
     error_code: ErrorCode | None = None
+    # A calculation receipt (calc_tool): what was computed, by which tool
+    # version, from which inputs (by hash), with which rounding and warnings.
+    # Persisted as a calculation run so figures can be traced (§07.3).
+    receipt: dict | None = None
 
     @classmethod
     def failure(cls, error_code: ErrorCode, content: str) -> "ToolResult":
@@ -77,9 +82,24 @@ class ToolSpec:
     timeout_seconds: float
     # None = available to every authenticated caller (e.g. public statistics).
     required_permission: str | None = None
+    # Roles allowed to use the tool; None means any active user who may ask
+    # Kriton (asking is authorised per engagement before the run starts).
+    allowed_roles: frozenset[str] | None = None
+    # Tools that change anything outside Kriton (filing, payments, postings,
+    # external messages) are refused by policy whatever the caller's role
+    # (ZL-ENG-AGT-01 §10.5). Every current tool is read-only.
+    is_write_action: bool = False
     # Hand-written JSON schema, for a tool whose accepted shapes are clearer
     # declared directly than generated (render_chart's per-type union).
     parameters_schema: dict | None = None
+    # Accountable team (§05.1). TBD until leads assign named owners.
+    owner: str = "TBD"
+    # "public" (open data, no tenant records), "tenant" (the caller's tenant
+    # records only; the tool re-checks scope itself) or "none" (pure compute).
+    tenant_scope: Literal["public", "tenant", "none"] = "none"
+    # Retries for a transient failure (timeout, tool error), never for a
+    # refusal or invalid arguments.
+    max_retries: int = 0
 
     def function_schema(self) -> dict:
         """OpenAI/Groq-style function declaration for this tool."""
@@ -89,6 +109,43 @@ class ToolSpec:
             "type": "function",
             "function": {"name": self.name, "description": self.description, "parameters": parameters},
         }
+
+
+POLICY_VERSION = "tool-policy-1"
+
+
+@dataclass(frozen=True)
+class PolicyDecision:
+    """The policy service's answer for one proposed tool call. Created only by
+    decide() from server-side facts (the stored user, the registry), never
+    from model output (ZL-ENG-AGT-01 App. B2)."""
+    decision_id: str
+    tool: str
+    allowed: bool
+    reason_code: str
+    role: str
+    policy_version: str = POLICY_VERSION
+
+
+def decide(spec: "ToolSpec | None", name: str, *, role: str, active: bool, same_tenant: bool,
+           role_unchanged: bool, permissions: frozenset[str]) -> PolicyDecision:
+    """Fail closed: every condition must hold for the call to be allowed."""
+    if spec is None:
+        reason = "unknown_tool"
+    elif not active or not same_tenant:
+        reason = "user_not_authorised"
+    elif not role_unchanged:
+        reason = "role_changed"
+    elif spec.is_write_action:
+        reason = "write_action_blocked"
+    elif spec.allowed_roles is not None and role not in spec.allowed_roles:
+        reason = "role_not_allowed"
+    elif spec.required_permission and spec.required_permission not in permissions:
+        reason = "permission_denied"
+    else:
+        reason = "allowed"
+    return PolicyDecision(decision_id=f"pd-{uuid.uuid4().hex[:16]}", tool=name,
+                          allowed=reason == "allowed", reason_code=reason, role=role)
 
 
 @dataclass
@@ -119,10 +176,20 @@ class ToolRegistry:
 
     async def execute(
         self, name: str, raw_arguments: str | dict | None, *, granted_permissions: frozenset[str],
+        decision: PolicyDecision | None = None,
     ) -> ToolResult:
         spec = self._tools.get(name)
         if spec is None:
             return ToolResult.failure("unknown_tool", f"Unknown tool '{name}'. Available: {', '.join(self.names())}.")
+        # A policy decision, when the caller runs one per step, must be for
+        # this exact tool and must allow it.
+        if decision is not None and (not decision.allowed or decision.tool != name):
+            return ToolResult.failure("permission_denied", f"You are not permitted to use '{name}'.")
+        if spec.is_write_action:
+            return ToolResult.failure(
+                "write_action_blocked",
+                f"'{name}' would change something outside Kriton and is not allowed. Explain the steps instead.",
+            )
         # Re-checked here even though function_schemas() already filters: the
         # model can name any tool in its output, offered or not.
         if spec.required_permission and spec.required_permission not in granted_permissions:
@@ -136,18 +203,24 @@ class ToolRegistry:
         except (ValueError, ValidationError) as exc:
             return ToolResult.failure("invalid_arguments", f"Invalid arguments for '{name}': {_short_error(exc)}")
 
-        try:
-            result = await asyncio.wait_for(spec.handler(args), timeout=spec.timeout_seconds)
-        except asyncio.TimeoutError:
-            return ToolResult.failure("timeout", f"'{name}' timed out after {spec.timeout_seconds:g}s. Do not guess the data.")
-        except Exception as exc:  # a tool bug must not fail the whole answer
-            logger.warning("Tool %s failed: %s", name, type(exc).__name__)
-            return ToolResult.failure("tool_error", f"'{name}' failed unexpectedly. Do not guess the data.")
+        result = None
+        for attempt in range(spec.max_retries + 1):
+            try:
+                result = await asyncio.wait_for(spec.handler(args), timeout=spec.timeout_seconds)
+                break
+            except asyncio.TimeoutError:
+                result = ToolResult.failure("timeout", f"'{name}' timed out after {spec.timeout_seconds:g}s. Do not guess the data.")
+            except Exception as exc:  # a tool bug must not fail the whole answer
+                logger.warning("Tool %s failed: %s", name, type(exc).__name__)
+                result = ToolResult.failure("tool_error", f"'{name}' failed unexpectedly. Do not guess the data.")
+            if attempt < spec.max_retries:
+                logger.info("Retrying tool %s (attempt %d of %d)", name, attempt + 2, spec.max_retries + 1)
 
         if len(result.content) > MAX_RESULT_CHARS:
             result = ToolResult(
                 ok=result.ok, content=result.content[:MAX_RESULT_CHARS] + " …[truncated]",
                 sources=result.sources, artifacts=result.artifacts, error_code=result.error_code,
+                receipt=result.receipt,
             )
         return result
 
@@ -170,9 +243,10 @@ def build_default_registry() -> ToolRegistry:
     from app.domains.model_gateway.tools.fx_tool import EXCHANGE_RATE_TOOL
     from app.domains.model_gateway.tools.kb_tool import KNOWLEDGE_BASE_TOOL
     from app.domains.model_gateway.tools.market_tool import MARKET_DATA_TOOL
+    from app.domains.model_gateway.tools.web_tool import SEARCH_WEB_TOOL
 
     registry = ToolRegistry()
-    for spec in (KNOWLEDGE_BASE_TOOL, EXCHANGE_RATE_TOOL, ECONOMIC_INDICATOR_TOOL, MARKET_DATA_TOOL,
+    for spec in (KNOWLEDGE_BASE_TOOL, SEARCH_WEB_TOOL, EXCHANGE_RATE_TOOL, ECONOMIC_INDICATOR_TOOL, MARKET_DATA_TOOL,
                  CALCULATE_TOOL, RENDER_CHART_TOOL):
         registry.register(spec)
     return registry

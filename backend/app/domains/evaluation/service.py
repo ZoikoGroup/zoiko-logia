@@ -131,7 +131,11 @@ async def execute_evaluation_run(
     ts = await get_threshold_set(db, threshold_set_id)
 
     # 2. Query actual cases from the database
-    res = await db.execute(select(BenchmarkCase).where(BenchmarkCase.dataset_id == dataset_id))
+    # Shared cases plus this tenant's own — never another tenant's learned answers.
+    res = await db.execute(select(BenchmarkCase).where(
+        BenchmarkCase.dataset_id == dataset_id,
+        or_(BenchmarkCase.tenant_id.is_(None), BenchmarkCase.tenant_id == tenant_id),
+    ))
     cases = res.scalars().all()
 
     # Nothing to measure means nothing to report: an empty dataset used to
@@ -303,7 +307,9 @@ async def record_promotion_authorization(
         )
 
     # Check if eligible for release, or if override was explicitly authorized
-    if not pack.promotion_eligible and not payload.residual_risk_accepted:
+    # Approving an ineligible pack needs explicitly accepted residual risk;
+    # rejecting one is always allowed.
+    if payload.decision == "APPROVED" and not pack.promotion_eligible and not payload.residual_risk_accepted:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Promotion denied. Result pack is ineligible and residual risk was not accepted."
@@ -321,3 +327,110 @@ async def record_promotion_authorization(
     await db.commit()
     await db.refresh(auth)
     return auth
+
+
+# ─── Read views for the Evaluation Gates page ────────────────────────────────
+
+def current_config_hash() -> str:
+    """The running code + model configuration fingerprint (same value as
+    GET /health/version); only a run made against it can be promoted."""
+    return runtime_config_hash(APP_ROOT)
+
+
+def run_checks(run: EvaluationRun, pack: ResultPack | None, ts: ThresholdSet | None) -> dict:
+    """What the page shows beside a run: threshold failures, whether the run
+    tested the running configuration, and which gated metrics it could not
+    measure (they are left out of the run, so they fail as missing)."""
+    metrics = run.metrics_summary or {}
+    failures = validate_metrics(metrics, ts.metrics, ts.zero_tolerance_metrics or [])[1] if ts else []
+    return {
+        "failures": failures,
+        "config_hash_valid": bool(pack) and run.config_hash == pack.exact_config_hash,
+        "unmeasured_metrics": [key for key in (ts.metrics if ts else {}) if key not in metrics],
+        "case_count": metrics.get("cases_evaluated"),
+    }
+
+
+def _visible_to(tenant_id: str | None):
+    return or_(EvaluationDataset.tenant_id.is_(None), EvaluationDataset.tenant_id == tenant_id)
+
+
+async def list_datasets(db: AsyncSession, *, tenant_id: str | None) -> list[dict]:
+    """Datasets this tenant can run, with how many of their cases it can see."""
+    from sqlalchemy import func
+
+    case_count = (
+        select(BenchmarkCase.dataset_id, func.count().label("n"))
+        .where(or_(BenchmarkCase.tenant_id.is_(None), BenchmarkCase.tenant_id == tenant_id))
+        .group_by(BenchmarkCase.dataset_id)
+        .subquery()
+    )
+    rows = await db.execute(
+        select(EvaluationDataset, func.coalesce(case_count.c.n, 0))
+        .outerjoin(case_count, case_count.c.dataset_id == EvaluationDataset.id)
+        .where(_visible_to(tenant_id))
+        .order_by(EvaluationDataset.created_at.desc())
+    )
+    return [
+        {
+            "id": dataset.id,
+            "version": dataset.version,
+            "status": dataset.status,
+            "domain": dataset.domain,
+            "created_at": dataset.created_at,
+            "case_count": count,
+        }
+        for dataset, count in rows.all()
+    ]
+
+
+async def list_threshold_sets(db: AsyncSession) -> list[ThresholdSet]:
+    res = await db.execute(select(ThresholdSet).order_by(ThresholdSet.created_at.desc()))
+    return list(res.scalars().all())
+
+
+async def list_runs(db: AsyncSession, *, tenant_id: str | None, limit: int = 20) -> list[dict]:
+    """Recent runs on datasets this tenant can see, with the result pack,
+    the latest promotion decision and the threshold failures."""
+    res = await db.execute(
+        select(EvaluationRun)
+        .join(EvaluationDataset, EvaluationDataset.id == EvaluationRun.dataset_id)
+        .where(_visible_to(tenant_id))
+        .options(selectinload(EvaluationRun.result_pack).selectinload(ResultPack.authorizations))
+        .order_by(EvaluationRun.created_at.desc())
+        .limit(limit)
+    )
+    runs = list(res.scalars().all())
+    thresholds = {ts.id: ts for ts in await list_threshold_sets(db)} if runs else {}
+    current_hash = current_config_hash() if runs else ""
+    out = []
+    for run in runs:
+        pack = run.result_pack
+        latest = max(pack.authorizations, key=lambda a: a.created_at) if pack and pack.authorizations else None
+        checks = run_checks(run, pack, thresholds.get(run.threshold_set_id))
+        out.append({
+            "id": run.id,
+            "dataset_id": run.dataset_id,
+            "threshold_set_id": run.threshold_set_id,
+            "config_hash": run.config_hash,
+            # The run tested the configuration that is running now.
+            "matches_current_config": bool(pack) and pack.exact_config_hash == current_hash and checks["config_hash_valid"],
+            "status": run.status,
+            "metrics_summary": run.metrics_summary,
+            "created_at": run.created_at,
+            "failures": checks["failures"],
+            "unmeasured_metrics": checks["unmeasured_metrics"],
+            "result_pack": {
+                "id": pack.id,
+                "contamination_scan_status": pack.contamination_scan_status,
+                "zero_tolerance_passed": pack.zero_tolerance_passed,
+                "promotion_eligible": pack.promotion_eligible,
+            } if pack else None,
+            "promotion": {
+                "decision": latest.decision,
+                "approver_id": latest.approver_id,
+                "residual_risk_accepted": latest.residual_risk_accepted,
+                "created_at": latest.created_at,
+            } if latest else None,
+        })
+    return out

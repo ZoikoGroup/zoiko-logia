@@ -27,10 +27,12 @@ _MIN_SIMILARITY = 0.90
 _MIN_TOKEN_OVERLAP = 0.8
 _MAX_REVIEWED_SOURCES = 2
 REVIEWED_PROVIDER = "Reviewed answer (your firm)"
-LEARNED_PROVIDER = "Learned from feedback (your firm)"
+# Answers saved automatically from user feedback by an earlier version. Never
+# read any more: feedback is not knowledge (ZL-ENG-AGT-01 §08). Kept so the
+# training export can keep excluding these rows.
 LEARNED_DATASET_ID = "kriton-learned"
-# A learned answer has no reviewer behind it, so it ages out and the question
-# is answered afresh from current sources (and can be learned again).
+# A reviewer's approval expires: after this the question is answered afresh
+# from current sources and needs a new review to be reused (§10.4).
 LEARNED_ANSWER_TTL = timedelta(days=90)
 
 # (case id, question text) -> embedding; reviewed questions never change.
@@ -136,9 +138,10 @@ def _is_current(case) -> bool:
 
 
 async def find_reviewed_answers(db: AsyncSession, *, tenant_id: str, question: str) -> list[WebSource]:
-    """Reviewer-approved, then feedback-learned, answers to this tenant's
-    closest matching questions, as noncitable memory candidates (reviewed first, then most
-    similar). [] when none match or on error."""
+    """Reviewer-approved answers to this tenant's closest matching questions,
+    as noncitable memory candidates, most similar first. Only a reviewer's
+    decision makes an answer reusable; ratings never do (§08). [] when none
+    match or on error."""
     from app.domains.evaluation.models import BenchmarkCase
     from app.orchestration.review import GOLD_DATASET_ID
 
@@ -147,7 +150,7 @@ async def find_reviewed_answers(db: AsyncSession, *, tenant_id: str, question: s
     reviewed_dataset = f"{GOLD_DATASET_ID}:{tenant_id}"
     try:
         cases = list((await db.execute(select(BenchmarkCase).where(
-            BenchmarkCase.dataset_id.in_([reviewed_dataset, f"{LEARNED_DATASET_ID}:{tenant_id}"]),
+            BenchmarkCase.dataset_id == reviewed_dataset,
             BenchmarkCase.tenant_id == tenant_id,
         ))).scalars())
     except Exception as exc:  # noqa: BLE001 — never block an answer on this
@@ -155,25 +158,17 @@ async def find_reviewed_answers(db: AsyncSession, *, tenant_id: str, question: s
         await db.rollback()
         return []
     cases = [case for case in cases if _is_current(case)]
-    scored = sorted(await matching_cases(question, cases),
-                    key=lambda item: (item[1].dataset_id != reviewed_dataset, -item[0]))
+    scored = sorted(await matching_cases(question, cases), key=lambda item: -item[0])
     sources: list[WebSource] = []
     for score, case in scored[:_MAX_REVIEWED_SOURCES]:
         on = case.created_at.date().isoformat() if case.created_at else "unknown date"
-        if case.dataset_id == reviewed_dataset:
-            facts = "; ".join(case.key_facts or [])
-            title, provider = f"Reviewed answer (your firm, {on})", REVIEWED_PROVIDER
-            snippet = (
-                f"Question reviewed: {case.query_text}\n"
-                f"Reviewer-approved answer: {_without_old_refs(case.gold_answer)}"
-                + (f"\nKey facts confirmed by the reviewer: {facts}" if facts else "")
-            )
-        else:
-            title, provider = f"Learned from feedback (your firm, {on})", LEARNED_PROVIDER
-            snippet = (
-                f"Question answered before: {case.query_text}\n"
-                f"Answer users confirmed and Kriton's fact-check verified: {_without_old_refs(case.gold_answer)}"
-            )
+        facts = "; ".join(case.key_facts or [])
+        title, provider = f"Reviewed answer (your firm, {on})", REVIEWED_PROVIDER
+        snippet = (
+            f"Question reviewed: {case.query_text}\n"
+            f"Reviewer-approved answer: {_without_old_refs(case.gold_answer)}"
+            + (f"\nKey facts confirmed by the reviewer: {facts}" if facts else "")
+        )
         sources.append(WebSource(
             title=f"{title} — {case.query_text[:90]}",
             url="",
@@ -228,7 +223,7 @@ async def _versions_in_force(db: AsyncSession, version_ids: set[str]) -> bool:
     from app.domains.source_library.models import SourceVersion
 
     if not version_ids:
-        return True  # reviewer-approved from external evidence only
+        return True  # nothing governed to check
     versions = (await db.execute(select(SourceVersion).where(SourceVersion.id.in_(version_ids)))).scalars().all()
     today = date.today()
     return len(versions) == len(version_ids) and all(
@@ -256,13 +251,20 @@ async def safe_memory_guidance(db: AsyncSession, *, tenant_id: str, question: st
             continue
         if re.search(r"(?:sources?|evidence)[^.\n]*(?:do not|does not|not establish|not state)", case.gold_answer, re.I):
             continue
-        refs = set(case.source_refs or [])
-        if memory.provider == REVIEWED_PROVIDER:
-            # A reviewer's correction cites governed source versions, not web
-            # snapshots: it stays usable while every one is still in force.
-            if not await _versions_in_force(db, refs):
-                continue
-        elif not _snapshots_still_current(refs, current):
+        # An approval is bound to the evidence it was given (§10.4): every
+        # governed source version must still be in force and the web pages
+        # it cited must reappear unchanged. A reviewer-written correction
+        # with no recorded evidence is the reviewer's own text: it stays an
+        # uncitable outline until the approval expires (LEARNED_ANSWER_TTL).
+        from app.orchestration.review import approval_is_valid, evidence_refs
+        if not approval_is_valid(case):
+            continue  # changed after approval, or the approval expired (§10.4)
+        refs = set(evidence_refs(case.source_refs))
+        versions = {ref for ref in refs if _PROVENANCE_MARKER not in ref}
+        snapshots = refs - versions
+        if versions and not await _versions_in_force(db, versions):
+            continue
+        if snapshots and not _snapshots_still_current(snapshots, current):
             continue
         guidance.append(memory.snippet)
     if not guidance:

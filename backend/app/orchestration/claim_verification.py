@@ -20,7 +20,7 @@ import os
 import re
 from dataclasses import dataclass, field
 
-from groq import AsyncGroq
+from app.domains.model_gateway import auxiliary as gateway
 
 logger = logging.getLogger(__name__)
 
@@ -213,24 +213,21 @@ async def verify_claims(claims: list[str], evidence: list[str], question: str = 
     block = redact_for_external_exposure(_evidence_block(evidence, " ".join([question, *claims]))).redacted_text
     question = redact_for_external_exposure(question).redacted_text
     claims = [redact_for_external_exposure(claim).redacted_text for claim in claims]
-    api_key = os.getenv("GROQ_API_KEY")
-    if not claims or not block or not api_key or not enabled():
+    if not claims or not block or not enabled() or not gateway.may_use("claim_verification", "groq"):
         return VerificationResult()
     numbered = "\n".join(f"{index}. {claim}" for index, claim in enumerate(claims, start=1))
     try:
-        response = await asyncio.wait_for(
-            AsyncGroq(api_key=api_key).chat.completions.create(
-                model=os.getenv("GROQ_VERIFIER_MODEL", os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")),
-                messages=[
-                    {"role": "system", "content": _SYSTEM},
-                    {"role": "user", "content": f"QUESTION:\n{question}\n\nEVIDENCE:\n{block}\n\nCLAIMS:\n{numbered}"},
-                ],
-                temperature=0.0,
-                response_format={"type": "json_object"},
-            ),
+        # Already redacted above, so the gateway does not redact again.
+        completion = await gateway.complete_auxiliary(
+            purpose="claim_verification",
+            model=os.getenv("GROQ_VERIFIER_MODEL", os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")),
+            system=_SYSTEM,
+            user=f"QUESTION:\n{question}\n\nEVIDENCE:\n{block}\n\nCLAIMS:\n{numbered}",
+            response_format={"type": "json_object"},
             timeout=_TIMEOUT_SECONDS,
+            redact=False,
         )
-        payload = json.loads(response.choices[0].message.content or "{}")
+        payload = json.loads(completion.text or "{}")
         # The model sometimes returns the verdict list bare, or under another
         # key; .get on a list raised AttributeError and skipped verification.
         if isinstance(payload, dict):

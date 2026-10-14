@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
@@ -39,6 +39,7 @@ import {
   type TaskType,
   type WorkspaceDocument,
 } from "@/lib/api";
+import { stateForError, stateForResult, suppliedAnswerLabel } from "@/lib/answer-state";
 import {
   answerBodyOnly,
   downloadTextFile,
@@ -51,6 +52,7 @@ import { ThinkingIndicator } from "@/components/ask-kriton/ThinkingIndicator";
 import { DesktopSidebar, MobileDrawer } from "@/components/ask-kriton/Sidebar";
 import { Composer, attachmentFromDocument, type AttachmentState } from "@/components/ask-kriton/Composer";
 import { ExploreFurther } from "@/components/ask-kriton/ExploreFurther";
+import { useConversationScroll } from "@/hooks/useConversationScroll";
 import { useAuth } from "@/hooks/useAuth";
 import {
   loadActiveConversationId,
@@ -91,7 +93,7 @@ const ROUTE_LABELS: Record<string, string> = {
 const OUTCOME_STYLES: Record<string, { label: string; dot: string; text: string }> = {
   answered: { label: "Answered", dot: "bg-ok", text: "text-ok" },
   clarification_required: { label: "Clarification needed", dot: "bg-info", text: "text-info" },
-  escalated: { label: "Escalated", dot: "bg-warn", text: "text-warn" },
+  escalated: { label: "Review pending", dot: "bg-warn", text: "text-warn" },
   limited_response: { label: "Limited", dot: "bg-warn", text: "text-warn" },
   refused: { label: "Refused", dot: "bg-bad", text: "text-bad" },
   rejected: { label: "Blocked", dot: "bg-bad", text: "text-bad" },
@@ -471,19 +473,16 @@ function QuestionActions({ question, onEdit }: { question: string; onEdit?: () =
   // a past turn would break the audit trail. The edited question is asked as a
   // new turn, and the original stays on the record.
   //
-  // Refilling alone reads as a no-op, because the composer sits at the bottom
-  // of a long conversation and is usually out of view — so scroll to it, put
-  // the caret at the end of the restored text, and flash the button.
+  // Focus the visible composer and put the caret at the end of the restored text.
   function editQuestion() {
     if (!onEdit) return;
     onEdit();
-    const box = document.querySelector<HTMLTextAreaElement>("[data-kriton-composer]");
+    const box = document.querySelector<HTMLTextAreaElement>("[data-kriton-composer] textarea");
     if (box) {
-      box.scrollIntoView({ behavior: "smooth", block: "center" });
       // Deferred: the value lands on the next render, and focusing before that
       // would put the caret in a textarea that is still empty.
       window.setTimeout(() => {
-        box.focus();
+        box.focus({ preventScroll: true });
         box.setSelectionRange(box.value.length, box.value.length);
       }, 0);
     }
@@ -559,7 +558,7 @@ function ConversationTurn({
         ? "Clarification required — missing calculation input"
         : result?.calculation?.status === "undefined"
         ? "Calculation undefined — verified"
-        : "Answered — calculated and verified"
+        : suppliedAnswerLabel(result?.answer ?? null) ?? "Answered — calculated and verified"
       : ROUTE_LABELS[route ?? ""] ?? route;
 
   return (
@@ -589,7 +588,7 @@ function ConversationTurn({
             ))}
           </div>
         ) : null}
-        <div className="kriton-animate-msg-user kriton-user-query max-w-[82%] rounded-2xl rounded-tr-md border px-5 py-3 text-sm font-medium leading-6 text-ink shadow-sm">
+        <div data-kriton-question className="kriton-animate-msg-user kriton-user-query max-w-[82%] whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded-2xl rounded-tr-md border px-5 py-3 text-sm font-medium leading-6 text-ink shadow-sm">
           {submittedQuery}
         </div>
         <QuestionActions
@@ -606,10 +605,17 @@ function ConversationTurn({
             {/* Names the real cause when the backend actually answered. The
                 blanket "could not respond" is only honest for a transport
                 failure, where there is no status to report. */}
-            <p className="text-sm font-semibold text-bad">
-              {errorStatus ? `Kriton returned an error (HTTP ${errorStatus})` : "Kriton could not respond"}
-            </p>
-            <p className="mt-1 text-xs text-bad/80">{error}</p>
+            {(() => {
+              // One state per failure (answer-state.ts): an access refusal
+              // shows fixed copy and never the server's detail.
+              const shown = stateForError(errorStatus ?? null, error);
+              return (
+                <>
+                  <p className="text-sm font-semibold text-bad" data-answer-state={shown.state}>{shown.title}</p>
+                  <p className="mt-1 text-xs text-bad/80">{shown.detail}</p>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -674,13 +680,22 @@ function ConversationTurn({
                 </>
               ) : !result.next_action ? (
                 <p className="rounded-xl border border-line bg-soft p-4 text-sm italic leading-6 text-muted">
-                  {outcome === "escalated"
-                    ? "This query has been escalated for human review. No AI-generated response is returned until a qualified reviewer clears it."
-                    : outcome === "clarification_required"
-                      ? "Kriton needs more context to route this query correctly. Please respond to the clarification above."
-                      : outcome === "rejected"
-                        ? "This request was blocked before processing."
-                        : "This query was refused by the policy engine. No response was composed."}
+                  {(() => {
+                    switch (stateForResult(result)) {
+                      case "review-pending":
+                        return "Review pending: a qualified reviewer must check this before an answer is released. No AI-generated response is shown until then.";
+                      case "need-more-information":
+                        return "Kriton needs more information to answer this. Please respond to the question above.";
+                      case "service-unavailable":
+                        return "Kriton is temporarily unavailable, so nothing was answered. Please try again in a moment.";
+                      case "sources-unavailable":
+                        return "No permitted source could support an answer to this, so none was given.";
+                      default:
+                        return outcome === "rejected"
+                          ? "This request was blocked before processing."
+                          : "This query was refused by the policy engine. No response was composed.";
+                    }
+                  })()}
                 </p>
               ) : null}
 
@@ -737,7 +752,6 @@ export default function AskKritonPage() {
   });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [sidebarPanel, setSidebarPanel] = useState<"projects" | "sources" | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
 
   async function refreshDocuments() {
     const token = getAuthToken();
@@ -970,9 +984,7 @@ export default function AskKritonPage() {
   const lastTurnLoading = activeConversation?.turns.at(-1)?.loading;
   const turnCount = activeConversation?.turns.length;
 
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [turnCount, lastTurnLoading]);
+  const { scrollRef, onScroll: onConversationScroll } = useConversationScroll(activeId, turnCount ?? 0, Boolean(lastTurnLoading));
 
   useEffect(() => {
     const token = session?.access_token;
@@ -1005,14 +1017,14 @@ export default function AskKritonPage() {
   };
 
   return (
-    <main className="kriton-page-background relative min-h-screen w-full min-w-0 overflow-hidden text-ink">
+    <main className="kriton-page-background relative h-dvh min-h-0 w-full min-w-0 overflow-hidden text-ink">
       <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-soft" />
-      <div className="relative z-10 grid h-screen w-full min-w-0 grid-cols-1 md:grid-cols-[252px_minmax(0,1fr)]">
+      <div className="relative z-10 grid h-full min-h-0 w-full min-w-0 grid-cols-1 md:grid-cols-[252px_minmax(0,1fr)]">
         <DesktopSidebar {...sidebarProps} showMenu />
         <MobileDrawer {...sidebarProps} showMenu open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} />
 
         <section className="relative flex min-h-0 min-w-0 flex-col">
-          <header className="relative z-10 flex h-14 items-center justify-between border-b border-line bg-panel/80 px-4 md:hidden">
+          <header className="relative z-10 flex h-14 shrink-0 items-center justify-between border-b border-line bg-panel/80 px-4 md:hidden">
             <div className="flex items-center gap-2">
               <ZoikoGlyph className="h-8 w-8 rounded-lg" />
               <span className="font-bold text-ink">Kriton</span>
@@ -1069,8 +1081,30 @@ export default function AskKritonPage() {
             </KritonPanel>
           )}
 
-          <div ref={scrollRef} className="relative z-10 min-w-0 flex-1 overflow-y-auto px-4">
-            <div className="mx-auto flex min-h-full min-w-0 w-full max-w-5xl flex-col items-center justify-center pb-16 pt-6 md:pb-24 md:pt-8">
+          {hasConversation && (
+            <div className="relative z-10 flex shrink-0 justify-end border-b border-line/50 px-4 py-2">
+              <button
+                type="button"
+                className="rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-medium text-ink hover:bg-soft"
+                onClick={() => {
+                  const history = scrollRef.current;
+                  const questions = history?.querySelectorAll<HTMLElement>("[data-kriton-question]");
+                  const question = questions?.[questions.length - 1];
+                  if (!history || !question) return;
+                  history.scrollTo({
+                    top: history.scrollTop + question.getBoundingClientRect().top - history.getBoundingClientRect().top - 16,
+                    behavior: "instant",
+                  });
+                  history.focus({ preventScroll: true });
+                }}
+              >
+                ↑ Back to latest question
+              </button>
+            </div>
+          )}
+
+          <div ref={scrollRef} onScroll={onConversationScroll} role="region" aria-label="Conversation history" tabIndex={0} className="relative z-10 min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain px-4">
+            <div className={`mx-auto min-h-full min-w-0 w-full max-w-5xl pb-16 pt-6 md:pb-24 md:pt-8 ${hasConversation ? "" : "flex flex-col items-center justify-center"}`}>
               {!hasConversation ? (
                 <div className="flex w-full max-w-3xl flex-col items-center text-center">
                   <div className="w-full">
@@ -1122,32 +1156,39 @@ export default function AskKritonPage() {
                   </div>
                 </div>
               ) : (
-                <div className="w-full min-w-0 max-w-3xl space-y-6 self-stretch md:translate-x-14 lg:translate-x-24">
+                <div className="mx-auto w-full min-w-0 max-w-3xl space-y-6">
                   {activeConversation?.turns.map((turn) => (
                     <div key={turn.id} className="min-w-0 space-y-6 border-b border-line/70 pb-7 last:border-b-0">
                       <ConversationTurn turn={turn} onFollowUp={handleFollowUp} onReuse={setQuery} />
                     </div>
                   ))}
-
-                  <Composer
-                    variant="sticky"
-                    query={query}
-                    onQueryChange={setQuery}
-                    jurisdiction={jurisdiction}
-                    onJurisdictionChange={setJurisdiction}
-                    onSubmit={handleSubmit}
-                    attachments={attachments}
-                    onAttachmentsChange={setAttachments}
-                    documents={documents}
-                    onUploadComplete={refreshDocuments}
-                    engagementId={engagementId || undefined}
-                    submitting={submitting}
-                    error={submitError}
-                  />
                 </div>
               )}
             </div>
           </div>
+
+          {/* Kept outside the scroll region so the follow-up box stays in
+              view however far back the conversation is scrolled. */}
+          {hasConversation && (
+            <div className="relative z-20 shrink-0 px-4 pb-4 pt-2 md:pb-5">
+              <Composer
+                variant="sticky"
+                query={query}
+                onQueryChange={setQuery}
+                jurisdiction={jurisdiction}
+                onJurisdictionChange={setJurisdiction}
+                onSubmit={handleSubmit}
+                attachments={attachments}
+                onAttachmentsChange={setAttachments}
+                documents={documents}
+                onUploadComplete={refreshDocuments}
+                engagementId={engagementId || undefined}
+                submitting={submitting}
+                error={submitError}
+              />
+            </div>
+          )}
+
         </section>
       </div>
     </main>

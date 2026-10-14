@@ -330,7 +330,7 @@ _HAS_FIGURE = re.compile(r"[₹$£€]|\d\s?%|\d{1,3}(?:,\d{2,3})+")
 
 
 def _cell_text(fragment: str) -> str:
-    return _ANY_SPACE.sub(" ", html.unescape(re.sub(r"<[^>]+>", " ", fragment))).strip()
+    return _ANY_SPACE.sub(" ", html.unescape(_TAG.sub(" ", fragment))).strip()
 
 
 def _table_to_text(match: re.Match) -> str:
@@ -371,18 +371,26 @@ def _table_to_text(match: re.Match) -> str:
     return "\n" + "\n".join(lines) + "\n"
 
 
+# A tag, with quoted attribute values allowed to contain ">": utility-class
+# markup such as class="[&>div]:p-3" (tax.gov.ae) broke the old <[^>]+> and
+# left "div]:w-72 [&>div]:p-3" in the extracted page text.
+_TAG = re.compile(r"""<(?:[^>"']|"[^"]*"|'[^']*')*>""")
+
+
 def _html_to_text(markup: str) -> str:
     """Visible text with structure kept: tables become one labelled line per
     row (see _table_to_text); other blocks become lines."""
     markup = re.sub(r"(?is)<(script|style|noscript|head|nav|footer|svg)\b.*?</\1>", " ", markup)
     markup = re.sub(r"(?is)<table\b.*?</table\s*>", _table_to_text, markup)
     markup = re.sub(r"(?i)<br\s*/?>|</(?:p|li|h[1-6]|div|section|caption)\s*>", "\n", markup)
-    text = html.unescape(re.sub(r"<[^>]+>", " ", markup))
+    text = html.unescape(_TAG.sub(" ", markup))
     lines = (_ANY_SPACE.sub(" ", line).strip(" |") for line in text.splitlines())
     return "\n".join(line for line in lines if line)
 
 
 _FIGURE = re.compile(r"[₹$£€]\s?\d|\d\s?%|\d{1,3}(?:,\d{2,3})+")
+_WANTS_FIGURE = re.compile(r"\b(rate|rates|threshold|limit|how much|amount|percentage|percent|"
+                           r"deadline|minimum|maximum|cap|allowance|fee|penalty)\b", re.I)
 # Small windows so a compact table outscores prose around it; ties go to
 # the earliest window (the main table precedes age-band variants).
 _EXCERPT_WINDOW = 12
@@ -616,6 +624,32 @@ async def _tavily_results(query: str, domains: list[str]) -> list[dict] | None:
     return []
 
 
+_GOVUK_SEARCH_URL = "https://www.gov.uk/api/search.json"
+
+
+async def _govuk_results(query: str) -> list[dict]:
+    """GOV.UK's own public search API: official pages only, no key, no rate
+    limit seen in practice. Used for UK questions when Tavily and SearXNG find
+    nothing trusted (Tavily over its plan limit, SearXNG's engines CAPTCHA'd),
+    so UK answers keep official sources. Results in SearXNG's shape; [] on any
+    failure."""
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            resp = await client.get(_GOVUK_SEARCH_URL, params={
+                "q": query, "count": 10, "fields": "title,link,description",
+            })
+            resp.raise_for_status()
+            rows = resp.json().get("results", []) or []
+    except Exception as exc:
+        logger.warning("GOV.UK search failed (%s)", type(exc).__name__)
+        return []
+    return [
+        {"url": "https://www.gov.uk" + row["link"] if row.get("link", "").startswith("/") else row.get("link"),
+         "title": row.get("title"), "content": row.get("description") or ""}
+        for row in rows if row.get("link")
+    ]
+
+
 async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pages: int = 2) -> list[WebSource]:
     """Search the web (Tavily when TAVILY_API_KEY is set, else SearXNG) and
     return up to `limit` sources, preferring trusted domains for the
@@ -686,8 +720,27 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pa
         retry_trusted = [s for s in retry_parsed if matches_allowlist(s.url, domains)]
         if retry_trusted or not parsed:
             parsed, trusted = retry_parsed, retry_trusted
+    if used_backup and not parsed and sites and not _strict_allowlist():
+        # The site-restricted search found nothing at all (a concept question
+        # such as "cash vs accrual accounting" restricted to ifrs.org). One
+        # unrestricted search; results stay untrusted unless on the allowlist.
+        parsed = relevant(await _searxng_results(base, {**params, "q": keywords or query}))
+        trusted = [s for s in parsed if matches_allowlist(s.url, domains)]
+    if not trusted and any(domain == "gov.uk" or domain.endswith(".gov.uk") for domain in domains):
+        # Official UK fallback: GOV.UK's own search, by key terms first.
+        for govuk_query in dict.fromkeys(q for q in (keywords, query) if q):
+            govuk = relevant(await _govuk_results(govuk_query))
+            govuk_trusted = [s for s in govuk if matches_allowlist(s.url, domains)]
+            if govuk_trusted:
+                parsed, trusted = govuk + parsed, govuk_trusted
+                break
 
     if trusted:
+        if _WANTS_FIGURE.search(query):
+            # A rate or threshold question: pages whose text states a figure
+            # first ("UAE corporate tax rate" picked tax.gov.ae pages with no
+            # rate in them over mof.gov.ae pages stating 9%). Stable sort.
+            trusted.sort(key=lambda source: not _FIGURE.search(source.snippet or ""))
         selected = _spread_across_organisations(trusted, domains, limit)
     elif _strict_allowlist():
         selected = []

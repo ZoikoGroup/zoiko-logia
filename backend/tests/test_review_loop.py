@@ -76,9 +76,12 @@ async def test_a_correction_becomes_a_gold_case_with_the_reviewers_key_facts(db)
     assert resolved.status == "resolved" and resolved.reviewer_decision == "corrected"
     assert resolved.reviewer_id == "reviewer" and resolved.resolved_at is not None
     stored = (await db.execute(select(BenchmarkCase).where(BenchmarkCase.id == gold.id))).scalar_one()
-    assert stored.dataset_id == f"{review.GOLD_DATASET_ID}:t1"
+    # Held as pending until re-tested and released (§08.3).
+    assert stored.dataset_id == f"{review.PENDING_GOLD_DATASET_ID}:t1"
     assert stored.gold_answer.startswith("You must leave") and stored.key_facts == ["£1.6 million"]
     assert await review.review_counts(db, tenant_id="t1") == {"resolved": 1}
+    released, released_gold = await review.release_reviewed_answer(db, tenant_id="t1", case_id=case.id, releaser_id="checker")
+    assert released.status == "released" and released_gold.dataset_id == f"{review.GOLD_DATASET_ID}:t1"
 
 
 async def test_approving_keeps_the_draft_and_rejecting_creates_no_gold_case(db):
@@ -167,3 +170,51 @@ async def test_feedback_cannot_replace_server_answer_or_cross_user_boundary(db):
     with pytest.raises(review.ReviewError, match="not found"):
         await review.record_feedback(db, tenant_id="t1", user_id="other", query_id="trusted", rating="up",
                                     reasons=[], comment="", question="", answer_text="")
+
+
+
+async def test_review_stages_triage_release_and_maker_checker(db):
+    """§08.3: received → triaged → resolved → released, with the release
+    re-tested and done by someone other than the approver."""
+    import pytest
+    case = await create_review_case(
+        db, query_id="q9", correlation_id="c9", tenant_id="t1", risk_level="LOW", confidence_state="limited",
+        reason="User reported", query_text="UK VAT registration threshold?", draft_answer="Register above £90,000.",
+    )
+    triaged = await review.triage_review_case(db, tenant_id="t1", case_id=case.id, note="Plausible report")
+    assert triaged.status == "triaged"
+    assert [c.id for c in await review.list_review_cases(db, tenant_id="t1", status="open")] == [case.id]
+    with pytest.raises(review.ReviewError):
+        await review.triage_review_case(db, tenant_id="t1", case_id=case.id)
+    with pytest.raises(review.ReviewError):  # nothing approved yet
+        await review.release_reviewed_answer(db, tenant_id="t1", case_id=case.id, releaser_id="r2")
+    await review.resolve_review_case(db, tenant_id="t1", case_id=case.id, reviewer_id="r1",
+                                     decision="approved", key_facts=["£90,000"])
+    with pytest.raises(review.ReviewError, match="different reviewer"):
+        await review.release_reviewed_answer(db, tenant_id="t1", case_id=case.id, releaser_id="r1")
+    released, _ = await review.release_reviewed_answer(db, tenant_id="t1", case_id=case.id, releaser_id="r2")
+    assert released.status == "released"
+    with pytest.raises(review.ReviewError):  # cannot release twice
+        await review.release_reviewed_answer(db, tenant_id="t1", case_id=case.id, releaser_id="r3")
+
+
+async def test_an_approval_is_invalidated_when_the_amount_changes_afterwards(db):
+    """§10.4: approval bound to the exact answer, evidence, reviewer and expiry."""
+    import pytest
+    from datetime import datetime, timedelta, timezone
+    case = await create_review_case(
+        db, query_id="q10", correlation_id="c10", tenant_id="t1", risk_level="LOW", confidence_state="limited",
+        reason="r", query_text="UK VAT registration threshold?", draft_answer="Register above £90,000.",
+    )
+    _, gold = await review.resolve_review_case(db, tenant_id="t1", case_id=case.id, reviewer_id="r1",
+                                               decision="approved", key_facts=["Register"])
+    assert review.approval_is_valid(gold)
+    gold.gold_answer = "Register above £95,000."   # amount changed after approval
+    await db.commit()
+    assert not review.approval_is_valid(gold)
+    with pytest.raises(review.ReviewError, match="changed or expired"):
+        await review.release_reviewed_answer(db, tenant_id="t1", case_id=case.id, releaser_id="r2")
+    gold.gold_answer = "Register above £90,000."
+    await db.commit()
+    assert review.approval_is_valid(gold)
+    assert not review.approval_is_valid(gold, now=datetime.now(timezone.utc) + timedelta(days=91))

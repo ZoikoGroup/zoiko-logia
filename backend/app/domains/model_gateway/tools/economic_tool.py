@@ -13,6 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
+from app.domains.identity.permissions import KRITON_TOOL_ROLES
 from app.domains.model_gateway.tool_registry import ToolResult, ToolSpec
 from app.orchestration.dbnomics import canonical_country, fetch_indicator_sources, supported_countries
 
@@ -164,4 +165,8 @@ ECONOMIC_INDICATOR_TOOL = ToolSpec(
     data_source="World Bank WDI (DBnomics mirror as fallback)",
     risk_level="low",
     timeout_seconds=12.0,
+    allowed_roles=KRITON_TOOL_ROLES,
+    tenant_scope="public",
+    owner="Kriton / AI-ML",
+    max_retries=1,
 )

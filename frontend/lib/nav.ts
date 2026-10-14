@@ -2,8 +2,8 @@ import type { ComponentType } from "react";
 import {
   LayoutGrid, ShieldCheck, Briefcase, MessageSquare, Bookmark, FileText, GraduationCap,
   FolderKanban, ClipboardCheck, Paperclip, BarChart3, CalendarClock,
-  Database, FileCheck2, Layers, Network, BookOpen, Globe2,
-  ShieldAlert, Scale, CheckSquare, Cpu, UserCheck,
+  Database, Layers, Network, Globe2,
+  ShieldAlert, Scale, CheckSquare, Cpu,
   AlertTriangle, History, Siren, ScrollText, LifeBuoy,
   Bell, Building2, Plug, Activity,
   Lock, Users, Building, GitBranch, Settings, CreditCard, Bot,
@@ -131,12 +131,20 @@ export const NAV_SECTIONS: NavL1Section[] = [
           { label: "Payroll/Compliance", slug: "payroll-compliance" },
           { label: "Internal Policies", slug: "internal-policies" },
           { label: "Education Content", slug: "education-content" },
+          { label: "Licensing & Approval", slug: "licensing" },
         ],
       },
-      { label: "Source Licensing", slug: "source-licensing", allowedRoles: SOURCE_KNOWLEDGE_GOVERNANCE, icon: FileCheck2 },
       { label: "Source Bundles", slug: "source-bundles", allowedRoles: SOURCE_KNOWLEDGE_GOVERNANCE, icon: Layers },
-      { label: "Accounting Ontology", slug: "accounting-ontology", allowedRoles: SOURCE_KNOWLEDGE_GOVERNANCE, icon: Network },
-      { label: "Learning & Syllabus Mapping", slug: "learning-syllabus-mapping", allowedRoles: SOURCE_KNOWLEDGE_GOVERNANCE, icon: BookOpen },
+      {
+        label: "Accounting Ontology",
+        slug: "accounting-ontology",
+        allowedRoles: SOURCE_KNOWLEDGE_GOVERNANCE,
+        icon: Network,
+        tabs: [
+          { label: "Topic map", slug: "topics" },
+          { label: "Syllabus coverage", slug: "syllabus" },
+        ],
+      },
       { label: "Jurisdiction Rollout", slug: "jurisdiction-rollout", allowedRoles: SOURCE_KNOWLEDGE_GOVERNANCE, icon: Globe2 },
     ],
   },
@@ -146,7 +154,16 @@ export const NAV_SECTIONS: NavL1Section[] = [
     allowedRoles: AI_GOVERNANCE,
     items: [
       { label: "AI Safety Dashboard", slug: "ai-safety-dashboard", allowedRoles: AI_GOVERNANCE, icon: ShieldAlert },
-      { label: "Risk Policy", slug: "risk-policy", allowedRoles: AI_GOVERNANCE, icon: Scale },
+      {
+        label: "Risk Policy",
+        slug: "risk-policy",
+        allowedRoles: AI_GOVERNANCE,
+        icon: Scale,
+        tabs: [
+          { label: "Classification", slug: "classification" },
+          { label: "Professional boundaries", slug: "boundaries" },
+        ],
+      },
       { label: "Evaluation Gates", slug: "evaluation-gates", allowedRoles: AI_GOVERNANCE, icon: CheckSquare },
       {
         label: "Model & Prompt Registry",
@@ -161,7 +178,6 @@ export const NAV_SECTIONS: NavL1Section[] = [
           { label: "Change History", slug: "change-history" },
         ],
       },
-      { label: "Professional Boundaries", slug: "professional-boundaries", allowedRoles: AI_GOVERNANCE, icon: UserCheck },
     ],
   },
   {

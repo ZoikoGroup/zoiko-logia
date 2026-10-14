@@ -140,3 +140,41 @@ async def test_expire_source_versions_only_expires_own_tenants_private_sources(s
     assert await _status(a_src) == "EXPIRED"
     assert await _status(b_src) == "ACTIVE", "tenant A's expire job mutated tenant B's private version"
     assert await _status(c_src) == "ACTIVE", "a version not yet past-due must not be expired"
+
+async def test_summary_and_expiry_use_only_latest_source_version(source_db):
+    from datetime import datetime, timezone
+    tenant = await _new_tenant(source_db, "Versioned")
+    source = await _seed_private_source(
+        source_db, tenant, title="Versioned tax", jurisdiction="UK", category="tax",
+        status="ACTIVE", effective_to=date.today() + timedelta(days=1),
+    )
+    old = (await source_db.execute(select(SourceVersion).where(SourceVersion.source_id == source.id))).scalar_one()
+    old.created_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    source_db.add(SourceVersion(
+        tenant_id=tenant.id, source_id=source.id, submitted_by=old.submitted_by,
+        status="PROPOSED", created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    ))
+    await source_db.commit()
+    assert await get_soonest_expiring(source_db, tenant.id) is None
+    summary = await get_jurisdiction_summary(source_db, tenant.id)
+    assert summary[0]["approved_count"] == 0
+    assert summary[0]["pending_count"] == 1
+
+
+async def test_bundle_list_is_tenant_scoped_and_returns_only_metadata(source_db):
+    from app.orchestration.models import EvidenceBundleManifest
+    from app.domains.source_library.service import list_source_bundles
+    for tenant in ["bundle-a", "bundle-b"]:
+        source_db.add(EvidenceBundleManifest(
+            id=tenant, tenant_id=tenant, query_id="private-query", index_version="v1",
+            retrieval_plan={"query": "private question"}, manifest={
+                "confidence_state": "sufficient", "jurisdiction": "UK",
+                "sources": [{"id": "source-1", "title": "Tax guidance"}],
+                "passages": [{"content": "private text"}],
+            },
+        ))
+    await source_db.commit()
+    records = await list_source_bundles(source_db, tenant_id="bundle-a")
+    assert len(records) == 1 and records[0]["id"] == "bundle-a"
+    assert records[0]["sources"] == [{"id": "source-1", "title": "Tax guidance"}]
+    assert set(records[0]) == {"id", "created_at", "confidence_state", "jurisdiction", "sources"}

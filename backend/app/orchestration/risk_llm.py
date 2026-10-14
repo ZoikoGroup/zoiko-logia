@@ -18,7 +18,7 @@ import re
 import os
 from typing import Optional
 
-from groq import AsyncGroq
+from app.domains.model_gateway import auxiliary as gateway
 
 _VALID = {"ZERO", "LOW", "MEDIUM", "HIGH", "RESTRICTED"}
 
@@ -154,21 +154,14 @@ async def classify_risk(query: str) -> Optional[str]:
 
 
 async def _classify_with(model: str, query: str) -> Optional[str]:
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
+    if not gateway.may_use("risk_classification", "groq"):
         return None
     try:
-        client = AsyncGroq(api_key=api_key)
-        resp = await asyncio.wait_for(client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": _SYSTEM},
-                {"role": "user", "content": query},
-            ],
-            temperature=0.0,
-            **_token_budget(model),
-        ), timeout=8)
-        raw = (resp.choices[0].message.content or "").strip().upper()
+        completion = await gateway.complete_auxiliary(
+            purpose="risk_classification", provider="groq", model=model,
+            system=_SYSTEM, user=query, timeout=8, extra=_token_budget(model),
+        )
+        raw = completion.text.strip().upper()
     except Exception:
         return None
 
@@ -185,38 +178,19 @@ async def classify_risk_gemini(query: str) -> Optional[str]:
     returns None (Groq down / no key / rate-limited), giving provider-level
     redundancy across two different LLMs. Also fails soft — returns None on any
     error / missing key, so the caller can fall back to the ML result."""
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
+    # Only a provider the gateway approves for risk classification may be
+    # used, even as a fallback (ZL-ENG-AGT-01 §11).
+    if not gateway.may_use("risk_classification", "gemini"):
         return None
-    # Reuse the configured Gemini model (a small/fast one is ideal for this
-    # one-word task); GEMINI_CLASSIFIER_MODEL can override it independently.
+    # A small/fast model is ideal for this one-word task;
+    # GEMINI_CLASSIFIER_MODEL can override it independently.
     model = os.getenv("GEMINI_CLASSIFIER_MODEL") or os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
     try:
-        from google import genai
-        from google.genai import types
-
-        def _call() -> str:
-            client = genai.Client(api_key=api_key)
-            resp = client.models.generate_content(
-                model=model,
-                contents=query,
-                config=types.GenerateContentConfig(
-                    system_instruction=_SYSTEM,
-                    temperature=0.0,
-                    # Gemini flash is a "thinking" model: internal reasoning is
-                    # billed against max_output_tokens, so a tiny cap (e.g. 16)
-                    # gets fully consumed by thinking and returns EMPTY text
-                    # (finish_reason=MAX_TOKENS). 256 leaves ample room for the
-                    # thinking plus the one-word answer. thinking_budget=0 is
-                    # rejected by this model, so headroom is the reliable fix.
-                    max_output_tokens=256,
-                ),
-            )
-            return (resp.text or "").strip().upper()
-
-        # google-genai's call is synchronous — run it off the event loop so it
-        # doesn't block other concurrent requests while awaiting the model.
-        raw = await asyncio.wait_for(asyncio.to_thread(_call), timeout=8)
+        completion = await gateway.complete_auxiliary(
+            purpose="risk_classification", provider="gemini", model=model,
+            system=_SYSTEM, user=query, timeout=8,
+        )
+        raw = completion.text.strip().upper()
     except Exception:
         return None
 

@@ -178,10 +178,13 @@ def test_jurisdiction_is_part_of_the_key(monkeypatch):
 
     async def run():
         await websearch.web_search("vat threshold", jurisdiction="UK")
+        first = len(calls)
         await websearch.web_search("vat threshold", jurisdiction="US")
+        return first
 
-    asyncio.run(run())
-    assert len(calls) == 2
+    first = asyncio.run(run())
+    # The US search ran again (it was not served the UK entry from the cache).
+    assert first > 0 and len(calls) > first
 
 
 def test_expired_entry_is_refetched(monkeypatch):
@@ -448,3 +451,18 @@ def test_a_rate_table_without_full_stops_survives_shortening():
     table = " | ".join(f"Item {n} | value {n}" for n in range(200)) + " | Profits over £250,000 | Main rate 25% | " + " | ".join(f"Row {n}" for n in range(200))
     page = "Intro sentence. " * 5 + table
     assert "Main rate 25%" in _focused_excerpt(page, "What is the UK corporation tax main rate?", 800)
+
+
+def test_uk_questions_fall_back_to_govuk_search_when_other_engines_find_nothing(monkeypatch):
+    """Tavily over its limit and SearXNG's engines blocked left UK answers with
+    no sources; GOV.UK's own search keeps them on official pages."""
+    async def nothing(base, params):
+        return []
+
+    async def govuk(query):
+        return [{"url": "https://www.gov.uk/register-for-vat", "title": "Register for VAT",
+                 "content": "You must register for VAT if your VAT taxable turnover is more than £90,000."}]
+    monkeypatch.setattr(websearch, "_searxng_results", nothing)
+    monkeypatch.setattr(websearch, "_govuk_results", govuk)
+    results = asyncio.run(websearch.web_search("UK VAT registration threshold", jurisdiction="UK", read_pages=0))
+    assert [s.url for s in results] == ["https://www.gov.uk/register-for-vat"]

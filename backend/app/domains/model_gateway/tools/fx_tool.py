@@ -10,6 +10,7 @@ from datetime import date
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.domains.identity.permissions import KRITON_TOOL_ROLES
 from app.domains.model_gateway.tool_registry import ToolResult, ToolSpec
 from app.orchestration.frankfurter import fetch_fx_history, fetch_fx_rates
 
@@ -110,4 +111,8 @@ EXCHANGE_RATE_TOOL = ToolSpec(
     risk_level="low",
     # Both the primary and fallback have six-second network timeouts.
     timeout_seconds=14.0,
+    allowed_roles=KRITON_TOOL_ROLES,
+    tenant_scope="public",
+    owner="Kriton / AI-ML",
+    max_retries=1,
 )

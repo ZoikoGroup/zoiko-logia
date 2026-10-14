@@ -97,3 +97,67 @@ async def test_source_dates_survive_response_persistence_and_retry():
             assert (await check_idempotency(db, "legacy-with-dates", "tenant-a"))["source_bundle"]["as_of"] == "2026-10-04"
     finally:
         await engine.dispose()
+
+
+async def test_an_answer_is_withheld_when_its_audit_record_cannot_be_committed(monkeypatch, caplog):
+    """QA demonstration 10 / App. D: audit commit failure → no answer, a
+    service-unavailable response with the request ID, and an ops alert."""
+    import logging
+    from types import SimpleNamespace
+
+    import pytest
+    from fastapi import HTTPException
+
+    from app.orchestration import router
+
+    async def answered(**_):
+        return SimpleNamespace(query_id="q-777", next_action=None, model_dump=lambda **__: {})
+
+    async def recorded(*_, **__):
+        return None
+
+    async def ledger_down(db, token):
+        raise ConnectionError("audit database unreachable")
+
+    rolled_back = []
+    monkeypatch.setattr(router, "ask_kriton", answered)
+    monkeypatch.setattr(router, "commit_audit_batch", ledger_down)
+    monkeypatch.setattr(router, "record_event_async", recorded)
+    db = SimpleNamespace(rollback=lambda: rolled_back.append(True) or _done())
+
+    with caplog.at_level(logging.CRITICAL), pytest.raises(HTTPException) as raised:
+        await router._run_with_deadline(db=db, actor_id="u1", tenant_id="t1", request=None)
+    assert raised.value.status_code == 503
+    assert "withheld" in raised.value.detail and "q-777" in raised.value.detail
+    assert rolled_back and "AUDIT_COMMIT_FAILED" in caplog.text
+
+
+async def _done():
+    return None
+
+
+def test_an_unhandled_error_still_reaches_the_browser_with_cors_headers():
+    """A crash used to surface as "blocked by CORS policy" with no message."""
+    from fastapi import FastAPI
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.testclient import TestClient
+    from app.main import _ErrorResponseMiddleware
+
+    app = FastAPI()
+    app.add_middleware(_ErrorResponseMiddleware)
+    app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000"], allow_methods=["*"], allow_headers=["*"])
+
+    @app.get("/boom")
+    async def boom():
+        raise ValueError("bug")
+
+    @app.get("/outage")
+    async def outage():
+        raise TimeoutError()
+
+    client = TestClient(app, raise_server_exceptions=False)
+    for path, status in (("/boom", 500), ("/outage", 503)):
+        response = client.get(path, headers={"Origin": "http://localhost:3000"})
+        assert response.status_code == status
+        assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+        assert "reference" in response.json()["detail"]

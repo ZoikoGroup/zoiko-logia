@@ -168,3 +168,25 @@ def remove_visual_placeholders(text: str) -> str:
     """A line such as "[The chart below]" is the model marking where a chart
     goes; the chart is rendered on its own, so the marker was shown as text."""
     return re.sub(r"\n{3,}", "\n\n", _PLACEHOLDER.sub("", text or ""))
+
+
+_NUMBERED_ITEM = re.compile(r"^(\s*)(\d+)([.)])(\s+)")
+
+
+def renumber_ordered_lists(text: str) -> str:
+    """Renumber each run of numbered list items 1, 2, 3 … after unsupported
+    steps were removed ("2. … 3. … 5. … 7." in a GSTR-3B answer). A blank
+    line or any other line ends a run; nested (indented) lists keep their
+    own count."""
+    out: list[str] = []
+    counters: dict[str, int] = {}
+    for line in (text or "").split("\n"):
+        match = _NUMBERED_ITEM.match(line)
+        if match:
+            indent = match.group(1)
+            counters[indent] = counters.get(indent, 0) + 1
+            line = f"{indent}{counters[indent]}{match.group(3)}{match.group(4)}" + line[match.end():]
+        elif line.strip() and not line.startswith((" ", "\t")):
+            counters = {}
+        out.append(line)
+    return "\n".join(out)

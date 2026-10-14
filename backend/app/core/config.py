@@ -140,6 +140,15 @@ class Settings(BaseSettings):
     # Must leave headroom under ASK_KRITON_TIMEOUT_SECONDS for retrieval
     # before composition and validation after it.
     AGENT_MAX_SECONDS: float = 75.0
+    # Total model tokens one agent run may use before it must stop calling
+    # tools and answer (ZL-ENG-AGT-01 §05.4 budget).
+    AGENT_MAX_TOKENS: int = 150000
+    # Local development only: start even when the shared database was set up
+    # by another branch (different setup fingerprint). Never true in production.
+    SKIP_STARTUP_FINGERPRINT_CHECK: bool = False
+    # Spend budget per agent run in USD; off unless both are set (> 0).
+    AGENT_MAX_COST_USD: float = 0.0
+    MODEL_PRICE_PER_MILLION_TOKENS: float = 0.0
 
     @property
     def is_sqlite(self) -> bool:

@@ -21,6 +21,7 @@ existing prose instructions, same as today.
 from __future__ import annotations
 
 import json
+import math
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
@@ -265,6 +266,57 @@ def build_chart_fence(raw_arguments: str) -> str:
         raise ChartToolError(f"render_chart arguments did not match a known chart shape: {exc}") from exc
 
     spec = chart.model_dump(exclude_none=True, exclude_defaults=False)
+
+    def finite(value):
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ChartToolError("Chart values must be finite numbers")
+        if isinstance(value, dict):
+            for item in value.values():
+                finite(item)
+        elif isinstance(value, list):
+            for item in value:
+                finite(item)
+
+    finite(spec)
+    if isinstance(chart, BarLineChart):
+        if not chart.categories or any(len(series.data) != len(chart.categories) for series in chart.series):
+            raise ChartToolError("Every series must have exactly one value per category")
+        if chart.type == "waterfall" and len(chart.series) != 1:
+            raise ChartToolError("Waterfall charts require one signed series")
+    elif isinstance(chart, PieChart):
+        if any(item.value < 0 for item in chart.data) or sum(item.value for item in chart.data) <= 0:
+            raise ChartToolError("Pie charts require non-negative parts with a positive total")
+    elif isinstance(chart, ScatterChart):
+        if any(not series.points or any(len(point) != 2 for point in series.points) for series in chart.series):
+            raise ChartToolError("Scatter observations must be x/y pairs")
+    elif isinstance(chart, RadarChart):
+        if any(indicator.max <= 0 for indicator in chart.indicators) or any(
+            len(series.data) != len(chart.indicators) or any(value < 0 or value > indicator.max for value, indicator in zip(series.data, chart.indicators))
+            for series in chart.series
+        ):
+            raise ChartToolError("Radar values must match the indicators and their bounds")
+    elif isinstance(chart, HeatmapChart):
+        if not chart.categories or not chart.yCategories or any(
+            len(cell) != 3 or cell[0] != int(cell[0]) or cell[1] != int(cell[1])
+            or not 0 <= cell[0] < len(chart.categories) or not 0 <= cell[1] < len(chart.yCategories)
+            for cell in chart.cells
+        ):
+            raise ChartToolError("Heatmap cells require valid x/y indexes and a value")
+        if len({(cell[0], cell[1]) for cell in chart.cells}) != len(chart.cells):
+            raise ChartToolError("Heatmap cell coordinates must be unique")
+    elif isinstance(chart, SankeyChart):
+        names = {node.name for node in chart.nodes}
+        if len(names) != len(chart.nodes) or any(
+            link.source not in names or link.target not in names or link.source == link.target or link.value < 0
+            for link in chart.links
+        ):
+            raise ChartToolError("Sankey flows require distinct existing nodes and non-negative values")
+    elif isinstance(chart, CandlestickChart):
+        if len(chart.ohlc) != len(chart.categories) or any(
+            len(row) != 4 or row[2] > min(row[0], row[1]) or row[3] < max(row[0], row[1]) or row[2] > row[3]
+            for row in chart.ohlc
+        ):
+            raise ChartToolError("Candlesticks require matching dates and valid open/close/low/high values")
     if spec.get("type") != "bar":
         spec.pop("stacked", None)
     return "```chart\n" + json.dumps(spec) + "\n```"
@@ -277,6 +329,7 @@ def build_chart_fence(raw_arguments: str) -> str:
 # real validation, so a chart can reach the answer only via validated data.
 from pydantic import ConfigDict  # noqa: E402
 
+from app.domains.identity.permissions import KRITON_TOOL_ROLES
 from app.domains.model_gateway.tool_registry import ToolResult, ToolSpec  # noqa: E402
 
 
@@ -311,5 +364,8 @@ RENDER_CHART_TOOL = ToolSpec(
     data_source="figures already in the conversation or returned by other tools",
     risk_level="low",
     timeout_seconds=2.0,
+    allowed_roles=KRITON_TOOL_ROLES,
+    tenant_scope="none",
+    owner="Frontend / Visualization",
     parameters_schema=CHART_TOOL_SCHEMA["function"]["parameters"],
 )

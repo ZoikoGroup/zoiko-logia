@@ -335,7 +335,7 @@ export function Composer({
           onSubmit();
         }}
         data-kriton-composer
-        className={variant === "sticky" ? "sticky bottom-5 mx-auto max-w-2xl" : "mt-8 w-full"}
+        className={variant === "sticky" ? "mx-auto w-full max-w-3xl" : "mt-8 w-full"}
       >
         <div className={`kriton-composer-surface ${cardRadius} border p-4 shadow-[0_18px_48px_rgba(18,34,32,0.08)]`}>
           {attachments.length > 0 && (
@@ -388,7 +388,7 @@ export function Composer({
             onKeyDown={handleKeyDown}
             placeholder={variant === "hero" ? "Ask Kriton..." : "Ask a follow-up..."}
             rows={rows}
-            className={`${minHeight} w-full resize-none rounded-xl !border-transparent !bg-transparent px-1 py-1 text-base font-medium leading-7 text-ink !shadow-none outline-none placeholder:text-muted`}
+            className={`${minHeight} max-h-[min(220px,30dvh)] w-full resize-none overflow-y-auto overscroll-contain rounded-xl !border-transparent !bg-transparent px-1 py-1 text-base font-medium leading-7 text-ink !shadow-none outline-none placeholder:text-muted`}
           />
 
           <div className="flex items-center justify-between gap-3">

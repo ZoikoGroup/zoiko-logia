@@ -13,6 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.domains.identity.permissions import KRITON_TOOL_ROLES
 from app.domains.market_data import registry as market_registry
 from app.domains.market_data import service as market_service
 from app.domains.model_gateway.tool_registry import ToolResult, ToolSpec
@@ -120,6 +121,12 @@ async def _handle(args: MarketDataArgs) -> ToolResult:
         ]
     if missing:
         lines.append(f"No data available for: {', '.join(missing)}. Say so rather than estimating.")
+    if any((source.freshness or "") in ("delayed", "historical", "end_of_day") for source in sources):
+        # "What is Apple's share price today?" was answered "the price is
+        # $336.64" from Friday's delayed close, and the release check rightly
+        # rejected it. Say what the figure is.
+        lines.append("When you state these figures, give the 'as at' date and time shown above and say the data "
+                     "is delayed (the latest available, not a live price). Never call it today's or the current price.")
     return ToolResult(ok=True, content="\n".join(lines), sources=tuple(sources))
 
 
@@ -136,4 +143,8 @@ MARKET_DATA_TOOL = ToolSpec(
     data_source="Twelve Data; SEC EDGAR 10-K filings for US fundamentals",
     risk_level="low",
     timeout_seconds=15.0,
+    allowed_roles=KRITON_TOOL_ROLES,
+    tenant_scope="public",
+    owner="Kriton / AI-ML",
+    max_retries=1,
 )

@@ -31,18 +31,15 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-import groq
-from groq import AsyncGroq
 from pydantic import ValidationError
+
+from app.domains.model_gateway import auxiliary as gateway
 
 from app.orchestration.query_intent import QueryIntent
 
 logger = logging.getLogger("kriton.query_classifier")
 
-_RETRYABLE_ERRORS = (
-    groq.APITimeoutError, groq.RateLimitError, groq.InternalServerError,
-    groq.APIConnectionError,
-)
+_RETRYABLE_ERRORS = gateway.RETRYABLE_ERRORS
 _MAX_RETRIES = 1
 _BACKOFF_SECONDS = 0.4
 
@@ -173,11 +170,6 @@ _SYSTEM = (
 )
 
 
-def _client() -> Optional[AsyncGroq]:
-    api_key = os.environ.get("GROQ_API_KEY")
-    return AsyncGroq(api_key=api_key) if api_key else None
-
-
 def _to_strict_schema(schema: dict) -> dict:
     """Groq's `strict: true` structured-output mode requires every object to
     set `additionalProperties: false` and list EVERY property (including
@@ -211,7 +203,7 @@ RATE_LIMIT_DAY = "rate_limit_day"
 RATE_LIMIT_MINUTE = "rate_limit_minute"
 
 
-def _classify_rate_limit(exc: groq.RateLimitError) -> str:
+def _classify_rate_limit(exc: gateway.RateLimitError) -> str:
     """Groq's 429 body distinguishes "tokens/requests per DAY (TPD/RPD)"
     from "...per MINUTE (TPM/RPM)" in its error message — a daily-quota hit
     cannot be worked around by any amount of in-process backoff (unlike a
@@ -268,8 +260,7 @@ async def attempt_classify_query_llm(query: str) -> ClassificationAttempt:
     """Same call as classify_query_llm(), with the full diagnostic result
     (failure category, token usage, remaining-budget headers) — intended
     for eval/observability tooling, not production request handling."""
-    client = _client()
-    if client is None:
+    if not gateway.may_use("query_classification", "groq"):
         return ClassificationAttempt(intent=None, failure_category="not_configured", latency_ms=0.0)
 
     # Same fast/classifier model already used for risk classification —
@@ -283,20 +274,15 @@ async def attempt_classify_query_llm(query: str) -> ClassificationAttempt:
     response = None
     while True:
         try:
-            response = await client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": _SYSTEM},
-                    {"role": "user", "content": query},
-                ],
-                temperature=0.0,
+            response = await gateway.complete_auxiliary(
+                purpose="query_classification", model=model, system=_SYSTEM, user=query,
                 response_format={
                     "type": "json_schema",
                     "json_schema": {"name": "query_intent", "strict": True, "schema": schema},
                 },
             )
             break
-        except groq.RateLimitError as exc:
+        except gateway.RateLimitError as exc:
             category = _classify_rate_limit(exc)
             latency_ms = (time.monotonic() - started) * 1000
             # A daily-quota hit will not resolve within this call's lifetime
@@ -319,7 +305,7 @@ async def attempt_classify_query_llm(query: str) -> ClassificationAttempt:
             delay = retry_after if retry_after is not None else _BACKOFF_SECONDS * (2 ** attempt)
             await asyncio.sleep(delay)
             attempt += 1
-        except groq.GroqError as exc:
+        except gateway.ProviderError as exc:
             # Auth/request-shape/other non-transient errors — retrying would
             # just fail identically, so don't.
             latency_ms = (time.monotonic() - started) * 1000
@@ -332,10 +318,9 @@ async def attempt_classify_query_llm(query: str) -> ClassificationAttempt:
             return ClassificationAttempt(intent=None, failure_category=category, latency_ms=latency_ms)
 
     latency_ms = (time.monotonic() - started) * 1000
-    usage = getattr(response, "usage", None)
-    input_tokens = getattr(usage, "prompt_tokens", None) if usage else None
-    output_tokens = getattr(usage, "completion_tokens", None) if usage else None
-    total_tokens = getattr(usage, "total_tokens", None) if usage else None
+    input_tokens = response.prompt_tokens
+    output_tokens = response.completion_tokens
+    total_tokens = response.total_tokens
     # Provider-returned headroom (x-ratelimit-remaining-tokens/-requests) is
     # deliberately NOT wired here: verified against this SDK version that
     # the plain client.chat.completions.create() response object (a parsed
@@ -351,7 +336,7 @@ async def attempt_classify_query_llm(query: str) -> ClassificationAttempt:
     remaining_tokens = None
     remaining_requests = None
 
-    raw = response.choices[0].message.content
+    raw = response.text
     if not raw:
         _log_failure("empty_response", latency_ms)
         return ClassificationAttempt(

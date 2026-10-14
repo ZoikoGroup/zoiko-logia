@@ -18,7 +18,7 @@ from app.training.rewards import arithmetic_tasks
 from app.training.trainer import artifact_hash, run_training
 
 
-async def exportable_examples(*, tenant_id: str, user_id: str) -> list[dict]:
+async def exportable_examples(*, tenant_id: str, user_id: str, data_use_approval: str) -> list[dict]:
     from app.core.database import RequestSessionLocal, request_engine, restore_request_identity
     from app.training.data import collect_examples
     # Bind to one connection: identity restoration commits, and an unbound
@@ -26,7 +26,7 @@ async def exportable_examples(*, tenant_id: str, user_id: str) -> list[dict]:
     async with request_engine.connect() as connection:
         async with RequestSessionLocal(bind=connection) as db:
             await restore_request_identity(db, tenant_id=tenant_id, user_id=user_id)
-            examples = await collect_examples(db, tenant_id=tenant_id)
+            examples = await collect_examples(db, tenant_id=tenant_id, data_use_approval=data_use_approval)
     return exclude_shipped_benchmarks(examples)
 
 
@@ -49,7 +49,9 @@ def read_config(path: Path) -> dict:
     config = json.loads(path.read_text())
     if not isinstance(config, dict):
         raise ValueError('Training configuration must be an object')
-    for name in ('tenant_id', 'user_id', 'base_model', 'output_root'):
+    # data_use_approval: reference to the documented security/legal approval
+    # to train on this tenant's data (ZL-ENG-AGT-01 §08.5). Required.
+    for name in ('tenant_id', 'user_id', 'base_model', 'output_root', 'data_use_approval'):
         if not isinstance(config.get(name), str) or not config[name].strip():
             raise ValueError(f'Training configuration requires {name}')
     for name, default, low, high in (('interval_seconds', 86400, 3600, 2592000),
@@ -105,7 +107,7 @@ def run_cycle(config: dict, *, collector=None, trainer=None, evaluator=None, ret
     repeated expensive retries on the same data until inputs change.
     """
     collector = collector or (lambda: asyncio.run(exportable_examples(
-        tenant_id=config['tenant_id'], user_id=config['user_id'])))
+        tenant_id=config['tenant_id'], user_id=config['user_id'], data_use_approval=config['data_use_approval'])))
     trainer, evaluator = trainer or run_training, evaluator or evaluate_candidate
     root = Path(config['output_root'])
     with cycle_lock(root):

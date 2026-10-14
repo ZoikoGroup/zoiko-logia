@@ -7,6 +7,7 @@ from app.training.data import question_key
 
 def config(tmp_path):
     return dict(tenant_id='t1',user_id='u1',base_model='chosen-model',output_root=str(tmp_path/'runs'),
+                data_use_approval='LEGAL-TEST-001',
                 steps=2,interval_seconds=86400,rl_count=100,cpu=True,with_rl=False)
 
 
@@ -56,6 +57,9 @@ def test_failure_is_persisted_without_private_error_text(tmp_path):
 def test_config_requires_model_and_tenant_and_bounded_schedule(tmp_path):
     path=tmp_path/'config.json'; path.write_text('{}')
     with pytest.raises(ValueError,match='tenant_id'):read_config(path)
+    without_approval=config(tmp_path); del without_approval['data_use_approval']
+    path.write_text(json.dumps(without_approval))
+    with pytest.raises(ValueError,match='data_use_approval'):read_config(path)  # §08.5
     settings=config(tmp_path)|{'interval_seconds':1}
     path.write_text(json.dumps(settings))
     with pytest.raises(ValueError,match='interval_seconds'):read_config(path)

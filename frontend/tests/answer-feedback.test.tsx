@@ -20,7 +20,7 @@ const props = { queryId: "q-1", question: "What is the UK VAT threshold?", answe
 
 describe("answer feedback", () => {
   beforeEach(() => {
-    submitAnswerFeedback.mockReset().mockResolvedValue({ id: "f1", rating: "down", review_case_id: null, self_correction_started: true });
+    submitAnswerFeedback.mockReset().mockResolvedValue({ id: "f1", rating: "down", review_case_id: "case-1" });
   });
 
   it("sends a thumbs-up straight away", async () => {
@@ -32,7 +32,7 @@ describe("answer feedback", () => {
     }));
   });
 
-  it("asks what was wrong before starting a checked correction", async () => {
+  it("asks what was wrong and sends the report to a reviewer", async () => {
     render(<AnswerFeedback {...props} />);
     fireEvent.click(screen.getByLabelText("Report a problem with this answer"));
     const send = screen.getByRole("button", { name: /send feedback/i });
@@ -45,7 +45,7 @@ describe("answer feedback", () => {
     expect(send).toBeEnabled();
     fireEvent.click(send);
 
-    await screen.findByText(/re-checking this answer/i);
+    await screen.findByText(/a reviewer will check this answer/i);
     expect(submitAnswerFeedback).toHaveBeenCalledWith("token", {
       query_id: "q-1",
       rating: "down",
@@ -56,15 +56,16 @@ describe("answer feedback", () => {
     });
   });
 
-  it("acknowledges saved feedback without promising unconditional reuse", async () => {
+  it("never claims a thumbs-up was saved for reuse (feedback is not knowledge)", async () => {
     submitAnswerFeedback.mockResolvedValue({ id: "f1", rating: "up", learned: true });
     render(<AnswerFeedback {...props} />);
     fireEvent.click(screen.getByLabelText("This answer was helpful"));
-    await screen.findByText(/saved this for future checks/i);
+    await screen.findByText("Thanks for the feedback");
+    expect(screen.queryByText(/saved/i)).not.toBeInTheDocument();
   });
 
   it("does not promise a correction when none was started", async () => {
-    submitAnswerFeedback.mockResolvedValue({ id: "f1", rating: "down", self_correction_started: false });
+    submitAnswerFeedback.mockResolvedValue({ id: "f1", rating: "down", review_case_id: null });
     render(<AnswerFeedback {...props} />);
     fireEvent.click(screen.getByLabelText("Report a problem with this answer"));
     fireEvent.click(screen.getByRole("button", { name: "Outdated" }));

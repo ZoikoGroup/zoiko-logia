@@ -1,42 +1,63 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense } from "react";
 import { Loader2, Network } from "lucide-react";
+import { useLiveData } from "@/components/overview/useLiveData";
+import { LiveSourceStatus } from "@/components/governance/LiveSourceStatus";
 import { PageShell } from "@/components/governance/PageShell";
 import { Card } from "@/components/governance/Card";
 import { Pill } from "@/components/governance/Pill";
 import { PanelHeader, PANEL_CLASS, type PanelTone } from "@/components/governance/PanelHeader";
-import { getAuthToken, listTopicMapNodes, type TopicMapNode } from "@/lib/api";
+import { Tabs } from "@/components/shell/Tabs";
+import { useTabParam } from "@/components/shell/useTabParam";
+import { SyllabusCoveragePanel } from "@/components/source-knowledge/SyllabusCoveragePanel";
+import { listTopicMapNodes } from "@/lib/api";
 
 const TOPIC_TONES: PanelTone[] = ["brand", "warn", "ok", "info"];
 
+const TABS = [
+  { label: "Topic map", slug: "topics" },
+  // Was the separate Learning & Syllabus Mapping page.
+  { label: "Syllabus coverage", slug: "syllabus" },
+];
+const TAB_SLUGS = TABS.map((t) => t.slug);
+
 export default function AccountingOntologyPage() {
-  const [topics, setTopics] = useState<TopicMapNode[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  return (
+    <Suspense fallback={null}>
+      <AccountingOntology />
+    </Suspense>
+  );
+}
 
-  useEffect(() => {
-    listTopicMapNodes(getAuthToken())
-      .then(setTopics)
-      .catch(() => setError("Could not load the topic map from the server."))
-      .finally(() => setLoading(false));
-  }, []);
-
+function AccountingOntology() {
+  const [activeTab, setActiveTab] = useTabParam("topics", TAB_SLUGS);
   return (
     <PageShell
       title="Accounting Ontology"
-      subtitle="The real topic map behind Kriton's accounting knowledge — concepts, prerequisites, and the standards each one links to."
+      subtitle="The real topic map behind Kriton's accounting knowledge — concepts, prerequisites, the standards each one links to, and syllabus coverage."
       showMetrics={false}
     >
-      {error && <p className="text-xs text-bad mb-3">{error}</p>}
+      <div className="mb-4"><Tabs tabs={TABS} activeSlug={activeTab} onChange={setActiveTab} /></div>
+      {activeTab === "syllabus" ? <SyllabusCoveragePanel /> : <TopicMap />}
+    </PageShell>
+  );
+}
+
+function TopicMap() {
+  const { data, error, loading, signedOut, reload } = useLiveData(`accounting-ontology`, (token, signal) => listTopicMapNodes(token, signal), 20_000);
+  const topics = data ?? [];
+
+
+  return (
+    <>
+      <LiveSourceStatus loading={loading} error={error} signedOut={signedOut} reload={reload} />
 
       <div className="rounded-xl border border-line bg-soft p-3 mb-4 text-xs text-muted">
-        This shows the real topic/prerequisite/standard data used by Learning &amp; Practice. It is not yet a full
-        graph — no cycle detection, no versioned releases, no tenant-policy conflict resolution. That is the
-        still-unbuilt <code>ontology</code> domain.
+        Topics, prerequisites, and linked standards come from the saved learning topic map.
       </div>
 
-      {loading ? (
+      {error || signedOut ? null : loading && !data ? (
         <div className="flex items-center justify-center py-12 text-muted">
           <Loader2 className="animate-spin mr-2" size={16} /> Loading topic map…
         </div>
@@ -67,6 +88,6 @@ export default function AccountingOntologyPage() {
           ))}
         </div>
       )}
-    </PageShell>
+    </>
   );
 }

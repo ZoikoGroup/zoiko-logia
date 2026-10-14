@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   Database,
@@ -12,13 +12,18 @@ import {
   CheckCircle2,
   Clock,
   XCircle,
+  FileCheck2,
 } from "lucide-react";
+import { useLiveData } from "@/components/overview/useLiveData";
+import { LiveSourceStatus } from "@/components/governance/LiveSourceStatus";
 import { PageShell } from "@/components/governance/PageShell";
 import { Pill } from "@/components/governance/Pill";
 import { PanelHeader, PANEL_CLASS, type PanelTone } from "@/components/governance/PanelHeader";
 import { StatTile } from "@/components/governance/StatTile";
 import { Tabs } from "@/components/shell/Tabs";
-import { getAuthToken, listSources, Source } from "@/lib/api";
+import { useTabParam } from "@/components/shell/useTabParam";
+import { SourceLicensingPanel } from "@/components/source-knowledge/SourceLicensingPanel";
+import { listSources, type Source } from "@/lib/api";
 
 const TABS = [
   { label: "Standards", slug: "standards" },
@@ -27,7 +32,10 @@ const TABS = [
   { label: "Payroll/Compliance", slug: "payroll-compliance" },
   { label: "Internal Policies", slug: "internal-policies" },
   { label: "Education Content", slug: "education-content" },
+  // Submit and approve sources (was the separate Source Licensing page).
+  { label: "Licensing & Approval", slug: "licensing" },
 ];
+const TAB_SLUGS = TABS.map((t) => t.slug);
 
 const DESCRIPTIONS: Record<string, string> = {
   standards: "Authoritative accounting and financial reporting standards (IFRS, GAAP, etc.).",
@@ -45,6 +53,7 @@ const TAB_ICON: Record<string, LucideIcon> = {
   "payroll-compliance": Users,
   "internal-policies": Lock,
   "education-content": GraduationCap,
+  licensing: FileCheck2,
 };
 
 const TAB_TONE: Record<string, PanelTone> = {
@@ -67,15 +76,24 @@ const STATUS_TONE: Record<string, "ok" | "warn" | "bad" | "neutral"> = {
 };
 
 export default function SourceLibraryPage() {
-  const [activeTab, setActiveTab] = useState("standards");
-  const [sources, setSources] = useState<Source[]>([]);
-  const [error, setError] = useState("");
+  return (
+    <Suspense fallback={null}>
+      <SourceLibrary />
+    </Suspense>
+  );
+}
 
-  useEffect(() => {
-    listSources(getAuthToken(), activeTab)
-      .then(setSources)
-      .catch(() => setError("Could not load sources from the server."));
-  }, [activeTab]);
+function SourceLibrary() {
+  const [activeTab, setActiveTab] = useTabParam("standards", TAB_SLUGS);
+  const isLicensing = activeTab === "licensing";
+  // The licensing tab loads its own register, so skip the category fetch there.
+  const { data, error, loading, signedOut, reload } = useLiveData(
+    `source-library:${activeTab}`,
+    (token, signal) => (isLicensing ? Promise.resolve([] as Source[]) : listSources(token, activeTab, signal)),
+    20_000,
+  );
+  const sources = data ?? [];
+
 
   const approvedCount = sources.filter((s) => ["ACTIVE", "APPROVED"].includes(s.latest_version.status)).length;
   const pendingCount = sources.filter((s) => ["PROPOSED", "UNDER_REVIEW"].includes(s.latest_version.status)).length;
@@ -87,11 +105,19 @@ export default function SourceLibraryPage() {
       subtitle="Browse and manage authoritative source material by category before it enters licensing and source bundles."
       showMetrics={false}
     >
+      {isLicensing ? (
+        <>
+          <div className="mb-4"><Tabs tabs={TABS} activeSlug={activeTab} onChange={setActiveTab} /></div>
+          <SourceLicensingPanel />
+        </>
+      ) : (
+      <>
+      <LiveSourceStatus loading={loading} error={error} signedOut={signedOut} reload={reload} />
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
-        <StatTile label="In this category" value={sources.length} tone={TAB_TONE[activeTab] ?? "brand"} icon={TAB_ICON[activeTab] ?? Database} />
-        <StatTile label="Approved / active" value={approvedCount} tone="ok" icon={CheckCircle2} />
-        <StatTile label="Awaiting review" value={pendingCount} tone="warn" icon={Clock} />
-        <StatTile label="Disputed / blocked" value={disputedCount} tone="bad" icon={XCircle} />
+        <StatTile label="In this category" value={data ? sources.length : "—"} tone={TAB_TONE[activeTab] ?? "brand"} icon={TAB_ICON[activeTab] ?? Database} />
+        <StatTile label="Approved / active" value={data ? approvedCount : "—"} tone="ok" icon={CheckCircle2} />
+        <StatTile label="Awaiting review" value={data ? pendingCount : "—"} tone="warn" icon={Clock} />
+        <StatTile label="Disputed / blocked" value={data ? disputedCount : "—"} tone="bad" icon={XCircle} />
       </div>
 
       <div className={PANEL_CLASS}>
@@ -102,9 +128,8 @@ export default function SourceLibraryPage() {
           subtitle={DESCRIPTIONS[activeTab]}
         />
         <Tabs tabs={TABS} activeSlug={activeTab} onChange={setActiveTab} />
-        {error && <p className="text-xs text-bad mb-3">{error}</p>}
 
-        {sources.length === 0 && !error && (
+        {sources.length === 0 && !error && !loading && !signedOut && (
           <p className="text-sm text-muted py-4">No sources in this category yet.</p>
         )}
 
@@ -120,6 +145,11 @@ export default function SourceLibraryPage() {
               <div className="text-xs text-muted mt-0.5">
                 {source.source_class} — {source.jurisdiction_scope}
               </div>
+              <div className="text-xs text-muted mt-1">
+                Version {source.latest_version.version_label} · {source.latest_version.file_path ? "Document attached" : source.latest_version.source_url ? "External source registered" : "Metadata only"}
+                {source.latest_version.quality_state && ` · ${source.latest_version.quality_state}`}
+                {source.latest_version.effective_to && ` · Effective until ${source.latest_version.effective_to}`}
+              </div>
               {source.latest_version.note && (
                 <div className="text-xs text-ink mt-1">{source.latest_version.note}</div>
               )}
@@ -127,6 +157,8 @@ export default function SourceLibraryPage() {
           ))}
         </ul>
       </div>
+      </>
+      )}
     </PageShell>
   );
 }

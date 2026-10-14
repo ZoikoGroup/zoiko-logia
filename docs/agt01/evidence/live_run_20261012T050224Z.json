@@ -1,0 +1,242 @@
+{
+  "directive": "ZL-ENG-AGT-01 \u00a702/\u00a704",
+  "runs": [
+    {
+      "demo": "A_research",
+      "question": "What is the UK VAT registration threshold, and how much VAT at the standard rate is due on \u00a3120,000 of standard-rated sales? Cite the official source.",
+      "started_at": "2026-10-12T05:01:22.874194+00:00",
+      "model": "openai/gpt-oss-120b",
+      "plan": {
+        "mode": "agent",
+        "planned_tools": [
+          "search_knowledge_base",
+          "search_web",
+          "calculate"
+        ],
+        "reasons": [
+          "professional rule or authority named",
+          "figures to compute",
+          "may need sources beyond the knowledge base"
+        ]
+      },
+      "tool_calls": [
+        {
+          "step": 1,
+          "tool": "search_knowledge_base",
+          "arguments_hash": "7dd111868483004483e4b58fdfc8ad32",
+          "ok": true,
+          "error_code": null,
+          "duration_ms": 26347,
+          "source_count": 5,
+          "policy_decision_id": "pd-2100d86d05ab4db0",
+          "policy_reason": "allowed",
+          "untrusted_instructions": "data_exfiltration",
+          "idempotency_key": "live-A_research-s1-7dd11186",
+          "calculation_id": null,
+          "planned": true,
+          "resumed": false
+        },
+        {
+          "step": 2,
+          "tool": "search_knowledge_base",
+          "arguments_hash": "0811b5b3c49b35081572df0456448859",
+          "ok": true,
+          "error_code": null,
+          "duration_ms": 14613,
+          "source_count": 5,
+          "policy_decision_id": "pd-39f06c685f4442a6",
+          "policy_reason": "allowed",
+          "untrusted_instructions": "data_exfiltration",
+          "idempotency_key": "live-A_research-s2-0811b5b3",
+          "calculation_id": null,
+          "planned": true,
+          "resumed": false
+        },
+        {
+          "step": 3,
+          "tool": "calculate",
+          "arguments_hash": "6e28d422d438343c732459e501b1a84c",
+          "ok": true,
+          "error_code": null,
+          "duration_ms": 0,
+          "source_count": 0,
+          "policy_decision_id": "pd-e1d642123ac34221",
+          "policy_reason": "allowed",
+          "untrusted_instructions": null,
+          "idempotency_key": "live-A_research-s3-6e28d422",
+          "calculation_id": "calc-3a1ae8e0c64d49f1",
+          "planned": true,
+          "resumed": false
+        }
+      ],
+      "stop_reason": "final_answer",
+      "steps": 4,
+      "tokens_used": 30995,
+      "calculation_receipts": [
+        {
+          "calculation_id": "calc-3a1ae8e0c64d49f1",
+          "tool": "calculate",
+          "tool_version": "1.1",
+          "formula_version": "expression-evaluator-1.0",
+          "label": "VAT due",
+          "expression": "120000 * 0.20",
+          "input_hash": "15081f6907801c50e463b454e84a70c3",
+          "result": "24000",
+          "rounded": "24000.00",
+          "rounding_rule": "ROUND_HALF_UP to 2 decimal places for display",
+          "units": "",
+          "warnings": []
+        }
+      ],
+      "unreconciled_figures": [],
+      "sources": [
+        {
+          "title": "Register for VAT \u2014 https://www.gov.uk/register-for-vat/when-register-for-vat#if-you-exceeded-the-threshold-in-the-last-12-months",
+          "url": "https://www.gov.uk/register-for-vat"
+        },
+        {
+          "title": "How VAT works \u2014 https://www.gov.uk/how-vat-works/vat-thresholds#registration-thresholds",
+          "url": "https://www.gov.uk/how-vat-works"
+        },
+        {
+          "title": "Register for VAT \u2014 https://www.gov.uk/register-for-vat/when-register-for-vat#example",
+          "url": "https://www.gov.uk/register-for-vat"
+        },
+        {
+          "title": "Register for VAT \u2014 https://www.gov.uk/register-for-vat/when-register-for-vat#if-youre-going-to-exceed-the-threshold-in-the-next-30-days",
+          "url": "https://www.gov.uk/register-for-vat"
+        },
+        {
+          "title": "VAT guide (VAT Notice 700) \u2014 https://www.gov.uk/guidance/vat-guide-notice-700#exemption-from-registration",
+          "url": "https://www.gov.uk/guidance/vat-guide-notice-700"
+        },
+        {
+          "title": "VAT guide (VAT Notice 700) \u2014 https://www.gov.uk/guidance/vat-guide-notice-700#vat-rates",
+          "url": "https://www.gov.uk/guidance/vat-guide-notice-700"
+        },
+        {
+          "title": "Charge, reclaim and record VAT \u2014 https://www.gov.uk/charge-reclaim-record-vat/charging-vat#when-to-charge-standard-rate",
+          "url": "https://www.gov.uk/charge-reclaim-record-vat"
+        },
+        {
+          "title": "How VAT works \u2014 https://www.gov.uk/how-vat-works/how-much-vat-you-must-charge#s0",
+          "url": "https://www.gov.uk/how-vat-works"
+        },
+        {
+          "title": "VAT rates \u2014 https://www.gov.uk/vat-rates#s0",
+          "url": "https://www.gov.uk/vat-rates"
+        },
+        {
+          "title": "VAT rates \u2014 https://www.gov.uk/vat-rates#vat-rates-for-goods-and-services",
+          "url": "https://www.gov.uk/vat-rates"
+        }
+      ],
+      "charts": 0,
+      "answer": "The UK VAT registration threshold is **\u00a390,000** of total taxable turnover in the previous 12\u202fmonths\u3010REF-1\u3011.  \n\nThe standard rate of VAT is **20\u202f%** on most goods and services\u3010REF-7\u3011.  \n\nVAT due on \u00a3120,000 of standard\u2011rated sales:\n\n- Calculation: 120\u202f000\u202f\u00d7\u202f0.20 = **\u00a324,000**\u3010calculate\u3011.  \n\nSo, a business with \u00a3120,000 of standard\u2011rated sales would owe **\u00a324,000** of VAT."
+    },
+    {
+      "demo": "B_calculation_chart",
+      "question": "Company A (synthetic data): FY2024 operating profit 120,000 on revenue 1,000,000; FY2025 operating profit 150,000 on revenue 1,200,000. Compare the operating margins, give the change in percentage points, and chart the trend.",
+      "started_at": "2026-10-12T05:02:15.714599+00:00",
+      "model": "openai/gpt-oss-120b",
+      "plan": {
+        "mode": "agent",
+        "planned_tools": [
+          "calculate",
+          "render_chart"
+        ],
+        "reasons": [
+          "figures to compute",
+          "chart requested"
+        ]
+      },
+      "tool_calls": [
+        {
+          "step": 1,
+          "tool": "calculate",
+          "arguments_hash": "bd8c4d9c3486d0f189d0de7ab1223b8b",
+          "ok": true,
+          "error_code": null,
+          "duration_ms": 0,
+          "source_count": 0,
+          "policy_decision_id": "pd-d07ff4f4033c435f",
+          "policy_reason": "allowed",
+          "untrusted_instructions": null,
+          "idempotency_key": "live-B_calculation_chart-s1-bd8c4d9c",
+          "calculation_id": "calc-12bab089f2ad46c6",
+          "planned": true,
+          "resumed": false
+        },
+        {
+          "step": 2,
+          "tool": "calculate",
+          "arguments_hash": "13d42d85de3805ca7d4bea28afa45c93",
+          "ok": true,
+          "error_code": null,
+          "duration_ms": 0,
+          "source_count": 0,
+          "policy_decision_id": "pd-c340840a346e484c",
+          "policy_reason": "allowed",
+          "untrusted_instructions": null,
+          "idempotency_key": "live-B_calculation_chart-s2-13d42d85",
+          "calculation_id": "calc-ee446a9b165c48bb",
+          "planned": true,
+          "resumed": false
+        },
+        {
+          "step": 3,
+          "tool": "render_chart",
+          "arguments_hash": "33a4c14f691615373e56d93545afe0f9",
+          "ok": true,
+          "error_code": null,
+          "duration_ms": 0,
+          "source_count": 0,
+          "policy_decision_id": "pd-cc50ca0c94654a6d",
+          "policy_reason": "allowed",
+          "untrusted_instructions": null,
+          "idempotency_key": "live-B_calculation_chart-s3-33a4c14f",
+          "calculation_id": null,
+          "planned": true,
+          "resumed": false
+        }
+      ],
+      "stop_reason": "final_answer",
+      "steps": 4,
+      "tokens_used": 23011,
+      "calculation_receipts": [
+        {
+          "calculation_id": "calc-12bab089f2ad46c6",
+          "tool": "calculate",
+          "tool_version": "1.1",
+          "formula_version": "expression-evaluator-1.0",
+          "label": "Operating margin FY2024 (%)",
+          "expression": "120000 / 1000000 * 100",
+          "input_hash": "9fcd6aca21f99f31d03ad9b10de75ca8",
+          "result": "12",
+          "rounded": "12.00",
+          "rounding_rule": "ROUND_HALF_UP to 2 decimal places for display",
+          "units": "",
+          "warnings": []
+        },
+        {
+          "calculation_id": "calc-ee446a9b165c48bb",
+          "tool": "calculate",
+          "tool_version": "1.1",
+          "formula_version": "expression-evaluator-1.0",
+          "label": "Operating margin FY2025 (%)",
+          "expression": "150000 / 1200000 * 100",
+          "input_hash": "0896b2b79566b5cf35683588aafa3ef7",
+          "result": "12.5",
+          "rounded": "12.50",
+          "rounding_rule": "ROUND_HALF_UP to 2 decimal places for display",
+          "units": "",
+          "warnings": []
+        }
+      ],
+      "unreconciled_figures": [],
+      "sources": [],
+      "charts": 1,
+      "answer": "The operating margin for FY2024 is:\n\n**12\u202f%**\u2003(120,000\u202f\u00f7\u202f1,000,000\u202f\u00d7\u202f100)\n\nThe operating margin for FY2025 is:\n\n**12.5\u202f%**\u2003(150,000\u202f\u00f7\u202f1,200,000\u202f\u00d7\u202f100)\n\n**Change in operating margin:**  \n12.5\u202f%\u202f\u2212\u202f12\u202f%\u202f=\u202f**0.5 percentage points** increase.\n\nThe chart below visualises the margin trend from FY2024 to FY2025."
+    }
+  ]
+}

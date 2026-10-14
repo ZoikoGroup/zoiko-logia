@@ -43,6 +43,11 @@ from app.orchestration.identifiers import (
 from app.orchestration.prescreen import run_prescreen
 from app.orchestration import claim_verification
 from app.orchestration.evidence_narrative import ground_causal_claims
+from app.orchestration.figure_reconciliation import unreconciled_figures
+from app.orchestration.agent_plan import WRITE_REQUEST_NOTICE, plan_request
+from app.orchestration.answer_formatting import renumber_ordered_lists
+from app.orchestration.citation_spans import evidence_by_ref, exact_spans
+from app.orchestration import workflow_state
 from app.orchestration.professional_boundary import CERTIFICATION_REFUSAL, requests_tax_certification
 from app.orchestration.series_summary import ground_series_summary
 from app.orchestration.retrieve import build_source_bundle
@@ -59,7 +64,7 @@ from app.orchestration.schemas import (
     GeneratedArtifactPublic,
 )
 from app.orchestration.audit_events import (
-    audit_agent_tool_called, audit_agent_completed,
+    audit_agent_tool_called, audit_agent_completed, audit_calculation_receipt, audit_agent_plan,
     audit_query_received, audit_request_validated, audit_request_rejected,
     audit_prescreen_completed, audit_retrieval_started, audit_retrieval_completed,
     audit_retrieval_failed, audit_risk_classified, audit_route_selected,
@@ -773,6 +778,56 @@ def _dated_fx_question(query: str) -> bool:
     return len(_find_currencies(query)) >= 2 and requested_rate_date(query) is not None
 
 
+async def _record_calculation_receipts(db, *, receipts: list[dict], query_id: str, correlation_id: str,
+                                       tenant_id: str, audit_chain_id: str, actor_id: str) -> None:
+    """Save each agent calculation as a calculation run (the immutable
+    receipt, §07.3) and audit it. Committed with the request's audit batch."""
+    from app.domains.calculations.models import CalculationRun
+    for receipt in receipts:
+        db.add(CalculationRun(
+            id=receipt["calculation_id"], tenant_id=tenant_id, query_id=query_id,
+            operation="expression", rule_version=receipt["formula_version"],
+            inputs=[{key: receipt.get(key) for key in ("label", "expression", "input_hash", "tool", "tool_version", "warnings")}],
+            output_value=receipt["result"], output_unit=receipt.get("units") or "",
+            rounding_mode="ROUND_HALF_UP", scale=2, status="completed",
+        ))
+        await audit_calculation_receipt(db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+                                        audit_chain_id=audit_chain_id, actor_id=actor_id, receipt=receipt)
+        workflow_state.note_calculation(receipt["calculation_id"])
+
+
+def final_text_needs_notice(text: str | None) -> bool:
+    """A real answer that does not already say Kriton won't act for the user."""
+    return bool((text or "").strip()) and WRITE_REQUEST_NOTICE.split(".")[0] not in text
+
+
+def _tool_authorizer(db, *, lock, actor_id: str, tenant_id: str, role: str):
+    """Per-step tool policy (ZL-ENG-AGT-01 §05, §10). Each proposed call is
+    decided from the user's CURRENT stored state, not from what the run
+    started with: a user deactivated, moved to another tenant or given a
+    different role during the run is refused at the next tool call. The
+    model's output never decides anything here."""
+    from sqlalchemy import select
+
+    from app.domains.identity.models import User
+    from app.domains.model_gateway.service import tool_registry
+    from app.domains.model_gateway.tool_registry import decide
+
+    async def authorize(tool: str):
+        async with lock:  # shares the request session with the knowledge-base tool
+            current = (await db.execute(
+                select(User.role, User.is_active, User.tenant_id).where(User.id == actor_id)
+            )).first()
+        current_role = current.role if current else ""
+        return decide(
+            tool_registry().get(tool), tool, role=current_role,
+            active=bool(current and current.is_active), same_tenant=bool(current and current.tenant_id == tenant_id),
+            role_unchanged=current_role == role, permissions=permissions_for_role(current_role),
+        )
+
+    return authorize
+
+
 async def ask_kriton(
     db: AsyncSession,
     sync_db: Session,
@@ -973,10 +1028,15 @@ async def ask_kriton(
                 actor_id=actor_id, clarification_cycle=clarification_cycle,
             )
         else:
-            message = (
-                "This professional task context is not supported by the current pilot. "
-                f"Reason: {', '.join(context_decision.reason_codes)}."
-            )
+            if "UNSUPPORTED_LANGUAGE" in context_decision.reason_codes:
+                from app.orchestration.language_support import scope_message
+                message = scope_message(context_decision.resolved_context.language
+                                        if context_decision.resolved_context else "")
+            else:
+                message = (
+                    "This professional task context is not supported by the current pilot. "
+                    f"Reason: {', '.join(context_decision.reason_codes)}."
+                )
             await audit_request_rejected(
                 db, query_id=query_id, correlation_id=correlation_id,
                 tenant_id=tenant_id, audit_chain_id=audit_chain_id,
@@ -1100,6 +1160,62 @@ async def ask_kriton(
             audit_reference=AuditReference(audit_chain_id=audit_chain_id),
         ))
 
+    # Complete supplied datasets are formatting/arithmetic tasks. Handle them
+    # after safety checks but before retrieval so unrelated web results cannot
+    # turn the user's own figures into an evidence-gap refusal.
+    from app.orchestration.supplied_charts import build_supplied_chart
+    supplied_chart = None
+    if not request.document_ids and request.source_scope != "DOCUMENTS_ONLY":
+        supplied_chart = build_supplied_chart(
+            request.query, screened_history(request.conversation_history),
+        )
+    if supplied_chart is not None:
+        if supplied_chart.clarification:
+            await audit_clarification_returned(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+                actor_id=actor_id, clarification_cycle=clarification_cycle,
+            )
+            return await finish(AskKritonResponse(
+                query_id=query_id, correlation_id=correlation_id,
+                outcome="clarification_required", route=ROUTE_CLARIFICATION,
+                safety=SafetyState(risk_level="LOW", policy_state="needs_more_context"),
+                confidence_state=CONF_INSUFFICIENT,
+                answer=ComposedAnswer(
+                    text=supplied_chart.text, output_text=supplied_chart.text,
+                    computed_from_question=True, response_kind=supplied_chart.response_kind,
+                    limitations=["Incomplete answer: the supplied inputs do not establish a complete total."],
+                ),
+                next_action=NextAction(type="ask_clarifying_question", message=supplied_chart.clarification),
+                audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+            ), json_dump=True)
+        await audit_risk_classified(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, risk_level="LOW", confidence_state=CONF_SUFFICIENT,
+        )
+        await audit_route_selected(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, route="CALCULATION", risk_level="LOW",
+            confidence_state=CONF_SUFFICIENT,
+        )
+        text = supplied_chart.markdown()
+        return await finish(AskKritonResponse(
+            query_id=query_id, correlation_id=correlation_id,
+            outcome="answered", route="CALCULATION",
+            safety=SafetyState(risk_level="LOW", policy_state="allowed", disclaimer_required=False),
+            confidence_state=CONF_SUFFICIENT,
+            answer=ComposedAnswer(
+                text=text, output_text=text, citations=[], computed_from_question=True,
+                response_kind=supplied_chart.response_kind,
+                limitations=["Built from figures supplied in this conversation; no external source was needed."],
+                prompt_id="deterministic-supplied-chart-v1",
+                prompt_name="Supplied data chart",
+            ),
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        ), json_dump=True)
+
     # Self-contained, allow-listed calculations are executed after the hard
     # safety pre-screen and before retrieval/model calls.  The matcher only
     # accepts known accounting formula families with explicitly labelled
@@ -1123,9 +1239,9 @@ async def ask_kriton(
         # allowed a conversion, so the agent fetches a dated, cited rate
         # (get_exchange_rate) and calculates with it.
         calculation_result = type(calculation_result)()
-    from app.orchestration.learned_answers import correction_critique, feedback_guidance
-    calculation_rejection = correction_critique.get() or ""
-    if calculation_result.status == "success" and not calculation_rejection:
+    from app.orchestration.learned_answers import feedback_guidance
+    calculation_rejection = ""
+    if calculation_result.status == "success":
         calculation_rejection = await feedback_guidance(db, tenant_id=tenant_id, user_id=actor_id, question=request.query)
     calculation_needs_evidence = bool(request.document_ids) or request.source_scope == "DOCUMENTS_ONLY" or bool(calculation_rejection)
     if calculation_result.status == "clarification_required" and re.search(
@@ -1210,6 +1326,23 @@ async def ask_kriton(
         request.query, screened_history(request.conversation_history),
     ) or _structured_visual_query_is_in_domain(request.query) is True
     needs_web = request.source_scope != "DOCUMENTS_ONLY" and not self_contained_calculation
+    # The plan comes first (ZL-ENG-AGT-01 §02, App. B4): it decides how much
+    # work the question needs before anything is fetched. A simple question
+    # skips the tool loop; an agent run fetches its own evidence through
+    # tools, so the web is not pre-fetched for it.
+    agent_mode = model_gateway_service.agent_mode_active()
+    # Only a turn that actually refers back ("show the same as a bar chart")
+    # is a follow-up; a new, self-contained question in the same chat is not.
+    execution_plan = plan_request(request.query, has_documents=bool(request.document_ids),
+                                  history=bool(request.conversation_history)
+                                  and _looks_like_contextual_follow_up(request.query))
+    run_agent_loop = agent_mode and execution_plan.mode == "agent"
+    await audit_agent_plan(
+        db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+        audit_chain_id=audit_chain_id, actor_id=actor_id, plan=execution_plan.summary(),
+        agent_mode=agent_mode, approved_tools=[spec.name for spec in model_gateway_service.tool_registry()
+                                               .allowed(permissions_for_role(role))],
+    )
     web_search_task = (
         asyncio.create_task(
             asyncio.wait_for(
@@ -1226,7 +1359,7 @@ async def ask_kriton(
                 timeout=25.0,
             )
         )
-        if needs_web else None
+        if needs_web and not run_agent_loop else None
     )
     # Live exact-figure sources (currency via Frankfurter, economic stats via
     # DBnomics). Self-gating + fail-soft: returns [] unless the question is
@@ -1246,7 +1379,6 @@ async def ask_kriton(
     # later "UK inflation" turn onto India's series.
     # In agent mode the model fetches exactly the figures it needs through
     # registered tools during composition, so nothing is pre-fetched here.
-    agent_mode = model_gateway_service.agent_mode_active()
     live_data_task = (
         asyncio.create_task(
             asyncio.wait_for(
@@ -1254,7 +1386,7 @@ async def ask_kriton(
                 timeout=25.0,
             )
         )
-        if needs_web and (not agent_mode or _dated_fx_question(request.query)) else None
+        if needs_web and (not run_agent_loop or _dated_fx_question(request.query)) else None
     )
     # These are speculative child tasks. Tie their lifetime to this request so
     # an early refusal, client disconnect, or end-to-end timeout cannot leave
@@ -1318,6 +1450,7 @@ async def ask_kriton(
                 tenant_id=tenant_id,
                 framework=(effective_context.framework or "") if effective_context else "",
                 effective_date=effective_context.period_end if effective_context else None,
+                engagement_id=effective_context.engagement_id if effective_context else None,
             ),
         )
         await audit_retrieval_completed(
@@ -1343,6 +1476,7 @@ async def ask_kriton(
                 jurisdiction=preliminary_bundle.jurisdiction,
                 framework=(effective_context.framework or "") if effective_context else "",
                 effective_date=effective_context.period_end if effective_context else None,
+                engagement_id=effective_context.engagement_id if effective_context else None,
             ),
         )
         await audit_licence_prefilter_completed(
@@ -1986,7 +2120,7 @@ async def ask_kriton(
                 prompt = None
 
         if (
-            explicit_visual_request and not live_evidence.observations and not agent_mode
+            explicit_visual_request and not live_evidence.observations and not run_agent_loop
             and deterministic_chart_text is None
         ):
             # Whether an approved prompt template happens to exist is an
@@ -2088,6 +2222,7 @@ async def ask_kriton(
                 result=deterministic_calculation.record,
                 chart=deterministic_calculation.chart,
             )
+            workflow_state.note_calculation(deterministic_calculation.record.calculation_id)
             grounded_input += deterministic_calculation.prompt_context()
 
     # Earlier turns (including answers with figures) for follow-ups such as
@@ -2097,11 +2232,11 @@ async def ask_kriton(
         grounded_input += "\n\nVerified application calculation (use these results and address every requested part):\n" + calculation_markdown(calculation_result)
     grounded_input += conversation_prompt(request.conversation_history)
     grounded_input += bare_chart_hint(request.query, request.conversation_history)
-    # A background re-answer after a thumbs-down (learned_answers.py): what
-    # the user said was wrong. Also changes the answer-cache key, so the
-    # rejected answer is never served back from the cache.
-    from app.orchestration.learned_answers import correction_critique, feedback_guidance
-    grounded_input += calculation_rejection or correction_critique.get() or await feedback_guidance(
+    # The user's own thumbs-down on this question asks for a re-check
+    # (structured reasons only, learned_answers.py). Also changes the
+    # answer-cache key, so the rejected answer is never served back.
+    from app.orchestration.learned_answers import feedback_guidance
+    grounded_input += calculation_rejection or await feedback_guidance(
         db, tenant_id=tenant_id, user_id=actor_id, question=request.query,
     )
 
@@ -2146,7 +2281,11 @@ async def ask_kriton(
     # through to the standard composition below, so agent mode can only add
     # evidence to an answer — never lose one.
     agent_outcome = None
-    if agent_mode and deterministic_chart_text is None:
+    if run_agent_loop and deterministic_chart_text is None:
+        # The knowledge base was already searched for this question (it feeds
+        # risk classification), so the agent's plan does not search it again:
+        # each search is ~30 round trips to the database.
+        agent_plan = execution_plan.without("search_knowledge_base") if governed_passages else execution_plan
         async def on_tool_start(tool: str) -> None:
             await report("tool_call", _TOOL_PROGRESS.get(tool, "Gathering evidence"))
 
@@ -2157,20 +2296,30 @@ async def ask_kriton(
                 step=record.step, tool=record.tool, arguments_hash=record.arguments_hash,
                 ok=record.ok, error_code=record.error_code,
                 duration_ms=record.duration_ms, source_count=record.source_count,
+                policy_decision_id=record.policy_decision_id, policy_reason=record.policy_reason,
+                untrusted_instructions=record.untrusted_instructions,
+                idempotency_key=record.idempotency_key, calculation_id=record.calculation_id,
+                planned=record.planned, resumed=record.resumed,
             )
 
         from app.orchestration.governed_retrieval import GovernedRetrievalContext, bind_context, reset_context
-        retrieval_token = bind_context(GovernedRetrievalContext(
+        retrieval_context = GovernedRetrievalContext(
             db=db, tenant_id=tenant_id, user_id=actor_id, query_id=query_id,
             jurisdiction=request.jurisdiction or conversation_jurisdiction(request.query, request.conversation_history),
             framework=(effective_context.framework or "") if effective_context else "",
             effective_date=effective_context.period_end if effective_context else None,
-        ))
+            engagement_id=effective_context.engagement_id if effective_context else None,
+        )
+        retrieval_token = bind_context(retrieval_context)
+        authorize_tool = _tool_authorizer(db, lock=retrieval_context.lock, actor_id=actor_id,
+                                          tenant_id=tenant_id, role=role)
         try:
             agent_outcome = await metrics.run(
                 "composition.agent",
                 model_gateway_service.run_agentic_completion(
-                    with_agent_instructions(grounded_input),
+                    with_agent_instructions(grounded_input) + agent_plan.as_prompt()
+                    + ("\n\nThe governed knowledge-base passages for this question are already included above; "
+                       "do not search the knowledge base again for the same point." if governed_passages else ""),
                     granted_permissions=permissions_for_role(role),
                     # Always the full GROQ_MODEL, never the fast one: planning
                     # tool calls is where the small model failed — refusing
@@ -2183,15 +2332,30 @@ async def ask_kriton(
                     chart_requested=chart_requested(request.query),
                     latest_fx_required=latest_fx_requested(request.query),
                     source_ref_offset=len(rag_citations),
+                    authorize=authorize_tool,
+                    request_id=query_id,
+                    planned_tools=agent_plan.tools,
+                    resume_key=idempotency_key or "",
+                    # The plan searches, and nothing was retrieved beforehand:
+                    # the agent must gather evidence before it answers.
+                    require_evidence=bool(set(agent_plan.tools) & {"search_web", "search_knowledge_base"})
+                    and not governed_passages and not document_sources,
                 ),
             )
             composed_text = agent_outcome.text
+            await _record_calculation_receipts(
+                db, receipts=agent_outcome.calculation_receipts, query_id=query_id,
+                correlation_id=correlation_id, tenant_id=tenant_id,
+                audit_chain_id=audit_chain_id, actor_id=actor_id,
+            )
             prompt_id, prompt_name = "agent", "Agent (governed tool calling)"
             await audit_agent_completed(
                 db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
                 audit_chain_id=audit_chain_id, actor_id=actor_id,
                 steps=agent_outcome.steps, stop_reason=agent_outcome.stop_reason,
                 tool_call_count=len(agent_outcome.tool_calls), fell_back=False,
+                tokens_used=agent_outcome.tokens_used, cost_usd=agent_outcome.cost_usd,
+                resumed_calls=agent_outcome.resumed_calls,
             )
         except Exception as exc:
             logger.warning(
@@ -2750,7 +2914,7 @@ async def ask_kriton(
             if check.passed:
                 revalidated = validate(pruned)
                 if revalidated is None or revalidated.passed:
-                    composed_text, release_check, validation = pruned, check, revalidated
+                    composed_text, release_check, validation = renumber_ordered_lists(pruned), check, revalidated
                     claim_verification_note = _UNSUPPORTED_REMOVED_NOTE
                 break
         # Pruning can create a new omission even when the original draft
@@ -2796,6 +2960,26 @@ async def ask_kriton(
         # is wrong: a correct, fully cited £90,000 threshold answer carried it.
         if release_check.passed and requires_authority and claim_verification_note == _CLAIMS_UNCONFIRMED_NOTE:
             claim_verification_note = None
+        # Gate G4 (§07.5): every material figure in the answer must match the
+        # question, the retrieved evidence, a tool result or a verified
+        # calculation. A figure with no source fails the release check like
+        # any other unverified claim (degraded or sent to review below).
+        unsupported_figures = unreconciled_figures(
+            composed_text,
+            "\n".join([request.query, grounded_input, *release_evidence])
+            + _agent_tool_evidence(agent_outcome, len(rag_citations))
+            # The agent's own calculator results carry no source, so they were
+            # missing here and a verified "4.17%" change was withheld.
+            + "".join(f"\n{r.get('expression')} = {r.get('result')} (rounded {r.get('rounded')})"
+                      for r in (agent_outcome.calculation_receipts if agent_outcome else [])),
+        )
+        if unsupported_figures and release_check.passed:
+            from app.orchestration.verification_service import AnswerVerification
+            release_check = AnswerVerification(
+                passed=False,
+                failures=[*release_check.failures, "unreconciled_figures: " + ", ".join(unsupported_figures[:8])],
+                rejected_claims=release_check.rejected_claims,
+            )
         # Not "decision": that name is the routing decision used below.
         release_decision = decide_release_failure(
             composed_text, release_check, risk_level=risk_level,
@@ -2822,7 +3006,16 @@ async def ask_kriton(
             audit_chain_id=audit_chain_id, actor_id=actor_id,
             passed=release_check.passed, requires_authority=requires_authority,
         )
+    if (execution_plan.write_request and final_text_needs_notice(composed_text)):
+        # §10.5: explain the steps, never act; say so first.
+        composed_text = WRITE_REQUEST_NOTICE + "\n\n" + composed_text
     final_text = composed_text
+    # Exact citation spans for the answer receipt (§06.4): the supporting
+    # sentence inside each cited reference's evidence.
+    workflow_state.note_citation_spans(exact_spans(final_text or "", evidence_by_ref([
+        *verification_evidence,
+        *(line for line in _agent_tool_evidence(agent_outcome, len(rag_citations)).split("\n\n") if line.startswith("[REF-")),
+    ])))
     await audit_validation_completed(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id, actor_id=actor_id,

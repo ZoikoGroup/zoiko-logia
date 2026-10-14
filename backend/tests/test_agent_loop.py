@@ -722,7 +722,7 @@ async def test_the_retrieved_data_row_cites_its_source() -> None:
     client = ScriptedClient([_reply(tool_calls=[_call("get_exchange_rate", {"key": "GBP"})]),
                              _reply("10,000 GBP = 11,780 EUR [REF-7].")])
     outcome = await run_agent(
-        client, model="m", system_prompt="sys", user_prompt="convert", registry=registry,
+        client, model="m", system_prompt="sys", user_prompt="convert 10,000 GBP to EUR", registry=registry,
         granted_permissions=frozenset(), limits=AgentLimits(), source_ref_offset=6,
     )
     assert "| GBP/EUR exchange rate — reference date | 2026-10-06 [REF-7] |" in outcome.text

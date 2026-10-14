@@ -852,9 +852,18 @@ async def lifespan(app: FastAPI):
     _require_supabase_config()
     try:
         if await _stored_fingerprint() != _startup_fingerprint():
-            raise RuntimeError("Database setup is required. Run python scripts/setup_database.py before starting the application.")
+            if not settings.SKIP_STARTUP_FINGERPRINT_CHECK:
+                raise RuntimeError("Database setup is required. Run python scripts/setup_database.py before starting the application.")
+            # Local development against a database shared with other branches:
+            # another branch's setup run rewrites the stored fingerprint, and
+            # rewriting it back would break that developer's server in turn.
+            print("WARNING: database setup fingerprint differs from this code; starting anyway because "
+                  "SKIP_STARTUP_FINGERPRINT_CHECK is true. Never set this in production.")
         await _verify_security_policies()
         await _warm_up_ml_models()
+        from app.domains.model_gateway.service import agent_mode_status
+        status = agent_mode_status()
+        print("Kriton agent mode: " + ("ON" if status["active"] else "OFF (" + "; ".join(status["reasons"]) + ")"))
         yield
     finally:
         await async_engine.dispose()
@@ -884,6 +893,48 @@ async def _verify_security_policies() -> None:
         raise RuntimeError("Required database security policies are missing. Run scripts/setup_database.py.")
 
 
+class _ErrorResponseMiddleware:
+    """Last-resort error response for any exception a route did not handle:
+    503 for a database or network outage (retryable), 500 otherwise, each with
+    a reference that appears next to the full traceback in the log. Responses
+    that already started streaming are left alone (their status is sent)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started = False
+
+        async def tracking_send(message):
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, tracking_send)
+        except Exception as exc:  # noqa: BLE001 — the point is to catch everything
+            if started:
+                raise
+            import uuid
+            reference = uuid.uuid4().hex[:8]
+            logger.error("Unhandled error %s on %s %s", reference, scope.get("method"), scope.get("path"),
+                         exc_info=(type(exc), exc, exc.__traceback__))
+            outage = isinstance(exc, (TimeoutError, OSError)) or type(exc).__module__.startswith(("asyncpg", "sqlalchemy"))
+            response = JSONResponse(
+                status_code=503 if outage else 500,
+                content={"detail": (
+                    "Kriton's database or network is temporarily unavailable. Please try again."
+                    if outage else "Kriton hit an unexpected error."
+                ) + f" (reference {reference})"},
+                headers={"Retry-After": "5"} if outage else None,
+            )
+            await response(scope, receive, send)
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="ZoikoLogia API & Safety Service",
@@ -892,6 +943,11 @@ def create_app() -> FastAPI:
         lifespan=lifespan
     )
 
+    # Registered before CORSMiddleware, so CORS wraps it: an unhandled error is
+    # turned into a JSON response INSIDE the CORS layer and carries its
+    # headers. Before this, any crash reached the browser as a misleading
+    # "blocked by CORS policy" message instead of the real error.
+    app.add_middleware(_ErrorResponseMiddleware)
     @app.middleware("http")
     async def impersonation_is_read_only(request, call_next):
         # Admin "view as" sessions (identity/governance.py) may only read. One
@@ -930,6 +986,26 @@ def create_app() -> FastAPI:
             headers={"Retry-After": "5"},
         )
 
+    try:
+        from asyncpg.exceptions import InterfaceError as _PgInterfaceError, PostgresError as _PgError
+    except ImportError:  # pragma: no cover - asyncpg is a hard dependency
+        _PgError = _PgInterfaceError = None
+
+    if _PgError is not None:
+        @app.exception_handler(_PgError)
+        @app.exception_handler(_PgInterfaceError)
+        async def database_driver_error_handler(_request, exc: Exception) -> JSONResponse:
+            # A raw driver error ("EMAXCONNSESSION max clients reached" when
+            # the pooler is full) escaped the SQLAlchemy handler above and
+            # became a 500 without CORS headers: the browser showed a CORS
+            # failure instead of a retryable message.
+            logger.error("Database driver error", exc_info=(type(exc), exc, exc.__traceback__))
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Kriton's database is busy. Please try again in a moment."},
+                headers={"Retry-After": "5"},
+            )
+
     @app.exception_handler(TimeoutError)
     async def database_timeout_handler(_request, exc: TimeoutError) -> JSONResponse:
         # A connection that could not be opened in time raised a bare
@@ -951,6 +1027,12 @@ def create_app() -> FastAPI:
             revision = revision_file.read_text().strip() if revision_file.exists() else os.getenv("RAILWAY_GIT_COMMIT_SHA", "unknown")
         from app.domains.evaluation.gold_set_contamination import runtime_config_hash
         return {"revision": revision, "config_hash": runtime_config_hash(Path(__file__).resolve().parent)}
+
+    @app.get("/health/agent", tags=["Health"])
+    async def health_agent() -> dict:
+        """Agent mode on/off and the reasons, with the registered tools."""
+        from app.domains.model_gateway.service import agent_mode_status
+        return agent_mode_status()
 
     @app.get("/health/live", tags=["Health"])
     async def health_live() -> dict[str, str]:

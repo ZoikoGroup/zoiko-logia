@@ -11,6 +11,7 @@ from app.domains.model_gateway.schemas import (
     TestRunRequest,
     TestRunResponse,
 )
+from app.domains.model_gateway import registry_view
 from app.domains.model_gateway.service import approve_prompt, list_models, list_prompts, run_test_prompt
 
 router = APIRouter(tags=["model_gateway"])
@@ -52,3 +53,27 @@ async def post_test_run(
 ) -> TestRunResponse:
     prompt, output = await run_test_prompt(db, payload.prompt_id, payload.input_text, actor.id, tenant_id=actor.tenant_id)
     return TestRunResponse(prompt_id=prompt.id, prompt_name=prompt.name, output_text=output)
+
+
+@router.get("/model-gateway/registry")
+async def get_registry_overview(
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(require_permission(MODEL_MANAGE)),
+) -> dict:
+    """Models each runtime role really uses, registry matches and usage."""
+    return await registry_view.registry_overview(db, tenant_id=actor.tenant_id)
+
+
+@router.get("/model-gateway/system-instructions")
+async def get_system_instructions(actor: User = Depends(require_permission(MODEL_MANAGE))) -> list[dict]:
+    """The system prompts the answer path sends, with content fingerprints."""
+    return registry_view.system_instructions()
+
+
+@router.get("/model-gateway/change-history")
+async def get_change_history(
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(require_permission(MODEL_MANAGE)),
+) -> list[dict]:
+    """Prompt approvals from the audit ledger, newest first."""
+    return await registry_view.change_history(db, tenant_id=actor.tenant_id)

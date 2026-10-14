@@ -123,6 +123,10 @@ def user_has_permission(user: User, permission: str) -> bool:
     )
 
 
+# Roles that may use Kriton's tools (ZL-ENG-AGT-01 §05.1 "approved user roles").
+# Every role this registry knows; a role it does not know is refused (fail closed).
+KRITON_TOOL_ROLES: frozenset[str] = frozenset(ROLE_PERMISSIONS)
+
 # Roles a service account may hold. Admin is excluded: administration needs a
 # person, and an API key must never be able to manage users, keys or grants.
 SERVICE_ACCOUNT_ROLES: frozenset[str] = ASSIGNABLE_ROLES - {"Admin"}

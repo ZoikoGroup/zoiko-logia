@@ -29,7 +29,11 @@ _PROMPT_INJECTION_PATTERNS = [
     # class shared between them), so — unlike the catastrophic-backtracking
     # regex fixed in calculation_service.py — there is exactly one way to
     # parse a run of them: no ambiguity, no exponential blowup.
-    r"ignore\s+(?:the\s+|all\s+|your\s+|any\s+)*(?:previous\s+|prior\s+|above\s+)*instructions?\b",
+    # A third qualifier group names WHICH instructions ("ignore previous
+    # SECURITY instructions") — it was not matched and passed the screen
+    # (ZL-ENG-AGT-01 §10 test). Distinct literal words, so still unambiguous.
+    r"ignore\s+(?:the\s+|all\s+|your\s+|any\s+)*(?:previous\s+|prior\s+|above\s+)*"
+    r"(?:security\s+|safety\s+|system\s+|access\s+|governance\s+|policy\s+)*instructions?\b",
     r"disregard\s+(?:(?:all|the)\s+)?(?:previous|prior|your)\s+instructions?\b",
     r"override\s+(?:the\s+|your\s+)?(system|safety|governance|policy)",
     r"forget\s+(?:the\s+|your\s+|all\s+)*(everything|rules|instructions)",
@@ -92,6 +96,18 @@ class PreScreenResult:
     trigger: Optional[str] = None        # "prompt_injection" | "data_exfiltration" |
                                           # "malicious_instruction" | "academic_integrity"
     trigger_detail: Optional[str] = None  # matched pattern for evidence reference
+
+
+def embedded_instructions(text: str) -> Optional[str]:
+    """For content that is DATA, not a request: a retrieved document, an
+    uploaded file or a tool result (ZL-ENG-AGT-01 §13 Demo C). Returns the
+    trigger ("prompt_injection" / "data_exfiltration") when the text contains
+    instruction-like wording, else None. The caller keeps the content but
+    marks it untrusted and records the finding; it never blocks on it."""
+    for trigger, patterns in (("prompt_injection", _INJECTION), ("data_exfiltration", _EXFILTRATION)):
+        if any(pattern.search(text or "") for pattern in patterns):
+            return trigger
+    return None
 
 
 def run_prescreen(query: str) -> PreScreenResult:

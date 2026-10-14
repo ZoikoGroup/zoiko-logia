@@ -343,13 +343,18 @@ def allowed_domains(
     them — this returns every domain for those jurisdictions, which is the
     behaviour the jurisdiction-only allowlist had before topics existed.
     """
-    keys = ["GLOBAL"]
+    keys: list[str] = []
     jkey = _jurisdiction_key(jurisdiction)
     if jkey in _TRUSTED_DOMAINS and jkey != "GLOBAL":
         keys.append(jkey)
     for detected in detect_jurisdictions(query):
-        if detected in _TRUSTED_DOMAINS and detected not in keys:
+        if detected in _TRUSTED_DOMAINS and detected not in keys and detected != "GLOBAL":
             keys.append(detected)
+    # The country's own authorities first, global bodies last: site_filter
+    # keeps only the first _MAX_SITE_FILTERS domains, and with GLOBAL first
+    # "How to file GSTR-3B" was searched on OECD/IFRS/IFAC and never reached
+    # gst.gov.in or cbic.gov.in.
+    keys.append("GLOBAL")
 
     wanted = topics or set(ALL_TOPICS)
     domains: list[str] = []

@@ -209,6 +209,11 @@ class EvidencePassage(BaseModel):
     score: float = 0.0
     rank: int = 0
     method: RetrievalMethod = "keyword"
+    # ZL-ENG-AGT-01 §06.4 / App. B3: the character range of the passage text
+    # that may be used (the whole passage once rights allow it) and the rights
+    # decisions that allowed it, so a citation resolves to a recorded span.
+    permitted_span: Optional[dict] = None
+    rights_decision: Optional[dict] = None
 
 
 class ExcludedEvidence(BaseModel):
@@ -375,6 +380,7 @@ class ComposedAnswer(BaseModel):
     # No citations, but the figures are the question's or the conversation's
     # own, computed or charted exactly — not model knowledge.
     computed_from_question: bool = False
+    response_kind: Optional[Literal["calculation", "chart", "chart_explanation"]] = None
     # Internal fields — kept for model_gateway wiring; never exposed to frontend
     prompt_id: str = "inline"
     prompt_name: str = "Inline RAG Prompt"
@@ -408,6 +414,8 @@ class NextAction(BaseModel):
 
 class AuditReference(BaseModel):
     audit_chain_id: str
+    # The answer receipt recorded before release (ZL-ENG-AGT-01 App. B3).
+    receipt_id: Optional[str] = None
 
 
 # ── Canonical Response Contract — §12 ────────────────────────────────────────

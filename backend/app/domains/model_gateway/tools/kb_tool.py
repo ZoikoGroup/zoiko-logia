@@ -15,6 +15,7 @@ from datetime import date
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.domains.identity.permissions import KRITON_TOOL_ROLES
 from app.domains.model_gateway.tool_registry import ToolResult, ToolSpec
 from app.orchestration.websearch import WebSource
 
@@ -46,6 +47,7 @@ async def _handle(args: KnowledgeBaseArgs) -> ToolResult:
                 context.db, query=args.query, tenant_id=context.tenant_id, query_id=context.query_id,
                 jurisdiction=args.jurisdiction or context.jurisdiction, framework=context.framework,
                 effective_date=args.as_of or context.effective_date, top_k=5,
+                engagement_id=context.engagement_id,
             )
         except asyncio.CancelledError:
             # A timeout cancels mid-query; the connection may be replaced by a
@@ -112,4 +114,7 @@ KNOWLEDGE_BASE_TOOL = ToolSpec(
     # persisted manifest, verified text); a second fanned-out search waits on
     # the lock. Co-located, the same path takes well under a second.
     timeout_seconds=45.0,
+    allowed_roles=KRITON_TOOL_ROLES,
+    tenant_scope="tenant",
+    owner="Massarius / Data",
 )

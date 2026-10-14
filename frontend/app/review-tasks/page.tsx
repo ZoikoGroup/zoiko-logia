@@ -4,10 +4,14 @@ import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, ClipboardCheck, Loader2, MessageSquareWarning, PencilLine, RefreshCw, XCircle } from "lucide-react";
 import { PageShell } from "@/components/governance/PageShell";
 import { AnswerRenderer } from "@/components/AnswerRenderer";
-import { ApiError, getAuthToken, listReviewCases, resolveReviewCase, getReviewEvidence, type ReviewEvidence, type ReviewCase } from "@/lib/api";
+import { ApiError, getAuthToken, listReviewCases, releaseReviewedAnswer, resolveReviewCase, triageReviewCase, getReviewEvidence, type ReviewEvidence, type ReviewCase } from "@/lib/api";
 
 type Decision = "approved" | "corrected" | "rejected" | "needs_evidence";
-type Filter = "open" | "needs_evidence" | "resolved";
+type Filter = "open" | "needs_evidence" | "resolved" | "released";
+
+const FILTER_LABEL: Record<Filter, string> = {
+  open: "Open", needs_evidence: "Needs evidence", resolved: "Resolved", released: "Released",
+};
 
 const SOURCE_LABEL: Record<string, string> = {
   escalation: "Escalated by validation",
@@ -18,9 +22,10 @@ function when(value: string) {
   return new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
-/** Ask Kriton review queue. Answers the validator escalated and answers users
- * reported land here; a reviewer approves, corrects or rejects each one, and
- * approved or corrected answers become evaluation (gold) cases. */
+/** Ask Kriton review queue (ZL-ENG-AGT-01 §08.3). Answers the validator
+ * escalated and answers users reported land here: a reviewer triages,
+ * approves, corrects or rejects each one. An approved or corrected answer is
+ * reused by Kriton only after a second reviewer re-tests and releases it. */
 export default function ReviewTasksPage() {
   const [filter, setFilter] = useState<Filter>("open");
   const [cases, setCases] = useState<ReviewCase[]>([]);
@@ -128,6 +133,29 @@ export default function ReviewTasksPage() {
     }
   }
 
+  async function stage(action: "triage" | "release") {
+    if (!selected) return;
+    const token = getAuthToken();
+    if (!token) return;
+    setSubmitting(true);
+    setSubmitError("");
+    try {
+      if (action === "triage") {
+        await triageReviewCase(token, selected.id, note.trim());
+        setLastResult("Triaged — ready for expert review.");
+      } else {
+        await releaseReviewedAnswer(token, selected.id);
+        setLastResult("Re-test passed — released. Kriton can now reuse this answer.");
+      }
+      setNote("");
+      await load(filter);
+    } catch (err) {
+      setSubmitError(err instanceof ApiError ? err.message : "Could not update the case.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   const canSubmit =
     !!mode && !submitting && (mode !== "corrected" || corrected.trim().length > 0)
     && (!["rejected", "needs_evidence"].includes(mode) || note.trim().length > 0)
@@ -136,11 +164,11 @@ export default function ReviewTasksPage() {
   return (
     <PageShell
       title="Review Tasks"
-      subtitle="Ask Kriton answers escalated by validation or reported by users. Approved and corrected answers become evaluation cases."
+      subtitle="Ask Kriton answers escalated by validation or reported by users. Approved answers are reused only after a second reviewer re-tests and releases them."
       showMetrics={false}
     >
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        {(["open", "needs_evidence", "resolved"] as Filter[]).map((value) => (
+        {(["open", "needs_evidence", "resolved", "released"] as Filter[]).map((value) => (
           <button
             key={value}
             type="button"
@@ -150,7 +178,7 @@ export default function ReviewTasksPage() {
               filter === value ? "bg-brand text-white" : "bg-soft text-muted hover:text-ink"
             }`}
           >
-            {value === "open" ? "Open" : value === "needs_evidence" ? "Needs evidence" : "Resolved"} ({counts[value] ?? 0})
+            {FILTER_LABEL[value]} ({value === "open" ? (counts.open ?? 0) + (counts.triaged ?? 0) : counts[value] ?? 0})
           </button>
         ))}
         <button
@@ -174,7 +202,7 @@ export default function ReviewTasksPage() {
         <p className="rounded-xl border border-line bg-panel p-4 text-sm text-bad">{loadError}</p>
       ) : cases.length === 0 ? (
         <p className="rounded-xl border border-line bg-panel p-10 text-center text-sm text-muted">
-          {filter === "open" ? "Nothing waiting for review." : filter === "needs_evidence" ? "No cases waiting for evidence." : "No resolved cases yet."}
+          {filter === "open" ? "Nothing waiting for review." : filter === "needs_evidence" ? "No cases waiting for evidence." : filter === "released" ? "No released answers yet." : "No resolved cases yet."}
         </p>
       ) : (
         <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
@@ -194,8 +222,10 @@ export default function ReviewTasksPage() {
                     {SOURCE_LABEL[item.source] ?? item.source} · {when(item.created_at)}
                   </span>
                   <span className="mt-1 line-clamp-2 block text-sm font-semibold text-ink">{item.question || "(question not recorded)"}</span>
-                  {item.reviewer_decision && (
-                    <span className="mt-1 block text-[11px] font-semibold capitalize text-muted">{item.reviewer_decision}</span>
+                  {(item.reviewer_decision || item.status === "triaged") && (
+                    <span className="mt-1 block text-[11px] font-semibold capitalize text-muted">
+                      {item.status === "triaged" ? "Triaged" : item.reviewer_decision}{item.status === "released" ? " · released" : ""}
+                    </span>
                   )}
                 </button>
               </li>
@@ -233,15 +263,34 @@ export default function ReviewTasksPage() {
                   </details>
                 ))}</div>}
 
-              {selected.status === "resolved" ? (
-                <p className="mt-4 text-sm text-muted">
-                  <span className="font-semibold capitalize text-ink">{selected.reviewer_decision}</span>
-                  {selected.resolved_at ? ` on ${when(selected.resolved_at)}` : ""}
-                  {selected.review_note ? ` — ${selected.review_note}` : ""}
-                </p>
+              {selected.status === "resolved" || selected.status === "released" ? (
+                <div className="mt-4 text-sm text-muted">
+                  <p>
+                    <span className="font-semibold capitalize text-ink">{selected.reviewer_decision}</span>
+                    {selected.resolved_at ? ` on ${when(selected.resolved_at)}` : ""}
+                    {selected.review_note ? ` — ${selected.review_note}` : ""}
+                    {selected.status === "released" ? " · Released for reuse" : ""}
+                  </p>
+                  {selected.status === "resolved" && ["approved", "corrected"].includes(selected.reviewer_decision ?? "") && (
+                    <div className="mt-3">
+                      <p className="text-xs">Not reused by Kriton yet. A different reviewer must re-test and release it.</p>
+                      <button type="button" onClick={() => void stage("release")} disabled={submitting}
+                        className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-ok px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+                        {submitting ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle2 size={13} />} Re-test &amp; release
+                      </button>
+                      {submitError && <p className="mt-2 text-xs font-semibold text-bad">{submitError}</p>}
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div className="mt-4">
                   <div className="flex flex-wrap gap-2">
+                    {selected.status === "open" && (
+                      <button type="button" onClick={() => void stage("triage")} disabled={submitting}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-soft px-3 py-1.5 text-xs font-semibold text-ink disabled:opacity-50">
+                        <ClipboardCheck size={14} /> Triage
+                      </button>
+                    )}
                     <button type="button" onClick={() => choose("approved")} disabled={!selected.draft_answer}
                       className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-40 ${mode === "approved" ? "bg-ok text-white" : "bg-ok/10 text-ok hover:bg-ok/20"}`}>
                       <CheckCircle2 size={14} /> Approve
