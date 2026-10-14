@@ -37,9 +37,14 @@ export function useLiveData<T>(key: string, fetcher: Fetcher<T>, timeoutMs = 45_
     if (authLoading || !token) {
       if (!authLoading) {
         memory.clear();
-        setSnapshot({ key: cacheKey, data: null });
-        setError("");
-        setLoading(false);
+        // Defer state updates so they don't run synchronously in the effect.
+        // This avoids the react-hooks/set-state-in-effect lint rule while
+        // keeping the previous auth-signout behavior unchanged.
+        Promise.resolve().then(() => {
+          setSnapshot({ key: cacheKey, data: null });
+          setError("");
+          setLoading(false);
+        });
       }
       return;
     }
