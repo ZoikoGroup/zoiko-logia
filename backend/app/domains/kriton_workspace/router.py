@@ -354,3 +354,45 @@ async def get_insights(
     from app.domains.kriton_workspace.insights import build_insights
 
     return await build_insights(db, current_user, window_days)
+
+
+# Evidence Packs: an on-demand ZIP for a saved answer or a draft (see evidence_pack.py).
+@router.get("/evidence-packs/{kind}/{item_id}")
+async def download_evidence_pack(
+    kind: str,
+    item_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    from app.domains.kriton_workspace.evidence_pack import build_evidence_pack
+
+    content, filename, manifest = await build_evidence_pack(db, current_user, kind, item_id)
+    await record_event_async(
+        db,
+        tenant_id=current_user.tenant_id,
+        event_name="kriton_workspace.evidence_pack_exported",
+        emitting_service="kriton_workspace",
+        actor_id=current_user.id,
+        subject_type=kind,
+        subject_id=item_id,
+        payload={"query_id": manifest["query_id"], "counts": manifest["counts"],
+                 "files": {name: f["sha256"] for name, f in manifest["files"].items()}},
+    )
+    return Response(
+        content=content, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# Compliance Calendar: general statutory deadlines from rules (see compliance_calendar.py).
+@router.get("/compliance-calendar")
+async def get_compliance_calendar(
+    days: int = 90,
+    jurisdiction: str = "",
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    from datetime import date
+
+    from app.domains.kriton_workspace.compliance_calendar import upcoming_deadlines
+
+    return upcoming_deadlines(date.today(), days, jurisdiction)
