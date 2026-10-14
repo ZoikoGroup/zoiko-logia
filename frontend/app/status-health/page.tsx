@@ -1,39 +1,67 @@
-import { PageShell } from "@/components/governance/PageShell";
-import { EditableModule } from "@/components/shell/EditableModule";
-import { Activity, CheckCircle2, Clock3, ServerCrash } from "lucide-react";
+"use client";
 
+import { Activity, Loader2 } from "lucide-react";
+import { useLiveData } from "@/components/overview/useLiveData";
+import { LiveSourceStatus } from "@/components/governance/LiveSourceStatus";
+import { PageShell } from "@/components/governance/PageShell";
+import { Card } from "@/components/governance/Card";
+import { Pill } from "@/components/governance/Pill";
+import { getOperationsStatus, type StatusCheck } from "@/lib/api";
+
+const STATE: Record<StatusCheck["state"], { label: string; tone: "ok" | "bad" | "neutral" }> = {
+  operational: { label: "Operational", tone: "ok" },
+  down: { label: "Down", tone: "bad" },
+  not_configured: { label: "Not configured", tone: "neutral" },
+};
+
+/** Live checks against each service this backend depends on, run each time
+ * the page loads (and every minute while it is open). */
 export default function StatusHealthPage() {
+  const { data, error, loading, signedOut, reload } = useLiveData(
+    "status-health", (token, signal) => getOperationsStatus(token, signal), 30_000,
+  );
+  const checks = data?.checks ?? [];
+  const down = checks.filter((c) => c.state === "down").length;
+  const operational = checks.filter((c) => c.state === "operational").length;
+
   return (
     <PageShell
       title="Status & Health"
-      subtitle="Live system status across all ZoikoLogia services."
+      subtitle="Live checks of the database, authentication, search, diagrams, background jobs, audit ledger and AI providers."
       showMetrics={false}
     >
-      <EditableModule
-        phase={4}
-        description="Service uptime, latency, and incident history dashboard."
-        icon={Activity}
-        panelTitle="Service status"
-        primaryAction="Add monitor"
-        stats={[
-          { label: "Services", value: 14, tone: "brand", icon: Activity },
-          { label: "Operational", value: 13, tone: "ok", icon: CheckCircle2 },
-          { label: "Degraded", value: 1, tone: "warn", icon: Clock3 },
-          { label: "Incidents", value: 0, tone: "bad", icon: ServerCrash },
-        ]}
-        records={[
-          { title: "Kriton orchestration API", meta: "p95 420ms / no open incident", status: "Healthy", tone: "ok" },
-          { title: "Source ingestion worker", meta: "queue delay 12m / backfill active", status: "Degraded", tone: "warn" },
-          { title: "Audit ledger archive", meta: "last chain check passed", status: "Healthy", tone: "ok" },
-        ]}
-        fields={[
-          { label: "Monitor name", value: "Source ingestion worker" },
-          { label: "Severity", value: "Under review", type: "select" },
-          { label: "Owner", value: "Operations" },
-          { label: "Runbook note", value: "Scale ingestion worker if queue delay remains above 15 minutes for two checks.", type: "textarea" },
-        ]}
-        checklist={["Metric source linked", "Alert rule active", "Runbook assigned", "Incident route tested"]}
-      />
+      <LiveSourceStatus loading={loading} error={error} signedOut={signedOut} reload={reload} />
+      {error || signedOut ? null : loading && !data ? (
+        <div className="flex items-center justify-center py-12 text-muted">
+          <Loader2 className="animate-spin mr-2" size={16} /> Running health checks…
+        </div>
+      ) : (
+        <Card title="Services">
+          <p className={`mb-3 text-sm font-semibold ${down ? "text-bad" : "text-ok"}`}>
+            {down ? `${down} service${down === 1 ? "" : "s"} down` : "All configured services operational"}
+            <span className="font-normal text-muted"> · {operational} operational · checked{" "}
+              {data ? new Date(data.checkedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : ""}
+            </span>
+          </p>
+          <ul className="divide-y divide-line">
+            {checks.map((check) => (
+              <li key={check.name} className="flex items-center justify-between gap-3 py-2.5">
+                <span className="flex min-w-0 items-center gap-2.5">
+                  <Activity size={15} className="shrink-0 text-brand" />
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium text-ink">{check.name}</span>
+                    <span className="block text-xs text-muted">{check.detail}</span>
+                  </span>
+                </span>
+                <span className="flex shrink-0 items-center gap-2">
+                  {check.latencyMs !== null && <span className="text-xs text-muted">{check.latencyMs} ms</span>}
+                  <Pill tone={STATE[check.state].tone}>{STATE[check.state].label}</Pill>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
     </PageShell>
   );
 }

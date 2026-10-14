@@ -5,12 +5,6 @@ export const METRICS = [
   { label: "Source-drift alerts", value: "9", detail: "4 affect production" },
 ];
 
-// [provider, scope, status, restriction]; Active→ok, Conditional→warn, Suspended→bad
-export const PROVIDERS: [string, string, string, string][] = [
-  ["OpenAI Enterprise", "LLM model routing", "Active", "Zero-retention verified"],
-  ["Vector DB EU", "Embeddings storage", "Conditional", "Transfer review due"],
-  ["Tax source API", "Source retrieval", "Suspended", "License renewal missing"],
-];
 
 export const LOCALIZATION_CARD = {
   heading: "Localization & accessibility",
@@ -26,17 +20,6 @@ export const COMPLIANCE_CALENDAR: [string, string, string, "Upcoming" | "At risk
   ["Sep 30, 2026", "Annual accessibility audit", "Compliance", "Upcoming"],
 ];
 
-export type Alert = {
-  severity: "critical" | "high" | "medium";
-  title: string;
-  detail: string;
-  age: string;
-};
 
-export const ALERTS: Alert[] = [
-  { severity: "critical", title: "LLM provider outage — failover engaged", detail: "Primary provider unavailable, traffic rerouted", age: "12m ago" },
-  { severity: "high", title: "Anomalous query volume from single API key", detail: "300% above baseline in the last hour", age: "52m ago" },
-  { severity: "medium", title: "Model latency SLO breach", detail: "p95 response time exceeded threshold", age: "2h ago" },
-];
 
 // [gate, status]; Passed→ok, Partial→warn, Pending→neutral
