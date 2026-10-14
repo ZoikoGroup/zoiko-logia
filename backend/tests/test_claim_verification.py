@@ -45,7 +45,7 @@ def _fake_groq(monkeypatch, payload, calls):
         def __init__(self, *a, **kw):
             self.chat = SimpleNamespace(completions=_Completions())
 
-    monkeypatch.setattr(cv, "AsyncGroq", _Client)
+    monkeypatch.setattr("app.domains.model_gateway.auxiliary.AsyncGroq", _Client)
     monkeypatch.setenv("GROQ_API_KEY", "test")
     monkeypatch.setenv("CLAIM_VERIFICATION", "on")
 
@@ -100,7 +100,7 @@ async def test_a_model_failure_never_blocks_the_answer(monkeypatch):
         def __init__(self, *a, **kw):
             raise RuntimeError("provider down")
 
-    monkeypatch.setattr(cv, "AsyncGroq", _Broken)
+    monkeypatch.setattr("app.domains.model_gateway.auxiliary.AsyncGroq", _Broken)
     monkeypatch.setenv("GROQ_API_KEY", "test")
     monkeypatch.setenv("CLAIM_VERIFICATION", "on")
     assert not (await cv.verify_claims(cv.extract_claims(ANSWER), EVIDENCE)).ran

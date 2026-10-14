@@ -36,6 +36,7 @@ class GovernedRetrievalContext:
     jurisdiction: str = ""
     framework: str = ""
     effective_date: date | None = None
+    engagement_id: str | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -66,16 +67,17 @@ async def retrieve_governed_evidence(
     framework: str = "",
     effective_date: date | None = None,
     top_k: int = 8,
+    engagement_id: str | None = None,
 ) -> tuple[SourceBundle, list[tuple[str, str, str]]]:
     """The frozen, persisted SourceBundle and its verified passage text
     (passage_id, locator, content), in rank order."""
     preliminary = await build_source_bundle(
         db, query=query, jurisdiction=jurisdiction, tenant_id=tenant_id,
-        framework=framework, effective_date=effective_date, top_k=top_k,
+        framework=framework, effective_date=effective_date, top_k=top_k, engagement_id=engagement_id,
     )
     licence = await license_gate.check_eligibility(
         db, preliminary.sources, tenant_id=tenant_id, jurisdiction=preliminary.jurisdiction,
-        framework=framework, effective_date=effective_date,
+        framework=framework, effective_date=effective_date, engagement_id=engagement_id,
     )
     bundle = bundle_builder.build_bundle(preliminary, licence)
     # Persisted under the request's query_id, so a reviewer replaying the

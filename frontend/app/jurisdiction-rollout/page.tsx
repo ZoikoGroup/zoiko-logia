@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { Loader2, Globe } from "lucide-react";
+import { useLiveData } from "@/components/overview/useLiveData";
+import { LiveSourceStatus } from "@/components/governance/LiveSourceStatus";
 import { PageShell } from "@/components/governance/PageShell";
 import { Card } from "@/components/governance/Card";
 import { Pill } from "@/components/governance/Pill";
 import { PanelHeader, PANEL_CLASS } from "@/components/governance/PanelHeader";
-import { getAuthToken, getJurisdictionSummary, type JurisdictionSummary } from "@/lib/api";
+import { getJurisdictionSummary } from "@/lib/api";
 
 const READINESS_TONE: Record<string, "ok" | "warn" | "neutral"> = {
   READY: "ok",
@@ -27,16 +28,9 @@ const BAR_COLOR: Record<string, string> = {
 };
 
 export default function JurisdictionRolloutPage() {
-  const [summaries, setSummaries] = useState<JurisdictionSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const { data, error, loading, signedOut, reload } = useLiveData(`jurisdiction-rollout`, (token, signal) => getJurisdictionSummary(token, signal), 20_000);
+  const summaries = data ?? [];
 
-  useEffect(() => {
-    getJurisdictionSummary(getAuthToken())
-      .then(setSummaries)
-      .catch(() => setError("Could not load jurisdiction readiness from the server."))
-      .finally(() => setLoading(false));
-  }, []);
 
   return (
     <PageShell
@@ -44,7 +38,7 @@ export default function JurisdictionRolloutPage() {
       subtitle="Real source-coverage readiness per jurisdiction, computed from the approved source register — not a fixed checklist."
       showMetrics={false}
     >
-      {error && <p className="text-xs text-bad mb-3">{error}</p>}
+      <LiveSourceStatus loading={loading} error={error} signedOut={signedOut} reload={reload} />
 
       <div className="rounded-xl border border-line bg-soft p-3 mb-4 text-xs text-muted">
         Readiness here is derived from real approved-source counts: <Pill tone="ok">READY</Pill> means 5+ approved
@@ -53,7 +47,7 @@ export default function JurisdictionRolloutPage() {
         privacy review, or QA gates — those controls aren&rsquo;t built.
       </div>
 
-      {loading ? (
+      {error || signedOut ? null : loading && !data ? (
         <div className="flex items-center justify-center py-12 text-muted">
           <Loader2 className="animate-spin mr-2" size={16} /> Computing jurisdiction readiness…
         </div>

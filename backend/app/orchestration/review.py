@@ -9,11 +9,16 @@ answer was wrong. Now:
   validator escalation      ──> review case (source "escalation", with the draft)
   reviewer approves/corrects ──> gold BenchmarkCase with the reviewer's key facts
                                  (scripts/run_baseline_eval.py --only gold)
+
+Stages (ZL-ENG-AGT-01 §08.3), stored in review_cases.status:
+  open (received) → triaged → resolved (accepted/rejected by an expert)
+  → released, after a re-test, by a second person.
+A reviewer's approved or corrected answer is held in the pending dataset and
+is not used by Kriton until it is re-tested and released (release_reviewed_answer).
 """
 from __future__ import annotations
 
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +28,9 @@ from app.orchestration.models import AnswerFeedback, ReviewCase
 from app.orchestration.persisted_objects import create_review_case
 
 GOLD_DATASET_ID = "kriton-reviewed-gold"
+# Approved/corrected answers awaiting re-test and release; never read by Kriton.
+PENDING_GOLD_DATASET_ID = "kriton-reviewed-pending"
+OPEN_STATUSES = ("open", "triaged", "needs_evidence")
 FEEDBACK_REASONS = frozenset({
     "wrong_answer", "wrong_calculation", "wrong_source", "outdated", "wrong_jurisdiction",
     "missing_evidence", "missing_citation", "poor_explanation", "other",
@@ -93,7 +101,9 @@ async def record_feedback(
 
 async def list_review_cases(db: AsyncSession, *, tenant_id: str, status: str = "open", limit: int = 50) -> list[ReviewCase]:
     query = select(ReviewCase).where(ReviewCase.tenant_id == tenant_id)
-    if status != "all":
+    if status == "open":
+        query = query.where(ReviewCase.status.in_(("open", "triaged")))
+    elif status != "all":
         query = query.where(ReviewCase.status == status)
     result = await db.execute(query.order_by(ReviewCase.created_at.desc()).limit(limit))
     return list(result.scalars())
@@ -106,8 +116,8 @@ async def review_counts(db: AsyncSession, *, tenant_id: str) -> dict[str, int]:
     return {status: count for status, count in rows.all()}
 
 
-async def _gold_dataset(db: AsyncSession, tenant_id: str) -> EvaluationDataset:
-    dataset_id = f"{GOLD_DATASET_ID}:{tenant_id}"
+async def _gold_dataset(db: AsyncSession, tenant_id: str, base: str = GOLD_DATASET_ID) -> EvaluationDataset:
+    dataset_id = f"{base}:{tenant_id}"
     dataset = await db.get(EvaluationDataset, dataset_id)
     if dataset is None:
         dataset = EvaluationDataset(id=dataset_id, tenant_id=tenant_id, version="1", status="ACTIVE", domain="ask_kriton")
@@ -138,7 +148,7 @@ async def resolve_review_case(
     )).scalar_one_or_none()
     if case is None:
         raise ReviewError("Review case not found")
-    if case.status not in ("open", "needs_evidence"):
+    if case.status not in OPEN_STATUSES:
         raise ReviewError("Review case is already resolved")
     corrected_answer = corrected_answer.strip()
     if decision == "corrected" and not corrected_answer:
@@ -168,13 +178,25 @@ async def resolve_review_case(
 
     gold = None
     if decision in ("approved", "corrected") and case.query_text.strip():
-        dataset = await _gold_dataset(db, tenant_id)
+        # Held as pending: not reused until re-tested and released (§08.3).
+        dataset = await _gold_dataset(db, tenant_id, PENDING_GOLD_DATASET_ID)
+        approved_answer = corrected_answer if decision == "corrected" else case.draft_answer
+        refs = await reviewed_source_refs(db, tenant_id=tenant_id, query_id=case.query_id)
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=APPROVAL_VALID_DAYS)).isoformat()
+        # The approval is bound to exactly this answer, its facts, its
+        # evidence, the reviewer, the decision and an expiry (§10.4).
+        binding = "|".join([
+            BINDING_PREFIX + _binding_hash(question=case.query_text, answer=approved_answer, key_facts=facts,
+                                           evidence_refs=refs, reviewer_id=reviewer_id, decision=decision,
+                                           expires_at=expires_at),
+            reviewer_id, decision, expires_at,
+        ])
         gold = BenchmarkCase(
-            id=f"gold-{uuid.uuid4().hex[:12]}",
+            id=gold_case_id(case.id),
             dataset_id=dataset.id,
             query_text=case.query_text,
-            gold_answer=corrected_answer if decision == "corrected" else case.draft_answer,
-            source_refs=await reviewed_source_refs(db, tenant_id=tenant_id, query_id=case.query_id),
+            gold_answer=approved_answer,
+            source_refs=[*refs, binding],
             tenant_id=tenant_id, category=category,
             risk_scope=case.risk_level if case.risk_level in ("LOW", "MEDIUM", "HIGH", "RESTRICTED") else "LOW",
             key_facts=facts,
@@ -185,12 +207,130 @@ async def resolve_review_case(
     return case, gold
 
 
+BINDING_PREFIX = "binding:"
+APPROVAL_VALID_DAYS = 90
+
+
+def _binding_hash(*, question: str, answer: str, key_facts: list[str], evidence_refs: list[str],
+                  reviewer_id: str, decision: str, expires_at: str) -> str:
+    import hashlib
+    import json
+    material = json.dumps({
+        "question": question, "answer": answer, "key_facts": sorted(key_facts),
+        "evidence": sorted(evidence_refs), "reviewer": reviewer_id, "decision": decision, "expires": expires_at,
+    }, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
+def evidence_refs(source_refs: list[str] | None) -> list[str]:
+    """The evidence references of a gold case, without its binding entry."""
+    return [ref for ref in (source_refs or []) if not ref.startswith(BINDING_PREFIX)]
+
+
+def approval_is_valid(gold: BenchmarkCase, *, now: datetime | None = None) -> bool:
+    """§10.4: the approval still covers exactly this answer, its amounts and
+    facts, its evidence, its reviewer and decision, and has not expired. A
+    gold case approved before bindings existed has none and is accepted as
+    before (it still expires through LEARNED_ANSWER_TTL)."""
+    bindings = [ref for ref in (gold.source_refs or []) if ref.startswith(BINDING_PREFIX)]
+    if not bindings:
+        return True
+    try:
+        digest, reviewer_id, decision, expires_at = bindings[0].split("|", 3)
+        digest = digest.removeprefix(BINDING_PREFIX)
+    except ValueError:
+        return False
+    if datetime.fromisoformat(expires_at) < (now or datetime.now(timezone.utc)):
+        return False
+    return digest == _binding_hash(
+        question=gold.query_text, answer=gold.gold_answer, key_facts=list(gold.key_facts or []),
+        evidence_refs=evidence_refs(gold.source_refs), reviewer_id=reviewer_id, decision=decision,
+        expires_at=expires_at,
+    )
+
+
+def gold_case_id(review_case_id: str) -> str:
+    return f"gold-{review_case_id}"
+
+
+async def triage_review_case(db: AsyncSession, *, tenant_id: str, case_id: str, note: str = "") -> ReviewCase:
+    """received → triaged: a reviewer has looked at the case and accepted it
+    for expert review."""
+    case = (await db.execute(
+        select(ReviewCase).where(ReviewCase.id == case_id, ReviewCase.tenant_id == tenant_id).with_for_update()
+    )).scalar_one_or_none()
+    if case is None:
+        raise ReviewError("Review case not found")
+    if case.status != "open":
+        raise ReviewError("Only a newly received case can be triaged")
+    case.status = "triaged"
+    if note.strip():
+        case.review_note = note.strip()
+    await db.commit()
+    await db.refresh(case)
+    return case
+
+
+async def release_reviewed_answer(
+    db: AsyncSession, *, tenant_id: str, case_id: str, releaser_id: str,
+) -> tuple[ReviewCase, BenchmarkCase]:
+    """Re-test a reviewer-approved answer and release it for reuse.
+
+    Maker-checker: the person releasing must not be the reviewer who approved
+    it. The re-test is deterministic: every key fact is still in the answer
+    and every governed source version it relied on is still in force. Only
+    then does the answer move from the pending set into the set Kriton reads.
+    """
+    from app.orchestration.reviewed_answers import _PROVENANCE_MARKER, _versions_in_force
+
+    case = (await db.execute(
+        select(ReviewCase).where(ReviewCase.id == case_id, ReviewCase.tenant_id == tenant_id).with_for_update()
+    )).scalar_one_or_none()
+    if case is None:
+        raise ReviewError("Review case not found")
+    if case.status != "resolved" or case.reviewer_decision not in ("approved", "corrected"):
+        raise ReviewError("Only an approved or corrected answer can be released")
+    if case.reviewer_id and case.reviewer_id == releaser_id:
+        raise ReviewError("A different reviewer must release this answer (maker-checker)")
+    gold = await db.get(BenchmarkCase, gold_case_id(case.id))
+    if gold is None or gold.tenant_id != tenant_id or not gold.dataset_id.startswith(PENDING_GOLD_DATASET_ID):
+        raise ReviewError("There is no pending reviewed answer for this case")
+    failures = [f"key fact missing: {fact}" for fact in (gold.key_facts or [])
+                if fact.casefold() not in (gold.gold_answer or "").casefold()]
+    if not approval_is_valid(gold):
+        failures.append("the answer, its evidence or its approval changed or expired since it was approved")
+    versions = {ref for ref in evidence_refs(gold.source_refs) if _PROVENANCE_MARKER not in ref}
+    if versions and not await _versions_in_force(db, versions):
+        failures.append("a source version it relied on is no longer in force")
+    if failures:
+        raise ReviewError("Re-test failed: " + "; ".join(failures))
+    live = await _gold_dataset(db, tenant_id)
+    gold.dataset_id = live.id
+    case.status = "released"
+    await db.commit()
+    await db.refresh(case)
+    return case, gold
+
+
 async def reviewed_source_refs(db: AsyncSession, *, tenant_id: str, query_id: str) -> list[str]:
-    from app.orchestration.models import EvidenceBundleManifest
+    """The evidence an approval is bound to (ZL-ENG-AGT-01 §10.4): the
+    governed source versions the answer used, plus a content fingerprint of
+    each web page it cited. The approved answer is reused only while every
+    version is still in force and the pages it relied on are unchanged
+    (reviewed_answers.safe_memory_guidance)."""
+    from app.orchestration.models import EvidenceBundleManifest, QueryAnswerRecord
+    from app.orchestration.reviewed_answers import evidence_fingerprint
     rows = (await db.execute(select(EvidenceBundleManifest).where(
         EvidenceBundleManifest.tenant_id == tenant_id, EvidenceBundleManifest.query_id == query_id,
     ))).scalars().all()
-    return sorted({p["source_version_id"] for row in rows for p in row.manifest.get("passages", [])})
+    refs = {p["source_version_id"] for row in rows for p in row.manifest.get("passages", [])}
+    record = (await db.execute(select(QueryAnswerRecord).where(
+        QueryAnswerRecord.tenant_id == tenant_id, QueryAnswerRecord.query_id == query_id,
+    ))).scalar_one_or_none()
+    for item in (record.external_evidence or []) if record else []:
+        if isinstance(item, dict) and item.get("url") and item.get("content"):
+            refs.add(evidence_fingerprint(item["url"], item["content"]))
+    return sorted(refs)
 
 
 async def review_evidence(db: AsyncSession, *, tenant_id: str, case_id: str) -> list[dict]:

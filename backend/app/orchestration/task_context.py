@@ -82,7 +82,13 @@ def resolve_task_context(
     spec = TASK_SPECS[selection.task_type]
     jurisdiction = _normalise(selection.jurisdiction or request.jurisdiction, _JURISDICTIONS)
     framework = _normalise(selection.framework, _FRAMEWORKS)
-    language = (selection.language or "en").strip().lower()
+    # The question's own language wins when it is clearly not English
+    # (language_support.detect_language): the selection defaults to "en", and
+    # a question written in Spanish cannot be answered properly in any case,
+    # so it meets the same honest scope limit as one tagged "es" (§09).
+    from app.orchestration.language_support import SUPPORTED_LANGUAGES, detect_language
+    detected = detect_language(request.query)
+    language = (detected if detected and detected != "en" else (selection.language or "en")).strip().lower()
     context = TaskContext(
         task_type=selection.task_type,
         task_spec_version=spec.version,
@@ -109,7 +115,7 @@ def resolve_task_context(
             status="unsupported", invalid_fields=["engagement_id"],
             reason_codes=["ENGAGEMENT_AUTHORIZATION_NOT_AVAILABLE"], resolved_context=context,
         )
-    if language != "en":
+    if language not in SUPPORTED_LANGUAGES:
         return ContextDecision(
             status="unsupported", invalid_fields=["language"],
             reason_codes=["UNSUPPORTED_LANGUAGE"], resolved_context=context,

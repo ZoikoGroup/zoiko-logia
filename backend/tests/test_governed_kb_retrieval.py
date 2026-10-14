@@ -211,3 +211,76 @@ def test_numbers_are_normalised_for_keyword_matching():
     # the 22nd September 2025 effective date its keyword match.
     assert {"56", "7500", "22", "100000"} <= _tokens("the 56th meeting, Rs 7,500, 22nd September, ₹1,00,000")
     assert "2025" in _tokens("September, 2025")   # a comma before a year is not a thousands separator
+
+
+async def test_a_source_that_may_not_be_sent_to_a_model_never_takes_a_result_slot(kb):
+    """ZL-ENG-AGT-01 §06.2: rights are applied before any text is searched.
+    A version cleared for retrieval but not for model transmission is
+    excluded up front, not dropped by the licence gate after ranking."""
+    [usable] = await _vat_source(kb, "VAT Notice 700/1", [
+        ("Registration", "general", "You must register for VAT when taxable turnover exceeds £90,000."),
+    ])
+    [blocked] = await _vat_source(kb, "Commercial VAT handbook", [
+        ("Registration", "general", "You must register for VAT when taxable turnover exceeds £90,000."),
+    ])
+    from sqlalchemy import select, update
+    blocked_version = (await kb.execute(select(SourcePassage.source_version_id).where(SourcePassage.id == blocked.id))).scalar()
+    await kb.execute(update(SourceRight).where(
+        SourceRight.source_version_id == blocked_version, SourceRight.operation == "model_transmission",
+    ).values(decision="deny", reason_code="LICENCE_NO_AI_USE"))
+    await kb.flush()
+    bundle = await build_source_bundle(kb, query="When must I register for VAT?", jurisdiction="", tenant_id="t")
+    selected = [passage.passage_id for passage in bundle.passages]
+    assert usable.id in selected and blocked.id not in selected
+    assert any(item.source_version_id == blocked_version for item in bundle.excluded_evidence)
+
+
+async def test_conflicting_sources_are_flagged_and_routed_to_human_review(kb):
+    """§06.5 / Demo B: two applicable sources recorded as conflicting are not
+    blended — the bundle is marked conflicting and the route is human review."""
+    from sqlalchemy import select
+    from app.domains.source_library.models import SourceRelationship
+    from app.orchestration.routing_matrix import CONF_CONFLICTING, ROUTE_HUMAN_REVIEW, resolve_route
+    [first] = await _vat_source(kb, "VAT Notice 700/1 (2024)", [
+        ("Registration", "general", "You must register for VAT when taxable turnover exceeds £90,000."),
+    ])
+    [second] = await _vat_source(kb, "VAT guidance draft", [
+        ("Registration", "general", "You must register for VAT when taxable turnover exceeds £85,000."),
+    ])
+    version_of = {p.id: (await kb.execute(select(SourcePassage.source_version_id).where(SourcePassage.id == p.id))).scalar()
+                  for p in (first, second)}
+    kb.add(SourceRelationship(tenant_id="GLOBAL_CONTROL", from_version_id=version_of[first.id],
+                              to_version_id=version_of[second.id], relationship_type="conflicts"))
+    await kb.flush()
+    bundle = await build_source_bundle(kb, query="When must I register for VAT?", jurisdiction="", tenant_id="t")
+    assert bundle.confidence_state == CONF_CONFLICTING
+    assert set(bundle.conflict_version_ids) == set(version_of.values())
+    assert resolve_route("LOW", bundle.confidence_state).route == ROUTE_HUMAN_REVIEW
+
+
+def test_table_rows_keep_their_header_labels():
+    """§06.3: a table row split from its table still says what each value is."""
+    from app.orchestration.websearch import _html_to_text
+    text = _html_to_text("<table><tr><th>Scheme</th><th>Leave above</th></tr>"
+                         "<tr><td>Flat Rate</td><td>£230,000</td></tr></table>")
+    assert text == "Scheme: Flat Rate; Leave above: £230,000"
+
+
+async def test_an_undated_version_cannot_be_approved(kb):
+    """§06.1: applicability dates are required before a version can be used."""
+    import pytest
+    from fastapi import HTTPException
+    from app.domains.source_library.service import approve_source_version
+    [passage] = await _vat_source(kb, "Undated guidance", [("A", "general", "Some text about VAT registration.")])
+    version = await kb.get(SourceVersion, (await kb.execute(
+        select_version_for(passage.id))).scalar())
+    version.status, version.effective_from, version.approved_by = "PROPOSED", None, None
+    await kb.flush()
+    with pytest.raises(HTTPException) as raised:
+        await approve_source_version(kb, approver_id="checker", source_id=version.source_id, version_id=version.id)
+    assert raised.value.status_code == 409 and "effective-from" in raised.value.detail
+
+
+def select_version_for(passage_id):
+    from sqlalchemy import select
+    return select(SourcePassage.source_version_id).where(SourcePassage.id == passage_id)

@@ -1,33 +1,112 @@
-/** GET /command-center — the signed-in user's own home view (backend
- * app/domains/command_center/home.py). Used by the Command Center (home page)
- * and My Workspace. Empty collections mean there is genuinely nothing yet. */
+// Shapes returned by GET /command-center and GET /command-center/workspace
+// (backend/app/domains/command_center/service.py). Every value is counted live
+// from the tenant's records; nothing here is sample data.
 
-import type { DomainState, GovernanceAlert, GovernanceDecision } from "@/lib/governance-dashboard-types";
+export type OverviewPermissions = {
+  review: boolean;
+  reviewResolve: boolean;
+  safety: boolean;
+  safetyManage: boolean;
+  support: boolean;
+  source: boolean;
+  sourceManage: boolean;
+  evaluation: boolean;
+};
 
-export type RecentWorkItem = { id: string; kind: string; title: string; at: string | null; href: string };
-export type Deadline = { id: string; title: string; dueAt: string; overdue: boolean; href: string };
-export type Matter = { id: string; name: string; status: string; myRole: string; createdAt: string | null };
-export type MyBreakGlass = { id: string; status: string; permissions: string[]; expiresAt: string | null };
+export type AttentionItem = {
+  id: string;
+  level: "high" | "attention";
+  title: string;
+  context: string;
+  due: string;
+  action: string;
+  href: string;
+};
+
+export type DeadlineItem = {
+  id: string;
+  title: string;
+  context: string;
+  date: string;
+  dueAt?: string;
+  state: "critical" | "approaching" | "scheduled";
+  href: string;
+};
+
+export type ReviewQueueItem = {
+  id: string;
+  title: string;
+  risk: string;
+  reason: string;
+  createdAt: string | null;
+  age: string;
+  href: string;
+};
+
+export type WorkItem = {
+  id: string;
+  kind: "saved_answer" | "draft" | "document" | "artifact" | "review";
+  title: string;
+  context: string;
+  verb: string;
+  href: string;
+  at: string | null;
+  age: string;
+};
+
+export type ActiveMatter = { id: string; name: string; status: string; createdAt: string | null; age: string };
 
 export type CommandCenterViewModel = {
-  user: { firstName: string; fullName: string; email: string; role: string };
-  workspace: { name: string; tenantId: string };
-  generatedAt: string;
-  counts: {
-    questionsLast7Days: number;
-    savedAnswers: number;
-    drafts: number;
-    attention: number;
-    reviews: number;
-    deadlines: number;
-    activeMatters: number;
+  contextToken: string;
+  activeContext: {
+    workspaceName: string;
+    jurisdictionCode: string;
+    frameworkCode: string;
+    periodLabel: string;
+    roleId: string;
   };
-  attentionItems: GovernanceAlert[];
-  reviewQueue: GovernanceDecision[];
-  deadlines: Deadline[];
-  activeMatters: Matter[];
-  recentWork: RecentWorkItem[];
-  breakGlass: MyBreakGlass[];
-  /** Null for Learners, who have no governance view. */
-  assurance: { overallState: DomainState; blockedGates: number } | null;
+  user: { displayName: string; role: string };
+  workspaceName: string;
+  permissions: OverviewPermissions;
+  summary: {
+    attentionCount: number;
+    reviewCount: number;
+    upcomingDeadlineCount: number;
+    overdueCount: number;
+    deadlineHorizonDays: number;
+  };
+  attentionItems: AttentionItem[];
+  activeMatters: ActiveMatter[];
+  activeMatterCount: number;
+  deadlines: DeadlineItem[];
+  reviewQueue: { open: number; items: ReviewQueueItem[] } | null;
+  evidence: { proposed: number; unreviewed: number; withdrawn: number; restrictedLicence: number; inUse: number } | null;
+  recentWork: WorkItem[];
+  assurance: {
+    overallState: "ok" | "attention";
+    controls: Record<string, "ok" | "attention" | "stale">;
+    policyVersion: string;
+    lastAuditEventAt: string | null;
+    lastAuditEventAge: string;
+  };
+  generatedAt: string;
+};
+
+export type WorkspaceTask = {
+  id: string;
+  title: string;
+  status: string;
+  tone: "bad" | "warn" | "info";
+  href: string;
+  age: string;
+};
+
+export type MyWorkspaceViewModel = {
+  user: { displayName: string; fullName: string; email: string; role: string };
+  workspaceName: string;
+  counts: { savedAnswers: number; drafts: number; documents: number; generatedFiles: number; reviewsResolved: number };
+  queues: { reviews: number; escalations: number };
+  recentActivity: WorkItem[];
+  pendingTasks: WorkspaceTask[];
+  generatedAt: string;
 };

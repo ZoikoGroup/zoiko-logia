@@ -28,6 +28,13 @@ class SourceUseContext:
     jurisdiction: str = ""
     framework: str = ""
     effective_date: date | None = None
+    # The engagement the request runs under (ZL-ENG-AGT-01 §06.2). A right
+    # whose terms_reference is "engagement:<id>" is usable only inside that
+    # engagement; requests outside any engagement cannot use it.
+    engagement_id: str | None = None
+
+
+ENGAGEMENT_TERMS_PREFIX = "engagement:"
 
 
 @dataclass(frozen=True)
@@ -93,6 +100,9 @@ def _decide(
         return SourceUseDecision(False, "RIGHT_EXPIRED", right.rights_version)
     if right.decision != "allow":
         return SourceUseDecision(False, right.reason_code or "RIGHT_DENIED", right.rights_version)
+    terms = right.terms_reference or ""
+    if terms.startswith(ENGAGEMENT_TERMS_PREFIX) and terms[len(ENGAGEMENT_TERMS_PREFIX):] != (context.engagement_id or ""):
+        return SourceUseDecision(False, "ENGAGEMENT_BOUNDARY", right.rights_version)
     return SourceUseDecision(True, "ALLOWED", right.rights_version)
 
 
@@ -113,6 +123,48 @@ async def can_use(
     now: datetime | None = None,
 ) -> SourceUseDecision:
     return (await can_use_many(db, [source_version_id], context, operation, now=now))[source_version_id]
+
+
+async def can_use_many_operations(
+    db: AsyncSession,
+    source_version_ids: list[str],
+    context: SourceUseContext,
+    operations: tuple[str, ...],
+    *,
+    now: datetime | None = None,
+) -> dict[str, dict[str, SourceUseDecision]]:
+    """can_use_many for several operations in the same two queries:
+    {operation: {version_id: decision}}. Retrieval needs both the retrieval
+    and the model-transmission right; asking for them separately cost an
+    extra round trip to the database on every question."""
+    current = now or datetime.now(timezone.utc)
+    ids = list(dict.fromkeys(source_version_ids))
+    known = tuple(op for op in operations if op in SOURCE_OPERATIONS)
+    if not ids:
+        return {op: {} for op in operations}
+    superseding = aliased(SourceVersion)
+    fetched = (await db.execute(
+        select(SourceVersion, Source, superseding.effective_from)
+        .join(Source, Source.id == SourceVersion.source_id)
+        .outerjoin(superseding, superseding.id == SourceVersion.superseded_by_version_id)
+        .where(SourceVersion.id.in_(ids))
+    )).all()
+    versions = {version.id: (version, source) for version, source, _ in fetched}
+    superseding_dates = {version.id: start for version, _, start in fetched}
+    rights: dict[tuple[str, str], list[SourceRight]] = {}
+    if known:
+        for right in (await db.execute(select(SourceRight).where(
+            SourceRight.source_version_id.in_(ids), SourceRight.operation.in_(known),
+        ))).scalars():
+            rights.setdefault((right.operation, right.source_version_id), []).append(right)
+    return {
+        op: {
+            vid: _decide(*versions.get(vid, (None, None)), _latest_right(rights.get((op, vid), [])),
+                         context, op, current, superseding_dates.get(vid))
+            for vid in ids
+        }
+        for op in operations
+    }
 
 
 async def can_use_many(

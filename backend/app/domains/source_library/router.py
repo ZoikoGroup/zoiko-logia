@@ -32,6 +32,7 @@ from app.domains.source_library.service import (
     grant_source_right,
     list_passages,
     list_sources,
+    list_source_bundles,
     revoke_source_version,
     save_uploaded_file,
 )
@@ -47,6 +48,14 @@ async def get_sources(
 ) -> list[SourcePublic]:
     sources = await list_sources(db, category, tenant_id=actor.tenant_id)
     return [SourcePublic.model_validate(s) for s in sources]
+
+
+@router.get("/bundles")
+async def get_source_bundles(
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(require_permission(SOURCE_READ)),
+) -> list[dict]:
+    return await list_source_bundles(db, tenant_id=actor.tenant_id)
 
 
 @router.get("/expiring", response_model=ExpiringSourceOut | None)

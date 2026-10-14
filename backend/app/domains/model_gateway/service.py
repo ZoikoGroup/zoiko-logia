@@ -17,6 +17,7 @@ from app.domains.model_gateway.providers.groq_adapter import (
     KRITON_SYSTEM_PROMPT,
     GroqAdapter,
 )
+from app.domains.model_gateway.auxiliary import approved_providers
 from app.domains.model_gateway.tool_registry import ToolRegistry, build_default_registry
 from app.domains.model_gateway.providers.google_adapter import GeminiAdapter
 from app.domains.model_gateway.providers.openai_adapter import OpenAIAdapter
@@ -48,11 +49,14 @@ def _select_adapter():
     answer quality than Llama), with Groq as the fallback — see
     _complete_with_fallback.
     """
-    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+    # Only providers this deployment approved may receive data, in preference
+    # order (ZL-ENG-AGT-01 §11.5, auxiliary.approved_providers).
+    approved = approved_providers()
+    if "gemini" in approved and (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
         return GeminiAdapter()
-    if os.environ.get("GROQ_API_KEY"):
+    if "groq" in approved and os.environ.get("GROQ_API_KEY"):
         return GroqAdapter()
-    if os.environ.get("OPENAI_API_KEY"):
+    if "openai" in approved and os.environ.get("OPENAI_API_KEY"):
         return OpenAIAdapter()
     return MockProviderAdapter()
 
@@ -123,7 +127,8 @@ async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
         # model answers the same prompt, so try it once before failing.
         logger.warning("Fast answer model %s failed; retrying with the main model", model)
         output = await bounded_complete(adapter, None)
-    if _invalid_output(output) and is_gemini and os.environ.get("GROQ_API_KEY"):
+    # Fall back only to a provider that is itself approved (§11.5).
+    if _invalid_output(output) and is_gemini and os.environ.get("GROQ_API_KEY") and "groq" in approved_providers():
         logger.warning("Gemini answer generation failed; trying Groq")
         output = await bounded_complete(GroqAdapter(), model)
     if _invalid_output(output):
@@ -218,12 +223,33 @@ def _tool_registry() -> ToolRegistry:
     return _default_registry
 
 
+def tool_registry() -> ToolRegistry:
+    """The production tool registry (shared with the per-step policy check)."""
+    return _tool_registry()
+
+
+def agent_mode_status() -> dict:
+    """Whether the governed agent loop is on, and if not, exactly why, so it
+    can never be switched off silently (ZL-ENG-AGT-01 §05)."""
+    reasons = []
+    if not get_settings().KRITON_AGENT_MODE:
+        reasons.append("KRITON_AGENT_MODE is not true")
+    if not os.environ.get("GROQ_API_KEY"):
+        reasons.append("GROQ_API_KEY is not set")
+    if "groq" not in approved_providers():
+        reasons.append("groq is not in MODEL_GATEWAY_APPROVED_PROVIDERS")
+    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+        reasons.append("a Gemini key is set, so Gemini answers and the tool loop is off")
+    return {"active": not reasons, "reasons": reasons, "tools": tool_registry().names()}
+
+
 def agent_mode_active() -> bool:
     """Agent mode needs the flag AND Groq as the answering provider — the
     loop speaks the OpenAI-compatible tool-calling API, and when Gemini is
     configured it answers instead (see _select_adapter)."""
     gemini_active = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
-    return get_settings().KRITON_AGENT_MODE and bool(os.environ.get("GROQ_API_KEY")) and not gemini_active
+    return (get_settings().KRITON_AGENT_MODE and bool(os.environ.get("GROQ_API_KEY"))
+            and "groq" in approved_providers() and not gemini_active)
 
 
 async def run_agentic_completion(
@@ -236,10 +262,17 @@ async def run_agentic_completion(
     chart_requested: bool = False,
     latest_fx_required: bool = False,
     source_ref_offset: int = 0,
+    authorize=None,
+    request_id: str = "",
+    planned_tools: tuple[str, ...] = (),
+    resume_key: str = "",
+    require_evidence: bool = False,
 ) -> AgentOutcome:
     """Answer through the governed tool-calling loop. Raises on provider
     failure, AgentUnavailable when Groq isn't usable, and RuntimeError on an
     empty answer — the caller falls back to run_grounded_completion()."""
+    if "groq" not in approved_providers():
+        raise AgentUnavailable("Groq is not an approved provider for this deployment")
     adapter = GroqAdapter()
     if adapter.client is None:
         raise AgentUnavailable("GROQ_API_KEY is not configured")
@@ -255,12 +288,20 @@ async def run_agentic_completion(
             max_steps=settings.AGENT_MAX_STEPS,
             max_tool_calls=settings.AGENT_MAX_TOOL_CALLS,
             max_seconds=settings.AGENT_MAX_SECONDS,
+            max_total_tokens=settings.AGENT_MAX_TOKENS,
+            max_cost_usd=settings.AGENT_MAX_COST_USD,
+            price_per_million_tokens=settings.MODEL_PRICE_PER_MILLION_TOKENS,
         ),
         on_tool_start=on_tool_start,
         on_tool_done=on_tool_done,
         chart_requested=chart_requested,
         latest_fx_required=latest_fx_required,
         source_ref_offset=source_ref_offset,
+        authorize=authorize,
+        request_id=request_id,
+        planned_tools=planned_tools,
+        resume_key=resume_key,
+        require_evidence=require_evidence,
     )
     if not outcome.text.strip():
         raise RuntimeError("Agent produced an empty answer")

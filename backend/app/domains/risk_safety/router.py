@@ -12,10 +12,10 @@ Endpoints:
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_sync_db
@@ -24,6 +24,7 @@ from app.domains.identity.rbac import get_current_user, require_permission
 from app.domains.identity.permissions import SAFETY_READ, SAFETY_MANAGE
 from app.domains.risk_safety import service as safety_service
 from app.domains.risk_safety import refusal_templates
+from app.domains.risk_safety import insights
 from app.domains.risk_safety.schemas import (
     ClassifyRequest,
     SafetyDecision,
@@ -133,6 +134,49 @@ def create_safety_override(
     """Create a new time-bounded safety override."""
     request = request.model_copy(update={"actor_id": user.id, "authority_role": user.role})
     return safety_service.create_safety_override(db, request, tenant_id=user.tenant_id)
+
+
+# ─── AI Governance views ────────────────────────────────────────────────────
+
+@router.get("/summary")
+def get_safety_summary(db: Session = Depends(get_sync_db),
+                       user: User = Depends(require_permission(SAFETY_READ))):
+    """Ledger-wide totals, risk mix, 14-day trend and escalation counts."""
+    return insights.safety_summary(db, tenant_id=user.tenant_id)
+
+
+@router.get("/policy")
+def get_policy_view(db: Session = Depends(get_sync_db),
+                    user: User = Depends(require_permission(SAFETY_READ))):
+    """The risk policy as enforced: routing matrix, SLAs, escalation rules,
+    RESTRICTED sub-class routing and recent risk-level counts."""
+    return insights.policy_view(db, tenant_id=user.tenant_id)
+
+
+@router.get("/boundaries")
+def get_boundary_view(db: Session = Depends(get_sync_db),
+                      user: User = Depends(require_permission(SAFETY_READ))):
+    """Professional-boundary checks Ask Kriton runs, and how often they fired."""
+    return insights.boundary_view(db, tenant_id=user.tenant_id)
+
+
+class BoundaryCheckRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=20000)
+    user_specific: bool = False
+    confidence_state: Literal["sufficient", "limited", "insufficient", "conflicting_sources", "stale_sources"] = "sufficient"
+    authority_level: Literal["primary", "secondary", "internal"] = "secondary"
+
+
+@router.post("/boundaries/check")
+def check_boundary(request: BoundaryCheckRequest,
+                   user: User = Depends(require_permission(SAFETY_READ))):
+    """Run a draft answer through the same wording checks as live answers."""
+    return insights.check_answer_text(
+        request.text,
+        user_specific=request.user_specific,
+        confidence_state=request.confidence_state,
+        authority_level=request.authority_level,
+    )
 
 
 # ─── Risk Policies ──────────────────────────────────────────────────────────

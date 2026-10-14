@@ -29,8 +29,8 @@ from app.core.supabase_auth import verify_token
 from app.domains.identity.models import User
 from app.domains.identity.permissions import REVIEW_READ, REVIEW_RESOLVE
 from app.domains.identity.rbac import get_current_user, require_permission
-from app.orchestration import learned_answers, review
-from app.orchestration.audit_events import audit_answer_feedback, audit_review_resolved
+from app.orchestration import review, workflow_state
+from app.orchestration.audit_events import audit_answer_feedback, audit_review_resolved, audit_review_stage
 from app.orchestration.schemas import AskKritonRequest, AskKritonResponse, TaskSpec, VisualizationTelemetryEvent
 from app.orchestration.service import ask_kriton
 from app.orchestration.visualization.frontend_telemetry import log_frontend_interaction
@@ -42,6 +42,7 @@ from app.domains.audit_ledger.event_envelope import (
     begin_audit_batch,
     commit_audit_batch,
     discard_audit_batch,
+    record_event_async,
 )
 from app.orchestration.identifiers import abandon_idempotency, scope_idempotency_key, store_idempotency
 
@@ -73,6 +74,42 @@ async def _abandon_after_failure(db: AsyncSession, idempotency_key: str, tenant_
         logger.warning("Could not release idempotency key after a failed request", exc_info=True)
 
 
+def answer_receipt(result, run: "workflow_state.WorkflowRun") -> dict:
+    """AnswerReceipt (ZL-ENG-AGT-01 App. B3) from the response and its run."""
+    from app.orchestration.routing_matrix import POLICY_VERSION
+    answer = getattr(result, "answer", None)
+    safety = getattr(result, "safety", None)
+    return {
+        "request_id": result.query_id,
+        "route": getattr(result, "route", None),
+        "risk": getattr(safety, "risk_level", None),
+        "outcome": getattr(result, "outcome", None),
+        "citation_ids": [c.ref_id for c in answer.citations] if answer else [],
+        "calculation_ids": list(run.calculation_ids),
+        "citation_spans": dict(run.citation_spans),
+        "review_required": getattr(result, "outcome", None) == "escalated",
+        "policy_version": POLICY_VERSION,
+        "workflow_final_state": run.state.value,
+    }
+
+
+async def _record_cancellation(kwargs: dict, run: "workflow_state.WorkflowRun") -> None:
+    """A durable record that a request was cancelled, on its own session (the
+    request's session may be mid-query). Never raises."""
+    from app.core.database import AsyncSessionLocal
+    try:
+        async with AsyncSessionLocal() as session:
+            await record_event_async(
+                session, tenant_id=kwargs["tenant_id"], event_name="request_cancelled",
+                emitting_service="orchestration", actor_id=kwargs.get("actor_id"),
+                subject_type="request", subject_id=kwargs.get("idempotency_key") or "unkeyed",
+                payload=run.summary(), replay_relevance="SUPPORTING",
+            )
+            await session.commit()
+    except Exception:  # noqa: BLE001 — cancellation must still propagate
+        logger.warning("Could not record a cancelled Ask Kriton request")
+
+
 async def _run_with_deadline(**kwargs) -> AskKritonResponse:
     if kwargs.get("idempotency_key"):
         request = kwargs.get("request")
@@ -91,9 +128,32 @@ async def _run_with_deadline(**kwargs) -> AskKritonResponse:
             kwargs["idempotency_key"], engagement_id, kwargs.get("actor_id")
         )
     token = begin_audit_batch()
+    run = workflow_state.WorkflowRun()
+    run_token = workflow_state.current_run.set(run)
     try:
         async with asyncio.timeout(settings.ASK_KRITON_TIMEOUT_SECONDS):
             result = await ask_kriton(**kwargs)
+            failed = bool(result.next_action and getattr(result.next_action, "type", "") == "composition_failed")
+            run.finish(released=not failed)
+            # The request's state path is committed with its other audit
+            # events, before the response leaves (ZL-ENG-AGT-01 §05.2).
+            await record_event_async(
+                kwargs["db"], tenant_id=kwargs["tenant_id"], event_name="workflow_completed",
+                emitting_service="orchestration", actor_id=kwargs.get("actor_id"),
+                subject_type="query", subject_id=result.query_id, correlation_id=result.query_id,
+                payload=run.summary(), replay_relevance="REQUIRED",
+            )
+            # The answer receipt (App. B3): what was released and on what basis,
+            # committed with the audit batch before the response leaves.
+            receipt = await record_event_async(
+                kwargs["db"], tenant_id=kwargs["tenant_id"], event_name="answer_receipt",
+                emitting_service="orchestration", actor_id=kwargs.get("actor_id"),
+                subject_type="query", subject_id=result.query_id, correlation_id=result.query_id,
+                payload=answer_receipt(result, run), replay_relevance="REQUIRED",
+            )
+            if receipt is not None and getattr(result, "audit_reference", None) is not None:
+                result = result.model_copy(update={"audit_reference": result.audit_reference.model_copy(
+                    update={"receipt_id": receipt.id})})
             if kwargs.get("idempotency_key"):
                 await store_idempotency(
                     kwargs["db"], kwargs["idempotency_key"], kwargs["tenant_id"],
@@ -101,7 +161,22 @@ async def _run_with_deadline(**kwargs) -> AskKritonResponse:
                 )
             # Audit events and the terminal idempotency response are committed
             # together before the response can leave the service.
-            await commit_audit_batch(kwargs["db"], token)
+            try:
+                await commit_audit_batch(kwargs["db"], token)
+            except Exception as exc:
+                # No durable audit record, no answer (ZL-ENG-AGT-01 App. D):
+                # withhold it, alert operations, and tell the user plainly.
+                logger.critical(
+                    "AUDIT_COMMIT_FAILED: answer withheld for request %s (%s)",
+                    result.query_id, type(exc).__name__,
+                )
+                with suppress(Exception):
+                    await kwargs["db"].rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=(f"Kriton could not record this answer, so it was withheld "
+                            f"(request {result.query_id}). Please try again."),
+                ) from exc
             return result
     except TimeoutError as exc:
         with suppress(ValueError, RuntimeError):
@@ -120,12 +195,22 @@ async def _run_with_deadline(**kwargs) -> AskKritonResponse:
         if exc.status_code != status.HTTP_409_CONFLICT and kwargs.get("idempotency_key"):
             await _abandon_after_failure(kwargs["db"], kwargs["idempotency_key"], kwargs["tenant_id"])
         raise
+    except asyncio.CancelledError:
+        # The user left (stream closed) or the server is stopping. The
+        # unfinished batch is dropped, but the cancellation itself is kept.
+        with suppress(ValueError, RuntimeError):
+            discard_audit_batch(token)
+        run.advance(workflow_state.WorkflowState.CANCELLED)
+        await asyncio.shield(_record_cancellation(kwargs, run))
+        raise
     except Exception:
         with suppress(ValueError, RuntimeError):
             discard_audit_batch(token)
         if kwargs.get("idempotency_key"):
             await _abandon_after_failure(kwargs["db"], kwargs["idempotency_key"], kwargs["tenant_id"])
         raise
+    finally:
+        workflow_state.current_run.reset(run_token)
 
 
 def _user_key(request: Request) -> str:
@@ -277,8 +362,8 @@ class AnswerFeedbackOut(BaseModel):
     id: str
     rating: str
     review_case_id: Optional[str] = None
-    # Self-learning (learned_answers.py): a verified answer kept on thumbs-up,
-    # a background re-answer started on thumbs-down.
+    # Always False. Kept so older clients still parse the response: feedback
+    # no longer saves answers or starts automatic re-answers (ZL-ENG-AGT-01 §08).
     learned: bool = False
     self_correction_started: bool = False
 
@@ -335,10 +420,10 @@ async def post_answer_feedback(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnswerFeedbackOut:
-    """Rate an answer. Kriton learns from it with no reviewer needed: a
-    thumbs-up keeps a fact-checked answer for the same question next time, a
-    thumbs-down retires it and re-answers the question in the background (see
-    learned_answers.py). A thumbs-down also opens an optional review case."""
+    """Rate an answer. A rating is a signal, never knowledge (ZL-ENG-AGT-01
+    §08): it is stored and audited, and a thumbs-down opens a review case for a
+    reviewer. Nothing is learned, saved for reuse or re-answered automatically;
+    only a reviewer's decision on the case can change a future answer."""
     try:
         feedback = await review.record_feedback(
             db, tenant_id=current_user.tenant_id, user_id=current_user.id, query_id=payload.query_id,
@@ -351,28 +436,12 @@ async def post_answer_feedback(
         db, query_id=payload.query_id, tenant_id=current_user.tenant_id, actor_id=current_user.id,
         rating=feedback.rating, reasons=feedback.reasons, review_case_id=feedback.review_case_id,
     )
-    learned = started = False
-    try:
-        if feedback.rating == "up":
-            learned = await learned_answers.learn_from_upvote(
-                db, tenant_id=current_user.tenant_id, user_id=current_user.id, query_id=payload.query_id,
-            )
-        elif feedback.rating == "down":
-            started = await learned_answers.correct_after_downvote(
-                db, _run_with_deadline, tenant_id=current_user.tenant_id, user_id=current_user.id,
-                role=current_user.role, query_id=payload.query_id, reasons=feedback.reasons,
-                comment=feedback.comment or "",
-            )
-    except Exception:  # noqa: BLE001 — the rating itself is already stored
-        logger.exception("Learning from feedback on %s failed", payload.query_id)
-        await db.rollback()
-    return AnswerFeedbackOut(id=feedback.id, rating=feedback.rating, review_case_id=feedback.review_case_id,
-                             learned=learned, self_correction_started=started)
+    return AnswerFeedbackOut(id=feedback.id, rating=feedback.rating, review_case_id=feedback.review_case_id)
 
 
 @router.get("/review-cases", response_model=ReviewQueueOut)
 async def get_review_cases(
-    status_filter: Literal["open", "needs_evidence", "resolved", "all"] = "open",
+    status_filter: Literal["open", "triaged", "needs_evidence", "resolved", "released", "all"] = "open",
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permission(REVIEW_READ)),
@@ -409,6 +478,46 @@ async def resolve_review_case(
         gold_case_id=gold.id if gold else None,
     )
     return ReviewResolutionOut(case=_case_out(case), gold_case_id=gold.id if gold else None)
+
+
+class ReviewStageIn(BaseModel):
+    note: str = Field(default="", max_length=4000)
+
+
+@router.post("/review-cases/{case_id}/triage", response_model=ReviewCaseOut)
+async def triage_review_case(
+    case_id: str,
+    payload: ReviewStageIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission(REVIEW_RESOLVE)),
+) -> ReviewCaseOut:
+    """received → triaged (ZL-ENG-AGT-01 §08.3)."""
+    try:
+        case = await review.triage_review_case(db, tenant_id=current_user.tenant_id, case_id=case_id, note=payload.note)
+    except review.ReviewError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    await audit_review_stage(db, case=case, tenant_id=current_user.tenant_id, actor_id=current_user.id,
+                             stage="triaged", note=payload.note)
+    return _case_out(case)
+
+
+@router.post("/review-cases/{case_id}/release", response_model=ReviewResolutionOut)
+async def release_reviewed_answer(
+    case_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission(REVIEW_RESOLVE)),
+) -> ReviewResolutionOut:
+    """Re-test an approved answer and release it for reuse; a different
+    reviewer from the approver must do this (ZL-ENG-AGT-01 §08.3)."""
+    try:
+        case, gold = await review.release_reviewed_answer(
+            db, tenant_id=current_user.tenant_id, case_id=case_id, releaser_id=current_user.id,
+        )
+    except review.ReviewError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    await audit_review_stage(db, case=case, tenant_id=current_user.tenant_id, actor_id=current_user.id,
+                             stage="released", note="re-test passed", gold_case_id=gold.id)
+    return ReviewResolutionOut(case=_case_out(case), gold_case_id=gold.id)
 
 
 @router.get("/review-cases/{case_id}/evidence")

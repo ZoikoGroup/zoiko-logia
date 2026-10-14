@@ -1,8 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { PageHeader } from "@/components/governance/PageHeader";
+import Link from "next/link";
+import { useCallback, useEffect, useState } from "react";
+import { PageShell } from "@/components/governance/PageShell";
+import { PanelHeader, PANEL_CLASS, type PanelTone } from "@/components/governance/PanelHeader";
+import { StatTile } from "@/components/governance/StatTile";
 import { Pill } from "@/components/governance/Pill";
+import { LiveSourceStatus } from "@/components/governance/LiveSourceStatus";
+import { errorMessage, formatCount, formatWhen } from "@/components/governance/LiveStatus";
 import {
   ShieldCheck,
   ShieldAlert,
@@ -13,10 +18,13 @@ import {
   CheckCircle2,
   XCircle,
   Loader2,
-  RefreshCw,
   Zap,
+  BarChart3,
+  MessageSquare,
 } from "lucide-react";
-import { getSafetyEvents, getEscalations, type SafetyEvent, type Escalation } from "@/lib/safety-api";
+import { getSafetyEvents, getSafetySummary, type SafetyEvent, type SafetySummary } from "@/lib/safety-api";
+
+type Tone = Exclude<PanelTone, "brand">;
 
 const EVENT_ICONS: Record<string, typeof ShieldCheck> = {
   risk_classification_applied: ShieldCheck,
@@ -28,7 +36,7 @@ const EVENT_ICONS: Record<string, typeof ShieldCheck> = {
   safety_refusal_returned: ShieldAlert,
 };
 
-const EVENT_TONES: Record<string, "ok" | "warn" | "bad" | "info"> = {
+const EVENT_TONES: Record<string, Tone> = {
   risk_classification_applied: "ok",
   risk_classification_uncertain: "warn",
   restricted_topic_blocked: "bad",
@@ -38,210 +46,138 @@ const EVENT_TONES: Record<string, "ok" | "warn" | "bad" | "info"> = {
   safety_refusal_returned: "warn",
 };
 
-function computeStats(events: SafetyEvent[], escalations: Escalation[], now: number) {
-  const classified = events.filter((e) => e.event_type === "risk_classification_applied").length;
-  const blocked = events.filter((e) => e.event_type === "restricted_topic_blocked").length;
-  const uncertain = events.filter((e) => e.event_type === "risk_classification_uncertain").length;
-  const incidents = events.filter((e) => e.event_type === "security_incident_created").length;
-  const pendingReview = escalations.filter(
-    (e) => e.status === "PENDING" || e.status === "UNDER_REVIEW"
-  ).length;
-  const overSla = escalations.filter((e) => {
-    if (!e.sla_deadline) return false;
-    return new Date(e.sla_deadline).getTime() < now && e.status !== "RESOLVED";
-  }).length;
+// Tailwind only ships classes it can see in the source, so tone classes must
+// be written out in full rather than built as `bg-${tone}`.
+const EVENT_TONE_CLASSES: Record<Tone, { dot: string; icon: string }> = {
+  ok: { dot: "bg-ok", icon: "bg-ok/10 border-ok/20 text-ok" },
+  warn: { dot: "bg-warn", icon: "bg-warn/10 border-warn/20 text-warn" },
+  bad: { dot: "bg-bad", icon: "bg-bad/10 border-bad/20 text-bad" },
+  info: { dot: "bg-info", icon: "bg-info/10 border-info/20 text-info" },
+};
 
-  return { classified, blocked, uncertain, incidents, pendingReview, overSla };
-}
+const OUTCOME_TEXT: Record<Tone, string> = { ok: "text-ok", warn: "text-warn", bad: "text-bad", info: "text-info" };
 
-function fetchSafetyData(): Promise<[SafetyEvent[], Escalation[]]> {
-  return Promise.all([getSafetyEvents(), getEscalations()]);
+const RISK_ORDER = ["ZERO", "LOW", "MEDIUM", "HIGH", "RESTRICTED"];
+const RISK_BAR: Record<string, string> = {
+  ZERO: "bg-muted/50", LOW: "bg-ok", MEDIUM: "bg-info", HIGH: "bg-warn", RESTRICTED: "bg-bad",
+};
+
+function Loading() {
+  return <div className="flex items-center justify-center py-10 text-muted"><Loader2 className="animate-spin" size={18} /></div>;
 }
 
 export default function AiSafetyDashboardPage() {
+  const [summary, setSummary] = useState<SafetySummary | null>(null);
   const [events, setEvents] = useState<SafetyEvent[]>([]);
-  const [escalations, setEscalations] = useState<Escalation[]>([]);
   const [loading, setLoading] = useState(true);
-  // When the data was fetched — SLA "overdue" is judged against this rather
-  // than Date.now() during render, which would make rendering impure.
-  const [loadedAt, setLoadedAt] = useState(0);
+  const [error, setError] = useState("");
 
-  function applyData([evts, escs]: [SafetyEvent[], Escalation[]]) {
-    setEvents(evts);
-    setEscalations(escs);
-    setLoadedAt(Date.now());
-    setLoading(false);
-  }
-
-  function refresh() {
+  const load = useCallback(async () => {
     setLoading(true);
-    void fetchSafetyData().then(applyData);
-  }
-
-  useEffect(() => {
-    void fetchSafetyData().then(applyData);
+    try {
+      const [nextSummary, nextEvents] = await Promise.all([getSafetySummary(), getSafetyEvents()]);
+      setSummary(nextSummary);
+      setEvents(nextEvents);
+      setError("");
+    } catch (err) {
+      setError(errorMessage(err, "the safety ledger"));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  const stats = computeStats(events, escalations, loadedAt);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial fetch
+    void load();
+  }, [load]);
+
+  const totals = summary?.totals;
+  const week = summary?.last_7_days;
+  const escalations = summary?.escalations;
+  const show = (value: number | undefined) => (summary ? formatCount(value) : "—");
+
+  const outcomes = summary?.answer_outcomes;
+  const outcomes7d = summary?.answer_outcomes_7d;
+  const outcomeRows: { label: string; key: keyof NonNullable<typeof outcomes>; tone: Tone }[] = [
+    { label: "Answered", key: "answered", tone: "ok" },
+    { label: "Clarification asked", key: "clarified", tone: "info" },
+    { label: "Refused", key: "refused", tone: "warn" },
+    { label: "Sent to human review", key: "sent_to_review", tone: "info" },
+  ];
+
+  const trend = summary?.trend ?? [];
+  const trendMax = Math.max(1, ...trend.map((p) => p.classified + p.blocked + p.review + p.other));
+  const riskTotal = RISK_ORDER.reduce((sum, level) => sum + (summary?.risk_levels[level] ?? 0), 0);
 
   return (
-    <main className="flex-1 overflow-y-auto p-6 space-y-6">
-      <PageHeader
-        title="AI Safety Dashboard"
-        subtitle="Real-time view of risk classifications, refusals, escalations, and human review activity."
-      />
+    <PageShell
+      title="AI Safety Dashboard"
+      subtitle="Real-time view of risk classifications, refusals, escalations, and human review activity."
+      showMetrics={false}
+    >
+      <LiveSourceStatus loading={loading} error={error} signedOut={false} reload={load} />
 
-      {/* ── Summary Metrics Grid (Section 15 audit counts) ───────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
-        {[
-          {
-            label: "Classifications",
-            value: stats.classified,
-            textColor: "text-ok",
-            bg: "bg-ok/5 border-ok/20 hover:shadow-ok/5 hover:border-ok/40",
-            iconBg: "bg-ok/10 text-ok border-ok/20",
-            icon: ShieldCheck
-          },
-          {
-            label: "Blocked Requests",
-            value: stats.blocked,
-            textColor: "text-bad",
-            bg: "bg-bad/5 border-bad/20 hover:shadow-bad/5 hover:border-bad/40",
-            iconBg: "bg-bad/10 text-bad border-bad/20",
-            icon: ShieldOff
-          },
-          {
-            label: "Uncertain Queries",
-            value: stats.uncertain,
-            textColor: "text-warn",
-            bg: "bg-warn/5 border-warn/20 hover:shadow-warn/5 hover:border-warn/40",
-            iconBg: "bg-warn/10 text-warn border-warn/20",
-            icon: AlertTriangle
-          },
-          {
-            label: "Security Incidents",
-            value: stats.incidents,
-            textColor: "text-bad",
-            bg: "bg-bad/5 border-bad/20 hover:shadow-bad/5 hover:border-bad/40",
-            iconBg: "bg-bad/10 text-bad border-bad/20",
-            icon: XCircle
-          },
-          {
-            label: "Pending Review",
-            value: stats.pendingReview,
-            textColor: "text-info",
-            bg: "bg-info/5 border-info/20 hover:shadow-info/5 hover:border-info/40",
-            iconBg: "bg-info/10 text-info border-info/20",
-            icon: Clock
-          },
-          {
-            label: "SLA Overdue",
-            value: stats.overSla,
-            textColor: "text-bad",
-            bg: "bg-bad/5 border-bad/20 hover:shadow-bad/5 hover:border-bad/40",
-            iconBg: "bg-bad/10 text-bad border-bad/20",
-            icon: AlertTriangle
-          },
-        ].map((m) => {
-          const Icon = m.icon;
-          return (
-            <div
-              key={m.label}
-              className={`rounded-2xl border bg-panel/85 p-5 flex flex-col justify-between shadow-[0_4px_12px_rgba(0,0,0,0.01)] transition-all duration-300 ${m.bg} hover:-translate-y-0.5 hover:shadow-lg`}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-muted font-bold uppercase tracking-wider">{m.label}</span>
-                <div className={`p-1.5 rounded-lg border ${m.iconBg}`}>
-                  <Icon size={13} />
-                </div>
-              </div>
-              <div className={`text-2xl font-extrabold tracking-tight mt-3 ${m.textColor}`}>{m.value}</div>
-            </div>
-          );
-        })}
-      </div>
+      <div className="space-y-6">
+        {/* Whole-ledger totals for this tenant */}
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+          <StatTile label="Classifications" value={show(totals?.classified)} tone="ok" icon={ShieldCheck} hint={summary ? `${formatCount(week?.classified)} in last 7 days` : undefined} />
+          <StatTile label="Blocked / Refused" value={show(totals?.blocked)} tone="bad" icon={ShieldOff} hint={summary ? `${formatCount(week?.blocked)} in last 7 days` : undefined} />
+          <StatTile label="Uncertain" value={show(totals?.uncertain)} tone="warn" icon={AlertTriangle} hint={summary ? "Took the conservative path" : undefined} />
+          <StatTile label="Security Incidents" value={show(totals?.incidents)} tone="bad" icon={XCircle} hint={summary ? `${formatCount(week?.incidents)} in last 7 days` : undefined} />
+        </div>
 
-      {/* ── Content Columns ───────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
-        {/* ── Safety Event Feed (Timeline format) ────────────────────── */}
-        <div className="xl:col-span-8">
-          <div className="rounded-2xl border border-line bg-panel/75 backdrop-blur-md p-6 shadow-[0_12px_30px_rgba(0,0,0,0.02)] space-y-4">
-            <div className="flex items-center justify-between border-b border-line/50 pb-4">
-              <div className="flex items-center gap-2">
-                <div className="p-1.5 rounded-lg bg-brand/10 border border-brand/20">
-                  <Activity size={14} className="text-brand animate-pulse" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-ink">Live Safety Event Log</h3>
-                  <p className="text-[11px] text-muted">Audit trail complying with ZL-T0-04 Section 15</p>
-                </div>
-              </div>
-              <button
-                onClick={refresh}
-                className="flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-semibold text-ink hover:bg-soft transition-all duration-200 cursor-pointer shadow-sm"
-              >
-                <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
-                Sync Log
-              </button>
-            </div>
-
-            {loading ? (
-              <div className="flex flex-col items-center justify-center py-20 text-muted">
-                <Loader2 className="animate-spin mb-2" size={24} />
-                <span className="text-xs">Fetching audit events...</span>
-              </div>
-            ) : events.length === 0 ? (
-              <div className="text-center py-20 space-y-3">
-                <Activity size={32} className="mx-auto text-muted/40" />
-                <p className="text-xs text-muted max-w-sm mx-auto leading-relaxed">
-                  Audit feed currently empty. Submit dynamic queries on the <span className="font-semibold text-brand">Ask Kriton™</span> console to seed events.
-                </p>
-              </div>
-            ) : (
-              <div className="relative pl-6 space-y-5 border-l-2 border-line/60 ml-3 max-h-[500px] overflow-y-auto pr-2">
-                {events.map((evt) => {
-                  const Icon = EVENT_ICONS[evt.event_type] ?? Activity;
-                  const tone = EVENT_TONES[evt.event_type] ?? "info";
-                  const payload = evt.payload as Record<string, unknown>;
-
-                  return (
-                    <div
-                      key={evt.id}
-                      className="group relative flex items-start gap-4 p-4 rounded-xl border border-line/50 bg-soft/20 hover:bg-panel hover:shadow-md hover:border-line transition-all duration-200"
-                    >
-                      {/* Pulsing Timeline Anchor */}
-                      <span className={`absolute -left-[31px] top-[22px] flex h-3 w-3 items-center justify-center rounded-full bg-${tone} border-2 border-panel shadow-sm group-hover:scale-125 transition-transform duration-200`} />
-
-                      <div className={`shrink-0 p-2 rounded-xl bg-${tone}/10 border border-${tone}/20 text-${tone}`}>
-                        <Icon size={16} />
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
+          <div className={`xl:col-span-8 ${PANEL_CLASS}`}>
+            <PanelHeader icon={BarChart3} tone="info" title="Safety activity — last 14 days" subtitle="Events per day from the safety ledger" />
+            {!summary ? <Loading /> : (
+              <div className="space-y-3">
+                <div className="flex h-40 items-end gap-1.5" role="img" aria-label="Safety events per day for the last 14 days">
+                  {trend.map((point) => {
+                    const total = point.classified + point.blocked + point.review + point.other;
+                    return (
+                      <div key={point.date} className="flex h-full flex-1 flex-col justify-end" title={`${point.date}: ${total} events (${point.classified} classified, ${point.blocked} blocked, ${point.review} review)`}>
+                        <div className="flex flex-col-reverse overflow-hidden rounded-t-md" style={{ height: `${(total / trendMax) * 100}%`, minHeight: total ? 2 : 0 }}>
+                          <div className="bg-ok/70" style={{ flexGrow: point.classified }} />
+                          <div className="bg-info/70" style={{ flexGrow: point.review + point.other }} />
+                          <div className="bg-bad/80" style={{ flexGrow: point.blocked }} />
+                        </div>
                       </div>
+                    );
+                  })}
+                </div>
+                <div className="flex gap-1.5 text-[9px] text-muted">
+                  {trend.map((point, index) => (
+                    <span key={point.date} className="flex-1 text-center">
+                      {index % 2 === 0 ? new Date(`${point.date}T00:00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short" }) : ""}
+                    </span>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-3 text-[11px] text-muted">
+                  <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-sm bg-ok/70" />Classified</span>
+                  <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-sm bg-info/70" />Review &amp; other</span>
+                  <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-sm bg-bad/80" />Blocked</span>
+                </div>
+              </div>
+            )}
+          </div>
 
-                      <div className="min-w-0 flex-1 space-y-1">
-                        <div className="flex items-center justify-between gap-4">
-                          <span className="text-xs font-bold text-ink uppercase tracking-wide">
-                            {evt.event_type.replace(/_/g, " ")}
-                          </span>
-                          {evt.timestamp && (
-                            <span className="text-[10px] text-muted font-mono bg-soft px-1.5 py-0.5 rounded border border-line/30">
-                              {new Date(evt.timestamp).toLocaleTimeString()}
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                          <span className="text-[10px] text-muted font-mono pr-2">ID: {evt.id}</span>
-                          {payload.risk_level != null && (
-                            <Pill tone={String(payload.risk_level) === "HIGH" ? "warn" : String(payload.risk_level) === "RESTRICTED" ? "bad" : "ok"}>
-                              {String(payload.risk_level)}
-                            </Pill>
-                          )}
-                          {payload.confidence != null && (
-                            <Pill>
-                              {"Conf: " + (Number(payload.confidence) * 100).toFixed(0) + "%"}
-                            </Pill>
-                          )}
-                          {payload.route != null && <Pill tone="info">{String(payload.route)}</Pill>}
-                        </div>
+          <div className={`xl:col-span-4 ${PANEL_CLASS}`}>
+            <PanelHeader icon={ShieldAlert} tone="warn" title="Risk level mix" subtitle="All classified queries for this tenant" />
+            {!summary ? <Loading /> : riskTotal === 0 ? (
+              <p className="py-8 text-center text-xs text-muted">No classified queries yet.</p>
+            ) : (
+              <div className="space-y-3">
+                {RISK_ORDER.map((level) => {
+                  const count = summary.risk_levels[level] ?? 0;
+                  const share = (count / riskTotal) * 100;
+                  return (
+                    <div key={level} className="space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-ink">{level}</span>
+                        <span className="font-mono text-muted">{formatCount(count)} · {share.toFixed(1)}%</span>
+                      </div>
+                      <div className="h-2 rounded-full bg-soft">
+                        <div className={`h-2 rounded-full ${RISK_BAR[level]}`} style={{ width: `${share}%` }} />
                       </div>
                     </div>
                   );
@@ -251,60 +187,101 @@ export default function AiSafetyDashboardPage() {
           </div>
         </div>
 
-        {/* ── Active Escalation Summary ─────────────────────────────── */}
-        <div className="xl:col-span-4">
-          <div className="rounded-2xl border border-line bg-panel/75 backdrop-blur-md p-6 shadow-[0_12px_30px_rgba(0,0,0,0.02)] space-y-4">
-            <div className="flex items-center gap-2 border-b border-line/50 pb-4">
-              <div className="p-1.5 rounded-lg bg-warn/10 border border-warn/20">
-                <Zap size={14} className="text-warn" />
-              </div>
-              <h3 className="text-sm font-bold text-ink">Actionable Escalations</h3>
+        <div className={PANEL_CLASS}>
+          <PanelHeader icon={MessageSquare} tone="ok" title="Ask Kriton outcomes" subtitle="From the audit ledger — every request this tenant sent. Validator rejections are on Professional Boundaries." />
+          {!outcomes ? <Loading /> : (
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              {outcomeRows.map((row) => (
+                <div key={row.key} className="rounded-lg border border-line/60 bg-soft/30 p-4">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-muted">{row.label}</div>
+                  <div className={`mt-2 text-xl font-extrabold ${OUTCOME_TEXT[row.tone]}`}>{formatCount(outcomes[row.key])}</div>
+                  <div className="mt-1 text-[10px] text-muted">{formatCount(outcomes7d?.[row.key])} in last 7 days</div>
+                </div>
+              ))}
             </div>
+          )}
+        </div>
 
-            {loading ? (
-              <div className="flex flex-col items-center justify-center py-10 text-muted">
-                <Loader2 className="animate-spin mb-2" size={16} />
-                <span className="text-xs">Fetching active cases...</span>
-              </div>
-            ) : escalations.length === 0 ? (
-              <div className="text-center py-10 text-muted">
-                <span className="text-xs">No active escalations.</span>
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
+          <div className={`xl:col-span-8 ${PANEL_CLASS}`}>
+            <PanelHeader icon={Activity} tone="info" title="Live Safety Event Log" subtitle="Latest 30 events — audit trail per ZL-T0-04 Section 15" />
+            {loading && events.length === 0 ? <Loading /> : events.length === 0 ? (
+              <div className="text-center py-16 space-y-3">
+                <Activity size={32} className="mx-auto text-muted/40" />
+                <p className="text-xs text-muted max-w-sm mx-auto leading-relaxed">
+                  No safety events yet. They appear here as questions are asked in <span className="font-semibold text-brand">Ask Kriton™</span>.
+                </p>
               </div>
             ) : (
-              <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
-                {escalations
-                  .filter((e) => e.status !== "RESOLVED" && e.status !== "REFUSED")
-                  .map((esc) => {
-                    const overdue = esc.sla_deadline && new Date(esc.sla_deadline).getTime() < loadedAt;
-                    return (
-                      <div
-                        key={esc.id}
-                        className={`rounded-xl border p-4 space-y-2.5 transition-all duration-200 hover:shadow-md ${overdue
-                            ? "border-bad/30 bg-bad/5 hover:border-bad"
-                            : "border-line/60 bg-soft/30 hover:bg-panel hover:border-line"
-                          }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-mono font-bold text-ink">{esc.id}</span>
-                          <Pill tone={esc.risk_level === "RESTRICTED" ? "bad" : "warn"}>
-                            {esc.risk_level}
-                          </Pill>
+              <div className="relative pl-6 space-y-5 border-l-2 border-line/60 ml-3 max-h-[500px] overflow-y-auto pr-2">
+                {events.map((evt) => {
+                  const Icon = EVENT_ICONS[evt.event_type] ?? Activity;
+                  const tone = EVENT_TONE_CLASSES[EVENT_TONES[evt.event_type] ?? "info"];
+                  const payload = evt.payload as Record<string, unknown>;
+                  const confidence = payload.confidence ?? payload.classifier_confidence;
+                  return (
+                    <div key={evt.id} className="relative flex items-start gap-4 p-4 rounded-lg border border-line/50 bg-soft/20 hover:bg-panel hover:shadow-md hover:border-line transition-all duration-200">
+                      <span className={`absolute -left-[31px] top-[22px] flex h-3 w-3 rounded-full border-2 border-panel shadow-sm ${tone.dot}`} />
+                      <div className={`shrink-0 p-2 rounded-md border ${tone.icon}`}>
+                        <Icon size={16} />
+                      </div>
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex items-center justify-between gap-4">
+                          <span className="text-xs font-bold text-ink uppercase tracking-wide">{evt.event_type.replace(/_/g, " ")}</span>
+                          {evt.timestamp && (
+                            <span className="text-[10px] text-muted font-mono bg-soft px-1.5 py-0.5 rounded border border-line/30">{formatWhen(evt.timestamp)}</span>
+                          )}
                         </div>
-                        <p className="text-xs text-ink font-semibold line-clamp-2 leading-relaxed">{esc.topic}</p>
-                        <div className="flex items-center gap-1.5 pt-1">
-                          <Pill>{esc.jurisdiction}</Pill>
-                          <Pill tone={overdue ? "bad" : "info"}>
-                            {overdue ? "SLA Breach" : esc.status}
-                          </Pill>
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                          <span className="text-[10px] text-muted font-mono pr-2">ID: {evt.id}</span>
+                          {payload.risk_level != null && (
+                            <Pill tone={String(payload.risk_level) === "HIGH" ? "warn" : String(payload.risk_level) === "RESTRICTED" ? "bad" : "ok"}>
+                              {String(payload.risk_level)}
+                            </Pill>
+                          )}
+                          {confidence != null && !Number.isNaN(Number(confidence)) && (
+                            <Pill>{"Conf: " + (Number(confidence) * 100).toFixed(0) + "%"}</Pill>
+                          )}
+                          {payload.route != null && <Pill tone="info">{String(payload.route)}</Pill>}
+                          {payload.restricted_sub_class != null && <Pill tone="bad">{String(payload.restricted_sub_class).replace("RESTRICTED_", "")}</Pill>}
                         </div>
                       </div>
-                    );
-                  })}
+                    </div>
+                  );
+                })}
               </div>
+            )}
+          </div>
+
+          {/* Counts only — the case list lives in the Escalation Queue. */}
+          <div className={`xl:col-span-4 ${PANEL_CLASS}`}>
+            <PanelHeader
+              icon={Zap}
+              tone="warn"
+              title="Escalations"
+              action={<Link href="/escalation-queue" className="text-[11px] font-semibold text-brand hover:underline">Open queue →</Link>}
+            />
+            {!escalations ? <Loading /> : (
+              <dl className="space-y-2.5 text-xs">
+                {[
+                  ["Total cases", escalations.total, "text-ink"],
+                  ["Pending", escalations.pending, "text-warn"],
+                  ["Under review", escalations.under_review, "text-info"],
+                  ["Over SLA", escalations.over_sla, "text-bad"],
+                  ["Resolved", escalations.resolved, "text-ok"],
+                  ["Refused", escalations.refused, "text-muted"],
+                  ["Active safety overrides", summary?.active_overrides ?? 0, "text-warn"],
+                ].map(([label, value, tone]) => (
+                  <div key={label as string} className="flex items-center justify-between border-b border-line/40 pb-2 last:border-b-0">
+                    <dt className="text-muted">{label}</dt>
+                    <dd className={`font-mono font-bold ${tone}`}>{formatCount(value as number)}</dd>
+                  </div>
+                ))}
+              </dl>
             )}
           </div>
         </div>
       </div>
-    </main>
+    </PageShell>
   );
 }

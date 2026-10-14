@@ -14,8 +14,10 @@ sys.path.insert(0, str(BACKEND))
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    export = commands.add_parser("export", help="Export verified tenant feedback from the database")
+    export = commands.add_parser("export", help="Export reviewer-approved tenant answers from the database")
     export.add_argument("--tenant-id", required=True)
+    export.add_argument("--data-use-approval", required=True,
+                        help="Reference to the documented security/legal approval to train on this tenant's data (ZL-ENG-AGT-01 §08.5)")
     export.add_argument("--user-id", required=True, help="Database identity used for tenant RLS")
     export.add_argument("--output", type=Path, required=True)
     arithmetic = commands.add_parser("arithmetic", help="Create deterministic RL tasks; no user data")
@@ -49,7 +51,8 @@ def main():
             from dotenv import load_dotenv
             load_dotenv(BACKEND / ".env")
             from app.training.workflow import exportable_examples
-            examples = await exportable_examples(tenant_id=args.tenant_id, user_id=args.user_id)
+            examples = await exportable_examples(tenant_id=args.tenant_id, user_id=args.user_id,
+                                                 data_use_approval=args.data_use_approval)
             train_rows, holdout = split_examples(examples)
             from app.training.data import validate_distinct_examples
             validate_distinct_examples(train_rows, holdout)

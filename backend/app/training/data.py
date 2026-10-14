@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from app.domains.evaluation.models import BenchmarkCase
 from app.orchestration.learned_answers import answer_was_verified, learnable
-from app.orchestration.models import AnswerFeedback, QueryAnswerRecord
+from app.orchestration.models import QueryAnswerRecord, ReviewCase
 from app.orchestration.redaction import redact_for_external_exposure
 from app.orchestration.verification_service import is_evidence_gap_statement, release_claims
 
@@ -67,19 +67,29 @@ def example_from_record(record) -> dict | None:
     }
 
 
-async def collect_examples(db, *, tenant_id: str, limit: int = 10000) -> list[dict]:
+class TrainingDataNotApproved(PermissionError):
+    """Raised when no documented data-use approval was supplied."""
+
+
+async def collect_examples(db, *, tenant_id: str, data_use_approval: str, limit: int = 10000) -> list[dict]:
+    """Training examples from this tenant's answers that a reviewer approved.
+
+    ZL-ENG-AGT-01 §08.5: tenant answers are customer data, so nothing is
+    exported without a documented security/legal data-use approval, whose
+    reference the caller must supply. User
+    ratings never select training data: a thumbs-up is feedback, not a
+    review. Only answers a reviewer approved unchanged in the review queue
+    qualify, and they must still have passed the release fact-check."""
+    if not (data_use_approval or "").strip():
+        raise TrainingDataNotApproved(
+            "Training on tenant answers needs a documented data-use approval reference (ZL-ENG-AGT-01 §08.5)"
+        )
     if not tenant_id.strip() or not 1 <= limit <= 10000:
         raise ValueError("A tenant and a limit between 1 and 10000 are required")
-    feedback = list((await db.execute(select(AnswerFeedback).where(
-        AnswerFeedback.tenant_id == tenant_id))).scalars())
-    positive = {f.query_id for f in feedback if f.rating == "up"}
-    negative = {f.query_id for f in feedback if f.rating == "down"}
-    learned = list((await db.execute(select(BenchmarkCase).where(
-        BenchmarkCase.tenant_id == tenant_id,
-        BenchmarkCase.dataset_id == f"kriton-learned:{tenant_id}",
-        BenchmarkCase.category == "learned_correction",
+    approved = set((await db.execute(select(ReviewCase.query_id).where(
+        ReviewCase.tenant_id == tenant_id, ReviewCase.status.in_(("resolved", "released")),
+        ReviewCase.reviewer_decision == "approved",
     ))).scalars())
-    corrected = {(c.query_text, c.gold_answer) for c in learned}
     records = list((await db.execute(select(QueryAnswerRecord).where(
         QueryAnswerRecord.tenant_id == tenant_id,
         QueryAnswerRecord.created_at >= datetime.now(timezone.utc) - timedelta(days=90),
@@ -94,9 +104,7 @@ async def collect_examples(db, *, tenant_id: str, limit: int = 10000) -> list[di
         tokens = set(question_key(record.question).split())
         if any(len(tokens & other) / max(1, len(tokens | other)) >= .7 for other in reserved_tokens):
             continue
-        if record.query_id in negative:
-            continue
-        if record.query_id not in positive and (record.question, record.answer_text) not in corrected:
+        if record.query_id not in approved:
             continue
         if await answer_was_verified(db, tenant_id=tenant_id, query_id=record.query_id):
             example = example_from_record(record)

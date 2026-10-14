@@ -12,6 +12,16 @@ def _isolate_external_services(monkeypatch):
     monkeypatch.setenv("EMBEDDING_PROVIDER", "none")
     # Claim verification calls a live model; tests that cover it stub it.
     monkeypatch.setenv("CLAIM_VERIFICATION", "off")
+    # A developer's local .env may skip the setup-fingerprint check for a
+    # shared database; tests always run with the production behaviour.
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), "SKIP_STARTUP_FINGERPRINT_CHECK", False)
+    # The GOV.UK search fallback is a live API; tests that cover it stub it.
+    from app.orchestration import websearch
+
+    async def _no_govuk(query):
+        return []
+    monkeypatch.setattr(websearch, "_govuk_results", _no_govuk)
     from app.domains.source_library.embeddings import get_embedder
 
     get_embedder.cache_clear()

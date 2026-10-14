@@ -1,63 +1,60 @@
-/** GET /governance-dashboard — built from the tenant's real governance
- * records (backend app/domains/governance_dashboard/assessment.py). Anything
- * the platform cannot measure yet comes back "not_assessed" with a reason. */
+// Shape returned by GET /governance-dashboard
+// (backend/app/domains/command_center/service.py → build_governance).
 
-export type DomainState = "critical" | "attention" | "effective" | "not_assessed";
-export type AlertSeverity = "critical" | "high" | "medium" | "low";
-export type GateState = "passed" | "blocked" | "partial" | "not_assessed";
+export type GovernanceFreshness = { state: "current" | "stale" | "unknown"; label: string; at?: string };
 
 export type GovernanceDomain = {
   key: string;
-  label: string;
-  state: DomainState;
-  headline: string;
-  metrics: { label: string; value: string | number | null }[];
-  drilldownTarget: string;
-  reason: string | null;
+  name: string;
+  href: string;
+  state: string;
+  metric: string;
+  exceptions: string;
+  freshness: GovernanceFreshness;
+  next: string;
 };
 
-export type GovernanceAlert = {
+export type GovernanceException = {
   id: string;
-  severity: AlertSeverity;
+  severity: "Critical" | "High" | "Medium" | "Low" | string;
   domain: string;
   title: string;
-  ownerRole: string;
-  dueAt: string | null;
-  openedAt: string | null;
-  drilldownTarget: string;
-  resolvedBy: string;
+  detail: string;
+  href: string;
 };
 
 export type GovernanceDecision = {
   id: string;
-  type: string;
+  severity: string;
+  kind: string;
   title: string;
-  submittedAt: string | null;
-  drilldownTarget: string;
-  blockedReason: string | null;
+  due: string;
+  href: string;
 };
 
-export type ReleaseGate = { gate: string; state: GateState; reason: string };
-
 export type GovernanceDashboardViewModel = {
-  governanceScope: {
-    tenantId: string;
+  contextToken: string;
+  scope: {
     workspaceName: string;
     environment: string;
-    assessmentWindow: { start: string; end: string; label: string };
-    roleId: string;
+    jurisdictions: string[];
+    windowDays: number;
+    windowStart: string;
+    windowEnd: string;
+    policyVersion: string;
+    evidenceFreshness: "current" | "degraded";
+    auditLedger: { lastEventAt: string | null; lastEventAge: string; eventsInWindow: number };
   };
-  governanceSummary: {
-    overallState: DomainState;
+  summary: {
     criticalExceptionCount: number;
     highExceptionCount: number;
     pendingDecisionCount: number;
     blockedGateCount: number;
-    notAssessedDomains: string[];
-    lastEvaluatedAt: string;
   };
-  domainStates: GovernanceDomain[];
-  exceptions: GovernanceAlert[];
+  staleDomains: string[];
+  domains: GovernanceDomain[];
+  exceptions: GovernanceException[];
   decisions: GovernanceDecision[];
-  releaseReadiness: ReleaseGate[];
+  panels: { sources: { state: string; lines: string[] }; audit: { state: string; lines: string[] } };
+  generatedAt: string;
 };

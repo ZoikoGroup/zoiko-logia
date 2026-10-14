@@ -62,13 +62,13 @@ export function AnswerFeedback({
         question,
         answer_text: answerText,
       });
+      // Feedback goes to people, never straight into what Kriton knows
+      // (ZL-ENG-AGT-01 §08): a report opens a case for a reviewer.
       setMessage(
         rating === "up"
-          ? result.learned
-            ? "Thanks — Kriton saved this for future checks"
-            : "Thanks for the feedback"
-          : result.self_correction_started
-            ? "Thanks — Kriton is re-checking this answer"
+          ? "Thanks for the feedback"
+          : result.review_case_id
+            ? "Thanks — a reviewer will check this answer"
             : "Thanks for reporting this",
       );
       setState(rating === "up" ? "sent-up" : "sent-down");

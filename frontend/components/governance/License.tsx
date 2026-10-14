@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { CheckCircle2, Loader2, ShieldAlert } from "lucide-react";
+import { useLiveData } from "@/components/overview/useLiveData";
+import { LiveSourceStatus } from "./LiveSourceStatus";
 import { Pill } from "./Pill";
 import { PanelHeader, PANEL_CLASS } from "./PanelHeader";
-import { createTicket, getAuthToken, getExpiringSource, type ExpiringSource } from "@/lib/api";
+import { createTicket, getAuthToken, getExpiringSource } from "@/lib/api";
 
 function severityFor(daysRemaining: number): string {
   if (daysRemaining <= 7) return "P1";
@@ -26,21 +28,14 @@ const COUNTDOWN_STYLE: Record<"bad" | "warn" | "ok", string> = {
 };
 
 export function License() {
-  const [expiring, setExpiring] = useState<ExpiringSource | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const { data: expiring, loading, error, signedOut, reload } = useLiveData("source-expiry", (token, signal) => getExpiringSource(token, signal), 20_000);
+  const [actionError, setActionError] = useState("");
   const [openingTask, setOpeningTask] = useState(false);
   const [ticketId, setTicketId] = useState<string | null>(null);
 
-  useEffect(() => {
-    getExpiringSource(getAuthToken())
-      .then(setExpiring)
-      .catch(() => setError("Could not load license-expiry data."))
-      .finally(() => setLoading(false));
-  }, []);
-
   async function handleOpenRenewalTask() {
     if (!expiring) return;
+    setActionError("");
     setOpeningTask(true);
     try {
       const ticket = await createTicket(getAuthToken(), {
@@ -50,16 +45,16 @@ export function License() {
       });
       setTicketId(ticket.id);
     } catch {
-      setError("Could not open a renewal task.");
+      setActionError("Could not open a renewal task.");
     } finally {
       setOpeningTask(false);
     }
   }
 
-  if (loading) {
+  if (loading && !expiring) {
     return (
       <div className={PANEL_CLASS}>
-        <PanelHeader icon={ShieldAlert} title="License-expiry countdown" />
+        <PanelHeader icon={ShieldAlert} title="Source effective-date countdown" />
         <div className="flex items-center gap-2 text-sm text-muted py-4">
           <Loader2 size={14} className="animate-spin" /> Checking source license expiry…
         </div>
@@ -67,11 +62,11 @@ export function License() {
     );
   }
 
-  if (error) {
+  if (error || signedOut) {
     return (
       <div className={PANEL_CLASS}>
-        <PanelHeader icon={ShieldAlert} tone="bad" title="License-expiry countdown" />
-        <p className="text-xs text-bad">{error}</p>
+        <PanelHeader icon={ShieldAlert} tone="bad" title="Source effective-date countdown" />
+        <LiveSourceStatus loading={loading} error={error} signedOut={signedOut} reload={reload} />
       </div>
     );
   }
@@ -79,8 +74,9 @@ export function License() {
   if (!expiring) {
     return (
       <div className={PANEL_CLASS}>
-        <PanelHeader icon={ShieldAlert} tone="ok" title="License-expiry countdown" action={<Pill tone="ok">All clear</Pill>} />
-        <p className="text-sm text-muted">No approved sources have an expiry date within range.</p>
+        <PanelHeader icon={ShieldAlert} tone="ok" title="Source effective-date countdown"  />
+        <LiveSourceStatus loading={loading} error={error} signedOut={signedOut} reload={reload} />
+        <p className="text-sm text-muted">No approved source has an effective-until date recorded.</p>
       </div>
     );
   }
@@ -92,9 +88,11 @@ export function License() {
       <PanelHeader
         icon={ShieldAlert}
         tone={tone}
-        title="License-expiry countdown"
+        title="Source effective-date countdown"
         action={<Pill tone={tone}>{expiring.days_remaining} days</Pill>}
       />
+      <LiveSourceStatus loading={loading} error={error} signedOut={signedOut} reload={reload} />
+      {actionError && <p className="text-xs text-bad">{actionError}</p>}
       <div className="flex items-center gap-3">
         <div className={`h-14 w-14 shrink-0 rounded-xl border border-line ${COUNTDOWN_STYLE[tone]} flex items-center justify-center text-xl font-extrabold`}>
           {expiring.days_remaining}
@@ -102,7 +100,7 @@ export function License() {
         <div className="min-w-0 font-semibold text-ink break-words">{expiring.title}</div>
       </div>
       <p className="mt-3 text-xs text-muted leading-relaxed">
-        Expires {expiring.effective_to}. Display allowed; export blocked after expiry unless renewal evidence is attached.
+        Expires {expiring.effective_to}. Access depends on the recorded rights for each use.
       </p>
       {ticketId ? (
         <div className="mt-2.5 flex items-center gap-1.5 text-xs text-ok">

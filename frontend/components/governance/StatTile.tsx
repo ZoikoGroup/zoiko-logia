@@ -10,12 +10,14 @@ const TILE_STYLE: Record<PanelTone, { wrap: string; badge: string; text: string 
 };
 
 export function StatTile({
-  label, value, tone, icon: Icon,
+  label, value, tone, icon: Icon, hint,
 }: {
   label: string;
   value: string | number;
   tone: PanelTone;
   icon: LucideIcon;
+  /** Optional second line under the value, e.g. "12 in last 7 days". */
+  hint?: string;
 }) {
   const s = TILE_STYLE[tone];
   return (
@@ -29,6 +31,7 @@ export function StatTile({
         </div>
       </div>
       <div className={`text-2xl font-extrabold tracking-tight mt-3 ${s.text}`}>{value}</div>
+      {hint && <div className="mt-1 text-[10px] text-muted">{hint}</div>}
     </div>
   );
 }

@@ -1,9 +1,10 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const api = vi.hoisted(() => ({ list: vi.fn(), evidence: vi.fn(), resolve: vi.fn() }));
+const api = vi.hoisted(() => ({ list: vi.fn(), evidence: vi.fn(), resolve: vi.fn(), triage: vi.fn(), release: vi.fn() }));
 vi.mock("@/lib/api", () => ({
   ApiError: class extends Error {}, getAuthToken: () => "token",
   listReviewCases: api.list, getReviewEvidence: api.evidence, resolveReviewCase: api.resolve,
+  triageReviewCase: api.triage, releaseReviewedAnswer: api.release,
 }));
 vi.mock("@/components/governance/PageShell", () => ({ PageShell: ({ children }: { children: React.ReactNode }) => <main>{children}</main> }));
 vi.mock("@/components/AnswerRenderer", () => ({ AnswerRenderer: () => <div>Draft answer</div> }));
@@ -33,5 +34,21 @@ describe("review workflow", () => {
     fireEvent.click(save);
     await waitFor(() => expect(api.resolve).toHaveBeenCalledWith("token", "rc1", expect.objectContaining({ decision: "needs_evidence", note: "Need the effective date." })));
     expect(await screen.findByText(/case remains in the queue/)).toBeInTheDocument();
+  });
+  it("triages a newly received case", async () => {
+    api.triage.mockResolvedValue({});
+    render(<ReviewTasksPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Triage" }));
+    await waitFor(() => expect(api.triage).toHaveBeenCalledWith("token", "rc1", ""));
+    expect(await screen.findByText(/Triaged — ready for expert review/)).toBeInTheDocument();
+  });
+  it("offers re-test and release for an approved answer that is not yet reused", async () => {
+    api.list.mockResolvedValue({ cases: [{ id: "rc2", query_id: "q2", question: "VAT rate?", draft_answer: "20%.", status: "resolved", reviewer_decision: "approved", source: "escalation", reason: "r", created_at: "2026-01-01" }], counts: { resolved: 1 } });
+    api.release.mockResolvedValue({ case: {}, gold_case_id: "gold-rc2" });
+    render(<ReviewTasksPage />);
+    expect(await screen.findByText(/Not reused by Kriton yet/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Re-test & release/ }));
+    await waitFor(() => expect(api.release).toHaveBeenCalledWith("token", "rc2"));
+    expect(await screen.findByText(/Re-test passed — released/)).toBeInTheDocument();
   });
 });

@@ -103,36 +103,52 @@ def test_holdout_gate_never_authorizes_production():
     assert score_outputs([{'expected':'20'}],['{"answer":20}'],kind='grpo')['accuracy']==1
 
 
-async def test_feedback_export_requires_tenant_scoped_verified_records():
+async def test_training_export_uses_only_reviewer_approved_answers_with_an_approval():
+    """§08.5: no export without a documented data-use approval, and ratings
+    never select training data. Only reviewer-approved, fact-checked answers."""
+    import pytest
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
     from app.db.base import Base
     from app.domains.audit_ledger.models import AuditEvent
-    from app.orchestration.models import AnswerFeedback, QueryAnswerRecord
-    from app.training.data import collect_examples
+    from app.orchestration.models import AnswerFeedback, QueryAnswerRecord, ReviewCase
+    from app.training.data import TrainingDataNotApproved, collect_examples
     engine = create_async_engine('sqlite+aiosqlite:///:memory:')
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     async with async_sessionmaker(engine, expire_on_commit=False)() as db:
-        for query_id, tenant, verified, rating in [('good','t1',True,'up'), ('bad','t1',False,'up'),
-                                                  ('negative','t1',True,'down'), ('other','t2',True,'up')]:
+        # (query, tenant, passed fact-check, thumbs, reviewer decision)
+        for query_id, tenant, verified, rating, decision in [
+            ('reviewed', 't1', True, None, 'approved'),
+            ('upvoted-only', 't1', True, 'up', None),
+            ('reviewed-unverified', 't1', False, None, 'approved'),
+            ('corrected', 't1', True, 'up', 'corrected'),
+            ('other-tenant', 't2', True, None, 'approved'),
+        ]:
             sample=record()
             db.add(QueryAnswerRecord(query_id=query_id,tenant_id=tenant,user_id='u1',
                 question=sample.question,answer_text=sample.answer_text,external_evidence=sample.external_evidence))
-            db.add(AnswerFeedback(tenant_id=tenant,user_id='u1',query_id=query_id,rating=rating))
+            if rating:
+                db.add(AnswerFeedback(tenant_id=tenant,user_id='u1',query_id=query_id,rating=rating))
+            if decision:
+                db.add(ReviewCase(query_id=query_id,correlation_id=query_id,tenant_id=tenant,risk_level='MEDIUM',
+                    confidence_state='reviewed',reason='review',status='resolved',reviewer_decision=decision))
             for name in ('validation_completed','release_check_completed'):
                 db.add(AuditEvent(event_name=name,emitting_service='orchestration',tenant_id=tenant,
                     subject_type='query',subject_id=query_id,payload={'passed':verified,'requires_authority':True},
                     payload_hash='h',chain_hash='h'))
         await db.commit()
-        rows=await collect_examples(db,tenant_id='t1')
-        assert [row['id'] for row in rows]==['good']
+        with pytest.raises(TrainingDataNotApproved):
+            await collect_examples(db,tenant_id='t1',data_use_approval='')
+        rows=await collect_examples(db,tenant_id='t1',data_use_approval='LEGAL-2026-014')
+        assert [row['id'] for row in rows]==['reviewed']
         from app.domains.evaluation.models import BenchmarkCase, EvaluationDataset
         db.add(EvaluationDataset(id='independent-evaluation',version='1',domain='tax'))
         await db.flush()
         db.add(BenchmarkCase(id='reserved-case',dataset_id='independent-evaluation',
             query_text=record().question,gold_answer=record().answer_text,risk_scope='LOW',tenant_id=None))
         await db.commit()
-        assert await collect_examples(db,tenant_id='t1') == []  # reserve independent DB benchmarks too
+        # reserve independent DB benchmarks too
+        assert await collect_examples(db,tenant_id='t1',data_use_approval='LEGAL-2026-014') == []
     await engine.dispose()
 
 

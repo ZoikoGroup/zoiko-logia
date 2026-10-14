@@ -20,6 +20,7 @@ from typing import Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domains.audit_ledger.event_envelope import record_event_async
+from app.orchestration import workflow_state
 from app.orchestration.routing_matrix import CLASSIFIER_VERSION, POLICY_VERSION
 
 
@@ -37,6 +38,9 @@ async def _emit(
     restore_tenant_context: bool = True,
 ) -> None:
     """Internal helper — wraps record_event_async with canonical envelope fields."""
+    # Each pipeline event also advances the request's workflow state
+    # (workflow_state.py), so the state machine follows the audit trail.
+    workflow_state.observe(event_name)
     await record_event_async(
         db,
         event_name=event_name,
@@ -191,20 +195,50 @@ async def audit_composition_completed(db, *, query_id, correlation_id, tenant_id
 
 async def audit_agent_tool_called(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                   step: int, tool: str, arguments_hash: str, ok: bool,
-                                  error_code: str | None, duration_ms: int, source_count: int):
+                                  error_code: str | None, duration_ms: int, source_count: int,
+                                  policy_decision_id: str | None = None, policy_reason: str | None = None,
+                                  untrusted_instructions: str | None = None,
+                                  idempotency_key: str | None = None, calculation_id: str | None = None,
+                                  planned: bool | None = None, resumed: bool = False):
     # Arguments are recorded as a digest only (they can echo user text); the
-    # tool name, outcome and evidence count are what replay needs.
+    # tool name, outcome, evidence count and the policy decision that allowed
+    # or refused the call are what replay needs.
     await _emit(db, "agent_tool_called", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"step": step, "tool": tool, "arguments_hash": arguments_hash, "ok": ok,
-                 "error_code": error_code, "duration_ms": duration_ms, "source_count": source_count},
+                 "error_code": error_code, "duration_ms": duration_ms, "source_count": source_count,
+                 "policy_decision_id": policy_decision_id, "policy_reason": policy_reason,
+                 # A possible prompt injection found in tool/document content (§13 Demo C).
+                 "untrusted_instructions": untrusted_instructions,
+                 "idempotency_key": idempotency_key, "calculation_id": calculation_id, "planned": planned,
+                 "resumed": resumed},
+                replay_relevance="REQUIRED")
+
+async def audit_calculation_receipt(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                    receipt: dict):
+    """A calculation the agent ran, by receipt (§07.3). The expression is
+    stored only as a hash; the persisted calculation run holds the detail."""
+    await _emit(db, "calculation_receipt_recorded", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {key: receipt.get(key) for key in ("calculation_id", "tool", "tool_version", "formula_version",
+                                                   "input_hash", "result", "rounding_rule", "warnings")},
+                replay_relevance="REQUIRED")
+
+async def audit_agent_plan(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                           plan: dict, agent_mode: bool, approved_tools: list[str]):
+    """The backend's plan for this request, before anything is fetched, and the
+    tools policy allows this user (ZL-ENG-AGT-01 §02, App. B4)."""
+    await _emit(db, "agent_plan_proposed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {**plan, "agent_mode": agent_mode, "approved_tools": approved_tools,
+                 "unapproved_planned_tools": [t for t in plan.get("planned_tools", []) if t not in approved_tools]},
                 replay_relevance="REQUIRED")
 
 async def audit_agent_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                 steps: int, stop_reason: str, tool_call_count: int,
-                                fell_back: bool, error: str | None = None):
+                                fell_back: bool, error: str | None = None, tokens_used: int | None = None,
+                                cost_usd: float | None = None, resumed_calls: int | None = None):
     await _emit(db, "agent_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"steps": steps, "stop_reason": stop_reason, "tool_call_count": tool_call_count,
-                 "fell_back": fell_back, "error": error},
+                 "fell_back": fell_back, "error": error, "tokens_used": tokens_used,
+                 "cost_usd": cost_usd, "resumed_calls": resumed_calls},
                 replay_relevance="REQUIRED")
 
 async def audit_composition_failed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id, error: str):
@@ -247,6 +281,14 @@ async def audit_review_resolved(db, *, query_id, correlation_id, tenant_id, acto
                                 decision: str, gold_case_id: str | None):
     await _emit(db, "human_review_resolved", query_id, correlation_id, tenant_id, f"review-{review_case_id}",
                 actor_id, {"review_case_id": review_case_id, "decision": decision, "gold_case_id": gold_case_id},
+                replay_relevance="REQUIRED")
+
+async def audit_review_stage(db, *, case, tenant_id, actor_id, stage: str, note: str = "",
+                             gold_case_id: str | None = None):
+    """A review case moving to another stage, with who moved it and why (§08.3)."""
+    await _emit(db, "human_review_stage_changed", case.query_id, case.correlation_id, tenant_id,
+                f"review-{case.id}", actor_id,
+                {"review_case_id": case.id, "stage": stage, "note": note[:500], "gold_case_id": gold_case_id},
                 replay_relevance="REQUIRED")
 
 async def audit_refusal_returned(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id, reason: str):

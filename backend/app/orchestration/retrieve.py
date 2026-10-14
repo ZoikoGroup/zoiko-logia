@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domains.source_library.embeddings import embed_query, vector_literal
 
-from app.domains.source_library.licensing import SourceUseContext, can_use_many
+from app.domains.source_library.licensing import SourceUseContext, can_use_many, can_use_many_operations
 from app.domains.source_library.models import Source, SourcePassage, SourceRelationship, SourceVersion
 from app.orchestration.dbnomics import countries_in_query
 from app.orchestration.procedures import is_other_procedure
@@ -256,6 +256,7 @@ async def build_source_bundle(
     effective_date: date | None = None,
     top_k: int = 8,
     _all_categories: bool = False,
+    engagement_id: str | None = None,
 ) -> SourceBundle:
     """Execute a bounded, context-aware hybrid (keyword + semantic) passage search.
 
@@ -269,6 +270,7 @@ async def build_source_bundle(
     context = SourceUseContext(
         tenant_id=tenant_id, jurisdiction=jurisdiction or infer_jurisdiction(query),
         framework=framework, effective_date=effective_date or date.today(),
+        engagement_id=engagement_id,
     )
 
     query_tokens = _tokens(query)
@@ -282,10 +284,18 @@ async def build_source_bundle(
         candidates = await _candidate_versions(
             db, tenant_id=tenant_id, category=None if _all_categories else category,
         )
-    decisions = await can_use_many(db, [version.id for _, version in candidates], context, "retrieval")
+    candidate_ids = [version.id for _, version in candidates]
+    # A version that may be retrieved but not sent to a model would be dropped
+    # by the licence gate after ranking, having taken a result slot from a
+    # usable source. Both rights are checked here, in one query, before any
+    # text is read (ZL-ENG-AGT-01 §06.2): the first refusal is the reason.
+    both = await can_use_many_operations(db, candidate_ids, context, ("retrieval", "model_transmission"))
+    decisions, transmission = both["retrieval"], both["model_transmission"]
     selected_source_ids: set[str] = set()
     for source, version in candidates:
         decision = decisions[version.id]
+        if decision.allowed and not transmission[version.id].allowed:
+            decision = transmission[version.id]
         if decision.allowed:
             if source.id not in selected_source_ids:
                 eligible_rows.append((source, version))
@@ -372,7 +382,7 @@ async def build_source_bundle(
     if not ranked and not _all_categories:
         return await build_source_bundle(
             db, query=query, jurisdiction=jurisdiction, tenant_id=tenant_id, framework=framework,
-            effective_date=effective_date, top_k=top_k, _all_categories=True,
+            effective_date=effective_date, top_k=top_k, _all_categories=True, engagement_id=engagement_id,
         )
 
     selected_passages = [
@@ -384,6 +394,11 @@ async def build_source_bundle(
             content_hash=passage.content_hash,
             score=round(score, 6),
             rank=rank,
+            permitted_span={"start": 0, "end": len(passage.content or "")},
+            rights_decision={
+                "retrieval": decisions[passage.source_version_id].reason_code,
+                "model_transmission": transmission[passage.source_version_id].reason_code,
+            },
             method=(
                 "hybrid" if passage.id in lexical and passage.id in semantic
                 else "vector" if passage.id in semantic and passage.id not in lexical

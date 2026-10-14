@@ -76,7 +76,10 @@ def test_south_africa_comes_before_the_africa_region():
 
 def test_taxonomy_domains_keep_their_place_ahead_of_the_catalogue():
     domains = allowed_domains("UK", {ECONOMY})
-    assert domains[:3] == ["worldbank.org", "imf.org", "oecd.org"]
+    # The country's own authorities come first (they must survive the site:
+    # filter's limit), then the global bodies, then the catalogue.
+    assert domains[0] == "ons.gov.uk"
+    assert domains.index("ons.gov.uk") < domains.index("worldbank.org") < domains.index("imf.org")
     assert domains.index("ons.gov.uk") < domains.index("dmo.gov.uk")
 
 
@@ -93,3 +96,13 @@ def test_off_taxonomy_question_is_not_widened_with_global_bodies():
 def test_catalogue_additions_are_capped_per_question():
     query = "Compare GDP in Brazil, Mexico, Chile, Peru, Colombia and Argentina"
     assert len(catalogue_domains(["GLOBAL"], detect_topics(query), query)) <= MAX_CATALOGUE_DOMAINS
+
+
+def test_country_authorities_survive_the_site_filter_limit():
+    """"How to file GSTR-3B" was searched on OECD/IFRS/IFAC: the global bodies
+    came first and filled the site: clause."""
+    from app.orchestration.source_taxonomy import detect_topics
+    query = "How to file GSTR-3B for September"
+    clause = site_filter(allowed_domains("", detect_topics(query), query))
+    assert "gst.gov.in" in clause or "cbic.gov.in" in clause
+    assert "site:oecd.org" not in clause.split(" OR ")[0]

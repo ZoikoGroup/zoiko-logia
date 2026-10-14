@@ -323,29 +323,21 @@ async def get_soonest_expiring(db: AsyncSession, tenant_id: str) -> dict | None:
     sources are visible to every tenant by design (Checkpoint A — e.g.
     regulatory standards); only rows marked is_tenant_private=True are
     restricted to their owning tenant."""
-    result = await db.execute(
-        select(SourceVersion, Source)
-        .join(Source, Source.id == SourceVersion.source_id)
-        .where(
-            (Source.is_tenant_private.is_(False)) | (Source.tenant_id == tenant_id),
-            SourceVersion.status.in_(_ELIGIBLE_STATUSES),
-            SourceVersion.effective_to.is_not(None),
-        )
-        .order_by(SourceVersion.effective_to.asc())
-        .limit(1)
-    )
-    row = result.first()
-    if row is None:
+    sources = await list_sources(db, tenant_id=tenant_id)
+    candidates = [item for item in sources if
+                  item["latest_version"].status in _ELIGIBLE_STATUSES
+                  and item["latest_version"].effective_to is not None]
+    if not candidates:
         return None
-
-    version, source = row
+    item = min(candidates, key=lambda item: item["latest_version"].effective_to)
+    version = item["latest_version"]
     days_remaining = (version.effective_to - date.today()).days
     return {
-        "source_id": source.id,
+        "source_id": item["id"],
         "version_id": version.id,
-        "title": source.title,
-        "category": source.category,
-        "jurisdiction_scope": source.jurisdiction_scope,
+        "title": item["title"],
+        "category": item["category"],
+        "jurisdiction_scope": item["jurisdiction_scope"],
         "effective_to": version.effective_to,
         "days_remaining": days_remaining,
     }
@@ -359,17 +351,13 @@ async def get_jurisdiction_summary(db: AsyncSession, tenant_id: str) -> list[dic
     Scoped to the tenant's boundary like list_sources: non-private (shared)
     sources count for every tenant; only is_tenant_private=True rows are
     restricted to their owning tenant."""
-    result = await db.execute(
-        select(Source, SourceVersion)
-        .join(SourceVersion, SourceVersion.source_id == Source.id)
-        .where((Source.is_tenant_private.is_(False)) | (Source.tenant_id == tenant_id))
-    )
-    rows = result.all()
+    rows = await list_sources(db, tenant_id=tenant_id)
 
     by_jurisdiction: dict[str, dict[str, dict[str, int]]] = {}
-    for source, version in rows:
-        j = by_jurisdiction.setdefault(source.jurisdiction_scope, {})
-        c = j.setdefault(source.category, {"approved": 0, "pending": 0})
+    for source in rows:
+        version = source["latest_version"]
+        j = by_jurisdiction.setdefault(source["jurisdiction_scope"], {})
+        c = j.setdefault(source["category"], {"approved": 0, "pending": 0})
         if version.status in _ELIGIBLE_STATUSES:
             c["approved"] += 1
         elif version.status in ("PROPOSED", "UNDER_REVIEW"):
@@ -420,6 +408,14 @@ async def approve_source_version(
 
     if not version.content_hash:
         raise HTTPException(status_code=409, detail="A version cannot be approved without a content hash")
+
+    # ZL-ENG-AGT-01 §06.1: applicability dates are stored at ingestion, so a
+    # version without one cannot be chosen for a past reporting period.
+    if version.effective_from is None:
+        raise HTTPException(
+            status_code=409,
+            detail="A version cannot be approved without an effective-from date (the date its rule applies from)",
+        )
 
     passage_result = await db.execute(
         select(func.count(SourcePassage.id)).where(SourcePassage.source_version_id == version.id)
@@ -652,3 +648,18 @@ async def expire_source_versions(db: AsyncSession, *, tenant_id: str, today: dat
         version.status = "EXPIRED"
     await db.commit()
     return len(versions)
+
+
+async def list_source_bundles(db: AsyncSession, *, tenant_id: str) -> list[dict]:
+    """List stored bundle metadata without exposing passage text or retrieval queries."""
+    from app.orchestration.models import EvidenceBundleManifest
+    result = await db.execute(select(EvidenceBundleManifest).where(
+        EvidenceBundleManifest.tenant_id == tenant_id,
+    ).order_by(EvidenceBundleManifest.created_at.desc(), EvidenceBundleManifest.id.desc()).limit(12))
+    return [{
+        "id": row.id, "created_at": row.created_at,
+        "confidence_state": row.manifest.get("confidence_state", "insufficient"),
+        "jurisdiction": row.manifest.get("jurisdiction", ""),
+        "sources": [{"id": source["id"], "title": source.get("title", source["id"])}
+                    for source in row.manifest.get("sources", [])],
+    } for row in result.scalars()]

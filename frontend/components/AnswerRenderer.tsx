@@ -12,6 +12,7 @@ import type { Root } from "mdast";
 import { CheckCircle2, Copy, Download, Table2 } from "lucide-react";
 import type { CalculationResult, VerifiedChartSpec, VisualizationSpec } from "@/lib/api";
 import { remarkAnswerLineBreaks } from "@/lib/answer-markdown";
+import { waterfallSeries } from "@/lib/waterfall";
 import { cssVar } from "@/lib/css-var";
 import { GraphRendererAdapter } from "@/components/visualization/GraphRendererAdapter";
 import { FlowRendererAdapter } from "@/components/visualization/FlowRendererAdapter";
@@ -776,29 +777,12 @@ function buildChartOption(spec: ChartSpec): Record<string, unknown> {
 
   if (spec.type === "waterfall") {
     // series[0].data: the starting amount, then signed changes; a final value
-    // equal to the running total is drawn as a total bar from zero. Built as
-    // an invisible "base" stacked under each visible step, so every bar
-    // starts where the previous one ended.
+    // equal to the running total is drawn as a total bar from zero. Explicit
+    // endpoints also handle negative balances and changes crossing zero.
     const values = spec.series?.[0]?.data ?? [];
-    const base: (number | string)[] = [];
-    const step: { value: number; itemStyle: { color: string } }[] = [];
     const up = cssVar("--ok", "#31a06a");
     const down = cssVar("--bad", "#e2725b");
     const total = cssVar("--brand", "#16799a");
-    let running = 0;
-    values.forEach((value, index) => {
-      const isEndTotal = index === values.length - 1 && index > 0 && Math.abs(value - running) < 1e-9;
-      if (index === 0 || isEndTotal) {
-        base.push(Math.min(0, value));
-        step.push({ value: Math.abs(value), itemStyle: { color: total } });
-        running = value;
-        return;
-      }
-      const next = running + value;
-      base.push(Math.min(running, next));
-      step.push({ value: Math.abs(value), itemStyle: { color: value >= 0 ? up : down } });
-      running = next;
-    });
     return {
       color,
       title,
@@ -812,23 +796,7 @@ function buildChartOption(spec: ChartSpec): Record<string, unknown> {
       grid: { left: 8, right: 24, top: title ? 48 : 24, bottom: 32, containLabel: true },
       xAxis: { type: "category", data: spec.categories ?? [], axisLabel: { color: muted, interval: 0 } },
       yAxis: { type: "value", axisLabel: { color: muted }, splitLine: { lineStyle: { color: line } } },
-      series: [
-        { type: "bar", stack: "waterfall", data: base, itemStyle: { color: "transparent" }, tooltip: { show: false } },
-        {
-          type: "bar",
-          stack: "waterfall",
-          name: spec.series?.[0]?.name,
-          data: step,
-          barMaxWidth: 54,
-          label: {
-            show: true,
-            position: "top",
-            color: ink,
-            fontSize: 11,
-            formatter: (p: { dataIndex: number }) => String(values[p.dataIndex]),
-          },
-        },
-      ],
+      series: [{ ...waterfallSeries(values, { up, down, total, ink }), name: spec.series?.[0]?.name }],
     };
   }
 

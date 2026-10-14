@@ -52,3 +52,19 @@ def test_missing_required_field_is_rejected():
     args = json.dumps({"type": "bar", "title": "Revenue"})  # no categories/series
     with pytest.raises(ChartToolError):
         build_chart_fence(args)
+
+
+@pytest.mark.parametrize("chart", [
+    dict(type="bar", title="Bad", categories=["A","B"], series=[dict(name="x",data=[1])]),
+    dict(type="bar", title="Bad", categories=["A"], series=[dict(name="x",data=[float('nan')])]),
+    dict(type="scatter", title="Bad", xName="x", yName="y", series=[dict(name="x",points=[[1,2,3]])]),
+    dict(type="heatmap", title="Bad", categories=["A"], yCategories=["B"], cells=[[1,0,4]]),
+    dict(type="heatmap", title="Bad", categories=["A"], yCategories=["B"], cells=[[0,0,4],[0,0,5]]),
+    dict(type="pie", title="Bad", data=[dict(name="A",value=-5),dict(name="B",value=10)]),
+    dict(type="pie", title="Bad", data=[dict(name="A",value=0)]),
+    dict(type="sankey", title="Bad", nodes=[dict(name="A")],links=[dict(source="A",target="B",value=5)]),
+    dict(type="candlestick", title="Bad", categories=["Today"],ohlc=[[10,12,11,13]]),
+])
+def test_invalid_chart_data_is_rejected_before_rendering(chart):
+    with pytest.raises(ChartToolError):
+        build_chart_fence(json.dumps(chart))

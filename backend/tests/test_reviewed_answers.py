@@ -28,6 +28,8 @@ async def _correct(db, tenant, question, answer, facts):
         db, tenant_id=tenant, case_id=case.id, reviewer_id="reviewer", decision="corrected",
         corrected_answer=answer, key_facts=facts, category="reasoning",
     )
+    # Re-tested and released by a second reviewer before Kriton reuses it.
+    await review.release_reviewed_answer(db, tenant_id=tenant, case_id=case.id, releaser_id="second-reviewer")
 
 
 async def test_a_correction_is_reused_for_the_same_question(db):

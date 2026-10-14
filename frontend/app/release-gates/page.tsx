@@ -7,8 +7,7 @@ import { Card } from "@/components/governance/Card";
 import { InfoCard } from "@/components/governance/InfoCard";
 import { Pill } from "@/components/governance/Pill";
 import { LOCALIZATION_CARD } from "@/lib/governance-data";
-import { ApiError, getAuthToken, getGovernanceDashboard } from "@/lib/api";
-import type { GateState, ReleaseGate } from "@/lib/governance-dashboard-types";
+import { ApiError, getAuthToken, getReleaseReadiness, type GateState, type ReleaseGate } from "@/lib/api";
 
 const GATE_PILL: Record<GateState, { label: string; tone: "ok" | "bad" | "warn" | "neutral" }> = {
   passed: { label: "Passed", tone: "ok" },
@@ -27,8 +26,8 @@ export default function ReleaseGatesPage() {
 
   useEffect(() => {
     const controller = new AbortController();
-    getGovernanceDashboard(getAuthToken(), { environment: "PRODUCTION", windowDays: 30 }, controller.signal)
-      .then((model) => setGates(model.releaseReadiness))
+    getReleaseReadiness(getAuthToken(), controller.signal)
+      .then(setGates)
       .catch((err) => {
         if (controller.signal.aborted) return;
         setError(

@@ -103,7 +103,7 @@ async def test_classify_query_llm_parses_valid_structured_response(monkeypatch):
     mock_client = MagicMock()
     mock_client.chat.completions.create = mock_create
     monkeypatch.setattr(
-        "app.orchestration.query_classifier_llm.AsyncGroq",
+        "app.domains.model_gateway.auxiliary.AsyncGroq",
         lambda api_key: mock_client,
     )
 
@@ -127,7 +127,7 @@ async def test_classify_query_llm_fails_soft_on_malformed_json(monkeypatch):
         return_value=_mock_groq_response("{not valid json")
     )
     monkeypatch.setattr(
-        "app.orchestration.query_classifier_llm.AsyncGroq",
+        "app.domains.model_gateway.auxiliary.AsyncGroq",
         lambda api_key: mock_client,
     )
     result = await classify_query_llm("Show UK inflation as a line chart.")
@@ -140,7 +140,7 @@ async def test_classify_query_llm_fails_soft_on_network_error(monkeypatch):
     mock_client = MagicMock()
     mock_client.chat.completions.create = AsyncMock(side_effect=ConnectionError("boom"))
     monkeypatch.setattr(
-        "app.orchestration.query_classifier_llm.AsyncGroq",
+        "app.domains.model_gateway.auxiliary.AsyncGroq",
         lambda api_key: mock_client,
     )
     result = await classify_query_llm("Show UK inflation as a line chart.")

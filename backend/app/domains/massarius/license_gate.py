@@ -57,6 +57,7 @@ async def check_eligibility(
     jurisdiction: str = "",
     framework: str = "",
     effective_date=None,
+    engagement_id: str | None = None,
 ) -> LicenceCheckResult:
     """
     Checkpoint A + B combined: filters ineligible sources and resolves
@@ -114,6 +115,7 @@ async def check_eligibility(
             jurisdiction=jurisdiction,
             framework=framework,
             effective_date=effective_date,
+            engagement_id=engagement_id,
         )
         transmission = await can_use(db, source.version_id, context, "model_transmission")
         if not transmission.allowed:

@@ -1,290 +1,127 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, ArrowRight, CheckCircle2, CircleDashed, ClipboardList, RefreshCw, ShieldAlert } from "lucide-react";
-import { ApiError, getAuthToken, getGovernanceDashboard } from "@/lib/api";
-import type {
-  AlertSeverity,
-  DomainState,
-  GateState,
-  GovernanceDashboardViewModel,
-} from "@/lib/governance-dashboard-types";
+import { useRef, useState } from "react";
+import { AlertTriangle, ArrowRight, CheckCircle2, Clock3, Download, FileCheck2 } from "lucide-react";
+import { getGovernanceDashboard } from "@/lib/api";
+import type { GovernanceDashboardViewModel } from "@/lib/governance-dashboard-types";
+import { useLiveData } from "@/components/overview/useLiveData";
+import { EmptyRow, ErrorBlock, LoadingBlock, RefreshButton, SignedOutBlock } from "@/components/overview/states";
 
-const STATE_LABEL: Record<DomainState, string> = {
-  critical: "Critical",
-  attention: "Needs attention",
-  effective: "Effective",
-  not_assessed: "Not assessed",
-};
+const WINDOWS = [7, 30, 90] as const;
 
-const STATE_STYLE: Record<DomainState, string> = {
-  critical: "bg-bad/10 text-bad",
-  attention: "bg-warn/10 text-warn",
-  effective: "bg-ok/10 text-ok",
-  not_assessed: "bg-soft text-muted",
-};
-
-const SEVERITY_STYLE: Record<AlertSeverity, string> = {
-  critical: "bg-bad text-white",
-  high: "bg-bad/10 text-bad",
-  medium: "bg-warn/10 text-warn",
-  low: "bg-soft text-muted",
-};
-
-const GATE_STYLE: Record<GateState, { label: string; className: string }> = {
-  passed: { label: "Passed", className: "text-ok" },
-  blocked: { label: "Blocked", className: "text-bad" },
-  partial: { label: "Partial evidence", className: "text-warn" },
-  not_assessed: { label: "Not assessed", className: "text-muted" },
-};
-
-function when(value: string | null): string {
-  if (!value) return "—";
-  return new Date(value).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+function StatePill({ label }: { label: string }) {
+  const danger = /failure/i.test(label);
+  const good = /^effective$/i.test(label);
+  const observations = /observations/i.test(label);
+  return <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${danger ? "bg-bad/10 text-bad" : good ? "bg-ok/10 text-ok" : observations ? "bg-info/10 text-info" : "bg-warn/10 text-warn"}`}>{label}</span>;
 }
 
-function StatePill({ state }: { state: DomainState }) {
-  return (
-    <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${STATE_STYLE[state]}`}>
-      {STATE_LABEL[state]}
-    </span>
-  );
+function plural(n: number, word: string) {
+  return `${n} ${n === 1 ? word : `${word}s`}`;
 }
 
-/** Governance Dashboard (Admin Governance Console spec §4): health cards,
- * alerts with owners, the viewer's work queue and release blockers — all from
- * the tenant's live governance records. Nothing here is sample data: domains
- * the platform cannot measure yet say "Not assessed" and why. */
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function exportJson(view: GovernanceDashboardViewModel) {
+  const blob = new Blob([JSON.stringify(view, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `governance-dashboard-${view.generatedAt.slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export function GovernanceDashboard() {
-  const [model, setModel] = useState<GovernanceDashboardViewModel | null>(null);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
+  const environment = "CONNECTED";
+  const [windowDays, setWindowDays] = useState<number>(30);
+  const options = useRef({ environment: "CONNECTED", windowDays: 30 });
+  const { data: view, error, loading, signedOut, reload } = useLiveData(`governance:${environment}:${windowDays}`, (token, signal, fresh) =>
+    getGovernanceDashboard(token, { environment: options.current.environment, jurisdiction: "US", windowDays: options.current.windowDays }, signal, fresh),
+  );
 
-  // State is only set in the request's callbacks, so the initial load can run
-  // straight from the effect; Refresh resets the loading/error state first.
-  const fetchModel = useCallback((signal?: AbortSignal) => {
-    return getGovernanceDashboard(getAuthToken(), { environment: "PRODUCTION", windowDays: 30 }, signal)
-      .then((next) => {
-        setModel(next);
-        setError("");
-      })
-      .catch((err) => {
-        if (signal?.aborted) return;
-        setError(
-          err instanceof ApiError && err.status === 403
-            ? "The Governance Dashboard isn't available for your role."
-            : "Could not load the governance assessment. Please try again.",
-        );
-      })
-      .finally(() => {
-        if (!signal?.aborted) setLoading(false);
-      });
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void fetchModel(controller.signal);
-    return () => controller.abort();
-  }, [fetchModel]);
-
-  function load() {
-    setLoading(true);
-    setError("");
-    return fetchModel();
+  function change(next: { windowDays?: number }) {
+    if (next.windowDays) setWindowDays(next.windowDays);
+    options.current = { environment, windowDays: next.windowDays ?? windowDays };
+    reload();
   }
 
-  const summary = model?.governanceSummary;
+  if (signedOut) return <main className="flex-1 overflow-y-auto bg-canvas p-4 lg:p-6"><div className="mx-auto max-w-[1500px]"><SignedOutBlock /></div></main>;
+
+  const s = view?.summary;
+  const freshnessTone = view?.scope.evidenceFreshness === "current" ? "text-ok" : "text-warn";
 
   return (
     <main className="flex-1 overflow-y-auto bg-canvas p-4 lg:p-6">
       <div className="mx-auto max-w-[1500px] space-y-5">
+        <div className="rounded-2xl border border-line bg-panel p-4 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-ink">{view?.scope.workspaceName ?? "Loading workspace…"} · Workspace scope</p>
+              <p className="mt-1 text-xs text-muted">Connected workspace · Jurisdictions: {view?.scope.jurisdictions.join(", ") || "—"}{view ? ` · ${formatDate(view.scope.windowStart)} – ${formatDate(view.scope.windowEnd)}` : ""}</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <label className="flex items-center gap-1.5 text-xs text-muted">Window
+                <select value={windowDays} onChange={(e) => change({ windowDays: Number(e.target.value) })} className="rounded-lg border border-line bg-panel px-2 py-1 text-sm font-semibold text-ink">{WINDOWS.map((w) => <option key={w} value={w}>Last {w} days</option>)}</select>
+              </label>
+            </div>
+          </div>
+          {view && <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 border-t border-line pt-3 text-xs text-muted"><span>Tenant isolation: <b className="text-ok">boundary enforced</b></span><span>Evidence freshness: <b className={freshnessTone}>{view.scope.evidenceFreshness}</b></span><span>Audit ledger: <b className="text-ink">{view.scope.auditLedger.eventsInWindow.toLocaleString()} events · last {view.scope.auditLedger.lastEventAge}</b></span><span>Risk policy: <b className="text-ink">{view.scope.policyVersion}</b></span></div>}
+        </div>
+
+        {view && view.staleDomains.length > 0 && <div className="flex items-start gap-2 rounded-xl border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn"><Clock3 size={16} className="mt-0.5 shrink-0" /><span>Partial governance view: {view.staleDomains.join(", ")} {view.staleDomains.length === 1 ? "has" : "have"} no evidence from the last {view.scope.windowDays} days.</span></div>}
+
         <header className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>
             <h1 className="text-3xl font-bold tracking-tight text-ink">Governance Dashboard</h1>
-            <p className="mt-1 text-muted">
-              Live oversight of sources, risk policy, escalations, incidents, the audit ledger and release readiness.
-            </p>
-            {model && (
-              <p className="mt-2 text-sm text-muted">
-                {model.governanceScope.workspaceName} · {model.governanceScope.environment} · Assessed{" "}
-                {when(model.governanceSummary.lastEvaluatedAt)}
-              </p>
-            )}
+            <p className="mt-1 text-muted">Evidence-backed oversight of AI, source, professional, release and operational controls.</p>
+            {s && <p className="mt-2 font-semibold text-ink">{plural(s.criticalExceptionCount, "critical exception")} · {plural(s.highExceptionCount, "high exception")} · {plural(s.pendingDecisionCount, "decision")} pending · {plural(s.blockedGateCount, "release gate")} blocked</p>}
           </div>
-          <button
-            type="button"
-            onClick={() => void load()}
-            disabled={loading}
-            className="inline-flex min-h-11 items-center gap-2 self-start rounded-xl border border-line bg-panel px-4 text-sm font-semibold text-ink hover:bg-soft disabled:opacity-60"
-          >
-            <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
-            {loading ? "Assessing…" : "Refresh"}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <Link href="#exceptions" className={`inline-flex min-h-11 items-center gap-2 rounded-xl px-4 text-sm font-semibold ${s?.criticalExceptionCount ? "bg-bad text-white" : "border border-line bg-panel text-ink"}`}><AlertTriangle size={16} />Open exceptions</Link>
+            <Link href="#decisions" className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-line bg-panel px-4 text-sm font-semibold text-ink"><FileCheck2 size={16} />Review pending decisions</Link>
+            <button onClick={() => view && exportJson(view)} disabled={!view} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-line bg-panel px-4 text-sm font-semibold text-ink disabled:opacity-60"><Download size={16} />Export</button>
+            <RefreshButton onClick={reload} loading={loading} generatedAt={view?.generatedAt} />
+          </div>
         </header>
 
-        {error && (
-          <div role="alert" className="rounded-xl border border-bad/30 bg-bad/10 px-4 py-3 text-sm text-bad">
-            {error}
-          </div>
-        )}
+        {error && <ErrorBlock message={error} onRetry={reload} />}
+        {!view && loading && <LoadingBlock label="Loading Governance Dashboard" />}
 
-        {!model && loading && (
-          <div aria-busy="true" className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {Array.from({ length: 8 }).map((_, i) => (
-              <div key={i} className="h-36 animate-pulse rounded-2xl border border-line bg-panel" />
-            ))}
-          </div>
-        )}
+        {view && <>
+          <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {view.domains.map((d) => <Link href={d.href} key={d.key} className="rounded-2xl border border-line bg-panel p-4 hover:border-brand/40"><h2 className="font-semibold text-ink">{d.name}</h2><div className="mt-3"><StatePill label={d.state} /></div><p className="mt-3 text-sm text-muted">{d.metric}</p><p className={`mt-4 border-t border-line pt-3 text-sm font-semibold ${d.freshness.state === "current" ? "text-ok" : "text-warn"}`}>{d.freshness.label}</p></Link>)}
+          </section>
 
-        {model && summary && (
-          <>
-            <section className="rounded-2xl border border-line bg-panel p-4 shadow-sm">
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="text-sm font-semibold text-ink">Overall</span>
-                <StatePill state={summary.overallState} />
-                <span className="text-sm text-ink">
-                  {summary.criticalExceptionCount} critical · {summary.highExceptionCount} high ·{" "}
-                  {summary.pendingDecisionCount} decision{summary.pendingDecisionCount === 1 ? "" : "s"} for you ·{" "}
-                  {summary.blockedGateCount} release gate{summary.blockedGateCount === 1 ? "" : "s"} blocked
-                </span>
-              </div>
-              {summary.notAssessedDomains.length > 0 && (
-                <p className="mt-2 text-xs text-muted">
-                  Not assessed yet: {summary.notAssessedDomains.join(", ")}. These show no figures until there is
-                  real data behind them.
-                </p>
-              )}
-            </section>
-
-            <section aria-labelledby="health-title">
-              <h2 id="health-title" className="mb-3 text-xs font-bold uppercase tracking-wide text-muted">
-                Governance health
-              </h2>
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                {model.domainStates.map((domain) => (
-                  <article key={domain.key} className="flex flex-col rounded-2xl border border-line bg-panel p-4">
-                    <div className="flex items-start justify-between gap-2">
-                      <h3 className="text-sm font-semibold text-ink">{domain.label}</h3>
-                      <StatePill state={domain.state} />
-                    </div>
-                    <p className="mt-2 text-sm text-ink">{domain.headline}</p>
-                    {domain.metrics.length > 0 && (
-                      <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-                        {domain.metrics.map((metric) => (
-                          <div key={metric.label} className="contents">
-                            <dt className="text-muted">{metric.label}</dt>
-                            <dd className="text-right font-semibold text-ink">{metric.value ?? "—"}</dd>
-                          </div>
-                        ))}
-                      </dl>
-                    )}
-                    {domain.reason && <p className="mt-3 text-xs text-muted">{domain.reason}</p>}
-                    <Link
-                      href={domain.drilldownTarget}
-                      className="mt-auto inline-flex items-center gap-1 pt-3 text-xs font-semibold text-brand hover:underline"
-                    >
-                      Open <ArrowRight size={12} />
-                    </Link>
-                  </article>
-                ))}
+          <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_390px]">
+            <section id="exceptions" className="overflow-hidden rounded-2xl border border-line bg-panel">
+              <div className="flex items-center justify-between border-b border-line px-5 py-4"><div><p className="text-xs font-bold uppercase tracking-[.18em] text-muted">Exception-first</p><h2 className="mt-1 text-xl font-bold text-ink">Open exceptions</h2></div><Link href="/alerts-center" className="text-sm font-semibold text-brand">Alerts center</Link></div>
+              <div className="divide-y divide-line">
+                {view.exceptions.length === 0 && <EmptyRow>No open exceptions. Incidents, overdue escalations, failed evaluation gates and expired licences appear here.</EmptyRow>}
+                {view.exceptions.map((e) => <Link href={e.href} key={e.id} className="block p-5 hover:bg-soft/50"><div className="flex items-start justify-between gap-4"><div><div className="flex flex-wrap items-center gap-2"><span className={`rounded-full px-2 py-0.5 text-xs font-bold ${e.severity === "Critical" ? "bg-bad/10 text-bad" : "bg-warn/10 text-warn"}`}>{e.severity}</span><span className="text-xs font-bold uppercase text-muted">{e.domain}</span></div><h3 className="mt-2 font-semibold text-ink">{e.title}</h3><p className="mt-2 text-sm text-muted">{e.detail}</p></div><ArrowRight size={17} className="shrink-0 text-brand" /></div></Link>)}
               </div>
             </section>
 
-            <div className="grid gap-5 xl:grid-cols-[1.4fr_1fr]">
-              <section className="overflow-hidden rounded-2xl border border-line bg-panel" aria-labelledby="alerts-title">
-                <div className="flex items-center gap-2 border-b border-line px-5 py-4">
-                  <ShieldAlert size={16} className="text-bad" />
-                  <h2 id="alerts-title" className="text-sm font-bold text-ink">Alerts</h2>
-                  <span className="text-xs text-muted">({model.exceptions.length})</span>
-                </div>
-                {model.exceptions.length === 0 ? (
-                  <p className="flex items-center gap-2 p-5 text-sm text-muted">
-                    <CheckCircle2 size={16} className="text-ok" /> No active alerts.
-                  </p>
-                ) : (
-                  <ul className="divide-y divide-line">
-                    {model.exceptions.map((alert) => (
-                      <li key={alert.id} className="flex flex-wrap items-start gap-3 p-4">
-                        <span className={`rounded-md px-2 py-0.5 text-[11px] font-bold uppercase ${SEVERITY_STYLE[alert.severity]}`}>
-                          {alert.severity}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-semibold text-ink">{alert.title}</p>
-                          <p className="mt-0.5 text-xs text-muted">
-                            {alert.domain} · Owner: {alert.ownerRole}
-                            {alert.dueAt && ` · Due ${when(alert.dueAt)}`}
-                            {!alert.dueAt && alert.openedAt && ` · Opened ${when(alert.openedAt)}`}
-                          </p>
-                        </div>
-                        <Link
-                          href={alert.drilldownTarget}
-                          title={alert.resolvedBy}
-                          className="inline-flex items-center gap-1 text-xs font-semibold text-brand hover:underline"
-                        >
-                          Resolve <ArrowRight size={12} />
-                        </Link>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </section>
-
-              <div className="space-y-5">
-                <section className="overflow-hidden rounded-2xl border border-line bg-panel" aria-labelledby="queue-title">
-                  <div className="flex items-center gap-2 border-b border-line px-5 py-4">
-                    <ClipboardList size={16} className="text-brand" />
-                    <h2 id="queue-title" className="text-sm font-bold text-ink">Your work queue</h2>
-                    <span className="text-xs text-muted">({model.decisions.length})</span>
-                  </div>
-                  {model.decisions.length === 0 ? (
-                    <p className="p-5 text-sm text-muted">Nothing waiting for your decision.</p>
-                  ) : (
-                    <ul className="divide-y divide-line">
-                      {model.decisions.map((item) => (
-                        <li key={item.id} className="p-4">
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-muted">{item.type}</p>
-                          <Link href={item.drilldownTarget} className="mt-0.5 block text-sm font-semibold text-ink hover:text-brand">
-                            {item.title}
-                          </Link>
-                          <p className="mt-0.5 text-xs text-muted">Submitted {when(item.submittedAt)}</p>
-                          {item.blockedReason && <p className="mt-1 text-xs text-warn">{item.blockedReason}</p>}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </section>
-
-                <section className="overflow-hidden rounded-2xl border border-line bg-panel" aria-labelledby="release-title">
-                  <div className="flex items-center gap-2 border-b border-line px-5 py-4">
-                    <AlertTriangle size={16} className="text-warn" />
-                    <h2 id="release-title" className="text-sm font-bold text-ink">Release readiness</h2>
-                  </div>
-                  <ul className="divide-y divide-line">
-                    {model.releaseReadiness.map((gate) => (
-                      <li key={gate.gate} className="flex items-start gap-3 p-4">
-                        {gate.state === "not_assessed" ? (
-                          <CircleDashed size={16} className="mt-0.5 shrink-0 text-muted" />
-                        ) : (
-                          <span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${gate.state === "passed" ? "bg-ok" : gate.state === "blocked" ? "bg-bad" : "bg-warn"}`} />
-                        )}
-                        <div className="min-w-0">
-                          <p className="text-sm font-semibold text-ink">
-                            {gate.gate}{" "}
-                            <span className={`text-xs font-semibold ${GATE_STYLE[gate.state].className}`}>
-                              · {GATE_STYLE[gate.state].label}
-                            </span>
-                          </p>
-                          <p className="mt-0.5 text-xs text-muted">{gate.reason}</p>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
+            <section id="decisions" className="overflow-hidden rounded-2xl border border-line bg-panel">
+              <div className="border-b border-line px-5 py-4"><p className="text-xs font-bold uppercase tracking-[.18em] text-muted">Assigned to your role</p><h2 className="mt-1 text-xl font-bold text-ink">Pending decisions</h2></div>
+              <div className="divide-y divide-line">
+                {view.decisions.length === 0 && <EmptyRow>No decisions are waiting on your role.</EmptyRow>}
+                {view.decisions.map((d) => <article key={d.id} className="p-5"><div className="flex justify-between gap-2"><span className={`text-xs font-bold ${["HIGH", "REPORTED", "RESTRICTED"].includes(d.severity) ? "text-bad" : "text-warn"}`}>{d.severity} · {d.kind}</span><span className="text-xs text-muted">{d.due}</span></div><h3 className="mt-3 font-semibold leading-6 text-ink">{d.title}</h3><Link href={d.href} className="mt-3 inline-flex items-center gap-1 text-sm font-semibold text-brand">Review decision <ArrowRight size={14} /></Link></article>)}
+                {s && s.pendingDecisionCount > view.decisions.length && <p className="px-5 py-3 text-xs text-muted">Showing {view.decisions.length} of {s.pendingDecisionCount} pending decisions.</p>}
               </div>
-            </div>
-          </>
-        )}
+            </section>
+          </div>
+
+          <section className="overflow-hidden rounded-2xl border border-line bg-panel"><div className="border-b border-line px-5 py-4"><p className="text-xs font-bold uppercase tracking-[.18em] text-muted">Full posture</p><h2 className="mt-1 text-xl font-bold text-ink">Control domains matrix</h2></div><div className="overflow-x-auto"><table className="w-full min-w-[980px] text-left text-sm"><thead className="bg-soft text-xs uppercase text-muted"><tr><th className="px-5 py-3">Domain</th><th>State</th><th>Measure</th><th>Exceptions</th><th>Evidence freshness</th><th>Next obligation</th><th className="pr-5">Open</th></tr></thead><tbody className="divide-y divide-line">{view.domains.map((d) => <tr key={d.key}><th className="px-5 py-4 font-semibold text-ink">{d.name}</th><td><StatePill label={d.state} /></td><td className="font-semibold text-brand">{d.metric}</td><td>{d.exceptions}</td><td className={d.freshness.state === "current" ? "text-ok" : "text-warn"}>{d.freshness.label}</td><td>{d.next}</td><td className="pr-5"><Link href={d.href} className="text-brand">Open ↗</Link></td></tr>)}</tbody></table></div></section>
+
+          <div className="grid gap-5 lg:grid-cols-2">
+            <section className="rounded-2xl border border-line bg-panel p-5"><div className="flex items-center justify-between"><h2 className="text-lg font-bold text-ink">Source & knowledge governance</h2><StatePill label={view.panels.sources.state} /></div><div className="mt-4 space-y-2 text-sm text-muted">{view.panels.sources.lines.map((line) => <p key={line}>{line}</p>)}</div></section>
+            <section className="rounded-2xl border border-line bg-panel p-5"><div className="flex items-center justify-between"><h2 className="text-lg font-bold text-ink">Audit / incident readiness</h2>{/^effective$/i.test(view.panels.audit.state) ? <span className="inline-flex items-center gap-1 text-ok"><CheckCircle2 size={15} />Effective</span> : <StatePill label={view.panels.audit.state} />}</div><div className="mt-4 space-y-2 text-sm text-muted">{view.panels.audit.lines.map((line) => <p key={line}>{line}</p>)}</div></section>
+          </div>
+        </>}
       </div>
     </main>
   );
