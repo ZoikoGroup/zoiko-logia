@@ -399,6 +399,76 @@ export async function revokeServiceAccountKey(token: string, accountId: string, 
   await authedFetch(`/service-accounts/${accountId}/keys/${keyId}/revoke`, token, { method: "POST" });
 }
 
+// ── Operations & Administration (backend app/domains/admin_governance) ──────
+// Every value is read from the running configuration or the tenant's records;
+// secret values never leave the backend, only whether they are set.
+
+export type OperationsAlert = { id: string; severity: string; domain: string; title: string; detail: string; href: string };
+
+export async function getOperationsAlerts(
+  token: string, signal?: AbortSignal, fresh = false,
+): Promise<{ alerts: OperationsAlert[]; generatedAt: string }> {
+  return (await authedFetch(`/operations/alerts${fresh ? "?fresh=true" : ""}`, token, { signal })).json();
+}
+
+export type ModelProvider = {
+  key: string; name: string; configured: boolean; purpose: string;
+  approved: boolean | null; models: Record<string, string>; dueDiligence: "not_assessed";
+};
+export type DataSource = { name: string; category: string; access: string; configured: boolean };
+export type Integration = { name: string; purpose: string; configured: boolean; detail?: string };
+
+export async function getOperationsConnections(
+  token: string, signal?: AbortSignal,
+): Promise<{ modelProviders: ModelProvider[]; dataSources: DataSource[]; integrations: Integration[] }> {
+  return (await authedFetch("/operations/connections", token, { signal })).json();
+}
+
+export type StatusCheck = {
+  name: string; state: "operational" | "down" | "not_configured"; latencyMs: number | null; detail: string;
+};
+
+export async function getOperationsStatus(
+  token: string, signal?: AbortSignal,
+): Promise<{ checks: StatusCheck[]; checkedAt: string }> {
+  return (await authedFetch("/operations/status", token, { signal })).json();
+}
+
+export type RoleMatrixEntry = { name: string; purpose: string; permissions: string[]; activeUsers: number };
+
+export async function getRolesMatrix(
+  token: string, signal?: AbortSignal,
+): Promise<{ roles: RoleMatrixEntry[]; unrecognisedRoles: { name: string; activeUsers: number }[] }> {
+  return (await authedFetch("/admin/roles-matrix", token, { signal })).json();
+}
+
+export type DeploymentSetting = { label: string; value: string | number | boolean; note: string; source: string };
+
+export type TenantSettingsView = {
+  workspace: { name: string; id: string };
+  people: { total: number; active: number; inactive: number; serviceAccounts: number; byRole: Record<string, number> };
+  security: DeploymentSetting[];
+  retention: DeploymentSetting[];
+};
+
+export async function getTenantSettings(token: string, signal?: AbortSignal): Promise<TenantSettingsView> {
+  return (await authedFetch("/admin/tenant-settings", token, { signal })).json();
+}
+
+export type UsageView = {
+  totals: {
+    questions_all_time: number; questions_this_month: number; active_users_this_month: number;
+    saved_answers: number; drafts: number; documents: number; generated_files: number;
+  };
+  questionsByMonth: { month: string; label: string; questions: number }[];
+  billing: { connected: boolean; reason: string };
+  generatedAt: string;
+};
+
+export async function getUsage(token: string, signal?: AbortSignal): Promise<UsageView> {
+  return (await authedFetch("/admin/usage", token, { signal })).json();
+}
+
 export type Ticket = {
   id: string;
   category: string;
