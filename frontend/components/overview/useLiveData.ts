@@ -17,40 +17,36 @@ export function useLiveData<T>(key: string, fetcher: Fetcher<T>, timeoutMs = 45_
   const { session, profile, loading: authLoading } = useAuth();
   const userId = session?.user?.id ?? "";
   const cacheKey = `${userId}:${profile?.tenant_id ?? ""}:${profile?.role ?? ""}:${key}`;
-  const [snapshot, setSnapshot] = useState<{ key: string; data: T | null }>({ key: cacheKey, data: null });
-  const data = session && snapshot.key === cacheKey ? snapshot.data : null;
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
   const [version, setVersion] = useState(0);
+  // One id per request: a new page key or a reload() starts a new request.
+  // Loading, error and data are worked out from it during render, so the
+  // effect never has to reset state before it fetches.
+  const requestId = `${cacheKey}#${version}`;
+  const [snapshot, setSnapshot] = useState<{ key: string; data: T | null }>({ key: cacheKey, data: null });
+  const [failure, setFailure] = useState<{ request: string; message: string }>({ request: "", message: "" });
+  const [settled, setSettled] = useState("");
   const fresh = useRef(false);
   const inFlight = useRef(false);
   const reload = useCallback(() => {
     if (inFlight.current) return;
     inFlight.current = true;
     fresh.current = true;
-    setLoading(true);
     setVersion((v) => v + 1);
   }, []);
   const token = session ? getAuthToken() : "";
 
+  // The last result for this page shows at once while the live request runs.
+  const data = !session ? null
+    : snapshot.key === cacheKey ? snapshot.data
+    : ((memory.get(cacheKey) as T | undefined) ?? null);
+  const error = session && failure.request === requestId ? failure.message : "";
+  const loading = authLoading || (Boolean(token) && settled !== requestId);
+
   useEffect(() => {
     if (authLoading || !token) {
-      if (!authLoading) {
-        memory.clear();
-        // Defer state updates so they don't run synchronously in the effect.
-        // This avoids the react-hooks/set-state-in-effect lint rule while
-        // keeping the previous auth-signout behavior unchanged.
-        Promise.resolve().then(() => {
-          setSnapshot({ key: cacheKey, data: null });
-          setError("");
-          setLoading(false);
-        });
-      }
+      if (!authLoading) memory.clear();
       return;
     }
-    setSnapshot({ key: cacheKey, data: (memory.get(cacheKey) as T | undefined) ?? null });
-    setError("");
-    setLoading(true);
     const controller = new AbortController();
     const wantFresh = fresh.current;
     fresh.current = false;
@@ -64,7 +60,6 @@ export function useLiveData<T>(key: string, fetcher: Fetcher<T>, timeoutMs = 45_
         if (controller.signal.aborted) return;
         memory.set(cacheKey, result);
         setSnapshot({ key: cacheKey, data: result });
-        setError("");
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
@@ -72,13 +67,13 @@ export function useLiveData<T>(key: string, fetcher: Fetcher<T>, timeoutMs = 45_
           memory.delete(cacheKey);
           setSnapshot({ key: cacheKey, data: null });
         }
-        setError(err instanceof Error ? err.message : "Could not load live data.");
+        setFailure({ request: requestId, message: err instanceof Error ? err.message : "Could not load live data." });
       })
       .finally(() => {
         clearTimeout(timer);
         if (!controller.signal.aborted) {
           inFlight.current = false;
-          setLoading(false);
+          setSettled(requestId);
           controller.abort();
         }
       });
@@ -86,7 +81,7 @@ export function useLiveData<T>(key: string, fetcher: Fetcher<T>, timeoutMs = 45_
     // fetcher reads its options from refs at every call site; key changes go
     // through reload().
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, token, userId, cacheKey, version, timeoutMs]);
+  }, [authLoading, token, userId, cacheKey, requestId, timeoutMs]);
 
-  return { data, error: snapshot.key === cacheKey && session ? error : "", loading: authLoading || (Boolean(token) && loading), signedOut: !authLoading && !session, reload };
+  return { data, error, loading, signedOut: !authLoading && !session, reload };
 }
