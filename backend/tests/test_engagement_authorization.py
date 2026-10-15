@@ -60,3 +60,28 @@ async def test_revocation_takes_effect_immediately(auth_db) -> None:
     decision = await authorize(db, actor_id="user-1", tenant_id="tenant-1", engagement_id="eng-1", operation=ASK)
     assert not decision.allowed
     assert decision.reason_code == "ENGAGEMENT_ACCESS_DENIED"
+
+
+@pytest.mark.asyncio
+async def test_new_engagement_is_listed_for_the_admin_who_created_it(auth_db) -> None:
+    """Kriton projects are engagements: one an Admin creates must appear in
+    their own list (and allow asking) without a separate membership step."""
+    from app.domains.identity.authorization import ALL_OPERATIONS, list_authorized_engagements
+    from app.domains.identity.engagement_router import create_engagement
+    from app.domains.identity.engagement_schemas import EngagementCreate
+
+    db, _ = auth_db
+    admin = User(id="admin-1", tenant_id="tenant-1", email="a@example.com", full_name="Admin", role="Admin")
+    db.add(admin)
+    await db.commit()
+
+    created = await create_engagement(EngagementCreate(name="  Year-end audit  "), db=db, admin=admin)
+    assert created.name == "Year-end audit"
+    listed = await list_authorized_engagements(db, actor_id="admin-1", tenant_id="tenant-1")
+    assert [e.id for e in listed] == [created.id]
+    for operation in ALL_OPERATIONS:
+        decision = await authorize(db, actor_id="admin-1", tenant_id="tenant-1", engagement_id=created.id, operation=operation)
+        assert decision.allowed, operation
+    # Another user in the tenant still needs to be added explicitly.
+    others = await list_authorized_engagements(db, actor_id="user-1", tenant_id="tenant-1")
+    assert created.id not in [e.id for e in others]

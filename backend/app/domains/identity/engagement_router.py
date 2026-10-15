@@ -22,6 +22,18 @@ async def get_engagements(db: AsyncSession = Depends(get_db), current_user: User
 async def create_engagement(payload: EngagementCreate, db: AsyncSession = Depends(get_db), admin: User = Depends(require_admin)):
     engagement = Engagement(tenant_id=admin.tenant_id, name=payload.name.strip())
     db.add(engagement)
+    await db.flush()
+    # The creator joins the engagement with every operation. Without this the
+    # new engagement was invisible to the Admin who created it (the list only
+    # returns engagements the caller is a member of), so it could never be
+    # chosen as a Kriton project. Other members are still added explicitly.
+    membership = EngagementMembership(tenant_id=admin.tenant_id, engagement_id=engagement.id,
+                                      user_id=admin.id, engagement_role="owner")
+    db.add(membership)
+    await db.flush()
+    for operation in ALL_OPERATIONS:
+        db.add(EngagementGrant(tenant_id=admin.tenant_id, membership_id=membership.id, operation=operation,
+                               effect="allow", version=engagement.rights_version))
     await db.commit()
     await db.refresh(engagement)
     return engagement

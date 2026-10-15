@@ -109,7 +109,6 @@ export default function AccountSecurityPage() {
     <PageShell
       title="Account security"
       subtitle="Two-step verification and active sessions for your account."
-      showMetrics={false}
     >
       {mustEnroll && (
         <p role="alert" className="mb-4 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-sm text-ink">

@@ -7,6 +7,7 @@ import { readCookie, subscribeCookies, writeCookie } from "@/lib/cookie-store";
 type ThemeContextValue = {
   theme: Theme;
   toggleTheme: () => void;
+  setTheme: (theme: Theme) => void;
 };
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
@@ -43,7 +44,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     applyTheme(theme === "dark" ? "light" : "dark");
   }
 
-  return <ThemeContext.Provider value={{ theme, toggleTheme }}>{children}</ThemeContext.Provider>;
+  return <ThemeContext.Provider value={{ theme, toggleTheme, setTheme: applyTheme }}>{children}</ThemeContext.Provider>;
 }
 
 export function useTheme(): ThemeContextValue {

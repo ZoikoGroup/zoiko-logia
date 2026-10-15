@@ -31,8 +31,19 @@ class Settings(BaseSettings):
     # the pool. A remote pooler/DNS incident must fail quickly enough for the
     # API to return a controlled 503 instead of consuming the complete Ask
     # Kriton request deadline.
-    DB_CONNECT_TIMEOUT_SECONDS: int = 10
+    # Per attempt. On networks where a new connection occasionally hangs
+    # (e.g. NAT64 on mobile broadband) a timeout plus a retry recovers sooner
+    # than one long wait. 5s was too short: a cold TLS connection to the
+    # hosted pooler measured 3.9s, and startup gave up on a healthy database.
+    DB_CONNECT_TIMEOUT_SECONDS: int = 8
+    DB_CONNECT_ATTEMPTS: int = 3
     DB_POOL_TIMEOUT_SECONDS: float = 10.0
+    # The hosted pooler (session mode) allows 15 clients per role in total,
+    # shared by every backend process on the database. SQLAlchemy's default
+    # (5 kept + 10 overflow) let one process take all 15, after which every
+    # other request failed with EMAXCONNSESSION ("database is busy").
+    DB_POOL_SIZE: int = 3
+    DB_MAX_OVERFLOW: int = 3
 
     # ── CORS ─────────────────────────────────────────────────────────────
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001"]
@@ -145,6 +156,10 @@ class Settings(BaseSettings):
     # browser's transport timeout so the API can return a controlled 504 (or a
     # terminal stream error) instead of letting the browser sever the socket.
     ASK_KRITON_TIMEOUT_SECONDS: float = 105.0
+    # A pasted document to review is searched, answered and every claim
+    # checked; on the streamed endpoint (heartbeats keep the browser
+    # connected) it gets longer, as long input does in ChatGPT or Claude.
+    ASK_KRITON_LONG_INPUT_TIMEOUT_SECONDS: float = 180.0
     # One ceiling for the combined FX/statistics/market-data fan-out. Individual
     # provider retry policies must not add up beyond this request-level budget.
     LIVE_DATA_TIMEOUT_SECONDS: float = 12.0

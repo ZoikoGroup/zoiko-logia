@@ -1,5 +1,6 @@
 """Answer correction and the final evidence verification release gate."""
 from __future__ import annotations
+import asyncio
 import re
 from typing import Callable, Awaitable
 from dataclasses import dataclass, field
@@ -7,8 +8,11 @@ from app.orchestration import claim_verification
 from app.orchestration.telemetry import StageMetrics
 from app.domains.model_gateway import service as model_gateway_service
 from app.orchestration.calculation_service import needs_lookup
+from app.orchestration.derived_output import is_illustration_heading, is_scenario_sentence
 
 _MODEL_PROVIDER_FAILURE = "Kriton is temporarily unable to reach the language model provider."
+# Claim batches judged at once; bounded for the provider's tokens-per-minute cap.
+_VERIFY_CONCURRENCY = 3
 
 _CLAIM_REMOVED_NOTE = (
     "A statement was removed because it conflicted with the cited sources. "
@@ -52,7 +56,8 @@ async def _verify_answer_claims(
     table, from memory, beside five unrelated citations."""
     if not claim_verification.enabled() or not evidence or not answer:
         return answer, None
-    claims = claim_verification.extract_claims(answer)
+    from app.orchestration.derived_output import without_scenarios
+    claims = claim_verification.extract_claims(without_scenarios(answer))
     if not claims:
         return answer, None
     await report("verifying", "Checking facts against the sources")
@@ -229,14 +234,25 @@ async def verify_for_release(answer: str, *, question: str, evidence: list[str],
             rejected.append(original)
             failures.append("A factual claim lacks a valid citation to retrieved evidence")
     supported = 0
-    for start in range(0, len(cited), claim_verification.MAX_CLAIMS):
-        batch = cited[start:start + claim_verification.MAX_CLAIMS]
+    batches = [cited[start:start + claim_verification.MAX_CLAIMS]
+               for start in range(0, len(cited), claim_verification.MAX_CLAIMS)]
+    # Batches are independent, so they run a few at a time: one after another,
+    # a long answer (a review of a pasted document, 40+ claims) spent most of
+    # the 105 s request deadline here and failed as "temporarily unavailable".
+    gate = asyncio.Semaphore(_VERIFY_CONCURRENCY)
+
+    async def judge(batch):
         batch_claims = [claim for _, claim, _ in batch]
-        verdict = await claim_verification.verify_claims(batch_claims, evidence, question)
-        if not verdict.ran:
-            # One retry: a timed-out or malformed verdict escalated a correct
-            # "the threshold is £90,000, not £85,000" answer to review.
+        async with gate:
             verdict = await claim_verification.verify_claims(batch_claims, evidence, question)
+            if not verdict.ran:
+                # One retry: a timed-out or malformed verdict escalated a correct
+                # "the threshold is £90,000, not £85,000" answer to review.
+                verdict = await claim_verification.verify_claims(batch_claims, evidence, question)
+        return verdict
+
+    verdicts = await asyncio.gather(*(judge(batch) for batch in batches))
+    for batch, verdict in zip(batches, verdicts):
         if not verdict.ran or verdict.checked != len(batch):
             return AnswerVerification(False, ["Claim verification unavailable or incomplete"])
         for index, (original, _, refs) in enumerate(batch, start=1):
@@ -386,9 +402,14 @@ def _release_claim_pairs(answer: str) -> list[tuple[str, str]]:
         paragraph_refs = " ".join(dict.fromkeys(re.findall(r"\[REF-\d+\]", line)))
         if line.startswith("|") and not paragraph_refs:
             paragraph_refs = _row_label_refs(line, lines)
+        in_illustration = is_illustration_heading(heading)
         for piece in ([line] if line.startswith("|") else claim_verification.sentences(line)):
             piece = claim_verification.without_leading_heading(piece.strip()).strip(" -*•")
             if is_evidence_gap_statement(piece) or _is_pure_arithmetic(piece) or _is_visual_pointer(piece):
+                continue
+            # The hypothetical entity and amounts of a labelled example are not
+            # claims; a sentence there stating a rule still is.
+            if in_illustration and is_scenario_sentence(piece):
                 continue
             inline_heading = claim_verification._LEADING_HEADING.match(line)
             context = inline_heading.group(1).strip("*_ ") if inline_heading else heading

@@ -14,6 +14,7 @@ from app.orchestration.router import router as orchestration_router
 from app.orchestration.diagram_router import router as diagram_router
 from app.domains.governance_dashboard.router import router as governance_dashboard_router
 from app.domains.command_center.router import router as command_center_router
+from app.domains.notifications_workflow.router import router as notifications_router
 from app.domains.admin_governance.router import router as administration_router
 from app.domains.operations.router import router as operations_router
 from app.domains.review_console.router import router as review_console_router
@@ -36,6 +37,7 @@ api_v1_router.include_router(diagram_router)
 api_v1_router.include_router(kriton_workspace_router)
 api_v1_router.include_router(governance_dashboard_router)
 api_v1_router.include_router(command_center_router)
+api_v1_router.include_router(notifications_router)
 api_v1_router.include_router(administration_router)
 api_v1_router.include_router(operations_router)
 api_v1_router.include_router(review_console_router)

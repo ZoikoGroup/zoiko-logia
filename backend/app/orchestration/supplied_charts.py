@@ -17,7 +17,9 @@ from app.orchestration.calculation_service import needs_lookup
 from app.orchestration.chart_intent import allows_automatic_chart
 
 _AMOUNT = r"[+−-]?(?:[$£€₹]\s*)?\d[\d,]*(?:\.\d+)?%?"
-_PAIR = re.compile(rf"\s*([A-Za-z][A-Za-z0-9 &/()'-]*?)\s*[:=]?\s+({_AMOUNT})\s*(?:,|;|$)")
+# A label may carry the sign instead of the amount ("+sales 60, −costs 45",
+# the usual way to write a waterfall); group 1 holds that sign.
+_PAIR = re.compile(rf"\s*([+−-]\s*)?([A-Za-z][A-Za-z0-9 &/()'-]*?)\s*[:=]?\s+({_AMOUNT})\s*(?:,|;|$)")
 _FOLLOWUP = re.compile(
     r"^\s*(?:now\s+)?(?:show|make|draw|plot|display|turn|convert)\s+"
     r"(?:it|this|that|them|the same(?: data| chart)?)(?:\s+as|\s+into)?\s+"
@@ -50,7 +52,10 @@ def _pairs(payload: str) -> list[tuple[str, Decimal]] | None:
         match = _PAIR.match(payload, position)
         if not match:
             return None
-        result.append((match[1].strip(), _number(match[2])))
+        value = _number(match[3])
+        if (match[1] or "").strip() in ("-", "−"):
+            value = -abs(value)
+        result.append((match[2].strip(), value))
         position = match.end()
     if not 2 <= len(result) <= 500 or len({name.casefold() for name, _ in result}) != len(result):
         return None
@@ -137,7 +142,7 @@ def _from_query(query: str) -> SuppliedChart | None:
         pairs = _pairs(destinations.strip()) if arrow else None
         if not origin or not pairs or any(v < 0 for _,v in pairs):
             return None
-        name, total = origin[1].strip(), _number(origin[2])
+        name, total = origin[2].strip(), _number(origin[3])
         if total != sum(v for _,v in pairs) or name in [label for label,_ in pairs]:
             return None
         return _validated(f"Total allocated: {_format(total)}.", dict(type=kind, title=title, nodes=[dict(name=n) for n in [name]+[n for n,_ in pairs]], links=[dict(source=name,target=n,value=float(v)) for n,v in pairs]))

@@ -24,14 +24,16 @@ export type AuthContextValue = {
 
 export const AuthContext = createContext<AuthContextValue | null>(null);
 
-// Per-tab cache of the last /auth/me result. Only a UX shortcut for the nav:
-// the backend still enforces every permission, and the entry is keyed to the
-// Supabase user id and dropped on sign-out or any failed re-verification.
+// Cache of the last /auth/me result, shared by this browser's tabs so a new
+// tab knows the role at once instead of rendering the fail-closed Learner view
+// until /auth/me answers. Only a UX shortcut: the backend still enforces every
+// permission, and the entry is keyed to the Supabase user id, re-verified on
+// load and dropped on sign-out or any failed re-verification.
 const PROFILE_CACHE_KEY = "zoiko_profile";
 
 function readCachedProfile(userId: string): UserPublic | null {
   try {
-    const raw = sessionStorage.getItem(PROFILE_CACHE_KEY);
+    const raw = localStorage.getItem(PROFILE_CACHE_KEY);
     const cached = raw ? (JSON.parse(raw) as UserPublic) : null;
     return cached?.id === userId ? cached : null;
   } catch {
@@ -41,7 +43,7 @@ function readCachedProfile(userId: string): UserPublic | null {
 
 function writeCachedProfile(profile: UserPublic): void {
   try {
-    sessionStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(profile));
+    localStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(profile));
   } catch {
     // Storage unavailable (private mode, quota) — the nav just waits for /auth/me.
   }
@@ -49,7 +51,7 @@ function writeCachedProfile(profile: UserPublic): void {
 
 function clearCachedProfile(): void {
   try {
-    sessionStorage.removeItem(PROFILE_CACHE_KEY);
+    localStorage.removeItem(PROFILE_CACHE_KEY);
   } catch {
     // Nothing cached to clear.
   }
@@ -66,6 +68,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // early 401 (sent before provisioning finished) can land last and wipe the
   // real role, leaving the user stuck on the fail-closed Learner role.
   const latestProfileRequest = useRef(0);
+  // The verified profile, readable from the auth listener without re-subscribing.
+  const profileRef = useRef<UserPublic | null>(null);
 
   async function loadProfile(currentSession: Session | null) {
     const requestId = ++latestProfileRequest.current;
@@ -95,7 +99,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (requestId !== latestProfileRequest.current) return;
     if (next) writeCachedProfile(next);
     else clearCachedProfile();
-    setProfile(next);
+    profileRef.current = next;
+    // Keep the same object when nothing changed, so pages keyed on the
+    // profile don't reload.
+    setProfile((prev) => (prev && next && JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
     setProfileLoading(false);
   }
 
@@ -112,12 +119,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSessionLoading(false);
     });
 
-    const { data: subscription } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSession(newSession);
+    const { data: subscription } = supabase.auth.onAuthStateChange((event, newSession) => {
+      // getSession() above already handled the initial session.
+      if (event === "INITIAL_SESSION") return;
       setCurrentAccessToken(newSession?.access_token ?? "");
+      // Supabase re-emits SIGNED_IN / TOKEN_REFRESHED on tab focus and every
+      // token refresh. Keep the same session object when the user and token
+      // are unchanged, so nothing downstream re-renders or refetches.
+      setSession((prev) =>
+        prev && newSession && prev.access_token === newSession.access_token && prev.user.id === newSession.user.id
+          ? prev
+          : newSession);
       // The provision flow refreshes right after writing app_metadata, so this
       // fires again with the refreshed token — which is what finally lets
-      // /auth/me return the tenant_id/role just provisioned.
+      // /auth/me return the tenant_id/role just provisioned. Once a profile is
+      // loaded for this user, a plain refresh doesn't need another /auth/me.
+      const loaded = profileRef.current;
+      if (newSession && loaded && loaded.id === newSession.user.id && event !== "USER_UPDATED") return;
       void loadProfile(newSession);
     });
 

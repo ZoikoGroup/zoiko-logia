@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from contextlib import suppress
 
 from datetime import datetime
@@ -60,16 +61,26 @@ async def list_task_specs(
     return list(TASK_SPECS.values())
 
 
+CLEANUP_SECONDS = 5.0
+
+
 async def _abandon_after_failure(db: AsyncSession, idempotency_key: str, tenant_id: str) -> None:
     """Release the idempotency reservation after a failed request. The failure
     (a timeout mid-query, a dropped connection) can leave the session in a
     failed transaction; querying it then raised PendingRollbackError, which
     turned a clean 504/"please try again" into an unhandled 500. Roll back
     first, and never let the clean-up itself mask the original failure."""
-    with suppress(Exception):
-        await db.rollback()
-    try:
+    async def clean_up() -> None:
+        with suppress(Exception):
+            await db.rollback()
         await abandon_idempotency(db, idempotency_key, tenant_id)
+
+    # Bounded: after a deadline cancelled a query mid-flight the connection is
+    # often broken, and reconnecting to release the key kept the user waiting
+    # ~15 s past the deadline (504 at 120.5 s for a 105 s limit). The browser
+    # uses a fresh key per attempt, so an unreleased reservation blocks nothing.
+    try:
+        await asyncio.wait_for(clean_up(), timeout=CLEANUP_SECONDS)
     except Exception:
         logger.warning("Could not release idempotency key after a failed request", exc_info=True)
 
@@ -110,6 +121,31 @@ async def _record_cancellation(kwargs: dict, run: "workflow_state.WorkflowRun") 
         logger.warning("Could not record a cancelled Ask Kriton request")
 
 
+# One line per question, by the browser's request id (its Idempotency-Key):
+# received → finished / failed (with a category) / cancelled. Written to
+# backend/logs/kriton-requests.log and the terminal (app/main.py).
+request_log = logging.getLogger("kriton.requests")
+
+
+def failure_category(status: int | None, exc: BaseException | None = None) -> str:
+    if status is not None:
+        return {504: "deadline", 503: "database_or_network", 429: "rate_limit", 409: "duplicate_in_progress",
+                422: "invalid_request", 401: "auth", 403: "auth"}.get(status, f"http_{status}")
+    if exc is not None and (isinstance(exc, (TimeoutError, OSError))
+                            or type(exc).__module__.startswith(("asyncpg", "sqlalchemy"))):
+        return "database_or_network"
+    return "unhandled_error"
+
+
+def stream_deadline(query: str) -> float:
+    """Pasted material gets the long deadline; a question keeps the normal one."""
+    from app.orchestration.websearch import is_pasted_material
+    settings = get_settings()
+    if is_pasted_material(query):
+        return settings.ASK_KRITON_LONG_INPUT_TIMEOUT_SECONDS
+    return settings.ASK_KRITON_TIMEOUT_SECONDS
+
+
 async def _run_with_deadline(**kwargs) -> AskKritonResponse:
     if kwargs.get("idempotency_key"):
         request = kwargs.get("request")
@@ -131,7 +167,7 @@ async def _run_with_deadline(**kwargs) -> AskKritonResponse:
     run = workflow_state.WorkflowRun()
     run_token = workflow_state.current_run.set(run)
     try:
-        async with asyncio.timeout(settings.ASK_KRITON_TIMEOUT_SECONDS):
+        async with asyncio.timeout(kwargs.get("deadline_seconds") or settings.ASK_KRITON_TIMEOUT_SECONDS):
             result = await ask_kriton(**kwargs)
             failed = bool(result.next_action and getattr(result.next_action, "type", "") == "composition_failed")
             run.finish(released=not failed)
@@ -293,6 +329,11 @@ async def post_ask_stream(
     async def progress(stage: str, message: str) -> None:
         await queue.put({"type": "progress", "stage": stage, "message": message})
 
+    request_id = idempotency_key or "none"
+    started = time.monotonic()
+    request_log.info("ask received id=%s chars=%s history=%s", request_id, len(payload.query),
+                     len(payload.conversation_history))
+
     async def execute() -> None:
         try:
             result = await _run_with_deadline(
@@ -306,15 +347,31 @@ async def post_ask_stream(
                 clarification_cycle=payload.clarification_cycle,
                 conversation_id=payload.conversation_id,
                 progress=progress,
+                deadline_seconds=stream_deadline(payload.query),
             )
+            failed = bool(result.next_action and result.next_action.type == "composition_failed")
+            request_log.info("ask %s id=%s query=%s outcome=%s route=%s seconds=%.1f",
+                             "failed category=model_provider" if failed else "finished", request_id,
+                             result.query_id, result.outcome, result.route, time.monotonic() - started)
             await queue.put({"type": "result", "data": result.model_dump(mode="json")})
         except HTTPException as exc:
+            # A deadline (504) or a withheld answer (503) was not logged at
+            # all; the user saw only "unavailable" and the cause was lost.
+            request_log.warning("ask failed id=%s category=%s status=%s seconds=%.1f detail=%s", request_id,
+                                failure_category(exc.status_code), exc.status_code,
+                                time.monotonic() - started, exc.detail)
             await queue.put({"type": "error", "status": exc.status_code, "message": exc.detail})
         except asyncio.CancelledError:
+            request_log.info("ask cancelled id=%s seconds=%.1f", request_id, time.monotonic() - started)
             raise
-        except Exception:
-            logger.exception("Unhandled Ask Kriton stream failure")
-            await queue.put({"type": "error", "status": 500, "message": "Kriton could not complete this request."})
+        except Exception as exc:
+            category = failure_category(None, exc)
+            logger.exception("Unhandled Ask Kriton stream failure (id=%s)", request_id)
+            request_log.error("ask failed id=%s category=%s error=%s seconds=%.1f", request_id, category,
+                              type(exc).__name__, time.monotonic() - started)
+            await queue.put({"type": "error", "status": 503 if category == "database_or_network" else 500,
+                             "message": "Kriton's database or network is temporarily unavailable."
+                             if category == "database_or_network" else "Kriton could not complete this request."})
 
     task = asyncio.create_task(execute())
 

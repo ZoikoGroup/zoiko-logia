@@ -1,6 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { GovernedRegister, type RegisterRecord } from "@/components/governance/GovernedRegister";
+import { ContextStrip } from "@/components/overview/OverviewUI";
+
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { PageShell } from "@/components/governance/PageShell";
 import { PanelHeader, PANEL_CLASS } from "@/components/governance/PanelHeader";
@@ -101,7 +104,6 @@ function RiskPolicy() {
     <PageShell
       title="Risk Policy"
       subtitle="Risk taxonomy and classification on the way in; professional boundaries on every answer on the way out."
-      showMetrics={false}
     >
       <div className="mb-4"><Tabs tabs={TABS} activeSlug={activeTab} onChange={setActiveTab} /></div>
       {activeTab === "boundaries" ? <ProfessionalBoundariesPanel /> : <ClassificationPolicy />}
@@ -135,12 +137,28 @@ function ClassificationPolicy() {
   }, [load]);
 
   const policy = view?.policy;
+  const policyRecords: RegisterRecord[] = (policy?.rules ?? []).map((rule, i) => ({
+    id: `${policy!.id}:rule:${i + 1}`, title: rule.pattern, category: "Classification rule", state: rule.risk, scope: policy!.scope, version: policy!.version, owner: policy!.owner,
+    facts: { "Policy": policy!.id, "Risk classification": rule.risk, "Scope": policy!.scope, "Owner": policy!.owner, "Approver": policy!.approver || "Not recorded", "Effective from": policy!.effective_from || "Not recorded" },
+    evidence: [`Classifier version: ${view!.classifier_version}`, `Routing matrix: ${view!.routing_matrix_version}`, `Matched pattern: ${rule.pattern}`, "Rule risk is a classification, not an independent publication approval."],
+    history: [`Policy version ${policy!.version}`, `Rollback target: ${policy!.rollback_target || "Not recorded"}`],
+  }));
+
 
   return (
     <>
 
       <LiveSourceStatus loading={loading} error={error} signedOut={false} reload={load} />
 
+      <ContextStrip jurisdiction={policy?.scope || "Policy scope"} framework="Global baseline + applicable overlays" period={policy?.version ? `Policy ${policy.version}` : "No policy version recorded"} />
+      {!error && view && <GovernedRegister title="Risk policy register" inspector="Selected control / policy inspector" records={policyRecords} tabs={["Decision & rule", "Applicability", "Tests & gates", "History"]} doctrine="Enforcement doctrine: policy classifications determine routing; missing evidence or approval cannot be replaced by a dashboard state. Changes must retain scope, authorization, and traceable approval." metrics={[
+        { label: "Classification rules", value: policyRecords.length, detail: "Rules from the current policy record" },
+        { label: "Escalation rules", value: view.escalation_rules.length, detail: "Configured routing and SLA controls", tone: "green" },
+        { label: "High-risk rules", value: policyRecords.filter(r => r.state === "HIGH").length, detail: "Professional review may be required", tone: "amber" },
+        { label: "Restricted rules", value: policyRecords.filter(r => r.state === "RESTRICTED").length, detail: "Restricted-topic classification", tone: "red" },
+        { label: "Open review cases", value: Object.values(view.open_cases_by_risk).reduce((n, v) => n + v, 0), detail: "Across reported risk levels", tone: "amber" },
+      ]} />}
+      <details className="rounded-xl border border-line bg-panel p-4"><summary className="cursor-pointer text-sm font-bold text-brand">Policy taxonomy, routing matrix, SLAs & templates</summary>
       <div className="space-y-6">
 
       {/* ── Active policy record ─────────────────────────────────────── */}
@@ -396,6 +414,7 @@ function ClassificationPolicy() {
         </div>
       </div>
       </div>
+      </details>
     </>
   );
 }

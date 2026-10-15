@@ -169,14 +169,6 @@ export async function getCurrentConfigHash(): Promise<string> {
   return (await request<{ config_hash: string }>("/config-hash")).config_hash;
 }
 
-export function getDataset(datasetId: string): Promise<EvaluationDataset> {
-  return request<EvaluationDataset>(`/datasets/${encodeURIComponent(datasetId)}`);
-}
-
-export function getThresholdSet(tsId: string): Promise<ThresholdSet> {
-  return request<ThresholdSet>(`/thresholds/${encodeURIComponent(tsId)}`);
-}
-
 export function runEvaluation(
   datasetId: string,
   thresholdSetId: string,

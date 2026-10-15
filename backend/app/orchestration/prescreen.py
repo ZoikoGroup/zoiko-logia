@@ -52,14 +52,29 @@ _PROMPT_INJECTION_PATTERNS = [
     r"answer\s+without\s+(?:recording|creating|writing)\s+(?:an?\s+)?audit(?:\s+event)?",
 ]
 
+# Each pattern names a system target (other tenants' or users' data, logs,
+# the hash chain, system files, credentials), not an accounting word on its
+# own: "show audit procedures for inventory", "list client acceptance
+# procedures", "export data to Excel" and a pasted review citing
+# https://www.ifrs.org were all blocked as security incidents.
 _DATA_EXFILTRATION_PATTERNS = [
-    r"(show|list|dump|export|print)\s+(all\s+)?(tenant|user|client|document|data|source)",
+    r"\b(?:show|list|dump|export|print|give|reveal|get|fetch|retrieve)\s+(?:me\s+)?(?:all\s+|every\s+|each\s+)?"
+    r"(?:the\s+|other\s+|another\s+)?(?:tenants?|users?)(?:'s|s'|’s)?\s+"
+    r"(?:data|records|details|emails?|passwords?|accounts?|documents?|files?|information)\b",
+    r"\b(?:other|another|different|every|all)\s+tenants?(?:'s|s'|’s)?\s+(?:data|records|documents?|files?|information)\b",
     r"access\s+(another|other|different)\s+tenant",
     r"(retrieve|get|fetch)\s+(credentials|api\s+key|secret|password|token)",
-    r"(show|print|dump)\s+(log|audit|chain|hash|event)",
-    r"(read|access|open)\s+(system\s+)?(file|directory|database)",
-    r"SELECT\s+.+\s+FROM",
-    r"curl\s+|wget\s+|http(s)?://",
+    r"\b(?:show|print|dump|export|reveal|give)\s+(?:me\s+)?(?:the\s+|your\s+|all\s+)*"
+    r"(?:system|server|internal|raw|application|audit|access|error|security|kriton(?:'s)?)\s+logs?\b",
+    r"\b(?:show|print|dump|export|reveal)\s+(?:me\s+)?(?:the\s+|your\s+)*(?:audit\s+)?hash(?:es)?\s+chain\b",
+    r"\b(?:read|access|open|cat)\s+(?:the\s+|your\s+)?(?:system|server|config(?:uration)?|env(?:ironment)?)\s+"
+    r"(?:files?|director(?:y|ies))\b",
+    r"\b(?:read|access|open|query|dump)\s+(?:the\s+|your\s+)?(?:kriton(?:'s)?|internal|backend|production|underlying|system)\s+database\b",
+    # SQL, not prose: "select the method from the list" is an ordinary sentence.
+    r"(?-i:\bSELECT\b)\s+[\w*.,\s]{1,80}?\s+(?-i:FROM)\s+\w+|\bselect\s+\*\s+from\b",
+    # A command or an instruction to send data out — not a link being cited.
+    r"\b(?:curl|wget)\s+(?:-{1,2}[\w-]+\s+)*['\"]?https?://",
+    r"\b(?:send|post|upload|forward|transmit|exfiltrate)\s+(?:this|the|these|all|it|them|every)?[^.\n]{0,40}?\s+to\s+https?://",
     r"(?:disclose|reveal|provide|expose)\s+(?:the\s+)?(?:api\s+keys?|credentials?|secrets?|passwords?|tokens?)",
     r"(?:disclose|reveal|provide|expose)\s+(?:confidential|private)\s+(?:tenant\s+)?data",
 ]
@@ -96,6 +111,7 @@ class PreScreenResult:
     trigger: Optional[str] = None        # "prompt_injection" | "data_exfiltration" |
                                           # "malicious_instruction" | "academic_integrity"
     trigger_detail: Optional[str] = None  # matched pattern for evidence reference
+    matched_text: Optional[str] = None    # the words that matched, shown to the user
 
 
 def embedded_instructions(text: str) -> Optional[str]:
@@ -116,36 +132,40 @@ def run_prescreen(query: str) -> PreScreenResult:
     Returns PreScreenResult(passed=False, trigger=...) on failure.
     Pipeline MUST short-circuit immediately on failure — no retrieval or model work.
     """
-    for pattern in _INJECTION:
-        if pattern.search(query):
-            return PreScreenResult(
-                passed=False,
-                trigger="prompt_injection",
-                trigger_detail=pattern.pattern,
-            )
-
-    for pattern in _EXFILTRATION:
-        if pattern.search(query):
-            return PreScreenResult(
-                passed=False,
-                trigger="data_exfiltration",
-                trigger_detail=pattern.pattern,
-            )
-
-    for pattern in _MALICIOUS:
-        if pattern.search(query):
-            return PreScreenResult(
-                passed=False,
-                trigger="malicious_instruction",
-                trigger_detail=pattern.pattern,
-            )
-
-    for pattern in _ACADEMIC_INTEGRITY:
-        if pattern.search(query):
-            return PreScreenResult(
-                passed=False,
-                trigger="academic_integrity",
-                trigger_detail=pattern.pattern,
-            )
+    for trigger, patterns in (
+        ("prompt_injection", _INJECTION),
+        ("data_exfiltration", _EXFILTRATION),
+        ("malicious_instruction", _MALICIOUS),
+        ("academic_integrity", _ACADEMIC_INTEGRITY),
+    ):
+        for pattern in patterns:
+            match = pattern.search(query)
+            if match:
+                return PreScreenResult(
+                    passed=False,
+                    trigger=trigger,
+                    trigger_detail=pattern.pattern,
+                    matched_text=" ".join(match.group(0).split())[:80],
+                )
 
     return PreScreenResult(passed=True)
+
+
+_BLOCK_REASONS = {
+    "prompt_injection": "it contains wording that tries to change Kriton's instructions",
+    "data_exfiltration": "it asks for system data, another user's or tenant's data, credentials or logs, "
+                         "or tells Kriton to send data to a web address",
+    "malicious_instruction": "it asks for something harmful or for a way around security controls",
+    "academic_integrity": "it asks Kriton to answer a graded exam, quiz or assignment",
+}
+
+
+def block_message(trigger: Optional[str], matched_text: Optional[str] = None) -> str:
+    """Say which rule stopped the request and the words that tripped it, so a
+    false block can be fixed by rewording instead of guessing ("what
+    specifically blocked the query" was itself refused as off-topic)."""
+    reason = _BLOCK_REASONS.get(trigger or "", "it matched a security policy")
+    message = f"Kriton blocked this request because {reason}."
+    if matched_text:
+        message += f' The words that triggered it: "{matched_text}".'
+    return message + " If that is a misreading, rephrase those words and ask again."

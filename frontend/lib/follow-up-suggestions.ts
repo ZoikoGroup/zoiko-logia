@@ -141,13 +141,28 @@ function clarificationPendingRule(result: AskKritonResponse): string[] | null {
   return [result.next_action?.message ?? "Please provide more context."];
 }
 
-// Rule 3 — match the original question's intent against a fixed pattern set.
+// Rule 3 — a claim-by-claim review of pasted text (backend review_mode.py).
+// Matched on the pasted text, a review of IFRS presentation that mentioned
+// "reclassification" was offered "Show the original, incorrect, and
+// correcting entries together" — journal-entry follow-ups.
+const REVIEW_ANSWER = /^I checked \d+ factual claims in the text\b/;
+const REVIEW_QUESTIONS = [
+  "Explain the rules behind the claims marked incorrect or partly confirmed.",
+  "Summarize the confirmed rules as a checklist.",
+  "What does the official standard say on the claims that could not be verified?",
+];
+
+function reviewRule(answerText: string): string[] | null {
+  return REVIEW_ANSWER.test(answerText.trim()) ? REVIEW_QUESTIONS : null;
+}
+
+// Rule 4 — match the original question's intent against a fixed pattern set.
 function intentPatternRule(originalQuery: string): string[] | null {
   const hit = INTENT_RULES.find((rule) => rule.pattern.test(originalQuery));
   return hit ? hit.questions : null;
 }
 
-// Rule 4 — fall back to the answer's overall shape.
+// Rule 5 — fall back to the answer's overall shape.
 function layoutRule(answerText: string): string[] | null {
   return LAYOUT_QUESTIONS[inferLayout(answerText)] ?? null;
 }
@@ -166,6 +181,7 @@ export function getFollowUpSuggestions(result: AskKritonResponse | null, origina
   const answerText = result.answer?.text ?? "";
 
   return firstMatch([
+    () => reviewRule(answerText),
     () => intentPatternRule(originalQuery),
     () => layoutRule(answerText),
     () => FALLBACK_QUESTIONS,

@@ -27,10 +27,31 @@ export type ProvisionRequest = {
   adult_confirmed?: boolean;
 };
 
+/** FastAPI sends `detail` as a string, or for a validation error (422) as a
+ * list of {loc, msg}. A list passed straight to Error() rendered as
+ * "[object Object]" in the chat. */
+export function describeDetail(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail.map((item) => {
+      if (typeof item === "string") return item;
+      const entry = item as { loc?: unknown[]; msg?: string } | null;
+      const field = entry?.loc?.filter((part) => part !== "body").join(".");
+      return entry?.msg ? (field ? `${field}: ${entry.msg}` : entry.msg) : "";
+    }).filter(Boolean);
+    if (messages.length) return messages.join("; ");
+  }
+  if (detail && typeof detail === "object") {
+    const message = (detail as { message?: unknown; msg?: unknown }).message ?? (detail as { msg?: unknown }).msg;
+    if (typeof message === "string") return message;
+  }
+  return "The request could not be completed.";
+}
+
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
-    super(message);
+  constructor(status: number, message: unknown) {
+    super(describeDetail(message));
     this.status = status;
   }
 }
@@ -141,7 +162,7 @@ async function authedFetch(
   init?: RequestInit,
   { asSelf = false }: { asSelf?: boolean } = {},
 ): Promise<Response> {
-  const res = await fetchWithSession(`${API_URL}${path}`, token, {
+  const send = () => fetchWithSession(`${API_URL}${path}`, token, {
     ...init,
     headers: {
       ...(init?.headers ?? {}),
@@ -151,12 +172,30 @@ async function authedFetch(
       ...(asSelf ? {} : impersonationHeaders()),
     },
   });
+  let res = await send();
+  // 503 = the backend couldn't get a database connection in time (the shared
+  // pooler's client limit or a network blip). A read is safe to repeat, so
+  // retry it once after a short pause instead of showing an error for a
+  // one-second blip. Writes are never retried automatically.
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (res.status === 503 && method === "GET" && !init?.signal?.aborted) {
+    const wait = Math.min(Number(res.headers.get("Retry-After")) || 1.5, 5) * 1000;
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    if (!init?.signal?.aborted) res = await send();
+  }
   if (res.status === 401 && typeof window !== "undefined") {
-    supabase.auth.signOut();
-    if (window.location.pathname !== "/login") {
-      window.location.href = "/login";
+    // Sign out only when the login itself is gone. A renewal that failed
+    // because the network had just reconnected left a valid session behind,
+    // and signing out there threw the user to the login page for nothing.
+    const { data } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+    if (!data.session) {
+      supabase.auth.signOut();
+      if (window.location.pathname !== "/login") {
+        window.location.href = "/login";
+      }
+      throw new ApiError(401, "Session expired — please log in again.");
     }
-    throw new ApiError(401, "Session expired — please log in again.");
+    throw new ApiError(401, "Your session is being renewed. Please try again in a moment.");
   }
   if (!res.ok) {
     const body = await res.json().catch(() => null);
@@ -1020,8 +1059,9 @@ export type EntitiesOverview = {
 export async function getEntitiesOverview(token: string, signal?: AbortSignal): Promise<EntitiesOverview> {
   return (await authedFetch("/admin/entities", token, { signal })).json();
 }
-export async function createEngagement(token: string, name: string) {
-  return sendJson<{ id: string; name: string }>("/engagements", token, "POST", { name });
+// POST /engagements returns EngagementPublic (id, name, status, rights_version).
+export async function createEngagement(token: string, name: string): Promise<Engagement> {
+  return sendJson<Engagement>("/engagements", token, "POST", { name });
 }
 export async function addEngagementMember(token: string, engagementId: string, userId: string) {
   return sendJson<{ id: string }>(`/engagements/${engagementId}/members`, token, "POST", { user_id: userId });
@@ -2409,3 +2449,82 @@ export async function listSourceBundles(token: string, signal?: AbortSignal): Pr
   const res = await authedFetch("/sources/bundles", token, { signal });
   return res.json();
 }
+
+// ─── Notifications & settings ───────────────────────────────────────────────
+
+export type NotificationSeverity = "info" | "warn" | "bad";
+
+export type AppNotification = {
+  id: string;
+  kind: string;
+  severity: NotificationSeverity;
+  title: string;
+  body: string;
+  link: string;
+  created_at: string | null;
+  read: boolean;
+};
+
+export type ActionItem = { key: string; count: number; label: string; link: string; severity: NotificationSeverity };
+
+export type NotificationSummary = { unread: number; action_items: ActionItem[] };
+
+export type MySettings = {
+  default_jurisdiction: string;
+  muted_notifications: string[];
+  notification_kinds: { kind: string; label: string }[];
+  jurisdictions: string[];
+};
+
+export async function getNotificationSummary(token: string, signal?: AbortSignal): Promise<NotificationSummary> {
+  return (await authedFetch("/notifications/summary", token, { signal })).json();
+}
+
+export async function listNotifications(
+  token: string,
+  options: { unreadOnly?: boolean; kind?: string; before?: string; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<AppNotification[]> {
+  const query = new URLSearchParams();
+  if (options.unreadOnly) query.set("unread_only", "true");
+  if (options.kind) query.set("kind", options.kind);
+  if (options.before) query.set("before", options.before);
+  query.set("limit", String(options.limit ?? 30));
+  return (await authedFetch(`/notifications?${query}`, token, { signal })).json();
+}
+
+export async function markNotificationRead(token: string, id: string): Promise<void> {
+  await authedFetch(`/notifications/${encodeURIComponent(id)}/read`, token, { method: "POST" });
+}
+
+export async function markAllNotificationsRead(token: string): Promise<void> {
+  await authedFetch("/notifications/read-all", token, { method: "POST" });
+}
+
+export async function getMySettings(token: string, signal?: AbortSignal): Promise<MySettings> {
+  return (await authedFetch("/me/settings", token, { signal })).json();
+}
+
+export async function updateMySettings(
+  token: string,
+  changes: Partial<Pick<MySettings, "default_jurisdiction" | "muted_notifications">>,
+): Promise<MySettings> {
+  const res = await authedFetch("/me/settings", token, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(changes),
+  });
+  return res.json();
+}
+
+export async function updateMyProfile(token: string, changes: { first_name?: string; last_name?: string }): Promise<UserPublic> {
+  const res = await authedFetch("/auth/me", token, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(changes),
+  });
+  return res.json();
+}
+
+/** Admin only. The creator becomes a member with every operation, so the
+ * new engagement shows up straight away (e.g. as a Kriton project). */

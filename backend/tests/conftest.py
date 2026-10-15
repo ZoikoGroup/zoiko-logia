@@ -24,6 +24,25 @@ def _isolate_external_services(monkeypatch):
     async def _no_govuk(query):
         return []
     monkeypatch.setattr(websearch, "_govuk_results", _no_govuk)
+    # The official IFRS standards are a live download; tests that cover it stub it.
+    from app.orchestration import official_standards
+
+    async def _no_standard(code):
+        return ""
+    monkeypatch.setattr(official_standards, "_download_standard", _no_standard)
+    official_standards._standard_cache.clear()
     from app.domains.source_library.embeddings import get_embedder
 
     get_embedder.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_in_process_caches():
+    # Process-level caches must not carry one test's users into another.
+    from app.domains.identity import governance
+    from app.domains.notifications_workflow import service as notifications
+
+    governance.forget_break_glass_cache()
+    notifications._action_cache.clear()
+    notifications._last_sync.clear()
+    yield

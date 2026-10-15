@@ -67,7 +67,6 @@ export default function SavedAnswersPage() {
     <PageShell
       title="Saved Answers"
       subtitle="Answers saved from Ask Kriton for reuse, citation, and review."
-      showMetrics={false}
     >
       {error && <p className="text-xs text-bad mb-3">{error}</p>}
 

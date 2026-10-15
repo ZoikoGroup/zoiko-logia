@@ -225,6 +225,7 @@ export function RecentsList({
 
 type KritonNavigationProps = {
   onNewChat: () => void;
+  onOpenChats: () => void;
   onOpenProjects: () => void;
   onOpenSources: () => void;
 };
@@ -240,12 +241,15 @@ export function DesktopSidebar(props: RecentsListProps & KritonNavigationProps) 
             <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted">ZoikoLogia</div>
           </div>
         </div>
-        <Search size={17} className="text-muted" />
+        <button type="button" onClick={props.onOpenChats} aria-label="Search chats" title="Search chats"
+          className="rounded-lg p-1.5 text-muted hover:bg-soft hover:text-ink">
+          <Search size={17} />
+        </button>
       </div>
 
       <nav className="space-y-1 px-3">
         <NavRow icon={Plus} label="New chat" onClick={props.onNewChat} />
-        <NavRow icon={MessageSquare} label="Chats" />
+        <NavRow icon={MessageSquare} label="Chats" onClick={props.onOpenChats} />
         <NavRow icon={FolderKanban} label="Projects" onClick={props.onOpenProjects} />
         <NavRow icon={BookOpen} label="Sources" onClick={props.onOpenSources} />
       </nav>
@@ -283,6 +287,7 @@ export function MobileDrawer(props: RecentsListProps & KritonNavigationProps & {
         </div>
         <nav className="space-y-1 px-3">
           <NavRow icon={Plus} label="New chat" onClick={() => { props.onNewChat(); props.onClose(); }} />
+          <NavRow icon={MessageSquare} label="Chats" onClick={() => { props.onOpenChats(); props.onClose(); }} />
           <NavRow icon={FolderKanban} label="Projects" onClick={() => { props.onOpenProjects(); props.onClose(); }} />
           <NavRow icon={BookOpen} label="Sources" onClick={() => { props.onOpenSources(); props.onClose(); }} />
         </nav>

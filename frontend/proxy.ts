@@ -42,9 +42,13 @@ export async function proxy(request: NextRequest) {
   // getUser() (not getSession()) — it revalidates against Supabase rather
   // than trusting the possibly-stale cookie payload, refreshing the
   // session cookie here if the access token had expired.
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // getClaims() verifies the session JWT's signature locally against the
+  // project's published signing keys (cached for the process), so it is as
+  // trustworthy as getUser() for this gate without a round trip to Supabase
+  // Auth on every navigation — that call added ~0.3-0.5s to every page click.
+  // It still refreshes an expired session (and rewrites the cookies) first.
+  const { data: claimsData } = await supabase.auth.getClaims();
+  const user = claimsData?.claims?.sub ? claimsData.claims : null;
 
   const { pathname } = request.nextUrl;
   const isPublic = PUBLIC_PATHS.includes(pathname);

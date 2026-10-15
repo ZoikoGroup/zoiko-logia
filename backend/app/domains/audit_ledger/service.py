@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.domains.audit_ledger import compensating_events as compensating_events_module
-from app.domains.audit_ledger.chain_integrity import verify_chain
+from app.domains.audit_ledger.chain_integrity import compute_chain_hash, verify_chain
 from app.domains.audit_ledger.models import AuditEvent, CompensatingEvent
 from app.domains.audit_ledger.replay import build_replay_manifest
 from app.domains.audit_ledger.schemas import CompensatingEventCreate
@@ -191,6 +191,33 @@ async def verify_tenant_chain(db: AsyncSession, tenant_id: str) -> dict:
         "events_checked": len(events),
         "first_broken_event_id": broken_event_id,
     }
+
+
+async def verify_recent_tenant_chain(db: AsyncSession, tenant_id: str, limit: int = 500) -> dict:
+    """Integrity of the tenant's most recent `limit` events, reading only the
+    hash columns. For health checks: verify_tenant_chain() loads every event
+    with its payload, which timed out on a large ledger over the hosted pooler.
+
+    Two different findings are reported separately:
+      * altered — an event's own chain_hash no longer matches its id, name,
+        payload hash and recorded previous hash: the record was changed.
+      * forks — an event's recorded previous hash isn't the event just before
+        it: two writers chained onto the same predecessor at the same moment.
+        Nothing was changed, but the chain is not strictly linear there.
+    """
+    rows = (await db.execute(
+        select(AuditEvent.id, AuditEvent.event_name, AuditEvent.payload_hash,
+               AuditEvent.chain_hash, AuditEvent.previous_chain_hash)
+        .where(AuditEvent.tenant_id == tenant_id)
+        .order_by(AuditEvent.ingested_at.desc())
+        .limit(limit)
+    )).all()
+    events = list(reversed(rows))
+    altered = next((e.id for e in events
+                    if compute_chain_hash(e.id, e.event_name, e.payload_hash, e.previous_chain_hash) != e.chain_hash), None)
+    forks = sum(1 for before, event in zip(events, events[1:]) if event.previous_chain_hash != before.chain_hash)
+    return {"tenant_id": tenant_id, "passed": altered is None and forks == 0, "events_checked": len(events),
+            "first_broken_event_id": altered, "altered_event_id": altered, "forks": forks}
 
 
 async def get_replay_manifest(db: AsyncSession, sync_db: Session, correlation_id: str, tenant_id: str) -> dict:

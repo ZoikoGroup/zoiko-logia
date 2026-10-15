@@ -22,6 +22,7 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import time
 import json
 import dataclasses
 import html
@@ -597,6 +598,8 @@ async def _tavily_results(query: str, domains: list[str]) -> list[dict] | None:
     key = _tavily_key()
     if not key:
         return None
+    if time.monotonic() < _tavily_paused["until"]:
+        return None  # a quota or credential failure is not retried on every search
     # Advanced depth on the trusted domains: basic depth returned OECD reports
     # for "GST rate on restaurant services in India" where advanced found the
     # CBIC rate notification. The open-web fallback is a quick basic search,
@@ -618,10 +621,41 @@ async def _tavily_results(query: str, domains: list[str]) -> list[dict] | None:
                         {"url": r.get("url"), "title": r.get("title"), "content": r.get("content")}
                         for r in results
                     ]
+    except httpx.HTTPStatusError as exc:
+        _pause_tavily(exc.response)
+        return None
     except Exception as exc:
         logger.warning("Tavily search failed (%s); trying the next provider", type(exc).__name__)
         return None
     return []
+
+
+# Tavily answered HTTP 432 "exceeds your plan's set usage limit" on every
+# search; it was logged only as "HTTPStatusError" and tried again on the next
+# search, adding a wasted call to each one. Account-level failures pause it.
+_TAVILY_PAUSE_SECONDS = {401: 1800, 403: 1800, 432: 1800, 433: 1800, 429: 60}
+_tavily_paused = {"until": 0.0, "reason": ""}
+
+
+def _pause_tavily(response: httpx.Response) -> None:
+    status = response.status_code
+    try:
+        detail = response.json().get("detail")
+        message = detail.get("error") if isinstance(detail, dict) else str(detail or "")
+    except Exception:  # noqa: BLE001 — a non-JSON body still has a status
+        message = ""
+    pause = _TAVILY_PAUSE_SECONDS.get(status, 0)
+    if pause:
+        _tavily_paused.update(until=time.monotonic() + pause, reason=f"HTTP {status}: {message}"[:200])
+    logger.warning("Tavily search failed: HTTP %s %s%s; using the backup search", status, message[:160],
+                   f" — paused for {pause // 60 or 1} min" if pause else "")
+
+
+def tavily_status() -> dict:
+    """For health checks: whether Tavily is currently paused, and why."""
+    paused = time.monotonic() < _tavily_paused["until"]
+    return {"configured": bool(_tavily_key()), "paused": paused,
+            "reason": _tavily_paused["reason"] if paused else ""}
 
 
 _GOVUK_SEARCH_URL = "https://www.gov.uk/api/search.json"
@@ -800,14 +834,65 @@ _HOSTED_SUB_SEARCH_CONCURRENCY = 6
 _SUB_SEARCH_TIMEOUT_SECONDS = 10.0
 
 
+# A pasted document ("check this response", "comment on the above") is one
+# request about the material, as ChatGPT and Claude read it — not a list of
+# questions. Its headings ("What should be added?") are not separate asks,
+# and the whole text is no search query.
+LONG_INPUT_CHARS = 1500
+_STANDARD_REFERENCE = re.compile(
+    r"\b(?:IFRS|IAS|IFRIC|SIC|ISA|ISQM|ISRE|ISAE|ASC|ASU|FRS|SFRS|Ind\s?AS|SSAP|GAAP|"
+    r"Section|Sec\.)\s?\d{1,4}[A-Z]{0,3}\b"
+)
+_MARKDOWN_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.+)$", re.M)
+_FOCUS_CHARS = 300
+_FOLLOW_UP_CONTEXT = re.compile(r"[.?!]\s+Context:\s+(?!.*\bContext:\s)(.+)$", re.S)
+
+
+def is_pasted_material(query: str) -> bool:
+    return len(query or "") > LONG_INPUT_CHARS
+
+
+def search_focus(query: str) -> str:
+    """A short search phrase for a long pasted message: its title and the
+    standards it names most often, else its opening and closing lines (where
+    the user's own request usually sits). A short question is returned as is."""
+    text = (query or "").strip()
+    # A follow-up chip sends "Summarize this as a checklist. Context: <topic>";
+    # the instruction is not what to look up — the topic is.
+    follow_up = _FOLLOW_UP_CONTEXT.search(text)
+    if follow_up:
+        text = follow_up.group(1).split("\n\nPrevious user request for context:")[0].strip()
+    if not is_pasted_material(text):
+        return text
+    from collections import Counter
+
+    parts: list[str] = []
+    heading = _MARKDOWN_HEADING.search(text)
+    if heading:
+        parts.append(heading.group(1).strip(" #*"))
+    references = Counter(" ".join(ref.split()) for ref in _STANDARD_REFERENCE.findall(text))
+    # A reference the title already names is not repeated.
+    parts.extend(ref for ref, _ in references.most_common(4)
+                 if not re.search(rf"\b{re.escape(ref)}\b", " ".join(parts)))
+    if not parts:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        parts = [line for line in (lines[0], lines[-1]) if len(line) <= 200]
+    focus = " ".join(" ".join(parts).split())
+    return focus[:_FOCUS_CHARS] or text[:_FOCUS_CHARS]
+
+
 def question_count(query: str) -> int:
     """How many separate questions a message asks (before the search cap)."""
+    if is_pasted_material(query):
+        return 1
     parts = [part.strip() for part in _QUESTION_BOUNDARY.split((query or "").strip()) if part.strip()]
     return max(1, len([part for part in parts if len(part.split()) >= 3]))
 
 
 def sub_questions(query: str) -> list[str]:
     """The separate questions in a message, or [query] when it holds one."""
+    if is_pasted_material(query):
+        return [query]
     parts = [part.strip() for part in _QUESTION_BOUNDARY.split(query.strip()) if part.strip()]
     parts = [part for part in parts if len(part.split()) >= 3]
     return parts[:MAX_SUB_QUESTIONS] if len(parts) >= 2 else [query]
@@ -857,6 +942,7 @@ async def web_search_each(query: str, jurisdiction: str = "", limit: int = 5) ->
     """web_search for a single question; for a message with several questions,
     one search per question (bounded concurrency), merged without duplicates
     so every part of the answer has sources of its own."""
+    query = search_focus(query)
     parts = evidence_search_queries(query)
     hosted = bool(_tavily_key())
     gate = asyncio.Semaphore(_HOSTED_SUB_SEARCH_CONCURRENCY if hosted else _SUB_SEARCH_CONCURRENCY)
@@ -882,6 +968,10 @@ async def web_search_each(query: str, jurisdiction: str = "", limit: int = 5) ->
     from app.orchestration.source_taxonomy import detect_jurisdictions
     searches = [search(part) for part in parts]
     searches.insert(0, official_sources(query))
+    # A question naming IFRS n / IAS n also gets that standard's own text
+    # (official_standards.py): the governed library holds none of them.
+    from app.orchestration.official_standards import official_standard_excerpts
+    searches.insert(0, official_standard_excerpts(query))
     if uk_vat_rules_requested(query) or (
         'UK' in detect_jurisdictions(query) and re.search(r'\bvat\b', query, re.I)
         and re.search(r'\b(?:threshold|register|registration)\b', query, re.I)

@@ -6,7 +6,7 @@ import { AuthGuard } from "@/components/AuthGuard";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { RoleProvider } from "@/components/shell/RoleProvider";
 import { ThemeProvider } from "@/components/shell/ThemeProvider";
-import { THEME_COOKIE } from "@/lib/theme";
+import { REDUCE_MOTION_COOKIE, TEXT_SIZE_COOKIE, THEME_COOKIE } from "@/lib/theme";
 
 // Resolves the theme once before first paint (no flash-of-wrong-theme), and
 // on the very first visit — when no cookie exists yet — PERSISTS whatever it
@@ -20,7 +20,7 @@ import { THEME_COOKIE } from "@/lib/theme";
 // governance console people sit in front of all day, and the dark palette is
 // the one the interface was designed against. A returning user's cookie still
 // wins, so anyone who has chosen light keeps it.
-const THEME_INIT_SCRIPT = `(function(){try{var m=document.cookie.match(/(?:^|; )${THEME_COOKIE}=([^;]*)/);var t=m?decodeURIComponent(m[1]):null;if(!t){t='dark';document.cookie='${THEME_COOKIE}='+t+'; path=/; max-age='+(60*60*24*365);}document.documentElement.setAttribute('data-theme',t);}catch(e){}})();`;
+const THEME_INIT_SCRIPT = `(function(){try{var m=document.cookie.match(/(?:^|; )${THEME_COOKIE}=([^;]*)/);var t=m?decodeURIComponent(m[1]):null;if(!t){t='dark';document.cookie='${THEME_COOKIE}='+t+'; path=/; max-age='+(60*60*24*365);}document.documentElement.setAttribute('data-theme',t);var z=document.cookie.match(/(?:^|; )${TEXT_SIZE_COOKIE}=([^;]*)/);if(z)document.documentElement.setAttribute('data-text-size',decodeURIComponent(z[1]));var r=document.cookie.match(/(?:^|; )${REDUCE_MOTION_COOKIE}=([^;]*)/);if(r)document.documentElement.setAttribute('data-reduce-motion',decodeURIComponent(r[1]));}catch(e){}})();`;
 
 export const metadata: Metadata = {
   title: "ZoikoLogia",

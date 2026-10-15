@@ -1,95 +1,18 @@
 "use client";
-
-import { Loader2, Globe } from "lucide-react";
-import { useLiveData } from "@/components/overview/useLiveData";
-import { LiveSourceStatus } from "@/components/governance/LiveSourceStatus";
 import { PageShell } from "@/components/governance/PageShell";
-import { Card } from "@/components/governance/Card";
-import { Pill } from "@/components/governance/Pill";
-import { PanelHeader, PANEL_CLASS } from "@/components/governance/PanelHeader";
+import { LiveSourceStatus } from "@/components/governance/LiveSourceStatus";
+import { GovernedRegister } from "@/components/governance/GovernedRegister";
+import { ContextStrip, ActionLink } from "@/components/overview/OverviewUI";
+import { useLiveData } from "@/components/overview/useLiveData";
 import { getJurisdictionSummary } from "@/lib/api";
-
-const READINESS_TONE: Record<string, "ok" | "warn" | "neutral"> = {
-  READY: "ok",
-  PARTIAL: "warn",
-  NOT_STARTED: "neutral",
-};
-
-const READINESS_PANEL_TONE: Record<string, "ok" | "warn" | "brand"> = {
-  READY: "ok",
-  PARTIAL: "warn",
-  NOT_STARTED: "brand",
-};
-
-const BAR_COLOR: Record<string, string> = {
-  READY: "bg-ok",
-  PARTIAL: "bg-warn",
-  NOT_STARTED: "bg-line",
-};
-
 export default function JurisdictionRolloutPage() {
-  const { data, error, loading, signedOut, reload } = useLiveData(`jurisdiction-rollout`, (token, signal) => getJurisdictionSummary(token, signal), 20_000);
+  const { data, error, loading, signedOut, reload } = useLiveData("jurisdiction-rollout", (token, signal) => getJurisdictionSummary(token, signal), 20_000);
   const summaries = data ?? [];
-
-
-  return (
-    <PageShell
-      title="Jurisdiction Rollout"
-      subtitle="Real source-coverage readiness per jurisdiction, computed from the approved source register — not a fixed checklist."
-      showMetrics={false}
-    >
-      <LiveSourceStatus loading={loading} error={error} signedOut={signedOut} reload={reload} />
-
-      <div className="rounded-xl border border-line bg-soft p-3 mb-4 text-xs text-muted">
-        Readiness here is derived from real approved-source counts: <Pill tone="ok">READY</Pill> means 5+ approved
-        sources across 2+ categories, <Pill tone="warn">PARTIAL</Pill> means some coverage but concentrated in one
-        category, <Pill>NOT_STARTED</Pill> means nothing approved yet. It does not yet reflect local-expert sign-off,
-        privacy review, or QA gates — those controls aren&rsquo;t built.
-      </div>
-
-      {error || signedOut ? null : loading && !data ? (
-        <div className="flex items-center justify-center py-12 text-muted">
-          <Loader2 className="animate-spin mr-2" size={16} /> Computing jurisdiction readiness…
-        </div>
-      ) : summaries.length === 0 ? (
-        <Card>
-          <p className="text-sm text-muted py-4 text-center">No sources in the register yet.</p>
-        </Card>
-      ) : (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          {summaries.map((s) => {
-            const maxCount = Math.max(...summaries.map((x) => x.approved_count), 1);
-            const pct = Math.round((s.approved_count / maxCount) * 100);
-            return (
-              <div key={s.jurisdiction_scope} className={PANEL_CLASS}>
-                <PanelHeader
-                  icon={Globe}
-                  tone={READINESS_PANEL_TONE[s.readiness] ?? "brand"}
-                  title={s.jurisdiction_scope}
-                  action={<Pill tone={READINESS_TONE[s.readiness]}>{s.readiness}</Pill>}
-                />
-                <div className="flex items-center justify-between text-sm mb-1.5">
-                  <span className="text-ink">{s.approved_count} approved · {s.pending_count} pending</span>
-                </div>
-                <div className="h-2 rounded-full bg-soft border border-line overflow-hidden mb-3">
-                  <div className={`h-full rounded-full ${BAR_COLOR[s.readiness]}`} style={{ width: `${pct}%` }} />
-                </div>
-                <div className="space-y-1.5">
-                  {s.categories.map((c) => (
-                    <div key={c.category} className="flex items-center justify-between text-xs">
-                      <span className="text-muted">{c.category}</span>
-                      <span className="text-ink font-medium">
-                        {c.approved_count} approved
-                        {c.pending_count > 0 && <span className="text-warn"> · {c.pending_count} pending</span>}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </PageShell>
-  );
+  return <PageShell title="Jurisdiction Rollout" subtitle="Inspect jurisdiction source coverage and the evidence needed before professional use.">
+    <ContextStrip jurisdiction="All registered jurisdictions" framework="Mapped source categories" period="Current source coverage" />
+    <LiveSourceStatus {...{ loading, error, signedOut, reload }} />
+    {!error && !signedOut && <GovernedRegister title="Jurisdiction readiness register" inspector="Jurisdiction inspector" tabs={["Overview", "Sources & rights", "Evaluations", "History & rollback"]} records={summaries.map(s => ({ id: s.jurisdiction_scope, title: s.jurisdiction_scope, category: "Source coverage", state: s.readiness, scope: s.jurisdiction_scope, facts: { "Approved sources": String(s.approved_count), "Pending sources": String(s.pending_count), "Categories": String(s.categories.length), "Readiness": s.readiness, "Independent sign-off": "Not evaluated by this feed", "Production release": "Not established by coverage" }, evidence: ["READY means 5+ approved sources across 2+ categories. PARTIAL means some approved coverage; NOT_STARTED means no approved sources.", "This feed does not evaluate local-expert sign-off, privacy review, or QA release gates.", ...s.categories.map(c => `${c.category}: ${c.approved_count} approved · ${c.pending_count} pending`)], actions: <ActionLink href="/source-library">View source evidence</ActionLink> }))} metrics={[
+      { label: "Jurisdiction records", value: data ? summaries.length : "—", detail: "Source coverage scopes" }, { label: "Source coverage ready", value: data ? summaries.filter(s => s.readiness === "READY").length : "—", detail: "Coverage threshold only · not release approval", tone: "green" }, { label: "Partial coverage", value: data ? summaries.filter(s => s.readiness === "PARTIAL").length : "—", detail: "Additional coverage needed", tone: "amber" }, { label: "Not started", value: data ? summaries.filter(s => s.readiness === "NOT_STARTED").length : "—", detail: "No approved sources", tone: "red" }, { label: "Pending sources", value: data ? summaries.reduce((n, s) => n + s.pending_count, 0) : "—", detail: "Across loaded jurisdictions", tone: "amber" },
+    ]} doctrine="Release invariant: a jurisdiction in this register does not imply supported professional use. Source coverage does not establish passed evaluations, independent sign-off, or production-release authority." />}
+  </PageShell>;
 }

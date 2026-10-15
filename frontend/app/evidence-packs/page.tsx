@@ -60,7 +60,7 @@ export default function EvidencePacksPage() {
   const visible = items.filter((i) => !needle || i.title.toLowerCase().includes(needle));
 
   return (
-    <PageShell title="Evidence Packs" subtitle="Download what an answer rested on: its sources, reviews and audit trail, in one file." showMetrics={false}>
+    <PageShell title="Evidence Packs" subtitle="Download what an answer rested on: its sources, reviews and audit trail, in one file.">
       {error && <p className="mb-3 text-sm text-bad" role="alert">{error}</p>}
       <div className="grid gap-4 lg:grid-cols-[1.5fr_1fr]">
         <div className={PANEL_CLASS}>

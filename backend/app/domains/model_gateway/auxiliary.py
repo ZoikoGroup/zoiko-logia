@@ -34,7 +34,7 @@ from groq import AsyncGroq
 logger = logging.getLogger("kriton.model_gateway.auxiliary")
 
 Provider = Literal["groq", "gemini"]
-Purpose = Literal["risk_classification", "query_classification", "claim_verification"]
+Purpose = Literal["risk_classification", "query_classification", "claim_verification", "claim_extraction"]
 
 # Which providers each purpose may use. A purpose missing here cannot call a
 # model at all; a provider missing for a purpose is never used for it, even
@@ -43,6 +43,8 @@ PURPOSE_PROVIDERS: dict[str, frozenset[str]] = {
     "risk_classification": frozenset({"groq", "gemini"}),
     "query_classification": frozenset({"groq"}),
     "claim_verification": frozenset({"groq"}),
+    # Pulls the checkable claims out of pasted text (review_mode.py).
+    "claim_extraction": frozenset({"groq"}),
 }
 
 _API_KEYS = {"groq": ("GROQ_API_KEY",), "gemini": ("GEMINI_API_KEY",)}

@@ -85,3 +85,43 @@ async def test_a_planned_search_is_tried_before_an_evidence_gap_answer():
                               registry=registry, granted_permissions=frozenset(), planned_tools=("search_web",))
     assert "Before saying the sources do not establish this, call search_web" in client.requests[1]["messages"][-1]["content"]
     assert [r.tool for r in outcome.tool_calls] == ["lookup"]
+
+
+async def test_an_empty_knowledge_base_search_still_leads_to_the_planned_web_search():
+    """The live failure: told to search first, the run searched only the empty
+    knowledge base, said "the sources do not establish this" and stopped —
+    both nudges shared one flag, so the planned web search never ran."""
+    from pydantic import BaseModel
+
+    from app.domains.model_gateway.agent import run_agent
+    from app.domains.model_gateway.tool_registry import ToolRegistry, ToolResult, ToolSpec
+    from app.orchestration.websearch import WebSource
+
+    class _Query(BaseModel):
+        query: str
+
+    async def empty_library(args):
+        return ToolResult.failure("no_data", "No governed passage covers this.")
+
+    async def web(args):
+        return ToolResult(ok=True, content="[REF-1] IFRS 18 replaces IAS 1.",
+                          sources=(WebSource(title="IFRS 18", url="https://www.ifrs.org/ifrs-18", snippet="IFRS 18 replaces IAS 1."),))
+
+    registry = ToolRegistry()
+    for name, handler in (("search_knowledge_base", empty_library), ("search_web", web)):
+        registry.register(ToolSpec(name=name, version="1.0", description="Search.", args_model=_Query, handler=handler,
+                                   data_source="test", risk_level="low", timeout_seconds=1.0))
+    client = ScriptedClient([
+        _reply("IFRS 18 replaces IAS 1."),                                             # no search yet
+        _reply(tool_calls=[_call("search_knowledge_base", {"query": "IFRS 18 IAS 1"})]),  # library is empty
+        _reply("The sources found do not establish the answer."),                      # gives up
+        _reply(tool_calls=[_call("search_web", {"query": "IFRS 18 IAS 1"}, "c2")]),
+        _reply("IFRS 18 replaces IAS 1 [REF-1]."),
+    ])
+    outcome = await run_agent(client, model="m", system_prompt="", user_prompt="Is IFRS 18 replacing IAS 1?",
+                              registry=registry, granted_permissions=frozenset(), require_evidence=True,
+                              planned_tools=("search_knowledge_base", "search_web"))
+    assert "Call search_knowledge_base and search_web" in client.requests[1]["messages"][-1]["content"]
+    assert [r.tool for r in outcome.tool_calls] == ["search_knowledge_base", "search_web"]
+    assert outcome.text.startswith("IFRS 18 replaces IAS 1") and outcome.sources
+    assert outcome.stop_reason == "final_answer"

@@ -94,7 +94,7 @@ export default function WorkpapersPage() {
   const available = options.filter((o) => !attached.has(`${o.kind}:${o.id}`));
 
   return (
-    <PageShell title="Workpapers" subtitle="Client job files: the answers, drafts and documents behind a piece of work, with reviewer sign-off." showMetrics={false}>
+    <PageShell title="Workpapers" subtitle="Client job files: the answers, drafts and documents behind a piece of work, with reviewer sign-off.">
       {error && <p className="mb-3 text-sm text-bad" role="alert">{error}</p>}
 
       <form onSubmit={handleCreate} className={`${PANEL_CLASS} mb-4`}>

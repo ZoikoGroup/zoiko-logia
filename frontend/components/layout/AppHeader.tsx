@@ -1,6 +1,8 @@
 "use client";
 
-import { Settings, Bell, Sun, Moon, Menu } from "lucide-react";
+import Link from "next/link";
+import { Settings, Sun, Moon, Menu } from "lucide-react";
+import { NotificationBell } from "@/components/layout/NotificationBell";
 import { RoleSwitcher } from "@/components/shell/RoleSwitcher";
 import { NavSearch } from "@/components/shell/NavSearch";
 import { useTheme } from "@/components/shell/ThemeProvider";
@@ -41,13 +43,15 @@ export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
         >
           {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
         </button>
-        <button className="h-10 w-10 flex items-center justify-center rounded-xl border border-line bg-panel text-muted hover:bg-soft">
+        <Link
+          href="/settings"
+          aria-label="Settings"
+          title="Settings"
+          className="h-10 w-10 flex items-center justify-center rounded-xl border border-line bg-panel text-muted hover:bg-soft"
+        >
           <Settings size={17} />
-        </button>
-        <button className="relative h-10 w-10 flex items-center justify-center rounded-xl border border-line bg-panel text-muted hover:bg-soft">
-          <Bell size={17} />
-          <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-gold" />
-        </button>
+        </Link>
+        <NotificationBell />
       </div>
     </div>
   );

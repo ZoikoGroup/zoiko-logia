@@ -1,6 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { GovernedRegister, type RegisterRecord } from "@/components/governance/GovernedRegister";
+import { ContextStrip } from "@/components/overview/OverviewUI";
+
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Cpu, MessageSquare, FileCode, FlaskConical, History, Loader2 } from "lucide-react";
@@ -144,14 +147,27 @@ export default function ModelPromptRegistryPage() {
 
   const tabError = errors[activeTab];
   const promptUsage = overview?.usage.by_prompt ?? {};
+  const registryRecords: RegisterRecord[] = [
+    ...(models ?? []).map(m => ({ id: `model:${m.id}`, title: m.name, category: "Models", state: m.status, scope: m.environment, version: m.version, facts: { "Model ID": m.id, "Provider": m.provider, "Role": m.role, "Environment": m.environment, "Version": m.version, "Runtime matches": overview?.registry_matches[m.id]?.join(", ") || "No running role matched" }, evidence: [`Provider: ${m.provider}`, `Registered status: ${m.status}`, "A model registration alone does not authorize a production configuration."], actions: <button onClick={() => setActiveTab("models")} className="rounded border border-line px-3 py-2 text-xs text-brand">Inspect runtime models below</button> })),
+    ...(prompts ?? []).map(p => ({ id: `prompt:${p.id}`, title: p.name, category: "Prompt templates", state: p.status, scope: p.mode, version: p.version, owner: p.submitted_by, facts: { "Prompt ID": p.id, "Mode": p.mode, "Version": p.version, "Submitted by": p.submitted_by, "Approved by": p.approved_by || "Not recorded", "Recorded runs": String(promptUsage[p.id]?.runs ?? 0) }, evidence: [`Approval actor: ${p.approved_by || "Not recorded"}`, `Last run: ${promptUsage[p.id]?.last_run || "Not recorded"}`], actions: <button onClick={() => setActiveTab("prompts")} className="rounded border border-line px-3 py-2 text-xs text-brand">Open prompt testing & approval below</button> })),
+  ];
+
 
   return (
     <PageShell
       title="Model & Prompt Registry"
       subtitle="Track which models and prompt versions are active in production, staging, or pending approval."
-      showMetrics={false}
     >
       <LiveSourceStatus loading={loading} error="" signedOut={false} reload={load} />
+      <ContextStrip jurisdiction="Registered environments" framework="Models, prompts, tools & evaluation evidence" period="Current backend configuration" />
+      <div className="overview-navy rounded-xl p-5 text-white"><p className="text-[10px] uppercase tracking-widest text-amber-300">Versioned · tested · human authorized</p><h2 className="mt-2 text-xl font-bold">Trace every Kriton release to its exact configuration.</h2><p className="mt-2 text-xs text-blue-100">Model and prompt records remain distinct from production release authorization.</p></div>
+      <GovernedRegister title="Model & prompt register" inspector="Selected registry configuration" records={registryRecords} tabs={["Overview", "Lineage", "Gate evidence", "Audit history"]} doctrine="A release binds model, prompt, tool access, source bundles, policy versions, and evaluation evidence. Registered or active model status alone is not release authorization." metrics={[
+        { label: "Model versions", value: models?.length ?? "—", detail: "Registered model catalog" },
+        { label: "Prompt versions", value: prompts?.length ?? "—", detail: "Versioned prompt templates", tone: "amber" },
+        { label: "Runtime model roles", value: overview?.runtime_models.length ?? "—", detail: "Configured backend responsibilities" },
+        { label: "Evaluation runs", value: runs?.length ?? "—", detail: "Loaded release evaluation history", tone: "green" },
+        { label: "Pending prompt reviews", value: prompts ? prompts.filter(p => p.status !== "Approved").length : "—", detail: "Prompts without approved status", tone: "red" },
+      ]} />
       <div className={PANEL_CLASS}>
         <PanelHeader
           icon={TAB_ICON[activeTab] ?? Cpu}

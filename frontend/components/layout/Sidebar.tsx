@@ -1,9 +1,9 @@
 "use client";
 
-import Link from "next/link";
+import Link, { useLinkStatus } from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ChevronDown, HelpCircle, LogOut, Palette, ShieldCheck, UserRound, X } from "lucide-react";
+import { ChevronDown, HelpCircle, Loader2, LogOut, Palette, ShieldCheck, UserRound, X } from "lucide-react";
 import { NAV_SECTIONS, isVisible, navHref } from "@/lib/nav";
 import { useRole } from "@/components/shell/RoleProvider";
 import { useAuth } from "@/hooks/useAuth";
@@ -17,6 +17,7 @@ export function Sidebar({
 }) {
   const pathname = usePathname();
   const router = useRouter();
+  const isOverview = pathname === "/" || pathname === "/overview/governance" || pathname === "/my-workspace" || ["/source-library", "/source-bundles", "/accounting-ontology", "/jurisdiction-rollout", "/risk-policy", "/evaluation-gates", "/model-prompt-registry"].includes(pathname);
   const { role, roleReady } = useRole();
   const { signOut, user, profile } = useAuth();
   // Prefer the provisioned profile's name (the real DB row) over Supabase's
@@ -28,7 +29,7 @@ export function Sidebar({
     .slice(0, 2)
     .map((part: string) => part[0]?.toUpperCase())
     .join("");
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(["overview"]));
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [identityOpen, setIdentityOpen] = useState(false);
 
   async function handleLogout() {
@@ -46,13 +47,8 @@ export function Sidebar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);
 
-  function toggle(id: string) {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  function toggle(id: string, open: boolean) {
+    setExpanded((prev) => ({ ...prev, [id]: !open }));
   }
 
   const navContent = (
@@ -73,6 +69,8 @@ export function Sidebar({
         </div>
       </div>
 
+      {isOverview && <div className="rounded-lg border border-line bg-soft p-3"><p className="text-[9px] font-bold uppercase tracking-[.14em] text-muted">Pinned shortcuts</p><div className="mt-2 flex gap-2"><Link href="/ask-kriton" className="flex-1 rounded border border-line px-2 py-2 text-center text-[11px] text-ink">✦ Ask Kriton</Link><Link href="/review-tasks" className="flex-1 rounded border border-line px-2 py-2 text-center text-[11px] text-ink">↗ Review Tasks</Link></div></div>}
+
       <nav className="flex-1 overflow-y-auto py-4 space-y-1" aria-busy={!roleReady}>
         {!roleReady && (
           <div className="space-y-2 px-3" aria-label="Loading menu">
@@ -82,12 +80,12 @@ export function Sidebar({
           </div>
         )}
         {roleReady && visibleSections.map((section) => {
-          const isOpen = expanded.has(section.id) || section.items.some((item) => navHref(item.slug) === pathname);
+          const isOpen = expanded[section.id] ?? (section.id === "overview" || section.items.some((item) => navHref(item.slug) === pathname));
           return (
             <div key={section.id}>
               <button
                 type="button"
-                onClick={() => toggle(section.id)}
+                onClick={() => toggle(section.id, isOpen)}
                 aria-expanded={isOpen}
                 aria-controls={`nav-section-${section.id}`}
                 className="w-full flex items-start justify-between gap-2 px-3 py-2.5 rounded-lg text-sm font-bold tracking-wide uppercase text-ink hover:bg-soft text-left"
@@ -104,6 +102,8 @@ export function Sidebar({
                       <Link
                         key={item.slug}
                         href={href}
+                        aria-current={active ? "page" : undefined}
+                        onNavigate={onMobileClose}
                         className={`flex items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-sm border ${
                           active
                             ? "text-ink bg-gradient-to-r from-brand/15 to-gold/10 border-brand/30 shadow-[inset_3px_0_0_0_var(--color-brand)]"
@@ -114,9 +114,7 @@ export function Sidebar({
                           <item.icon size={16} />
                           <span className="truncate">{item.label}</span>
                         </span>
-                        <span className="shrink-0 text-[11px] rounded-full border border-line bg-chip text-muted px-1.5 py-0.5">
-                          ›
-                        </span>
+                        <NavigationHint label={item.label} />
                       </Link>
                     );
                   })}
@@ -131,7 +129,7 @@ export function Sidebar({
         {identityOpen && <div className="mb-2 space-y-0.5 rounded-xl border border-line bg-panel p-1.5 shadow-lg">
           <Link href="/my-workspace" className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-ink hover:bg-soft"><UserRound size={15} /> Profile & My Workspace</Link>
           <Link href="/account/security" className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-ink hover:bg-soft"><ShieldCheck size={15} /> Account security</Link>
-          <Link href="/tenant-settings" className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-ink hover:bg-soft"><Palette size={15} /> Appearance & accessibility</Link>
+          <Link href="/settings?tab=appearance" className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-ink hover:bg-soft"><Palette size={15} /> Appearance & accessibility</Link>
           <Link href="/support-tickets" className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-ink hover:bg-soft"><HelpCircle size={15} /> Help</Link>
           <button onClick={handleLogout} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-bad hover:bg-bad/10"><LogOut size={15} /> Log out</button>
         </div>}
@@ -167,4 +165,12 @@ export function Sidebar({
       )}
     </>
   );
+}
+
+/** Uses Next's navigation lifecycle, including cancellation and back/forward. */
+function NavigationHint({ label }: { label: string }) {
+  const { pending } = useLinkStatus();
+  return <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-line bg-chip text-[11px] text-muted">
+    {pending ? <><Loader2 size={12} className="animate-spin" aria-hidden="true" /><span role="status" className="sr-only">Opening {label}…</span></> : <span aria-hidden="true">›</span>}
+  </span>;
 }

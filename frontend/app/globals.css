@@ -306,3 +306,43 @@ main select:focus {
   .kriton-status-change { animation: kriton-status-change 240ms ease-out both; }
   .kriton-stage-icon { animation: kriton-stage-icon 1.2s ease-in-out infinite; }
 }
+
+/* Settings → Appearance (set on <html> by the init script in app/layout.tsx). */
+html[data-text-size="large"] {
+  font-size: 112.5%;
+}
+
+html[data-reduce-motion="true"] *,
+html[data-reduce-motion="true"] *::before,
+html[data-reduce-motion="true"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* Overview workspace surfaces, shared by the three reference layouts. */
+.overview-navy {
+  background: linear-gradient(115deg, #0b2c42, #123b56 70%, #214c60);
+}
+.overview-navy::before {
+  content: "";
+  position: absolute;
+  width: 420px;
+  height: 420px;
+  border: 54px solid rgba(255, 255, 255, .025);
+  border-radius: 50%;
+  right: -80px;
+  top: -190px;
+  pointer-events: none;
+}
+.overview-page table { width: 100%; border-collapse: collapse; text-align: left; }
+.overview-page th { padding: 10px; background: var(--bg); color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .05em; }
+.overview-page td { padding: 12px 10px; border-bottom: 1px solid var(--line); font-size: 11px; }
+.overview-page tbody tr:last-child td { border-bottom: 0; }
+.overview-page td small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+
+.governed-register :is(button, input, select):focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+}

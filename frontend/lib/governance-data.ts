@@ -1,10 +1,3 @@
-export const METRICS = [
-  { label: "Active sources", value: "1,284", detail: "37 due for review" },
-  { label: "Pending reviews", value: "42", detail: "11 legal/compliance" },
-  { label: "Open escalations", value: "14", detail: "3 over SLA" },
-  { label: "Source-drift alerts", value: "9", detail: "4 affect production" },
-];
-
 
 export const LOCALIZATION_CARD = {
   heading: "Localization & accessibility",

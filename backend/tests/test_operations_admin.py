@@ -142,3 +142,11 @@ async def test_usage_is_measured_per_tenant_and_billing_not_faked(db) -> None:
 
     other = await overview.usage(db, "t2", now=NOW)
     assert other["totals"]["questions_all_time"] == 1
+
+
+def test_placeholder_secrets_are_not_used_as_headers():
+    from app.domains.operations.service import _usable_secret
+
+    assert _usable_secret("eyJhbGciOiJIUzI1NiJ9.e30.sig") is True
+    for bad in ("", None, "<service-role-key>", "your-service-role…", "your_key_here", "changeme"):
+        assert _usable_secret(bad) is False

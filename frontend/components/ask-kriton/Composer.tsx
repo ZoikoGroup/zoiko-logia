@@ -9,6 +9,7 @@ import {
   Loader2,
   Mic,
   Paperclip,
+  Plus,
   X,
 } from "lucide-react";
 import { getAuthToken, getKritonAttachment, uploadKritonAttachment, deleteKritonAttachment, ApiError, type WorkspaceDocument } from "@/lib/api";
@@ -110,8 +111,8 @@ type SpeechRecognitionLike = {
   lang: string;
   start: () => void;
   stop: () => void;
-  onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
-  onerror: (() => void) | null;
+  onresult: ((e: { resultIndex: number; results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void) | null;
+  onerror: ((e: { error: string }) => void) | null;
   onend: (() => void) | null;
 };
 
@@ -169,6 +170,22 @@ export function Composer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  // The "+" menu of the compact (in-conversation) composer.
+  const [plusOpen, setPlusOpen] = useState(false);
+  const plusRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!plusOpen) return;
+    function close(event: MouseEvent) {
+      if (!plusRef.current?.contains(event.target as Node)) setPlusOpen(false);
+    }
+    function onKey(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") setPlusOpen(false);
+    }
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", onKey); };
+  }, [plusOpen]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -294,118 +311,313 @@ export function Composer({
     }
   }
 
-  function toggleVoice() {
+  // What each Web Speech API error means for the person at the keyboard.
+  const VOICE_ERRORS: Record<string, string> = {
+    "not-allowed": "Microphone access is blocked. Allow it from the icon at the left of the address bar, then try again.",
+    "service-not-allowed": "This browser does not allow speech recognition here. Try Chrome or Edge.",
+    "audio-capture": "No microphone was found. Check one is connected and selected.",
+    network: "The browser's speech service could not be reached. Check your internet connection.",
+    "no-speech": "Nothing was heard. Press the mic and start speaking.",
+    "language-not-supported": "Speech recognition does not support your browser language. Try English.",
+  };
+
+  async function toggleVoice() {
     if (listening) {
       recognitionRef.current?.stop();
       return;
     }
     const Recognition = getSpeechRecognition();
     if (!Recognition) {
-      setVoiceError("Voice input is not supported in this browser.");
+      setVoiceError("Voice input is not supported in this browser. Use Chrome, Edge or Safari.");
       return;
     }
     setVoiceError(null);
+    // Ask for the microphone first, so the browser shows its permission
+    // prompt and a refusal can be explained instead of failing silently.
+    if (navigator.mediaDevices?.getUserMedia) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((track) => track.stop());
+      } catch (err) {
+        const name = err instanceof DOMException ? err.name : "";
+        setVoiceError(name === "NotFoundError" ? VOICE_ERRORS["audio-capture"] : VOICE_ERRORS["not-allowed"]);
+        return;
+      }
+    }
     const recognition = new Recognition();
     recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.lang = "en-US";
+    // Interim results show the words as they are spoken.
+    recognition.interimResults = true;
+    recognition.lang = navigator.language || "en-GB";
+    const before = query.trim();
     recognition.onresult = (e) => {
-      const transcript = Array.from(e.results as unknown as ArrayLike<ArrayLike<{ transcript: string }>>)
-        .map((r) => r[0].transcript)
-        .join(" ");
-      onQueryChange(`${query}${query ? " " : ""}${transcript}`.trim());
+      const spoken = Array.from(e.results).map((result) => result[0]?.transcript ?? "").join(" ").trim();
+      onQueryChange(`${before}${before && spoken ? " " : ""}${spoken}`);
     };
-    recognition.onerror = () => setListening(false);
-    recognition.onend = () => setListening(false);
+    recognition.onerror = (e) => {
+      setListening(false);
+      if (e.error !== "aborted") setVoiceError(VOICE_ERRORS[e.error] ?? `Voice input stopped (${e.error}). Try again.`);
+    };
+    recognition.onend = () => {
+      setListening(false);
+      textareaRef.current?.focus();
+    };
     recognitionRef.current = recognition;
-    setListening(true);
-    recognition.start();
+    try {
+      recognition.start();
+      setListening(true);
+    } catch {
+      setVoiceError("Voice input could not start. Try again.");
+    }
   }
 
-  const cardRadius = variant === "hero" ? "rounded-[1.75rem]" : "rounded-[1.5rem]";
-  const minHeight = variant === "hero" ? "min-h-20" : "min-h-14";
-  const rows = variant === "hero" ? 2 : 2;
+  // Stop listening if the composer goes away mid-dictation.
+  useEffect(() => () => recognitionRef.current?.stop(), []);
+
+  const savedDocuments = documents
+    .filter((document) => document.status === "READY")
+    .filter((document) => !attachments.some((entry) => entry.documentId === document.id));
+
+  function addSavedDocument(documentId: string) {
+    const document = documents.find((item) => item.id === documentId);
+    if (!document) return;
+    onAttachmentsChange((previous) => (
+      previous.some((entry) => entry.documentId === document.id)
+        ? previous
+        : [...previous, {
+            id: nextAttachmentId(),
+            documentId: document.id,
+            name: document.filename,
+            status: document.status === "READY" ? "success" : "error",
+            progress: 1,
+            chunkCount: document.chunk_count,
+            error: document.processing_error ?? undefined,
+            fromLibrary: true,
+          }]
+    ));
+  }
+
+  const uploadLabel = (() => {
+    const uploading = attachments.filter((item) => item.status === "uploading");
+    if (uploading.length > 0) {
+      const mean = uploading.reduce((total, item) => total + item.progress, 0) / uploading.length;
+      return uploading.length > 1
+        ? `Uploading ${uploading.length} files ${Math.round(mean * 100)}%`
+        : `Uploading ${Math.round(mean * 100)}%`;
+    }
+    return "Processing…";
+  })();
+
+  const fileInput = (
+    <input
+      ref={fileInputRef}
+      type="file"
+      multiple
+      accept={ACCEPTED_EXTENSIONS.join(",")}
+      className="hidden"
+      onChange={(e) => {
+        const files = Array.from(e.target.files ?? []);
+        if (files.length > 0) void handleFilesSelected(files);
+        // Reset so re-picking the same file still fires onChange.
+        e.target.value = "";
+      }}
+    />
+  );
+
+  const attachmentList = attachments.length > 0 && (
+    <div className="mb-3 space-y-1.5">
+      {attachments.length > 1 && (
+        <div className="flex items-center justify-between px-1 text-[11px] font-semibold text-muted">
+          <span>
+            {readyDocumentIds.length} of {attachments.length} document{attachments.length === 1 ? "" : "s"} ready
+          </span>
+          <button
+            type="button"
+            onClick={() => onAttachmentsChange([])}
+            className="rounded px-1 py-0.5 font-semibold text-muted transition hover:bg-soft hover:text-ink"
+          >
+            Remove all
+          </button>
+        </div>
+      )}
+      {attachments.map((item) => (
+        <div key={item.id} className="flex items-center gap-2 rounded-xl border border-line bg-soft/60 px-3 py-2 text-xs">
+          {isAttachmentPending(item) && <Loader2 size={14} className="shrink-0 animate-spin text-brand" />}
+          {item.status === "success" && <CheckCircle2 size={14} className="shrink-0 text-ok" />}
+          {item.status === "error" && <AlertTriangle size={14} className="shrink-0 text-bad" />}
+          <FileText size={14} className="shrink-0 text-muted" />
+          <span className="min-w-0 flex-1 truncate font-medium text-ink">{item.name}</span>
+          {item.status === "success" && <span className="shrink-0 text-ok">Used in this chat</span>}
+          <span className="shrink-0 text-muted">
+            {item.status === "uploading" && `${Math.round(item.progress * 100)}%`}
+            {item.status === "processing" && "Processing…"}
+            {item.status === "success" && `${item.chunkCount} chunks`}
+            {item.status === "error" && item.error}
+          </span>
+          <button
+            type="button"
+            onClick={() => void removeAttachment(item)}
+            aria-label={`Remove ${item.name}`}
+            className="shrink-0 rounded p-0.5 text-muted hover:bg-soft"
+          >
+            <X size={13} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+
+  const textarea = (rowsShown: number, className: string) => (
+    <textarea
+      ref={textareaRef}
+      value={query}
+      onChange={(e) => onQueryChange(e.target.value)}
+      onKeyDown={handleKeyDown}
+      placeholder={variant === "hero" ? "Ask Kriton..." : "Ask a follow-up..."}
+      rows={rowsShown}
+      aria-label={variant === "hero" ? "Ask Kriton" : "Ask a follow-up"}
+      className={`max-h-[min(220px,30dvh)] w-full resize-none overflow-y-auto overscroll-contain !border-transparent !bg-transparent text-ink !shadow-none outline-none placeholder:text-muted ${className}`}
+    />
+  );
+
+  const jurisdictionSelect = (className: string) => (
+    <select
+      aria-label="Jurisdiction"
+      value={jurisdiction}
+      onChange={(event) => onJurisdictionChange(event.target.value)}
+      className={`h-9 rounded-full !border-transparent !bg-soft px-3 text-xs font-semibold text-ink !shadow-none outline-none hover:bg-line/40 ${className}`}
+    >
+      {JURISDICTIONS.map((value) => (
+        <option key={value || "any"} value={value}>{value || "Any jurisdiction"}</option>
+      ))}
+    </select>
+  );
+
+  const micButton = (
+    <button
+      type="button"
+      onClick={toggleVoice}
+      aria-label={listening ? "Stop voice input" : "Voice input"}
+      title={voiceError ?? (listening ? "Stop voice input" : "Voice input")}
+      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition ${
+        listening ? "animate-pulse bg-bad/10 text-bad" : "text-muted hover:bg-soft hover:text-ink"
+      }`}
+    >
+      <Mic size={19} />
+    </button>
+  );
+
+  const sendButton = (
+    <button
+      type="submit"
+      disabled={submitting || !query.trim() || pending}
+      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand text-white transition hover:bg-brand-2 disabled:opacity-40"
+      aria-label={variant === "hero" ? "Ask Kriton" : "Ask follow-up"}
+      title="Send"
+    >
+      {submitting ? <Loader2 size={16} className="animate-spin" /> : <ArrowUp size={17} />}
+    </button>
+  );
+
+  const submitForm = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (pending) return;
+    onSubmit();
+  };
+
+  const messages = (
+    <>
+      {voiceError && <p className="mt-2 text-center text-xs text-muted">{voiceError}</p>}
+      {error && (
+        <div className="mt-3 rounded-xl border border-bad/30 bg-bad/5 px-4 py-2.5 text-sm text-bad" role="alert">
+          {error}
+        </div>
+      )}
+    </>
+  );
+
+  // In the conversation: one slim rounded bar — "+" menu, the text, then
+  // jurisdiction, voice and a round send button — like a chat app's composer.
+  if (variant === "sticky") {
+    return (
+      <div>
+        <form onSubmit={submitForm} data-kriton-composer className="mx-auto w-full max-w-3xl">
+          {attachmentList}
+          <div className="kriton-composer-surface flex items-end gap-1.5 rounded-[1.75rem] border px-2 py-1.5 shadow-[0_8px_28px_rgba(18,34,32,0.08)]">
+            {fileInput}
+            <div ref={plusRef} className="relative shrink-0">
+              <button
+                type="button"
+                onClick={() => setPlusOpen((open) => !open)}
+                aria-label="Add documents"
+                aria-haspopup="menu"
+                aria-expanded={plusOpen}
+                title="Add documents"
+                className="flex h-9 w-9 items-center justify-center rounded-full text-ink transition hover:bg-soft"
+              >
+                {pending ? <Loader2 size={18} className="animate-spin text-brand" /> : <Plus size={20} />}
+              </button>
+              {plusOpen && (
+                <div role="menu" className="absolute bottom-full left-0 z-30 mb-2 w-64 overflow-hidden rounded-xl border border-line bg-panel py-1 shadow-xl">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={attachments.length >= MAX_ATTACHMENTS}
+                    onClick={() => { setPlusOpen(false); fileInputRef.current?.click(); }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink hover:bg-soft disabled:opacity-50"
+                  >
+                    <Paperclip size={15} className="text-muted" /> Upload documents
+                  </button>
+                  {savedDocuments.length > 0 && (
+                    <>
+                      <div className="mt-1 border-t border-line px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wider text-muted">Saved documents</div>
+                      <div className="max-h-48 overflow-y-auto">
+                        {savedDocuments.map((document) => (
+                          <button
+                            key={document.id}
+                            type="button"
+                            role="menuitem"
+                            disabled={attachments.length >= MAX_ATTACHMENTS}
+                            onClick={() => { addSavedDocument(document.id); setPlusOpen(false); }}
+                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink hover:bg-soft disabled:opacity-50"
+                          >
+                            <FileText size={15} className="shrink-0 text-muted" />
+                            <span className="truncate">{document.filename}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="min-w-0 flex-1 py-1.5">
+              {pending && <span className="sr-only" role="status">{uploadLabel}</span>}
+              {textarea(1, "min-h-6 px-1 text-[15px] leading-6")}
+            </div>
+            {jurisdictionSelect("hidden sm:block")}
+            {micButton}
+            {sendButton}
+          </div>
+          <p className="mt-1.5 text-center text-[11px] text-muted">
+            Kriton checks answers against sources, but can still make mistakes. Verify important figures.
+          </p>
+        </form>
+        {messages}
+      </div>
+    );
+  }
 
   return (
     <div>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (pending) return;
-          onSubmit();
-        }}
-        data-kriton-composer
-        className={variant === "sticky" ? "mx-auto w-full max-w-3xl" : "mt-8 w-full"}
-      >
-        <div className={`kriton-composer-surface ${cardRadius} border p-4 shadow-[0_18px_48px_rgba(18,34,32,0.08)]`}>
-          {attachments.length > 0 && (
-            <div className="mb-3 space-y-1.5">
-              {attachments.length > 1 && (
-                <div className="flex items-center justify-between px-1 text-[11px] font-semibold text-muted">
-                  <span>
-                    {readyDocumentIds.length} of {attachments.length} document{attachments.length === 1 ? "" : "s"} ready
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => onAttachmentsChange([])}
-                    className="rounded px-1 py-0.5 font-semibold text-muted transition hover:bg-soft hover:text-ink"
-                  >
-                    Remove all
-                  </button>
-                </div>
-              )}
-              {attachments.map((item) => (
-                <div key={item.id} className="flex items-center gap-2 rounded-xl border border-line bg-soft/60 px-3 py-2 text-xs">
-                  {isAttachmentPending(item) && <Loader2 size={14} className="shrink-0 animate-spin text-brand" />}
-                  {item.status === "success" && <CheckCircle2 size={14} className="shrink-0 text-ok" />}
-                  {item.status === "error" && <AlertTriangle size={14} className="shrink-0 text-bad" />}
-                  <FileText size={14} className="shrink-0 text-muted" />
-                  <span className="min-w-0 flex-1 truncate font-medium text-ink">{item.name}</span>
-                  {item.status === "success" && <span className="shrink-0 text-ok">Used in this chat</span>}
-                  <span className="shrink-0 text-muted">
-                    {item.status === "uploading" && `${Math.round(item.progress * 100)}%`}
-                    {item.status === "processing" && "Processing…"}
-                    {item.status === "success" && `${item.chunkCount} chunks`}
-                    {item.status === "error" && item.error}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => void removeAttachment(item)}
-                    aria-label={`Remove ${item.name}`}
-                    className="shrink-0 rounded p-0.5 text-muted hover:bg-soft"
-                  >
-                    <X size={13} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <textarea
-            ref={textareaRef}
-            value={query}
-            onChange={(e) => onQueryChange(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={variant === "hero" ? "Ask Kriton..." : "Ask a follow-up..."}
-            rows={rows}
-            className={`${minHeight} max-h-[min(220px,30dvh)] w-full resize-none overflow-y-auto overscroll-contain rounded-xl !border-transparent !bg-transparent px-1 py-1 text-base font-medium leading-7 text-ink !shadow-none outline-none placeholder:text-muted`}
-          />
+      <form onSubmit={submitForm} data-kriton-composer className="mt-8 w-full">
+        <div className="kriton-composer-surface rounded-[1.75rem] border p-4 shadow-[0_18px_48px_rgba(18,34,32,0.08)]">
+          {attachmentList}
+          {textarea(2, "min-h-20 rounded-xl px-1 py-1 text-base font-medium leading-7")}
 
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                accept={ACCEPTED_EXTENSIONS.join(",")}
-                className="hidden"
-                onChange={(e) => {
-                  const files = Array.from(e.target.files ?? []);
-                  if (files.length > 0) void handleFilesSelected(files);
-                  // Reset so re-picking the same file still fires onChange.
-                  e.target.value = "";
-                }}
-              />
+              {fileInput}
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
@@ -416,18 +628,7 @@ export function Composer({
                 {pending ? (
                   <>
                     <Loader2 size={16} className="shrink-0 animate-spin" />
-                    <span className="hidden sm:inline">
-                      {(() => {
-                        const uploading = attachments.filter((item) => item.status === "uploading");
-                        if (uploading.length > 0) {
-                          const mean = uploading.reduce((total, item) => total + item.progress, 0) / uploading.length;
-                          return uploading.length > 1
-                            ? `Uploading ${uploading.length} files ${Math.round(mean * 100)}%`
-                            : `Uploading ${Math.round(mean * 100)}%`;
-                        }
-                        return "Processing…";
-                      })()}
-                    </span>
+                    <span className="hidden sm:inline">{uploadLabel}</span>
                   </>
                 ) : (
                   <>
@@ -447,78 +648,26 @@ export function Composer({
                   // currently attached is shown by the chips above.
                   value=""
                   disabled={attachments.length >= MAX_ATTACHMENTS}
-                  onChange={(event) => {
-                    const document = documents.find((item) => item.id === event.target.value);
-                    if (!document) return;
-                    onAttachmentsChange((previous) => (
-                      previous.some((entry) => entry.documentId === document.id)
-                        ? previous
-                        : [...previous, {
-                            id: nextAttachmentId(),
-                            documentId: document.id,
-                            name: document.filename,
-                            status: document.status === "READY" ? "success" : "error",
-                            progress: 1,
-                            chunkCount: document.chunk_count,
-                            error: document.processing_error ?? undefined,
-                            fromLibrary: true,
-                          }]
-                    ));
-                  }}
+                  onChange={(event) => addSavedDocument(event.target.value)}
                   className="h-9 max-w-48 rounded-full !border-transparent !bg-soft px-3 text-xs font-semibold text-ink outline-none disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <option value="">Saved documents</option>
-                  {documents
-                    .filter((document) => document.status === "READY")
-                    .filter((document) => !attachments.some((entry) => entry.documentId === document.id))
-                    .map((document) => (
-                      <option key={document.id} value={document.id}>{document.filename}</option>
-                    ))}
+                  {savedDocuments.map((document) => (
+                    <option key={document.id} value={document.id}>{document.filename}</option>
+                  ))}
                 </select>
               )}
             </div>
 
             <div className="flex min-w-0 items-center justify-end gap-2">
-              <select
-                aria-label="Jurisdiction"
-                value={jurisdiction}
-                onChange={(event) => onJurisdictionChange(event.target.value)}
-                className="hidden h-9 rounded-full !border-transparent !bg-soft px-3 text-xs font-semibold text-ink !shadow-none outline-none hover:bg-line/40 sm:block"
-              >
-                {JURISDICTIONS.map((value) => (
-                  <option key={value || "any"} value={value}>{value || "Any jurisdiction"}</option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={toggleVoice}
-                aria-label={listening ? "Stop voice input" : "Voice input"}
-                title={voiceError ?? undefined}
-                className={`flex h-9 w-9 items-center justify-center rounded-full transition ${
-                  listening ? "animate-pulse bg-bad/10 text-bad" : "text-muted hover:bg-soft"
-                }`}
-              >
-                <Mic size={19} />
-              </button>
-              <button
-                type="submit"
-                disabled={submitting || !query.trim() || pending}
-                className="flex h-9 w-9 items-center justify-center rounded-full bg-brand text-white transition hover:bg-brand-2 disabled:opacity-40"
-                aria-label={variant === "hero" ? "Ask Kriton" : "Ask follow-up"}
-              >
-                {submitting ? <Loader2 size={16} className="animate-spin" /> : <ArrowUp size={17} />}
-              </button>
+              {jurisdictionSelect("hidden sm:block")}
+              {micButton}
+              {sendButton}
             </div>
           </div>
         </div>
       </form>
-
-      {voiceError && <p className="mt-2 text-center text-xs text-muted">{voiceError}</p>}
-      {error && (
-        <div className="mt-3 rounded-xl border border-bad/30 bg-bad/5 px-4 py-2.5 text-sm text-bad" role="alert">
-          {error}
-        </div>
-      )}
+      {messages}
     </div>
   );
 }

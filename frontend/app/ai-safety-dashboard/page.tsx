@@ -113,7 +113,6 @@ export default function AiSafetyDashboardPage() {
     <PageShell
       title="AI Safety Dashboard"
       subtitle="Real-time view of risk classifications, refusals, escalations, and human review activity."
-      showMetrics={false}
     >
       <LiveSourceStatus loading={loading} error={error} signedOut={false} reload={load} />
 

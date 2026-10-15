@@ -48,8 +48,11 @@ def test_pipeline_keeps_the_restored_steps_wired():
     assert "screened_history(request.conversation_history)" in source
     # 559f16b: HIGH-risk questions are answered as general guidance.
     assert "Give general guidance only" in source
-    # 7d9cafa / 13ae7b8: the answer says what it rests on when unsourced.
-    assert "No sources could be retrieved for this answer" in source
+    # 7d9cafa / 13ae7b8 said in a note what an unsourced answer rests on; that
+    # note was removed on request, since the status line ("Answered — no cited
+    # sources") already says it. Web-sourced answers still carry their note.
+    assert "No sources could be retrieved for this answer" not in source
+    assert "based on live data and web sources" in source
 
 
 def test_a_bare_number_is_not_a_verified_calculation():
