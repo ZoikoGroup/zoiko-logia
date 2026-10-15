@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db.base import Base
 from app.domains.admin_governance import overview
-from app.domains.admin_governance.router import require_operations
+from app.domains.operations.router import require_operations
 from app.domains.identity.models import ServiceAccount, Tenant, User
 from app.domains.kriton_workspace.models import SavedAnswer
 from app.domains.operations import service as operations
@@ -80,7 +80,7 @@ def test_connections_report_presence_never_secret_values(monkeypatch) -> None:
     assert SECRET not in payload
 
 
-async def test_status_checks_are_live_and_honest(db, monkeypatch) -> None:
+async def test_dependency_checks_are_live_and_honest(db, monkeypatch) -> None:
     class _Settings:
         SUPABASE_URL = ""
         SUPABASE_SERVICE_ROLE_KEY = ""
@@ -89,12 +89,13 @@ async def test_status_checks_are_live_and_honest(db, monkeypatch) -> None:
                 "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AZURE_OPENAI_API_KEY"):
         monkeypatch.delenv(var, raising=False)
 
-    checks = {c["name"]: c for c in await operations.status_checks(db, "t1")}
-    assert checks["Database"]["state"] == "operational" and checks["Database"]["latencyMs"] is not None
-    assert checks["Supabase Auth"]["state"] == "not_configured"
-    assert checks["Web search (SearXNG)"]["state"] == "not_configured"
-    assert checks["Audit ledger (this workspace)"]["state"] == "operational"
-    assert checks["AI model providers"]["state"] == "down", "no provider key is an outage, not a pass"
+    checks = {c["key"]: c for c in await operations.dependency_checks(db)}
+    assert checks["database"]["state"] == "operational" and checks["database"]["latencyMs"] is not None
+    assert checks["supabase_auth"]["state"] == "not_configured"
+    assert checks["searxng"]["state"] == "not_configured"
+    assert checks["groq"]["state"] == "not_configured", "no key: never probed, never reported up"
+    audit = await operations.audit_chain_check(db, "t1")
+    assert audit["state"] == "operational"
 
 
 async def test_operations_pages_are_role_gated(db) -> None:

@@ -204,6 +204,10 @@ async def resolve_review_case(
         db.add(gold)
     await db.commit()
     await db.refresh(case)
+    # The same question's escalation (Escalation Queue) is the same work:
+    # this decision closes it, so the two queues never disagree.
+    from app.domains.review_console.escalations import sync_from_review
+    await sync_from_review(db, case)
     return case, gold
 
 

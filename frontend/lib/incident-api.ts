@@ -64,25 +64,24 @@ export async function getIncidentStats(): Promise<IncidentStats | null> {
   return tryBackend<IncidentStats>("/stats");
 }
 
+// The timeline credits the signed-in user; the backend sets who acted.
 export async function updateIncident(
   incidentId: string,
   action: string,
-  actor: string,
   note: string
 ): Promise<SecurityIncident | null> {
   return tryBackend<SecurityIncident>(`/${incidentId}/action`, {
     method: "POST",
-    body: JSON.stringify({ action, actor, note }),
+    body: JSON.stringify({ action, note }),
   });
 }
 
 export async function closeIncident(
   incidentId: string,
-  resolver: string,
   resolutionNote: string
 ): Promise<SecurityIncident | null> {
   return tryBackend<SecurityIncident>(`/${incidentId}/close`, {
     method: "POST",
-    body: JSON.stringify({ resolver, resolution_note: resolutionNote }),
+    body: JSON.stringify({ resolution_note: resolutionNote }),
   });
 }

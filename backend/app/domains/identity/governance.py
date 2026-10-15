@@ -67,6 +67,23 @@ async def _audit(db: AsyncSession, actor: User, event_name: str, subject_type: s
     )
 
 
+_LIMIT_SETTINGS = {
+    "impersonation_max_minutes": "IMPERSONATION_MAX_MINUTES",
+    "break_glass_max_minutes": "BREAK_GLASS_MAX_MINUTES",
+    "break_glass_repeat_threshold": "BREAK_GLASS_REPEAT_THRESHOLD",
+    "service_key_max_days": "SERVICE_KEY_MAX_DAYS",
+}
+
+
+async def _tenant_limit(db: AsyncSession, tenant_id: str, key: str) -> int:
+    """The deployment ceiling, or the tenant's stricter value if it set one
+    (admin_governance/tenant_policy.py). Never above the deployment's."""
+    from app.domains.admin_governance.tenant_policy import tenant_value
+    deployment = getattr(get_settings(), _LIMIT_SETTINGS[key])
+    tenant = await tenant_value(db, tenant_id, key)
+    return deployment if tenant is None else min(deployment, int(tenant))
+
+
 async def _tenant_user(db: AsyncSession, tenant_id: str, user_id: str) -> User | None:
     result = await db.execute(select(User).where(User.id == user_id, User.tenant_id == tenant_id))
     return result.scalar_one_or_none()
@@ -89,7 +106,7 @@ async def start_impersonation(
     db: AsyncSession, actor: User, target_user_id: str, reason: str, minutes: int,
 ) -> ImpersonationSession:
     _require_interactive(actor, "start impersonation")
-    limit = get_settings().IMPERSONATION_MAX_MINUTES
+    limit = await _tenant_limit(db, actor.tenant_id, "impersonation_max_minutes")
     if not 1 <= minutes <= limit:
         raise GovernanceError(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Duration must be between 1 and {limit} minutes.")
     if not reason.strip():
@@ -216,7 +233,7 @@ async def request_break_glass(
     db: AsyncSession, requester: User, permissions: list[str], reason: str, duration_minutes: int,
 ) -> BreakGlassGrant:
     _require_interactive(requester, "request break-glass access")
-    limit = get_settings().BREAK_GLASS_MAX_MINUTES
+    limit = await _tenant_limit(db, requester.tenant_id, "break_glass_max_minutes")
     if not 1 <= duration_minutes <= limit:
         raise GovernanceError(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Duration must be between 1 and {limit} minutes.")
     if not reason.strip():
@@ -276,7 +293,7 @@ async def approve_break_glass(db: AsyncSession, approver: User, grant_id: str) -
             BreakGlassGrant.activated_at >= now - REPEAT_WINDOW,
         )
     )).scalar_one()
-    if recent >= get_settings().BREAK_GLASS_REPEAT_THRESHOLD:
+    if recent >= await _tenant_limit(db, grant.tenant_id, "break_glass_repeat_threshold"):
         await _audit(db, approver, "break_glass_repeated_use_detected", "user_account", grant.user_id, {
             "grants_in_30_days": recent, "latest_grant_id": grant.id,
         })
@@ -420,7 +437,7 @@ async def issue_service_account_key(
     """Returns the stored key row and the plaintext key — the only time the
     plaintext exists outside the caller's hands."""
     _require_interactive(admin, "issue API keys")
-    limit = get_settings().SERVICE_KEY_MAX_DAYS
+    limit = await _tenant_limit(db, admin.tenant_id, "service_key_max_days")
     if not 1 <= expires_in_days <= limit:
         raise GovernanceError(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Expiry must be between 1 and {limit} days.")
     account = await _tenant_service_account(db, admin, account_id)

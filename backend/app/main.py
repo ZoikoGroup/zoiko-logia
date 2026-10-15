@@ -1,8 +1,10 @@
 import asyncio
+import contextlib
 import hashlib
 import inspect
 import logging
 import os
+import time
 import warnings
 from contextlib import asynccontextmanager
 
@@ -19,9 +21,10 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 
 from app.api.v1.router import api_v1_router
 from app.core.config import get_settings
-from app.core.database import async_engine, SessionLocal
+from app.core.database import AsyncSessionLocal, async_engine, SessionLocal
 from app.core.rate_limit import limiter
 from app.db.base import Base
+from app.domains.operations.telemetry import recorder as api_recorder
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -245,7 +248,9 @@ async def _migrate_orphan_tenant_id_not_null():
         ))
         for (tbl,) in rows.fetchall():
             model_table = Base.metadata.tables.get(tbl)
-            if model_table is not None and "tenant_id" in model_table.columns:
+            if model_table is None:
+                continue  # not this code's table (e.g. another branch's, on a shared DB) — leave as-is
+            if "tenant_id" in model_table.columns:
                 continue  # model owns tenant_id (e.g. RLS tables) — leave as-is
             await conn.execute(
                 text(f'ALTER TABLE "{tbl}" ALTER COLUMN tenant_id DROP NOT NULL')
@@ -635,35 +640,6 @@ def _seed_escalation_rules():
         db.close()
 
 
-def _seed_incidents():
-    """Seed a demo incident if the table is empty."""
-    from app.domains.support_incident.models import SecurityIncident
-    db = SessionLocal()
-    try:
-        if db.query(SecurityIncident).count() == 0:
-            incident = SecurityIncident(
-                tenant_id="tenant-default",
-                title="Suspicious prompt bypass attempt detected",
-                severity="Critical",
-                containment_status="OPEN",
-                source="RESTRICTED_CONTROL_BYPASS",
-                query_id="q-demo-bypass",
-                restricted_sub_class="RESTRICTED_CONTROL_BYPASS",
-                timeline=[{
-                    "timestamp": "2026-07-08T09:00:00Z",
-                    "actor": "system",
-                    "action": "created",
-                    "note": "Incident auto-created due to control bypass attempt"
-                }]
-            )
-            db.add(incident)
-            db.commit()
-    except Exception:
-        db.rollback()
-    finally:
-        db.close()
-
-
 def _require_supabase_config():
     """Regression guard for missing/misconfigured Supabase auth.
 
@@ -743,7 +719,9 @@ _SCHEMA_MIGRATIONS = (
     "_migrate_source_passage_retrieval_columns", "_migrate_review_loop_columns",
     "_setup_document_search_index",
 )
-_SEEDS = ("_seed_defaults", "_seed_evaluation", "_seed_escalation_rules", "_seed_incidents")
+# No incident is seeded: incidents come only from real detections (a demo
+# "prompt bypass" incident used to be inserted into every new database).
+_SEEDS = ("_seed_defaults", "_seed_evaluation", "_seed_escalation_rules")
 
 
 def _step(name: str):
@@ -864,7 +842,17 @@ async def lifespan(app: FastAPI):
         from app.domains.model_gateway.service import agent_mode_status
         status = agent_mode_status()
         print("Kriton agent mode: " + ("ON" if status["active"] else "OFF (" + "; ".join(status["reasons"]) + ")"))
-        yield
+        sampler = None
+        if settings.HEALTH_SAMPLER_ENABLED:
+            from app.domains.operations.telemetry import run_sampler
+            sampler = asyncio.create_task(run_sampler(AsyncSessionLocal))
+        try:
+            yield
+        finally:
+            if sampler is not None:
+                sampler.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await sampler
     finally:
         await async_engine.dispose()
 
@@ -881,6 +869,16 @@ async def _verify_security_policies() -> None:
     # is deliberately absent: keys are looked up by hash before a tenant is known.
     expected.update({table: f"tenant_isolation_{table}"
                      for table in ("impersonation_sessions", "break_glass_grants", "service_accounts")})
+    # Operations registers and alerts (migration s8l9m0n1o2p3).
+    # service_health_samples is deliberately absent: platform telemetry only.
+    expected.update({table: f"tenant_isolation_{table}"
+                     for table in ("service_owners", "operations_alerts", "provider_records", "integration_records")})
+    # Administration console (migration t9m0n1o2p3q4).
+    expected.update({table: f"tenant_isolation_{table}"
+                     for table in ("teams", "team_members", "access_reviews", "tenant_policies",
+                                   "setting_change_requests", "release_candidates")})
+    # Review, Escalation & Audit console (migration u0n1o2p3q4r5).
+    expected["audit_export_requests"] = "tenant_isolation_audit_export_requests"
     async with async_engine.connect() as conn:
         rows = (await conn.execute(text("""
             SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity, p.polname
@@ -960,6 +958,23 @@ def create_app() -> FastAPI:
                 content={"detail": "Viewing as another user is read-only. End the session to make changes."},
             )
         return await call_next(request)
+
+    @app.middleware("http")
+    async def measure_api_latency(request, call_next):
+        # Real request timings feed the Status & Health page (operations/telemetry.py).
+        # The status endpoint itself waits on external health checks (up to
+        # their timeout), so timing it would report the checks, not the API.
+        path = request.url.path
+        if not path.startswith("/api/") or path.endswith("/operations/status") or request.method == "OPTIONS":
+            return await call_next(request)
+        start = time.perf_counter()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        finally:
+            api_recorder.record((time.perf_counter() - start) * 1000, status_code)
 
     app.add_middleware(
         CORSMiddleware,

@@ -49,12 +49,14 @@ class SecurityIncidentOut(BaseModel):
 
 class IncidentActionRequest(BaseModel):
     action: str  # Contain, Escalate
-    actor: str
+    # Ignored: the timeline records the signed-in user, never a client-sent name.
+    actor: str | None = None
     note: str
 
 
 class IncidentCloseRequest(BaseModel):
-    resolver: str
+    # Ignored: the resolver recorded is the signed-in user.
+    resolver: str | None = None
     resolution_note: str
 
 

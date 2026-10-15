@@ -16,6 +16,8 @@ def _isolate_external_services(monkeypatch):
     # shared database; tests always run with the production behaviour.
     from app.core.config import get_settings
     monkeypatch.setattr(get_settings(), "SKIP_STARTUP_FINGERPRINT_CHECK", False)
+    # The health sampler probes live services; never from a test's app lifespan.
+    monkeypatch.setattr(get_settings(), "HEALTH_SAMPLER_ENABLED", False)
     # The GOV.UK search fallback is a live API; tests that cover it stub it.
     from app.orchestration import websearch
 

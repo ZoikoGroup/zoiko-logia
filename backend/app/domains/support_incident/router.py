@@ -93,6 +93,12 @@ def get_security_incident(
     return incident
 
 
+def _actor_name(user: User) -> str:
+    """Who the timeline credits: the authenticated user, never a name the
+    client sent (the page used to send a fixed "Security Admin")."""
+    return user.full_name or user.email
+
+
 @router.post("/incidents/{incident_id}/action", response_model=SecurityIncidentOut)
 def post_incident_action(
     incident_id: str,
@@ -100,7 +106,7 @@ def post_incident_action(
     db: Session = Depends(get_sync_db),
     actor: User = Depends(require_permission(SUPPORT_MANAGE)),
 ):
-    incident = update_incident(db, actor.tenant_id, incident_id, payload.action, payload.actor, payload.note)
+    incident = update_incident(db, actor.tenant_id, incident_id, payload.action, _actor_name(actor), payload.note)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
     return incident
@@ -113,7 +119,7 @@ def post_incident_close(
     db: Session = Depends(get_sync_db),
     actor: User = Depends(require_permission(SUPPORT_MANAGE)),
 ):
-    incident = close_incident(db, actor.tenant_id, incident_id, payload.resolver, payload.resolution_note)
+    incident = close_incident(db, actor.tenant_id, incident_id, _actor_name(actor), payload.resolution_note)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
     return incident

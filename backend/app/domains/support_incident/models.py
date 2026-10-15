@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -28,9 +28,20 @@ class SupportTicket(Base):
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     assigned_to: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # Support console (migration u0n1o2p3q4r5). Nullable: tickets created
+    # before these existed have only a category and severity.
+    subject: Mapped[str | None] = mapped_column(String, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    jurisdiction: Mapped[str | None] = mapped_column(String, nullable=True)
+    first_response_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    waiting_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paused_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    escalation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    incident_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    messages: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
-
-from sqlalchemy import JSON, Text
 
 class SecurityIncident(Base):
     __tablename__ = "security_incidents"
@@ -48,3 +59,7 @@ class SecurityIncident(Base):
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Incident console (migration u0n1o2p3q4r5): audit events and the support
+    # ticket this incident was raised from or linked to.
+    linked_event_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    ticket_id: Mapped[str | None] = mapped_column(String, nullable=True)

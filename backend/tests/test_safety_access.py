@@ -14,12 +14,14 @@ from app.domains.risk_safety.models import (
     EscalationCase, SafetyEvent, SafetyOverride, _utcnow,
 )
 from app.domains.risk_safety.router import router
+# Deciding an escalation checks the question's review case (one decision per question).
+from app.orchestration.models import ReviewCase
 
 
 @pytest.fixture
 def safety_app():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    for model in (EscalationCase, SafetyEvent, SafetyOverride):
+    for model in (EscalationCase, SafetyEvent, SafetyOverride, ReviewCase):
         model.__table__.create(engine)
     with Session(engine) as db:
         for tenant in ("a", "b", "GLOBAL_CONTROL"):

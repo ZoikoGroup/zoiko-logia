@@ -207,6 +207,17 @@ def resolve_escalation(
             "cannot also be the reviewer (ZL-T0-04 §10.2)."
         )
 
+    if action in ("approve", "refuse"):
+        # The answer's review case (Review Tasks) is the single decision for
+        # this question; deciding the escalation separately could disagree.
+        from app.orchestration.models import ReviewCase
+        open_review = db.query(ReviewCase).filter(
+            ReviewCase.tenant_id == tenant_id, ReviewCase.query_id == case.query_id,
+            ReviewCase.status.in_(("open", "triaged", "needs_evidence")),
+        ).first()
+        if open_review is not None:
+            raise ValueError("Decide the answer in Review Tasks; that decision closes this escalation.")
+
     status_map = {
         "approve": EscalationStatus.RESOLVED,
         "refuse": EscalationStatus.REFUSED,
