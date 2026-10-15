@@ -259,7 +259,13 @@ def _extract_pptx(content: bytes) -> list[ExtractedBlock]:
             shape.text for shape in slide.shapes
             if hasattr(shape, "text") and shape.text.strip()
         )
-        blocks.append(ExtractedBlock(text, f"Slide {index}", {"slide": index}))
+        # A slide table has no .text, so it was skipped entirely; write it as
+        # tab-separated rows like a Word table, so its figures are evidence.
+        tables = [
+            "\n".join("\t".join(cell.text.strip() for cell in row.cells) for row in shape.table.rows)
+            for shape in slide.shapes if getattr(shape, "has_table", False)
+        ]
+        blocks.append(ExtractedBlock("\n\n".join(part for part in (text, *tables) if part), f"Slide {index}", {"slide": index}))
     return blocks
 
 
