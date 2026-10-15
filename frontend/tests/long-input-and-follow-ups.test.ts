@@ -80,3 +80,25 @@ describe("follow-ups after a pasted review", () => {
     expect(suggestions.join(" ")).not.toMatch(/correcting entries|P&L and AR/);
   });
 });
+
+describe("which questions use the attached file", () => {
+  it("a standards or self-contained question is not limited to an attached file", async () => {
+    const { usesAttachedFile } = await import("@/lib/kriton-conversation");
+    // After attaching balance_sheet.pdf, these were searched only in the balance sheet and escalated.
+    expect(usesAttachedFile("Summarize the confirmed rules as a checklist. Context: Critical Analysis: IFRS Financial Statement Presentation Under IAS 1 and IFRS 18")).toBe(false);
+    expect(usesAttachedFile("A shop bought stock for £18,000 and sold it for £25,500. What's the markup and the margin?")).toBe(false);
+    // Questions about the file keep the file-only safeguard.
+    expect(usesAttachedFile("give the financial statement")).toBe(true);
+    expect(usesAttachedFile("Using the attached balance sheet, what is the current ratio?")).toBe(true);
+    expect(usesAttachedFile("Does this report comply with IAS 1?")).toBe(true);
+    expect(usesAttachedFile("What was Apex's revenue last year?")).toBe(true);   // never answered from another "Apex"
+  });
+
+  it("review follow-ups only offer what the table holds", async () => {
+    const { getFollowUpSuggestions } = await import("@/lib/follow-up-suggestions");
+    const clean = { outcome: "answered", answer: { text: "I checked 13 factual claims in the text, each against sources searched for it: 10 correct, 0 incorrect, 3 could not be verified." } };
+    expect(getFollowUpSuggestions(clean as never, "x").join(" ")).not.toMatch(/incorrect or partly/);
+    const mixed = { outcome: "answered", answer: { text: "I checked 5 factual claims in the text, each against sources searched for it: 3 correct, 1 partly confirmed, 1 incorrect, 0 could not be verified." } };
+    expect(getFollowUpSuggestions(mixed as never, "x")[0]).toMatch(/incorrect or partly/);
+  });
+});

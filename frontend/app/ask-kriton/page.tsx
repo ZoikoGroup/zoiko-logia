@@ -26,7 +26,7 @@ import {
 } from "lucide-react";
 import { AnswerRenderer } from "@/components/AnswerRenderer";
 import { AnswerFeedback } from "@/components/ask-kriton/AnswerFeedback";
-import { conversationHistory, followUpSubject, splitQuestions } from "@/lib/kriton-conversation";
+import { conversationHistory, followUpSubject, splitQuestions, usesAttachedFile } from "@/lib/kriton-conversation";
 import {
   askKritonStream,
   createSavedAnswer,
@@ -1001,11 +1001,13 @@ export default function AskKritonPage() {
           clarification_cycle: questions.length === 1 ? clarificationCycleFor(priorConversation) : 0,
           conversation_id: convId,
           conversation_history: conversationHistory(completedTurns),
-          document_ids: documentIds,
-          // An attached file defines the entity/source scope for this chat.
-          // Do not silently replace a document miss with same-name web results
-          // (for example, another company called "Apex").
-          source_scope: documentIds.length ? "DOCUMENTS_ONLY" : "WEB_ONLY",
+          // An attached file defines the entity/source scope for questions
+          // about it: a document miss is not replaced with same-name web
+          // results (another company called "Apex"). A question that is not
+          // about the file (an IFRS rule, arithmetic on its own figures) is
+          // not limited to it (usesAttachedFile).
+          document_ids: usesAttachedFile(turn.submittedQuery) ? documentIds : [],
+          source_scope: documentIds.length && usesAttachedFile(turn.submittedQuery) ? "DOCUMENTS_ONLY" : "WEB_ONLY",
           task_context: {
             engagement_id: engagementId || null,
             jurisdiction: jurisdiction || null,

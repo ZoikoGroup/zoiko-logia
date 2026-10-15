@@ -129,3 +129,32 @@ export function splitQuestions(text: string): string[] {
   return questions.every((question) => QUESTION_START.test(question) || question.includes("?"))
     ? questions : [text];
 }
+
+// ── Does a question use the file attached to the chat? ─────────────────────
+// Attaching a file limited EVERY later question in the chat to that file, so
+// "Summarize the confirmed rules (IAS 1, IFRS 18) as a checklist", asked after
+// attaching balance_sheet.pdf, searched only the balance sheet and was
+// escalated for "no eligible sources". A question that names the file keeps
+// the file-only scope; one that names an accounting standard or carries all
+// its own figures, and does not mention the file, is not about it. Everything
+// else keeps the file-only safeguard ("What was Apex's revenue?" with Apex's
+// report attached must not be answered from another Apex on the web).
+// File words always count; ordinary nouns ("statement", "report", "sheet")
+// only when the question points at one ("the financial statement", "this
+// report") — a topic title such as "IFRS Financial Statement Presentation"
+// is not a reference to the attached file.
+const MENTIONS_FILE = new RegExp(
+  "\\b(?:attach\\w*|upload\\w*|pdf|csv|xlsx|spreadsheet|workbook|these (?:figures|numbers|amounts|accounts)|in (?:it|there))\\b"
+  + "|\\b(?:the|this|that|my|our|your|its|attached|uploaded)\\s+(?:\\w+\\s+){0,2}"
+  + "(?:document|file|report|statements?|sheet|balance sheet|trial balance|ledger|invoices?|accounts|p\\s*&\\s*l)\\b",
+  "i",
+);
+const NAMES_STANDARD = /\b(?:IFRS|IAS|IFRIC|GAAP|ASC|FRS|Ind\s?AS|ISA)\s?\d*\b/;
+const OWN_FIGURES = /[£$€₹]\s?\d|\d[\d,]*(?:\.\d+)?\s*%/g;
+
+export function usesAttachedFile(query: string): boolean {
+  const text = query.split(FOLLOW_UP_CONTEXT_MARKER)[0] + " " + (query.split(FOLLOW_UP_CONTEXT_MARKER)[1] ?? "");
+  if (MENTIONS_FILE.test(text)) return true;
+  if (NAMES_STANDARD.test(text)) return false;
+  return (text.match(OWN_FIGURES)?.length ?? 0) < 2;
+}

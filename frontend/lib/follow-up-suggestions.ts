@@ -153,7 +153,17 @@ const REVIEW_QUESTIONS = [
 ];
 
 function reviewRule(answerText: string): string[] | null {
-  return REVIEW_ANSWER.test(answerText.trim()) ? REVIEW_QUESTIONS : null;
+  const text = answerText.trim();
+  if (!REVIEW_ANSWER.test(text)) return null;
+  // Only offer what the table holds: "Explain the claims marked incorrect"
+  // was offered after a review with 0 incorrect and 0 partly confirmed.
+  const count = (label: string) => Number(text.match(new RegExp(`(\\d+) ${label}`))?.[1] ?? 0);
+  const questions: string[] = [];
+  if (count("incorrect") + count("partly confirmed") > 0) questions.push(REVIEW_QUESTIONS[0]);
+  questions.push(REVIEW_QUESTIONS[1]);
+  if (count("could not be verified") > 0) questions.push(REVIEW_QUESTIONS[2]);
+  if (questions.length < 3) questions.push("Explain the confirmed rules in more detail.");
+  return questions;
 }
 
 // Rule 4 — match the original question's intent against a fixed pattern set.
