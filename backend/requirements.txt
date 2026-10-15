@@ -18,6 +18,9 @@ openpyxl
 python-pptx
 reportlab
 Pillow
+# OCR for scanned PDF pages (app/domains/kriton_workspace/ocr.py); models bundled
+rapidocr-onnxruntime
+pypdfium2
 
 # Supabase Auth — JWKS token verification + Admin API calls
 pyjwt[crypto]

@@ -109,6 +109,110 @@ def test_unrelated_columns_are_not_compared():
     assert "Units as a share of Revenue" not in block and "Total Units = 10" in block
 
 
+def test_a_messy_sheet_with_titles_sections_formulas_dashes_codes_and_rates():
+    sheet = "\n".join([
+        "Quarterly sales report",
+        "Prepared by\tFinance team",
+        "Region\tRevenue\tCost\tProfit\tVAT rate",
+        "North",                                              # a section row inside the table
+        "Leeds\tUSD 1,000\t400\t=B4-C4 => 600\t20%",
+        "York\t2,000\t-\t=B5-C5 => 2000\t20%",
+        "South",
+        "Bath\t3,000 USD\t(500)\t=B7-C7 => 3500\t5%",
+        "Total\t6,000\t-100\t6,100\t",
+    ])
+    block = verified_document_figures([_src(sheet)])
+    assert "Table 'sales.xlsx' (Region, Revenue, Cost, Profit, VAT rate): 3 data rows" in block   # title, "Prepared by" and Total rows left out
+    assert "Total Revenue = 6,000" in block and "Total Cost = -100" in block and "Total Profit = 6,100" in block
+    assert "VAT rate: average 15" in block and "Total VAT rate" not in block
+
+
+def test_a_long_workbook_split_into_ranges_and_overlapping_chunks_is_counted_once():
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Customer", "Notes", "Revenue"])
+    for n in range(1, 131):
+        sheet.append([f"Customer {n:03d}", "long note " * 12, n * 100])
+    data = io.BytesIO()
+    workbook.save(data)
+    blocks = extract_document("big.xlsx", data.getvalue())
+    assert len({b.location for b in blocks}) >= 4 and len(blocks) > len({b.location for b in blocks})   # ranges, and split chunks
+    sources = [WebSource(title=f"big.xlsx — {b.location}", url="", snippet=b.text, source_id="doc-1") for b in blocks]
+    block = verified_document_figures(sources)
+    assert f"Total Revenue = {sum(n * 100 for n in range(1, 131)):,}" in block
+    assert "130 data rows" in block
+
+
+def test_two_uploads_with_the_same_file_name_stay_separate():
+    a = WebSource(title="sales.xlsx — 'S'!1:3", url="", snippet="Item\tAmount\nA\t10\nB\t20", source_id="doc-a")
+    b = WebSource(title="sales.xlsx — 'S'!1:3", url="", snippet="Item\tAmount\nA\t1\nB\t2", source_id="doc-b")
+    block = verified_document_figures([a, b])
+    assert "Total Amount = 30" in block and "Total Amount = 3" in block
+
+
+def test_pdf_column_names_come_from_a_header_line_or_a_year_row():
+    named = verified_document_figures([_src("Product Revenue Cost\nSoftware 100 40\nHardware 50 20\nServices 30 10", "r.pdf — Page 1")])
+    assert "Total Revenue = 180" in named and "Total Cost = 70" in named
+    years = verified_document_figures([_src("Revenue 2024 2025\nSoftware 100 140\nHardware 50 60\nServices 30 35", "r.pdf — Page 2")])
+    assert "Total 2025 = 235" in years
+
+
+def test_ocr_boxes_become_tab_rows_with_empty_cells_kept_in_their_column():
+    from app.domains.kriton_workspace.ocr import lines_from_boxes
+
+    def box(x0, x1, y, text):
+        return [[x0, y - 10], [x1, y - 10], [x1, y + 10], [x0, y + 10]], text, 0.95
+
+    text = lines_from_boxes([
+        box(50, 300, 20, "Sales summary FY2025"),
+        box(50, 150, 80, "Product"), box(400, 520, 80, "Revenue"), box(700, 780, 80, "Cost"),
+        box(50, 160, 120, "Software"), box(405, 530, 121, "1,199,000"), box(690, 800, 119, "588,000"),
+        box(50, 160, 160, "Hardware"), box(690, 800, 160, "280,000"),            # Revenue cell blank
+        box(50, 100, 200, "Data"), box(105, 160, 200, "Centre"), box(405, 530, 200, "512,000"), box(690, 800, 200, "241,000"),
+    ])
+    assert text.splitlines() == [
+        "Sales summary FY2025", "Product\tRevenue\tCost", "Software\t1,199,000\t588,000",
+        "Hardware\t\t280,000", "Data Centre\t512,000\t241,000",
+    ]
+
+
+def test_a_scanned_pdf_is_read_with_ocr():
+    pytest.importorskip("rapidocr_onnxruntime")
+    pytest.importorskip("pypdfium2")
+    from PIL import Image, ImageDraw, ImageFont
+
+    font = ImageFont.load_default(size=30)
+    image = Image.new("RGB", (1240, 700), "white")
+    draw = ImageDraw.Draw(image)
+    draw.text((80, 60), "Sales summary FY2025", fill="black", font=font)
+    for r, row in enumerate([("Product", "Revenue", "Cost"), ("Software", "1,199,000", "588,000"),
+                             ("Hardware", "553,000", "280,000"), ("Services", "512,000", "241,000")]):
+        for c, cell in enumerate(row):
+            draw.text((80 + c * 380, 160 + r * 70), cell, fill="black", font=font)
+    scan = io.BytesIO()
+    image.save(scan, "PDF", resolution=150)              # an image only: no text layer
+    [page] = extract_document("scan.pdf", scan.getvalue())
+    assert page.metadata == {"page": 1, "ocr": True}
+    block = verified_document_figures([_src(page.text, "scan.pdf — Page 1")])
+    assert "Total Revenue = 2,264,000" in block and "Revenue by Product: Software = 1,199,000 (52.96%)" in block
+
+
+def test_ocr_unavailable_leaves_scanned_pages_empty_without_failing(monkeypatch):
+    from PIL import Image
+
+    from app.domains.kriton_workspace import ocr
+
+    def unavailable():
+        raise ImportError("libGL.so.1: cannot open shared object file")
+
+    monkeypatch.setattr(ocr, "_get_engine", unavailable)
+    scan = io.BytesIO()
+    Image.new("RGB", (200, 200), "white").save(scan, "PDF")
+    assert extract_document("scan.pdf", scan.getvalue()) == []
+
+
 async def test_the_hook_reads_the_complete_documents_for_a_targeted_question(monkeypatch):
     full = [_src("\n".join([HEADER, *ROWS]))]
     partial = [_src("\n".join([HEADER, ROWS[0]]))]

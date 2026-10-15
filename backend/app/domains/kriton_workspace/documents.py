@@ -68,10 +68,16 @@ def _chunk_block(block: ExtractedBlock) -> list[ExtractedBlock]:
 def _extract_pdf(content: bytes) -> list[ExtractedBlock]:
     from pypdf import PdfReader
 
+    from app.domains.kriton_workspace.ocr import needs_ocr, ocr_pdf_pages
+
     reader = PdfReader(io.BytesIO(content))
+    texts = [page.extract_text() or "" for page in reader.pages]
+    # Scanned pages have no text layer; read them with OCR instead.
+    scanned = ocr_pdf_pages(content, [i for i, text in enumerate(texts) if needs_ocr(text)]) if any(map(needs_ocr, texts)) else {}
     return [
-        ExtractedBlock(page.extract_text() or "", f"Page {index}", {"page": index})
-        for index, page in enumerate(reader.pages, start=1)
+        ExtractedBlock(scanned.get(index - 1, text), f"Page {index}",
+                       {"page": index, "ocr": True} if index - 1 in scanned else {"page": index})
+        for index, text in enumerate(texts, start=1)
     ]
 
 

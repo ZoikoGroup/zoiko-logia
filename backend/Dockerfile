@@ -3,8 +3,10 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # torch/transformers pull in a fair amount of native tooling to build cleanly.
+# libgl1/libglib2.0-0: OpenCV, used by the OCR reader for scanned PDFs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
