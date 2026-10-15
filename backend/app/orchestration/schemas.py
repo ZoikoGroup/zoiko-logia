@@ -139,7 +139,7 @@ class AskKritonRequest(BaseModel):
     source_scope: Literal["WEB_ONLY", "DOCUMENTS_ONLY", "DOCUMENTS_THEN_WEB", "COMBINED"] = "DOCUMENTS_THEN_WEB"
     # Immediately preceding user query. conversation_id is correlation, not
     # server-side chat memory; this context is still treated as untrusted.
-    previous_query: Optional[str] = Field(default=None, max_length=2000)
+    previous_query: Optional[str] = Field(default=None, max_length=4000)
     jurisdiction: str = ""
     mode: str = "Workflow"
     # Round-tripped by the client across a clarification exchange so
