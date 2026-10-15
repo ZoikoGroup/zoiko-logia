@@ -879,6 +879,8 @@ async def _verify_security_policies() -> None:
                                    "setting_change_requests", "release_candidates")})
     # Review, Escalation & Audit console (migration u0n1o2p3q4r5).
     expected["audit_export_requests"] = "tenant_isolation_audit_export_requests"
+    # Billing (migration w2p3q4r5s6t7).
+    expected.update({t: f"tenant_isolation_{t}" for t in ("billing_plans", "billing_adjustments", "billing_statements")})
     async with async_engine.connect() as conn:
         rows = (await conn.execute(text("""
             SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity, p.polname

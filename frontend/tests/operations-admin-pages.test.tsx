@@ -114,17 +114,27 @@ describe("Operations pages", () => {
 });
 
 describe("Billing & Usage", () => {
-  it("Billing & Usage shows measured usage and an honest billing state", () => {
-    live.data = {
-      totals: { questions_all_time: 1366, questions_this_month: 42, active_users_this_month: 3, saved_answers: 15,
-        drafts: 0, documents: 7, generated_files: 2 },
-      questionsByMonth: [{ month: "2026-10", label: "Oct 2026", questions: 42 }],
-      billing: { connected: false, reason: "No billing or subscription system is connected to this deployment yet." },
-      generatedAt: "",
-    };
+  const meters = [{ key: "kriton_interactions", label: "Kriton interactions", unit: "interaction", event: "query_received" }];
+  const base = {
+    period: "2026-10", now: "2026-10-15T10:00:00Z", meters,
+    current: { period: "2026-10", planVersion: null, currency: "USD", subtotalCents: 0, creditsCents: 0, totalCents: 0, variableCents: 0,
+      excludedCents: 0, priced: false,
+      lines: [{ key: "kriton_interactions", label: "Kriton interactions", unit: "interaction", quantity: 42, included: 0, billable: 42,
+        rateCents: 0, amountCents: 0, status: "unpriced", excluded: false }],
+      usage: { totals: { kriton_interactions: 42 }, daily: { "2026-10-14": { kriton_interactions: 42 } }, engagements: { "": 42 } } },
+    summary: { estimatedCents: 0, commitmentCents: 0, variableCents: 0, interactions: 42, softBudgetCents: 0, hardCapCents: 0,
+      budgetUsedPct: null, projectedCents: null, openDisputes: 0, excludedCents: 0, priced: false },
+    trend: [{ period: "2026-10", totalCents: 0, interactions: 42, estimate: true, priced: false }],
+    allocation: [{ engagementId: null, name: "Unassigned (no engagement)", interactions: 42, share: 1, amountCents: 0 }],
+    plan: null, pendingPlan: null, planHistory: [], adjustments: [], statements: [], closablePeriods: [], trail: [],
+  };
+
+  it("measures usage and prices nothing until a plan is approved", () => {
+    live.data = base;
     render(<BillingUsagePage />);
-    expect(screen.getByText("1,366")).toBeInTheDocument();
-    expect(screen.getByText(/No billing or subscription system/)).toBeInTheDocument();
-    expect(screen.queryByText(/July platform invoice|82%/)).not.toBeInTheDocument();
+    expect(screen.getByText(/No approved plan yet/)).toBeInTheDocument();
+    expect(screen.getAllByText("42").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("No rate card").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Sample Finance Co|INV-2026-009|\$14,100/)).not.toBeInTheDocument();
   });
 });
