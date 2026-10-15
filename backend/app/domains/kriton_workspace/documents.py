@@ -68,10 +68,16 @@ def _chunk_block(block: ExtractedBlock) -> list[ExtractedBlock]:
 def _extract_pdf(content: bytes) -> list[ExtractedBlock]:
     from pypdf import PdfReader
 
+    from app.domains.kriton_workspace.ocr import needs_ocr, ocr_pdf_pages
+
     reader = PdfReader(io.BytesIO(content))
+    texts = [page.extract_text() or "" for page in reader.pages]
+    # Scanned pages have no text layer; read them with OCR instead.
+    scanned = ocr_pdf_pages(content, [i for i, text in enumerate(texts) if needs_ocr(text)]) if any(map(needs_ocr, texts)) else {}
     return [
-        ExtractedBlock(page.extract_text() or "", f"Page {index}", {"page": index})
-        for index, page in enumerate(reader.pages, start=1)
+        ExtractedBlock(scanned.get(index - 1, text), f"Page {index}",
+                       {"page": index, "ocr": True} if index - 1 in scanned else {"page": index})
+        for index, text in enumerate(texts, start=1)
     ]
 
 
@@ -259,7 +265,13 @@ def _extract_pptx(content: bytes) -> list[ExtractedBlock]:
             shape.text for shape in slide.shapes
             if hasattr(shape, "text") and shape.text.strip()
         )
-        blocks.append(ExtractedBlock(text, f"Slide {index}", {"slide": index}))
+        # A slide table has no .text, so it was skipped entirely; write it as
+        # tab-separated rows like a Word table, so its figures are evidence.
+        tables = [
+            "\n".join("\t".join(cell.text.strip() for cell in row.cells) for row in shape.table.rows)
+            for shape in slide.shapes if getattr(shape, "has_table", False)
+        ]
+        blocks.append(ExtractedBlock("\n\n".join(part for part in (text, *tables) if part), f"Slide {index}", {"slide": index}))
     return blocks
 
 

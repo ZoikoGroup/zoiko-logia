@@ -54,7 +54,8 @@ _EXPLICIT_CHART_HINTS = re.compile(
     # "chart", "graph" and "plot" are interchangeable to users — the same
     # widening applied to _CHART_VARIANTS below, for the same reason.
     r"(?:line|bar|column)\s*(?:chart|graph|plot)|"
-    r"chart (?:of|for)|plot (?:this|it|the|a)|give me a chart|only the chart|show only the chart|"
+    # Not "chart of accounts": an accounting term, not a chart request.
+    r"chart (?:of|for)(?!\s+accounts?\b)|plot (?:this|it|the|a)|give me a chart|only the chart|show only the chart|"
     r"plain line|dashed line|dotted line|dash[ -]?dot line|value[ -]?labell?ed line|"
     r"area (chart )?with markers?|area \+ markers?|vertical bar|horizontal bar|"
     r"clustered bar|diverging bar|waterfall chart|scatter\s*plot|scatter chart|"

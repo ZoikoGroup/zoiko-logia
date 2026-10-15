@@ -2239,6 +2239,9 @@ async def ask_kriton(
     grounded_input += calculation_rejection or await feedback_guidance(
         db, tenant_id=tenant_id, user_id=actor_id, question=request.query,
     )
+    grounded_input += await _verified_document_figures_context(
+        db, request.query, resolved_document_ids, document_sources, document_plan, tenant_id, actor_id,
+    )
 
     # External-provider exposure boundary (ZL-ENG-03 §5.8): redact before
     # grounded_input leaves the tenant trust boundary for the model gateway.
@@ -3437,6 +3440,32 @@ async def _record_answer_source_usages(
         artifact_id=query_id,
         operation="model_transmission",
     )
+
+
+async def _verified_document_figures_context(
+    db, query: str, document_ids, document_sources, document_plan, tenant_id: str, user_id: str,
+) -> str:
+    """Totals, shares, rankings and margins computed from the attached
+    documents' tables (document_figures.py), so the model states them instead
+    of computing them in its head and gate G4 can confirm them. Always over
+    the COMPLETE documents: a targeted retrieval holds only the relevant
+    chunks, and a "total" over part of a sheet would be wrong. Fails soft."""
+    if not document_ids:
+        return ""
+    from app.orchestration.document_figures import verified_document_figures
+
+    try:
+        sources = document_sources
+        if document_plan.retrieval_mode != "full_document":
+            # A savepoint, so a failed read cannot leave the request's session unusable.
+            async with db.begin_nested():
+                sources = await retrieve_document_sources(
+                    db, query=query, document_ids=document_ids, tenant_id=tenant_id, user_id=user_id, full_document=True,
+                )
+        return verified_document_figures(sources)
+    except Exception:  # noqa: BLE001 - extra figures must never fail the answer
+        logger.exception("Could not compute verified document figures")
+        return ""
 
 async def _finalise_and_return(
     db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,

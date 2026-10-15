@@ -932,7 +932,9 @@ export default function AskKritonPage() {
         token,
         {
           query: turn.submittedQuery,
-          previous_query: completedTurns.at(-1)?.submittedQuery.trim() || undefined,
+          // Backend limit (AskKritonRequest.previous_query max_length): a long
+          // pasted previous message otherwise rejects the whole request (422).
+          previous_query: completedTurns.at(-1)?.submittedQuery.trim().slice(0, 4000) || undefined,
           jurisdiction,
           mode,
           clarification_cycle: questions.length === 1 ? clarificationCycleFor(priorConversation) : 0,

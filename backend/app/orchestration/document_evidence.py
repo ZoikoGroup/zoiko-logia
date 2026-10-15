@@ -410,6 +410,7 @@ def _subject(query: str) -> str:
         " ", query, flags=re.I,
     )
     subject = re.sub(r"\s+", " ", subject).strip(" -.,:")
-    if not subject:
+    # A long pasted message is not a title; it was shown in full, three times.
+    if not subject or len(subject) > 80:
         return "Uploaded document"
     return subject[:1].upper() + subject[1:]
