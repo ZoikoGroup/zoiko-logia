@@ -105,6 +105,12 @@ class EscalationCase(Base):
     reviewer_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=_utcnow)
     resolved_at = Column(DateTime, nullable=True)
+    # Escalation console (migration u0n1o2p3q4r5): the expert working the case,
+    # who raised a manual escalation, and every note and decision in order.
+    assigned_to = Column(String, nullable=True)
+    origin = Column(String, nullable=True)  # None/"auto" = safety classifier; "manual"; "support_ticket"
+    created_by = Column(String, nullable=True)
+    history = Column(JSON, nullable=True)
 
 
 class SafetyOverride(Base):

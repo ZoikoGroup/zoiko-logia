@@ -81,6 +81,15 @@ class Settings(BaseSettings):
     BREAK_GLASS_REPEAT_THRESHOLD: int = 3
     SERVICE_KEY_MAX_DAYS: int = 365
 
+    # Operations health history (operations/telemetry.py): how often the
+    # backend samples each dependency, how long samples are kept, and the
+    # objectives the Status & Health page measures against.
+    HEALTH_SAMPLER_ENABLED: bool = True
+    HEALTH_SAMPLE_INTERVAL_SECONDS: int = 300
+    HEALTH_SAMPLE_RETENTION_DAYS: int = 30
+    OPS_AVAILABILITY_OBJECTIVE_PCT: float = 99.5
+    OPS_API_P95_OBJECTIVE_MS: int = 2000
+
     # ── LLM Providers ───────────────────────────────────────────────────
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""

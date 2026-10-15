@@ -79,7 +79,8 @@ class EscalationOut(BaseModel):
 class EscalationAction(BaseModel):
     """Payload for a reviewer taking action on an escalation case."""
     action: str = Field(..., description="approve | refuse | escalate | request_info")
-    reviewer_id: str
+    # Ignored: the reviewer recorded is the signed-in user.
+    reviewer_id: str = ""
     reason: str = ""
 
 
@@ -113,8 +114,9 @@ class RiskPolicyOut(BaseModel):
 
 class OverrideRequest(BaseModel):
     """Request to create a time-bounded safety override."""
-    actor_id: str
-    authority_role: str
+    # Set by the server from the signed-in user; a client value is ignored.
+    actor_id: str = ""
+    authority_role: str = ""
     original_route: str
     new_route: str
     scope: str

@@ -1,219 +1,214 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { PageShell } from "@/components/governance/PageShell";
-import { Card } from "@/components/governance/Card";
-import { Pill } from "@/components/governance/Pill";
+import Link from "next/link";
+import { useMemo, useState } from "react";
+import { AlertOctagon, CheckCircle2, Search, ShieldAlert, ShieldCheck, Siren, UserX } from "lucide-react";
+import { useLiveData } from "@/components/overview/useLiveData";
+import { LiveSourceStatus } from "@/components/governance/LiveSourceStatus";
 import {
-  SecurityIncident,
-  IncidentStats,
-  getIncidents,
-  getIncidentStats,
-  updateIncident,
-  closeIncident,
-} from "@/lib/incident-api";
+  Badge, Breadcrumb, Button, DetailRows, EmptyState, ErrorNote, KpiTile, OpsHero, Panel, PillTabs, ProgressRow,
+  inputClass, useMutation, utcDate,
+} from "@/components/operations/ui";
+import {
+  actOnIncident, getIncidentRegister, getReviewPeople, openIncident,
+  type IncidentRegister, type IncidentRow, type ReviewPerson,
+} from "@/lib/api";
 
-const SEVERITY_TONE: Record<string, "bad" | "warn" | "neutral"> = {
-  Critical: "bad",
-  High: "warn",
-  Medium: "neutral",
-};
-
-const STATUS_TONE: Record<string, "warn" | "ok" | "bad"> = {
-  OPEN: "bad",
-  CONTAINED: "warn",
-  RESOLVED: "ok",
-};
+type TabKey = "all" | "OPEN" | "CONTAINED" | "critical" | "RESOLVED";
+const SEV_TONE = { Critical: "bad", High: "warn", Medium: "info", Low: "ok" } as const;
+const STATUS = { OPEN: { label: "Open", tone: "bad" }, CONTAINED: { label: "Contained", tone: "warn" }, RESOLVED: { label: "Resolved", tone: "ok" } } as const;
 
 export default function IncidentResponsePage() {
-  const [incidents, setIncidents] = useState<SecurityIncident[]>([]);
-  const [stats, setStats] = useState<IncidentStats | null>(null);
-  const [selectedIncident, setSelectedIncident] = useState<SecurityIncident | null>(null);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [actionNote, setActionNote] = useState("");
-
-  // State is only set in the promise callbacks, so the initial load can run
-  // from the effect without a synchronous setState (react-hooks rule).
-  const refreshData = () =>
-    Promise.all([getIncidents(), getIncidentStats()])
-      .then(([resIncidents, resStats]) => {
-        setIncidents(resIncidents);
-        setStats(resStats);
-      })
-      .catch(() => setError("Could not load incidents from the server."));
-
-  useEffect(() => {
-    void refreshData();
-  }, []);
-
-  const handleAction = async (action: string) => {
-    if (!selectedIncident) return;
-    setLoading(true);
-    try {
-      if (action === "CLOSE") {
-        await closeIncident(selectedIncident.id, "Security Admin", actionNote || "Incident resolved via dashboard.");
-      } else {
-        await updateIncident(selectedIncident.id, action, "Security Admin", actionNote || `Action ${action} triggered.`);
-      }
-      setSelectedIncident(null);
-      setActionNote("");
-      await refreshData();
-    } catch {
-      alert("Failed to perform action");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { data, error, loading, signedOut, reload } = useLiveData(
+    "incident-response", (token, signal) => getIncidentRegister(token, signal), 30_000,
+  );
+  const people = useLiveData("review-people", (token, signal) => getReviewPeople(token, signal), 20_000);
+  const [tab, setTab] = useState<TabKey>("all");
+  const [selectedId, setSelectedId] = useState("");
+  const [creating, setCreating] = useState(false);
+  const rows = useMemo(() => data?.incidents ?? [], [data]);
+  const selected = rows.find((r) => r.id === selectedId) ?? rows.find((r) => r.status !== "RESOLVED") ?? rows[0];
 
   return (
-    <PageShell
-      title="Incident Response"
-      subtitle="Track incident status from detection through resolution, with full audit linkage (ZL-T0-04)."
-      showMetrics={false}
-    >
-      <div className="grid grid-cols-4 gap-4 mb-6">
-        <Card title="Open Incidents">
-          <div className="text-3xl font-medium mt-2">{stats?.open || 0}</div>
-        </Card>
-        <Card title="Contained">
-          <div className="text-3xl font-medium mt-2 text-warn">{stats?.contained || 0}</div>
-        </Card>
-        <Card title="Critical / High">
-          <div className="text-3xl font-medium mt-2 text-bad">
-            {stats?.critical || 0} / {stats?.high || 0}
+    <main className="flex-1 space-y-4 overflow-y-auto p-4">
+      <Breadcrumb section="Review, Escalation & Audit" page="Incident Response" />
+      <OpsHero icon={Siren} eyebrow="Review, Escalation & Audit" title="Incident Response"
+        subtitle="Detect, contain, and resolve security incidents with accountable ownership and a complete audit trail.">
+        <p className="text-base font-bold text-white">Contain first. Prove it after.</p>
+        <p>Every action attributed · Linked to audit evidence</p>
+      </OpsHero>
+      <LiveSourceStatus loading={loading} error={error} signedOut={signedOut} reload={reload} />
+      {data && (
+        <>
+          <Kpis data={data} />
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <PillTabs label="Incident views" active={tab} onChange={setTab} tabs={[
+              { key: "all", label: "All incidents" }, { key: "OPEN", label: "Open", count: data.summary.open },
+              { key: "CONTAINED", label: "Contained", count: data.summary.contained }, { key: "critical", label: "Critical", count: data.summary.critical },
+              { key: "RESOLVED", label: "Resolved" }]} />
+            <Button variant="primary" onClick={() => setCreating(true)}>+ Open incident</Button>
           </div>
-        </Card>
-        <Card title="Resolved (30d)">
-          <div className="text-3xl font-medium mt-2 text-ok">{stats?.resolved || 0}</div>
-        </Card>
+          {creating && <CreateForm onDone={() => { setCreating(false); reload(); }} />}
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_440px]">
+            <Register rows={rows} tab={tab} selectedId={selected?.id} onSelect={setSelectedId} />
+            {selected ? <Detail key={selected.id} i={selected} people={people.data ?? []} onChanged={reload} />
+              : <Panel title="Incident"><EmptyState icon={ShieldCheck} title="No incidents">Security detections, support escalations and audit findings open incidents here.</EmptyState></Panel>}
+          </div>
+          <Bottom data={data} />
+        </>
+      )}
+    </main>
+  );
+}
+
+function Kpis({ data }: { data: IncidentRegister }) {
+  const s = data.summary;
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <KpiTile icon={Siren} tone={s.open ? "bad" : "ok"} value={s.open} label="Open incidents" hint="Not yet contained" />
+      <KpiTile icon={ShieldAlert} tone={s.contained ? "warn" : "ok"} value={s.contained} label="Contained" hint="Awaiting resolution" />
+      <KpiTile icon={AlertOctagon} tone={s.critical ? "bad" : "ok"} value={`${s.critical} / ${s.high}`} label="Critical / High" hint="Unresolved" />
+      <KpiTile icon={UserX} tone={s.unowned ? "warn" : "ok"} value={s.unowned} label="Without owner" hint="Assign accountable responder" />
+      <KpiTile icon={CheckCircle2} tone="ok" value={s.resolved30d} label="Resolved (30 days)" hint={s.mttrHours === null ? "No resolutions yet" : `Mean time to resolve ${s.mttrHours}h`} />
+    </div>
+  );
+}
+
+function Register({ rows, tab, selectedId, onSelect }: { rows: IncidentRow[]; tab: TabKey; selectedId?: string; onSelect: (id: string) => void }) {
+  const [query, setQuery] = useState("");
+  const [sev, setSev] = useState("");
+  const [source, setSource] = useState("");
+  const shown = rows.filter((i) => (tab === "all" || (tab === "critical" ? i.severity === "Critical" && i.status !== "RESOLVED" : i.status === tab))
+    && (!sev || i.severity === sev) && (!source || i.sourceLabel === source)
+    && (!query || `${i.id} ${i.title} ${i.sourceLabel} ${i.owner ?? ""}`.toLowerCase().includes(query.toLowerCase())));
+  const sources = [...new Set(rows.map((r) => r.sourceLabel))];
+  return (
+    <Panel title="Incident register" meta={`${shown.length} of ${rows.length}`}>
+      <div className="mb-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_10rem_12rem_auto]">
+        <label className="relative"><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+          <input className={`${inputClass} pl-9`} placeholder="Search incident ID, title, source or owner…" value={query} onChange={(e) => setQuery(e.target.value)} /></label>
+        <select aria-label="Severity" className={inputClass} value={sev} onChange={(e) => setSev(e.target.value)}><option value="">All severities</option>{["Critical", "High", "Medium", "Low"].map((s) => <option key={s}>{s}</option>)}</select>
+        <select aria-label="Source" className={inputClass} value={source} onChange={(e) => setSource(e.target.value)}><option value="">All sources</option>{sources.map((s) => <option key={s}>{s}</option>)}</select>
+        <Button onClick={() => { setQuery(""); setSev(""); setSource(""); }}>Clear</Button>
       </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[740px] text-left text-sm">
+          <thead className="bg-soft text-xs text-muted"><tr>{["Incident ID", "Title", "Source", "Severity", "Status", "Owner", "Opened (UTC)"].map((h) => <th key={h} className="px-3 py-2 font-semibold">{h}</th>)}</tr></thead>
+          <tbody>{shown.map((i) => (
+            <tr key={i.id} onClick={() => onSelect(i.id)} aria-selected={selectedId === i.id} className={`cursor-pointer border-b border-line hover:bg-soft ${selectedId === i.id ? "bg-info/5" : ""}`}>
+              <td className="px-3 py-2.5 font-mono text-xs font-semibold text-info">{i.id}</td>
+              <td className="px-3 py-2.5 font-semibold text-ink">{i.title}</td>
+              <td className="px-3 py-2.5 text-ink">{i.sourceLabel}</td>
+              <td className="px-3 py-2.5"><Badge tone={SEV_TONE[i.severity] ?? "warn"}>{i.severity}</Badge></td>
+              <td className="px-3 py-2.5"><Badge tone={STATUS[i.status].tone}>{STATUS[i.status].label}</Badge></td>
+              <td className="px-3 py-2.5 text-ink">{i.owner ?? <span className="text-muted">Unassigned</span>}</td>
+              <td className="px-3 py-2.5 text-ink">{i.openedAt ? utcDate(i.openedAt) : "—"}</td>
+            </tr>))}</tbody>
+        </table>
+        {!shown.length && <EmptyState title={rows.length ? "No incidents in this view" : "No incidents recorded"} />}
+      </div>
+    </Panel>
+  );
+}
 
-      <div className="flex gap-6">
-        <div className="flex-1">
-          <Card title="Security Incidents">
-            {error && <p className="text-xs text-bad mb-3">{error}</p>}
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-[11px] text-muted border-b border-line">
-                  <th className="font-medium pb-2">Incident ID</th>
-                  <th className="font-medium pb-2">Title</th>
-                  <th className="font-medium pb-2">Severity</th>
-                  <th className="font-medium pb-2">Status</th>
-                  <th className="font-medium pb-2">Opened</th>
-                </tr>
-              </thead>
-              <tbody>
-                {incidents.map((incident) => (
-                  <tr
-                    key={incident.id}
-                    className={`border-b border-line cursor-pointer hover:bg-neutral-50 ${selectedIncident?.id === incident.id ? "bg-neutral-50" : ""}`}
-                    onClick={() => setSelectedIncident(incident)}
-                  >
-                    <td className="py-3 text-xs font-mono text-muted">{incident.id}</td>
-                    <td className="py-3 text-ink font-medium">{incident.title}</td>
-                    <td className="py-3">
-                      <Pill tone={SEVERITY_TONE[incident.severity] ?? "warn"}>{incident.severity}</Pill>
-                    </td>
-                    <td className="py-3">
-                      <Pill tone={STATUS_TONE[incident.containment_status] ?? "warn"}>{incident.containment_status}</Pill>
-                    </td>
-                    <td className="py-3 text-xs text-muted whitespace-nowrap">
-                      {new Date(incident.opened_at).toLocaleString()}
-                    </td>
-                  </tr>
-                ))}
-                {incidents.length === 0 && (
-                  <tr>
-                    <td colSpan={5} className="py-8 text-center text-muted text-sm">
-                      No incidents found.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </Card>
-        </div>
+type DetailTab = "overview" | "timeline" | "evidence";
 
-        {selectedIncident && (
-          <div className="w-[380px]">
-            <Card title="Incident Details">
-              <div className="space-y-4 text-sm mt-2">
-                <div>
-                  <div className="text-[11px] text-muted font-medium mb-1 uppercase tracking-wide">Incident</div>
-                  <div className="font-medium">{selectedIncident.title}</div>
-                  <div className="text-xs font-mono text-muted mt-1">{selectedIncident.id}</div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4 border-y border-line py-4">
-                  <div>
-                    <div className="text-[11px] text-muted font-medium mb-1 uppercase tracking-wide">Severity</div>
-                    <Pill tone={SEVERITY_TONE[selectedIncident.severity]}>{selectedIncident.severity}</Pill>
-                  </div>
-                  <div>
-                    <div className="text-[11px] text-muted font-medium mb-1 uppercase tracking-wide">Status</div>
-                    <Pill tone={STATUS_TONE[selectedIncident.containment_status]}>{selectedIncident.containment_status}</Pill>
-                  </div>
-                  <div>
-                    <div className="text-[11px] text-muted font-medium mb-1 uppercase tracking-wide">Source</div>
-                    <div className="font-mono text-xs break-all">{selectedIncident.source}</div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] text-muted font-medium mb-1 uppercase tracking-wide">Query ID</div>
-                    <div className="font-mono text-xs">{selectedIncident.query_id || "N/A"}</div>
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-[11px] text-muted font-medium mb-3 uppercase tracking-wide">Timeline & Audit Trail</div>
-                  <div className="space-y-3 relative before:absolute before:inset-0 before:ml-2 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-line before:to-transparent">
-                    {selectedIncident.timeline.map((entry, idx) => (
-                      <div key={idx} className="relative flex items-start pl-6">
-                        <div className="absolute left-0 top-1.5 w-4 h-4 rounded-full bg-surface border-2 border-primary z-10"></div>
-                        <div>
-                          <div className="text-xs font-medium">{entry.action.toUpperCase()} <span className="text-muted font-normal">by {entry.actor}</span></div>
-                          <div className="text-xs text-muted mt-0.5">{new Date(entry.timestamp).toLocaleString()}</div>
-                          <div className="text-xs mt-1 text-ink bg-neutral-50 p-2 rounded border border-line">{entry.note}</div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {selectedIncident.containment_status !== "RESOLVED" && (
-                  <div className="pt-4 border-t border-line">
-                    <div className="text-[11px] text-muted font-medium mb-2 uppercase tracking-wide">Actions</div>
-                    <textarea
-                      placeholder="Add investigation or resolution note..."
-                      className="w-full text-xs p-2 border border-line rounded focus:outline-none focus:border-primary mb-3 min-h-[60px]"
-                      value={actionNote}
-                      onChange={(e) => setActionNote(e.target.value)}
-                    />
-                    <div className="flex gap-2">
-                      {selectedIncident.containment_status === "OPEN" && (
-                        <button
-                          onClick={() => handleAction("CONTAIN")}
-                          disabled={loading}
-                          className="flex-1 bg-yellow-100 text-yellow-800 border border-yellow-200 py-1.5 rounded text-xs font-medium hover:bg-yellow-200"
-                        >
-                          Mark Contained
-                        </button>
-                      )}
-                      <button
-                        onClick={() => handleAction("CLOSE")}
-                        disabled={loading}
-                        className="flex-1 bg-green-100 text-green-800 border border-green-200 py-1.5 rounded text-xs font-medium hover:bg-green-200"
-                      >
-                        Resolve Incident
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </Card>
+function Detail({ i, people, onChanged }: { i: IncidentRow; people: ReviewPerson[]; onChanged: () => void }) {
+  const [tab, setTab] = useState<DetailTab>("overview");
+  const [note, setNote] = useState("");
+  const [eventId, setEventId] = useState("");
+  const { busy, error, run } = useMutation();
+  const closed = i.status === "RESOLVED";
+  const act = (action: string, extra: { owner_id?: string; event_id?: string; severity?: string } = {}) =>
+    run(action, (t) => actOnIncident(t, i.id, { action, note, ...extra })).then((ok) => { if (ok) { setNote(""); setEventId(""); onChanged(); } });
+  return (
+    <Panel title={i.id} action={<Badge tone={STATUS[i.status].tone}>{STATUS[i.status].label}</Badge>}>
+      <h3 className="-mt-1 text-lg font-extrabold text-ink">{i.title}</h3>
+      <div className="mb-3 mt-1 flex gap-1.5"><Badge tone={SEV_TONE[i.severity] ?? "warn"}>{i.severity}</Badge><Badge tone="info">{i.sourceLabel}</Badge></div>
+      <PillTabs label="Incident detail" active={tab} onChange={setTab} tabs={[
+        { key: "overview", label: "Overview" }, { key: "timeline", label: "Timeline", count: i.timeline.length }, { key: "evidence", label: "Evidence", count: i.linkedEventIds.length }]} />
+      <div className="mt-4 space-y-4">
+        {!closed && i.severity === "Critical" && <p className="rounded-lg border border-bad/30 bg-bad/5 p-3 text-xs text-ink"><b className="text-bad">Critical incident.</b> Containment first; resolution is signed off by someone other than the owner.</p>}
+        {tab === "overview" && (
+          <DetailRows rows={[
+            ["Severity", i.severity], ["Status", STATUS[i.status].label], ["Detected by", i.sourceLabel],
+            ["Restricted class", i.subClass ?? "—"], ["Owner", i.owner ?? "Unassigned"],
+            ["Opened", i.openedAt ? utcDate(i.openedAt) : "—"], ["Open for", i.hoursOpen === null ? "—" : `${i.hoursOpen}h`],
+            ["Resolved", i.resolvedAt ? `${utcDate(i.resolvedAt)} · ${i.resolutionNote}` : "—"],
+            ["Linked ticket", i.ticketId ? "Support ticket linked" : "None"],
+          ]} />
+        )}
+        {tab === "timeline" && (
+          <ol className="space-y-2 border-l border-line pl-4 text-sm">{[...i.timeline].reverse().map((e, k) => (
+            <li key={k}><b className="text-ink">{e.action.replace(/_/g, " ")}</b> <span className="text-xs text-muted">· {e.actor} · {utcDate(e.timestamp)}</span>{e.note && <p className="text-ink">{e.note}</p>}</li>))}</ol>
+        )}
+        {tab === "evidence" && (
+          <div className="space-y-2 text-sm">
+            {i.linkedEventIds.length ? <ul className="space-y-1">{i.linkedEventIds.map((id) => <li key={id} className="font-mono text-xs text-ink">{id}</li>)}</ul>
+              : <p className="text-muted">No audit events linked yet.</p>}
+            {i.queryId && <Link href={`/audit-replay?correlation_id=${encodeURIComponent(i.queryId)}`} className="font-semibold text-info">Replay the triggering question →</Link>}
+            {!closed && <div className="grid grid-cols-[1fr_auto] gap-2">
+              <input className={inputClass} placeholder="Audit event ID from Audit Logs" value={eventId} onChange={(e) => setEventId(e.target.value)} />
+              <Button disabled={!eventId.trim()} busy={busy === "link_event"} onClick={() => act("link_event", { event_id: eventId.trim() })}>Link event</Button>
+            </div>}
           </div>
         )}
+        <ErrorNote message={error} />
+        <div className="space-y-2 border-t border-line pt-3">
+          <textarea className={`${inputClass} min-h-16 py-2`} placeholder="Containment, investigation or resolution note" value={note} onChange={(e) => setNote(e.target.value)} />
+          <div className="grid grid-cols-2 gap-2">
+            {i.status === "OPEN" && <Button variant="primary" busy={busy === "contain"} onClick={() => act("contain")}>Mark contained</Button>}
+            {!closed && <select aria-label="Assign owner" className={inputClass} value="" disabled={busy === "assign"} onChange={(e) => e.target.value && act("assign", { owner_id: e.target.value })}>
+              <option value="">Assign owner…</option>{people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>}
+            {!closed && <select aria-label="Severity" className={inputClass} value="" disabled={busy === "severity"} onChange={(e) => e.target.value && act("severity", { severity: e.target.value })}>
+              <option value="">Change severity…</option>{["Critical", "High", "Medium", "Low"].filter((s) => s !== i.severity).map((s) => <option key={s}>{s}</option>)}</select>}
+            <Button busy={busy === "note"} onClick={() => act("note")}>Add note</Button>
+            {!closed ? <Button variant="primary" busy={busy === "resolve"} onClick={() => act("resolve")}>Resolve incident</Button>
+              : <Button busy={busy === "reopen"} onClick={() => act("reopen")}>Reopen</Button>}
+          </div>
+        </div>
       </div>
-    </PageShell>
+    </Panel>
+  );
+}
+
+function Bottom({ data }: { data: IncidentRegister }) {
+  const s = data.summary;
+  const unresolved = Math.max(1, s.open + s.contained);
+  const maxSource = Math.max(1, ...data.sources30d.map((x) => x.count));
+  return (
+    <div className="grid gap-4 xl:grid-cols-3">
+      <Panel title="Unresolved by severity">
+        <div className="space-y-3">{(["Critical", "High", "Medium", "Low"] as const).map((k) => (
+          <ProgressRow key={k} label={k} value={s.bySeverity[k] ?? 0} total={unresolved} tone={k === "Critical" ? "bad" : k === "High" ? "warn" : k === "Medium" ? "info" : "ok"} right={s.bySeverity[k] ?? 0} />))}</div>
+      </Panel>
+      <Panel title="Detection sources" meta="Last 30 days">
+        {data.sources30d.length ? <div className="space-y-3">{data.sources30d.map((x) => <ProgressRow key={x.source} label={x.source} value={x.count} total={maxSource} tone="info" right={x.count} />)}</div>
+          : <p className="text-sm text-muted">No incidents opened in the last 30 days.</p>}
+      </Panel>
+      <Panel title="Response doctrine">
+        <ul className="space-y-2 text-sm text-ink">
+          {["Contain before investigating root cause", "Every action credited to the signed-in responder",
+            "Critical incidents closed by someone other than the owner", "Evidence linked from the audit ledger, never copied",
+            "Support tickets and audit findings stay linked"].map((t) => <li key={t} className="flex gap-2"><span className="text-ok">✓</span>{t}</li>)}
+        </ul>
+      </Panel>
+    </div>
+  );
+}
+
+function CreateForm({ onDone }: { onDone: () => void }) {
+  const [v, setV] = useState({ title: "", severity: "High", note: "" });
+  const { busy, error, run } = useMutation();
+  return (
+    <Panel title="Open incident" action={<Button onClick={onDone}>Cancel</Button>}>
+      <form className="grid gap-3 md:grid-cols-3" onSubmit={(e) => { e.preventDefault(); run("c", (t) => openIncident(t, v)).then((ok) => ok && onDone()); }}>
+        <input required minLength={3} className={`${inputClass} md:col-span-2`} placeholder="What happened?" value={v.title} onChange={(e) => setV({ ...v, title: e.target.value })} aria-label="Title" />
+        <select aria-label="Severity" className={inputClass} value={v.severity} onChange={(e) => setV({ ...v, severity: e.target.value })}>{["Critical", "High", "Medium", "Low"].map((s) => <option key={s}>{s}</option>)}</select>
+        <textarea required minLength={3} className={`${inputClass} min-h-16 py-2 md:col-span-3`} placeholder="Detection details and first actions" value={v.note} onChange={(e) => setV({ ...v, note: e.target.value })} aria-label="Details" />
+        <div className="md:col-span-3"><ErrorNote message={error} /></div>
+        <div><Button type="submit" variant="primary" busy={busy === "c"}>Open incident</Button></div>
+      </form>
+    </Panel>
   );
 }

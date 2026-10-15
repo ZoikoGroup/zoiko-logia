@@ -122,15 +122,15 @@ export type SafetyOverride = {
   is_active: boolean;
 };
 
+/** The reviewer recorded is the signed-in user (set by the backend). */
 export async function actOnEscalation(
   caseId: string,
   action: string,
-  reviewerId: string,
   reason: string = "",
 ): Promise<Escalation | null> {
   return tryBackend<Escalation>(`/escalations/${caseId}/action`, {
     method: "POST",
-    body: JSON.stringify({ action, reviewer_id: reviewerId, reason }),
+    body: JSON.stringify({ action, reason }),
   }, true);
 }
 
@@ -143,9 +143,8 @@ export async function getSafetyOverrides(activeOnly = true): Promise<SafetyOverr
   return remote || [];
 }
 
+/** The actor and authority role are the signed-in user's (set by the backend). */
 export async function createSafetyOverride(payload: {
-  actor_id: string;
-  authority_role: string;
   original_route: string;
   new_route: string;
   scope: string;

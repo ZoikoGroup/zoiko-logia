@@ -257,22 +257,25 @@ function text(value: unknown): string {
  * anything) and refreshes the session so the next call carries tenant/role.
  * Used after password sign-in, OAuth (/auth/callback) and invitations. The
  * workspace type comes from sign-up metadata (email sign-up) or the choice
- * remembered before an OAuth redirect; with neither, it stays "company",
- * the original behaviour. */
+ * remembered before an OAuth redirect. With neither (e.g. "Continue with
+ * Google" straight from the login card) it is an individual Learner account:
+ * a company workspace, whose creator becomes its Admin, is only ever created
+ * when the person explicitly chose "My company". */
 export async function provisionAndRefresh(
   accessToken: string,
   metadata: Record<string, unknown>,
+  confirm: { adultConfirmed?: boolean } = {},
 ): Promise<UserPublic> {
   const pending = takeSignupChoice();
   const [fullFirst, ...fullRest] = text(metadata.full_name || metadata.name).split(" ");
   const accountType: AccountType =
-    pending?.accountType ?? (metadata.account_type === "individual" ? "individual" : "company");
+    pending?.accountType ?? (metadata.account_type === "company" ? "company" : "individual");
   const profile = await provisionProfile(accessToken, {
     first_name: text(metadata.first_name) || text(metadata.given_name) || fullFirst,
     last_name: text(metadata.last_name) || text(metadata.family_name) || fullRest.join(" "),
     company_name: text(metadata.company_name),
     account_type: accountType,
-    adult_confirmed: pending?.adultConfirmed ?? metadata.adult_confirmed === true,
+    adult_confirmed: confirm.adultConfirmed ?? pending?.adultConfirmed ?? metadata.adult_confirmed === true,
   });
   // The token used above pre-dates /auth/provision writing app_metadata —
   // refresh so the next backend call already carries tenant_id/role.
@@ -293,7 +296,16 @@ export async function resetPassword(email: string): Promise<void> {
   const { error } = await supabase.auth.resetPasswordForEmail(email, {
     redirectTo: `${window.location.origin}/auth/reset-password`,
   });
-  if (error) throw new AuthError("Could not send a reset link. Please try again.");
+  if (error) {
+    // Supabase's built-in mailer allows only a few emails an hour for the
+    // whole project; say so instead of a generic failure.
+    if (error.status === 429 || /rate limit|security purposes/i.test(error.message)) {
+      throw new AuthError(
+        "Too many reset emails have been sent recently. Please wait a few minutes and try again, or use the last reset link you received.",
+      );
+    }
+    throw new AuthError("Could not send a reset link. Please try again.");
+  }
 }
 
 export async function updatePassword(newPassword: string): Promise<void> {

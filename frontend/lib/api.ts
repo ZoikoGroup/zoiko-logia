@@ -414,39 +414,556 @@ export async function revokeServiceAccountKey(token: string, accountId: string, 
   await authedFetch(`/service-accounts/${accountId}/keys/${keyId}/revoke`, token, { method: "POST" });
 }
 
-// ── Operations & Administration (backend app/domains/admin_governance) ──────
-// Every value is read from the running configuration or the tenant's records;
-// secret values never leave the backend, only whether they are set.
+// ── Operations (backend app/domains/operations) ─────────────────────────────
+// Every value is measured (live checks, stored health samples, real request
+// timings) or entered in the registers; secret values never leave the
+// backend, only whether they are set.
 
-export type OperationsAlert = { id: string; severity: string; domain: string; title: string; detail: string; href: string };
+async function sendJson<T>(path: string, token: string, method: string, body: unknown): Promise<T> {
+  const res = await authedFetch(path, token, {
+    method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  return res.json();
+}
 
-export async function getOperationsAlerts(
-  token: string, signal?: AbortSignal, fresh = false,
-): Promise<{ alerts: OperationsAlert[]; generatedAt: string }> {
+export type HealthState = "operational" | "degraded" | "down" | "not_configured";
+
+export type MonitoredService = {
+  key: string; name: string; component: string; category: string; location: string;
+  state: HealthState; latencyMs: number | null; detail: string;
+  availability24h: number | null; samples24h: number; p95LatencyMs24h: number | null; errorRate24h: number | null;
+  lastSampleAt: string | null; ownerId: string | null; owner: string | null;
+  openAlerts: { ref: string; state: string }[]; dependsOn: string[];
+};
+
+export type DependencyNode = {
+  key: string; name: string; state: HealthState | "impacted"; children: DependencyNode[];
+};
+
+export type StatusOverview = {
+  checkedAt: string;
+  summary: {
+    platformState: "operational" | "degraded" | "down"; impacted: string[];
+    availability24h: number | null; availabilityObjective: number;
+    apiP95Ms: number | null; apiP95ObjectiveMs: number;
+    activeAlerts: number; unavailable: number; blockedJobs: number;
+  };
+  services: MonitoredService[];
+  hourly: { hour: string; availability: number | null; p50: number | null; p95: number | null }[];
+  dependencyMap: DependencyNode;
+  events: { at: string; serviceKey: string; service: string; from: string; to: string; detail: string }[];
+  slo: { key: string; name: string; samples: number; availability: number; objective: number;
+    budgetRemainingPct: number | null; met: boolean }[];
+  jobs: {
+    sampler: { enabled: boolean; intervalSeconds: number; retentionDays: number; lastSampleAt: string | null };
+    documents: { available: boolean; stuck: number; processing: number; failed24h: number };
+    queue: { state: HealthState; detail: string };
+  };
+};
+
+export async function getOperationsStatus(token: string, signal?: AbortSignal): Promise<StatusOverview> {
+  return (await authedFetch("/operations/status", token, { signal })).json();
+}
+
+export async function setServiceOwner(token: string, serviceKey: string, ownerUserId: string) {
+  return sendJson<{ serviceKey: string; ownerId: string; owner: string }>(
+    `/operations/services/${serviceKey}/owner`, token, "PUT", { owner_user_id: ownerUserId });
+}
+
+export type Assignee = { id: string; name: string; role: string };
+
+export async function getAssignees(token: string, signal?: AbortSignal): Promise<Assignee[]> {
+  return (await authedFetch("/operations/assignees", token, { signal })).json();
+}
+
+export type AlertState = "unacknowledged" | "acknowledged" | "investigating" | "contained" | "resolved" | "suppressed";
+export type AlertSeverity = "Critical" | "High" | "Medium" | "Low";
+export type HistoryEntry = { at: string; action: string; actorId: string | null; actor: string; note: string };
+
+export type OperationsAlert = {
+  id: string; ref: string; origin: "governance" | "health" | "manual"; category: string; severity: AlertSeverity;
+  title: string; detail: string; href: string; serviceKey: string | null; state: AlertState;
+  ownerId: string | null; owner: string | null; detectedAt: string; lastSeenAt: string;
+  acknowledgedAt: string | null; acknowledgedBy: string | null; resolvedAt: string | null; resolvedBy: string | null;
+  history: HistoryEntry[];
+};
+
+export type AlertsView = {
+  alerts: OperationsAlert[];
+  summary: {
+    active: number; critical: number; unacknowledged: number; unowned: number; safetyBlocks: number;
+    bySeverity: Record<AlertSeverity, number>; byCategory: { category: string; count: number }[];
+  };
+  delivery: { channelConfigured: boolean; channel: string };
+  generatedAt: string;
+};
+
+export async function getOperationsAlerts(token: string, signal?: AbortSignal, fresh = false): Promise<AlertsView> {
   return (await authedFetch(`/operations/alerts${fresh ? "?fresh=true" : ""}`, token, { signal })).json();
 }
 
-export type ModelProvider = {
-  key: string; name: string; configured: boolean; purpose: string;
-  approved: boolean | null; models: Record<string, string>; dueDiligence: "not_assessed";
-};
-export type DataSource = { name: string; category: string; access: string; configured: boolean };
-export type Integration = { name: string; purpose: string; configured: boolean; detail?: string };
+export type AlertAction = "acknowledge" | "investigate" | "assign" | "escalate" | "contain" | "resolve" | "suppress" | "reopen";
 
-export async function getOperationsConnections(
-  token: string, signal?: AbortSignal,
-): Promise<{ modelProviders: ModelProvider[]; dataSources: DataSource[]; integrations: Integration[] }> {
-  return (await authedFetch("/operations/connections", token, { signal })).json();
+export async function actOnAlert(
+  token: string, alertId: string, payload: { action: AlertAction; note?: string; owner_user_id?: string },
+): Promise<OperationsAlert> {
+  return sendJson(`/operations/alerts/${alertId}/actions`, token, "POST", payload);
 }
 
-export type StatusCheck = {
-  name: string; state: "operational" | "down" | "not_configured"; latencyMs: number | null; detail: string;
+export async function raiseAlert(
+  token: string,
+  payload: { title: string; severity: AlertSeverity; category: string; detail: string; service_key?: string | null },
+): Promise<OperationsAlert> {
+  return sendJson("/operations/alerts", token, "POST", payload);
+}
+
+export type GateStatus = "pass" | "open" | "fail";
+export type Gate = {
+  key: string; label: string; description?: string; derived?: boolean; status: GateStatus;
+  note?: string; byName?: string; at?: string | null;
+};
+export type Level = "critical" | "high" | "medium" | "low";
+
+export type ProviderDecision = "approved_scoped" | "conditional" | "under_review" | "on_hold" | "suspended";
+export type ProviderRecord = {
+  id: string; ref: string; name: string; category: string; categoryLabel: string; service: string;
+  configKey: string | null; inUse: boolean; decision: ProviderDecision; criticality: Level; region: string;
+  approvedUse: string; dataClassification: string; contractState: string; ownerId: string | null; owner: string | null;
+  nextReviewAt: string | null; reviewDue: boolean; gates: Gate[]; gatesPassed: number; gatesTotal: number;
+  createdBy: string | null; createdAt: string; decidedBy: string | null; decidedAt: string | null; history: HistoryEntry[];
+};
+export type ProviderRegister = {
+  providers: ProviderRecord[];
+  detected: { configKey: string; name: string; category: string; service: string }[];
+  summary: { registered: number; approved: number; inReview: number; conditional: number; underReview: number;
+    blocked: number; reviewActions: number };
+  resilience: { critical: number; fallbackDocumented: number; untestedExits: number };
+  categories: Record<string, string>;
+  generatedAt: string;
+};
+export type ProviderInput = {
+  name: string; category: string; service?: string; config_key?: string | null; criticality?: Level; region?: string;
+  approved_use?: string; data_classification?: string; contract_state?: string; owner_user_id?: string | null;
+  next_review_at?: string | null;
 };
 
-export async function getOperationsStatus(
-  token: string, signal?: AbortSignal,
-): Promise<{ checks: StatusCheck[]; checkedAt: string }> {
-  return (await authedFetch("/operations/status", token, { signal })).json();
+export async function getProviderRegister(token: string, signal?: AbortSignal): Promise<ProviderRegister> {
+  return (await authedFetch("/operations/providers", token, { signal })).json();
+}
+export async function registerProvider(token: string, payload: ProviderInput): Promise<ProviderRecord> {
+  return sendJson("/operations/providers", token, "POST", payload);
+}
+export async function updateProvider(token: string, id: string, payload: Partial<ProviderInput>): Promise<ProviderRecord> {
+  return sendJson(`/operations/providers/${id}`, token, "PATCH", payload);
+}
+export async function setProviderGate(token: string, id: string, gate: string, status: GateStatus, note: string): Promise<ProviderRecord> {
+  return sendJson(`/operations/providers/${id}/gates/${gate}`, token, "PUT", { status, note });
+}
+export async function decideProvider(token: string, id: string, decision: ProviderDecision, note: string): Promise<ProviderRecord> {
+  return sendJson(`/operations/providers/${id}/decision`, token, "POST", { decision, note });
+}
+
+export type IntegrationAuthorization = "approved_scoped" | "pending" | "under_review" | "on_hold" | "suspended";
+export type IntegrationRecord = {
+  id: string; ref: string; name: string; category: string; categoryLabel: string; providerId: string | null;
+  provider: string | null; healthKey: string | null; health: HealthState | "not_enabled" | "not_monitored";
+  healthDetail: string; healthCheckedAt: string | null; authorization: IntegrationAuthorization;
+  dataFlow: "inbound" | "outbound" | "bidirectional"; region: string; riskTier: Level; authMethod: string;
+  scopesRequested: string[]; scopesApproved: string[]; ownerId: string | null; owner: string | null;
+  gates: Gate[]; gatesPassed: number; gatesTotal: number; scopeException: boolean;
+  createdBy: string | null; createdAt: string; decidedBy: string | null; decidedAt: string | null; history: HistoryEntry[];
+};
+export type IntegrationRegister = {
+  integrations: IntegrationRecord[];
+  detected: { healthKey: string; name: string; category: string }[];
+  summary: { registered: number; approved: number; pending: number; degraded: number; blocked: number; scopeExceptions: number };
+  controls: Record<"least_privilege" | "secret_vault" | "replay_idempotency" | "residency_privacy", { passed: number; total: number }>;
+  exceptions: { id: string; ref: string; title: string; action: "HOLD" | "REVIEW" | "BLOCK" }[];
+  categories: Record<string, string>;
+  providers: { id: string; label: string }[];
+  generatedAt: string;
+};
+export type IntegrationInput = {
+  name: string; category: string; provider_id?: string | null; health_key?: string | null;
+  data_flow?: "inbound" | "outbound" | "bidirectional"; region?: string; risk_tier?: Level; auth_method?: string;
+  scopes_requested?: string[]; scopes_approved?: string[]; owner_user_id?: string | null;
+};
+
+export async function getIntegrationRegister(token: string, signal?: AbortSignal): Promise<IntegrationRegister> {
+  return (await authedFetch("/operations/integrations", token, { signal })).json();
+}
+export async function registerIntegration(token: string, payload: IntegrationInput): Promise<IntegrationRecord> {
+  return sendJson("/operations/integrations", token, "POST", payload);
+}
+export async function updateIntegration(token: string, id: string, payload: Partial<IntegrationInput>): Promise<IntegrationRecord> {
+  return sendJson(`/operations/integrations/${id}`, token, "PATCH", payload);
+}
+export async function setIntegrationGate(token: string, id: string, gate: string, status: GateStatus, note: string): Promise<IntegrationRecord> {
+  return sendJson(`/operations/integrations/${id}/gates/${gate}`, token, "PUT", { status, note });
+}
+export async function decideIntegration(token: string, id: string, decision: IntegrationAuthorization, note: string): Promise<IntegrationRecord> {
+  return sendJson(`/operations/integrations/${id}/decision`, token, "POST", { decision, note });
+}
+
+// ── Review, Escalation & Audit (backend app/domains/review_console) ────────
+
+export type ReviewPerson = { id: string; name: string; role: string; expert: boolean };
+
+export async function getReviewPeople(token: string, signal?: AbortSignal): Promise<ReviewPerson[]> {
+  return (await authedFetch("/review/people", token, { signal })).json();
+}
+
+export type EscalationRow = {
+  id: string; queryId: string; question: string; topic: string; severity: "Critical" | "High" | "Medium" | "Low";
+  riskLevel: string; subClass: string | null; trigger: string; jurisdiction: string;
+  status: "open" | "expert_review" | "escalated" | "resolved" | "refused"; rawStatus: string; origin: string;
+  requesterId: string | null; requester: string | null; assigneeId: string | null; assignee: string | null;
+  reviewerRole: string | null; decidedBy: string | null; decision: string | null; slaDeadline: string | null;
+  sla: "overdue" | "due_today" | "due_tomorrow" | "within" | "closed" | "none"; createdAt: string | null;
+  resolvedAt: string | null; detail: string; routeReason: string; evidenceRefs: unknown[];
+  reviewCase: { id: string; status: string; decision: string | null; source: string } | null;
+  closureRestricted: boolean; closureReason: string; nextSteps: string[]; history: HistoryEntry[];
+};
+export type EscalationQueue = {
+  escalations: EscalationRow[];
+  summary: { open: number; critical: number; overdue: number; expertReview: number; closureRestricted: number;
+    unassigned: number; linkedToReview: number; bySeverity: Record<string, number> };
+  overrides: { id: string; scope: string; reason: string; originalRoute: string; newRoute: string; actor: string;
+    role: string; expiresAt: string | null }[];
+  generatedAt: string;
+};
+
+export async function getEscalationQueue(token: string, signal?: AbortSignal): Promise<EscalationQueue> {
+  return (await authedFetch("/review/escalations", token, { signal })).json();
+}
+export async function actOnEscalationCase(token: string, id: string, payload: { action: string; note?: string; assignee_id?: string }) {
+  return sendJson<{ id: string; status: string }>(`/review/escalations/${id}/actions`, token, "POST", payload);
+}
+export async function raiseEscalation(token: string, payload: { topic: string; detail: string; risk_level: string; jurisdiction: string }) {
+  return sendJson<{ id: string }>("/review/escalations", token, "POST", payload);
+}
+
+export type TicketMessage = { at: string; kind: "reply" | "note" | "customer" | "system"; actorId: string | null; actor: string; body: string };
+export type SupportTicketRow = {
+  id: string; ref: string; subject: string; description: string; category: string; priority: "P1" | "P2" | "P3" | "P4";
+  priorityLabel: string; status: "open" | "in_progress" | "investigating" | "waiting_customer" | "escalated" | "resolved";
+  jurisdiction: string; requesterId: string; requester: string; ownerId: string | null; owner: string | null;
+  queryId: string | null; sourceId: string | null; createdAt: string | null; firstResponseAt: string | null;
+  resolvedAt: string | null; resolutionNote: string; escalationId: string | null; incidentId: string | null;
+  sla: { state: "on_track" | "at_risk" | "breached" | "paused" | "met"; dueAt: string; remainingSeconds: number;
+    firstResponseDueAt: string; firstResponseMet: boolean | null; targetHours: number; firstResponseHours: number };
+  messages: TicketMessage[];
+};
+export type TicketRegister = {
+  tickets: SupportTicketRow[];
+  summary: { open: number; atRisk: number; breaches: number; waitingCustomer: number; escalated: number; unassigned: number;
+    firstResponsePct: number | null; resolutionPct: number | null; byPriority: Record<string, number> };
+  policy: { priority: string; label: string; firstResponseHours: number; resolutionHours: number }[];
+  categories: string[];
+  activity: (TicketMessage & { ticketId: string; ref: string })[];
+  generatedAt: string;
+};
+
+export async function getTicketRegister(token: string, signal?: AbortSignal): Promise<TicketRegister> {
+  return (await authedFetch("/review/tickets", token, { signal })).json();
+}
+export async function createSupportTicket(token: string, payload: { subject: string; description: string; category: string; priority: string; jurisdiction?: string }) {
+  return sendJson<{ id: string }>("/review/tickets", token, "POST", payload);
+}
+export async function actOnTicket(token: string, id: string, payload: { action: string; body?: string; owner_id?: string; status?: string }) {
+  return sendJson<SupportTicketRow>(`/review/tickets/${id}/actions`, token, "POST", payload);
+}
+
+export type IncidentRow = {
+  id: string; title: string; severity: "Critical" | "High" | "Medium" | "Low"; status: "OPEN" | "CONTAINED" | "RESOLVED";
+  source: string; sourceLabel: string; queryId: string | null; subClass: string | null; ownerId: string | null; owner: string | null;
+  openedAt: string | null; resolvedAt: string | null; resolutionNote: string; hoursOpen: number | null;
+  linkedEventIds: string[]; ticketId: string | null;
+  timeline: { timestamp: string; actor: string; actorId?: string | null; action: string; note: string }[];
+};
+export type IncidentRegister = {
+  incidents: IncidentRow[];
+  summary: { open: number; contained: number; critical: number; high: number; unowned: number; resolved30d: number;
+    mttrHours: number | null; bySeverity: Record<string, number> };
+  sources30d: { source: string; count: number }[];
+  generatedAt: string;
+};
+
+export async function getIncidentRegister(token: string, signal?: AbortSignal): Promise<IncidentRegister> {
+  return (await authedFetch("/review/incidents", token, { signal })).json();
+}
+export async function openIncident(token: string, payload: { title: string; severity: string; note: string; event_id?: string }) {
+  return sendJson<{ id: string }>("/review/incidents", token, "POST", payload);
+}
+export async function actOnIncident(token: string, id: string, payload: { action: string; note?: string; owner_id?: string; event_id?: string; severity?: string }) {
+  return sendJson<IncidentRow>(`/review/incidents/${id}/actions`, token, "POST", payload);
+}
+
+export type AuditFamily = "ai" | "access" | "privileged" | "source" | "user";
+export type AuditEventRow = {
+  id: string; event: string; family: AuditFamily; familyLabel: string; risk: "critical" | "high" | "medium" | "low";
+  outcome: "denied" | "blocked" | "failed" | "pending" | "recorded"; at: string | null; ingestedAt: string | null;
+  actorId: string | null; actor: string; actorType: string; service: string; subjectType: string; subjectId: string;
+  correlationId: string | null; chainHashed: boolean; classification: string; payload: Record<string, unknown>;
+};
+export type AuditExport = {
+  id: string; ref: string; purpose: string; filters: Record<string, string>; status: "pending" | "approved" | "rejected";
+  requestedBy: string; requestedById: string; requestedAt: string | null; decidedBy: string | null; decidedAt: string | null;
+  decisionNote: string; expiresAt: string | null; downloadable: boolean; downloads: number;
+};
+export type AuditOverview = {
+  summary: { total: number; last30d: number; denied30d: number; deniedHighRisk30d: number; openInvestigations: number;
+    investigationsWithEvidence: number; chainPassed: boolean; eventsChecked: number; brokenAt: string | null;
+    chainVerifiedAt: string; exportsPending: number; ingestionLagP95Seconds: number | null };
+  families: { key: AuditFamily; label: string; count: number; pct: number }[];
+  priority: AuditEventRow[];
+  exports: AuditExport[];
+  generatedAt: string;
+};
+export type AuditEventPage = { events: AuditEventRow[]; total: number; offset: number; families: Record<string, string>; windowDays: number; generatedAt: string };
+
+export async function getAuditOverview(token: string, signal?: AbortSignal, fresh = false): Promise<AuditOverview> {
+  return (await authedFetch(`/review/audit/overview${fresh ? "?fresh=true" : ""}`, token, { signal })).json();
+}
+export async function getAuditEvents(
+  token: string, filters: { family?: string; risk?: string; outcome?: string; q?: string; days?: number; offset?: number; limit?: number },
+  signal?: AbortSignal,
+): Promise<AuditEventPage> {
+  const qs = new URLSearchParams();
+  Object.entries(filters).forEach(([k, v]) => { if (v !== undefined && v !== "") qs.set(k, String(v)); });
+  return (await authedFetch(`/review/audit/events?${qs.toString()}`, token, { signal })).json();
+}
+export type TraceRow = {
+  correlationId: string; title: string; kind: string; events: number; firstAt: string | null; lastAt: string | null;
+  integrity: "verified" | "exception"; complete: boolean; state: "verified" | "partial" | "restricted" | "review_open" | "refused";
+  reviewCase: string | null; reviewStatus: string | null; incident: string | null; refused: boolean; humanReview: boolean;
+};
+export type TraceRegister = {
+  traces: TraceRow[];
+  summary: { recorded30d: number; shown: number; replayReady: number; holds: number; humanReviewsOpen: number; exportHolds: number };
+  integrity: { hashed: number; complete: number; reviewed: number; total: number };
+  generatedAt: string;
+};
+export async function getTraceRegister(token: string, signal?: AbortSignal): Promise<TraceRegister> {
+  return (await authedFetch("/review/audit/traces", token, { signal })).json();
+}
+export async function requestAuditExport(token: string, purpose: string, filters: Record<string, string | number>) {
+  return sendJson<{ id: string; ref: string }>("/review/audit/exports", token, "POST", { purpose, filters });
+}
+export async function decideAuditExport(token: string, id: string, approve: boolean, note: string) {
+  return sendJson<{ id: string; status: string }>(`/review/audit/exports/${id}/decision`, token, "POST", { approve, note });
+}
+/** Downloads an approved export as a CSV file in the browser. */
+export async function downloadAuditExport(token: string, id: string): Promise<void> {
+  const res = await authedFetch(`/review/audit/exports/${id}/download`, token);
+  const blob = await res.blob();
+  const name = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "")?.[1] ?? "audit-export.csv";
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Administration (backend app/domains/admin_governance) ──────────────────
+
+export type ActivityEvent = {
+  id: string; event: string; at: string; actor: string; subjectType: string; subjectId: string;
+  detail: Record<string, unknown>;
+};
+
+export async function getAdminActivity(token: string, subjectId: string, signal?: AbortSignal): Promise<ActivityEvent[]> {
+  return (await authedFetch(`/admin/activity?subject_id=${encodeURIComponent(subjectId)}`, token, { signal })).json();
+}
+
+// Tenant Settings
+export type ControlAuthority = "global_locked" | "deployment" | "tenant_scoped";
+export type ControlState = "enforced" | "staged" | "review_due" | "blocked" | "not_configured";
+export type SettingRequest = {
+  id: string; ref: string; key: string; setting: string; from: string; to: string; reason: string;
+  status: "pending" | "applied" | "rejected" | "withdrawn"; requestedBy: string; requestedById: string;
+  requestedAt: string | null; decidedBy: string | null; decidedAt: string | null; decisionNote: string;
+};
+export type TenantControl = {
+  id: string; key: string | null; name: string; domain: string; authority: ControlAuthority; state: ControlState;
+  risk: "critical" | "high" | "medium" | "low"; value: string; deploymentValue: string; tenantValue: string | null;
+  rawEffective: boolean | number | null; kind: "bool" | "int" | null; unit: string; description: string; rule: string;
+  tightened: boolean; changedAt: string | null; changeAuthority: string; pendingRequest: string | null;
+  history: SettingRequest[];
+};
+export type TenantSettingsConsole = {
+  tenant: { name: string; id: string; policyVersion: string; evaluatedAt: string; region: string };
+  controls: TenantControl[];
+  requests: SettingRequest[];
+  hierarchy: { level: number; title: string; detail: string }[];
+  summary: { effectiveControls: number; totalControls: number; stagedRequests: number; prohibitedOverrides: number;
+    reviewsDue: number; tightened: number; activeExceptions: number };
+  activity: ActivityEvent[];
+  generatedAt: string;
+};
+
+export async function getTenantSettingsConsole(token: string, signal?: AbortSignal): Promise<TenantSettingsConsole> {
+  return (await authedFetch("/admin/tenant-settings", token, { signal })).json();
+}
+export async function requestSettingChange(token: string, key: string, value: boolean | number, reason: string) {
+  return sendJson<{ id: string; ref: string; status: string }>("/admin/settings/changes", token, "POST", { key, value, reason });
+}
+export async function decideSettingChange(token: string, id: string, approve: boolean, note: string) {
+  return sendJson<{ id: string; ref: string; status: string }>(`/admin/settings/changes/${id}/decision`, token, "POST", { approve, note });
+}
+
+// Users & Teams
+export type GateCheck = { label: string; status: "pass" | "open" | "fail"; note?: string; detail?: string };
+export type MemberRow = {
+  id: string; name: string; email: string; role: string; privileged: boolean; teams: string[];
+  status: "active" | "invited" | "inactive" | "offboarding"; isActive: boolean;
+  identity: "mfa" | "password_only" | "invite_pending" | "unknown"; providers: string[];
+  lastSignInAt: string | null; invitedAt: string | null; createdAt: string | null;
+  reviewDueAt: string; reviewOverdue: boolean;
+  lastReview: { at: string | null; decision: string; reviewer: string; role: string } | null;
+  blockers: { kind: string; label: string }[]; offboardingGates: GateCheck[];
+};
+export type TeamRow = {
+  id: string; name: string; description: string; ownerId: string | null; owner: string | null;
+  memberIds: string[]; members: number; createdAt: string | null;
+};
+export type UsersOverview = {
+  members: MemberRow[]; teams: TeamRow[];
+  summary: { activeMembers: number; openInvitations: number; staleInvitations: number; activeTeams: number;
+    ownedTeams: number; reviewsDue: number; reviewsDueSoon: number; offboardingCases: number; inactive: number };
+  priorities: { kind: string; userId: string; title: string; detail: string }[];
+  controls: GateCheck[];
+  authStatusAvailable: boolean;
+  generatedAt: string;
+};
+
+export async function getUsersOverview(token: string, signal?: AbortSignal): Promise<UsersOverview> {
+  return (await authedFetch("/admin/users-overview", token, { signal })).json();
+}
+export async function createTeam(token: string, payload: { name: string; description?: string; owner_user_id?: string | null }) {
+  return sendJson<{ id: string; name: string }>("/admin/teams", token, "POST", payload);
+}
+export async function updateTeam(token: string, id: string, payload: { owner_user_id?: string | null; add?: string[]; remove?: string[] }) {
+  return sendJson<{ id: string; name: string }>(`/admin/teams/${id}`, token, "PATCH", payload);
+}
+export async function recordAccessReview(token: string, payload: { user_id: string; decision: "certified" | "role_changed" | "deactivated"; note: string }) {
+  return sendJson<{ id: string; decision: string }>("/admin/access-reviews", token, "POST", payload);
+}
+
+// Roles & Permissions
+export type RoleRow = {
+  name: string; purpose: string; scope: string; permissions: string[]; people: number; serviceAccounts: number;
+  privileged: boolean; stepUp: string[]; boundary: string; assignableToServiceAccounts: boolean;
+  sodConflicts: { permissions: string[]; reason: string }[]; reviewInterval: number;
+};
+export type RolesConsole = {
+  roles: RoleRow[];
+  permissions: { key: string; label: string; stepUp: boolean }[];
+  sodRules: { permissions: string[]; reason: string; roles: string[] }[];
+  policyTests: { label: string; passed: boolean; detail: string }[];
+  unrecognisedRoles: { name: string; people: number }[];
+  summary: { roles: number; privilegedRoles: number; identities: number; people: number; serviceAccounts: number;
+    sodConflicts: number; peopleWithConflicts: number; reviewsDue: number; reviewsCompleted: number;
+    activeBreakGlass: number; testsPassed: number; testsTotal: number };
+  events: ActivityEvent[];
+  generatedAt: string;
+};
+
+export async function getRolesConsole(token: string, signal?: AbortSignal): Promise<RolesConsole> {
+  return (await authedFetch("/admin/roles-console", token, { signal })).json();
+}
+export async function simulateAccess(token: string, payload: { role: string; permission: string; session_mfa: boolean }) {
+  return sendJson<{ decision: "allow" | "deny" | "step_up"; reason: string }>("/admin/roles/simulate", token, "POST", payload);
+}
+
+// Service Accounts
+export type ServiceAccountRow = {
+  id: string; name: string; description: string; role: string; permissions: string[]; ownerId: string; owner: string;
+  ownerActive: boolean; createdBy: string; createdAt: string | null; isActive: boolean;
+  state: "active" | "restricted" | "quarantined" | "dormant" | "no_credential" | "disabled";
+  risk: "critical" | "high" | "medium" | "low"; liveKeys: number; expiringKeys: number; nextExpiry: string | null;
+  lastUsedAt: string | null; checks: GateCheck[]; checksPassed: number;
+  sodConflicts: { permissions: string[]; reason: string }[];
+  keys: { id: string; prefix: string; createdAt: string | null; expiresAt: string | null; revokedAt: string | null; lastUsedAt: string | null }[];
+};
+export type ServiceAccountsOverview = {
+  accounts: ServiceAccountRow[];
+  summary: { accounts: number; liveKeys: number; renewals: number; scopeExceptions: number; ownershipReviews: number;
+    quarantined: number; states: Record<string, number> };
+  generatedAt: string;
+};
+
+export async function getServiceAccountsOverview(token: string, signal?: AbortSignal): Promise<ServiceAccountsOverview> {
+  return (await authedFetch("/admin/service-accounts-overview", token, { signal })).json();
+}
+export async function transferServiceAccount(token: string, id: string, ownerUserId: string) {
+  return sendJson<{ id: string; ownerId: string }>(`/admin/service-accounts/${id}/owner`, token, "PUT", { owner_user_id: ownerUserId });
+}
+
+// Entities / Clients
+export type EngagementRow = {
+  id: string; name: string; status: string; rightsVersion: string; createdAt: string | null;
+  activeMembers: number; revokedMembers: number;
+  members: { userId: string; name: string; role: string; status: string; grantedAt: string | null; revokedAt: string | null; operations: string[] }[];
+};
+export type EntitiesOverview = {
+  engagements: EngagementRow[];
+  summary: { engagements: number; active: number; members: number; revoked: number; withoutMembers: number };
+  legalEntityRegister: { available: boolean; reason: string };
+  generatedAt: string;
+};
+
+export async function getEntitiesOverview(token: string, signal?: AbortSignal): Promise<EntitiesOverview> {
+  return (await authedFetch("/admin/entities", token, { signal })).json();
+}
+export async function createEngagement(token: string, name: string) {
+  return sendJson<{ id: string; name: string }>("/engagements", token, "POST", { name });
+}
+export async function addEngagementMember(token: string, engagementId: string, userId: string) {
+  return sendJson<{ id: string }>(`/engagements/${engagementId}/members`, token, "POST", { user_id: userId });
+}
+export async function revokeEngagementMember(token: string, engagementId: string, userId: string): Promise<void> {
+  await authedFetch(`/engagements/${engagementId}/members/${userId}`, token, { method: "DELETE" });
+}
+
+// Release Gates
+export type ReleaseStatus = "validating" | "on_hold" | "approval_queue" | "approved" | "deployed" | "rolled_back";
+export type ReleaseGateRow = {
+  key: string; number: number; label: string; description: string; derived: boolean;
+  status: "pass" | "open" | "fail"; note: string; byName?: string; at?: string | null;
+};
+export type ReleaseCandidate = {
+  id: string; ref: string; name: string; version: string; component: string; changeRef: string; description: string;
+  risk: "critical" | "high" | "medium" | "low"; ownerId: string | null; owner: string | null; status: ReleaseStatus;
+  stage: string; gates: ReleaseGateRow[]; passed: number; failed: number; pending: number;
+  rollout: { step: string; detail: string; status: string }[];
+  createdBy: string; createdById: string; createdAt: string | null; approvedBy: string | null; approvedAt: string | null;
+  deployedAt: string | null; rolledBackAt: string | null; history: HistoryEntry[];
+};
+export type ReleaseRegister = {
+  releases: ReleaseCandidate[];
+  summary: { records: number; onHold: number; validating: number; awaitingApproval: number; approved: number;
+    deployed: number; rolledBack: number };
+  readiness: ReleaseGate[];
+  components: string[];
+  generatedAt: string;
+};
+
+export async function getReleaseRegister(token: string, signal?: AbortSignal): Promise<ReleaseRegister> {
+  return (await authedFetch("/admin/releases", token, { signal })).json();
+}
+export async function createRelease(token: string, payload: {
+  name: string; version: string; component: string; change_ref?: string; description?: string;
+  risk?: "critical" | "high" | "medium" | "low"; owner_user_id?: string | null;
+}) {
+  return sendJson<{ id: string; ref: string }>("/admin/releases", token, "POST", payload);
+}
+export async function setReleaseGate(token: string, id: string, gate: string, status: GateStatus, note: string) {
+  return sendJson<{ id: string; ref: string }>(`/admin/releases/${id}/gates/${gate}`, token, "PUT", { status, note });
+}
+export async function actOnRelease(token: string, id: string, action: "approve" | "deploy" | "rollback", note = "") {
+  return sendJson<{ id: string; ref: string; status: string }>(`/admin/releases/${id}/actions`, token, "POST", { action, note });
 }
 
 export type RoleMatrixEntry = { name: string; purpose: string; permissions: string[]; activeUsers: number };
@@ -455,19 +972,6 @@ export async function getRolesMatrix(
   token: string, signal?: AbortSignal,
 ): Promise<{ roles: RoleMatrixEntry[]; unrecognisedRoles: { name: string; activeUsers: number }[] }> {
   return (await authedFetch("/admin/roles-matrix", token, { signal })).json();
-}
-
-export type DeploymentSetting = { label: string; value: string | number | boolean; note: string; source: string };
-
-export type TenantSettingsView = {
-  workspace: { name: string; id: string };
-  people: { total: number; active: number; inactive: number; serviceAccounts: number; byRole: Record<string, number> };
-  security: DeploymentSetting[];
-  retention: DeploymentSetting[];
-};
-
-export async function getTenantSettings(token: string, signal?: AbortSignal): Promise<TenantSettingsView> {
-  return (await authedFetch("/admin/tenant-settings", token, { signal })).json();
 }
 
 export type UsageView = {

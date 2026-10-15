@@ -170,12 +170,15 @@ async def require_admin(
 
 async def enforce_step_up(db: AsyncSession, user: User, required: str) -> None:
     """Refuse a privileged action from a session that has not completed MFA,
-    when the deployment requires it. The assurance level comes from the
+    when the deployment or the tenant's own policy requires it. The assurance level comes from the
     verified token (get_current_user), never from the request body."""
-    if not get_settings().MFA_REQUIRED_FOR_PRIVILEGED:
-        return
     if getattr(user, "auth_aal", "aal1") == "aal2":
         return
+    if not get_settings().MFA_REQUIRED_FOR_PRIVILEGED:
+        # A tenant may require it even where the deployment does not.
+        from app.domains.admin_governance.tenant_policy import effective
+        if not await effective(db, user.tenant_id, "mfa_required_privileged"):
+            return
     # A service account's API key is a non-interactive credential with no
     # session to step up; its scope is bounded instead by a non-Admin role,
     # a named owner, an expiry and revocation (identity/governance.py).

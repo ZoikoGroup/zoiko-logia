@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 from urllib.parse import urlparse
 
@@ -123,69 +124,139 @@ def integrations() -> list[dict]:
     ]
 
 
-async def _http_check(client: httpx.AsyncClient, name: str, url: str | None, *, headers: dict | None = None) -> dict:
+
+
+# ── Live service checks ─────────────────────────────────────────────────────
+# Every monitored service has a stable key so its sampled history, owner and
+# alerts link to it. (key, name, what it does, category, location kind)
+SERVICES = [
+    ("api", "Kriton API", "Request handling for every page and Ask Kriton", "Platform"),
+    ("database", "Database", "PostgreSQL: tenant data with row-level security", "Platform"),
+    ("supabase_auth", "Authentication", "Supabase Auth: sign-in, MFA, invitations", "Identity"),
+    ("groq", "Groq", "Answer composition, classification, verification", "AI models"),
+    ("google", "Google Gemini", "Answer fallback, risk classification", "AI models"),
+    ("openai", "OpenAI", "Model gateway adapter", "AI models"),
+    ("anthropic", "Anthropic", "Model gateway adapter", "AI models"),
+    ("searxng", "Web search", "SearXNG: live web evidence for answers", "Search"),
+    ("kroki", "Diagrams", "Kroki: diagram rendering", "Rendering"),
+    ("redis", "Background jobs", "Redis / Celery job queue", "Jobs"),
+]
+SERVICE_NAMES = {key: name for key, name, _, _ in SERVICES}
+# Services whose outage takes the whole platform down, not just a feature.
+CORE_SERVICES = {"api", "database", "supabase_auth"}
+
+# Provider model-list endpoints: reachable + key accepted, and no tokens spent.
+_PROVIDER_PROBES = {
+    "groq": ("GROQ_API_KEY", "https://api.groq.com/openai/v1/models", "bearer"),
+    "openai": ("OPENAI_API_KEY", "https://api.openai.com/v1/models", "bearer"),
+    "anthropic": ("ANTHROPIC_API_KEY", "https://api.anthropic.com/v1/models", "anthropic"),
+}
+
+
+def _result(key: str, state: str, latency: float | None = None, detail: str = "") -> dict:
+    return {"key": key, "name": SERVICE_NAMES[key], "state": state,
+            "latencyMs": None if latency is None else round(latency), "detail": detail}
+
+
+def _elapsed(start: float) -> float:
+    return (time.perf_counter() - start) * 1000
+
+
+async def _http_check(client: httpx.AsyncClient, key: str, url: str | None, *,
+                      headers: dict | None = None, params: dict | None = None) -> dict:
     if not url:
-        return {"name": name, "state": "not_configured", "latencyMs": None, "detail": "Not configured"}
+        return _result(key, "not_configured", detail="Not configured")
     start = time.perf_counter()
     try:
-        response = await client.get(url, headers=headers or {})
-        latency = round((time.perf_counter() - start) * 1000)
+        response = await client.get(url, headers=headers or {}, params=params or {})
+        latency = _elapsed(start)
+        if response.status_code in (401, 403):
+            return _result(key, "down", latency, f"Credentials rejected (HTTP {response.status_code})")
         ok = response.status_code < 500
-        return {"name": name, "state": "operational" if ok else "down", "latencyMs": latency,
-                "detail": f"HTTP {response.status_code}"}
+        return _result(key, "operational" if ok else "down", latency, f"HTTP {response.status_code}")
     except (httpx.HTTPError, OSError) as exc:
-        return {"name": name, "state": "down", "latencyMs": None, "detail": type(exc).__name__}
+        # Only the exception type: a message could echo a URL holding a key.
+        return _result(key, "down", detail=type(exc).__name__)
 
 
-async def _tcp_check(name: str, url: str | None) -> dict:
+async def _tcp_check(key: str, url: str | None) -> dict:
     if not url:
-        return {"name": name, "state": "not_configured", "latencyMs": None, "detail": "Not configured"}
+        return _result(key, "not_configured", detail="Not configured")
     parsed = urlparse(url)
     start = time.perf_counter()
     try:
         _, writer = await asyncio.wait_for(
             asyncio.open_connection(parsed.hostname, parsed.port or 6379), CHECK_TIMEOUT_SECONDS)
         writer.close()
-        return {"name": name, "state": "operational", "latencyMs": round((time.perf_counter() - start) * 1000),
-                "detail": "Reachable"}
+        return _result(key, "operational", _elapsed(start), "Reachable")
     except (OSError, asyncio.TimeoutError) as exc:
-        return {"name": name, "state": "down", "latencyMs": None, "detail": type(exc).__name__}
+        return _result(key, "down", detail=type(exc).__name__)
 
 
 async def _database_check(db: AsyncSession) -> dict:
     start = time.perf_counter()
     try:
         await db.execute(text("SELECT 1"))
-        return {"name": "Database", "state": "operational",
-                "latencyMs": round((time.perf_counter() - start) * 1000), "detail": "Query succeeded"}
+        return _result("database", "operational", _elapsed(start), "Query succeeded")
     except Exception as exc:  # noqa: BLE001 — report, never raise, from a health check
-        return {"name": "Database", "state": "down", "latencyMs": None, "detail": type(exc).__name__}
+        return _result("database", "down", detail=type(exc).__name__)
 
 
-async def status_checks(db: AsyncSession, tenant_id: str) -> list[dict]:
-    """Live checks, run concurrently with short timeouts. The model providers
-    are reported as configured or not — calling them would spend tokens."""
+def _provider_check(client: httpx.AsyncClient, key: str):
+    if key == "google":
+        api_key = next((os.getenv(v) for v in ("GEMINI_API_KEY", "GOOGLE_API_KEY") if _set(v)), None)
+        return _http_check(client, key, "https://generativelanguage.googleapis.com/v1beta/models" if api_key else None,
+                           params={"key": api_key, "pageSize": 1} if api_key else None)
+    env, url, style = _PROVIDER_PROBES[key]
+    api_key = os.getenv(env) if _set(env) else None
+    headers = ({"Authorization": f"Bearer {api_key}"} if style == "bearer"
+               else {"x-api-key": api_key or "", "anthropic-version": "2023-06-01"})
+    return _http_check(client, key, url if api_key else None, headers=headers)
+
+
+async def dependency_checks(db: AsyncSession) -> list[dict]:
+    """Live checks of every dependency, run concurrently with short timeouts.
+    The API's own latency is measured separately (telemetry.py)."""
     s = get_settings()
     supabase_headers = {"apikey": s.SUPABASE_SERVICE_ROLE_KEY} if s.SUPABASE_SERVICE_ROLE_KEY else {}
     async with httpx.AsyncClient(timeout=CHECK_TIMEOUT_SECONDS) as client:
         external = await asyncio.gather(
-            _http_check(client, "Supabase Auth",
+            _http_check(client, "supabase_auth",
                         f"{s.SUPABASE_URL.rstrip('/')}/auth/v1/health" if s.SUPABASE_URL else None,
                         headers=supabase_headers),
-            _http_check(client, "Web search (SearXNG)", os.getenv("SEARXNG_URL") if _set("SEARXNG_URL") else None),
-            _http_check(client, "Diagrams (Kroki)",
-                        f"{os.getenv('KROKI_URL', '').rstrip('/')}/health" if _set("KROKI_URL") else None),
-            _tcp_check("Redis / Celery", os.getenv("CELERY_BROKER_URL") or os.getenv("REDIS_URL")
+            *(_provider_check(client, key) for key in ("groq", "google", "openai", "anthropic")),
+            _http_check(client, "searxng", os.getenv("SEARXNG_URL") if _set("SEARXNG_URL") else None),
+            _http_check(client, "kroki", f"{os.getenv('KROKI_URL', '').rstrip('/')}/health" if _set("KROKI_URL") else None),
+            _tcp_check("redis", os.getenv("CELERY_BROKER_URL") or os.getenv("REDIS_URL")
                        if _any("CELERY_BROKER_URL", "REDIS_URL") else None),
         )
-    checks = [await _database_check(db), *external]
+    return [await _database_check(db), *external]
+
+
+async def audit_chain_check(db: AsyncSession, tenant_id: str) -> dict:
     chain = await audit_service.verify_tenant_chain(db, tenant_id)
-    checks.append({"name": "Audit ledger (this workspace)", "state": "operational" if chain["passed"] else "down",
-                   "latencyMs": None,
-                   "detail": f"Hash chain verified across {chain['events_checked']} event(s)" if chain["passed"]
-                   else f"Hash chain broken at {chain['first_broken_event_id']}"})
-    configured = [p["name"] for p in model_providers() if p["configured"]]
-    checks.append({"name": "AI model providers", "state": "operational" if configured else "down",
-                   "latencyMs": None,
-                   "detail": ("Configured: " + ", ".join(configured)) if configured else "No provider API key configured"})
-    return checks
+    return {"key": "audit_ledger", "name": "Audit ledger (this workspace)",
+            "state": "operational" if chain["passed"] else "down", "latencyMs": None,
+            "detail": f"Hash chain verified across {chain['events_checked']} event(s)" if chain["passed"]
+            else f"Hash chain broken at {chain['first_broken_event_id']}"}
+
+
+def service_location(key: str) -> str:
+    """Where a service runs, from its configured address; never a guess."""
+    s = get_settings()
+    if key == "api":
+        return "This server"
+    if key == "database":
+        if s.is_sqlite:
+            return "Local file"
+        host = urlparse(s.DATABASE_URL.replace("+asyncpg", "")).hostname or ""
+        region = re.search(r"aws-\d+-([a-z]{2}-[a-z]+-\d)", host)
+        return f"AWS {region.group(1)}" if region else ("Local" if host in {"localhost", "127.0.0.1"} else host)
+    url = {"searxng": os.getenv("SEARXNG_URL"), "kroki": os.getenv("KROKI_URL"),
+           "redis": os.getenv("CELERY_BROKER_URL") or os.getenv("REDIS_URL"),
+           "supabase_auth": s.SUPABASE_URL}.get(key)
+    if url:
+        host = urlparse(url).hostname or ""
+        return "Local" if host in {"localhost", "127.0.0.1"} or host.endswith(".internal") else (
+            "Supabase cloud" if host.endswith(".supabase.co") else host)
+    return "Provider-managed" if key in {"groq", "google", "openai", "anthropic"} else "—"
