@@ -73,6 +73,17 @@ class Settings(BaseSettings):
     # finishes provisioning. Must be in Supabase Auth → URL Configuration.
     FRONTEND_URL: str = "http://localhost:3000"
 
+    # Transactional email through Resend (app/core/email.py). Blank key: emails
+    # are logged and skipped, never raised. MAIL_FROM must be on a domain
+    # verified in that Resend account (onboarding@resend.dev only delivers to
+    # the account owner).
+    RESEND_API_KEY: str = ""
+    MAIL_FROM: str = "ZoikoLogia <onboarding@resend.dev>"
+
+    # Password reset by emailed code (identity/password_reset.py).
+    PASSWORD_RESET_TTL_MINUTES: int = 15
+    PASSWORD_RESET_MAX_ATTEMPTS: int = 5
+
     # Governance ceilings for elevated access (identity/governance.py).
     IMPERSONATION_MAX_MINUTES: int = 60
     BREAK_GLASS_MAX_MINUTES: int = 240

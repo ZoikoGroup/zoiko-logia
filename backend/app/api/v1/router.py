@@ -17,6 +17,8 @@ from app.domains.command_center.router import router as command_center_router
 from app.domains.admin_governance.router import router as administration_router
 from app.domains.operations.router import router as operations_router
 from app.domains.review_console.router import router as review_console_router
+from app.domains.identity.password_reset_router import router as password_reset_router
+from app.domains.billing.router import router as billing_router
 
 api_v1_router = APIRouter()
 api_v1_router.include_router(auth_router)
@@ -37,3 +39,5 @@ api_v1_router.include_router(command_center_router)
 api_v1_router.include_router(administration_router)
 api_v1_router.include_router(operations_router)
 api_v1_router.include_router(review_console_router)
+api_v1_router.include_router(password_reset_router)
+api_v1_router.include_router(billing_router)

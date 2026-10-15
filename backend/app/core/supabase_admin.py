@@ -98,6 +98,31 @@ def revoke_all_sessions(user_id: str) -> bool:
     return resp.status_code == 204
 
 
+class PasswordRejectedError(ValueError):
+    """Supabase refused the new password (its own policy, e.g. too weak or a
+    known-leaked password). Carries Supabase's reason for the user."""
+
+
+def set_password(user_id: str, password: str) -> None:
+    """Set a user's password through the GoTrue Admin API — used by the
+    emailed-code reset (identity/password_reset.py) after the code checks
+    out. Also gives a Google-only account an email+password sign-in."""
+    _require_configured()
+    resp = httpx.put(
+        f"{settings.SUPABASE_URL}/auth/v1/admin/users/{user_id}",
+        headers=_headers(),
+        json={"password": password},
+        timeout=15,
+    )
+    if resp.status_code == 422:
+        try:
+            reason = resp.json().get("msg") or resp.json().get("message")
+        except ValueError:
+            reason = None
+        raise PasswordRejectedError(reason or "This password is not allowed. Choose a different one.")
+    resp.raise_for_status()
+
+
 def update_app_metadata(user_id: str, tenant_id: str, role: str) -> dict:
     """Set tenant_id/role into app_metadata — writable only via the
     service-role key, so a client can never grant itself a role/tenant.

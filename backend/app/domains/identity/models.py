@@ -181,3 +181,24 @@ class ServiceAccountKey(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PasswordResetChallenge(Base):
+    """A 6-digit password-reset code sent by email (identity/password_reset.py).
+
+    Only a keyed hash of the code is stored. A challenge expires, works once,
+    and locks after too many wrong attempts; requesting a new code supersedes
+    the previous one. Deliberately not under RLS: it is used before sign-in,
+    when no tenant is known, and holds no tenant data, only a hash and times."""
+
+    __tablename__ = "password_reset_challenges"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    code_hash: Mapped[str] = mapped_column(String, nullable=False)
+    salt: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

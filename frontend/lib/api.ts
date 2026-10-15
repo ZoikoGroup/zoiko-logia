@@ -54,6 +54,33 @@ export async function provisionProfile(accessToken: string, payload: ProvisionRe
   return res.json();
 }
 
+// ── Forgot password (backend identity/password_reset_router.py) ───────────
+// No sign-in required. The backend emails a 6-digit code from ZoikoLogia's
+// own sender, then sets the new password in Supabase once the code checks out.
+
+async function postPublic<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    const detail = typeof data?.detail === "string" ? data.detail
+      : res.status === 429 ? "Too many attempts. Please wait a few minutes and try again." : "Something went wrong. Please try again.";
+    throw new ApiError(res.status, detail);
+  }
+  return res.json();
+}
+
+export async function requestPasswordResetCode(email: string) {
+  return postPublic<{ message: string; expires_in_minutes: number; code_length: number }>("/auth/password/forgot", { email });
+}
+export async function verifyPasswordResetCode(email: string, code: string) {
+  return postPublic<{ message: string }>("/auth/password/verify", { email, code });
+}
+export async function resetPasswordWithCode(email: string, code: string, password: string) {
+  return postPublic<{ message: string }>("/auth/password/reset", { email, code, password });
+}
+
 /** While an Admin is viewing as someone, this returns that user's profile, so
  * the role-gated navigation renders exactly what they would see. */
 export async function getMe(token: string): Promise<UserPublic> {
@@ -762,6 +789,82 @@ export async function downloadAuditExport(token: string, id: string): Promise<vo
   const a = document.createElement("a");
   a.href = url;
   a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Billing & Usage (backend app/domains/billing) ───────────────────────────
+
+export type BillingMeter = { key: string; label: string; unit: string; event: string };
+export type ChargeLine = {
+  key: string; label: string; unit: string; quantity: number; included: number; billable: number;
+  rateCents: number; amountCents: number;
+  status: "contracted" | "measured" | "disputed" | "waived" | "unpriced" | "approved_credit"; excluded: boolean;
+};
+export type BillingPlan = {
+  id: string; version: number; status: "proposed" | "active" | "superseded" | "rejected"; name: string; currency: string;
+  commitmentCents: number; included: Record<string, number>; rates: Record<string, number>; softBudgetCents: number;
+  hardCapCents: number; effectiveFrom: string; note: string; proposedBy: string; proposedById: string; proposedAt: string | null;
+  decidedBy: string | null; decidedAt: string | null;
+};
+export type BillingAdjustmentRow = {
+  id: string; period: string; kind: "credit" | "dispute"; meter: string | null; amountCents: number; reason: string;
+  status: string; createdBy: string; createdById: string; createdAt: string | null; decidedBy: string | null; decisionNote: string;
+};
+export type BillingStatementRow = {
+  id: string; ref: string; period: string; currency: string; planVersion: number; subtotalCents: number; creditsCents: number;
+  totalCents: number; status: "issued" | "paid"; issuedBy: string; issuedAt: string | null; paidAt: string | null;
+  paymentReference: string; lines: ChargeLine[];
+};
+export type BillingOverview = {
+  period: string; now: string; meters: BillingMeter[];
+  current: {
+    period: string; planVersion: number | null; currency: string; lines: ChargeLine[]; subtotalCents: number;
+    creditsCents: number; totalCents: number; variableCents: number; excludedCents: number; priced: boolean;
+    usage: { totals: Record<string, number>; daily: Record<string, Record<string, number>>; engagements: Record<string, number> };
+  };
+  summary: {
+    estimatedCents: number; commitmentCents: number; variableCents: number; interactions: number; softBudgetCents: number;
+    hardCapCents: number; budgetUsedPct: number | null; projectedCents: number | null; openDisputes: number;
+    excludedCents: number; priced: boolean;
+  };
+  trend: { period: string; totalCents: number; interactions: number; estimate: boolean; priced: boolean }[];
+  allocation: { engagementId: string | null; name: string; interactions: number; share: number; amountCents: number }[];
+  plan: BillingPlan | null; pendingPlan: BillingPlan | null; planHistory: BillingPlan[];
+  adjustments: BillingAdjustmentRow[]; statements: BillingStatementRow[]; closablePeriods: string[];
+  trail: { id: string; event: string; at: string | null; actor: string; detail: Record<string, unknown> }[];
+};
+
+export async function getBillingOverview(token: string, signal?: AbortSignal): Promise<BillingOverview> {
+  return (await authedFetch("/billing/overview", token, { signal })).json();
+}
+export async function proposeBillingPlan(token: string, payload: {
+  name: string; currency: string; commitment_cents: number; included: Record<string, number>; rates: Record<string, number>;
+  soft_budget_cents: number; hard_cap_cents: number; effective_from: string; note: string;
+}) {
+  return sendJson<{ id: string; version: number }>("/billing/plans", token, "POST", payload);
+}
+export async function decideBillingPlan(token: string, id: string, approve: boolean, note: string) {
+  return sendJson<{ id: string; status: string }>(`/billing/plans/${id}/decision`, token, "POST", { approve, note });
+}
+export async function addBillingAdjustment(token: string, payload: { kind: "credit" | "dispute"; period: string; reason: string; amount_cents?: number; meter?: string }) {
+  return sendJson<{ id: string; status: string }>("/billing/adjustments", token, "POST", payload);
+}
+export async function decideBillingAdjustment(token: string, id: string, decision: string, note: string) {
+  return sendJson<{ id: string; status: string }>(`/billing/adjustments/${id}/decision`, token, "POST", { decision, note });
+}
+export async function closeBillingPeriod(token: string, period: string) {
+  return sendJson<{ id: string; ref: string }>("/billing/statements", token, "POST", { period });
+}
+export async function markStatementPaid(token: string, id: string, reference: string) {
+  return sendJson<{ id: string; status: string }>(`/billing/statements/${id}/paid`, token, "POST", { reference });
+}
+export async function downloadBillingReport(token: string, period: string): Promise<void> {
+  const res = await authedFetch(`/billing/report?period=${encodeURIComponent(period)}`, token);
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `billing-${period}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
