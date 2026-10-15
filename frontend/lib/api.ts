@@ -136,9 +136,24 @@ async function authedFetch(
     if (res.status === 403 && body?.detail === IMPERSONATION_ENDED) {
       clearImpersonation();
     }
-    throw new ApiError(res.status, body?.detail ?? `Request to ${path} failed`);
+    throw new ApiError(res.status, errorText(body?.detail) ?? `Request to ${path} failed`);
   }
   return res;
+}
+
+/** A readable message from an error `detail`. A validation error (422) sends
+ * a list of objects, and an object passed as an Error message shows as
+ * "[object Object]". */
+export function errorText(detail: unknown): string | undefined {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail.map((item) => (typeof item === "string" ? item : item?.msg)).filter(Boolean);
+    if (messages.length) return `The request was not accepted: ${messages.join("; ")}`;
+  }
+  if (detail && typeof detail === "object" && typeof (detail as { message?: unknown }).message === "string") {
+    return (detail as { message: string }).message;
+  }
+  return undefined;
 }
 
 export async function getGovernanceDashboard(
