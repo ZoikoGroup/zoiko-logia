@@ -2,12 +2,20 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Eye, EyeOff, KeyRound, LockKeyhole } from "lucide-react";
+import { Check, Eye, EyeOff, KeyRound, LockKeyhole, X } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { AuthError, updatePassword } from "@/services/auth.service";
 import { BrandMark } from "@/components/layout/AppHeader";
 
 type Stage = "detecting" | "ready" | "success" | "invalid";
+
+// Mirrors the rule updatePassword() enforces (services/auth.service.ts).
+const RULES: { label: string; test: (p: string) => boolean }[] = [
+  { label: "At least 8 characters", test: (p) => p.length >= 8 },
+  { label: "An uppercase letter", test: (p) => /[A-Z]/.test(p) },
+  { label: "A lowercase letter", test: (p) => /[a-z]/.test(p) },
+  { label: "A number", test: (p) => /\d/.test(p) },
+];
 
 /** Completion side of the reset flow. Supabase redirects from the emailed
  * link to this page with the tokens in the URL hash
@@ -15,12 +23,13 @@ type Stage = "detecting" | "ready" | "success" | "invalid";
  * (on by default) auto-exchanges that hash for a single-use recovery
  * session, which surfaces as a PASSWORD_RECOVERY auth event. This page
  * waits for that event (or an already-present session), then collects the
- * new password and calls supabase.auth.updateUser — the same SDK call the
+ * new password (entered twice, both must match) and calls supabase.auth.updateUser — the same SDK call the
  * backend has no hand in, by design. */
 export default function ResetPasswordPage() {
   const router = useRouter();
   const [stage, setStage] = useState<Stage>("detecting");
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -64,6 +73,10 @@ export default function ResetPasswordPage() {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
+    if (password !== confirm) {
+      setError("The two passwords don't match.");
+      return;
+    }
     setSubmitting(true);
     try {
       await updatePassword(password);
@@ -139,18 +152,19 @@ export default function ResetPasswordPage() {
               <div className="mb-3">
                 <h2 className="text-2xl font-bold tracking-normal text-ink">Choose a new password</h2>
                 <p className="mt-1.5 text-sm leading-6 text-muted">
-                  Must be at least 8 characters with an uppercase letter, a lowercase letter, and a number.
+                  Enter your new password twice. It must meet every rule below.
                 </p>
               </div>
 
               <form onSubmit={handleSubmit} className="space-y-2">
                 <div>
-                  <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
+                  <label htmlFor="new-password" className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
                     New Password
                   </label>
                   <div className="relative">
                     <LockKeyhole size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
                     <input
+                      id="new-password"
                       type={showPassword ? "text" : "password"}
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
@@ -169,6 +183,39 @@ export default function ResetPasswordPage() {
                   </div>
                 </div>
 
+                <div>
+                  <label htmlFor="confirm-password" className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
+                    Confirm New Password
+                  </label>
+                  <div className="relative">
+                    <LockKeyhole size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+                    <input
+                      id="confirm-password"
+                      type={showPassword ? "text" : "password"}
+                      value={confirm}
+                      onChange={(e) => setConfirm(e.target.value)}
+                      placeholder="Re-enter the new password"
+                      autoComplete="new-password"
+                      aria-invalid={confirm.length > 0 && confirm !== password}
+                      className={`h-9 w-full rounded-lg border bg-soft pl-10 pr-3 text-sm text-ink placeholder:text-muted outline-none focus:border-brand ${
+                        confirm.length > 0 && confirm !== password ? "border-bad" : "border-line"
+                      }`}
+                    />
+                  </div>
+                </div>
+
+                <ul className="grid grid-cols-2 gap-x-3 gap-y-1 pt-1 text-xs" aria-label="Password requirements">
+                  {[...RULES, { label: "Passwords match", test: (p: string) => p.length > 0 && p === confirm }].map((rule) => {
+                    const ok = rule.test(password);
+                    return (
+                      <li key={rule.label} className={`flex items-center gap-1.5 ${ok ? "text-ok" : "text-muted"}`}>
+                        {ok ? <Check size={13} /> : <X size={13} />}
+                        {rule.label}
+                      </li>
+                    );
+                  })}
+                </ul>
+
                 {error && (
                   <p className="rounded-lg border border-bad/25 bg-bad/10 px-3 py-2 text-xs font-medium text-bad">
                     {error}
@@ -177,7 +224,7 @@ export default function ResetPasswordPage() {
 
                 <button
                   type="submit"
-                  disabled={submitting}
+                  disabled={submitting || !RULES.every((r) => r.test(password)) || password !== confirm}
                   className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-ink px-4 text-sm font-bold text-panel shadow-[0_12px_28px_rgba(21,25,34,0.18)] transition-colors hover:bg-brand disabled:opacity-60"
                 >
                   {submitting ? "Updating password..." : "Set new password"}
