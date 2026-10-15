@@ -2161,7 +2161,9 @@ async def ask_kriton(
                 "information a qualified professional would need to conclude. Do NOT make the "
                 "decision or give a definitive personal recommendation for their case."
             )
-        if requires_authoritative_evidence(request.query) and not self_contained_calculation:
+        from app.orchestration.pasted_material import review_instruction
+        if (requires_authoritative_evidence(review_instruction(request.query) or request.query)
+                and not self_contained_calculation):
             # The release check (verify_for_release) holds back the whole
             # answer when any sentence lacks a supporting [REF-N]. "Cite
             # material claims" left uncited greetings, framing and closing
@@ -2807,7 +2809,11 @@ async def ask_kriton(
                 "failures": [*validation.failures, *calculation_failures],
                 "degraded_route": validation.degraded_route or ROUTE_HUMAN_REVIEW,
             })
-    requires_authority = requires_authoritative_evidence(request.query) and not self_contained_calculation
+    # Pasted material plus "comment on the above": the instruction decides
+    # whether statutory sources are needed, not the words in the material.
+    from app.orchestration.pasted_material import review_instruction
+    requires_authority = (requires_authoritative_evidence(review_instruction(request.query) or request.query)
+                          and not self_contained_calculation)
     release_review_required = False
     if (not uses_user_supplied_structure and not uses_deterministic_summary
             and deterministic_chart_text is None and _MODEL_DOMAIN_REFUSAL not in composed_text):
