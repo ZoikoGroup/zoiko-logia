@@ -105,8 +105,10 @@ def _product_or_ratio(value: float, stated: list[float]) -> bool:
 
 
 def unreconciled_figures(text: str, evidence: str) -> list[str]:
-    """Material figures in `text` that no evidence value supports."""
-    figures = material_figures(text)
+    """Material figures in `text` that no evidence value supports. The made-up
+    amounts of a labelled illustrative example are not claims (derived_output.py)."""
+    from app.orchestration.derived_output import without_scenarios
+    figures = material_figures(without_scenarios(text))
     if not figures:
         return []
     known = known_values(evidence)

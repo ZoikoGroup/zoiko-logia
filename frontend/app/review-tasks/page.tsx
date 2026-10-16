@@ -165,7 +165,6 @@ export default function ReviewTasksPage() {
     <PageShell
       title="Review Tasks"
       subtitle="Ask Kriton answers escalated by validation or reported by users. Approved answers are reused only after a second reviewer re-tests and releases them."
-      showMetrics={false}
     >
       <div className="mb-4 flex flex-wrap items-center gap-2">
         {(["open", "needs_evidence", "resolved", "released"] as Filter[]).map((value) => (

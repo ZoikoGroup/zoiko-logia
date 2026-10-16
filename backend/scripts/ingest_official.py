@@ -68,6 +68,19 @@ UAE_GOVERNMENT = govuk.Publisher(
 )
 
 
+IFRS_FOUNDATION = govuk.Publisher(
+    name="IFRS Foundation",
+    jurisdiction_scope="International,IFRS",
+    reason_code="IFRS_FOUNDATION_STANDARD",
+    terms=(
+        "IFRS Accounting Standards are copyright of the IFRS Foundation. Reading them on ifrs.org is free; "
+        "storing, indexing and reproducing them in a product requires a licence from the IFRS Foundation. "
+        "Do not set IFRS_INGESTION_RIGHTS_APPROVED until that licence is confirmed."
+    ),
+)
+_IFRS_HTML = "https://www.ifrs.org/content/dam/ifrs/publications/html-standards/english/2026/issued/{}.html"
+
+
 @dataclass(frozen=True)
 class OfficialDocument:
     url: str
@@ -75,7 +88,8 @@ class OfficialDocument:
     publisher: govuk.Publisher
     published: datetime
     procedure: str = "general"
-    # "faq_pdf": numbered questions; "pdf": paragraphs; "html": h2/h3 sections.
+    # "faq_pdf": numbered questions; "pdf": paragraphs; "html": h2/h3 sections;
+    # "ifrs_html": a standard split at its own paragraph numbers (pinpoint "¶33").
     kind: str = "faq_pdf"
     rights_env: str = "GST_INGESTION_RIGHTS_APPROVED"
 
@@ -108,7 +122,54 @@ DOCUMENTS: list[OfficialDocument] = [
         kind="html",
         rights_env="UAE_INGESTION_RIGHTS_APPROVED",
     ),
+    # IFRS standards: the governed library held none, so IFRS 18 / IAS 2
+    # questions rested on web search alone. IAS 1 is not listed: the IFRS
+    # Foundation no longer publishes its text (superseded by IFRS 18).
+    OfficialDocument(
+        url=_IFRS_HTML.format("ifrs18"),
+        title="IFRS 18 Presentation and Disclosure in Financial Statements (issued April 2024; effective for "
+              "annual periods beginning on or after 1 January 2027, earlier application permitted)",
+        publisher=IFRS_FOUNDATION, published=datetime(2024, 4, 9, tzinfo=timezone.utc),
+        kind="ifrs_html", rights_env="IFRS_INGESTION_RIGHTS_APPROVED",
+    ),
+    OfficialDocument(
+        url=_IFRS_HTML.format("ias2"), title="IAS 2 Inventories (IFRS Foundation, 2026 issued edition)",
+        publisher=IFRS_FOUNDATION, published=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        kind="ifrs_html", rights_env="IFRS_INGESTION_RIGHTS_APPROVED",
+    ),
+    OfficialDocument(
+        url=_IFRS_HTML.format("ias7"), title="IAS 7 Statement of Cash Flows (IFRS Foundation, 2026 issued edition)",
+        publisher=IFRS_FOUNDATION, published=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        kind="ifrs_html", rights_env="IFRS_INGESTION_RIGHTS_APPROVED",
+    ),
 ]
+
+# "33 | …" in the body; "B139 | …" and "C1 | …" in the appendices (the
+# effective date is IFRS 18 C1 — without the letter prefix it fell into ¶131).
+_IFRS_PARAGRAPH = re.compile(r"(?:^|\s)([A-Z]{0,2}\d{1,3}[A-Z]{0,2})\s\|\s")
+_IFRS_MAX_PASSAGE = 2500
+
+
+def split_ifrs_paragraphs(text: str, title: str, url: str) -> list:
+    """One passage per numbered paragraph ("33 | When the circumstances…"),
+    located as url#p33 so a citation can name the paragraph. A paragraph
+    longer than the embedder can use is split into parts (#p33/2)."""
+    marks = list(_IFRS_PARAGRAPH.finditer(text))
+    passages = []
+    for index, mark in enumerate(marks):
+        end = marks[index + 1].start() if index + 1 < len(marks) else len(text)
+        body = " ".join(text[mark.end():end].split())
+        if len(body) < 40:
+            continue
+        number = mark.group(1)
+        pieces = [body[i:i + _IFRS_MAX_PASSAGE] for i in range(0, len(body), _IFRS_MAX_PASSAGE)]
+        for part, piece in enumerate(pieces):
+            passages.append(govuk.Passage(
+                locator=f"{url}#p{number}" + (f"/{part + 1}" if part else ""),
+                heading=f"{title.split(' (')[0]} ¶{number}",
+                content=f"{title.split(' (')[0]} paragraph {number}: {piece}",
+            ))
+    return passages
 
 _QUESTION = re.compile(r"(?m)^\s*(\d{1,3})\.\s+(?=\S)")
 
@@ -173,7 +234,11 @@ _MAIN = re.compile(r"<main\b[^>]*>(.*?)</main>", re.S | re.I)
 
 
 def fetch(document: OfficialDocument):
-    if document.kind == "html":
+    if document.kind == "ifrs_html":
+        from app.orchestration.websearch import _html_to_text
+        text = _html_to_text(_get(document.url).text)
+        passages = split_ifrs_paragraphs(text, document.title, document.url)
+    elif document.kind == "html":
         html = _get(document.url).text
         main = _MAIN.search(html)
         text = main.group(1) if main else html

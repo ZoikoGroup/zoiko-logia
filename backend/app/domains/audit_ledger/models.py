@@ -9,7 +9,7 @@ Implements the append-only evidence ledger defined in the ZL-T0-07
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, JSON, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -32,6 +32,10 @@ class AuditEvent(Base):
     never by mutating a row here (Section 2 / Section 6)."""
 
     __tablename__ = "audit_events"
+    # "This tenant's events since <time>" (dashboards, notifications sweep,
+    # recent-chain check). With only separate tenant_id / ingested_at indexes
+    # the Governance Dashboard's 30-day count took ~2.9s over 138k rows.
+    __table_args__ = (Index("ix_audit_events_tenant_ingested_at", "tenant_id", "ingested_at"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_event_id)
     event_name: Mapped[str] = mapped_column(String, nullable=False)

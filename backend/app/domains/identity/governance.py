@@ -217,7 +217,28 @@ async def _expire_lapsed(db: AsyncSession, grants: list[BreakGlassGrant]) -> Non
         await db.commit()
 
 
+# Users known to have no active break-glass grant, with when that was checked.
+# Only the negative answer is cached: it is the answer for almost every
+# request, and caching it saves a round trip each time. A newly approved grant
+# takes effect within NO_GRANT_CACHE_SECONDS; an active grant is never cached,
+# so revocation and expiry apply on the next request.
+NO_GRANT_CACHE_SECONDS = 15
+_no_grant_checked: dict[str, float] = {}
+
+
+def forget_break_glass_cache(user_id: str | None = None) -> None:
+    if user_id is None:
+        _no_grant_checked.clear()
+    else:
+        _no_grant_checked.pop(user_id, None)
+
+
 async def active_break_glass_permissions(db: AsyncSession, user: User) -> frozenset[str]:
+    import time as _time
+
+    checked = _no_grant_checked.get(user.id)
+    if checked is not None and _time.monotonic() - checked < NO_GRANT_CACHE_SECONDS:
+        return frozenset()
     result = await db.execute(
         select(BreakGlassGrant).where(
             BreakGlassGrant.tenant_id == user.tenant_id,
@@ -226,7 +247,12 @@ async def active_break_glass_permissions(db: AsyncSession, user: User) -> frozen
         )
     )
     live = [g for g in result.scalars().all() if _effective_status(g) == "active"]
-    return frozenset(p for g in live for p in g.permissions)
+    permissions = frozenset(p for g in live for p in g.permissions)
+    if permissions:
+        _no_grant_checked.pop(user.id, None)
+    else:
+        _no_grant_checked[user.id] = _time.monotonic()
+    return permissions
 
 
 async def request_break_glass(
@@ -276,6 +302,7 @@ async def approve_break_glass(db: AsyncSession, approver: User, grant_id: str) -
         raise GovernanceError(status.HTTP_409_CONFLICT, f"This request is already {grant.status}.")
     now = _now()
     grant.status = "active"
+    forget_break_glass_cache(grant.user_id)
     grant.approved_by = approver.id
     grant.activated_at = now
     grant.expires_at = now + timedelta(minutes=grant.duration_minutes)

@@ -27,11 +27,45 @@ export function stateForError(status: number | null, serverDetail?: string | nul
   if (status === 401 || status === 403) {
     return { state: "access-denied", title: "Not available", detail: ACCESS_DENIED_TEXT };
   }
-  if (status === null || UNAVAILABLE_STATUSES.has(status)) {
+  // Say which failure it was: "temporarily unavailable" for a timeout, a
+  // crash and an outage alike left no way to tell them apart.
+  if (status === 504 || status === 408) {
+    return {
+      state: "service-unavailable",
+      title: "Kriton took too long on this request",
+      detail: "Nothing was answered because the processing time limit was reached. Try again, or ask about one part of the text at a time.",
+    };
+  }
+  if (status === 500) {
+    return {
+      state: "service-unavailable",
+      title: "Kriton hit an internal error",
+      detail: "Nothing was answered. The error is in the backend log (\"Unhandled Ask Kriton stream failure\"). Please try again.",
+    };
+  }
+  // The backend's own message names the cause ("database or network is
+  // temporarily unavailable (reference 3f2a…)"); one generic line for a
+  // restart, a database outage and a rate limit hid which one it was.
+  const said = serverDetail?.trim();
+  if (status === 429) {
+    return {
+      state: "service-unavailable",
+      title: "Too many questions at once",
+      detail: said || "Kriton accepts up to 30 questions a minute. Wait a moment and ask again.",
+    };
+  }
+  if (status === null || status === 0) {
+    return {
+      state: "service-unavailable",
+      title: "Could not reach the Kriton backend",
+      detail: `Nothing was answered: the connection failed before a reply (the backend may be restarting or stopped).${said ? ` ${said}` : ""}`,
+    };
+  }
+  if (UNAVAILABLE_STATUSES.has(status)) {
     return {
       state: "service-unavailable",
       title: "Kriton is temporarily unavailable",
-      detail: "Nothing was answered. Please try again in a moment.",
+      detail: `${said || "Nothing was answered. Please try again in a moment."} (HTTP ${status})`,
     };
   }
   return {

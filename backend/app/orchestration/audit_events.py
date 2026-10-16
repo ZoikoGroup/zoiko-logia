@@ -188,6 +188,15 @@ async def audit_calculation_completed(db, *, query_id, correlation_id, tenant_id
         replay_relevance="REQUIRED",
     )
 
+async def audit_claim_review_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                       claim_count: int, correct: int, incorrect: int, unverified: int,
+                                       source_count: int):
+    """Pasted text checked claim by claim (review_mode.py): counts, not content."""
+    await _emit(db, "claim_review_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"claim_count": claim_count, "correct": correct, "incorrect": incorrect,
+                 "unverified": unverified, "source_count": source_count},
+                replay_relevance="REQUIRED")
+
 async def audit_composition_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                        prompt_id: str, output_hash: str):
     await _emit(db, "composition_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,

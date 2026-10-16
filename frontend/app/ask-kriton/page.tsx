@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
@@ -15,6 +15,7 @@ import {
   ExternalLink,
   FileText,
   FolderKanban,
+  MessageSquare,
   History,
   Lightbulb,
   PenLine,
@@ -25,19 +26,22 @@ import {
 } from "lucide-react";
 import { AnswerRenderer } from "@/components/AnswerRenderer";
 import { AnswerFeedback } from "@/components/ask-kriton/AnswerFeedback";
-import { conversationHistory, splitQuestions } from "@/lib/kriton-conversation";
+import { conversationHistory, followUpSubject, splitQuestions, usesAttachedFile } from "@/lib/kriton-conversation";
 import {
   askKritonStream,
   createSavedAnswer,
   downloadKritonArtifact,
   getAuthToken,
+  getMySettings,
   listKritonAttachments,
   listEngagements,
+  createEngagement,
   ApiError,
   type AskKritonResponse,
   type SourceCitation,
   type TaskType,
   type WorkspaceDocument,
+  type Engagement,
 } from "@/lib/api";
 import { stateForError, stateForResult, suppliedAnswerLabel } from "@/lib/answer-state";
 import {
@@ -518,7 +522,10 @@ function QuestionActions({ question, onEdit }: { question: string; onEdit?: () =
   );
 }
 
-function ConversationTurn({
+// Memoised: the composer's text lives in the page, so without this every
+// keystroke re-rendered every answer (markdown, tables, charts) in the chat,
+// which made typing lag in long conversations.
+const ConversationTurn = memo(function ConversationTurn({
   turn,
   onFollowUp,
   onReuse,
@@ -527,7 +534,7 @@ function ConversationTurn({
   onFollowUp?: (question: string, originalQuery: string) => void;
   onReuse?: (query: string) => void;
 }) {
-  const { submittedQuery, result, error, errorStatus, loading } = turn;
+  const { submittedQuery, result, error, errorStatus, errorRequestId, loading } = turn;
   const followUps = useMemo(() => getFollowUpSuggestions(result, submittedQuery), [result, submittedQuery]);
   const safety = result?.safety ?? null;
   const route = result?.route ?? null;
@@ -560,6 +567,13 @@ function ConversationTurn({
         ? "Calculation undefined — verified"
         : suppliedAnswerLabel(result?.answer ?? null) ?? "Answered — calculated and verified"
       : ROUTE_LABELS[route ?? ""] ?? route;
+  // The backend reports "answered" for these too; the badge must not say
+  // "Answered" next to a line that says the answer was not (fully) given.
+  const shownOutcomeStyle = routeLabel?.startsWith("Not answered")
+    ? { label: "Not answered", dot: "bg-bad", text: "text-bad" }
+    : routeLabel?.startsWith("Partially answered")
+      ? { label: "Partial", dot: "bg-warn", text: "text-warn" }
+      : outcomeStyle;
 
   return (
     <>
@@ -613,6 +627,9 @@ function ConversationTurn({
                 <>
                   <p className="text-sm font-semibold text-bad" data-answer-state={shown.state}>{shown.title}</p>
                   <p className="mt-1 text-xs text-bad/80">{shown.detail}</p>
+                  {/* Quotable: the same id is on this request's lines in
+                      backend/logs/kriton-requests.log. */}
+                  {errorRequestId && <p className="mt-1 font-mono text-[11px] text-bad/60">Request ID: {errorRequestId}</p>}
                 </>
               );
             })()}
@@ -627,8 +644,8 @@ function ConversationTurn({
               <div>
                 <div className="flex items-center gap-2">
                   <p className="text-sm font-bold text-ink">Kriton</p>
-                  {outcomeStyle && <span className={`h-2 w-2 rounded-full ${outcomeStyle.dot}`} />}
-                  {outcomeStyle && <span className={`text-xs font-semibold ${outcomeStyle.text}`}>{outcomeStyle.label}</span>}
+                  {shownOutcomeStyle && <span className={`h-2 w-2 rounded-full ${shownOutcomeStyle.dot}`} />}
+                  {shownOutcomeStyle && <span className={`text-xs font-semibold ${shownOutcomeStyle.text}`}>{shownOutcomeStyle.label}</span>}
                 </div>
                 <p className="mt-0.5 text-xs text-muted">{routeLabel}</p>
               </div>
@@ -723,18 +740,31 @@ function ConversationTurn({
       )}
     </>
   );
-}
+});
 
 export default function AskKritonPage() {
-  const { session, loading: authLoading } = useAuth();
+  const { session, profile, loading: authLoading } = useAuth();
   const [query, setQuery] = useState("");
   const [jurisdiction, setJurisdiction] = useState("");
+  // Start from the jurisdiction saved in Settings → Kriton defaults, unless
+  // one has already been picked for this conversation.
+  useEffect(() => {
+    if (!session) return;
+    getMySettings(getAuthToken())
+      .then((saved) => { if (saved.default_jurisdiction) setJurisdiction((current) => current || saved.default_jurisdiction); })
+      .catch(() => undefined);
+  }, [session]);
   const [mode, setMode] = useState("Kriton's choice");
   const framework = "";
   const periodStart = "";
   const periodEnd = "";
   const currency = "";
   const [engagementId, setEngagementId] = useState("");
+  // Projects are engagements the user is a member of (GET /engagements).
+  const [engagements, setEngagements] = useState<Engagement[]>([]);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [projectError, setProjectError] = useState("");
+  const [creatingProject, setCreatingProject] = useState(false);
   const [attachments, setAttachments] = useState<AttachmentState[]>([]);
   const [documents, setDocuments] = useState<WorkspaceDocument[]>([]);
   // Only successfully indexed uploads are sent. A failed extraction has no
@@ -751,7 +781,8 @@ export default function AskKritonPage() {
     return loadActiveConversationId(loadConversations());
   });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [sidebarPanel, setSidebarPanel] = useState<"projects" | "sources" | null>(null);
+  const [sidebarPanel, setSidebarPanel] = useState<"chats" | "projects" | "sources" | null>(null);
+  const [chatSearch, setChatSearch] = useState("");
 
   async function refreshDocuments() {
     const token = getAuthToken();
@@ -811,32 +842,60 @@ export default function AskKritonPage() {
     persistConversations(next);
   }
 
-  function patchTurn(convId: string, turnId: string, patch: Partial<Turn>) {
+  /** `save: false` for transient updates (progress messages): saving
+   * stringifies every stored chat, and doing that on each progress step while
+   * an answer streamed in made the page lag. */
+  function patchTurn(convId: string, turnId: string, patch: Partial<Turn>, save = true) {
     setConversations((prev) => {
       const next = prev.map((c) =>
         c.id !== convId ? c : { ...c, updatedAt: Date.now(), turns: c.turns.map((t) => (t.id !== turnId ? t : { ...t, ...patch })) },
       );
-      persistConversations(next);
+      if (save) persistConversations(next);
       return next;
     });
   }
 
-  function startNewChat() {
+  /** A new chat stays in the current project unless one is given. */
+  function startNewChat(projectId?: string) {
     setActiveId(null);
     setQuery("");
     setAttachments([]);
+    if (projectId !== undefined) setEngagementId(projectId);
+  }
+
+  async function createProject(event: FormEvent) {
+    event.preventDefault();
+    const name = newProjectName.trim();
+    if (!name || !session?.access_token) return;
+    setCreatingProject(true);
+    setProjectError("");
+    try {
+      const created = await createEngagement(session.access_token, name);
+      setEngagements((current) => [...current, created].sort((a, b) => a.name.localeCompare(b.name)));
+      setNewProjectName("");
+      startNewChat(created.id);
+      setSidebarPanel(null);
+    } catch (err) {
+      setProjectError(err instanceof ApiError && err.status === 403
+        ? "Only an Admin can create projects."
+        : err instanceof ApiError ? err.message : "The project could not be created.");
+    } finally {
+      setCreatingProject(false);
+    }
   }
 
   /** Seeds the composer with the suggestion + the just-answered turn's own
    * question as context — never auto-submits, the user stays in control. */
-  function handleFollowUp(question: string, originalTurnQuery: string) {
-    setQuery(`${question} Context: ${originalTurnQuery}`);
-  }
+  const handleFollowUp = useCallback((question: string, originalTurnQuery: string) => {
+    setQuery(`${question} Context: ${followUpSubject(originalTurnQuery)}`);
+  }, []);
 
   function selectConversation(id: string) {
     setActiveId(id);
     setQuery("");
     const conversation = conversations.find((item) => item.id === id);
+    // Opening a chat switches to its project, so follow-ups are asked in it.
+    setEngagementId(conversation?.engagementId ?? "");
     setAttachments(
       (conversation?.documentIds ?? [])
         .map((documentId) => documents.find((item) => item.id === documentId))
@@ -907,7 +966,8 @@ export default function AskKritonPage() {
     }));
     setConversations((prev) => {
       const next = isNew
-        ? [{ id: convId, title: questions[0].slice(0, 80), turns: newTurns, createdAt: now, updatedAt: now, pinned: false, documentIds }, ...prev]
+        ? [{ id: convId, title: questions[0].slice(0, 80), turns: newTurns, createdAt: now, updatedAt: now, pinned: false, documentIds,
+            engagementId: engagementId || undefined }, ...prev]
         : prev.map((c) => (c.id === convId ? { ...c, updatedAt: now, documentIds, turns: [...c.turns, ...newTurns] } : c));
       persistConversations(next);
       return next;
@@ -926,8 +986,9 @@ export default function AskKritonPage() {
     try {
       for (const turn of newTurns) {
         const turnId = turn.id;
+        // Outside the try: a failed turn shows it as its Request ID.
+        const idempotencyKey = genId("idem");
         try {
-      const idempotencyKey = genId("idem");
       const response = await askKritonStream(
         token,
         {
@@ -940,11 +1001,13 @@ export default function AskKritonPage() {
           clarification_cycle: questions.length === 1 ? clarificationCycleFor(priorConversation) : 0,
           conversation_id: convId,
           conversation_history: conversationHistory(completedTurns),
-          document_ids: documentIds,
-          // An attached file defines the entity/source scope for this chat.
-          // Do not silently replace a document miss with same-name web results
-          // (for example, another company called "Apex").
-          source_scope: documentIds.length ? "DOCUMENTS_ONLY" : "WEB_ONLY",
+          // An attached file defines the entity/source scope for questions
+          // about it: a document miss is not replaced with same-name web
+          // results (another company called "Apex"). A question that is not
+          // about the file (an IFRS rule, arithmetic on its own figures) is
+          // not limited to it (usesAttachedFile).
+          document_ids: usesAttachedFile(turn.submittedQuery) ? documentIds : [],
+          source_scope: documentIds.length && usesAttachedFile(turn.submittedQuery) ? "DOCUMENTS_ONLY" : "WEB_ONLY",
           task_context: {
             engagement_id: engagementId || null,
             jurisdiction: jurisdiction || null,
@@ -957,7 +1020,7 @@ export default function AskKritonPage() {
           },
         },
         idempotencyKey,
-        ({ message }) => patchTurn(convId, turnId, { progressMessage: message }),
+        ({ message }) => patchTurn(convId, turnId, { progressMessage: message }, false),
       );
       patchTurn(convId, turnId, { result: response, loading: false });
       completedTurns.push({ ...turn, result: response, loading: false });
@@ -965,6 +1028,7 @@ export default function AskKritonPage() {
       patchTurn(convId, turnId, {
         error: err instanceof ApiError ? err.message : "Could not reach the orchestration service.",
         errorStatus: err instanceof ApiError ? err.status : null,
+        errorRequestId: idempotencyKey,
         loading: false,
       });
         }
@@ -995,6 +1059,7 @@ export default function AskKritonPage() {
     listEngagements(token)
       .then((items) => {
         if (!cancelled) {
+          setEngagements(items);
           setEngagementId((current) => current || (items.length === 1 ? items[0].id : ""));
         }
       })
@@ -1013,7 +1078,8 @@ export default function AskKritonPage() {
     onRename: renameConversation,
     onDownload: downloadConversation,
     onDelete: deleteConversation,
-    onNewChat: startNewChat,
+    onNewChat: () => startNewChat(),
+    onOpenChats: () => { setChatSearch(""); setSidebarPanel("chats"); },
     onOpenProjects: () => setSidebarPanel("projects"),
     onOpenSources: () => setSidebarPanel("sources"),
   };
@@ -1036,32 +1102,143 @@ export default function AskKritonPage() {
             </button>
           </header>
 
+          {sidebarPanel === "chats" && (
+            <KritonPanel
+              title="Chats"
+              description="All your saved Kriton conversations. Search by title or by a question you asked."
+              onClose={() => setSidebarPanel(null)}
+            >
+              <input
+                id="chat-search"
+                type="search"
+                autoFocus
+                value={chatSearch}
+                onChange={(event) => setChatSearch(event.target.value)}
+                placeholder="Search chats…"
+                aria-label="Search chats"
+                className="mb-3 w-full rounded-xl border border-line bg-soft px-3 py-2 text-sm text-ink outline-none focus:border-brand"
+              />
+              {(() => {
+                const needle = chatSearch.trim().toLowerCase();
+                const matches = needle
+                  ? sorted.filter((c) => c.title.toLowerCase().includes(needle)
+                      || c.turns.some((t) => t.submittedQuery.toLowerCase().includes(needle)))
+                  : sorted;
+                if (sorted.length === 0) {
+                  return <p className="text-sm text-muted">No chats yet. Ask a question to start one.</p>;
+                }
+                if (matches.length === 0) {
+                  return <p className="text-sm text-muted">No chats match “{chatSearch.trim()}”.</p>;
+                }
+                return (
+                  <div className="max-h-[55vh] space-y-1 overflow-y-auto">
+                    {matches.map((conversation) => {
+                      const hit = needle && !conversation.title.toLowerCase().includes(needle)
+                        ? conversation.turns.find((t) => t.submittedQuery.toLowerCase().includes(needle))?.submittedQuery
+                        : undefined;
+                      return (
+                        <button
+                          key={conversation.id}
+                          type="button"
+                          onClick={() => { selectConversation(conversation.id); setSidebarPanel(null); }}
+                          className={`flex w-full items-center justify-between gap-4 rounded-xl px-3 py-2.5 text-left hover:bg-soft ${conversation.id === activeId ? "bg-soft" : ""}`}
+                        >
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-semibold text-ink">{conversation.title}</span>
+                            <span className="mt-0.5 block truncate text-xs text-muted">
+                              {hit ? `“${hit}”` : `${conversation.turns.length} question${conversation.turns.length === 1 ? "" : "s"} · ${new Date(conversation.updatedAt).toLocaleDateString()}`}
+                            </span>
+                          </span>
+                          <MessageSquare size={16} className="shrink-0 text-muted" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </KritonPanel>
+          )}
+
           {sidebarPanel === "projects" && (
             <KritonPanel
               title="Projects"
-              description="Continue your Kriton work without leaving the assistant."
+              description="Your client engagements. Chats in a project are asked under it, so Kriton checks your access and uses its documents."
               onClose={() => setSidebarPanel(null)}
             >
-              {sorted.length === 0 ? (
-                <p className="text-sm text-muted">No project conversations yet. Start a new chat to create your first one.</p>
-              ) : (
-                <div className="space-y-2">
-                  {sorted.map((conversation) => (
-                    <button
-                      key={conversation.id}
-                      type="button"
-                      onClick={() => { selectConversation(conversation.id); setSidebarPanel(null); }}
-                      className="flex w-full items-center justify-between gap-4 rounded-xl border border-line p-3 text-left hover:border-brand/30 hover:bg-soft"
-                    >
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm font-semibold text-ink">{conversation.title}</span>
-                        <span className="mt-0.5 block text-xs text-muted">{conversation.turns.length} exchange{conversation.turns.length === 1 ? "" : "s"}</span>
-                      </span>
-                      <FolderKanban size={17} className="shrink-0 text-brand" />
-                    </button>
-                  ))}
-                </div>
+              {profile?.role === "Admin" && (
+                <form onSubmit={createProject} className="mb-4 flex gap-2">
+                  <input
+                    id="new-project-name"
+                    value={newProjectName}
+                    onChange={(event) => setNewProjectName(event.target.value)}
+                    placeholder="New project name, e.g. Acme Ltd — FY2026 audit"
+                    maxLength={120}
+                    aria-label="New project name"
+                    className="min-w-0 flex-1 rounded-xl border border-line bg-soft px-3 py-2 text-sm text-ink outline-none focus:border-brand"
+                  />
+                  <button
+                    type="submit"
+                    disabled={creatingProject || !newProjectName.trim()}
+                    className="shrink-0 rounded-xl bg-brand px-3 py-2 text-sm font-semibold text-white hover:bg-brand-2 disabled:opacity-60"
+                  >
+                    {creatingProject ? "Creating…" : "Create project"}
+                  </button>
+                </form>
               )}
+              {projectError && <p className="mb-3 text-sm text-bad">{projectError}</p>}
+              <div className="max-h-[55vh] space-y-3 overflow-y-auto">
+                {[...engagements.map((e) => ({ id: e.id, name: e.name })), { id: "", name: "No project" }].map((project) => {
+                  const chats = sorted.filter((c) => (c.engagementId ?? "") === project.id);
+                  const documentCount = new Set(chats.flatMap((c) => c.documentIds ?? [])).size;
+                  const current = engagementId === project.id;
+                  if (!project.id && chats.length === 0 && engagements.length > 0) return null;
+                  return (
+                    <div key={project.id || "none"} className={`rounded-xl border p-3 ${current ? "border-brand/40 bg-brand/5" : "border-line"}`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="min-w-0">
+                          <span className="flex items-center gap-2 text-sm font-semibold text-ink">
+                            <FolderKanban size={15} className="shrink-0 text-brand" />
+                            <span className="truncate">{project.name}</span>
+                            {current && <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[10px] font-bold text-brand">Current</span>}
+                          </span>
+                          <span className="mt-0.5 block text-xs text-muted">
+                            {chats.length} chat{chats.length === 1 ? "" : "s"} · {documentCount} document{documentCount === 1 ? "" : "s"}
+                          </span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => { startNewChat(project.id); setSidebarPanel(null); }}
+                          className="shrink-0 rounded-lg border border-line px-2.5 py-1.5 text-xs font-semibold text-ink hover:bg-soft"
+                        >
+                          New chat here
+                        </button>
+                      </div>
+                      {chats.length > 0 && (
+                        <div className="mt-2 space-y-0.5 border-t border-line pt-2">
+                          {chats.slice(0, 8).map((conversation) => (
+                            <button
+                              key={conversation.id}
+                              type="button"
+                              onClick={() => { selectConversation(conversation.id); setSidebarPanel(null); }}
+                              className="block w-full truncate rounded-lg px-2 py-1.5 text-left text-sm text-ink hover:bg-soft"
+                            >
+                              {conversation.title}
+                            </button>
+                          ))}
+                          {chats.length > 8 && <p className="px-2 text-xs text-muted">and {chats.length - 8} more — search them in Chats.</p>}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {engagements.length === 0 && (
+                  <p className="text-sm text-muted">
+                    {profile?.role === "Admin"
+                      ? "You have no projects yet. Create one above to group chats for a client or engagement."
+                      : "You are not a member of any project yet. Ask your Admin to add you to an engagement."}
+                  </p>
+                )}
+              </div>
             </KritonPanel>
           )}
 
@@ -1083,27 +1260,7 @@ export default function AskKritonPage() {
             </KritonPanel>
           )}
 
-          {hasConversation && (
-            <div className="relative z-10 flex shrink-0 justify-end border-b border-line/50 px-4 py-2">
-              <button
-                type="button"
-                className="rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-medium text-ink hover:bg-soft"
-                onClick={() => {
-                  const history = scrollRef.current;
-                  const questions = history?.querySelectorAll<HTMLElement>("[data-kriton-question]");
-                  const question = questions?.[questions.length - 1];
-                  if (!history || !question) return;
-                  history.scrollTo({
-                    top: history.scrollTop + question.getBoundingClientRect().top - history.getBoundingClientRect().top - 16,
-                    behavior: "instant",
-                  });
-                  history.focus({ preventScroll: true });
-                }}
-              >
-                ↑ Back to latest question
-              </button>
-            </div>
-          )}
+
 
           <div ref={scrollRef} onScroll={onConversationScroll} role="region" aria-label="Conversation history" tabIndex={0} className="relative z-10 min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain px-4">
             <div className={`mx-auto min-h-full min-w-0 w-full max-w-5xl pb-16 pt-6 md:pb-24 md:pt-8 ${hasConversation ? "" : "flex flex-col items-center justify-center"}`}>

@@ -14,6 +14,16 @@ async function refreshToken(): Promise<string> {
   return pendingRefresh;
 }
 
+/** Seconds until the JWT expires (negative once expired); null if unreadable. */
+function secondsLeft(token: string): number | null {
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    return typeof payload.exp === "number" ? payload.exp - Date.now() / 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Retry authentication once; concurrent 401s share one session refresh. */
 export async function fetchWithSession(url: string, token: string, init?: RequestInit): Promise<Response> {
   if (!token) {
@@ -21,6 +31,15 @@ export async function fetchWithSession(url: string, token: string, init?: Reques
     token = data.session?.access_token ?? "";
   }
   if (!token) throw new Error("Sign in to load these records.");
+  // Renew a token that has expired (or is about to) before sending it. After
+  // the tab sat idle or the laptop slept, background requests (the bell)
+  // went out with the old token, failed with 401 and could sign the user out.
+  const left = secondsLeft(token);
+  if (left !== null && left < 60) {
+    const current = getCurrentAccessToken();
+    const fresher = current && current !== token && (secondsLeft(current) ?? 0) >= 60 ? current : await refreshToken();
+    if (fresher) token = fresher;
+  }
   const send = (accessToken: string) => {
     const headers = new Headers(init?.headers);
     headers.set("Authorization", `Bearer ${accessToken}`);

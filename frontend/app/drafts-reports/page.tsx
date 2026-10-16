@@ -171,7 +171,6 @@ export default function DraftsReportsPage() {
     <PageShell
       title="Drafts & Reports"
       subtitle="In-progress reports and drafts generated from Kriton answers."
-      showMetrics={false}
     >
       {error && <p className="text-xs text-bad mb-3">{error}</p>}
 

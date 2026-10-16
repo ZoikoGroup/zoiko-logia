@@ -40,3 +40,11 @@ describe("supplied-data answer labels", () => {
     expect(suppliedAnswerLabel(null)).toBeNull();
   });
 });
+
+describe("failed request says which failure it was", () => {
+  it("names a timeout and an internal error separately", () => {
+    expect(stateForError(504).title).toBe("Kriton took too long on this request");
+    expect(stateForError(500).title).toBe("Kriton hit an internal error");
+    expect(stateForError(503).title).toBe("Kriton is temporarily unavailable");
+  });
+});

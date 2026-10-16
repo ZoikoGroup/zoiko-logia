@@ -103,9 +103,14 @@ def _sync_engine_options(url: str) -> dict:
         return {"connect_args": {"check_same_thread": False}}
     return {
         "connect_args": _SYNC_POSTGRES_CONNECT_ARGS,
+        "pool_size": settings.DB_POOL_SIZE,
+        "max_overflow": settings.DB_MAX_OVERFLOW,
         "pool_timeout": settings.DB_POOL_TIMEOUT_SECONDS,
         "pool_pre_ping": True,
-        "pool_recycle": 300,
+        # Pre-ping catches a connection the pooler closed while idle, so
+        # recycling can be rarer: every new connection is a TLS handshake that
+        # can hang on a flaky network.
+        "pool_recycle": 900,
     }
 
 
@@ -117,9 +122,14 @@ def _async_engine_options(url: str) -> dict:
     # use.
     return {
         "connect_args": _ASYNC_POSTGRES_CONNECT_ARGS,
+        "pool_size": settings.DB_POOL_SIZE,
+        "max_overflow": settings.DB_MAX_OVERFLOW,
         "pool_timeout": settings.DB_POOL_TIMEOUT_SECONDS,
         "pool_pre_ping": True,
-        "pool_recycle": 300,
+        # Pre-ping catches a connection the pooler closed while idle, so
+        # recycling can be rarer: every new connection is a TLS handshake that
+        # can hang on a flaky network.
+        "pool_recycle": 900,
     }
 
 
@@ -142,7 +152,7 @@ def get_sync_db() -> Generator[Session, None, None]:
 # one-shot seed scripts (scripts/seed_dev_user.py, ingest_reference_sources.py)
 # import directly — those need to write rows unconstrained by RLS.
 # pool_pre_ping revalidates a pooled connection before handing it out, and
-# pool_recycle drops connections older than 5 min — both needed because
+# pool_recycle drops connections older than 15 min — both needed because
 # Supabase's connection pooler silently closes idle connections, and without
 # these a reused-but-dead connection fails a request with
 # "asyncpg ... connection is closed" (intermittent, since it only hits stale
@@ -185,11 +195,15 @@ async def _open_request_connection() -> AsyncConnection:
     occasionally takes longer than the connect timeout for a single attempt;
     the retry a moment later usually succeeds, where the failure used to reach
     the browser as a bare 500 (reported there as a CORS error)."""
-    try:
-        return await request_engine.connect()
-    except (TimeoutError, OSError, SQLAlchemyError):
-        await asyncio.sleep(0.5)
-        return await request_engine.connect()
+    attempts = max(1, settings.DB_CONNECT_ATTEMPTS)
+    for attempt in range(1, attempts + 1):
+        try:
+            return await request_engine.connect()
+        except (TimeoutError, OSError, SQLAlchemyError):
+            if attempt == attempts:
+                raise
+            await asyncio.sleep(0.3 * attempt)
+    raise RuntimeError("unreachable")
 
 
 async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
@@ -228,28 +242,29 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
     Holding one connection for the request removes the possibility."""
     connection = await _open_request_connection()
     try:
+        identity = ("", "")
+        if not settings.is_sqlite:
+            user_id, tenant_id = _identity_from_request(request)
+            identity = (tenant_id, user_id)
+            # Set straight on the driver connection, before SQLAlchemy opens
+            # a transaction on it: asyncpg runs a statement outside a
+            # transaction in autocommit, so this is one round trip (~0.3s to
+            # the hosted database) instead of BEGIN + SELECT + COMMIT. The
+            # settings are session-level (is_local=false), so they persist for
+            # every transaction this request runs and can't be undone by a
+            # later rollback (the governed-retrieval timeout handler's rollback
+            # used to erase app.tenant_id, failing the next insert's RLS check).
+            # Always called, even with "", so a connection reused from the
+            # pool never carries a prior request's identity into one that has
+            # none. set_config takes bound parameters, unlike SET.
+            raw = await connection.get_raw_connection()
+            await raw.driver_connection.execute(
+                "SELECT set_config('app.tenant_id', $1, false), set_config('app.user_id', $2, false)",
+                tenant_id, user_id,
+            )
         async with RequestSessionLocal(bind=connection) as session:
-            if not settings.is_sqlite:
-                user_id, tenant_id = _identity_from_request(request)
-                # set_config(..., false) accepts a bound parameter, unlike SET,
-                # whose grammar takes a literal, not a placeholder — binding
-                # these directly into SET would require unsafe string
-                # formatting. Always called, even with "", so a connection
-                # reused from the pool never carries over a prior request's
-                # identity into a request that has none.
-                await session.execute(
-                    text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id}
-                )
-                await session.execute(
-                    text("SELECT set_config('app.user_id', :user_id, false)"), {"user_id": user_id}
-                )
-                # Committed, so the identity outlives any later rollback in
-                # this request. A session-level setting made inside a
-                # transaction is undone if that transaction rolls back: the
-                # governed-retrieval timeout handler's rollback erased
-                # app.tenant_id, and the answer record insert then failed RLS
-                # ("new row violates row-level security policy") with a 503.
-                await session.commit()
+            # Lets rbac skip re-setting an identity that is already in place.
+            session.info["rls_identity"] = identity
             yield session
     finally:
         await connection.close()

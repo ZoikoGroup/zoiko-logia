@@ -136,7 +136,7 @@ export default function ReportsInsightsPage() {
   const openReviews = (data?.reviews?.byStatus.open ?? 0) + (data?.reviews?.byStatus.needs_evidence ?? 0);
 
   return (
-    <PageShell title="Reports & Insights" subtitle="How Kriton is used in your workspace, from its own records." showMetrics={false}>
+    <PageShell title="Reports & Insights" subtitle="How Kriton is used in your workspace, from its own records.">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <div className="flex rounded-lg border border-line p-0.5" role="group" aria-label="Time range">
           {WINDOWS.map((d) => (

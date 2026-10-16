@@ -4,7 +4,10 @@ import type { LucideIcon } from "lucide-react";
 export type PanelTone = "brand" | "ok" | "warn" | "bad" | "info";
 
 export const PANEL_CLASS =
-  "rounded-lg border border-line bg-panel/75 backdrop-blur-md p-5 shadow-[0_12px_30px_rgba(0,0,0,0.02)]";
+  // Solid, not bg-panel/75 + backdrop-blur: the blur re-rendered the page
+  // behind every panel on each scroll frame (67 panels across the app) and
+  // made scrolling lag; on the flat page background it was barely visible.
+  "rounded-lg border border-line bg-panel p-5 shadow-[0_12px_30px_rgba(0,0,0,0.02)]";
 
 const ICON_BADGE_STYLE: Record<PanelTone, string> = {
   brand: "bg-brand/10 border-brand/20 text-brand",

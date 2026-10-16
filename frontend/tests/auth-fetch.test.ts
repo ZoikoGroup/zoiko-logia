@@ -35,3 +35,22 @@ it("waits for the session and never sends an empty bearer token", async () => {
   await expect(fetchWithSession("/safety/summary", "")).rejects.toThrow("Sign in");
   expect(fetcher).not.toHaveBeenCalled();
 });
+function jwt(expiresInSeconds: number): string {
+  const payload = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + expiresInSeconds })).replace(/=+$/, "");
+  return `h.${payload}.s`;
+}
+it("renews an expired token before sending, instead of failing with 401", async () => {
+  const expired = jwt(-30);
+  setCurrentAccessToken(expired);
+  auth.refreshSession.mockResolvedValue({ data: { session: { access_token: "fresh" } }, error: null });
+  const fetcher = vi.fn().mockImplementation((_url, init) => Promise.resolve(new Response("{}", { status: init.headers.get("Authorization") === "Bearer fresh" ? 200 : 401 })));
+  vi.stubGlobal("fetch", fetcher);
+  expect((await fetchWithSession("/notifications/summary", expired)).status).toBe(200);
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});
+it("sends a token that is still valid without renewing it", async () => {
+  const valid = jwt(3600);
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 200 })));
+  expect((await fetchWithSession("/notifications/summary", valid)).status).toBe(200);
+  expect(auth.refreshSession).not.toHaveBeenCalled();
+});

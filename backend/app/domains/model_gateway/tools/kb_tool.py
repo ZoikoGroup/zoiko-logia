@@ -84,7 +84,11 @@ async def _handle(args: KnowledgeBaseArgs) -> ToolResult:
         return ToolResult.failure(
             "no_data",
             f"No governed passage covers this ({bundle.confidence_state} evidence). "
-            "Say the sources do not state it; do not answer from memory.",
+            # "Say the sources do not state it" ended runs here with search_web
+            # still planned: an IFRS 18 question the library has no document
+            # for was answered "not established" without a web search.
+            "If search_web is available, search the web for it next; only if that finds nothing, "
+            "say the sources do not state it. Do not answer from memory.",
         )
     return ToolResult(
         ok=True,

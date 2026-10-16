@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { GovernedRegister, type RegisterRecord } from "@/components/governance/GovernedRegister";
+import { ContextStrip } from "@/components/overview/OverviewUI";
 import { PageShell } from "@/components/governance/PageShell";
 import { PanelHeader, PANEL_CLASS } from "@/components/governance/PanelHeader";
 import { LiveSourceStatus } from "@/components/governance/LiveSourceStatus";
@@ -201,16 +203,35 @@ export default function EvaluationGatesPage() {
     ? Array.from(new Set([...Object.keys(threshold?.metrics ?? {}), ...Object.keys(selected.metrics)]))
     : [];
   const eligible = selected?.pack?.promotion_eligible ?? false;
+  const gateRecords: RegisterRecord[] = metricKeys.map(key => {
+    const failure = selected?.failures.find(f => f.metric === key);
+    const missing = selected?.unmeasured.includes(key) || selected?.metrics[key] == null;
+    const state = failure ? "Failed" : missing ? "Unmeasured" : threshold?.metrics[key] == null ? "Observed" : "Passed";
+    return { id: key, title: METRIC_META[key]?.label || key, category: zeroTolerance.includes(key) ? "Zero tolerance" : "Quality metric", state, scope: selected?.datasetId, owner: threshold?.owner,
+      facts: { "Run": selected?.id || "Not selected", "Result": fmt(key, selected?.metrics[key]), "Threshold": fmt(key, threshold?.metrics[key]), "Severity": failure?.severity || (zeroTolerance.includes(key) ? "Zero tolerance" : "Quality"), "Threshold owner": threshold?.owner || "Not recorded", "Independent approver": threshold?.approver || "Not recorded" },
+      evidence: [METRIC_META[key]?.description || key, failure?.reason || (state === "Passed" ? "No failure reported for this measured threshold." : "Review measurement and threshold evidence."), `Configuration match: ${selected?.configMatches ? "current" : "stale / unverified"}`],
+      history: selected ? [`Run recorded ${selected.createdAt || "without timestamp"}`, `Configuration hash: ${selected.configHash}`, `Promotion decision: ${selected.promotion?.decision || "Not recorded"}`] : [],
+    };
+  });
+
 
   return (
     <PageShell
       title="Evaluation Gates"
       subtitle="QA benchmark runs, red-team gates, citation checks, and release promotion authorizations — ZL-T0-10 §3, ZL-T0-11."
-      showMetrics={false}
     >
 
       <LiveSourceStatus loading={loading} error={loadError} signedOut={false} reload={load} />
 
+      <ContextStrip jurisdiction={selected?.datasetId || "Select an evaluation run below"} framework="Recorded threshold set" period={selected?.createdAt?.slice(0, 10) || "No snapshot selected"} />
+      {selected && <div className={`rounded-lg border p-4 text-xs font-bold ${eligible ? "border-ok/25 bg-ok/5 text-ok" : "border-bad/25 bg-bad/5 text-bad"}`}>{eligible ? "Evaluation pack eligible for independent release review" : "RELEASE HOLD · Evaluation evidence does not authorize promotion"}</div>}
+      {!loadError && <GovernedRegister title="Mandatory gate register" inspector="Gate inspector" records={gateRecords} tabs={["Gate checks", "Test evidence", "Decision trail"]} doctrine="Release decisions require every mandatory gate, current configuration evidence, and independent authorization. Aggregate scores cannot override a failed or unmeasured gate." empty="Choose a run from the evaluation console below to inspect its metric gates." metrics={[
+        { label: "Metric gates", value: selected ? gateRecords.length : "—", detail: "Selected run and threshold set" },
+        { label: "Gates passed", value: selected ? gateRecords.filter(r => r.state === "Passed").length : "—", detail: "Measured thresholds without reported failures", tone: "green" },
+        { label: "Failed gates", value: selected ? gateRecords.filter(r => r.state === "Failed").length : "—", detail: "Review blocking evidence", tone: "red" },
+        { label: "Unmeasured gates", value: selected ? gateRecords.filter(r => r.state === "Unmeasured").length : "—", detail: "Missing measurements cannot establish a pass", tone: "amber" },
+        { label: "Saved evaluation runs", value: history.length, detail: "Available run history" },
+      ]} />}
       <div className="space-y-6">
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start max-w-7xl">

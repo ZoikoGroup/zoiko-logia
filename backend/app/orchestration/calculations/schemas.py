@@ -34,4 +34,8 @@ class CalculationResult(BaseModel):
     verification_status: Literal["passed", "not_run"] = "not_run"
     error_code: str | None = None
     message: str = ""
+    # Plain statements the result depends on: a reported figure that does not
+    # agree with its own inputs, what arithmetic can settle versus what only
+    # the preparer can confirm, an input carried from an earlier message.
+    notes: list[str] = Field(default_factory=list)
 

@@ -651,7 +651,16 @@ async def _indicator_source(
     if not points:
         return None
     tail = points[-_MAX_POINTS:]
-    values_txt = ", ".join(f"{p}: {v:.15g}" for p, v in tail)
+    # Published precision, not float noise: the answer repeated
+    # "3.88306881625999 %" for UK inflation. Percentages to 2 decimals,
+    # other values to 6 significant figures — the same text the observation
+    # carries, so the figure check compares like with like.
+    percent = "%" in label
+
+    def shown(value: float) -> str:
+        return f"{value:.2f}" if percent else f"{value:.6g}"
+
+    values_txt = ", ".join(f"{p}: {shown(v)}" for p, v in tail)
     return WebSource(
         title=f"{label} — {country.title()}",
         url=url,
@@ -662,8 +671,8 @@ async def _indicator_source(
         freshness="historical",
         observation=LiveObservation(
             observation_id=f"obs_{uuid.uuid4().hex}", indicator=label,
-            value=str(tail[-1][1]),
-            unit="percent" if "%" in label else "provider-defined",
+            value=shown(tail[-1][1]),
+            unit="percent" if percent else "provider-defined",
             period=str(tail[-1][0]), provider=provider, source_url=url,
             freshness="historical",
         ),
@@ -1739,7 +1748,8 @@ def _build_source(match: SeriesMatch) -> WebSource:
         observation = LiveObservation(
             observation_id=f"obs_{uuid.uuid4().hex}",
             indicator=match.series_name,
-            value=str(latest_value),
+            # Same precision as the snippet text above (:g), not the raw float.
+            value=f"{latest_value:g}",
             unit="percent" if "%" in match.series_name else "provider-defined",
             period=str(latest_period),
             provider=match.provider_name or "DBnomics",

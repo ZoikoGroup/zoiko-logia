@@ -14,7 +14,11 @@ const memory = new Map<string, unknown>();
  * `reload()` (which bypasses the server's short cache). Shows the last result
  * for this page immediately when there is one. */
 export function useLiveData<T>(key: string, fetcher: Fetcher<T>, timeoutMs = 45_000) {
-  const { session, profile, loading: authLoading } = useAuth();
+  const { session, profile, loading: authLoading, profileLoading } = useAuth();
+  // Wait for the profile before the first fetch: the cache key includes the
+  // role, so fetching earlier loaded every page twice (once with no role,
+  // again when the profile arrived).
+  const waiting = authLoading || Boolean(session && profileLoading && !profile);
   const userId = session?.user?.id ?? "";
   const cacheKey = `${userId}:${profile?.tenant_id ?? ""}:${profile?.role ?? ""}:${key}`;
   const [version, setVersion] = useState(0);
@@ -40,11 +44,11 @@ export function useLiveData<T>(key: string, fetcher: Fetcher<T>, timeoutMs = 45_
     : snapshot.key === cacheKey ? snapshot.data
     : ((memory.get(cacheKey) as T | undefined) ?? null);
   const error = session && failure.request === requestId ? failure.message : "";
-  const loading = authLoading || (Boolean(token) && settled !== requestId);
+  const loading = waiting || (Boolean(token) && settled !== requestId);
 
   useEffect(() => {
-    if (authLoading || !token) {
-      if (!authLoading) memory.clear();
+    if (waiting || !token) {
+      if (!authLoading && !token) memory.clear();
       return;
     }
     const controller = new AbortController();
@@ -81,7 +85,7 @@ export function useLiveData<T>(key: string, fetcher: Fetcher<T>, timeoutMs = 45_
     // fetcher reads its options from refs at every call site; key changes go
     // through reload().
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, token, userId, cacheKey, requestId, timeoutMs]);
+  }, [waiting, token, userId, cacheKey, requestId, timeoutMs]);
 
   return { data, error, loading, signedOut: !authLoading && !session, reload };
 }

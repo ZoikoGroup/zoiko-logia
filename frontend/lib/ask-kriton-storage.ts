@@ -23,6 +23,8 @@ export type Turn = {
    *  UI distinguish "Kriton answered with a 4xx/5xx" from "the request never
    *  reached Kriton" instead of showing one generic message for both. */
   errorStatus?: number | null;
+  /** The failed request's id (its Idempotency-Key), as logged in backend/logs/kriton-requests.log. */
+  errorRequestId?: string;
   result: AskKritonResponse | null;
   /** Latest server-reported orchestration stage while this turn is running. */
   progressMessage?: string;
@@ -39,6 +41,8 @@ export type Conversation = {
   updatedAt: number;
   pinned: boolean;
   documentIds?: string[];
+  /** The project (engagement) this chat belongs to; absent for "No project". */
+  engagementId?: string;
 };
 
 const CONVERSATIONS_KEY = "kriton_conversations_v3";

@@ -7,9 +7,10 @@ Gate 1) — massarius/schemas.py re-exports these types rather than redefining t
 since this file already anchors the live AskKritonResponse contract.
 """
 from __future__ import annotations
+import re
 from datetime import date
 from typing import Literal, Optional, List
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.domains.calculations.schemas import (
     LiveObservation,
     VerifiedChartSpec,
@@ -125,21 +126,58 @@ from app.orchestration.calculations.schemas import CalculationResult
 
 # ── Request ──────────────────────────────────────────────────────────────────
 
+# A pasted document is a normal message (as in ChatGPT or Claude), so the
+# question itself is bounded only by what one model call can take. Context
+# from earlier turns is shortened here instead of rejected: a long paste
+# followed by any question failed with a 422 the UI showed as "[object Object]".
+MAX_QUERY_CHARS = 100_000
+PREVIOUS_QUERY_CHARS = 4000
+HISTORY_MESSAGE_CHARS = 8000
+_GLUED_CONNECTOR = re.compile(r"(\d)(and|or|vs|versus|with|explain|compare)\b", re.I)
+
+
+def clip_context(text: Optional[str], limit: int) -> Optional[str]:
+    """Keep the start and the end of an over-long text. A pasted document
+    usually ends with the actual request ("comment on the above")."""
+    if text is None or len(text) <= limit:
+        return text
+    head = limit // 3
+    tail = limit - head - 5
+    return f"{text[:head]}\n…\n{text[-tail:]}"
+
+
 class ConversationMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
     role: Literal["user", "assistant"]
-    content: str = Field(min_length=1, max_length=4000)
+    content: str = Field(min_length=1)
+
+    @field_validator("content")
+    @classmethod
+    def _shorten(cls, value: str) -> str:
+        return clip_context(value, HISTORY_MESSAGE_CHARS) or value
 
 
 class AskKritonRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    query: str
+    query: str = Field(max_length=MAX_QUERY_CHARS)
     document_ids: List[str] = Field(default_factory=list)
     source_scope: Literal["WEB_ONLY", "DOCUMENTS_ONLY", "DOCUMENTS_THEN_WEB", "COMBINED"] = "DOCUMENTS_THEN_WEB"
     # Immediately preceding user query. conversation_id is correlation, not
     # server-side chat memory; this context is still treated as untrusted.
-    previous_query: Optional[str] = Field(default=None, max_length=4000)
+    previous_query: Optional[str] = None
+
+    @field_validator("previous_query")
+    @classmethod
+    def _shorten_previous(cls, value: Optional[str]) -> Optional[str]:
+        return clip_context(value, PREVIOUS_QUERY_CHARS)
+
+    @field_validator("query")
+    @classmethod
+    def _space_glued_words(cls, value: str) -> str:
+        # "IAS 1and explain" searched for the token "1and" and found nothing,
+        # while "IAS 1 and explain" was answered.
+        return _GLUED_CONNECTOR.sub(r"\1 \2", value)
     jurisdiction: str = ""
     mode: str = "Workflow"
     # Round-tripped by the client across a clarification exchange so

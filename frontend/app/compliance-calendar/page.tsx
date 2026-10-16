@@ -69,7 +69,7 @@ export default function ComplianceCalendarPage() {
   const soon = (data?.deadlines ?? []).filter((d) => d.daysLeft <= 7).length;
 
   return (
-    <PageShell title="Compliance Calendar" subtitle="Upcoming statutory filing and payment deadlines, each with its official source." showMetrics={false}>
+    <PageShell title="Compliance Calendar" subtitle="Upcoming statutory filing and payment deadlines, each with its official source.">
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <div className="flex rounded-lg border border-line p-0.5" role="group" aria-label="Country">
           {["", ...(data?.jurisdictions ?? ["India", "UK", "US"])].map((j) => (

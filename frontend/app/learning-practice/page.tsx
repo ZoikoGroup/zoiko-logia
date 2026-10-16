@@ -171,7 +171,6 @@ export default function LearningPracticePage() {
     <PageShell
       title="Learning & Practice"
       subtitle="Guided learning content, syllabus pathways, and topic maps for skill development."
-      showMetrics={false}
     >
       {error && <p className="text-xs text-bad mb-3">{error}</p>}
 

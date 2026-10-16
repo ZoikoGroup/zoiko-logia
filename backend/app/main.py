@@ -29,6 +29,49 @@ from app.domains.operations.telemetry import recorder as api_recorder
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+
+def _log_problems_to_file() -> None:
+    """Warnings and errors also go to backend/logs/kriton-errors.log.
+
+    They were printed only in the terminal running uvicorn, so a failed
+    request ("Kriton is temporarily unavailable") left no record to find the
+    cause in afterwards — and a failed request's audit batch is discarded.
+    Rotates at 5 MB, keeps three files. Off under pytest, or with
+    KRITON_ERROR_LOG=off."""
+    import sys
+    from logging.handlers import RotatingFileHandler
+
+    if "pytest" in sys.modules or os.getenv("KRITON_ERROR_LOG", "on").lower() in ("off", "0", "false"):
+        return
+    root = logging.getLogger()
+    if any(getattr(handler, "_kriton_error_log", False) for handler in root.handlers):
+        return  # a --reload re-import must not add a second handler
+    folder = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+    os.makedirs(folder, exist_ok=True)
+    handler = RotatingFileHandler(os.path.join(folder, "kriton-errors.log"), maxBytes=5_000_000, backupCount=3)
+    handler.setLevel(logging.WARNING)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    handler._kriton_error_log = True
+    root.addHandler(handler)
+    if root.level > logging.WARNING or root.level == logging.NOTSET:
+        root.setLevel(logging.WARNING)
+
+    # Every question's lifecycle (orchestration/router.py: received →
+    # finished / failed with a category / cancelled), by request id, in its
+    # own file and the terminal (so also dev.log).
+    requests = logging.getLogger("kriton.requests")
+    requests.setLevel(logging.INFO)
+    requests.propagate = False
+    trail = RotatingFileHandler(os.path.join(folder, "kriton-requests.log"), maxBytes=5_000_000, backupCount=3)
+    terminal = logging.StreamHandler()
+    for each in (trail, terminal):
+        each.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        requests.addHandler(each)
+    requests.addHandler(handler)  # failures also land in kriton-errors.log
+
+
+_log_problems_to_file()
+
 _TENANT_SCOPED_TABLES = (
     "sources", "source_versions", "workspace_documents", "workspace_document_chunks", "workspace_artifacts",
     "workspace_conversation_documents",
@@ -829,7 +872,21 @@ async def lifespan(app: FastAPI):
     """Serve only an explicitly prepared database; never execute startup DDL."""
     _require_supabase_config()
     try:
-        if await _stored_fingerprint() != _startup_fingerprint():
+        database_reachable = True
+        try:
+            stored = await _stored_fingerprint()
+        except RuntimeError as exc:
+            if not settings.SKIP_STARTUP_FINGERPRINT_CHECK:
+                raise
+            # Local development only: a slow or briefly unreachable database at
+            # boot used to exit the server, and under --reload it then stayed
+            # down until a file changed ("Kriton is temporarily unavailable").
+            # Start anyway; every request retries its own connection.
+            print(f"WARNING: {exc} Starting anyway because SKIP_STARTUP_FINGERPRINT_CHECK is true; "
+                  "requests will retry the database.")
+            stored = _startup_fingerprint()
+            database_reachable = False
+        if stored != _startup_fingerprint():
             if not settings.SKIP_STARTUP_FINGERPRINT_CHECK:
                 raise RuntimeError("Database setup is required. Run python scripts/setup_database.py before starting the application.")
             # Local development against a database shared with other branches:
@@ -837,7 +894,10 @@ async def lifespan(app: FastAPI):
             # rewriting it back would break that developer's server in turn.
             print("WARNING: database setup fingerprint differs from this code; starting anyway because "
                   "SKIP_STARTUP_FINGERPRINT_CHECK is true. Never set this in production.")
-        await _verify_security_policies()
+        if database_reachable:
+            await _verify_security_policies()
+        else:
+            print("WARNING: row-level security policies were not verified at startup (database unreachable).")
         await _warm_up_ml_models()
         from app.domains.model_gateway.service import agent_mode_status
         status = agent_mode_status()
@@ -1049,7 +1109,9 @@ def create_app() -> FastAPI:
     async def health_agent() -> dict:
         """Agent mode on/off and the reasons, with the registered tools."""
         from app.domains.model_gateway.service import agent_mode_status
-        return agent_mode_status()
+        from app.orchestration.websearch import tavily_status
+        # Tavily's own state: a used-up plan (HTTP 432) shows here, not only in logs.
+        return {**agent_mode_status(), "web_search_tavily": tavily_status()}
 
     @app.get("/health/live", tags=["Health"])
     async def health_live() -> dict[str, str]:

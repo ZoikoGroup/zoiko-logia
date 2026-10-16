@@ -62,6 +62,63 @@ def missing_tax_inputs(query: str) -> str | None:
     return None
 
 
+# A VAT/GST amount question needs: the country, the rate(s), and whether the
+# figures include VAT. "Sales £120,000, purchases £48,000. How much VAT do I
+# owe?" was answered "(£120,000 − £48,000) × r" — silently assuming the
+# figures exclude VAT and that every item carries one rate.
+_VAT = re.compile(r"\b(?:vat|gst)\b", re.I)
+_VAT_AMOUNT_QUESTION = re.compile(
+    r"\b(?:how much|owe[sd]?|payable|liabilit\w*|due to|pay (?:to )?(?:hmrc|the tax))\b"
+    r"|\b(?:calculate|compute|work out|what is|what's)\b[^.?]{0,40}\b(?:vat|gst)\b"
+    r"|\b(?:vat|gst)\s+(?:on|of)\s+[£$€₹]?\s*\d",
+    re.I,
+)
+_VAT_LOOKUP_ONLY = re.compile(r"\b(?:register|registration|threshold|deadline|records?|reclaim period)\b", re.I)
+_TREATMENT = re.compile(
+    r"\b(?:incl(?:ud(?:e|es|ed|ing)|usive|\.)?|excl(?:ud(?:e|es|ed|ing)|usive|\.)?|net of|gross of|plus vat|plus gst|"
+    r"before (?:vat|gst)|after (?:vat|gst)|vat[- ]inclusive|vat[- ]exclusive|ex[- ]vat|inc[- ]vat)\b",
+    re.I,
+)
+_SINGLE_COUNTRY_CURRENCY = re.compile(r"£|₹|\b(?:gbp|hmrc|sterling|inr|rupees?|aed|dirhams?|sar|riyals?)\b", re.I)
+_SAME_RATE = re.compile(r"\b(?:all|every|each)\b[^.?]{0,40}\b(?:standard[- ]rated|at \d|same rate)|\bsame rate\b", re.I)
+
+
+def _rate_per_item(query: str) -> bool:
+    from app.orchestration.calculations.engine import item_rate
+    return (item_rate(query, ("sales", "turnover", "outputs")) is not None
+            and item_rate(query, ("purchases", "purchase", "inputs")) is not None)
+
+
+def missing_vat_inputs(query: str) -> str | None:
+    """The inputs a VAT/GST amount needs that the question does not give —
+    only those — or None when it can be calculated (or is not that question)."""
+    q = query or ""
+    if not (_VAT.search(q) and _VAT_AMOUNT_QUESTION.search(q) and re.search(r"\d", q)) or _VAT_LOOKUP_ONLY.search(q):
+        return None
+    if re.search(r"[-−]\s*\d+(?:\.\d+)?\s*%", q):
+        return None  # an impossible rate is rejected first by the calculator (INVALID_PERCENTAGE)
+    from app.orchestration.source_taxonomy import detect_jurisdictions
+    has_rate = bool(re.search(r"\d+(?:\.\d+)?\s*%", q))
+    sales_and_purchases = bool(re.search(r"\b(?:sales|turnover|output)\b", q, re.I)
+                               and re.search(r"\b(?:purchases?|costs?|expenses|input)\b", q, re.I))
+    missing = []
+    if not detect_jurisdictions(q, infer_from_tax_terms=False) and not _SINGLE_COUNTRY_CURRENCY.search(q):
+        missing.append("which country the business is VAT-registered in")
+    if not has_rate:
+        missing.append("the VAT rate or rates that apply (standard, reduced, zero-rated or exempt)")
+    elif sales_and_purchases and not _SAME_RATE.search(q) and not _rate_per_item(q):
+        missing.append("whether all the sales and purchases are at that rate, or some are zero-rated, exempt or outside VAT")
+    if not _TREATMENT.search(q):
+        missing.append("whether the amounts include VAT or exclude VAT")
+    if not missing:
+        return None
+    items = "; ".join(f"({index}) {item}" for index, item in enumerate(missing, start=1))
+    goal = ("output VAT on sales, input VAT on purchases and the amount payable"
+            if sales_and_purchases else "the VAT amount and the total")
+    return (f"To work out the VAT I need: {items}. With those I can calculate {goal} — "
+            "I won't assume a rate or whether the figures include VAT.")
+
+
 def needs_invoice_attachment(query: str) -> bool:
     return bool(re.search(r"\b(?:invoice|subtotal)\b", query, re.I)
                 and re.search(r"\b(?:extract|attached|uploaded|sample invoice)\b", query, re.I))

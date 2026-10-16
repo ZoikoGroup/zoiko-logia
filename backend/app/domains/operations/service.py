@@ -30,6 +30,15 @@ def _set(name: str) -> bool:
     return bool(value) and "<" not in value and ">" not in value
 
 
+def _usable_secret(value: str | None) -> bool:
+    """False for empty values and .env placeholders such as "<service-role-key>"
+    or "your-key…", which cannot be sent as a header."""
+    if not value or not value.isascii():
+        return False
+    lowered = value.lower()
+    return not any(marker in lowered for marker in ("<", ">", "your-", "your_", "changeme", "placeholder"))
+
+
 def _any(*names: str) -> bool:
     return any(_set(n) for n in names)
 
@@ -174,8 +183,10 @@ async def _http_check(client: httpx.AsyncClient, key: str, url: str | None, *,
             return _result(key, "down", latency, f"Credentials rejected (HTTP {response.status_code})")
         ok = response.status_code < 500
         return _result(key, "operational" if ok else "down", latency, f"HTTP {response.status_code}")
-    except (httpx.HTTPError, OSError) as exc:
+    except (httpx.HTTPError, OSError, UnicodeError, ValueError) as exc:
         # Only the exception type: a message could echo a URL holding a key.
+        # UnicodeError: a non-ASCII placeholder key in a header raised
+        # UnicodeEncodeError and failed the whole status page with a 500.
         return _result(key, "down", detail=type(exc).__name__)
 
 
@@ -218,7 +229,7 @@ async def dependency_checks(db: AsyncSession) -> list[dict]:
     """Live checks of every dependency, run concurrently with short timeouts.
     The API's own latency is measured separately (telemetry.py)."""
     s = get_settings()
-    supabase_headers = {"apikey": s.SUPABASE_SERVICE_ROLE_KEY} if s.SUPABASE_SERVICE_ROLE_KEY else {}
+    supabase_headers = {"apikey": s.SUPABASE_SERVICE_ROLE_KEY} if _usable_secret(s.SUPABASE_SERVICE_ROLE_KEY) else {}
     async with httpx.AsyncClient(timeout=CHECK_TIMEOUT_SECONDS) as client:
         external = await asyncio.gather(
             _http_check(client, "supabase_auth",
@@ -234,11 +245,20 @@ async def dependency_checks(db: AsyncSession) -> list[dict]:
 
 
 async def audit_chain_check(db: AsyncSession, tenant_id: str) -> dict:
-    chain = await audit_service.verify_tenant_chain(db, tenant_id)
-    return {"key": "audit_ledger", "name": "Audit ledger (this workspace)",
-            "state": "operational" if chain["passed"] else "down", "latencyMs": None,
-            "detail": f"Hash chain verified across {chain['events_checked']} event(s)" if chain["passed"]
-            else f"Hash chain broken at {chain['first_broken_event_id']}"}
+    """The health check verifies the RECENT chain: loading every event (70,000+
+    in a busy workspace) on each status-page load was slow, and links written
+    by simultaneous requests were reported as a broken chain. An altered event
+    is still "down"; the full chain stays verifiable from the audit ledger."""
+    chain = await audit_service.verify_recent_tenant_chain(db, tenant_id)
+    if chain["altered_event_id"]:
+        state, detail = "down", f"Event {chain['altered_event_id']} no longer matches its recorded hash"
+    elif chain["forks"]:
+        state, detail = "operational", (f"No event altered in the latest {chain['events_checked']}; "
+                                        f"{chain['forks']} out-of-order link(s) from simultaneous writes")
+    else:
+        state, detail = "operational", f"Hash chain verified across the latest {chain['events_checked']} event(s)"
+    return {"key": "audit_ledger", "name": "Audit ledger (this workspace)", "state": state, "latencyMs": None,
+            "detail": detail}
 
 
 def service_location(key: str) -> str:

@@ -22,7 +22,14 @@ function answersToReplay(recent: Turn[]): Set<Turn> {
     const answer = turn.result?.answer?.text ?? "";
     return turn.result?.outcome !== "refused" && (answer.match(FIGURES)?.length ?? 0) >= 3;
   });
-  return new Set(withFigures.slice(-ANSWERS_REPLAYED));
+  const replayed = new Set(withFigures.slice(-ANSWERS_REPLAYED));
+  // The latest real answer is always replayed: "Explain this with an example"
+  // or "Summarize this as a checklist" is about it, and an answer without
+  // figures ("IFRS 18 supersedes IAS 1…") was never sent, so "this" meant
+  // nothing to the model.
+  const latestAnswered = [...recent].reverse().find((turn) => turn.result?.outcome === "answered" && turn.result?.answer?.text?.trim());
+  if (latestAnswered) replayed.add(latestAnswered);
+  return replayed;
 }
 
 /** Preserve a complete chart block instead of cutting JSON mid-dataset.
@@ -44,7 +51,8 @@ export function conversationHistory(turns: Turn[]): ConversationMessage[] {
   // Document-derived answers are not replayed as evidence on a later turn.
   // A document must be selected and authorized again before being consulted.
   const recent = turns.filter((turn) => turn.result && !turn.attachments?.length)
-    .slice(-(MAX_HISTORY_MESSAGES - ANSWERS_REPLAYED));
+    // Room for the figure answers plus the latest answer (answersToReplay).
+    .slice(-(MAX_HISTORY_MESSAGES - ANSWERS_REPLAYED - 1));
   const replayed = answersToReplay(recent);
   const messages: ConversationMessage[] = [];
   recent.forEach((turn) => {
@@ -55,6 +63,29 @@ export function conversationHistory(turns: Turn[]): ConversationMessage[] {
     }
   });
   return messages;
+}
+
+const FOLLOW_UP_CONTEXT_MARKER = " Context: ";
+const FOLLOW_UP_SUBJECT_CHARS = 500;
+
+/** The original subject of a follow-up chain. A follow-up of a follow-up used
+ * to nest: "Summarize this as a checklist. Context: Explain this with a
+ * grounded example. Context: …" — every click added a layer, and the search
+ * ran on the pile of instructions instead of the topic. */
+/** Backend websearch.LONG_INPUT_CHARS: longer is pasted material, not a question. */
+const PASTED_MATERIAL_CHARS = 1500;
+
+export function followUpSubject(query: string): string {
+  let subject = query.split(FOLLOW_UP_CONTEXT_MARKER).at(-1)!.trim();
+  if (subject.length > PASTED_MATERIAL_CHARS) {
+    // A pasted document's topic is its title, not its first 500 characters
+    // ("# Critical Analysis: … ## 1. Overall Assessment **Verdict: …").
+    const lines = subject.split("\n").map((line) => line.replace(/^[#>*\s]+|[*\s]+$/g, "")).filter(Boolean);
+    subject = lines[0] ?? subject;
+  }
+  if (subject.length <= FOLLOW_UP_SUBJECT_CHARS) return subject;
+  const cut = subject.slice(0, FOLLOW_UP_SUBJECT_CHARS);
+  return `${cut.slice(0, cut.lastIndexOf(" ") > 0 ? cut.lastIndexOf(" ") : cut.length)}…`;
 }
 
 const MAX_SPLIT_QUESTIONS = 10;
@@ -97,4 +128,33 @@ export function splitQuestions(text: string): string[] {
   });
   return questions.every((question) => QUESTION_START.test(question) || question.includes("?"))
     ? questions : [text];
+}
+
+// ── Does a question use the file attached to the chat? ─────────────────────
+// Attaching a file limited EVERY later question in the chat to that file, so
+// "Summarize the confirmed rules (IAS 1, IFRS 18) as a checklist", asked after
+// attaching balance_sheet.pdf, searched only the balance sheet and was
+// escalated for "no eligible sources". A question that names the file keeps
+// the file-only scope; one that names an accounting standard or carries all
+// its own figures, and does not mention the file, is not about it. Everything
+// else keeps the file-only safeguard ("What was Apex's revenue?" with Apex's
+// report attached must not be answered from another Apex on the web).
+// File words always count; ordinary nouns ("statement", "report", "sheet")
+// only when the question points at one ("the financial statement", "this
+// report") — a topic title such as "IFRS Financial Statement Presentation"
+// is not a reference to the attached file.
+const MENTIONS_FILE = new RegExp(
+  "\\b(?:attach\\w*|upload\\w*|pdf|csv|xlsx|spreadsheet|workbook|these (?:figures|numbers|amounts|accounts)|in (?:it|there))\\b"
+  + "|\\b(?:the|this|that|my|our|your|its|attached|uploaded)\\s+(?:\\w+\\s+){0,2}"
+  + "(?:document|file|report|statements?|sheet|balance sheet|trial balance|ledger|invoices?|accounts|p\\s*&\\s*l)\\b",
+  "i",
+);
+const NAMES_STANDARD = /\b(?:IFRS|IAS|IFRIC|GAAP|ASC|FRS|Ind\s?AS|ISA)\s?\d*\b/;
+const OWN_FIGURES = /[£$€₹]\s?\d|\d[\d,]*(?:\.\d+)?\s*%/g;
+
+export function usesAttachedFile(query: string): boolean {
+  const text = query.split(FOLLOW_UP_CONTEXT_MARKER)[0] + " " + (query.split(FOLLOW_UP_CONTEXT_MARKER)[1] ?? "");
+  if (MENTIONS_FILE.test(text)) return true;
+  if (NAMES_STANDARD.test(text)) return false;
+  return (text.match(OWN_FIGURES)?.length ?? 0) < 2;
 }

@@ -27,6 +27,7 @@ from sqlalchemy.orm import aliased
 from app.core.config import get_settings
 from app.core.database import RequestSessionLocal, request_engine
 
+from app.domains.audit_ledger import event_envelope
 from app.domains.audit_ledger.event_envelope import record_event_async
 from app.domains.audit_ledger.models import AuditEvent
 from app.domains.evaluation.models import EvaluationDataset, EvaluationRun, ThresholdSet
@@ -172,7 +173,10 @@ async def scoped_session(user: User) -> AsyncIterator[AsyncSession]:
 # "EMAXCONNSESSION max clients reached" and the page failed. At most this many
 # extra connections are open for the Overview at once in this process; further
 # groups wait for a free one.
-OVERVIEW_DB_CONNECTIONS = 2
+# 3 (was 2): each engine's pool is now capped at 3 kept + 3 overflow
+# (DB_POOL_SIZE / DB_MAX_OVERFLOW), so this still leaves room for the
+# request's own connection, while the five parts of a page finish sooner.
+OVERVIEW_DB_CONNECTIONS = 3
 _overview_slots: asyncio.Semaphore | None = None
 
 
@@ -210,30 +214,79 @@ async def workspace_meta(db: AsyncSession, tenant_id: str) -> dict:
 # the three Overview pages (or coming back to one) is instant. The Refresh
 # button asks for fresh=1, which skips the cache.
 CACHE_SECONDS = 30
+# A result older than CACHE_SECONDS but younger than this is still returned at
+# once while a rebuild runs in the background ("stale while revalidate"): a
+# rebuild is 4-8s against the hosted database, and reopening a page used to
+# wait for all of it every time the 30s cache had lapsed.
+STALE_SECONDS = 600
 _CACHE_LIMIT = 512
 _cache: dict[tuple, tuple[float, dict]] = {}
+# Builds in progress, so concurrent requests for the same key (a page and its
+# prefetch, two tabs) share one build instead of each running it.
+_inflight: dict[tuple, asyncio.Future] = {}
+_background: set[asyncio.Task] = set()
 
 
-async def cached(key: tuple, build: Callable[[], Awaitable[dict]], *, fresh: bool = False) -> dict:
+def _store(key: tuple, value: dict) -> None:
     now = time.monotonic()
-    hit = _cache.get(key)
-    if hit and not fresh and now - hit[0] < CACHE_SECONDS:
-        return hit[1]
-    value = await build()
     if len(_cache) >= _CACHE_LIMIT:
         for stale_key, (stamp, _) in list(_cache.items()):
-            if now - stamp >= CACHE_SECONDS:
+            if now - stamp >= STALE_SECONDS:
                 del _cache[stale_key]
         if len(_cache) >= _CACHE_LIMIT:
             _cache.clear()
     _cache[key] = (now, value)
-    return value
+
+
+async def _build_once(key: tuple, build: Callable[[], Awaitable[dict]]) -> dict:
+    running = _inflight.get(key)
+    if running is not None:
+        return await asyncio.shield(running)
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
+    _inflight[key] = future
+    try:
+        value = await build()
+        _store(key, value)
+        future.set_result(value)
+        return value
+    except BaseException as exc:
+        future.set_exception(exc)
+        # Nobody else may be awaiting; mark the exception retrieved.
+        future.exception()
+        raise
+    finally:
+        _inflight.pop(key, None)
+
+
+async def cached(key: tuple, build: Callable[[], Awaitable[dict]], *, fresh: bool = False) -> dict:
+    hit = _cache.get(key)
+    age = time.monotonic() - hit[0] if hit else None
+    if hit and not fresh and age < CACHE_SECONDS:
+        return hit[1]
+    if hit and not fresh and age < STALE_SECONDS:
+        if key not in _inflight:
+            async def refresh() -> None:
+                try:
+                    await _build_once(key, build)
+                except Exception:  # noqa: BLE001 — the stale value is still served
+                    logger.exception("Background refresh failed for %s", key[0] if key else key)
+            task = asyncio.create_task(refresh())
+            _background.add(task)
+            task.add_done_callback(_background.discard)
+        return hit[1]
+    return await _build_once(key, build)
 
 
 async def record_opened(user: User, **event) -> None:
     """Write the "page opened" audit event after the response has been sent:
     the ledger write (chain-hash lookup, insert, commit) is several round
     trips the user should not wait for. Failures are logged, never raised."""
+    # This runs after the response, in a copy of the request's context, so the
+    # audit writer's "last hash I wrote" cache can be stale by then (other
+    # requests have written since). Chaining onto a stale hash forked the
+    # tenant's ledger and made the Status page report it as broken. Clear it so
+    # the writer reads the tenant's actual latest hash.
+    event_envelope._cached_previous_chain_hash.set(None)
     try:
         async with scoped_session(user) as session:
             await record_event_async(session, tenant_id=user.tenant_id, actor_id=user.id,

@@ -464,6 +464,7 @@ async def run_agent(
     reminded_working = False
     reminded_figures = False
     reminded_evidence = False
+    reminded_planned_search = False
     tools = registry.function_schemas(granted_permissions)
     messages: list[dict] = [
         {"role": "system", "content": system_prompt},
@@ -680,6 +681,14 @@ async def run_agent(
         try:
             response = await create("auto", remaining)
         except Exception as exc:
+            if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+                # A slow model step used up the step budget. Raised, it threw
+                # away the evidence already gathered, and the request started
+                # a fresh composition with ~40 s left and hit the 105 s limit
+                # (504 after 120.5 s, idem-1792040729549-q19ym9). The final
+                # answer below uses the reserved time and that evidence.
+                outcome.stop_reason = "time_budget"
+                break
             if unparseable_generation(exc):
                 # Consumes a step, so a model that keeps failing still ends.
                 messages.append({
@@ -749,23 +758,28 @@ async def run_agent(
                 # accounting?" was answered from memory without searching.
                 reminded_evidence = True
                 messages.append({"role": "assistant", "content": message.content})
+                searches = [t for t in ("search_knowledge_base", "search_web") if t in planned_tools] or ["the search tool"]
                 messages.append({"role": "user", "content": (
-                    "No evidence has been gathered for this answer. Call the search tool from the plan first and "
-                    "answer only from what it returns, citing it. If nothing relevant is found, say that the "
-                    "sources found do not establish the answer."
+                    f"No evidence has been gathered for this answer. Call {' and '.join(searches)} from the plan "
+                    "first and answer only from what they return, citing it. If nothing relevant is found, say "
+                    "that the sources found do not establish the answer."
                 )})
                 continue
             planned_search = next((t for t in ("search_web", "search_knowledge_base")
                                    if t in planned_tools and not any(r.tool == t for r in outcome.tool_calls)), None)
-            if planned_search and not reminded_evidence and step < limits.max_steps:
+            if planned_search and not reminded_planned_search and step < limits.max_steps:
                 # Imported here: verification_service imports this module.
                 from app.orchestration.verification_service import is_evidence_gap_statement
-            if (planned_search and not reminded_evidence and step < limits.max_steps
+            # Its own flag: sharing reminded_evidence with the "search first"
+            # nudge above meant a run that was told to search, searched only
+            # the knowledge base (empty) and then said "the sources do not
+            # establish this" was never sent to the planned web search.
+            if (planned_search and not reminded_planned_search and step < limits.max_steps
                     and is_evidence_gap_statement(message.content or "")):
                 # "What was the threshold in 2015?" was answered "the sources do
                 # not state this" from today's passages without ever running
                 # the planned search. Try it before giving up.
-                reminded_evidence = True
+                reminded_planned_search = True
                 messages.append({"role": "assistant", "content": message.content})
                 messages.append({"role": "user", "content": (
                     f"Before saying the sources do not establish this, call {planned_search} for the specific "

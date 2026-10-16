@@ -1,164 +1,28 @@
 "use client";
-
+import Link from "next/link";
 import { Suspense } from "react";
-import type { LucideIcon } from "lucide-react";
-import {
-  Database,
-  Landmark,
-  ClipboardCheck,
-  Users,
-  Lock,
-  GraduationCap,
-  CheckCircle2,
-  Clock,
-  XCircle,
-  FileCheck2,
-} from "lucide-react";
-import { useLiveData } from "@/components/overview/useLiveData";
-import { LiveSourceStatus } from "@/components/governance/LiveSourceStatus";
 import { PageShell } from "@/components/governance/PageShell";
-import { Pill } from "@/components/governance/Pill";
-import { PanelHeader, PANEL_CLASS, type PanelTone } from "@/components/governance/PanelHeader";
-import { StatTile } from "@/components/governance/StatTile";
-import { Tabs } from "@/components/shell/Tabs";
+import { LiveSourceStatus } from "@/components/governance/LiveSourceStatus";
+import { GovernedRegister, type RegisterRecord } from "@/components/governance/GovernedRegister";
+import { ContextStrip } from "@/components/overview/OverviewUI";
+import { useLiveData } from "@/components/overview/useLiveData";
 import { useTabParam } from "@/components/shell/useTabParam";
 import { SourceLicensingPanel } from "@/components/source-knowledge/SourceLicensingPanel";
-import { listSources, type Source } from "@/lib/api";
+import { listSources } from "@/lib/api";
 
-const TABS = [
-  { label: "Standards", slug: "standards" },
-  { label: "Tax", slug: "tax" },
-  { label: "Audit", slug: "audit" },
-  { label: "Payroll/Compliance", slug: "payroll-compliance" },
-  { label: "Internal Policies", slug: "internal-policies" },
-  { label: "Education Content", slug: "education-content" },
-  // Submit and approve sources (was the separate Source Licensing page).
-  { label: "Licensing & Approval", slug: "licensing" },
-];
-const TAB_SLUGS = TABS.map((t) => t.slug);
-
-const DESCRIPTIONS: Record<string, string> = {
-  standards: "Authoritative accounting and financial reporting standards (IFRS, GAAP, etc.).",
-  tax: "Tax authority guidance, statutes, and rulings by jurisdiction.",
-  audit: "Auditing standards, methodology guides, and quality control frameworks.",
-  "payroll-compliance": "Payroll, employment, and statutory compliance source material.",
-  "internal-policies": "Firm- and tenant-specific internal policy documents.",
-  "education-content": "Licensed education and CPD source content.",
-};
-
-const TAB_ICON: Record<string, LucideIcon> = {
-  standards: Database,
-  tax: Landmark,
-  audit: ClipboardCheck,
-  "payroll-compliance": Users,
-  "internal-policies": Lock,
-  "education-content": GraduationCap,
-  licensing: FileCheck2,
-};
-
-const TAB_TONE: Record<string, PanelTone> = {
-  standards: "brand",
-  tax: "warn",
-  audit: "ok",
-  "payroll-compliance": "info",
-  "internal-policies": "brand",
-  "education-content": "warn",
-};
-
-const STATUS_TONE: Record<string, "ok" | "warn" | "bad" | "neutral"> = {
-  ACTIVE: "ok",
-  APPROVED: "ok",
-  PROPOSED: "warn",
-  UNDER_REVIEW: "warn",
-  DISPUTED: "bad",
-  SUPERSEDED: "neutral",
-  BLOCKED: "bad",
-};
-
-export default function SourceLibraryPage() {
-  return (
-    <Suspense fallback={null}>
-      <SourceLibrary />
-    </Suspense>
-  );
-}
-
+export default function SourceLibraryPage() { return <Suspense fallback={null}><SourceLibrary /></Suspense>; }
 function SourceLibrary() {
-  const [activeTab, setActiveTab] = useTabParam("standards", TAB_SLUGS);
-  const isLicensing = activeTab === "licensing";
-  // The licensing tab loads its own register, so skip the category fetch there.
-  const { data, error, loading, signedOut, reload } = useLiveData(
-    `source-library:${activeTab}`,
-    (token, signal) => (isLicensing ? Promise.resolve([] as Source[]) : listSources(token, activeTab, signal)),
-    20_000,
-  );
+  const [tab, setTab] = useTabParam("all", ["all", "standards", "tax", "audit", "payroll-compliance", "internal-policies", "education-content", "licensing"]);
+  const { data, loading, error, signedOut, reload } = useLiveData(`source-library:${tab}`, (token, signal) => listSources(token, tab === "all" || tab === "licensing" ? undefined : tab, signal), 20_000);
   const sources = data ?? [];
-
-
-  const approvedCount = sources.filter((s) => ["ACTIVE", "APPROVED"].includes(s.latest_version.status)).length;
-  const pendingCount = sources.filter((s) => ["PROPOSED", "UNDER_REVIEW"].includes(s.latest_version.status)).length;
-  const disputedCount = sources.filter((s) => ["DISPUTED", "BLOCKED"].includes(s.latest_version.status)).length;
-
-  return (
-    <PageShell
-      title="Source Library"
-      subtitle="Browse and manage authoritative source material by category before it enters licensing and source bundles."
-      showMetrics={false}
-    >
-      {isLicensing ? (
-        <>
-          <div className="mb-4"><Tabs tabs={TABS} activeSlug={activeTab} onChange={setActiveTab} /></div>
-          <SourceLicensingPanel />
-        </>
-      ) : (
-      <>
-      <LiveSourceStatus loading={loading} error={error} signedOut={signedOut} reload={reload} />
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
-        <StatTile label="In this category" value={data ? sources.length : "—"} tone={TAB_TONE[activeTab] ?? "brand"} icon={TAB_ICON[activeTab] ?? Database} />
-        <StatTile label="Approved / active" value={data ? approvedCount : "—"} tone="ok" icon={CheckCircle2} />
-        <StatTile label="Awaiting review" value={data ? pendingCount : "—"} tone="warn" icon={Clock} />
-        <StatTile label="Disputed / blocked" value={data ? disputedCount : "—"} tone="bad" icon={XCircle} />
-      </div>
-
-      <div className={PANEL_CLASS}>
-        <PanelHeader
-          icon={TAB_ICON[activeTab] ?? Database}
-          tone={TAB_TONE[activeTab] ?? "brand"}
-          title={TABS.find((t) => t.slug === activeTab)?.label ?? "Sources"}
-          subtitle={DESCRIPTIONS[activeTab]}
-        />
-        <Tabs tabs={TABS} activeSlug={activeTab} onChange={setActiveTab} />
-
-        {sources.length === 0 && !error && !loading && !signedOut && (
-          <p className="text-sm text-muted py-4">No sources in this category yet.</p>
-        )}
-
-        <ul className="space-y-3">
-          {sources.map((source) => (
-            <li key={source.id} className="border-t border-line pt-3 first:border-t-0 first:pt-0">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold text-ink">{source.title}</div>
-                <Pill tone={STATUS_TONE[source.latest_version.status] ?? "neutral"}>
-                  {source.latest_version.status}
-                </Pill>
-              </div>
-              <div className="text-xs text-muted mt-0.5">
-                {source.source_class} — {source.jurisdiction_scope}
-              </div>
-              <div className="text-xs text-muted mt-1">
-                Version {source.latest_version.version_label} · {source.latest_version.file_path ? "Document attached" : source.latest_version.source_url ? "External source registered" : "Metadata only"}
-                {source.latest_version.quality_state && ` · ${source.latest_version.quality_state}`}
-                {source.latest_version.effective_to && ` · Effective until ${source.latest_version.effective_to}`}
-              </div>
-              {source.latest_version.note && (
-                <div className="text-xs text-ink mt-1">{source.latest_version.note}</div>
-              )}
-            </li>
-          ))}
-        </ul>
-      </div>
-      </>
-      )}
-    </PageShell>
-  );
+  const records: RegisterRecord[] = sources.map(s => ({ id: s.id, title: s.title, category: s.category, state: s.latest_version.status, scope: s.jurisdiction_scope, version: s.latest_version.version_label, owner: s.latest_version.submitted_by, updated: s.latest_version.created_at?.slice(0, 10), facts: { "Source class": s.source_class, "Framework": s.framework_scope, "Jurisdiction": s.jurisdiction_scope, "Display restriction": s.latest_version.display_restriction, "Effective from": s.latest_version.effective_from || "Not recorded", "Effective until": s.latest_version.effective_to || "Not recorded", "Approved by": s.latest_version.approved_by || "Not recorded", "Quality state": s.latest_version.quality_state || "Not recorded" }, evidence: [s.latest_version.note, s.latest_version.source_url ? `Source URL: ${s.latest_version.source_url}` : s.latest_version.file_path ? "Document attached to the source record." : "Metadata only; no document attached."].filter(Boolean), history: [`Version ${s.latest_version.version_label} · created ${s.latest_version.created_at}`, `Approval actor: ${s.latest_version.approved_by || "Not recorded"}`], actions: <Link href="/source-library?tab=licensing" className="rounded-lg bg-[#f28a18] px-3 py-2 text-xs font-bold text-white">Open licensing & approval →</Link> }));
+  const count = (states: string[]) => sources.filter(s => states.includes(s.latest_version.status)).length;
+  return <PageShell title="Source Library" subtitle="Govern authoritative accounting knowledge, licensing rights, temporal applicability, and retrieval eligibility.">
+    <ContextStrip jurisdiction="All loaded jurisdictions" framework="All loaded frameworks" period="Effective dates per record" />
+    <LiveSourceStatus {...{ loading, error, signedOut, reload }} />
+    <div className="flex gap-2 text-xs"><button className="rounded-md border border-line px-3 py-2 text-brand" onClick={() => setTab("all")}>Source register</button><button className="rounded-md border border-line px-3 py-2 text-brand" onClick={() => setTab("licensing")}>Licensing & Approval</button></div>
+    {tab === "licensing" ? <SourceLicensingPanel /> : !error && !signedOut && <GovernedRegister title="Governed source register" inspector="Source inspector" records={records} tabs={["Overview", "Authority & rights", "Versions", "Retrieval & audit"]} doctrine="Source eligibility is a multi-gate decision: authority, licence rights, jurisdiction, effective date, integrity, and retrieval approval must all be checked." action={<button onClick={() => setTab("licensing")} className="rounded-md bg-[#f28a18] px-3 py-2 text-xs font-bold text-white">+ Add source</button>} metrics={[
+      { label: "Registered source records", value: data ? sources.length : "—", detail: "Loaded catalog scope" }, { label: "Approved / active", value: data ? count(["ACTIVE", "APPROVED"]) : "—", detail: "Status alone does not establish retrieval rights", tone: "green" }, { label: "Awaiting validation", value: data ? count(["PROPOSED", "UNDER_REVIEW"]) : "—", detail: "Editorial or applicability review", tone: "amber" }, { label: "Disputed / blocked", value: data ? count(["DISPUTED", "BLOCKED"]) : "—", detail: "Requires a governance decision", tone: "red" }, { label: "Superseded", value: data ? count(["SUPERSEDED"]) : "—", detail: "Check historical applicability" },
+    ]} />}
+  </PageShell>;
 }

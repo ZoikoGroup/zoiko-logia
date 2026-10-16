@@ -267,6 +267,7 @@ async def run_agentic_completion(
     planned_tools: tuple[str, ...] = (),
     resume_key: str = "",
     require_evidence: bool = False,
+    max_seconds: float | None = None,
 ) -> AgentOutcome:
     """Answer through the governed tool-calling loop. Raises on provider
     failure, AgentUnavailable when Groq isn't usable, and RuntimeError on an
@@ -287,7 +288,7 @@ async def run_agentic_completion(
         limits=AgentLimits(
             max_steps=settings.AGENT_MAX_STEPS,
             max_tool_calls=settings.AGENT_MAX_TOOL_CALLS,
-            max_seconds=settings.AGENT_MAX_SECONDS,
+            max_seconds=min(settings.AGENT_MAX_SECONDS, max_seconds) if max_seconds else settings.AGENT_MAX_SECONDS,
             max_total_tokens=settings.AGENT_MAX_TOKENS,
             max_cost_usd=settings.AGENT_MAX_COST_USD,
             price_per_million_tokens=settings.MODEL_PRICE_PER_MILLION_TOKENS,

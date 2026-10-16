@@ -1,93 +1,24 @@
 "use client";
-
 import { Suspense } from "react";
-import { Loader2, Network } from "lucide-react";
-import { useLiveData } from "@/components/overview/useLiveData";
-import { LiveSourceStatus } from "@/components/governance/LiveSourceStatus";
 import { PageShell } from "@/components/governance/PageShell";
-import { Card } from "@/components/governance/Card";
-import { Pill } from "@/components/governance/Pill";
-import { PanelHeader, PANEL_CLASS, type PanelTone } from "@/components/governance/PanelHeader";
-import { Tabs } from "@/components/shell/Tabs";
+import { LiveSourceStatus } from "@/components/governance/LiveSourceStatus";
+import { GovernedRegister } from "@/components/governance/GovernedRegister";
+import { ContextStrip } from "@/components/overview/OverviewUI";
+import { useLiveData } from "@/components/overview/useLiveData";
 import { useTabParam } from "@/components/shell/useTabParam";
 import { SyllabusCoveragePanel } from "@/components/source-knowledge/SyllabusCoveragePanel";
 import { listTopicMapNodes } from "@/lib/api";
-
-const TOPIC_TONES: PanelTone[] = ["brand", "warn", "ok", "info"];
-
-const TABS = [
-  { label: "Topic map", slug: "topics" },
-  // Was the separate Learning & Syllabus Mapping page.
-  { label: "Syllabus coverage", slug: "syllabus" },
-];
-const TAB_SLUGS = TABS.map((t) => t.slug);
-
-export default function AccountingOntologyPage() {
-  return (
-    <Suspense fallback={null}>
-      <AccountingOntology />
-    </Suspense>
-  );
-}
-
+export default function AccountingOntologyPage() { return <Suspense fallback={null}><AccountingOntology /></Suspense>; }
 function AccountingOntology() {
-  const [activeTab, setActiveTab] = useTabParam("topics", TAB_SLUGS);
-  return (
-    <PageShell
-      title="Accounting Ontology"
-      subtitle="The real topic map behind Kriton's accounting knowledge — concepts, prerequisites, the standards each one links to, and syllabus coverage."
-      showMetrics={false}
-    >
-      <div className="mb-4"><Tabs tabs={TABS} activeSlug={activeTab} onChange={setActiveTab} /></div>
-      {activeTab === "syllabus" ? <SyllabusCoveragePanel /> : <TopicMap />}
-    </PageShell>
-  );
-}
-
-function TopicMap() {
-  const { data, error, loading, signedOut, reload } = useLiveData(`accounting-ontology`, (token, signal) => listTopicMapNodes(token, signal), 20_000);
+  const [tab, setTab] = useTabParam("topics", ["topics", "syllabus"]);
+  const { data, error, loading, signedOut, reload } = useLiveData("accounting-ontology", (token, signal) => listTopicMapNodes(token, signal), 20_000);
   const topics = data ?? [];
-
-
-  return (
-    <>
-      <LiveSourceStatus loading={loading} error={error} signedOut={signedOut} reload={reload} />
-
-      <div className="rounded-xl border border-line bg-soft p-3 mb-4 text-xs text-muted">
-        Topics, prerequisites, and linked standards come from the saved learning topic map.
-      </div>
-
-      {error || signedOut ? null : loading && !data ? (
-        <div className="flex items-center justify-center py-12 text-muted">
-          <Loader2 className="animate-spin mr-2" size={16} /> Loading topic map…
-        </div>
-      ) : topics.length === 0 ? (
-        <Card>
-          <p className="text-sm text-muted py-4 text-center">No topics defined yet.</p>
-        </Card>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {topics.map((topic, idx) => (
-            <div key={topic.id} className={PANEL_CLASS}>
-              <PanelHeader icon={Network} tone={TOPIC_TONES[idx % TOPIC_TONES.length]} title={topic.topic} />
-              <div className="space-y-3">
-                <div>
-                  <span className="text-[11px] font-bold text-muted uppercase tracking-wider">Prerequisites</span>
-                  <div className="flex flex-wrap gap-1.5 mt-1.5">
-                    {topic.prerequisites
-                      ? topic.prerequisites.split(",").map((p) => <Pill key={p.trim()}>{p.trim()}</Pill>)
-                      : <span className="text-xs text-muted">None</span>}
-                  </div>
-                </div>
-                <div>
-                  <span className="text-[11px] font-bold text-muted uppercase tracking-wider">Standards</span>
-                  <p className="text-sm text-ink mt-1.5">{topic.standards_summary || "—"}</p>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </>
-  );
+  return <PageShell title="Accounting Ontology" subtitle="Explore concept identities, prerequisite relationships, standards, and syllabus coverage.">
+    <ContextStrip jurisdiction="Topic map scope" framework="Linked standards per concept" period="Saved learning topic map" />
+    <LiveSourceStatus {...{ loading, error, signedOut, reload }} />
+    <div className="flex gap-2">{["topics", "syllabus"].map(t => <button key={t} onClick={() => setTab(t)} aria-pressed={tab === t} className="rounded-md border border-line px-3 py-2 text-xs text-brand">{t === "topics" ? "Concept register" : "Syllabus coverage"}</button>)}</div>
+    {tab === "syllabus" ? <SyllabusCoveragePanel /> : !error && !signedOut && <GovernedRegister title="Accounting concept registry" inspector="Ontology inspector" tabs={["Overview", "Relationships", "Framework mappings", "Versions"]} records={topics.map(t => ({ id: t.id, title: t.topic, category: "Learning concept", state: "Recorded", facts: { "Persistent concept ID": t.id, "Standards": t.standards_summary || "Not recorded", "Prerequisites": t.prerequisites || "None recorded", "Release approval": "Not supplied by topic map" }, evidence: t.standards_summary ? [`Linked standards: ${t.standards_summary}`, "A standards summary does not establish a reviewed cross-framework equivalence."] : [], relations: t.prerequisites ? t.prerequisites.split(",").map(p => `Prerequisite: ${p.trim()}`) : [], actions: <button onClick={() => setTab("syllabus")} className="rounded-md bg-[#f28a18] px-3 py-2 text-xs font-bold text-white">Explore syllabus coverage →</button> }))} metrics={[
+      { label: "Registered concepts", value: data ? topics.length : "—", detail: "Saved topic map identities" }, { label: "Prerequisite references", value: data ? topics.reduce((n, t) => n + (t.prerequisites ? t.prerequisites.split(",").filter(p => p.trim()).length : 0), 0) : "—", detail: "Recorded prerequisite labels", tone: "green" }, { label: "Linked standards", value: data ? topics.filter(t => t.standards_summary).length : "—", detail: "Concepts with standards summaries" }, { label: "Semantic conflicts", value: "—", detail: "Conflict review feed not available", tone: "red" }, { label: "Impact reviews", value: "—", detail: "Release impact feed not available", tone: "amber" },
+    ]} doctrine="Ontology invariant: matching labels do not establish equivalent meaning. Cross-framework assertions require authoritative sources, jurisdiction, effective period, and independent review." footerTitle="Controlled ontology release" />}
+  </PageShell>;
 }

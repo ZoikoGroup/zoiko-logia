@@ -228,3 +228,14 @@ async def test_missing_total_is_a_clarification_without_external_work(monkeypatc
     assert "Known-values subtotal: 1,075" in response.answer.text
     assert "May" in response.next_action.message
     forbidden.assert_not_called()
+
+
+def test_waterfall_with_signs_on_the_labels():
+    from app.orchestration.supplied_charts import build_supplied_chart
+
+    for query in ("Waterfall: opening cash 100, +sales 60, −costs 45, −tax 10",
+                  "Waterfall: opening cash 100, +sales 60, -costs 45, -tax 10"):
+        chart = build_supplied_chart(query)
+        assert chart is not None and chart.chart["type"] == "waterfall"
+        assert chart.chart["series"][0]["data"] == [100.0, 60.0, -45.0, -10.0, 105.0]
+        assert chart.text == "Closing balance: 105."

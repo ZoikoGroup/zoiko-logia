@@ -33,10 +33,21 @@ async def _set_rls_identity(db: AsyncSession, *, tenant_id: str, user_id: str | 
     a later rollback cannot undo it (see get_db in app/core/database.py)."""
     if session_is_sqlite(db):
         return
-    await db.execute(text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id or ""})
-    if user_id is not None:
-        await db.execute(text("SELECT set_config('app.user_id', :user_id, false)"), {"user_id": user_id})
+    current = db.info.get("rls_identity")
+    if current and current[0] == (tenant_id or "") and (user_id is None or current[1] == user_id):
+        # get_db already set exactly this identity (the usual case: the
+        # token's tenant claim matches the user's row). Re-setting it was two
+        # more round trips on every request.
+        return
+    if user_id is None:
+        await db.execute(text("SELECT set_config('app.tenant_id', :tenant_id, false)"), {"tenant_id": tenant_id or ""})
+    else:
+        await db.execute(
+            text("SELECT set_config('app.tenant_id', :tenant_id, false), set_config('app.user_id', :user_id, false)"),
+            {"tenant_id": tenant_id or "", "user_id": user_id},
+        )
     await db.commit()
+    db.info["rls_identity"] = (tenant_id or "", user_id if user_id is not None else (current[1] if current else ""))
 
 
 async def _user_from_api_key(db: AsyncSession, raw_key: str, credentials_error: HTTPException) -> User:
