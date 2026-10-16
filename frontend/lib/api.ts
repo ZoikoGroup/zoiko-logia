@@ -15,6 +15,8 @@ export type UserPublic = {
   full_name: string;
   role: string;
   tenant_id: string;
+  // Platform control plane role, separate from the tenant role. "super_admin" or null.
+  platform_role?: string | null;
 };
 
 export type ProvisionRequest = {
@@ -2530,3 +2532,46 @@ export async function updateMyProfile(token: string, changes: { first_name?: str
 
 /** Admin only. The creator becomes a member with every operation, so the
  * new engagement shows up straight away (e.g. as a Kriton project). */
+
+// ── Platform control plane (backend app/domains/platform) ────────────────────
+
+export type PlatformControlState = "pass" | "review" | "fail" | "unknown" | "pending";
+export type PlatformDecision = {
+  id: string; ref: string; priority: "Critical" | "High" | "Medium"; title: string; area: string;
+  owner: string; tenant: string; since: string | null; state: string;
+};
+export type PlatformCommand = {
+  generatedAt: string;
+  summary: {
+    criticalIncidents: number; openIncidents: number; unassignedIncidents: number;
+    releaseHolds: number; openReleases: number; decisions: number; decisionsByPriority: Record<string, number>;
+    isolation: PlatformControlState; availabilityPct: number | null; objectivePct: number;
+    privilegedRequests: number; privilegedAwaitingApproval: number; controlExceptions: number;
+  };
+  decisions: PlatformDecision[];
+  controls: { key: string; label: string; state: PlatformControlState; detail: string }[];
+  health: {
+    services: { key: string; name: string; state: string; core: boolean; latencyMs: number | null; checkedAt: string | null }[];
+    sampled: boolean; availabilityPct: number | null; objectivePct: number; p95LatencyMs: number | null;
+    degraded: number; measured: number; coreDown: string[];
+  };
+  evaluation: {
+    state: PlatformControlState; latest: { id: string; status: string; at: string | null } | null;
+    metrics: { name: string; value: number }[]; recent: { completed: number; failed: number };
+  };
+  releases: { open: number; held: number; items: { ref: string; name: string; version: string; held: boolean; tenant: string }[] };
+  tenants: { total: number; withUsers: number; active30d: number; users: number; withApprovedPlan: number };
+  commercial: {
+    month: string; invoiced: Record<string, number>; collected: Record<string, number>; receivable: Record<string, number>;
+    unpaidStatements: number; openDisputes: number; pendingCredits: number;
+  };
+  privileged: {
+    awaitingApproval: number; active: number; awaitingReview: number;
+    activeGrants: { ref: string; tenant: string; expiresAt: string | null }[];
+  };
+  audit: { events24h: number; exportsPending: number; deniedAttempts30d: number };
+};
+
+export async function getPlatformCommand(token: string, signal?: AbortSignal): Promise<PlatformCommand> {
+  return (await authedFetch("/platform/command", token, { signal }, { asSelf: true })).json();
+}

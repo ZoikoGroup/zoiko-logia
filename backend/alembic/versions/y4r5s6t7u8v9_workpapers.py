@@ -3,14 +3,14 @@
 workpapers and workpaper_items are tenant isolated by RLS like every other
 tenant table. Additive only: no existing table is changed.
 
-Revision ID: s8l9m0n1o2p3
-Revises: r7k8l9m0n1o2
+Revision ID: y4r5s6t7u8v9
+Revises: x3q4r5s6t7u8
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "s8l9m0n1o2p3"
-down_revision = "r7k8l9m0n1o2"
+revision = "y4r5s6t7u8v9"  # was s8l9m0n1o2p3, which the operations registers migration already uses
+down_revision = "x3q4r5s6t7u8"
 branch_labels = None
 depends_on = None
 

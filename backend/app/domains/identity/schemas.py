@@ -18,6 +18,7 @@ class UserPublic(BaseModel):
     full_name: str
     role: str
     tenant_id: str
+    platform_role: str | None = None
 
     model_config = {"from_attributes": True}
 
