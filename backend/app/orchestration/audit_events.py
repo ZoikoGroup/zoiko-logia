@@ -316,9 +316,22 @@ async def audit_security_incident_recorded(db, *, query_id, correlation_id, tena
                 classification="SECURITY", replay_relevance="REQUIRED")
 
 async def audit_response_finalised(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
-                                    outcome: str, route: str):
-    await _emit(db, "response_finalised", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
-                {"outcome": outcome, "route": route})
+                                    outcome: str, route: str, completeness: str | None = None):
+    payload = {"outcome": outcome, "route": route}
+    if completeness:
+        payload["completeness"] = completeness
+    await _emit(db, "response_finalised", query_id, correlation_id, tenant_id, audit_chain_id, actor_id, payload)
+
+async def audit_answer_statements_removed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                          stages: list[dict], completeness: str | None, outcome: str):
+    """Which statements verification removed from the answer, and why. Each
+    statement is a hash plus a redacted excerpt; reason codes keep "the cited
+    evidence says otherwise" apart from "the evidence does not address it"
+    (service.removal_stage). Emitted only when something was removed."""
+    await _emit(db, "answer_statements_removed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"stages": stages, "completeness": completeness, "outcome": outcome, "reason_codes_version": "1"},
+                replay_relevance="REQUIRED")
+
 
 async def audit_response_returned(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                    latency_ms: float, stage_metrics: dict | None = None):

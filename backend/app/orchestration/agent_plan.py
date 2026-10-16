@@ -111,7 +111,12 @@ def plan_request(question: str, *, has_documents: bool = False, history: bool = 
         reasons.append("market or company data")
     # Something to compute: figures the question gives, or one figure plus a
     # rate or value another tool looks up ("tax due on profits of 300,000").
-    if _COMPUTE.search(q) and (numbers >= 2 or (numbers >= 1 and tools)
+    # In a conversation the other figures are in the earlier turns: "Using the
+    # same figures, what profit would 6,000 units give?" has one number of its
+    # own, so only search_web was planned; the agent calculated £36,000, was
+    # then told to answer only from search results, and replaced the result
+    # with "the sources do not establish this".
+    if _COMPUTE.search(q) and (numbers >= 2 or (numbers >= 1 and (tools or history))
                                or "get_exchange_rate" in tools or "get_market_data" in tools):
         tools.append("calculate")
         reasons.append("figures to compute")

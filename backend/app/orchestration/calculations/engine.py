@@ -20,7 +20,10 @@ _NUMBER_TEXT = r"-?\d(?:[\d,]*\d)?(?:\.\d+)?"
 _CURRENCY_SYMBOLS = {"£": "GBP", "$": "USD", "€": "EUR", "₹": "INR"}
 _CURRENCY_CODES = ("GBP", "USD", "EUR", "INR", "AED")
 _CALCULATION_HINT = re.compile(
-    r"\b(calculate|compute|work out|determine|what is|find)\b", re.I,
+    r"\b(calculate|compute|work out|determine|what is|find)\b"
+    # A terse direct question about a break-even figure ("…variable cost £15
+    # per unit. Break-even units?") carries no verb but asks for a number.
+    r"|\bbreak[- ]even(?:\s+(?:point|units|revenue|sales))?\s*\?", re.I,
 )
 
 _ALIASES: dict[str, tuple[str, ...]] = {
@@ -48,7 +51,9 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "asset_cost": ("asset cost", "cost of the asset", "asset costs", "asset", "machine", "equipment"),
     "residual_value": ("residual value", "salvage value"),
     "useful_life": ("useful life", "asset life", "year life", "years life", "year useful life"),
-    "selling_price": ("selling price", "sale price", "price per unit"),
+    # Read only by break-even, where a bare "price £25 per unit" is the
+    # selling price; the terse form missed the calculator altogether.
+    "selling_price": ("selling price", "sale price", "price per unit", "unit price", "price"),
     "variable_cost": ("variable cost", "variable cost per unit"),
     "fixed_costs": ("fixed costs", "fixed cost"),
     "principal": ("principal", "amount invested", "investment"),
@@ -107,6 +112,30 @@ def _input(query: str, name: str, *, kind: str = "money", percentage: bool = Fal
         name=name, value=value, display_value=f"{value:f}", kind=kind,
         currency=currency if kind == "money" else None,
     )
+
+
+def _supplied(name: str, value: Decimal, currency: str | None = None, kind: str = "money") -> CalculationInput:
+    """A value read from the question, recorded so the working shows what was used."""
+    return CalculationInput(name=name, value=value, display_value=f"{value:f}", kind=kind,
+                            currency=currency if kind == "money" else None, source_location="query")
+
+
+_RATE_AT = re.compile(rf"\bat\s+(?:a\s+(?:vat\s+)?rate\s+of\s+)?(?P<number>{_NUMBER_TEXT})\s*%", re.I)
+
+
+def _vat_rate_at(query: str) -> CalculationInput | None:
+    """The rate of a VAT request that names it after the amount ("VAT on £500
+    at −20%"): the label-first reading needs "VAT at 20%", so −20% here was
+    reported missing and the invalid rate never reached its check. Only when
+    the request carries exactly one percentage, so another figure ("a 10%
+    discount") is never taken for the rate."""
+    if len(re.findall(r"\d\s*%", query)) != 1:
+        return None
+    match = _RATE_AT.search(query)
+    value = _decimal(match.group("number")) if match else None
+    if value is None:
+        return None
+    return CalculationInput(name="vat_rate", value=value, display_value=f"{value:f}", kind="percentage")
 
 
 def _currency(inputs: list[CalculationInput]) -> str | None:
@@ -467,9 +496,117 @@ def percent_of_amount(query: str) -> CalculationResult | None:
     ], [f"{pct:f}% of {base} = {base} × {pct:f} ÷ 100 = {shown}"])
 
 
+_MONEY = r"[£$€₹]\s?(\d(?:[\d,]*\d)?(?:\.\d+)?)"
+_SALE_LINE = re.compile(
+    r"(?P<symbol>[£$€₹])\s?(?P<amount>\d(?:[\d,]*\d)?(?:\.\d+)?)\s+(?:of\s+[a-z\s]{0,30}?\s+)?at\s+(?:the\s+|a\s+)?"
+    r"(?:[a-z-]+\s+){0,3}?(?:rate\s+of\s+)?(?P<rate>\d+(?:\.\d+)?)\s*%", re.I)
+
+
+def output_vat_lines(query: str) -> CalculationResult | None:
+    """Output VAT on sales lines that each carry their own rate ("£8,000 at
+    the standard rate of 20% and £3,000 at the reduced rate of 5%"). It asked
+    for "the VAT rate" — two were given — and whether the figures include VAT.
+    VAT charged at a rate on a sale value is calculated on that value; the
+    VAT if the values were VAT-inclusive is shown beside it, not assumed away.
+    Only a request for output VAT (not net VAT payable) is handled here."""
+    q = query or ""
+    if not _VAT_WORD.search(q) or re.search(r"\b(?:purchases?|input vat|input tax|reclaim|payable|owe)\b", q, re.I):
+        return None
+    lines = list(_SALE_LINE.finditer(q))
+    if len(lines) < 2 and not (lines and re.search(r"\boutput (?:vat|tax)\b", q, re.I)):
+        return None
+    inclusive = bool(_INCLUSIVE.search(q)) and not _EXCLUSIVE.search(q)
+    currency = _CURRENCY_SYMBOLS.get(lines[0].group("symbol"))
+    outputs, steps, total, total_inclusive = [], [], Decimal("0"), Decimal("0")
+    inputs = []
+    for index, line in enumerate(lines, start=1):
+        amount, rate = _decimal(line.group("amount")), _decimal(line.group("rate"))
+        if amount is None or rate is None or not 0 <= rate <= 100:
+            return None
+        inputs += [_supplied(f"sales_line_{index}", amount, currency), _supplied(f"vat_rate_line_{index}", rate, kind="percentage")]
+        vat = amount * rate / (100 + rate) if inclusive else amount * rate / 100
+        total += vat
+        total_inclusive += amount * rate / (100 + rate)
+        outputs.append(CalculationOutput(name=f"output_vat_line_{index}", value=vat, display_value=_money(vat, currency), kind="money"))
+        steps.append(f"{_money(amount, currency)} at {rate:f}% = {_money(amount, currency)} × {rate:f} ÷ {'(100 + ' + format(rate, 'f') + ')' if inclusive else '100'} = {_money(vat, currency)}")
+    outputs.append(CalculationOutput(name="total_output_vat", value=total, display_value=_money(total, currency), kind="money"))
+    steps.append("Total output VAT = " + " + ".join(o.display_value for o in outputs[:-1]) + f" = {_money(total, currency)}")
+    result = _success(["output_vat_by_rate"], inputs, outputs, steps)
+    result.notes = (["The sales values are taken as VAT-inclusive, as stated."] if inclusive else [
+        "VAT is charged on the sales values as given (net of VAT). If those values already include VAT, "
+        f"the output VAT inside them would be {_money(total_inclusive, currency)}."])
+    return result
+
+
+_RESULT_CHANGE = re.compile(
+    r"\bfrom\s+an?\s+(?P<from_kind>loss|profit)\s+of\s+" + _MONEY.replace("(\\d", "(?P<from>\\d", 1)
+    + r"\s+to\s+an?\s+(?P<to_kind>loss|profit)\s+of\s+" + _MONEY.replace("(\\d", "(?P<to>\\d", 1), re.I)
+
+
+def result_change(query: str) -> CalculationResult | None:
+    """"…changes from a loss of £12,000 to a profit of £3,000": a £15,000
+    improvement. Composed by the model it was right, but followed by "possible
+    drivers" (sales volume, price, unit contribution) the question never gave,
+    shaped by an earlier break-even example in the same chat. The arithmetic
+    is stated; causes are not invented."""
+    q = query or ""
+    match = _RESULT_CHANGE.search(q)
+    if not match:
+        return None
+    currency = _CURRENCY_SYMBOLS.get((re.search(r"[£$€₹]", match.group(0)) or [""])[0])
+    start = _decimal(match.group("from")) * (-1 if match.group("from_kind").lower() == "loss" else 1)
+    end = _decimal(match.group("to")) * (-1 if match.group("to_kind").lower() == "loss" else 1)
+    change = end - start
+    word = "improvement" if change >= 0 else "deterioration"
+    result = _success(["result_change"], [_supplied("starting_result", start, currency), _supplied("ending_result", end, currency)], [
+        CalculationOutput(name="starting_result", value=start, display_value=_money(start, currency), kind="money"),
+        CalculationOutput(name="ending_result", value=end, display_value=_money(end, currency), kind="money"),
+        CalculationOutput(name=word, value=abs(change), display_value=_money(abs(change), currency), kind="money"),
+    ], [f"Change = {_money(end, currency)} − ({_money(start, currency)}) = {_money(change, currency)}"])
+    result.notes = [
+        f"The result moved by {_money(abs(change), currency)} — an {word} of that amount in absolute terms.",
+        "A percentage change is not meaningful when the starting figure is a loss (it would divide by a negative base).",
+        "The question does not say what caused the change; to explain it, share the revenue and cost figures for both periods.",
+    ]
+    return result
+
+
+_COST_PRICE = re.compile(r"\b(?:cost(?:s|ing)?|cost price|bought(?:\s+\w+){0,2}\s+for|purchased(?:\s+\w+){0,2}\s+for|paid)\s+(?:of\s+|is\s+|was\s+|at\s+)?" + _MONEY, re.I)
+_SELL_PRICE = re.compile(r"\b(?:sells?|sold|selling price|sale price|sells? (?:it|them) for|retails?)\s+(?:\w+\s+){0,2}?(?:for|at|of|is|was)?\s*" + _MONEY, re.I)
+
+
+def price_margin_markup(query: str) -> CalculationResult | None:
+    """"A product costs £84 and sells for £126": gross profit £42, margin
+    33.33%, markup 50%. It asked for "revenue" — the selling price is the
+    revenue per item — and markup had no formula."""
+    q = query or ""
+    if not re.search(r"\b(?:margin|markup|mark-up|mark up|gross profit|profit)\b", q, re.I) or _input(q, "revenue"):
+        return None
+    cost, sell = _COST_PRICE.search(q), _SELL_PRICE.search(q)
+    if not (cost and sell) or len(re.findall(r"[£$€₹]\s?\d", q)) != 2:
+        return None
+    cost_value, sell_value = _decimal(cost.group(1)), _decimal(sell.group(1))
+    currency = _CURRENCY_SYMBOLS.get((re.search(r"[£$€₹]", q) or [""])[0])
+    profit = sell_value - cost_value
+    outputs = [CalculationOutput(name="gross_profit", value=profit, display_value=_money(profit, currency), kind="money")]
+    steps = [f"Gross profit = {_money(sell_value, currency)} − {_money(cost_value, currency)} = {_money(profit, currency)}"]
+    if sell_value:
+        margin = profit / sell_value * 100
+        outputs.append(CalculationOutput(name="gross_margin", value=margin, display_value=_percent(margin), kind="percentage"))
+        steps.append(f"Gross margin = {_money(profit, currency)} ÷ {_money(sell_value, currency)} × 100 = {_percent(margin)}")
+    if cost_value:
+        markup = profit / cost_value * 100
+        outputs.append(CalculationOutput(name="markup", value=markup, display_value=_percent(markup), kind="percentage"))
+        steps.append(f"Markup = {_money(profit, currency)} ÷ {_money(cost_value, currency)} × 100 = {_percent(markup)}")
+    return _success(["gross_profit", "gross_margin", "markup"],
+                    [_supplied("cost_price", cost_value, currency), _supplied("selling_price", sell_value, currency)], outputs, steps)
+
+
 def calculate_from_query(query: str) -> CalculationResult:
     """Recognize and execute supported self-contained accounting calculations."""
-    q = query or ""
+    # "−20%" (U+2212) was not read as a number, so a rate the user gave — and
+    # which is invalid — was reported as missing ("provide the VAT rate").
+    q = (query or "").replace("\u2212", "-").replace("\u2013", "-")
     from app.orchestration.websearch import is_pasted_material
     if is_pasted_material(q) and not _CALCULATION_HINT.search(q[:400] + "\n" + q[-400:]):
         # A pasted document's own words ("gross profit $919,000") are not a
@@ -532,6 +669,10 @@ def calculate_from_query(query: str) -> CalculationResult:
     share = percent_of_amount(q)
     if share is not None:
         return share
+    for family in (output_vat_lines, result_change, price_margin_markup):
+        found = family(q)
+        if found is not None:
+            return found
 
     # Several questions in one message: labels would be read across all of
     # them (one question's "cost" used in another's formula). Not matched,
@@ -738,7 +879,7 @@ def calculate_from_query(query: str) -> CalculationResult:
     if re.search(r"\bvat\b", q, re.I) and re.search(r"\b(calculate|compute|gross total|vat amount|reverse vat)\b", q, re.I):
         net = _input(q, "net_amount")
         gross = _input(q, "gross_amount")
-        rate = _input(q, "vat_rate", kind="percentage", percentage=True)
+        rate = _input(q, "vat_rate", kind="percentage", percentage=True) or _vat_rate_at(q)
         inputs = [item for item in (net, gross, rate) if item]
         if not rate:
             return _clarify("vat", inputs, ["vat_rate"])
@@ -829,13 +970,33 @@ def calculate_from_query(query: str) -> CalculationResult:
             return _undefined("break_even_units", inputs, "Break-even units are undefined because contribution per unit is zero or negative.")
         units = fixed.value / contribution
         currency = _currency(inputs)
-        return _success(["contribution_per_unit", "break_even_units"], inputs, [
+        revenue = units * price.value
+        outputs = [
             CalculationOutput(name="contribution_per_unit", value=contribution, display_value=_money(contribution, currency), kind="money"),
             CalculationOutput(name="break_even_units", value=units, display_value=f"{units.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):f} units", kind="units"),
-        ], [
+        ]
+        steps = [
             f"Contribution per unit = {_money(price.value, currency)} − {_money(variable.value, currency)} = {_money(contribution, currency)}",
             f"Break-even units = {_money(fixed.value, currency)} ÷ {_money(contribution, currency)} = {units.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):f} units",
-        ])
+        ]
+        formulas = ["contribution_per_unit", "break_even_units"]
+        # Only when asked ("break-even point in units and revenue"): a
+        # "Break-even units?" item in a numbered batch keeps its one answer.
+        if re.search(r"\b(?:revenue|sales value|sales revenue|in sales|turnover)\b", q, re.I):
+            outputs.append(CalculationOutput(name="break_even_revenue", value=revenue, display_value=_money(revenue, currency), kind="money"))
+            steps.append(f"Break-even revenue = {units.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):f} units × {_money(price.value, currency)} = {_money(revenue, currency)}")
+            formulas.append("break_even_revenue")
+        # "…how many units for an operating profit of £18,000": the target
+        # profit was ignored and only the break-even point was returned.
+        target = re.search(r"\b(?:target|operating|desired|required)?\s*profit\s+(?:of|is|=)?\s*[£$€₹]?\s*(\d[\d,]*(?:\.\d+)?)", q, re.I)
+        if target:
+            goal = _decimal(target.group(1))
+            needed = (fixed.value + goal) / contribution
+            outputs.append(CalculationOutput(name="units_for_target_profit", value=needed,
+                                             display_value=f"{needed.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):f} units", kind="units"))
+            steps.append(f"Units for {_money(goal, currency)} profit = ({_money(fixed.value, currency)} + {_money(goal, currency)}) ÷ {_money(contribution, currency)} = {needed.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):f} units")
+            formulas.append("target_profit_units")
+        return _success(formulas, inputs, outputs, steps)
 
     return CalculationResult()
 

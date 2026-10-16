@@ -1904,6 +1904,8 @@ export type ComposedAnswer = {
   /** No citations, but the figures are the question's or conversation's own, computed or charted exactly. */
   computed_from_question?: boolean;
   response_kind?: "calculation" | "chart" | "chart_explanation" | null;
+  /** Set by the backend and recorded in the audit trail; absent on older cached answers. */
+  completeness?: "complete" | "partial" | "none" | null;
   presentation?: AnswerPresentation | null;
   response_mode?: "concise" | "educational" | "analytical" | "calculation" | "workflow" | "compound";
   /** Preferred, ordered rendering path — not yet returned by the backend. */
