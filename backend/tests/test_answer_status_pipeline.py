@@ -45,6 +45,9 @@ def pipeline(monkeypatch):
     monkeypatch.setattr(service, "web_search_each", AsyncMock(return_value=[]))
     monkeypatch.setattr(service, "select_prompt", AsyncMock(return_value=SimpleNamespace(
         id="prompt-test", mode="agent", template="{query}", version="1", model_hint=None)))
+    # These cases exercise the agent path; it must not depend on a developer's
+    # .env (CI has no KRITON_AGENT_MODE or GROQ_API_KEY, and refused them).
+    monkeypatch.setattr(service.model_gateway_service, "agent_mode_active", lambda: True)
     agent = AsyncMock(side_effect=AssertionError("this request must not reach the model"))
     monkeypatch.setattr(service.model_gateway_service, "run_agentic_completion", agent)
     # The release-correction rewrite is a model call too: no rewrite, so the
