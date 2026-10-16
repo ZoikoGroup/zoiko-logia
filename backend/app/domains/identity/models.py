@@ -36,6 +36,11 @@ class User(Base):
     last_name: Mapped[str] = mapped_column(String, nullable=False, default="")
     full_name: Mapped[str] = mapped_column(String, nullable=False)
     role: Mapped[str] = mapped_column(String, nullable=False, default="Admin")
+    # Platform control plane role, separate from the tenant `role` above so a
+    # tenant Admin never inherits platform access (Dashboard & Sidebar
+    # decision record, PRIV-01). Only "super_admin" today; set by
+    # scripts/grant_platform_role.py, never through the API.
+    platform_role: Mapped[str | None] = mapped_column(String, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)

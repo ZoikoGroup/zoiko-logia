@@ -7,6 +7,7 @@ import { AppHeader } from "./AppHeader";
 import { ImpersonationBanner } from "@/components/shell/ImpersonationBanner";
 import { useRole } from "@/components/shell/RoleProvider";
 import { Loader2 } from "lucide-react";
+import { SuperAdminChrome } from "@/components/platform/SuperAdminChrome";
 
 export function AppChrome({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -15,6 +16,11 @@ export function AppChrome({ children }: { children: ReactNode }) {
 
   if (pathname.startsWith("/auth/") || pathname === "/login" || pathname === "/signup") {
     return <>{children}</>;
+  }
+
+  // Platform control plane: its own shell, never the tenant sidebar.
+  if (pathname === "/super-admin" || pathname.startsWith("/super-admin/")) {
+    return <SuperAdminChrome>{children}</SuperAdminChrome>;
   }
 
   if (pathname === "/ask-kriton") {

@@ -3,7 +3,7 @@
 import Link, { useLinkStatus } from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ChevronDown, HelpCircle, Loader2, LogOut, Palette, ShieldCheck, UserRound, X } from "lucide-react";
+import { ChevronDown, Globe2, HelpCircle, Loader2, LogOut, Palette, ShieldCheck, UserRound, X } from "lucide-react";
 import { NAV_SECTIONS, isVisible, navHref } from "@/lib/nav";
 import { useRole } from "@/components/shell/RoleProvider";
 import { useAuth } from "@/hooks/useAuth";
@@ -68,6 +68,12 @@ export function Sidebar({
           <div className="text-xs text-muted truncate mt-0.5">Governance</div>
         </div>
       </div>
+
+      {profile?.platform_role === "super_admin" && (
+        <Link href="/super-admin" className="mx-1 mb-2 flex items-center gap-2.5 rounded-xl bg-hero px-3 py-2.5 text-sm font-semibold text-white hover:opacity-90">
+          <Globe2 size={16} className="text-accent" /> Super Admin Command
+        </Link>
+      )}
 
       {isOverview && <div className="rounded-lg border border-line bg-soft p-3"><p className="text-[9px] font-bold uppercase tracking-[.14em] text-muted">Pinned shortcuts</p><div className="mt-2 flex gap-2"><Link href="/ask-kriton" className="flex-1 rounded border border-line px-2 py-2 text-center text-[11px] text-ink">✦ Ask Kriton</Link><Link href="/review-tasks" className="flex-1 rounded border border-line px-2 py-2 text-center text-[11px] text-ink">↗ Review Tasks</Link></div></div>}
 

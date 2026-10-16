@@ -5,7 +5,7 @@ import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { setCurrentAccessToken } from "@/lib/session-token";
 import { signOut as signOutService } from "@/services/auth.service";
-import { getMe, type UserPublic } from "@/lib/api";
+import { ApiError, getMe, type UserPublic } from "@/lib/api";
 
 export type AuthContextValue = {
   session: Session | null;
@@ -57,6 +57,29 @@ function clearCachedProfile(): void {
   }
 }
 
+// A 401/403/404 from /auth/me is the server's answer (no profile, session
+// rejected). Anything else (timeout, network error, 5xx while the backend
+// restarts or the database pool is busy) says nothing about the role.
+function isDefinitiveRefusal(err: unknown): boolean {
+  return err instanceof ApiError && [401, 403, 404].includes(err.status);
+}
+
+const PROFILE_RETRY_DELAYS_MS = [1500, 4000];
+
+/** /auth/me with retries for transient failures only. Returns the profile,
+ * "refused" when the server said no, or "unavailable" when it never answered. */
+async function fetchProfile(accessToken: string): Promise<UserPublic | "refused" | "unavailable"> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await getMe(accessToken);
+    } catch (err) {
+      if (isDefinitiveRefusal(err)) return "refused";
+      if (attempt >= PROFILE_RETRY_DELAYS_MS.length) return "unavailable";
+      await new Promise((resolve) => setTimeout(resolve, PROFILE_RETRY_DELAYS_MS[attempt]));
+    }
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<UserPublic | null>(null);
@@ -86,17 +109,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const cached = readCachedProfile(currentSession.user.id);
     if (cached) setProfile((prev) => (prev?.id === cached.id ? prev : cached));
     setProfileLoading(true);
-    let next: UserPublic | null;
-    try {
-      next = await getMe(accessToken);
-    } catch {
-      // getMe 401s when the local profile row doesn't exist yet (very first
-      // sign-in, before /auth/provision runs) or the session just expired.
-      // Either way there is no real role to gate on — the app keeps working
-      // in demo mode rather than hard-failing here.
-      next = null;
-    }
+    const result = await fetchProfile(accessToken);
     if (requestId !== latestProfileRequest.current) return;
+    let next: UserPublic | null;
+    if (result === "refused") {
+      // 401 when the local profile row doesn't exist yet (very first sign-in,
+      // before /auth/provision runs) or the session expired: there is no
+      // real role to gate on.
+      next = null;
+    } else if (result === "unavailable") {
+      // The backend never answered. Keep this same user's last verified
+      // profile rather than dropping a signed-in Admin to the fail-closed
+      // Learner view for the rest of the session; the backend still enforces
+      // the real role on every request. With nothing verified, fail closed.
+      next = profileRef.current?.id === currentSession.user.id ? profileRef.current : cached;
+    } else {
+      next = result;
+    }
     if (next) writeCachedProfile(next);
     else clearCachedProfile();
     profileRef.current = next;

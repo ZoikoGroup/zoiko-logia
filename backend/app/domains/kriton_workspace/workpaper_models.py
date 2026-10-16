@@ -1,7 +1,7 @@
 """Workpapers: a client job file that gathers the answers, drafts and
 documents behind a piece of work, with a maker-checker sign-off.
 
-Created by migration s8l9m0n1o2p3_workpapers; both tables are tenant
+Created by migration y4r5s6t7u8v9_workpapers; both tables are tenant
 isolated by RLS like every other tenant table.
 """
 import uuid
