@@ -548,9 +548,11 @@ const ConversationTurn = memo(function ConversationTurn({
   // policy decision — saying "policy blocked" sent users looking for a rule.
   const routeLabel = result?.next_action?.type === "composition_failed"
     ? "Not answered — please try again"
-    : visibleLimitations.some((limitation) => limitation.includes("No factual answer was verified"))
+    // The backend's completeness is the value recorded in the audit trail;
+    // the limitation text is the fallback for answers stored before it existed.
+    : (result?.answer?.completeness ?? (visibleLimitations.some((limitation) => limitation.includes("No factual answer was verified")) ? "none" : null)) === "none"
       ? "Not answered — insufficient evidence"
-    : visibleLimitations.some((limitation) => limitation.includes("Incomplete answer"))
+    : (result?.answer?.completeness ?? (visibleLimitations.some((limitation) => limitation.includes("Incomplete answer")) ? "partial" : null)) === "partial"
       ? "Partially answered — missing information"
     : route === "LLM"
     ? citationCount > 0
@@ -561,7 +563,9 @@ const ConversationTurn = memo(function ConversationTurn({
         ? "Answered — structured from your input"
         : "Answered — no cited sources"
     : route === "CALCULATION"
-      ? result?.calculation?.status === "clarification_required"
+      ? result?.next_action?.type === "calculation_input_invalid"
+        ? "Not calculated — invalid input"
+      : result?.calculation?.status === "clarification_required"
         ? "Clarification required — missing calculation input"
         : result?.calculation?.status === "undefined"
         ? "Calculation undefined — verified"

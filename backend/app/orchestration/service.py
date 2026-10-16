@@ -72,7 +72,7 @@ from app.orchestration.audit_events import (
     audit_composition_rejected, audit_human_review_created, audit_refusal_returned,
     audit_release_check_degraded, audit_release_check_completed,
     audit_clarification_returned, audit_security_incident_recorded,
-    audit_response_finalised, audit_response_returned,
+    audit_response_finalised, audit_response_returned, audit_answer_statements_removed,
     audit_licence_prefilter_completed, audit_licence_denied,
     audit_bundle_built, audit_validation_completed,
     audit_redaction_applied,
@@ -711,6 +711,111 @@ def figureless_calculation_request(query: str) -> bool:
     return bool(_FIGURELESS_CALCULATION.match(query or "")) and not re.search(r"\d", query or "")
 
 
+_REFERS_BACK = re.compile(
+    r"\b(?:previous|earlier|above|same|those|these|that|it|them|again|instead|also|now|then|original|last)\b", re.I)
+_OWN_MONEY = re.compile(r"[£$€₹]\s?\d|\b\d[\d,]*(?:\.\d+)?\s*(?:GBP|USD|EUR|INR|AED)\b", re.I)
+
+
+def _standalone_with_figures(query: str) -> bool:
+    """A request that carries its own figures and does not refer back: earlier
+    turns add nothing it needs, and their figures can only contaminate it.
+    Follow-ups ("what if revenue rises 15%?", "use the same figures") keep
+    their history."""
+    text = query or ""
+    return (len(_OWN_MONEY.findall(text)) >= 2 and not _REFERS_BACK.search(text)
+            and not _looks_like_contextual_follow_up(text))
+
+
+_CLAUSE_SPLIT = re.compile(r"[.;?!]\s+|,?\s+\b(?:and|also|then|plus)\b\s+(?=(?:also\s+)?(?:tell|give|explain|show|list|state|"
+                           r"cite|compare|what|which|how|why|is|are|does|do)\b)", re.I)
+_EXTERNAL_FACT = re.compile(
+    r"\b(?:published|official|benchmark|industry|sector|typical|statistics?|according to|national|government|"
+    r"ONS|HMRC|IRS|OECD|average\s+(?:\w+\s+){0,3}(?:for|of|in|across)\s+(?:UK|US|the|\w+\s+(?:companies|firms|businesses|cafés|cafes|retailers))|"
+    r"regulation|rule|standard|law|legislation|explain|why)\b", re.I)
+_ASKS = re.compile(r"\b(?:tell|give|explain|state|cite|list|compare|what|which|how|why|is|are|does|do)\b", re.I)
+
+
+def uncalculated_part(query: str) -> str:
+    """A clause of a calculation request that the calculator cannot answer:
+    it carries no figures of its own and asks for an outside fact or an
+    explanation. "" when every clause is arithmetic on the given figures."""
+    for clause in _CLAUSE_SPLIT.split(query or ""):
+        clause = clause.strip()
+        # A year ("in 2025") is not a figure to calculate with.
+        figures = re.sub(r"\b(?:19|20)\d{2}\b", "", clause)
+        if (clause and not re.search(r"\d", figures) and _ASKS.search(clause) and _EXTERNAL_FACT.search(clause)
+                and not re.search(r"\b(?:calculate|compute|work out)\b", clause, re.I)):
+            return clause
+    return ""
+
+
+_PART_NOT_FOUND = re.compile(
+    r"\b(?:no|not)\b[^.\n]{0,200}?\b(?:could be|can be|was|were)\s+(?:found|retrieved|located|identified)\b"
+    r"|\bcould not (?:be )?(?:find|found|retrieve|retrieved|locate|located|verify|verified|confirm|confirmed)\b",
+    re.I)
+
+
+# Reason codes in answer_statements_removed (version 1). Only the first says
+# the statement is wrong; the others say it could not be verified as written.
+REMOVAL_REASONS = frozenset({
+    "contradicted_by_cited_source",   # the cited evidence says otherwise
+    "not_in_cited_evidence",          # the cited evidence does not address it
+    "missing_citation",               # a factual statement with no valid reference
+    "citation_not_bound",             # supported, but not by the reference it cites
+    "calculation_error",              # a derived figure that does not compute
+    "figure_unreconciled",            # a figure matching no evidence, tool result or calculation
+    "policy_rule:composition_threshold_label", "policy_rule:state_service_threshold",
+    "policy_rule:ring_fence_rate", "policy_rule:export_igst_refund", "policy_rule:interstate_exemptions",
+    "unspecified",
+})
+_MAX_REMOVED_PER_STAGE = 20
+_EXCERPT_CHARS = 120
+
+
+def removal_stage(stage: str, before: str, after: str, removed: list[tuple[str, str, dict]],
+                  citations: list) -> dict:
+    """One stage of removals for the audit trail. A statement is kept as a
+    hash and a redacted excerpt (no full answer text), with the references it
+    cited and their source ids."""
+    from app.orchestration.redaction import redact_for_external_exposure
+    source_of = {citation.ref_id: citation.source_id for citation in citations or []}
+    entries = []
+    for statement, reason, extra in removed[:_MAX_REMOVED_PER_STAGE]:
+        refs = list(dict.fromkeys(f"REF-{n}" for n in re.findall(r"\[REF-(\d+)\]", statement)))
+        excerpt = redact_for_external_exposure(re.sub(r"\s*\[REF-\d+\]", "", statement)).redacted_text
+        entries.append({
+            "statement_hash": _hash_query(statement),
+            "excerpt": excerpt[:_EXCERPT_CHARS] + ("…" if len(excerpt) > _EXCERPT_CHARS else ""),
+            "reason_code": reason if reason in REMOVAL_REASONS else "unspecified",
+            "cited_refs": refs,
+            "source_ids": [source_of[ref] for ref in refs if ref in source_of],
+            **extra,
+        })
+    return {
+        "stage": stage,
+        "answer_hash_before": _hash_query(before) if before else None,
+        "answer_hash_after": _hash_query(after or ""),
+        "removed_count": len(removed),
+        "removed": entries,
+    }
+
+
+def cited_only(text: str, citations: list) -> list:
+    """The sources the released answer actually cites. An IAS 2 answer citing
+    [REF-1] and [REF-2] listed seven sources, among them a carbon-offset paper
+    and an ethics code it never used. Only the displayed list changes: the
+    source bundle, retrieval audit and answer receipt keep every source that
+    was considered. Ref ids are kept, so [REF-n] in the text still points at
+    its source. An answer without markers cites no web hit (a gross-margin
+    answer listed ten unrelated OECD papers); it keeps only sources that name
+    their provider (market data, exchange rates, official text), whose figures
+    an answer can show without a marker."""
+    used = {f"REF-{number}" for number in re.findall(r"\[REF-(\d+)\]", text or "")}
+    if not used:
+        return [citation for citation in citations if getattr(citation, "provider", None)]
+    return [citation for citation in citations if citation.ref_id in used]
+
+
 def dangling_reference(query: str) -> bool:
     """The message points at figures from earlier ("those expenses") but
     carries none itself. Only meaningful when there is no earlier turn or
@@ -982,6 +1087,9 @@ async def ask_kriton(
         })
 
     review_evidence_snapshot: list[dict] = []
+    # What verification removed from the answer, by stage (removal_stage);
+    # written as one audit event when the response is finalised.
+    removed_statements: list[dict] = []
 
     async def finish(
         response: AskKritonResponse, *, route: str | None = None, store: bool = True, json_dump: bool = False,
@@ -989,10 +1097,20 @@ async def ask_kriton(
         """Finalise the audit trail, keep the response for idempotent retries
         and return it in its request context. Every terminal response is
         retained for consistent idempotent retries."""
+        if response.answer is not None:
+            response = response.model_copy(update={"answer": response.answer.model_copy(
+                update={"completeness": answer_completeness(response.answer.limitations)})})
+        if removed_statements:
+            await audit_answer_statements_removed(
+                db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+                audit_chain_id=audit_chain_id, actor_id=actor_id, stages=removed_statements,
+                completeness=response.answer.completeness if response.answer else None, outcome=response.outcome,
+            )
         await _finalise_and_return(
             db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
             audit_chain_id=audit_chain_id, actor_id=actor_id,
             outcome=response.outcome, route=route or response.route, start_time=start_time,
+            completeness=response.answer.completeness if response.answer else None,
         )
         from app.orchestration.review import record_answer
         if response.answer or review_evidence_snapshot:
@@ -1287,6 +1405,13 @@ async def ask_kriton(
         re.IGNORECASE,
     ):
         calculation_needs_evidence = True
+    if calculation_result.status == "success" and uncalculated_part(request.query):
+        # "Calculate the gross margin, and tell me the ONS average for UK
+        # cafés": the calculator answered the margin and the second part was
+        # dropped without a word, shown as "Answered" (qry-2be6ef6162c4). The
+        # verified calculation goes into the prompt below; the evidence path
+        # answers the rest or says it could not.
+        calculation_needs_evidence = True
     if calculation_result.error_code in {"INVALID_PERCENTAGE", "CURRENCY_MISMATCH", "AMBIGUOUS_INPUTS", "INVALID_PERIOD"}:
         calculation_needs_evidence = False
     if calculation_result.matched and not calculation_needs_evidence:
@@ -1323,7 +1448,11 @@ async def ask_kriton(
                 outcome="clarification_required", route="CALCULATION",
                 safety=safety_state, confidence_state=effective_confidence,
                 next_action=NextAction(
-                    type="calculation_input_missing",
+                    # "VAT rate cannot be negative." is an invalid input the
+                    # user gave, not a missing one; the page said "missing
+                    # calculation input" beside it.
+                    type="calculation_input_invalid" if (calculation_result.error_code or "").startswith("INVALID")
+                    else "calculation_input_missing",
                     message=calculation_result.message,
                 ),
                 audit_reference=AuditReference(audit_chain_id=audit_chain_id),
@@ -2289,7 +2418,11 @@ async def ask_kriton(
     # below with the rest of the prompt.
     if calculation_result.status == "success":
         grounded_input += "\n\nVerified application calculation (use these results and address every requested part):\n" + calculation_markdown(calculation_result)
-    history_block = conversation_prompt(request.conversation_history)
+    # Provenance: earlier turns are context only for a request that refers
+    # back. A standalone question that carries its own figures ("from a loss
+    # of £12,000 to a profit of £3,000") was answered with drivers drawn from
+    # an earlier break-even example in the same chat.
+    history_block = "" if _standalone_with_figures(request.query) else conversation_prompt(request.conversation_history)
     grounded_input += history_block
     grounded_input += bare_chart_hint(request.query, request.conversation_history)
     # The user's own thumbs-down on this question asks for a re-check
@@ -2730,6 +2863,8 @@ async def ask_kriton(
         # calculations before that stricter check ever saw them.
         and not requires_authoritative_evidence(request.query)
     ):
+        contradicted_removed: list[dict] = []
+        before_claim_check = composed_text
         composed_text, claim_verification_note = await _verify_answer_claims(
             composed_text,
             evidence=verification_evidence,
@@ -2737,7 +2872,13 @@ async def ask_kriton(
             grounded_input=grounded_input,
             report=report,
             metrics=metrics,
+            removed=contradicted_removed,
         )
+        if contradicted_removed:
+            removed_statements.append(removal_stage(
+                "contradiction_removal", before_claim_check, composed_text,
+                [(item["statement"], item["reason_code"], {"confirmations": item["confirmations"]})
+                 for item in contradicted_removed], rag_citations))
     if agent_outcome:
         composed_text = restore_matching_tax_chart(composed_text, agent_outcome.artifacts)
 
@@ -2989,9 +3130,12 @@ async def ask_kriton(
         # of a pruned answer sometimes rejects a different sentence; one round
         # escalated a sound export answer whose first prune had succeeded.
         candidate, check = composed_text, release_check
+        pruned_away: list[tuple[str, str, dict]] = []
         for _round in range(2):
             if check.passed or not check.prunable or not (validation is None or validation.passed):
                 break
+            pruned_away += [(claim, reason, {}) for claim, reason in
+                            zip(check.rejected_claims, check.rejected_reasons or ["unspecified"] * len(check.rejected_claims))]
             pruned = prune_rejected_claims(candidate, check.rejected_claims)
             if not pruned or pruned == candidate:
                 break
@@ -3007,6 +3151,8 @@ async def ask_kriton(
             if check.passed:
                 revalidated = validate(pruned)
                 if revalidated is None or revalidated.passed:
+                    removed_statements.append(removal_stage(
+                        "release_prune", composed_text, renumber_ordered_lists(pruned), pruned_away, rag_citations))
                     composed_text, release_check, validation = renumber_ordered_lists(pruned), check, revalidated
                     claim_verification_note = _UNSUPPORTED_REMOVED_NOTE
                 break
@@ -3072,6 +3218,7 @@ async def ask_kriton(
                 passed=False,
                 failures=[*release_check.failures, "unreconciled_figures: " + ", ".join(unsupported_figures[:8])],
                 rejected_claims=release_check.rejected_claims,
+                rejected_reasons=release_check.rejected_reasons,
             )
         # Not "decision": that name is the routing decision used below.
         release_decision = decide_release_failure(
@@ -3081,6 +3228,13 @@ async def ask_kriton(
         if release_decision is not None and not release_decision.escalate:
             # Arithmetic mismatches and prohibited claims fail validation
             # above and still escalate; see decide_release_failure.
+            removed_statements.append(removal_stage(
+                "release_withheld", composed_text, release_decision.text,
+                [(claim, reason, {}) for claim, reason in zip(
+                    release_check.rejected_claims,
+                    release_check.rejected_reasons or ["unspecified"] * len(release_check.rejected_claims))]
+                + [(figure, "figure_unreconciled", {}) for figure in unsupported_figures],
+                rag_citations))
             composed_text, claim_verification_note = release_decision.text, release_decision.note
             await audit_release_check_degraded(
                 db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
@@ -3248,11 +3402,30 @@ async def ask_kriton(
 
     from app.orchestration.verification_service import is_evidence_gap_statement
     evidence_gap_only = not release_claims(final_text) and is_evidence_gap_statement(final_text)
-    if re.search(r"(?:sources?|evidence)[^.\n]*(?:do not|does not|not establish|not state)", final_text, re.I) and not evidence_gap_only:
+    if (re.search(r"(?:sources?|evidence)[^.\n]*(?:do not|does not|not establish|not state)", final_text, re.I)
+            # "No ONS data … could be retrieved from the available sources":
+            # one part answered, another not, shown as fully answered.
+            or _PART_NOT_FOUND.search(final_text)) and not evidence_gap_only:
         limitations.append("Incomplete answer: some requested information could not be verified from the retrieved evidence.")
+    if agent_outcome is not None and agent_outcome.unreconciled_figures:
+        # The written answer was withheld and only the verified working is
+        # shown; "Answered" beside "…so it was withheld" contradicted itself.
+        # Name the figures, exactly as the answer wrote them (the reconciliation
+        # result), so the reader knows what is unverified, not just that
+        # something was.
+        figures = list(dict.fromkeys(agent_outcome.unreconciled_figures))
+        removed_statements.append(removal_stage(
+            "figure_reconciliation", "", final_text, [(figure, "figure_unreconciled", {}) for figure in figures],
+            rag_citations))
+        shown = ", ".join(figures[:5]) + (f" and {len(figures) - 5} more" if len(figures) > 5 else "")
+        limitations.append(f"Incomplete answer: the written explanation was withheld because "
+                           f"{'this figure' if len(figures) == 1 else 'these figures'} in it could not be verified "
+                           f"against the question, the conversation or the tool results: {shown}. Only the "
+                           f"calculator's verified working is shown.")
     if evidence_gap_only:
         rag_citations = []
         limitations = ["The retrieved evidence does not establish the requested answer. No factual answer was verified."]
+    rag_citations = cited_only(final_text, rag_citations)
 
     # A calculation on the question's own figures, or a chart redrawn from
     # figures already in the conversation, needs no source — calling it
@@ -3552,16 +3725,38 @@ async def _verified_document_figures_context(
         logger.exception("Could not compute verified document figures")
         return ""
 
+NOT_VERIFIED_MARKER = "No factual answer was verified"
+INCOMPLETE_MARKER = "Incomplete answer"
+
+
+def answer_completeness(limitations: list[str]) -> str:
+    """How much of the request the released answer covers, from the
+    limitations the pipeline attached: every partial path adds an
+    "Incomplete answer: …" limitation and an evidence gap adds "No factual
+    answer was verified". The page showed "Partially answered" from these
+    while the audit said only "answered"."""
+    if any(NOT_VERIFIED_MARKER in item for item in limitations or []):
+        return "none"
+    # Statements removed by verification, or figures left unconfirmed, are
+    # content the reader does not get as verified: the IFRS 15 answer that lost
+    # a section to "Statements the cited sources do not support were removed"
+    # was still called complete.
+    withheld = (INCOMPLETE_MARKER, _UNSUPPORTED_REMOVED_NOTE, _CLAIM_REMOVED_NOTE, _CLAIMS_UNCONFIRMED_NOTE)
+    if any(marker in item for item in limitations or [] for marker in withheld):
+        return "partial"
+    return "complete"
+
+
 async def _finalise_and_return(
     db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
-    outcome, route, start_time: float
+    outcome, route, start_time: float, completeness: str | None = None,
 ) -> None:
     latency_ms = (time.monotonic() - start_time) * 1000
     metrics = current_stage_metrics()
     await audit_response_finalised(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id,
-        actor_id=actor_id, outcome=outcome, route=route,
+        actor_id=actor_id, outcome=outcome, route=route, completeness=completeness,
     )
     await audit_response_returned(
         db, query_id=query_id, correlation_id=correlation_id,

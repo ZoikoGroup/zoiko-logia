@@ -419,6 +419,12 @@ class ComposedAnswer(BaseModel):
     # own, computed or charted exactly — not model knowledge.
     computed_from_question: bool = False
     response_kind: Optional[Literal["calculation", "chart", "chart_explanation"]] = None
+    # Whether everything asked was answered: "partial" when a part was withheld
+    # or could not be verified, "none" when no factual answer was verified.
+    # Set once, in ask_kriton's finish(), and recorded in the response_finalised
+    # audit event, so the page and the audit trail cannot disagree. Additive:
+    # `outcome` keeps its meaning for existing consumers.
+    completeness: Optional[Literal["complete", "partial", "none"]] = None
     # Internal fields — kept for model_gateway wiring; never exposed to frontend
     prompt_id: str = "inline"
     prompt_name: str = "Inline RAG Prompt"

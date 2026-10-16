@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 MAX_CLAIMS = 12
 _MAX_EVIDENCE_CHARS = 14000
 _MAX_ITEM_CHARS = 1500
+# A source the answer cites may use more of the same total budget: an official
+# IFRS 15 excerpt (~3,000 characters) was cut to 1,500 for the verifier, which
+# then judged claims "not in evidence" whose support sat in the other half,
+# and the answer lost them (qry-535a68332c4d) or was withheld (qry-375971f37cb5).
+_MAX_CITED_ITEM_CHARS = 4000
 _TIMEOUT_SECONDS = 15.0
 
 # A statement worth checking names something specific a source could
@@ -138,6 +143,9 @@ class VerificationResult:
     evidence_refs: dict[int, list[str]] = field(default_factory=dict)
     # 1-based numbers of claims judged contradicted or not_in_evidence.
     rejected_ids: list[int] = field(default_factory=list)
+    # The contradicted ones among them: "the evidence says otherwise" is a
+    # different finding from "the evidence does not address it".
+    contradicted_ids: list[int] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -189,7 +197,7 @@ def _evidence_block(evidence: list[str], focus: str = "") -> str:
                      not bool(cited & set(re.findall(r'\[(REF-\d+)\]', pair[1] or ''))))
     priority_count = sum(bool(cited & set(re.findall(r'\[(REF-\d+)\]', item or '')))
                          for item in evidence)
-    priority_allowance = min(_MAX_ITEM_CHARS, _MAX_EVIDENCE_CHARS // max(1, priority_count))
+    priority_allowance = min(_MAX_CITED_ITEM_CHARS, _MAX_EVIDENCE_CHARS // max(1, priority_count))
     for index, item in ordered:
         item = " ".join((item or "").split())
         allowance = priority_allowance if cited & set(re.findall(r'\[(REF-\d+)\]', item)) else _MAX_ITEM_CHARS
@@ -257,6 +265,7 @@ async def verify_claims(claims: list[str], evidence: list[str], question: str = 
         if kind in ("contradicted", "not_in_evidence"):
             result.rejected_ids.append(identifier)
         if kind == "contradicted":
+            result.contradicted_ids.append(identifier)
             result.contradicted.append(Contradiction(claim, str(verdict.get("evidence_says") or "").strip()))
         elif kind == "supported":
             result.supported += 1

@@ -89,16 +89,18 @@ def _stated(evidence: str) -> list[float]:
 
 
 def _product_or_ratio(value: float, stated: list[float]) -> bool:
-    """An amount converted at a rate (10,000 × 1.178) or a ratio of two
-    figures (120,000 / 1,000,000 = 12.0%). Only the direct product, ratio or
-    ratio as a percentage: rescaling these as well would accept almost any
+    """An amount converted at a rate (10,000 × 1.178), a ratio of two figures
+    (120,000 / 1,000,000 = 12.0%), or their sum or difference. Only these
+    direct combinations: rescaling them as well would accept almost any
     number by coincidence."""
     if len(stated) > _PAIRWISE_MAX_NUMBERS:
         return False
     tolerance = max(abs(value) * 0.002, 0.006)
     for a in stated:
         for b in stated:
-            candidates = [a * b] + ([a / b, a / b * 100] if b else [])
+            # a ± b: "£2,260 more than the original" (22,260 − 20,000) was
+            # withheld as an unverified figure though both terms were verified.
+            candidates = [a * b, a + b, a - b] + ([a / b, a / b * 100] if b else [])
             if any(abs(abs(value) - abs(c)) <= tolerance for c in candidates):
                 return True
     return False

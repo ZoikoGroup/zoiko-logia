@@ -95,6 +95,9 @@ def answer_receipt(result, run: "workflow_state.WorkflowRun") -> dict:
         "route": getattr(result, "route", None),
         "risk": getattr(safety, "risk_level", None),
         "outcome": getattr(result, "outcome", None),
+        # complete | partial | none — the same value the page shows and
+        # response_finalised records (service.answer_completeness).
+        "completeness": getattr(answer, "completeness", None) if answer else None,
         "citation_ids": [c.ref_id for c in answer.citations] if answer else [],
         "calculation_ids": list(run.calculation_ids),
         "citation_spans": dict(run.citation_spans),

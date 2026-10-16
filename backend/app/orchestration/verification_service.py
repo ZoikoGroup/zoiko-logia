@@ -44,6 +44,7 @@ async def _verify_answer_claims(
     grounded_input: str,
     report: Callable[[str, str], Awaitable[None]],
     metrics: StageMetrics,
+    removed: list[dict] | None = None,
 ) -> tuple[str, str | None]:
     """Judge every statement carrying a specific (amount, rate, threshold,
     form, deadline) against the evidence the answer was composed from, and
@@ -88,6 +89,11 @@ async def _verify_answer_claims(
             confirmed = {item.claim for item in confirm.contradicted} if confirm.ran else set(suspects)
             removable = [claim for claim in suspects if claim in confirmed]
             if removable:
+                if removed is not None:
+                    # For the audit trail (service.record_removed): contradicted
+                    # on the recheck and, when it ran, on a confirming check.
+                    removed.extend({"statement": claim, "reason_code": "contradicted_by_cited_source",
+                                    "confirmations": 2 if confirm.ran else 1} for claim in removable)
                 return claim_verification.remove_claims(corrected, removable), _CLAIM_REMOVED_NOTE
         return corrected, None
     if verdict.mostly_unconfirmed and needs_lookup(question):
@@ -146,6 +152,9 @@ class AnswerVerification:
     # True when every other claim was verified as supported, so removing the
     # rejected ones leaves an answer that can be checked again.
     prunable: bool = False
+    # One reason code per rejected claim, in the same order (audit only; see
+    # REMOVAL_REASONS). Never "false" for a claim the evidence did not address.
+    rejected_reasons: list[str] = field(default_factory=list)
 
 
 async def verify_for_release(answer: str, *, question: str, evidence: list[str],
@@ -182,11 +191,13 @@ async def verify_for_release(answer: str, *, question: str, evidence: list[str],
     available = {ref for item in evidence for ref in re.findall(r"\[(REF-\d+)\]", item)}
     failures: list[str] = []
     rejected: list[str] = []
+    reasons: list[str] = []
     cited = []
     for original, claim in pairs:
         if (re.search(r'\bcomposition\b', claim, re.I)
                 and re.search(r'monthly\s+output\s+tax\s+liability|output\s+tax\s+liability[^.]{0,60}per\s+month', claim, re.I)):
             rejected.append(original)
+            reasons.append("policy_rule:composition_threshold_label")
             failures.append('Monthly output-tax liability for a registration procedure was mislabelled as composition-scheme eligibility')
             continue
         if (re.search(r'\bgst\b', question, re.I)
@@ -196,6 +207,7 @@ async def verify_for_release(answer: str, *, question: str, evidence: list[str],
                 and re.search(r'\bservices\b[^.\n]{0,100}?(?:10\s*lakhs?|10,00,000)|(?:10\s*lakhs?|10,00,000)[^.\n]{0,100}?\bservices\b', claim, re.I)
                 and not re.search(r'\b(?:states?|manipur|mizoram|nagaland|tripura|special[- ]category)\b', claim, re.I)):
             rejected.append(original)
+            reasons.append("policy_rule:state_service_threshold")
             failures.append('A state-specific service registration threshold was stated without its state condition')
             continue
         if (re.search(r'\bcorporation tax\b', question, re.I)
@@ -203,6 +215,7 @@ async def verify_for_release(answer: str, *, question: str, evidence: list[str],
                 and re.search(r'\bring[-‑ ]fence\b', claim, re.I)
                 and not re.search(r'\b(?:only|not|except|oil|gas)\b', claim, re.I)):
             rejected.append(original)
+            reasons.append("policy_rule:ring_fence_rate")
             failures.append('A special ring-fence rate was applied to an ordinary-company question')
             continue
         if (re.search(r'\b(?:export|exports|us client|foreign)\b', question, re.I)
@@ -210,6 +223,7 @@ async def verify_for_release(answer: str, *, question: str, evidence: list[str],
                 and re.search(r'refund of (?:the )?IGST paid', claim, re.I)
                 and not re.search(r'alternativ|instead|if.*pay|with payment', claim, re.I)):
             rejected.append(original)
+            reasons.append("policy_rule:export_igst_refund")
             failures.append('Export without IGST payment was conflated with a refund of IGST paid')
             continue
         if (re.search(r'\bgst\b', question, re.I) and re.search(r'registration', question, re.I)
@@ -217,6 +231,7 @@ async def verify_for_release(answer: str, *, question: str, evidence: list[str],
                 and re.search(r'regardless of turnover|irrespective of turnover', claim, re.I)
                 and not re.search(r'exempt|except|unless|subject to|notification', claim, re.I)):
             rejected.append(original)
+            reasons.append("policy_rule:interstate_exemptions")
             failures.append('Inter-state service registration omitted turnover exemptions')
             continue
         refs = set(re.findall(r"\[(REF-\d+)\]", claim))
@@ -227,11 +242,13 @@ async def verify_for_release(answer: str, *, question: str, evidence: list[str],
                 claim, calculation_error = derived
                 if calculation_error:
                     rejected.append(original)
+                    reasons.append("calculation_error")
                     failures.append(calculation_error)
                     continue
             cited.append((original, claim, refs))
         else:
             rejected.append(original)
+            reasons.append("missing_citation")
             failures.append("A factual claim lacks a valid citation to retrieved evidence")
     supported = 0
     batches = [cited[start:start + claim_verification.MAX_CLAIMS]
@@ -258,9 +275,12 @@ async def verify_for_release(answer: str, *, question: str, evidence: list[str],
         for index, (original, _, refs) in enumerate(batch, start=1):
             if index in verdict.rejected_ids:
                 rejected.append(original)
+                reasons.append("contradicted_by_cited_source" if index in verdict.contradicted_ids
+                               else "not_in_cited_evidence")
                 failures.append("Answer contains contradicted or unsupported claims")
             elif not set(verdict.evidence_refs.get(index, [])) & refs:
                 rejected.append(original)
+                reasons.append("citation_not_bound")
                 failures.append("Claim verification did not bind a supported claim to its citation")
             else:
                 supported += 1
@@ -272,7 +292,7 @@ async def verify_for_release(answer: str, *, question: str, evidence: list[str],
         "Rejected: " + "; ".join(f"\"{claim[:120]}\"" for claim in rejected[:3])
     ]
     return AnswerVerification(
-        False, failures, rejected_claims=rejected, prunable=supported > 0,
+        False, failures, rejected_claims=rejected, prunable=supported > 0, rejected_reasons=reasons,
     )
 
 

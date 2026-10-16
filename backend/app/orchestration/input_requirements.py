@@ -95,8 +95,14 @@ def missing_vat_inputs(query: str) -> str | None:
     q = query or ""
     if not (_VAT.search(q) and _VAT_AMOUNT_QUESTION.search(q) and re.search(r"\d", q)) or _VAT_LOOKUP_ONLY.search(q):
         return None
-    if re.search(r"[-−]\s*\d+(?:\.\d+)?\s*%", q):
+    if re.search(r"[-−–]\s*\d+(?:\.\d+)?\s*%", q):
         return None  # an impossible rate is rejected first by the calculator (INVALID_PERCENTAGE)
+    from app.orchestration.calculations.engine import output_vat_lines
+    if output_vat_lines(q) is not None:
+        # Output VAT on sales lines that each state a rate: calculated on the
+        # values given, with the VAT-inclusive alternative shown — not a
+        # question about input VAT or treatment the user did not ask about.
+        return None
     from app.orchestration.source_taxonomy import detect_jurisdictions
     has_rate = bool(re.search(r"\d+(?:\.\d+)?\s*%", q))
     sales_and_purchases = bool(re.search(r"\b(?:sales|turnover|output)\b", q, re.I)
