@@ -5,7 +5,7 @@ import { clearImpersonation, getImpersonation, impersonationHeaders } from "@/li
 import type { GovernanceDashboardViewModel } from "@/lib/governance-dashboard-types";
 import type { CommandCenterViewModel, MyWorkspaceViewModel } from "@/lib/command-center-types";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010/api/v1";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8010/api/v1";
 
 export type UserPublic = {
   id: string;
@@ -2572,4 +2572,34 @@ export type PlatformCommand = {
 
 export async function getPlatformCommand(token: string, signal?: AbortSignal): Promise<PlatformCommand> {
   return (await authedFetch("/platform/command", token, { signal }, { asSelf: true })).json();
+}
+
+export type PlatformAccountStatus =
+  "active" | "never_signed_in" | "unconfirmed" | "no_login" | "suspended" | "deactivated";
+export type PlatformAccount = {
+  id: string; name: string; email: string; role: string; platformRole: string | null;
+  tenantId: string; tenant: string; status: PlatformAccountStatus; createdAt: string | null;
+  emailConfirmed: boolean | null; lastSignInAt: string | null; lastSeenAt: string | null; lastActivityAt: string | null;
+  online: boolean; activeSessions: number; mfa: boolean | null; providers: string[];
+};
+export type PlatformCompany = {
+  id: string; name: string; type: "company" | "personal"; state: "online" | "active" | "dormant" | "empty";
+  createdAt: string | null; members: number; activeMembers: number; online: number; signedIn24h: number; signedIn7d: number;
+  roles: Record<string, number>; admins: { name: string; email: string }[];
+  lastSignInAt: string | null; lastActivityAt: string | null; billingPlan: boolean; issues: number;
+};
+export type PlatformDirectory = {
+  generatedAt: string;
+  signInDataAvailable: boolean;
+  summary: {
+    companies: number; personalWorkspaces: number; companiesOnline: number; companiesSignedIn24h: number;
+    companiesActive30d: number; accounts: number; online: number; signedIn24h: number; signedIn7d: number;
+    statuses: Partial<Record<PlatformAccountStatus, number>>; roles: Record<string, number>; withMfa: number;
+  };
+  companies: PlatformCompany[];
+  accounts: PlatformAccount[];
+};
+
+export async function getPlatformDirectory(token: string, signal?: AbortSignal): Promise<PlatformDirectory> {
+  return (await authedFetch("/platform/directory", token, { signal }, { asSelf: true })).json();
 }

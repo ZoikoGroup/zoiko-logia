@@ -1,13 +1,14 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-const auth = vi.hoisted(() => ({ update: vi.fn().mockResolvedValue(undefined) }));
+const auth = vi.hoisted(() => ({ update: vi.fn().mockResolvedValue(undefined), signOut: vi.fn().mockResolvedValue({ error: null }) }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("@/components/layout/AppHeader", () => ({ BrandMark: () => null }));
 vi.mock("@/lib/supabase", () => ({
   supabase: { auth: {
     getSession: async () => ({ data: { session: { user: { id: "u1" } } } }),
     onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
+    signOut: auth.signOut,
   } },
 }));
 vi.mock("@/services/auth.service", () => ({ AuthError: class extends Error {}, updatePassword: auth.update }));
@@ -36,5 +37,6 @@ describe("Reset password", () => {
     fireEvent.click(submit);
     await waitFor(() => expect(auth.update).toHaveBeenCalledWith("Secure123"));
     expect(await screen.findByText("Your password is set")).toBeInTheDocument();
+    expect(auth.signOut).toHaveBeenCalledWith({ scope: "global" });
   });
 });

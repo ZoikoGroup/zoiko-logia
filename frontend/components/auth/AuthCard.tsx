@@ -18,10 +18,12 @@ import {
 import {
   ADULT_ONLY_MESSAGE,
   AuthError,
+  EmailNotConfirmedError,
   ENABLED_OAUTH_PROVIDERS,
   OAUTH_PROVIDER_LABELS,
   PUBLIC_SIGNUP_ENABLED,
   rememberSignupChoice,
+  resendConfirmation,
   signInWithOAuthProvider,
   signInWithPassword,
   signUp,
@@ -117,19 +119,36 @@ function SignInPanel({ active, onSwitchToSignup }: { active: boolean; onSwitchTo
   const [rememberMe, setRememberMe] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [unconfirmed, setUnconfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
+    setNotice("");
+    setUnconfirmed(false);
     setSubmitting(true);
     try {
-      const { mfaRequired, home } = await signInWithPassword(email, password);
+      const { mfaRequired, home } = await signInWithPassword(email.trim(), password);
       router.push(mfaRequired ? "/auth/mfa" : home);
     } catch (err) {
+      setUnconfirmed(err instanceof EmailNotConfirmedError);
       setError(err instanceof AuthError ? err.message : "Something went wrong while signing you in. Please try again.");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleResend() {
+    setError("");
+    setNotice("");
+    try {
+      await resendConfirmation(email.trim());
+      setUnconfirmed(false);
+      setNotice("Verification email sent. Open the link in it, then sign in.");
+    } catch (err) {
+      setError(err instanceof AuthError ? err.message : "Could not resend the verification email.");
     }
   }
 
@@ -207,8 +226,21 @@ function SignInPanel({ active, onSwitchToSignup }: { active: boolean; onSwitchTo
         </label>
 
         {error && (
-          <p className="rounded-lg border border-bad/25 bg-bad/10 px-3 py-2 text-xs font-medium text-bad">
+          <p role="alert" className="rounded-lg border border-bad/25 bg-bad/10 px-3 py-2 text-xs font-medium text-bad">
             {error}
+            {unconfirmed && (
+              <>
+                {" "}
+                <button type="button" onClick={handleResend} className="font-semibold underline">
+                  Resend verification email
+                </button>
+              </>
+            )}
+          </p>
+        )}
+        {notice && (
+          <p role="status" className="rounded-lg border border-ok/30 bg-ok/10 px-3 py-2 text-xs font-medium text-ok">
+            {notice}
           </p>
         )}
 
@@ -275,14 +307,15 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
   const [adultConfirmed, setAdultConfirmed] = useState(false);
   const isCompany = accountType === "company";
 
-  /** Runs before an OAuth redirect: the form can't travel through Google, so
-   * the workspace choice is remembered for /auth/callback instead. */
+  /** Runs before an OAuth redirect. Google sign-up always creates a personal
+   * Learner account (the backend enforces it), so only the adult
+   * confirmation travels to /auth/callback. */
   function prepareOAuthSignup(): boolean {
-    if (!isCompany && !adultConfirmed) {
+    if (!adultConfirmed) {
       setFieldErrors({ adultConfirmed: ADULT_ONLY_MESSAGE });
       return false;
     }
-    rememberSignupChoice({ accountType, adultConfirmed });
+    rememberSignupChoice({ accountType: "individual", adultConfirmed });
     return true;
   }
 
@@ -296,9 +329,13 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
 
     setSubmitting(true);
     try {
-      await signUp(fields);
+      const { home } = await signUp(fields);
+      if (home) {
+        // No email confirmation required on this project: already signed in.
+        router.push(home);
+        return;
+      }
       setSuccess(true);
-      setTimeout(() => router.push("/login"), 2000);
     } catch (err) {
       setFormError(err instanceof AuthError ? err.message : "Could not create your account. Please try again.");
     } finally {
@@ -312,15 +349,15 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
         <div className="mb-3">
           <h2 className="text-2xl font-bold tracking-normal text-ink">Check your email</h2>
           <p className="mt-1.5 text-sm leading-6 text-muted">
-            Account created successfully. Please check your email and verify your account before signing in.
+            Account created. We sent a confirmation link to <span className="font-semibold text-ink">{email}</span>.
+            Open it to verify your address and you&apos;ll be signed in automatically.
           </p>
         </div>
         <p className="mt-3 text-center text-sm text-muted">
-          Redirecting to{" "}
-          <button type="button" onClick={() => router.push("/login")} className="font-semibold text-brand hover:underline">
-            sign in
+          Already verified?{" "}
+          <button type="button" onClick={onSwitchToSignin} className="font-semibold text-brand hover:underline">
+            Sign in
           </button>
-          ...
         </p>
       </div>
     );
@@ -509,7 +546,13 @@ function SignUpPanel({ active, onSwitchToSignin }: { active: boolean; onSwitchTo
           {!submitting && <ArrowRight size={16} />}
         </button>
 
-        <OAuthButtons active={active} onError={setFormError} beforeStart={prepareOAuthSignup} />
+        {isCompany ? (
+          <p className="pt-1 text-center text-xs leading-5 text-muted">
+            Company workspaces are created with a work email. Google sign-up creates a personal learner account.
+          </p>
+        ) : (
+          <OAuthButtons active={active} onError={setFormError} beforeStart={prepareOAuthSignup} />
+        )}
       </form>
 
       <div className="mt-5 flex items-center justify-center gap-1.5">

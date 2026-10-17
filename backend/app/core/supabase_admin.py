@@ -71,16 +71,76 @@ def create_user(email: str, password: str, email_confirm: bool = False) -> dict:
 
 
 def get_user_by_email(email: str) -> dict | None:
+    """The auth user with exactly this email, or None. GoTrue's admin list has
+    no exact-email filter (an unknown `email` param is ignored and the first
+    page of ALL users comes back), so page through and match exactly."""
+    _require_configured()
+    wanted = email.strip().lower()
+    page = 1
+    while True:
+        resp = httpx.get(
+            f"{settings.SUPABASE_URL}/auth/v1/admin/users",
+            headers=_headers(),
+            params={"page": page, "per_page": 1000},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        users = resp.json().get("users", [])
+        for user in users:
+            if (user.get("email") or "").lower() == wanted:
+                return user
+        if len(users) < 1000:
+            return None
+        page += 1
+
+
+def get_user(user_id: str) -> dict | None:
+    """The auth user with this id, or None when Supabase has no such user."""
     _require_configured()
     resp = httpx.get(
+        f"{settings.SUPABASE_URL}/auth/v1/admin/users/{user_id}",
+        headers=_headers(),
+        timeout=15,
+    )
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    return resp.json()
+
+
+def create_user_with_id(user_id: str, email: str, password: str) -> dict:
+    """Create a confirmed auth user under a chosen id — used to re-attach an
+    existing local profile (whose id is fixed) to a fresh Supabase identity."""
+    _require_configured()
+    resp = httpx.post(
         f"{settings.SUPABASE_URL}/auth/v1/admin/users",
         headers=_headers(),
-        params={"email": email},
+        json={"id": user_id, "email": email, "password": password, "email_confirm": True},
         timeout=15,
     )
     resp.raise_for_status()
-    users = resp.json().get("users", [])
-    return users[0] if users else None
+    return resp.json()
+
+
+def confirm_email(user_id: str) -> None:
+    _require_configured()
+    resp = httpx.put(
+        f"{settings.SUPABASE_URL}/auth/v1/admin/users/{user_id}",
+        headers=_headers(),
+        json={"email_confirm": True},
+        timeout=15,
+    )
+    resp.raise_for_status()
+
+
+def delete_user(user_id: str) -> None:
+    _require_configured()
+    resp = httpx.delete(
+        f"{settings.SUPABASE_URL}/auth/v1/admin/users/{user_id}",
+        headers=_headers(),
+        timeout=15,
+    )
+    resp.raise_for_status()
 
 
 def revoke_all_sessions(user_id: str) -> bool:

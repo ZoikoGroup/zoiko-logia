@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabase";
 import { setCurrentAccessToken } from "@/lib/session-token";
 import { signOut as signOutService } from "@/services/auth.service";
 import { ApiError, getMe, type UserPublic } from "@/lib/api";
+import { PROFILE_PRIMED_EVENT, clearCachedProfile, readCachedProfile, writeCachedProfile } from "@/lib/profile-cache";
 
 export type AuthContextValue = {
   session: Session | null;
@@ -23,39 +24,6 @@ export type AuthContextValue = {
 };
 
 export const AuthContext = createContext<AuthContextValue | null>(null);
-
-// Cache of the last /auth/me result, shared by this browser's tabs so a new
-// tab knows the role at once instead of rendering the fail-closed Learner view
-// until /auth/me answers. Only a UX shortcut: the backend still enforces every
-// permission, and the entry is keyed to the Supabase user id, re-verified on
-// load and dropped on sign-out or any failed re-verification.
-const PROFILE_CACHE_KEY = "zoiko_profile";
-
-function readCachedProfile(userId: string): UserPublic | null {
-  try {
-    const raw = localStorage.getItem(PROFILE_CACHE_KEY);
-    const cached = raw ? (JSON.parse(raw) as UserPublic) : null;
-    return cached?.id === userId ? cached : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeCachedProfile(profile: UserPublic): void {
-  try {
-    localStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(profile));
-  } catch {
-    // Storage unavailable (private mode, quota) — the nav just waits for /auth/me.
-  }
-}
-
-function clearCachedProfile(): void {
-  try {
-    localStorage.removeItem(PROFILE_CACHE_KEY);
-  } catch {
-    // Nothing cached to clear.
-  }
-}
 
 // A 401/403/404 from /auth/me is the server's answer (no profile, session
 // rejected). Anything else (timeout, network error, 5xx while the backend
@@ -168,7 +136,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       void loadProfile(newSession);
     });
 
-    return () => subscription.subscription.unsubscribe();
+    // A profile just verified by sign-in: use it now, and supersede any
+    // /auth/me still in flight (one sent before provisioning finished would
+    // otherwise land later with a 401 and wipe it).
+    function onPrimed(event: Event) {
+      const primed = (event as CustomEvent<UserPublic>).detail;
+      ++latestProfileRequest.current;
+      profileRef.current = primed;
+      setProfile((prev) => (prev && JSON.stringify(prev) === JSON.stringify(primed) ? prev : primed));
+      setProfileLoading(false);
+    }
+    window.addEventListener(PROFILE_PRIMED_EVENT, onPrimed);
+
+    return () => {
+      subscription.subscription.unsubscribe();
+      window.removeEventListener(PROFILE_PRIMED_EVENT, onPrimed);
+    };
   }, []);
 
   const value: AuthContextValue = {

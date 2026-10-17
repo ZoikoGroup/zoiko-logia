@@ -1,6 +1,7 @@
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import { primeProfile } from "@/lib/profile-cache";
 import { ApiError, provisionProfile, recordMfaEnrolled, type UserPublic } from "@/lib/api";
-import { homePathFor } from "@/lib/roles";
+import { signInHomeFor } from "@/lib/roles";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // >=8 chars, at least one uppercase, one lowercase, one digit.
@@ -60,17 +61,20 @@ export class AuthError extends Error {}
  * the project) — first_name/last_name/company_name are stashed in
  * user_metadata via signUp's `options.data` so they survive to the first
  * real sign-in, where they get handed to the backend's /auth/provision. */
-export async function signUp(fields: SignUpFields): Promise<void> {
+export async function signUp(fields: SignUpFields): Promise<{ home: string | null }> {
   if (!isSupabaseConfigured()) {
     throw new AuthError(
       "Signup is unavailable — Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL " +
         "and NEXT_PUBLIC_SUPABASE_ANON_KEY in frontend/.env and restart the dev server."
     );
   }
-  const { error } = await supabase.auth.signUp({
+  const { data, error } = await supabase.auth.signUp({
     email: fields.email,
     password: fields.password,
     options: {
+      // The confirmation link signs the person in and provisions the
+      // workspace there (company → Admin, individual → Learner).
+      emailRedirectTo: `${window.location.origin}/auth/callback`,
       // Survives email verification, then reaches /auth/provision on the
       // first sign-in (provisionAndRefresh).
       data: {
@@ -99,6 +103,36 @@ export async function signUp(fields: SignUpFields): Promise<void> {
     // message is exactly what made this failure look like a signup bug.
     throw new AuthError(`Signup failed: ${message}`);
   }
+  // An address that is already registered gets no error from Supabase (so
+  // sign-up can't be used to probe for accounts): it returns a user with no
+  // identities and sends no email. Say so instead of "check your email".
+  if (data.user && (data.user.identities?.length ?? 0) === 0) {
+    throw new AuthError("An account with this email already exists. Sign in, or use Forgot password.");
+  }
+  // "Confirm email" switched off on the Supabase project: the session exists
+  // already, so provision now and go straight in.
+  if (data.session) {
+    const profile = await provisionAndRefresh(data.session.access_token, data.user?.user_metadata ?? {});
+    return { home: signInHomeFor(profile) };
+  }
+  return { home: null };
+}
+
+export class EmailNotConfirmedError extends AuthError {}
+
+/** Sends the sign-up confirmation email again. */
+export async function resendConfirmation(email: string): Promise<void> {
+  const { error } = await supabase.auth.resend({
+    type: "signup",
+    email,
+    options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
+  });
+  if (error) {
+    if (error.status === 429 || /rate limit|security purposes/i.test(error.message)) {
+      throw new AuthError("A verification email was sent recently. Please wait a minute and try again.");
+    }
+    throw new AuthError(`Could not resend the verification email: ${error.message}`);
+  }
 }
 
 /** On success, provisions the local backend profile (idempotent — a no-op
@@ -119,21 +153,33 @@ export async function signInWithPassword(
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
   if (error) {
-    throw new AuthError("Incorrect email or password.");
+    // With "Confirm email" on, Supabase refuses an unverified account with
+    // its own code — reporting that as a wrong password sent people round in
+    // circles resetting a password that was never the problem.
+    if (error.code === "email_not_confirmed" || /email not confirmed/i.test(error.message)) {
+      throw new EmailNotConfirmedError("Please verify your email before signing in. Check your inbox for the confirmation link.");
+    }
+    if (error.status === 429) {
+      throw new AuthError("Too many sign-in attempts. Please wait a minute and try again.");
+    }
+    if (error.code === "invalid_credentials" || error.status === 400) {
+      throw new AuthError("Incorrect email or password.");
+    }
+    throw new AuthError(`Sign-in failed: ${error.message}`);
   }
 
   if (!data.user.email_confirmed_at) {
     await supabase.auth.signOut();
-    throw new AuthError("Please verify your email before signing in.");
+    throw new EmailNotConfirmedError("Please verify your email before signing in. Check your inbox for the confirmation link.");
   }
 
   if (!data.session) {
     throw new AuthError("Sign-in did not create a session. Please try again.");
   }
 
-  let role: string;
+  let profile: UserPublic;
   try {
-    role = (await provisionAndRefresh(data.session.access_token, data.user.user_metadata ?? {})).role;
+    profile = await provisionAndRefresh(data.session.access_token, data.user.user_metadata ?? {});
   } catch (err) {
     // Provisioning fails for two very different reasons, and the UI must not
     // squash them into one:
@@ -151,15 +197,17 @@ export async function signInWithPassword(
           "The ZoikoLogia backend could not be reached. Make sure it is running on port 8010, then sign in again.",
         );
       }
-      if (err.status === 403) {
-        // Invite-only deployment refusing an unknown sign-up: the backend's
-        // own message says what to do, and the half-signed-in session must
-        // not linger.
+      if (err.status === 403 || err.status === 409 || err.status === 422) {
+        // The server refused this account (invite-only deployment, an email
+        // already owned by a different sign-in identity, an unconfirmed age):
+        // its own message says what to do, and the half-signed-in session
+        // must not linger — left behind, it loops on 401s from /auth/me.
         await supabase.auth.signOut();
         throw new AuthError(err.message);
       }
+      await supabase.auth.signOut();
       throw new AuthError(
-        err.status === 401 || err.status === 403
+        err.status === 401
           ? "Your session could not be validated by the server. Please sign in again."
           : "Sign-in could not be completed on the server. Please try again later.",
       );
@@ -171,7 +219,7 @@ export async function signInWithPassword(
     }
     throw err;
   }
-  return { mfaRequired: await mfaChallengeRequired(), home: homePathFor(role) };
+  return { mfaRequired: await mfaChallengeRequired(), home: signInHomeFor(profile) };
 }
 
 // ── Single sign-on ──────────────────────────────────────────────────────────
@@ -225,8 +273,9 @@ export async function signInWithOAuthProvider(provider: OAuthProvider): Promise<
 }
 
 // OAuth sign-up can't carry form data through the provider redirect, so the
-// "Myself / My company" choice made on the sign-up card waits here until
-// /auth/callback provisions the account. Per tab; consumed once.
+// adult confirmation given on the sign-up card waits here until
+// /auth/callback provisions the account. Per tab; consumed once. (The
+// account type it carries is no longer used: OAuth is always a Learner.)
 const PENDING_SIGNUP_KEY = "zoiko_pending_signup";
 
 type SignupChoice = { accountType: AccountType; adultConfirmed: boolean };
@@ -249,18 +298,29 @@ function takeSignupChoice(): SignupChoice | null {
   }
 }
 
+/** Whether the access token's app_metadata already names this profile's
+ * tenant and role. Reads the payload only — the backend verifies the token. */
+function tokenMatchesProfile(accessToken: string, profile: UserPublic): boolean {
+  try {
+    const part = accessToken.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(atob(part.padEnd(part.length + ((4 - (part.length % 4)) % 4), "=")));
+    const meta = payload?.app_metadata ?? {};
+    return meta.tenant_id === profile.tenant_id && meta.role === profile.role;
+  } catch {
+    return false;
+  }
+}
+
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
 /** Provisions the backend profile (idempotent: only the first call creates
  * anything) and refreshes the session so the next call carries tenant/role.
- * Used after password sign-in, OAuth (/auth/callback) and invitations. The
- * workspace type comes from sign-up metadata (email sign-up) or the choice
- * remembered before an OAuth redirect. With neither (e.g. "Continue with
- * Google" straight from the login card) it is an individual Learner account:
- * a company workspace, whose creator becomes its Admin, is only ever created
- * when the person explicitly chose "My company". */
+ * Used after password sign-in, OAuth (/auth/callback) and invitations. A
+ * company workspace, whose creator becomes its Admin, is only ever created by
+ * an email sign-up that chose "My company" (its metadata says so); Google /
+ * Microsoft sign-in is always an individual Learner account. */
 export async function provisionAndRefresh(
   accessToken: string,
   metadata: Record<string, unknown>,
@@ -268,8 +328,10 @@ export async function provisionAndRefresh(
 ): Promise<UserPublic> {
   const pending = takeSignupChoice();
   const [fullFirst, ...fullRest] = text(metadata.full_name || metadata.name).split(" ");
-  const accountType: AccountType =
-    pending?.accountType ?? (metadata.account_type === "company" ? "company" : "individual");
+  // Only an email sign-up that chose "My company" carries account_type in its
+  // metadata. Google / Microsoft sign-in is always a personal Learner account
+  // (the backend enforces this from the token's provider too).
+  const accountType: AccountType = metadata.account_type === "company" ? "company" : "individual";
   const profile = await provisionProfile(accessToken, {
     first_name: text(metadata.first_name) || text(metadata.given_name) || fullFirst,
     last_name: text(metadata.last_name) || text(metadata.family_name) || fullRest.join(" "),
@@ -277,9 +339,13 @@ export async function provisionAndRefresh(
     account_type: accountType,
     adult_confirmed: confirm.adultConfirmed ?? pending?.adultConfirmed ?? metadata.adult_confirmed === true,
   });
-  // The token used above pre-dates /auth/provision writing app_metadata —
-  // refresh so the next backend call already carries tenant_id/role.
-  await supabase.auth.refreshSession();
+  // A first sign-in's token pre-dates /auth/provision writing app_metadata —
+  // refresh so the next backend call carries tenant_id/role. Every later
+  // sign-in already has them, and the refresh was a wasted round trip.
+  if (!tokenMatchesProfile(accessToken, profile)) {
+    await supabase.auth.refreshSession();
+  }
+  primeProfile(profile);
   return profile;
 }
 
@@ -288,7 +354,8 @@ export async function signOut(): Promise<void> {
 }
 
 /** Password reset is owned entirely by Supabase's SDK: this sends the reset
- * email (user clicks the link, lands on /auth/reset-password), and
+ * email through Supabase's own mailer (user clicks the link, lands on
+ * /auth/reset-password), and
  * updatePassword() below finalizes it with the session the link created.
  * No backend endpoint — the backend has nothing to add to a flow Supabase
  * already verifies end-to-end against its own token. */
@@ -313,7 +380,18 @@ export async function updatePassword(newPassword: string): Promise<void> {
     throw new AuthError("Password must be at least 8 characters with an uppercase letter, a lowercase letter, and a number.");
   }
   const { error } = await supabase.auth.updateUser({ password: newPassword });
-  if (error) throw new AuthError("Could not update your password. Please try again.");
+  if (error) {
+    if (error.code === "same_password") {
+      throw new AuthError("Your new password must be different from your current one.");
+    }
+    if (error.code === "weak_password") {
+      throw new AuthError(`That password is too weak: ${error.message}`);
+    }
+    if (error.status === 401 || error.code === "session_not_found" || error.code === "session_expired") {
+      throw new AuthError("Your reset link has expired. Request a new one.");
+    }
+    throw new AuthError("Could not update your password. Please try again.");
+  }
 }
 
 // ── Multi-factor authentication (TOTP) ─────────────────────────────────────

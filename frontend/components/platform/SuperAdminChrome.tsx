@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, type ReactNode } from "react";
-import { ArrowLeftRight, Globe2, LayoutGrid, Menu, X } from "lucide-react";
+import { ArrowLeftRight, Building2, Globe2, LayoutGrid, Menu, Users, X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { BrandMark } from "@/components/layout/AppHeader";
 
@@ -33,6 +33,17 @@ function SuperAdminNav() {
           <Link href="/super-admin" className={linkClass(pathname === "/super-admin")} aria-current={pathname === "/super-admin" ? "page" : undefined}>
             <span className="flex items-center gap-2.5"><LayoutGrid size={16} /> Super Admin Command</span>
           </Link>
+        </div>
+        <div>
+          <p className="px-3 pb-1 text-[11px] font-bold uppercase tracking-[0.14em] text-white/55">Directory</p>
+          {[
+            { href: "/super-admin/companies", label: "Companies", icon: Building2 },
+            { href: "/super-admin/accounts", label: "Accounts", icon: Users },
+          ].map(({ href, label, icon: Icon }) => (
+            <Link key={href} href={href} className={linkClass(pathname === href)} aria-current={pathname === href ? "page" : undefined}>
+              <span className="flex items-center gap-2.5"><Icon size={16} /> {label}</span>
+            </Link>
+          ))}
         </div>
       </nav>
       <Link href="/" className="flex min-h-11 items-center gap-2 rounded-lg border border-white/15 px-3 text-sm font-semibold text-white hover:bg-white/10">

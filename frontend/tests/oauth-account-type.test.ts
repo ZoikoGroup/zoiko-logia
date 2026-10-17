@@ -30,10 +30,10 @@ describe("OAuth first sign-in account type", () => {
     expect(sent()).toMatchObject({ account_type: "individual", adult_confirmed: true });
   });
 
-  it("creates a company workspace only when the person chose My company", async () => {
-    rememberSignupChoice({ accountType: "company", adultConfirmed: false });
-    await provisionAndRefresh("t", {});
-    expect(sent()).toMatchObject({ account_type: "company" });
+  it("never asks for a company workspace from a Google sign-in, even with a stale choice", async () => {
+    rememberSignupChoice({ accountType: "company", adultConfirmed: true });
+    await provisionAndRefresh("t", { full_name: "Asha Rao" });
+    expect(sent()).toMatchObject({ account_type: "individual", adult_confirmed: true });
   });
 
   it("keeps the choice made at email sign-up", async () => {
