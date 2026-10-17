@@ -28,6 +28,9 @@ settings = get_settings()
 ADMIN_FUNCTIONS = {
     "create_user": ("a@example.com", "pw"),
     "get_user_by_email": ("a@example.com",),
+    "create_user_with_id": ("user-1", "a@example.com", "pw"),
+    "confirm_email": ("user-1",),
+    "delete_user": ("user-1",),
     "revoke_all_sessions": ("user-1",),
     "update_app_metadata": ("user-1", "tenant-1", "Admin"),
 }

@@ -34,8 +34,8 @@ async def db(monkeypatch):
     await engine.dispose()
 
 
-def _as(monkeypatch, sub: str, email: str) -> None:
-    claims = SupabaseClaims(sub=sub, email=email)
+def _as(monkeypatch, sub: str, email: str, provider: str = "email") -> None:
+    claims = SupabaseClaims(sub=sub, email=email, provider=provider)
     monkeypatch.setattr("app.domains.identity.router.verify_token", lambda token: claims)
 
 
@@ -75,6 +75,28 @@ async def test_company_signup_is_unchanged(db, monkeypatch) -> None:
     user = await provision(ProvisionRequest(first_name="Olu", company_name="Acme Ltd"), db, "token")
     assert user.role == "Admin"
     assert (await db.get(Tenant, user.tenant_id)).name == "Acme Ltd"
+
+
+@pytest.mark.parametrize("provider", ["google", "azure"])
+async def test_oauth_sign_up_is_always_a_learner_never_a_company_admin(db, monkeypatch, provider) -> None:
+    # "Continue with Google" must never create a company workspace, even when
+    # the browser asks for one (a stale "My company" choice, a crafted call).
+    _as(monkeypatch, f"u-{provider}", f"new-{provider}@gmail.com", provider=provider)
+    user = await provision(
+        ProvisionRequest(first_name="Gia", company_name="Acme Ltd", account_type="company", adult_confirmed=True),
+        db, "token",
+    )
+    assert user.role == "Learner"
+    assert (await db.get(Tenant, user.tenant_id)).name == "Gia (personal)"
+    [event] = (await db.execute(select(AuditEvent).where(AuditEvent.event_name == "auth.provisioned"))).scalars()
+    assert (event.payload["account_type"], event.payload["provider"]) == ("individual", provider)
+
+
+async def test_oauth_sign_up_still_needs_adult_confirmation(db, monkeypatch) -> None:
+    _as(monkeypatch, "u-g", "kid@gmail.com", provider="google")
+    with pytest.raises(HTTPException) as exc:
+        await provision(ProvisionRequest(account_type="company", company_name="Acme"), db, "token")
+    assert exc.value.status_code == 422
 
 
 async def test_choice_only_applies_on_first_provision(db, monkeypatch) -> None:

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { ApiError } from "@/lib/api";
-import { homePathFor } from "@/lib/roles";
+import { signInHomeFor } from "@/lib/roles";
 import { BrandMark } from "@/components/layout/AppHeader";
 import { mfaChallengeRequired, provisionAndRefresh } from "@/services/auth.service";
 
@@ -25,6 +25,7 @@ export default function AuthCallbackPage() {
   const [needsAdult, setNeedsAdult] = useState(false);
   const [adult, setAdult] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [confirmedOnly, setConfirmedOnly] = useState(false);
   const pending = useRef<{ token: string; metadata: Record<string, unknown> } | null>(null);
 
   async function complete(accessToken: string, metadata: Record<string, unknown>, adultConfirmed?: boolean) {
@@ -32,15 +33,16 @@ export default function AuthCallbackPage() {
     try {
       const profile = await provisionAndRefresh(accessToken, metadata, { adultConfirmed });
       const needsMfa = await mfaChallengeRequired();
-      router.replace(needsMfa ? "/auth/mfa" : homePathFor(profile.role));
+      router.replace(needsMfa ? "/auth/mfa" : signInHomeFor(profile));
     } catch (err) {
       if (err instanceof ApiError && err.status === 422 && /18 or older/i.test(err.message) && !adultConfirmed) {
         // New individual account: confirm age here rather than refusing.
         setNeedsAdult(true);
         return;
       }
-      if (err instanceof ApiError && (err.status === 403 || err.status === 422)) {
-        // Refused sign-up (invite-only deployment): show why, drop the session.
+      if (err instanceof ApiError && (err.status === 403 || err.status === 409 || err.status === 422)) {
+        // Refused sign-up (invite-only deployment, email owned by another
+        // sign-in identity): show why, drop the session.
         await supabase.auth.signOut();
         setError(err.message);
         return;
@@ -52,7 +54,18 @@ export default function AuthCallbackPage() {
   useEffect(() => {
     let cancelled = false;
 
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribe: (() => void) | undefined;
+
     async function finish() {
+      // Supabase reports a failed or expired link in the URL itself.
+      const params = new URLSearchParams(`${window.location.search.slice(1)}&${window.location.hash.slice(1)}`);
+      const linkError = params.get("error_description") || params.get("error");
+      if (linkError) {
+        setError(`${linkError.replace(/\+/g, " ")}. Please sign in, or request a new link.`);
+        return;
+      }
+
       const {
         data: { session },
       } = await supabase.auth.getSession();
@@ -63,9 +76,20 @@ export default function AuthCallbackPage() {
         const { data: subscription } = supabase.auth.onAuthStateChange((event, newSession) => {
           if (newSession && !cancelled) {
             subscription.subscription.unsubscribe();
+            if (timer) clearTimeout(timer);
             complete(newSession.access_token, newSession.user.user_metadata ?? {});
           }
         });
+        unsubscribe = () => subscription.subscription.unsubscribe();
+        // An email-confirmation link opened in a different browser than the
+        // one that signed up confirms the address but cannot create a session
+        // here (the sign-in code is tied to the original browser). The
+        // account is verified either way, so send the person to sign in.
+        timer = setTimeout(() => {
+          if (cancelled) return;
+          unsubscribe?.();
+          setConfirmedOnly(true);
+        }, 6000);
         return;
       }
 
@@ -75,6 +99,8 @@ export default function AuthCallbackPage() {
     finish();
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
+      unsubscribe?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -130,9 +156,28 @@ export default function AuthCallbackPage() {
     );
   }
 
+  if (confirmedOnly || error) {
+    return (
+      <main className="flex min-h-screen w-full items-center justify-center bg-bg px-5 py-10 text-ink">
+        <div className="w-full max-w-md rounded-2xl border border-line bg-panel p-6 text-center shadow-[0_18px_50px_rgba(11,95,122,0.10)]">
+          <p className="text-sm text-ink">
+            {error || "Your email address is verified. Sign in to continue."}
+          </p>
+          <button
+            type="button"
+            onClick={() => router.replace("/login")}
+            className="mt-4 inline-flex h-9 w-full items-center justify-center rounded-lg bg-ink px-4 text-sm font-bold text-panel transition-colors hover:bg-brand"
+          >
+            Go to sign in
+          </button>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="flex min-h-screen w-full items-center justify-center bg-bg text-ink">
-      <p className="text-sm text-muted">{error || "Finishing sign-in…"}</p>
+      <p className="text-sm text-muted">Finishing sign-in…</p>
     </main>
   );
 }

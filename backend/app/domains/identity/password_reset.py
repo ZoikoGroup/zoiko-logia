@@ -43,6 +43,11 @@ class ResetError(ValueError):
     """A reset the rules refuse; the message is safe to show."""
 
 
+class ResetUnavailableError(RuntimeError):
+    """The code was valid but the new password could not be set (Supabase
+    Admin API unconfigured or down). The code is left unspent."""
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -147,4 +152,13 @@ async def reset(db: AsyncSession, email: str, code: str, password: str, *, set_p
         challenge.consumed_at = None
         await db.commit()
         raise ResetError(str(exc)) from exc
+    except Exception as exc:
+        # The Admin API is unconfigured (e.g. a masked service-role key) or
+        # unreachable. The password did not change, so the code must not be
+        # spent either — and the person gets a clear failure, not a raw 500.
+        challenge.consumed_at = None
+        await db.commit()
+        raise ResetUnavailableError(
+            "Password reset is temporarily unavailable. Please try again later."
+        ) from exc
     return user

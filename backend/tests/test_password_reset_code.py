@@ -98,6 +98,18 @@ async def test_password_refused_by_supabase_gives_the_code_back(db) -> None:
     await password_reset.reset(db, "ada@example.com", code, "Better-Choice9", set_password=lambda *a: None)
 
 
+async def test_admin_api_unavailable_is_a_clear_error_and_keeps_the_code(db) -> None:
+    # A masked/missing service-role key used to surface as a raw 500 that had
+    # already burned the code.
+    _, code = await password_reset.request_code(db, "ada@example.com", now=NOW)
+
+    def unconfigured(*_):
+        raise supabase_admin.SupabaseNotConfiguredError("masked key")
+    with pytest.raises(password_reset.ResetUnavailableError):
+        await password_reset.reset(db, "ada@example.com", code, "Secure123", set_password=unconfigured)
+    await password_reset.reset(db, "ada@example.com", code, "Secure123", set_password=lambda *a: None)
+
+
 def test_email_is_branded_escaped_and_skipped_without_a_key(monkeypatch) -> None:
     subject, html, text = email_templates.password_reset_code(
         email="<script>@x.com", code="123456", ttl_minutes=15, reset_url="https://app.example/auth/forgot-password")

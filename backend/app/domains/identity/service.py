@@ -94,6 +94,8 @@ async def provision_profile(
     *,
     token_tenant_id: str = "",
     token_role: str = "",
+    token_provider: str = "email",
+    existing: User | None | object = ...,
 ) -> User:
     """Idempotent upsert called by the frontend right after a Supabase
     sign-up/first OAuth login. First call creates the Tenant (from
@@ -109,7 +111,8 @@ async def provision_profile(
     account permanently without a tenant in its tokens — and every
     tenant-scoped RLS write then failed for that user. A repair failure is
     logged, never raised: an existing user must still be able to sign in."""
-    existing = await get_user_by_id(db, user_id)
+    if existing is ...:  # not looked up by the caller
+        existing = await get_user_by_id(db, user_id)
     if existing is not None:
         # Re-stamp app_metadata when this access token's embedded app_metadata
         # has drifted from the authoritative users row — and only then, so a
@@ -143,7 +146,13 @@ async def provision_profile(
         )
 
     full_name = f"{payload.first_name} {payload.last_name}".strip()
-    if payload.account_type == "individual":
+    # A company workspace (whose creator becomes its Admin) is only ever
+    # created by email sign-up with "My company". An account created through
+    # Google / Microsoft sign-in is always a personal Learner workspace,
+    # whatever the client asks for — the provider comes from the verified
+    # token, so the browser cannot claim otherwise.
+    account_type = payload.account_type if token_provider == "email" else "individual"
+    if account_type == "individual":
         if not payload.adult_confirmed:
             # Under-18 learners need the age-status and guardian-consent
             # controls (Privacy spec §9, PRD "Minor learners") before any data
@@ -185,13 +194,18 @@ async def provision_profile(
         # fresh auth id, and the id lookup can no longer find the row that
         # still owns the address.
         #
-        # Deliberately NOT auto-adopting that row. Claiming it would hand the
-        # new sign-up whatever tenant and data the old one had, on the
-        # strength of a matching email — an account-linking policy, and one
-        # that cuts straight across the tenant isolation this service exists
-        # to enforce. Re-linking is an administrative act with a human behind
-        # it, so this reports the conflict and stops.
+        # Not adopted on a matching email alone — that would hand the new
+        # sign-up whatever tenant and data the old one had. It is re-linked
+        # only when the old Supabase identity no longer exists AND this one
+        # has a confirmed email (see identity/relink.py); otherwise 409.
         await db.rollback()
+        from app.domains.identity.relink import relink_if_reregistered
+
+        if await relink_if_reregistered(user_id, email):
+            relinked = await get_user_by_id(db, user_id)
+            if relinked is not None:
+                _sync_app_metadata_best_effort(relinked.id, relinked.tenant_id, relinked.role)
+                return relinked
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(

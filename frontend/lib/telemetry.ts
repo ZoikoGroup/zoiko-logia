@@ -10,7 +10,7 @@
 import { getCurrentAccessToken } from "@/lib/session-token";
 
 // Must match lib/api.ts's API_URL exactly (same backend, same fallback).
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010/api/v1";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8010/api/v1";
 
 export type VisualizationTelemetryEvent =
   | "advisor_evaluated" | "view_selected" | "exported_png" | "exported_csv"

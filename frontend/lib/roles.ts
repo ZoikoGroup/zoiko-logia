@@ -53,10 +53,18 @@ export const BACKEND_ROLES: readonly string[] = [
   "Learner",
 ];
 
-/** Where a role lands after signing in. Learners go straight to their
- * learning workspace instead of the governance Command Center. */
-export function homePathFor(role: string | null | undefined): string {
+/** Where a role lands after signing in. A platform Super Admin starts in the
+ * control plane; Learners go straight to their learning workspace instead of
+ * the governance Command Center; everyone else (company Admins) lands on "/". */
+export function homePathFor(role: string | null | undefined, platformRole?: string | null): string {
+  if (platformRole === "super_admin") return "/super-admin";
   return role === "Learner" ? "/learning-practice" : "/";
+}
+
+/** Where a signed-in user lands right after sign-in (not on every visit to
+ * "/": a Super Admin may still switch to their own tenant workspace). */
+export function signInHomeFor(profile: { role?: string | null; platform_role?: string | null } | null | undefined): string {
+  return homePathFor(profile?.role, profile?.platform_role);
 }
 
 export const DEFAULT_ROLE: RoleCode = "Admin";

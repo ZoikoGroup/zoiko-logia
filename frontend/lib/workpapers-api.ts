@@ -1,7 +1,7 @@
 import { getAuthToken } from "@/lib/api";
 import { impersonationHeaders } from "@/lib/impersonation";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010/api/v1";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8010/api/v1";
 const WORKPAPERS = `${API_URL}/kriton-workspace/workpapers`;
 
 // Shapes of /api/v1/kriton-workspace/workpapers (backend/app/domains/kriton_workspace/workpapers.py).

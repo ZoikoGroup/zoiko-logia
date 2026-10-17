@@ -47,6 +47,9 @@ class SupabaseClaims(BaseModel):
     # "aal1" after a password/OAuth sign-in, "aal2" once a verified MFA factor
     # has been challenged in this session. Absent → treated as the weaker aal1.
     aal: str = "aal1"
+    # The sign-in method that created the Supabase account ("email",
+    # "google", "azure"…), from app_metadata, which only Supabase can write.
+    provider: str = "email"
 
 
 def verify_token(token: str) -> SupabaseClaims | None:
@@ -96,4 +99,5 @@ def verify_token(token: str) -> SupabaseClaims | None:
         tenant_id=app_metadata.get("tenant_id", ""),
         role=app_metadata.get("role", ""),
         aal=payload.get("aal") or "aal1",
+        provider=app_metadata.get("provider") or "email",
     )
