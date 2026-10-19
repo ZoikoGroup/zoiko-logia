@@ -6,7 +6,7 @@ import { ArrowRight, LockKeyhole, MailCheck } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { AuthError, provisionAndRefresh, updatePassword } from "@/services/auth.service";
 import { BrandMark } from "@/components/layout/AppHeader";
-import { homePathFor } from "@/lib/roles";
+import { signInHomeFor } from "@/lib/roles";
 
 /** Landing page for an Admin's invitation email (POST /users without a
  * password). Supabase's invite link signs the user in with tokens in the URL
@@ -56,7 +56,7 @@ export default function AcceptInvitePage() {
       const { data } = await supabase.auth.getSession();
       if (!data.session) throw new AuthError("Your invitation session expired. Ask your administrator to resend it.");
       const profile = await provisionAndRefresh(data.session.access_token, data.session.user.user_metadata ?? {});
-      router.replace(homePathFor(profile.role));
+      router.replace(signInHomeFor(profile));
     } catch (err) {
       setError(err instanceof AuthError ? err.message : "Could not finish setting up your account. Please try again.");
       setSubmitting(false);

@@ -57,11 +57,12 @@ export default function ResetPasswordPage() {
 
     detectRecoverySession();
 
-    // The SDK exchanges the hash on load; if nothing arrived after a grace
-    // window, the link is stale, already used, or wasn't a recovery link.
+    // The SDK exchanges the link's code on load; if nothing arrived after a
+    // grace window, the link is stale, already used, opened in a different
+    // browser than the one that asked for it, or wasn't a recovery link.
     const timeout = setTimeout(() => {
       if (!cancelled) setStage((current) => (current === "detecting" ? "invalid" : current));
-    }, 3000);
+    }, 6000);
 
     return () => {
       cancelled = true;
@@ -80,6 +81,10 @@ export default function ResetPasswordPage() {
     setSubmitting(true);
     try {
       await updatePassword(password);
+      // End the reset session, and every other session of this account, so
+      // the person signs in fresh with the new password (and a stolen session
+      // elsewhere dies with the old one).
+      await supabase.auth.signOut({ scope: "global" }).catch(() => supabase.auth.signOut({ scope: "local" }));
       setStage("success");
     } catch (err) {
       setError(err instanceof AuthError ? err.message : "Could not update your password. Please try again.");
@@ -111,8 +116,8 @@ export default function ResetPasswordPage() {
             <>
               <h2 className="text-2xl font-bold tracking-normal text-ink">Reset link invalid</h2>
               <p className="mt-1.5 text-sm leading-6 text-muted">
-                This link is expired, already used, or wasn&apos;t a password reset link. Request a fresh one and
-                use it right away.
+                This link is expired, already used, or was opened in a different browser from the one you
+                requested it in. Request a fresh one and open it in this browser.
               </p>
               <p className="mt-3 text-center text-sm text-muted">
                 <button
@@ -134,8 +139,7 @@ export default function ResetPasswordPage() {
               </div>
               <h2 className="text-2xl font-bold tracking-normal text-ink">Your password is set</h2>
               <p className="mt-1.5 text-sm leading-6 text-muted">
-                You can sign in with your new password now. Sign out of your other devices if you&apos;d like to
-                revoke them.
+                You were signed out on every device. Sign in with your new password.
               </p>
               <button
                 type="button"

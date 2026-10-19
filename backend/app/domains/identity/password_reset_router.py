@@ -93,6 +93,9 @@ async def reset(request: Request, body: ResetBody, background: BackgroundTasks) 
                 set_password=lambda uid, pw: supabase_admin.set_password(uid, pw))
         except password_reset.ResetError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except password_reset.ResetUnavailableError as exc:
+            log.error("Password reset could not set the new password (%s)", type(exc.__cause__).__name__)
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         # A changed password ends every existing session.
         try:
             await asyncio.to_thread(supabase_admin.revoke_all_sessions, user.id)

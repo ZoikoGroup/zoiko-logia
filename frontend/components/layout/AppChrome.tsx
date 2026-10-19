@@ -1,18 +1,31 @@
 "use client";
 
-import { usePathname } from "next/navigation";
-import { ReactNode, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { ReactNode, useEffect, useState } from "react";
 import { Sidebar } from "./Sidebar";
 import { AppHeader } from "./AppHeader";
 import { ImpersonationBanner } from "@/components/shell/ImpersonationBanner";
 import { useRole } from "@/components/shell/RoleProvider";
 import { Loader2 } from "lucide-react";
 import { SuperAdminChrome } from "@/components/platform/SuperAdminChrome";
+import { useAuth } from "@/hooks/useAuth";
+import { canAccessPath } from "@/lib/nav";
+import { homePathFor } from "@/lib/roles";
 
 export function AppChrome({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const { roleReady } = useRole();
+  const { roleReady, realRole } = useRole();
+  const { session } = useAuth();
+  const router = useRouter();
+  // A signed-in user may only open the pages their own (verified) role can
+  // reach — a Learner typing an Admin URL goes back to their learning home.
+  // Uses the real role, not an Admin's "Viewing as" preview. The backend
+  // still enforces every permission on its own.
+  const blocked = Boolean(session) && roleReady && !canAccessPath(pathname, realRole);
+  useEffect(() => {
+    if (blocked) router.replace(homePathFor(realRole));
+  }, [blocked, realRole, router]);
 
   if (pathname.startsWith("/auth/") || pathname === "/login" || pathname === "/signup") {
     return <>{children}</>;
@@ -40,7 +53,7 @@ export function AppChrome({ children }: { children: ReactNode }) {
         {/* Until the signed-in user's real role is known, pages would render
             for the fail-closed Learner role and then switch — show a neutral
             loading state instead. */}
-        {roleReady ? children : (
+        {roleReady && !blocked ? children : (
           <main className="flex flex-1 items-center justify-center p-8 text-muted" aria-busy="true">
             <Loader2 size={20} className="animate-spin" aria-label="Loading your workspace" />
           </main>

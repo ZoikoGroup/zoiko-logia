@@ -1,6 +1,6 @@
 import { getCurrentAccessToken } from "@/lib/session-token";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010/api/v1";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8010/api/v1";
 
 export type KrokiKind =
   | "swimlane" | "sequence" | "gantt" | "bpmn" | "erd"

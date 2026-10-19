@@ -61,11 +61,15 @@ async def provision(
     if claims is None or claims.email is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session")
 
-    was_first_provision = (await get_user_by_id(db, claims.sub)) is None
+    # One lookup, shared with provision_profile: each query is a round trip to
+    # the hosted database, and this runs on every sign-in.
+    existing = await get_user_by_id(db, claims.sub)
+    was_first_provision = existing is None
     try:
         user = await provision_profile(
             db, claims.sub, claims.email, payload,
             token_tenant_id=claims.tenant_id, token_role=claims.role,
+            token_provider=claims.provider, existing=existing,
         )
     except supabase_admin.SupabaseNotConfiguredError:
         # Defensive: provisioning commits the local profile row before the
@@ -89,7 +93,8 @@ async def provision(
             actor_id=user.id,
             subject_type="user_account",
             subject_id=user.id,
-            payload={"first_time": True, "company_name": payload.company_name, "account_type": payload.account_type},
+            payload={"first_time": True, "company_name": payload.company_name, "provider": claims.provider,
+                     "account_type": "individual" if user.role == "Learner" else "company"},
         )
     return UserPublic.model_validate(user)
 

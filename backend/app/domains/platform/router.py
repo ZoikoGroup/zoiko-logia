@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import AsyncSessionLocal, get_db
 from app.domains.identity.models import User
 from app.domains.identity.rbac import get_current_user, record_access_denied
-from app.domains.platform import service
+from app.domains.platform import directory, service
 
 router = APIRouter(prefix="/platform", tags=["Platform control plane"])
 
@@ -36,3 +36,12 @@ async def command(_: User = Depends(require_super_admin)) -> dict:
     # boundary that keeps the result to metadata.
     async with AsyncSessionLocal() as db:
         return await service.command_overview(db)
+
+
+@router.get("/directory")
+async def platform_directory(_: User = Depends(require_super_admin)) -> dict:
+    # Every company and account across tenants, with sign-in status. The owner
+    # connection reads past RLS (and Supabase's auth schema); directory.py
+    # keeps it to identity metadata.
+    async with AsyncSessionLocal() as db:
+        return await directory.directory(db)

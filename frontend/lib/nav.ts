@@ -226,6 +226,25 @@ export function isVisible(allowedRoles: RoleCode[], role: RoleCode): boolean {
   return allowedRoles.includes(role);
 }
 
+/** Whether a role may open this path. The nav item with the longest matching
+ * href decides (so "/source-library/tax" follows Source Library); a path no
+ * nav item covers (account, settings, notifications…) is open to everyone
+ * signed in. Hiding a nav entry alone left the page one typed URL away. */
+export function canAccessPath(pathname: string, role: RoleCode): boolean {
+  let match: { section: NavL1Section; item: NavL2Item; length: number } | null = null;
+  for (const section of NAV_SECTIONS) {
+    for (const item of section.items) {
+      const href = navHref(item.slug);
+      if (href === "/") continue; // "/" is every role's Command Center (RoleHome redirects Learners)
+      if ((pathname === href || pathname.startsWith(`${href}/`)) && (!match || href.length > match.length)) {
+        match = { section, item, length: href.length };
+      }
+    }
+  }
+  if (!match) return true;
+  return isVisible(match.section.allowedRoles, role) && isVisible(match.item.allowedRoles, role);
+}
+
 export function navHref(slug: string): string {
   return slug ? `/${slug}` : "/";
 }

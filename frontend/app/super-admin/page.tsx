@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import {
   Activity, AlertTriangle, BadgeCheck, Building2, Clock, Cpu, CreditCard, FileSearch, KeyRound, Lock,
   ShieldAlert, ShieldCheck, ShieldX,
@@ -12,6 +13,7 @@ import {
   Badge, Breadcrumb, DetailRows, EmptyState, KpiRow, KpiTile, OpsHero, Panel, PillTabs, humanize, timeAgo, utcDate,
 } from "@/components/operations/ui";
 import { getPlatformCommand, type PlatformCommand, type PlatformControlState } from "@/lib/api";
+import { usePlatformDirectory } from "@/components/platform/directory";
 
 /** Super Admin Command Center: platform metadata across every tenant. The
  * API returns counts, states and references only; nothing on this page is a
@@ -182,19 +184,7 @@ function Body({ data, tab, setTab }: { data: PlatformCommand; tab: PriorityTab; 
           )}
         </Panel>
 
-        <Panel title="Tenant Governance" meta="Metadata and authorization posture only">
-          <DetailRows rows={[
-            ["Tenants", data.tenants.total],
-            ["With members", data.tenants.withUsers],
-            ["Active in 30 days", data.tenants.active30d],
-            ["Active users", data.tenants.users],
-            ["Approved billing plan", data.tenants.withApprovedPlan],
-          ]} />
-          <p className="mt-3 flex gap-2 rounded-lg border border-line bg-soft px-3 py-2 text-xs text-muted">
-            <Lock size={14} className="mt-0.5 shrink-0" />
-            This view holds no tenant account balances, workpapers, employee records or customer conversations. Access to tenant content needs a separately approved, time-limited grant.
-          </p>
-        </Panel>
+        <TenantGovernance data={data} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
@@ -246,5 +236,29 @@ function Body({ data, tab, setTab }: { data: PlatformCommand; tab: PriorityTab; 
         <span className="flex items-center gap-1"><Cpu size={12} /> No Kriton prompts or answers</span>
       </p>
     </>
+  );
+}
+
+/** Companies and sign-ins at a glance, from the platform directory, with the
+ * way into the full Companies and Accounts pages. */
+function TenantGovernance({ data }: { data: PlatformCommand }) {
+  const { data: directory } = usePlatformDirectory();
+  const d = directory?.summary;
+  return (
+    <Panel title="Companies & Accounts" meta="Live sign-in activity"
+      action={<Link href="/super-admin/companies" className="text-xs font-semibold text-info hover:underline">View all</Link>}>
+      <DetailRows rows={[
+        ["Companies", d ? `${d.companies} · ${d.personalWorkspaces} personal` : data.tenants.total],
+        ["Online now", d ? `${d.companiesOnline} companies · ${d.online} accounts` : "—"],
+        ["Signed in · 24 h", d ? `${d.companiesSignedIn24h} companies · ${d.signedIn24h} accounts` : "—"],
+        ["Active in 30 days", d ? d.companiesActive30d : data.tenants.active30d],
+        ["Accounts", d ? d.accounts : data.tenants.users],
+        ["Approved billing plan", data.tenants.withApprovedPlan],
+      ]} />
+      <div className="mt-3 flex gap-3 text-sm">
+        <Link href="/super-admin/companies" className="font-semibold text-info hover:underline">Companies</Link>
+        <Link href="/super-admin/accounts" className="font-semibold text-info hover:underline">Accounts</Link>
+      </div>
+    </Panel>
   );
 }
