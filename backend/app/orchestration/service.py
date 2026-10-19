@@ -2965,6 +2965,8 @@ async def ask_kriton(
             call.tool in ("calculate", "render_chart") and call.ok for call in agent_outcome.tool_calls
         ))
     )
+    from app.orchestration.limitation_reply import is_limitation_reply
+
     def validate(text: str):
         return (
             validate_answer(
@@ -2972,7 +2974,10 @@ async def ask_kriton(
                 source_bundle,
                 disclaimer_required=False,
                 external_source_count=len(rag_citations),
-                ungrounded_answer_allowed=effective_confidence == CONF_INSUFFICIENT or computed_from_own_figures,
+                # An honest "I can't do this, because…" with no figure is not
+                # an ungrounded claim (limitation_reply.py).
+                ungrounded_answer_allowed=(effective_confidence == CONF_INSUFFICIENT or computed_from_own_figures
+                                           or is_limitation_reply(text)),
                 # What the answer was composed against: a phrase quoted from it
                 # is the source speaking, not Kriton advising.
                 evidence_text="\n".join([
