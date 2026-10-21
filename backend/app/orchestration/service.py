@@ -1487,6 +1487,21 @@ async def ask_kriton(
             )
         return await finish(response, json_dump=True)
 
+    # A diagram requested without its structure ("Draw the purchase-to-pay
+    # process as a swimlane diagram") gets the standard structure, written in
+    # the typed form the diagram parsers accept and appended to the question,
+    # so the same parsers and renderers draw it (illustrative_diagram.py).
+    from app.orchestration.illustrative_diagram import (
+        NOTE as ILLUSTRATION_NOTE, illustrated_query, needs_illustration,
+    )
+    illustrative_diagram = False
+    if not request.document_ids and needs_illustration(request.query):
+        illustrated = await illustrated_query(
+            request.query, model_gateway_service.run_grounded_completion, _MODEL_PROVIDER_FAILURE)
+        if illustrated:
+            request = request.model_copy(update={"query": illustrated})
+            illustrative_diagram = True
+
     # ── Kick off the live web search NOW, concurrently ──────────────────────
     # SearXNG is the slowest single step (~several seconds waiting on search
     # engines). It only depends on the query + jurisdiction — both already
@@ -3555,6 +3570,8 @@ async def ask_kriton(
     chart_note = substitution_note(request.query, final_text, *(agent_outcome.artifacts if agent_outcome else []))
     if chart_note:
         limitations.append(chart_note)
+    if illustrative_diagram:
+        limitations.insert(0, ILLUSTRATION_NOTE)
     answer = ComposedAnswer(
         text=final_text,
         citations=rag_citations,
