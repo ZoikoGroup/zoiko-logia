@@ -3571,6 +3571,8 @@ async def ask_kriton(
     if chart_note:
         limitations.append(chart_note)
     if illustrative_diagram:
+        from app.orchestration.illustrative_diagram import illustration_wording
+        final_text = illustration_wording(final_text)
         limitations.insert(0, ILLUSTRATION_NOTE)
     answer = ComposedAnswer(
         text=final_text,

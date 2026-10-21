@@ -98,9 +98,30 @@ async def illustrated_query(query: str, complete: Callable[[str], Awaitable[str]
     if not payload or provider_failure in payload or len(payload) > MAX_PAYLOAD_CHARS or re.search(r"\d", payload):
         return ""
     # The parsers read the text after the first colon that follows the
-    # diagram's name; a flowchart reads the arrow chain after a colon.
-    stem = (query or "").strip().rstrip(".!?:")
-    if kind != FLOW and not kroki._REQUESTS[kind].search(stem):  # noqa: SLF001
-        stem = f"{stem} as a {label}"
+    # diagram's name, so the question is cut just after that name: anything
+    # the user wrote after it ("Swimlane: Clerk / Manager / Finance lanes")
+    # was read as the payload, the steps did not parse as lanes, and a plain
+    # flow was drawn instead of a swimlane.
+    text = (query or "").strip().rstrip(".!?:")
+    name = (kroki._REQUESTS[kind] if kind != FLOW else _FLOW_REQUEST).search(text)  # noqa: SLF001
+    stem = text[:name.end()] if name else f"{text} as a {label}"
     candidate = f"{stem}: {payload}"
     return candidate if extract_graph(candidate) is not None else ""
+
+
+# The descriptions say what the user supplied; an illustration supplied none.
+_SUPPLIED_WORDING = (
+    ("supplied accounting-workflow stages", "standard accounting-workflow stages"),
+    ("The validated process visualization below does not add or remove stages.",
+     "The process visualization below is a general illustration of a standard process."),
+    ("Kriton mapped the accounting relationships exactly as supplied:",
+     "Kriton mapped a standard set of accounting relationships:"),
+    ("The validated visualization below does not infer additional links.",
+     "The visualization below is a general illustration, not your organisation's structure."),
+)
+
+
+def illustration_wording(text: str) -> str:
+    for supplied, illustrated in _SUPPLIED_WORDING:
+        text = (text or "").replace(supplied, illustrated)
+    return text

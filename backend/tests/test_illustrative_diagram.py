@@ -55,3 +55,21 @@ async def test_a_swimlane_without_steps_is_drawn_and_labelled(pipeline):
     assert response.outcome == "answered"
     assert response.visualization is not None
     assert response.answer.limitations[0] == NOTE
+
+
+async def test_extra_text_after_the_diagram_name_does_not_break_the_lanes():
+    from app.orchestration.kroki_diagrams import extract_kroki_graph
+
+    query = '"Show the purchase-to-pay process as a swimlane diagram"\tSwimlane: Clerk / Manager / Finance lanes'
+    out = await illustrated_query(query, AsyncMock(return_value=SWIMLANE), FAILURE)
+    assert out.endswith(SWIMLANE) and extract_kroki_graph(out) is not None   # a real swimlane, not a plain flow
+
+
+def test_an_illustration_is_not_described_as_supplied():
+    from app.orchestration.illustrative_diagram import illustration_wording
+
+    text = ("Kriton mapped the 6 supplied accounting-workflow stages in order. "
+            "The validated process visualization below does not add or remove stages.")
+    reworded = illustration_wording(text)
+    assert "supplied" not in reworded and "standard accounting-workflow stages" in reworded
+    assert "general illustration" in reworded
