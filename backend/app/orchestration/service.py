@@ -3457,6 +3457,16 @@ async def ask_kriton(
             evidence_gap_only = False
             rag_citations = []
             limitations.insert(0, GENERAL_NOTE)
+    # An explanation gap ("the sources do not state the factors that…") is
+    # filled with a labelled general explanation; a missing figure, rate or
+    # rule is left for "Partially answered" (gap_filler.py).
+    if not evidence_gap_only and not is_offdomain_refusal and not uses_user_supplied_structure:
+        from app.orchestration.gap_filler import NOTE as GAP_NOTE, fill_explanation_gaps
+        final_text, gaps_filled = await fill_explanation_gaps(
+            final_text, request.query, model_gateway_service.run_grounded_completion, _MODEL_PROVIDER_FAILURE)
+        if gaps_filled:
+            composed_text = final_text
+            limitations.append(GAP_NOTE)
     if (re.search(r"(?:sources?|evidence)[^.\n]*(?:do not|does not|not establish|not state)", final_text, re.I)
             # "No ONS data … could be retrieved from the available sources":
             # one part answered, another not, shown as fully answered.
