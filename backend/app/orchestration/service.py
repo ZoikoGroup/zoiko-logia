@@ -2443,9 +2443,10 @@ async def ask_kriton(
     grounded_input += calculation_rejection or await feedback_guidance(
         db, tenant_id=tenant_id, user_id=actor_id, question=request.query,
     )
-    grounded_input += await _verified_document_figures_context(
+    document_figures_block = await _verified_document_figures_context(
         db, request.query, resolved_document_ids, document_sources, document_plan, tenant_id, actor_id,
     )
+    grounded_input += document_figures_block
 
     # External-provider exposure boundary (ZL-ENG-03 §5.8): redact before
     # grounded_input leaves the tenant trust boundary for the model gateway.
@@ -2859,6 +2860,13 @@ async def ask_kriton(
     ], citations=rag_citations)
     verification_evidence = [
         *(f"[{citation.ref_id}] {source.snippet}" for citation, source in zip(rag_citations, evidence_sources)),
+        # The figures computed from the attached files (document_figures.py)
+        # are what an answer about them states — "Dr Depreciation 137,085"
+        # is cost ÷ useful life, not a line in the file. Claim verification
+        # read only the raw rows, judged such claims unsupported and pruned
+        # them to "the sources do not state…". They are evidence for the
+        # file they were computed from, under that file's reference.
+        *_document_figures_evidence(document_figures_block, rag_citations, evidence_sources),
         *(f"[{citation.ref_id}] {content}" for citation in rag_citations
           for passage_id, _, content in governed_passages if citation.source_id == passage_id),
         *((f"[REF-{len(rag_citations) - len(agent_outcome.sources) + i + 1}] {source.snippet}" for i, source in enumerate(agent_outcome.sources))
@@ -3741,6 +3749,22 @@ async def _record_answer_source_usages(
         artifact_id=query_id,
         operation="model_transmission",
     )
+
+
+def _document_figures_evidence(figures_block: str, citations, sources) -> list[str]:
+    """The verified-figures block as evidence, once per attached file, under
+    the reference of that file's first cited excerpt."""
+    block = (figures_block or "").strip()
+    if not block:
+        return []
+    seen: set[str] = set()
+    evidence = []
+    for citation, source in zip(citations, sources):
+        file_key = source.source_id or source.title
+        if getattr(source, "provider", None) == "uploaded_document" and file_key not in seen:
+            seen.add(file_key)
+            evidence.append(f"[{citation.ref_id}] {block}")
+    return evidence
 
 
 def _evidence_scope(source_scope: str, sent_documents: bool, restored_documents_read: bool) -> str:
