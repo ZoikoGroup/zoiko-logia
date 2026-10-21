@@ -3476,7 +3476,12 @@ async def ask_kriton(
     if evidence_gap_only:
         rag_citations = []
         limitations = ["The retrieved evidence does not establish the requested answer. No factual answer was verified."]
+    citations_composed_against = rag_citations
     rag_citations = cited_only(final_text, rag_citations)
+    # An answer from an attached file always lists the file (source_guarantee.py).
+    from app.orchestration.source_guarantee import keep_document_citations, official_sources_note
+    if not evidence_gap_only and not is_offdomain_refusal and not uses_user_supplied_structure:
+        rag_citations = keep_document_citations(rag_citations, citations_composed_against)
 
     # A calculation on the question's own figures, or a chart redrawn from
     # figures already in the conversation, needs no source — calling it
@@ -3520,6 +3525,11 @@ async def ask_kriton(
         # An answer with no sources at all gets no extra note: the status line
         # already reads "Answered — no cited sources" (removed at the user's
         # request — the note repeated it under every explanation).
+    if (not rag_citations and not computed_from_question and not is_offdomain_refusal
+            and not uses_user_supplied_structure and (final_text or "").strip()):
+        # Which official publishers to check when nothing was cited — named,
+        # never presented as citations (source_guarantee.py).
+        limitations.append(official_sources_note(request.query))
     # Rewrites after the first normalisation can reintroduce LaTeX, which the
     # answer view shows raw ("\\(40{,}000 \\times 0.06 = 2{,}400\\)").
     from app.orchestration.answer_formatting import latex_to_plain
