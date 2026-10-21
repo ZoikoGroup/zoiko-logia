@@ -3295,6 +3295,7 @@ async def ask_kriton(
     # whose keyword-inferred SourceBundle category — "audit" — has no
     # governed sources seeded) is wrongly escalated to human review for
     # lacking citations it was never supposed to need.
+    released_with_review_warning = ""
     if validation and not validation.passed and (not force_direct or release_review_required) and not uses_user_supplied_structure:
         await audit_composition_rejected(
             db, query_id=query_id, correlation_id=correlation_id,
@@ -3302,8 +3303,31 @@ async def ask_kriton(
             actor_id=actor_id, failures=validation.failures,
             degraded_route=validation.degraded_route,
         )
+        # Product decision (2026-10-21): the reader always gets the answer.
+        # An answer that fails a check is shown with a plain warning naming
+        # what could not be verified, and still goes to Review Tasks for a
+        # reviewer; "Response validation failed; escalated for review" with
+        # no answer is no longer returned (review_release.py).
+        if validation.degraded_route == ROUTE_HUMAN_REVIEW and (composed_text or "").strip():
+            from app.orchestration.review_release import release_warning
+            review_case = await create_review_case(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, risk_level=risk_level,
+                confidence_state=effective_confidence,
+                reason="Composition rejected (answer shown with a warning): " + "; ".join(dict.fromkeys(
+                    validation.failures[:2] + [f for f in validation.failures if f.startswith("Rejected: ")][:1]
+                )),
+                query_text=request.query,
+                draft_answer=composed_text,
+            )
+            await audit_human_review_created(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+                actor_id=actor_id, review_case_id=review_case.id,
+            )
+            released_with_review_warning = release_warning(validation.failures)
         # Invalid answer is NEVER returned; degrade route
-        if validation.degraded_route == ROUTE_HUMAN_REVIEW:
+        elif validation.degraded_route == ROUTE_HUMAN_REVIEW:
             review_case = await create_review_case(
                 db, query_id=query_id, correlation_id=correlation_id,
                 tenant_id=tenant_id, risk_level=risk_level,
@@ -3348,7 +3372,8 @@ async def ask_kriton(
                 )),
                 audit_reference=AuditReference(audit_chain_id=audit_chain_id),
             )
-        return await finish(response)
+        if not released_with_review_warning:
+            return await finish(response)
 
     # ── Step 8: Finalise response ─────────────────────────────────────────────
     # final_text already has the mandatory disclaimer (§10) applied above, and
@@ -3356,6 +3381,8 @@ async def ask_kriton(
 
     # Build limitations list
     limitations: list[str] = list(decision.limitations or [])
+    if released_with_review_warning:
+        limitations.insert(0, released_with_review_warning)
     from app.orchestration.answer_coverage import requested_topic_gaps
     from app.orchestration.input_requirements import gst_answer_gaps
     remaining_topics = requested_topic_gaps(request.query, final_text) + gst_answer_gaps(request.query, final_text)
