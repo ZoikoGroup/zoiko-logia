@@ -1280,7 +1280,17 @@ async def ask_kriton(
             "Happy to help. Which tax is it (for example income tax, VAT/GST, corporation tax), "
             "which country, and what are the figures (income or turnover, and the period)?"
         )
-    if not missing_input_message and not request.document_ids:
+    # A follow-up does not re-send the chat's attached file; it is restored
+    # from the conversation. Without this, "journal entry for this year's
+    # depreciation" after uploading a fixed-asset register was checked against
+    # the previous message, not the file, and asked the user to paste entries.
+    has_chat_documents = bool(request.document_ids) or bool(
+        request.conversation_id and await resolve_conversation_document_ids(
+            db, conversation_id=request.conversation_id, requested_ids=[],
+            tenant_id=tenant_id, user_id=actor_id,
+        )
+    )
+    if not missing_input_message and not has_chat_documents:
         # "Show the correcting entries. Context: <a review with no entries>"
         # got an invented "Debit Expense … Credit Cash" example (supplied_context.py).
         gap = missing_in_supplied_context(
