@@ -2190,11 +2190,12 @@ async def ask_kriton(
             freshness="registered_version",
         ))
 
-    if request.source_scope == "DOCUMENTS_ONLY":
+    evidence_scope = _evidence_scope(request.source_scope, bool(request.document_ids), bool(document_sources))
+    if evidence_scope == "DOCUMENTS_ONLY":
         evidence_sources = document_sources
-    elif request.source_scope == "WEB_ONLY":
+    elif evidence_scope == "WEB_ONLY":
         evidence_sources = web_sources
-    elif request.source_scope == "COMBINED":
+    elif evidence_scope == "COMBINED":
         evidence_sources = document_sources + web_sources
     else:  # DOCUMENTS_THEN_WEB
         evidence_sources = document_sources or web_sources
@@ -3713,6 +3714,22 @@ async def _record_answer_source_usages(
         artifact_id=query_id,
         operation="model_transmission",
     )
+
+
+def _evidence_scope(source_scope: str, sent_documents: bool, restored_documents_read: bool) -> str:
+    """Which retrieved sources an answer is composed and checked against.
+
+    A follow-up does not re-send the chat's file (the frontend sends only what
+    is in the composer, as WEB_ONLY), but the file is restored from the
+    conversation and read, and its verified figures reach the prompt. Checked
+    as web-only, an answer built from that file had no source: "Dr
+    Depreciation 137,085" from a fixed-asset register was escalated for
+    "no eligible sources". When the chat's file was restored and read, it is
+    evidence alongside the web.
+    """
+    if source_scope == "WEB_ONLY" and restored_documents_read and not sent_documents:
+        return "COMBINED"
+    return source_scope
 
 
 async def _verified_document_figures_context(
