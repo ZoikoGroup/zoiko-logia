@@ -605,8 +605,8 @@ async def fetch_company_fundamentals(company: str, year: Optional[int] = None) -
     ticker = str(entry.get("ticker", "")).strip()
     figures = "; ".join(
         f"{label} for the fiscal year ending {fact.get('end', '')}"
-        f"{f' (FY{fact.get('fy')})' if fact.get('fy') else ''}: "
-        f"{format_value(float(fact['val']), str(fact.get('unit', 'USD')))}"
+        + (f" (FY{fact.get('fy')})" if fact.get("fy") else "")
+        + f": {format_value(float(fact['val']), str(fact.get('unit', 'USD')))}"
         for label, fact in facts
     )
     newest = max(facts, key=lambda item: str(item[1].get("end", "")))[1]
