@@ -543,7 +543,38 @@ def _is_relevant(query: str, source: WebSource) -> bool:
     # cash accounting?" answer gave the old £437,500 tolerance as the rule.
     if _HISTORY_PAGE.search(source.title) and not _ASKS_ABOUT_HISTORY.search(query):
         return False
-    return bool(wanted & _terms(source.title)) or len(wanted & _terms(f"{source.title} {source.snippet}")) >= 2
+    return (bool(wanted & _terms(source.title)) or len(wanted & _terms(f"{source.title} {source.snippet}")) >= 2
+            or _spells_out_abbreviation(wanted, f"{source.title} {source.snippet}"))
+
+
+# Small words skipped when reading initials ("Property, Plant AND Equipment").
+_INITIALS_SKIP = {"and", "of", "the", "for", "on", "in", "to", "a", "an", "&"}
+
+
+def _spells_out_abbreviation(wanted: set[str], text: str) -> bool:
+    """A question term that is an abbreviation the page spells out.
+
+    "What is IPR?" restricted to the trusted bodies returned OECD and World
+    Bank pages on "Intellectual Property Rights"; none contains the letters
+    "ipr", so every one was dropped as irrelevant and the answer had no
+    source. A short term (2–5 letters) counts when consecutive words of the
+    page, small words skipped, start with its letters in order."""
+    abbreviations = [t for t in wanted if 2 <= len(t) <= 5 and t.isalpha()]
+    if not abbreviations:
+        return False
+    words = [w for w in re.findall(r"[A-Za-z][A-Za-z'-]*|&", text or "") if w.lower() not in _INITIALS_SKIP]
+    initials = "".join(w[0].lower() for w in words)
+    return any(len(a) <= len(initials) and a in initials and _initials_are_words(a, words) for a in abbreviations)
+
+
+def _initials_are_words(abbreviation: str, words: list[str]) -> bool:
+    """The letters start consecutive words, each word longer than one letter."""
+    n = len(abbreviation)
+    for start in range(len(words) - n + 1):
+        run = words[start:start + n]
+        if all(len(w) > 1 and w[0].lower() == c for w, c in zip(run, abbreviation)):
+            return True
+    return False
 
 
 _EMPTY_RETRY_DELAY_SECONDS = 1.5
@@ -727,10 +758,18 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pa
     def relevant(raw: list[dict]) -> list[WebSource]:
         """Entries with a usable URL that are actually about the question."""
         found: list[WebSource] = []
+        seen_urls: set[str] = set()
         for r in raw:
             url = (r.get("url") or "").strip()
-            if not url:
+            # The same page returned several times ("what is IAS 16" came back
+            # as five copies of one ifrs.org page) filled every slot, so the
+            # answer could only ever cite one source.
+            # "#news", "#standard", "?mod=article_inline" are the same page.
+            page = re.sub(r"\.html?$", "", re.sub(r"^https?://", "", re.sub(r"[?#].*$", "", url))
+                          .rstrip("/").lower()).replace("/content/ifrs/home/", "/")
+            if not url or page in seen_urls:
                 continue
+            seen_urls.add(page)
             source = WebSource(
                 title=(r.get("title") or url)[:200],
                 url=url,
