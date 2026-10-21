@@ -252,3 +252,25 @@ async def test_the_hook_fails_soft(monkeypatch):
     db = SimpleNamespace(begin_nested=lambda: _Nested())
     assert await service._verified_document_figures_context(
         db, "q", ["doc-1"], [], SimpleNamespace(retrieval_mode="targeted"), "t1", "u1") == ""
+
+
+def test_a_fixed_asset_register_gets_its_straight_line_depreciation():
+    register = "\n".join([
+        "asset_id\tdescription\tcategory\tcost\tacquired\tuseful_life_years\taccumulated_depreciation\tnet_book_value",
+        "FA201\tAsset 01\tPlant and machinery\t9450\t2023-02-15\t4\t4725\t4725",
+        "FA202\tAsset 02\tMotor vehicles\t10900\t2023-03-15\t5\t6540\t4360",
+        "FA203\tAsset 03\tIT equipment\t12350\t2023-04-15\t3\t4116.67\t8233.33",
+        "FA204\tAsset 04\tPlant and machinery\t5520\t2023-05-15\t4\t2760\t2760",
+    ])
+    block = verified_document_figures([_src(register, "kriton-test-fixed-assets.xlsx — 'Register'!1:5")])
+    # 9450/4 + 10900/5 + 12350/3 + 5520/4 = 2362.50 + 2180 + 4116.67 + 1380
+    assert "Annual straight-line depreciation (cost ÷ useful_life_years" in block
+    assert "total = 10,039.17 for 4 assets" in block
+    assert "Plant and machinery = 3,742.50" in block and "IT equipment = 4,116.67" in block
+    assert "FA201 = 2,362.50" in block
+    assert "Total useful_life_years" not in block and "useful_life_years: average 4" in block
+
+
+def test_no_depreciation_line_without_both_cost_and_useful_life():
+    block = verified_document_figures([_src("Customer\tRevenue\tCost\nA\t100\t40\nB\t50\t20")])
+    assert "straight-line" not in block
