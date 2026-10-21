@@ -3445,6 +3445,18 @@ async def ask_kriton(
 
     from app.orchestration.verification_service import is_evidence_gap_statement
     evidence_gap_only = not release_claims(final_text) and is_evidence_gap_statement(final_text)
+    # A concept question the sources did not cover gets a labelled general
+    # explanation instead of "Not answered" (concept_fallback.py).
+    from app.orchestration.concept_fallback import GENERAL_NOTE, general_explanation, is_concept_question
+    if evidence_gap_only and not is_offdomain_refusal and is_concept_question(
+            request.query, has_documents=bool(document_sources), uses_live_data=bool(live_evidence.observations)):
+        explanation = await general_explanation(
+            request.query, model_gateway_service.run_grounded_completion, _MODEL_PROVIDER_FAILURE)
+        if explanation:
+            final_text = composed_text = explanation
+            evidence_gap_only = False
+            rag_citations = []
+            limitations.insert(0, GENERAL_NOTE)
     if (re.search(r"(?:sources?|evidence)[^.\n]*(?:do not|does not|not establish|not state)", final_text, re.I)
             # "No ONS data … could be retrieved from the available sources":
             # one part answered, another not, shown as fully answered.
