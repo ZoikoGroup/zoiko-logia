@@ -452,13 +452,32 @@ def _release_claim_pairs(answer: str) -> list[tuple[str, str]]:
 
 def requires_authoritative_evidence(question: str) -> bool:
     text = question or ""
+    lowered = text.lower()
     # Pure definitions of terms ("what is X", "define X") need not be forced
     # into the strict citation regime that can trigger an evidence-gap answer.
-    if re.match(r"^\s*(?:what is|what'?s|define|explain(?: in simple terms)?|meaning of|describe|tell me (?:about|what))\b", text, re.I):
-        if re.search(r"\b(?:rate|rates|threshold|thresholds|slab|slabs|due date|deadline|penalt(?:y|ies)|exemption|refund|registration threshold|turnover|percentage|%\b)\b", text, re.I):
+    # However, explanations of standards/rules that are regulatory ("explain IFRS 16")
+    # must remain authoritative per existing tests.
+    if re.match(r"^\s*explain\b", text, re.I):
+        if re.search(r"\b(?:ifrs|gaap|ias|frs|uk gaap|us gaap|ind as)\b", lowered) or re.search(r"\b(?:vat|gst|tax|hmrc|regulation|law|act|compliance|deadline|rate|penalt)\b", lowered):
+            pass  # fall through to strict checks
+        elif re.search(r"\b(?:rate|rates|threshold|thresholds|slab|slabs|due date|deadline|penalt(?:y|ies)|exemption|refund|percentage|%\b)\b", lowered):
             pass
         else:
+            # Generic "explain X" (not regulatory) could be definition-like; but test expects "Explain IFRS 16" to require authority
+            pass  # continue to checks below
+    if re.match(r"^\s*(?:what is|what'?s|define|meaning of|describe|tell me (?:about|what))\b", text, re.I):
+        if re.search(r"\b(?:rate|rates|threshold|thresholds|slab|slabs|due date|deadline|penalt(?:y|ies)|exemption|refund|registration threshold|turnover|percentage|%\b)\b", text, re.I):
+            pass
+        elif re.search(r"\b(?:ifrs|gaap|ias|frs|uk gaap|us gaap|ind as)\b", lowered):
+            pass  # regulatory standards still require authority
+        else:
             return False
+    if re.match(r"^\s*explain(?: in simple terms)?\b", text, re.I) and re.search(r"\b(?:ifrs|gaap|ias|frs|uk gaap|us gaap|ind as)\b", lowered):
+        pass  # require authority
+    elif re.match(r"^\s*explain(?: in simple terms)?\b", text, re.I) and not re.search(r"\b(?:rate|rates|threshold|deadline|penalt|compliance|filing|return|law|act|regulation)\b", lowered):
+        # Pure explanatory non-regulatory could be treated as definition-like only if not matching other rules
+        # but safer to let other rules decide; don't force False here
+        pass
     return needs_lookup(text) or bool(re.search(
         r"\b(?:vat|gst|tax|taxation|hmrc|cbic|filing|statutory|legislation|regulation|"
         # "Due date for GSTR-3B" was answered unsourced, adding a wrong
