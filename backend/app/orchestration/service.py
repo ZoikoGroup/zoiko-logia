@@ -3549,6 +3549,12 @@ async def ask_kriton(
     from app.orchestration.answer_formatting import latex_to_plain
     from app.orchestration.answer_formatting import remove_visual_placeholders
     final_text = remove_visual_placeholders(latex_to_plain(final_text))
+    # A requested chart type that was not drawn is named, with the reason
+    # (chart_substitution.py).
+    from app.orchestration.chart_substitution import substitution_note
+    chart_note = substitution_note(request.query, final_text, *(agent_outcome.artifacts if agent_outcome else []))
+    if chart_note:
+        limitations.append(chart_note)
     answer = ComposedAnswer(
         text=final_text,
         citations=rag_citations,
