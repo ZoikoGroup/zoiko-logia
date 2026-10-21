@@ -451,7 +451,15 @@ def _release_claim_pairs(answer: str) -> list[tuple[str, str]]:
 
 
 def requires_authoritative_evidence(question: str) -> bool:
-    return needs_lookup(question) or bool(re.search(
+    text = question or ""
+    # Pure definitions of terms ("what is X", "define X") need not be forced
+    # into the strict citation regime that can trigger an evidence-gap answer.
+    if re.match(r"^\s*(?:what is|what'?s|define|explain(?: in simple terms)?|meaning of|describe|tell me (?:about|what))\b", text, re.I):
+        if re.search(r"\b(?:rate|rates|threshold|thresholds|slab|slabs|due date|deadline|penalt(?:y|ies)|exemption|refund|registration threshold|turnover|percentage|%\b)\b", text, re.I):
+            pass
+        else:
+            return False
+    return needs_lookup(text) or bool(re.search(
         r"\b(?:vat|gst|tax|taxation|hmrc|cbic|filing|statutory|legislation|regulation|"
         # "Due date for GSTR-3B" was answered unsourced, adding a wrong
         # "nil returns are due on the 10th".
@@ -461,7 +469,7 @@ def requires_authoritative_evidence(question: str) -> bool:
         # ESI wage ceiling (₹10,000; it is ₹21,000) and no citation.
         r"pf|epf|esi|esic|provident fund|gratuity|national insurance|nic|paye|social security|"
         r"medicare|fica|minimum wage|living wage|sick pay|maternity pay|employment allowance|"
-        r"withholding)\b", question, re.I,
+        r"withholding)\b", text, re.I,
     ))
 
 
