@@ -2339,15 +2339,7 @@ async def ask_kriton(
                 f"{authority_context}"
             )
         if risk_level == "HIGH":
-            # pm_1.3: a question about the asker's own or a client's matter is
-            # answered as general guidance, never as the decision itself.
-            grounded_input += (
-                "\n\nThis question concerns the asker's own or a client's specific matter. "
-                "Give general guidance only: explain the applicable rules and standards, the "
-                "factors that decide the outcome, worked illustrations where useful, and the "
-                "information a qualified professional would need to conclude. Do NOT make the "
-                "decision or give a definitive personal recommendation for their case."
-            )
+            grounded_input += _high_risk_instruction(bool(document_sources))
         from app.orchestration.pasted_material import review_instruction
         if (requires_authoritative_evidence(review_instruction(request.query) or request.query)
                 and not self_contained_calculation):
@@ -3758,6 +3750,34 @@ async def _record_answer_source_usages(
         artifact_type="answer",
         artifact_id=query_id,
         operation="model_transmission",
+    )
+
+
+def _high_risk_instruction(has_attached_file: bool) -> str:
+    """What a HIGH-risk (the asker's own or a client's matter) answer is told.
+
+    pm_1.3: such a question is answered as general guidance, never as the
+    decision itself. Except about the user's attached file (product rule,
+    2026-10-21): "Prepare the journal entry for this year's depreciation"
+    with a fixed-asset register attached was told "general guidance only, do
+    NOT make the decision", so the model ignored the verified 137,085, wrote
+    about IAS 16 (which the file does not state) and that was pruned away.
+    The "General guidance only" limitation is still shown to the reader.
+    """
+    if has_attached_file:
+        return (
+            "\n\nThis question is about the user's own attached records. Prepare exactly what is "
+            "asked (the entry, statement, schedule or figures) from the attached file and the "
+            "verified figures computed from it, citing the file's [REF-N]. State any assumption "
+            "the file does not settle (for example: straight-line, no residual value, a full "
+            "year) in one short line. Do not certify, sign off or give tax or legal advice."
+        )
+    return (
+        "\n\nThis question concerns the asker's own or a client's specific matter. "
+        "Give general guidance only: explain the applicable rules and standards, the "
+        "factors that decide the outcome, worked illustrations where useful, and the "
+        "information a qualified professional would need to conclude. Do NOT make the "
+        "decision or give a definitive personal recommendation for their case."
     )
 
 
