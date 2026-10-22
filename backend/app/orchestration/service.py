@@ -2111,6 +2111,14 @@ async def ask_kriton(
     except Exception as exc:
         document_sources = []
         document_retrieval_error = str(exc)[:1000]
+    if not request.document_ids and document_sources:
+        # A follow-up restores every file attached earlier in the chat; only
+        # the ones the question is about are used (document_relevance.py).
+        from app.orchestration.document_relevance import documents_for_question
+        relevant = documents_for_question(request.query, document_sources)
+        if relevant:
+            document_sources = [s for s in document_sources if s.source_id in relevant]
+            resolved_document_ids = [d for d in resolved_document_ids if d in relevant]
     await audit_document_retrieval(
         db,
         query_id=query_id,
