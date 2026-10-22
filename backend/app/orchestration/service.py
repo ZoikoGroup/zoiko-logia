@@ -3694,7 +3694,13 @@ async def ask_kriton(
     # Pasted material plus "comment on the above": the instruction decides
     # whether statutory sources are needed, not the words in the material.
     from app.orchestration.pasted_material import review_instruction
-    requires_authority = authority_required and not self_contained_calculation
+    # A summary of the user's own attached file, whose totals are the verified
+    # document figures, is arithmetic over their figures like a self-contained
+    # calculation: "Prepare the VAT summary for this period" of a sales file
+    # was withheld for want of an HMRC source. A tax rule it states still needs
+    # a source and is removed without one (unsourced_rule_statements below).
+    document_calculation = bool(document_figures_block)
+    requires_authority = authority_required and not (self_contained_calculation or document_calculation)
     release_review_required = False
     general_background_kept = False
     if (not uses_user_supplied_structure and not uses_deterministic_summary
@@ -3716,6 +3722,11 @@ async def ask_kriton(
             question="\n".join([request.query, *(m.content for m in request.conversation_history if m.role == "user"),
                                 *release_evidence]) + memory_facts_text + _agent_tool_evidence(agent_outcome, len(rag_citations)),
             receipts=agent_outcome.calculation_receipts if agent_outcome else None)
+        if document_figures_block:
+            # The totals computed from the attached files are verified results,
+            # like calculator receipts: "Output VAT: 62,070" from a sales file
+            # was removed as a tax statement with no source.
+            release_calculated.results |= calculated_figures(None, question=document_figures_block).inputs
         # A research citation on arithmetic over the user's own figures is
         # not its source; the calculator is (unbind_arithmetic_citations).
         composed_text = unbind_arithmetic_citations(
@@ -3754,7 +3765,7 @@ async def ask_kriton(
                     [(statement, "figure_misattributed", {}) for statement in statements], rag_citations))
                 composed_text = pruned
                 service_misattributed = list(dict.fromkeys(why for _, _, why in misattributed))
-        if self_contained_calculation and not requires_authority:
+        if (self_contained_calculation or document_calculation) and not requires_authority:
             # The arithmetic needs no source, but a tax or legal statement added
             # to it does, and this answer has none: removed, the rest kept.
             from app.orchestration.verification_service import unsourced_rule_statements
@@ -3942,8 +3953,11 @@ async def ask_kriton(
         # missing here and a verified "4.17%" change was withheld.
         calculator_results = "".join(f"\n{r.get('expression')} = {r.get('result')} (rounded {r.get('rounded')})"
                                      for r in (agent_outcome.calculation_receipts if agent_outcome else []))
+        # With the totals computed from the attached files, cited or not: a VAT
+        # summary's 62,070 from a sales file was withheld as unsourced.
         figure_evidence = "\n".join([figure_evidence_text(request, web_sources, governed_passages, document_sources,
-                                                         calculation_result, remembered_calculation), *release_evidence])
+                                                         calculation_result, remembered_calculation), *release_evidence,
+                                     document_figures_block])
         unsupported_figures = unreconciled_figures(
             composed_text,
             figure_evidence + _agent_tool_evidence(agent_outcome, len(rag_citations)) + calculator_results,
