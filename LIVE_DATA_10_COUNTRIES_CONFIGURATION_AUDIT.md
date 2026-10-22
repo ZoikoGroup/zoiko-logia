@@ -48,7 +48,7 @@ That is all **19**. All carried identical values, so each was redundant rather t
   - `FRED_API_BASE_URL` → `backend/.env:103`
 - The later duplicate block was removed.
 - Both remaining values were verified unchanged from the original.
-- `FRED_API_BASE_URL` points at the public FRED REST host; the key is passed as a **query parameter** (`api_key`), not a header. This is confirmed correct for FRED.
+- `FRED_API_BASE_URL` points at the public FRED REST host; the key is passed as a **query parameter** (`api_key`), not a header. This is confirmed correct- for FRED.
 - **Section comment corrected.** The header at `backend/.env:89` read `Exact-figure grounding (free, keyless, public URLs)`, which was inaccurate because FRED is free but **requires a key**. It now reads `Exact-figure grounding (free publisher URLs; FRED is free but key-gated)`.
 
 ### A.3 Unused variables removed (2)

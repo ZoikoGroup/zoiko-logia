@@ -315,7 +315,10 @@ class GroqAdapter:
                 getattr(e, "status_code", None),
                 model,
             )
-            return f"[Error connecting to Groq API: {str(e)}]"
+            # Type and status only: the provider's error body can carry account
+            # identifiers and billing URLs (gateway failure handling still
+            # treats this text as a failure, never as an answer).
+            return f"[Error connecting to Groq API: {type(e).__name__} status={getattr(e, 'status_code', None)}]"
 
     async def _create_with_tool_recovery(self, model: str, messages: list):
         """Groq validates a proposed render_chart call against the schema

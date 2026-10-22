@@ -154,9 +154,15 @@ async def test_a_figure_the_inputs_do_not_produce_is_withheld(pipeline):
     wrong = ANSWER.replace("£1,418,181.82", "£1,560,000.00")
     pipeline.answers(AgentOutcome(text=wrong, calculation_receipts=receipts(RECEIPTS)))
     response, audited = await pipeline.ask(FORECAST)
-    # An equation that does not hold is never released: it goes to review.
-    assert response.outcome == audited.outcome != "answered"
-    assert response.answer is None or "£1,560,000" not in response.answer.text
+    # An equation that does not hold is never released. Since the 22 Oct 2026
+    # merge the rest of the answer is still shown (main's "the reader always
+    # gets the answer"), but the disproved statement is removed, the verified
+    # result is named, and the answer is partial, never complete.
+    assert "£1,560,000" not in response.answer.text
+    assert audited.completeness == response.answer.completeness == "partial"
+    limitations = " ".join(response.answer.limitations)
+    assert "did not match its own calculation" in limitations and "1418181.82" in limitations
+    assert "could not be re-checked" not in limitations
 
 
 # 3. The scenario comparison and target-profit calculation are included.

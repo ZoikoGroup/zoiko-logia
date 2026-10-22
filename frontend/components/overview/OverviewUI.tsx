@@ -6,7 +6,7 @@ import { ArrowRight, Building2, CalendarDays, Globe2, BookOpen, Sparkles } from 
 import { BrandMark } from "@/components/layout/AppHeader";
 
 export function OverviewFrame({ title, subtitle, children, actions }: { title: string; subtitle: string; children: ReactNode; actions?: ReactNode }) {
-  return <main className="overview-page flex-1 overflow-y-auto p-4 lg:p-6"><div className="mx-auto max-w-[1600px] space-y-4">
+  return <main className="overview-page flex-1 min-w-0 overflow-y-auto p-4 lg:p-6"><div className="w-full min-w-0 space-y-4">
     <div className="flex items-center gap-2 text-[11px] text-muted"><span>Workspace</span><span>/</span><span>Overview</span><span>/</span><b className="text-ink">{title}</b></div>
     <header className="flex flex-wrap items-end justify-between gap-3"><div><h1 className="text-[28px] font-bold tracking-tight text-ink">{title}</h1><p className="mt-1 text-xs leading-5 text-muted">{subtitle}</p></div>{actions}</header>
     {children}

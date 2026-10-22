@@ -63,6 +63,13 @@ _CURRENCY_CODE = re.compile(
 _ZERO = {"-", "–", "—", "nil"}
 # Rates and percentages are averaged, never summed.
 _RATE_HEADER = re.compile(r"%|percent|\brate\b|ratio", re.IGNORECASE)
+# A fixed-asset register: cost and useful life give the straight-line charge
+# (cost ÷ life) that a depreciation journal needs and the register does not
+# state. A useful life is averaged like a rate, never summed.
+_LIFE_HEADER = re.compile(r"useful[\s_-]*life|\blife[\s_-]*(?:in[\s_-]*)?(?:years?|yrs)\b|^life$", re.IGNORECASE)
+_COST_HEADER = re.compile(r"(?:^|[\s_])(?:gross[\s_]*|original[\s_]*|acquisition[\s_]*|historical[\s_]*)?cost(?:[\s_]|$)", re.IGNORECASE)
+_NOT_COST = re.compile(r"accumulated|depreciat|net|total|book", re.IGNORECASE)
+MAX_ASSETS_LISTED = 40
 _YEAR = re.compile(r"^(19|20)\d{2}$")
 
 
@@ -248,7 +255,8 @@ def _columns(table: Table) -> tuple[list[int], list[int], set[int]]:
         distinct = len(set(cells))
         if (share_numeric >= 0.8 and any(numbers) and not re.search(r"\b(id|year|no|number|code|date)\b", header, re.IGNORECASE)):
             numeric.append(i)
-            if _RATE_HEADER.search(header) or sum(c.strip().endswith("%") for c in cells) >= len(cells) / 2:
+            if (_RATE_HEADER.search(header) or _LIFE_HEADER.search(header)
+                    or sum(c.strip().endswith("%") for c in cells) >= len(cells) / 2):
                 rates.add(i)
         elif (share_numeric < 0.2 and 1 < distinct <= 50 and not _NOT_CATEGORY.search(header)
               and not all(_DATE_LIKE.match(c) for c in cells)):
@@ -262,6 +270,38 @@ def _columns(table: Table) -> tuple[list[int], list[int], set[int]]:
 
     category.sort(key=priority)
     return numeric[:MAX_NUMERIC_COLUMNS], category[:MAX_CATEGORY_COLUMNS], rates
+
+
+def _straight_line_depreciation(table: Table, numeric: list[int], category: list[int]) -> list[str]:
+    """The annual straight-line charge (cost ÷ useful life) per asset, per
+    category and in total, when the table has a cost and a useful-life column."""
+    cost = next((i for i in numeric if _COST_HEADER.search(table.headers[i] or "")
+                 and not _NOT_COST.search(table.headers[i] or "")), None)
+    life = next((i for i in numeric if _LIFE_HEADER.search(table.headers[i] or "")), None)
+    if cost is None or life is None:
+        return []
+    charges: list[tuple[str, str, float]] = []
+    for row in table.rows:
+        amount = _to_number(row[cost]) if cost < len(row) else None
+        years = _to_number(row[life]) if life < len(row) else None
+        if amount is None or not years or years <= 0:
+            continue
+        group = row[category[0]].strip() if category and category[0] < len(row) else ""
+        charges.append(((row[0] or "").strip(), group, round(amount / years, 2)))
+    if not charges:
+        return []
+    total = round(sum(c for _, _, c in charges), 2)
+    lines = [f"- Annual straight-line depreciation ({table.headers[cost]} ÷ {table.headers[life]}; no residual value; "
+             f"a full year's charge): total = {_fmt(total)} for {len(charges)} assets"]
+    if category:
+        groups: dict[str, float] = defaultdict(float)
+        for _, group, charge in charges:
+            groups[group] += charge
+        lines.append(f"- Annual depreciation by {table.headers[category[0]]}: " + "; ".join(
+            f"{g} = {_fmt(round(v, 2))}" for g, v in sorted(groups.items(), key=lambda x: -x[1])))
+    lines.append("- Annual depreciation per asset: " + "; ".join(
+        f"{label} = {_fmt(charge)}" for label, _, charge in charges[:MAX_ASSETS_LISTED]))
+    return lines
 
 
 def _table_lines(table: Table) -> list[str]:
@@ -286,6 +326,7 @@ def _table_lines(table: Table) -> list[str]:
         totals[i] = sum(values)
         lines.append(f"- Total {name(i)} = {_fmt(totals[i])}; average {_fmt(totals[i] / len(values))}; "
                      f"highest {_fmt(max(values))}; lowest {_fmt(min(values))}")
+    lines.extend(_straight_line_depreciation(table, numeric, category))
     keys = list(totals)
     for a in keys:
         for b in keys:

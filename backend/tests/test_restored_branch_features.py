@@ -46,8 +46,10 @@ def test_pipeline_keeps_the_restored_steps_wired():
     assert 'get_refusal_template("ACCOUNTING_INTEGRITY")' in source
     # 188a6ad: follow-up calculations see the screened conversation history.
     assert "screened_history(request.conversation_history)" in source
-    # 559f16b: HIGH-risk questions are answered as general guidance.
-    assert "Give general guidance only" in source
+    # 559f16b: HIGH-risk questions are answered as general guidance (the text
+    # lives in _high_risk_instruction, which also covers an attached file).
+    assert "_high_risk_instruction(" in source
+    assert "Give general guidance only" in inspect.getsource(service._high_risk_instruction)
     # 7d9cafa / 13ae7b8 said in a note what an unsourced answer rests on; that
     # note was removed on request, since the status line ("Answered — no cited
     # sources") already says it. The user also removed repeated web-source

@@ -58,6 +58,39 @@ def _isolate_external_services(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _block_live_http(request, monkeypatch):
+    """No offline test reaches a real website. The per-service stubs above
+    missed govuk.py's own search, so a prompt-size test grew from about 2,300
+    to 8,545 characters when GOV.UK's page changed (22 Oct 2026), and two more
+    test files were reading GOV.UK, DBnomics and Frankfurter live. Mock
+    transports and loopback servers are unaffected; tests marked live or
+    integration keep the network."""
+    import os
+
+    if os.getenv("RUN_LIVE_HTTP_TESTS") == "1" or request.node.get_closest_marker("live") \
+            or request.node.get_closest_marker("integration"):
+        return
+    import httpx
+
+    def offline(self, http_request):
+        if http_request.url.host in ("localhost", "127.0.0.1", "::1"):
+            return original_sync(self, http_request)
+        raise httpx.ConnectError(f"Live HTTP is disabled in offline tests: {http_request.url.host}",
+                                 request=http_request)
+
+    async def offline_async(self, http_request):
+        if http_request.url.host in ("localhost", "127.0.0.1", "::1"):
+            return await original_async(self, http_request)
+        raise httpx.ConnectError(f"Live HTTP is disabled in offline tests: {http_request.url.host}",
+                                 request=http_request)
+
+    original_sync = httpx.HTTPTransport.handle_request
+    original_async = httpx.AsyncHTTPTransport.handle_async_request
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", offline)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", offline_async)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_in_process_caches():
     # Process-level caches must not carry one test's users into another.
     from app.domains.identity import governance

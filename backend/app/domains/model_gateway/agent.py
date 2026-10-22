@@ -1000,6 +1000,12 @@ async def _run_agent_loop(
             outcome.stop_reason = exc.reason
             break  # Try the smaller final-answer prompt before returning verified work.
         except Exception as exc:
+            if isinstance(exc, ProviderRequestRejected) and not isinstance(exc, TimeoutError):
+                # A typed provider failure (spending limit, authentication,
+                # request too large, rate limit) is not cured by another step:
+                # it propagates typed so the caller reports the specific cause
+                # and keeps verified work. A timeout uses the time budget below.
+                raise
             if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
                 # A slow model step used up the step budget. Raised, it threw
                 # away the evidence already gathered, and the request started

@@ -1,6 +1,8 @@
 """Safe, actionable provider failures; no credentials or raw error bodies."""
 from __future__ import annotations
 
+import re
+
 from groq import APITimeoutError
 from httpx import TimeoutException
 
@@ -72,14 +74,41 @@ class ProviderResponseIncomplete(ProviderRequestRejected):
     )
 
 
+# Documented hard blocks: Groq answers 400 `blocked_api_access` once the
+# organisation's spend limit is reached (console.groq.com/docs/spend-limits).
+_HARD_BLOCK_CODES = frozenset({"blocked_api_access", "spend_limit_reached"})
+# Known provider wordings for the same block, read from the structured error
+# message only.
+_HARD_BLOCK_WORDING = re.compile(
+    r"\bspend(?:ing)?\s+limit\s+(?:has\s+been\s+|was\s+)?reached\b|\bapi\s+access\s+(?:has\s+been\s+|is\s+)?blocked\b"
+    r"|\bblocked\s+(?:the\s+)?api\s+access\b",
+    re.I,
+)
+# An alert can be a notification threshold rather than a block.
+_SPEND_ALERT = re.compile(r"\bspend(?:ing)?\s+alert\b", re.I)
+
+
 def provider_access_failure(exc: BaseException) -> ProviderAccessBlocked | None:
+    """A hard account block, from the provider's structured error only.
+
+    Order: documented error code, then known hard-block wording, then a spend
+    alert only when the provider refused the request outright (400/402/403 and
+    "blocked"). A rate limit or a warning is never a spend block, and free text
+    (an exception message, a user's words) never decides."""
     if isinstance(exc, ProviderAccessBlocked):
         return exc
     body = getattr(exc, "body", None)
     if not isinstance(body, dict):
         return None
     error = body.get("error", body)
-    if isinstance(error, dict) and error.get("code") == "spend_limit_reached":
+    if not isinstance(error, dict):
+        return None
+    code = str(error.get("code") or "").lower()
+    message = str(error.get("message") or "")
+    if code in _HARD_BLOCK_CODES or _HARD_BLOCK_WORDING.search(message):
+        return ProviderAccessBlocked()
+    status = getattr(exc, "status_code", None)
+    if _SPEND_ALERT.search(message) and status in {400, 402, 403} and re.search(r"\bblock", message, re.I):
         return ProviderAccessBlocked()
     return None
 

@@ -283,6 +283,16 @@ _MODEL_DOMAIN_REFUSAL_TEXT = (
     "global countries.\n\nPlease ask a question related to these topics."
 )
 _MODEL_PROVIDER_FAILURE = "Kriton is temporarily unable to reach the language model provider."
+# Prefix of the gateway's spend-limit message (_PROVIDER_SPEND_LIMIT_MESSAGE in
+# model_gateway/service.py). A substring check, so the gateway's longer,
+# user-facing sentence is recognised here.
+_MODEL_PROVIDER_SPEND_LIMIT = (
+    "Kriton is temporarily unavailable because the AI provider has reached its configured spending limit."
+)
+_MODEL_PROVIDER_SPEND_LIMIT_MESSAGE = (
+    "Kriton is temporarily unavailable because the AI provider has reached its "
+    "configured spending limit. Please try again later."
+)
 
 # High-confidence, consumer/general-knowledge requests that are plainly
 # outside Kriton's governed accounting and finance scope. Keeping this gate
@@ -1663,7 +1673,17 @@ async def ask_kriton(
             "Happy to help. Which tax is it (for example income tax, VAT/GST, corporation tax), "
             "which country, and what are the figures (income or turnover, and the period)?"
         )
-    if not missing_input_message and not request.document_ids:
+    # A follow-up does not re-send the chat's attached file; it is restored
+    # from the conversation. Without this, "journal entry for this year's
+    # depreciation" after uploading a fixed-asset register was checked against
+    # the previous message, not the file, and asked the user to paste entries.
+    has_chat_documents = bool(request.document_ids) or bool(
+        request.conversation_id and await resolve_conversation_document_ids(
+            db, conversation_id=request.conversation_id, requested_ids=[],
+            tenant_id=tenant_id, user_id=actor_id,
+        )
+    )
+    if not missing_input_message and not has_chat_documents:
         # "Show the correcting entries. Context: <a review with no entries>"
         # got an invented "Debit Expense … Credit Cash" example (supplied_context.py).
         gap = missing_in_supplied_context(
@@ -1935,6 +1955,21 @@ async def ask_kriton(
                 visualization=calculated_visual,
             )
         return await finish(response, json_dump=True)
+
+    # A diagram requested without its structure ("Draw the purchase-to-pay
+    # process as a swimlane diagram") gets the standard structure, written in
+    # the typed form the diagram parsers accept and appended to the question,
+    # so the same parsers and renderers draw it (illustrative_diagram.py).
+    from app.orchestration.illustrative_diagram import (
+        NOTE as ILLUSTRATION_NOTE, illustrated_query, needs_illustration,
+    )
+    illustrative_diagram = False
+    if not request.document_ids and needs_illustration(request.query):
+        illustrated = await illustrated_query(
+            request.query, model_gateway_service.run_grounded_completion, _MODEL_PROVIDER_FAILURE)
+        if illustrated:
+            request = request.model_copy(update={"query": illustrated})
+            illustrative_diagram = True
 
     # ── Kick off the live web search NOW, concurrently ──────────────────────
     # SearXNG is the slowest single step (~several seconds waiting on search
@@ -2653,11 +2688,12 @@ async def ask_kriton(
             freshness="registered_version",
         ))
 
-    if request.source_scope == "DOCUMENTS_ONLY":
+    evidence_scope = _evidence_scope(request.source_scope, bool(request.document_ids), bool(document_sources))
+    if evidence_scope == "DOCUMENTS_ONLY":
         evidence_sources = document_sources
-    elif request.source_scope == "WEB_ONLY":
+    elif evidence_scope == "WEB_ONLY":
         evidence_sources = web_sources
-    elif request.source_scope == "COMBINED":
+    elif evidence_scope == "COMBINED":
         evidence_sources = document_sources + web_sources
     else:  # DOCUMENTS_THEN_WEB
         evidence_sources = document_sources or web_sources
@@ -2820,15 +2856,7 @@ async def ask_kriton(
                 ),
             ))
         if risk_level == "HIGH":
-            # pm_1.3: a question about the asker's own or a client's matter is
-            # answered as general guidance, never as the decision itself.
-            grounded_input += (
-                "\n\nThis question concerns the asker's own or a client's specific matter. "
-                "Give general guidance only: explain the applicable rules and standards, the "
-                "factors that decide the outcome, worked illustrations where useful, and the "
-                "information a qualified professional would need to conclude. Do NOT make the "
-                "decision or give a definitive personal recommendation for their case."
-            )
+            grounded_input += _high_risk_instruction(bool(document_sources))
         from app.orchestration.pasted_material import review_instruction
         if authority_required and not self_contained_calculation:
             # The release check (verify_for_release) holds back the whole
@@ -2941,9 +2969,10 @@ async def ask_kriton(
     grounded_input += calculation_rejection or await feedback_guidance(
         db, tenant_id=tenant_id, user_id=actor_id, question=request.query,
     )
-    grounded_input += await _verified_document_figures_context(
+    document_figures_block = await _verified_document_figures_context(
         db, request.query, resolved_document_ids, document_sources, document_plan, tenant_id, actor_id,
     )
+    grounded_input += document_figures_block
 
     if context_sections:
         from app.domains.model_gateway.agent_budget import request_prompt_estimate
@@ -3185,6 +3214,12 @@ async def ask_kriton(
             # user-safe text. At the orchestration boundary that text is still
             # a failed composition, never an "answered — source grounded"
             # result. Structured official-data paths above do not reach here.
+            # An account spending-limit block is a distinct, non-transient
+            # cause and is checked first so it gets its own message. Both are
+            # raised rather than returned, so they cannot be cached or shown as
+            # an answer.
+            if composed_text and _MODEL_PROVIDER_SPEND_LIMIT in composed_text:
+                raise RuntimeError("model_provider_spend_limit")
             if composed_text and _MODEL_PROVIDER_FAILURE in composed_text:
                 raise RuntimeError("model_provider_unavailable")
 
@@ -3222,7 +3257,14 @@ async def ask_kriton(
                 audit_reference=AuditReference(audit_chain_id=audit_chain_id),
             )
             return await finish(response, route="CALCULATION")
-        # Service unavailability is not a policy refusal or missing input.
+        # Service unavailability is not a policy refusal or missing input. A typed
+        # provider failure carries its own safe message; anything untyped gets
+        # the generic one (or the spend-limit one if its text says so).
+        provider_message = (
+            _MODEL_PROVIDER_SPEND_LIMIT_MESSAGE
+            if "spend_limit" in str(exc)
+            else "Kriton™ could not compose a response at this time. Please try again shortly."
+        )
         response = AskKritonResponse(
             query_id=query_id, correlation_id=correlation_id,
             outcome="unavailable", route="LLM",
@@ -3230,8 +3272,7 @@ async def ask_kriton(
             source_bundle=source_bundle, answer=None,
             next_action=NextAction(
                 type=exc.next_action_type if isinstance(exc, ProviderRequestRejected) else "composition_failed",
-                message=exc.user_message if isinstance(exc, ProviderRequestRejected) else
-                    "Kriton™ could not compose a response at this time. Please try again shortly.",
+                message=exc.user_message if isinstance(exc, ProviderRequestRejected) else provider_message,
             ),
             audit_reference=AuditReference(audit_chain_id=audit_chain_id),
         )
@@ -3449,6 +3490,13 @@ async def ask_kriton(
     ], citations=rag_citations)
     verification_evidence = [
         *(f"[{citation.ref_id}] {source.snippet}" for citation, source in zip(rag_citations, evidence_sources)),
+        # The figures computed from the attached files (document_figures.py)
+        # are what an answer about them states — "Dr Depreciation 137,085"
+        # is cost ÷ useful life, not a line in the file. Claim verification
+        # read only the raw rows, judged such claims unsupported and pruned
+        # them to "the sources do not state…". They are evidence for the
+        # file they were computed from, under that file's reference.
+        *_document_figures_evidence(document_figures_block, rag_citations, evidence_sources),
         *(f"[{citation.ref_id}] {content}" for citation in rag_citations
           for passage_id, _, content in governed_passages if citation.source_id == passage_id),
         *((f"[REF-{len(rag_citations) - len(agent_outcome.sources) + i + 1}] {source.snippet}" for i, source in enumerate(agent_outcome.sources))
@@ -3566,6 +3614,8 @@ async def ask_kriton(
             call.tool in ("calculate", "render_chart") and call.ok for call in agent_outcome.tool_calls
         ))
     )
+    from app.orchestration.limitation_reply import is_limitation_reply
+
     def validate(text: str):
         return (
             validate_answer(
@@ -3573,7 +3623,10 @@ async def ask_kriton(
                 source_bundle,
                 disclaimer_required=False,
                 external_source_count=len(rag_citations),
-                ungrounded_answer_allowed=effective_confidence == CONF_INSUFFICIENT or computed_from_own_figures,
+                # An honest "I can't do this, because…" with no figure is not
+                # an ungrounded claim (limitation_reply.py).
+                ungrounded_answer_allowed=(effective_confidence == CONF_INSUFFICIENT or computed_from_own_figures
+                                           or is_limitation_reply(text)),
                 # What the answer was composed against: a phrase quoted from it
                 # is the source speaking, not Kriton advising.
                 evidence_text="\n".join([
@@ -3999,6 +4052,8 @@ async def ask_kriton(
     # whose keyword-inferred SourceBundle category — "audit" — has no
     # governed sources seeded) is wrongly escalated to human review for
     # lacking citations it was never supposed to need.
+    released_with_review_warning = ""
+    disproved_figure_notes: list[str] = []
     if validation and not validation.passed and (not force_direct or release_review_required) and not uses_user_supplied_structure:
         await audit_composition_rejected(
             db, query_id=query_id, correlation_id=correlation_id,
@@ -4006,8 +4061,39 @@ async def ask_kriton(
             actor_id=actor_id, failures=validation.failures,
             degraded_route=validation.degraded_route,
         )
-        # Invalid answer is NEVER returned; degrade route
         if validation.degraded_route == ROUTE_HUMAN_REVIEW:
+            # Shown with a warning is for what could not be verified; a figure
+            # the calculator disproved is removed first. If nothing of
+            # substance is left, the answer goes to review as before.
+            from app.orchestration.review_release import remove_disproved_figures
+            composed_text, disproved_figure_notes = remove_disproved_figures(composed_text, validation.failures)
+            final_text = composed_text
+        # Product decision (2026-10-21): the reader always gets the answer.
+        # An answer that fails a check is shown with a plain warning naming
+        # what could not be verified, and still goes to Review Tasks for a
+        # reviewer; "Response validation failed; escalated for review" with
+        # no answer is no longer returned (review_release.py).
+        if validation.degraded_route == ROUTE_HUMAN_REVIEW and (composed_text or "").strip():
+            from app.orchestration.review_release import release_warning
+            review_case = await create_review_case(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, risk_level=risk_level,
+                confidence_state=effective_confidence,
+                reason="Composition rejected (answer shown with a warning): " + "; ".join(dict.fromkeys(
+                    validation.failures[:2] + [f for f in validation.failures if f.startswith("Rejected: ")][:1]
+                )),
+                query_text=request.query,
+                draft_answer=composed_text,
+            )
+            await audit_human_review_created(
+                db, query_id=query_id, correlation_id=correlation_id,
+                tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+                actor_id=actor_id, review_case_id=review_case.id,
+            )
+            released_with_review_warning = release_warning(validation.failures,
+                                                           disproved_removed=bool(disproved_figure_notes))
+        # Invalid answer is NEVER returned; degrade route
+        elif validation.degraded_route == ROUTE_HUMAN_REVIEW:
             review_case = await create_review_case(
                 db, query_id=query_id, correlation_id=correlation_id,
                 tenant_id=tenant_id, risk_level=risk_level,
@@ -4052,7 +4138,8 @@ async def ask_kriton(
                 )),
                 audit_reference=AuditReference(audit_chain_id=audit_chain_id),
             )
-        return await finish(response)
+        if not released_with_review_warning:
+            return await finish(response)
 
     # ── Step 8: Finalise response ─────────────────────────────────────────────
     # final_text already has the mandatory disclaimer (§10) applied above, and
@@ -4060,6 +4147,11 @@ async def ask_kriton(
 
     # Build limitations list
     limitations: list[str] = list(decision.limitations or [])
+    if released_with_review_warning:
+        limitations.insert(0, released_with_review_warning)
+    if disproved_figure_notes:
+        limitations.append("Incomplete answer: statements with a figure that did not match its own calculation "
+                           "were removed: " + "; ".join(disproved_figure_notes) + ".")
     from app.orchestration.answer_coverage import requested_topic_gaps
     from app.orchestration.input_requirements import gst_answer_gaps
     remaining_topics = requested_topic_gaps(request.query, final_text) + gst_answer_gaps(request.query, final_text)
@@ -4122,6 +4214,28 @@ async def ask_kriton(
 
     from app.orchestration.verification_service import is_evidence_gap_statement
     evidence_gap_only = not release_claims(final_text) and is_evidence_gap_statement(final_text)
+    # A concept question the sources did not cover gets a labelled general
+    # explanation instead of "Not answered" (concept_fallback.py).
+    from app.orchestration.concept_fallback import GENERAL_NOTE, general_explanation, is_concept_question
+    if evidence_gap_only and not is_offdomain_refusal and is_concept_question(
+            request.query, has_documents=bool(document_sources), uses_live_data=bool(live_evidence.observations)):
+        explanation = await general_explanation(
+            request.query, model_gateway_service.run_grounded_completion, _MODEL_PROVIDER_FAILURE)
+        if explanation:
+            final_text = composed_text = explanation
+            evidence_gap_only = False
+            rag_citations = []
+            limitations.insert(0, GENERAL_NOTE)
+    # An explanation gap ("the sources do not state the factors that…") is
+    # filled with a labelled general explanation; a missing figure, rate or
+    # rule is left for "Partially answered" (gap_filler.py).
+    if not evidence_gap_only and not is_offdomain_refusal and not uses_user_supplied_structure:
+        from app.orchestration.gap_filler import NOTE as GAP_NOTE, fill_explanation_gaps
+        final_text, gaps_filled = await fill_explanation_gaps(
+            final_text, request.query, model_gateway_service.run_grounded_completion, _MODEL_PROVIDER_FAILURE)
+        if gaps_filled:
+            composed_text = final_text
+            limitations.append(GAP_NOTE)
     if (re.search(r"(?:sources?|evidence)[^.\n]*(?:do not|does not|not establish|not state)", final_text, re.I)
             # "No ONS data … could be retrieved from the available sources":
             # one part answered, another not, shown as fully answered.
@@ -4190,7 +4304,12 @@ async def ask_kriton(
     jurisdiction_note = jurisdiction_limitation(request.query, removed_statements)
     if jurisdiction_note:
         limitations.append(jurisdiction_note)
+    citations_composed_against = rag_citations
     rag_citations = cited_only(final_text, rag_citations)
+    # An answer from an attached file always lists the file (source_guarantee.py).
+    from app.orchestration.source_guarantee import keep_document_citations, official_sources_note
+    if not evidence_gap_only and not is_offdomain_refusal and not uses_user_supplied_structure:
+        rag_citations = keep_document_citations(rag_citations, citations_composed_against)
     from app.orchestration.agent_plan import GENERAL_GUIDANCE_REASON
     if GENERAL_GUIDANCE_REASON in execution_plan.reasons and not rag_citations and not evidence_gap_only:
         # Decision C: practical guidance answered without sources says so.
@@ -4222,11 +4341,26 @@ async def ask_kriton(
         # An answer with no sources at all gets no extra note: the status line
         # already reads "Answered — no cited sources" (removed at the user's
         # request — the note repeated it under every explanation).
+    if (not rag_citations and not computed_from_question and not is_offdomain_refusal
+            and not uses_user_supplied_structure and (final_text or "").strip()):
+        # Which official publishers to check when nothing was cited — named,
+        # never presented as citations (source_guarantee.py).
+        limitations.append(official_sources_note(request.query))
     # Rewrites after the first normalisation can reintroduce LaTeX, which the
     # answer view shows raw ("\\(40{,}000 \\times 0.06 = 2{,}400\\)").
     from app.orchestration.answer_formatting import latex_to_plain
     from app.orchestration.answer_formatting import remove_visual_placeholders
     final_text = remove_visual_placeholders(latex_to_plain(final_text))
+    # A requested chart type that was not drawn is named, with the reason
+    # (chart_substitution.py).
+    from app.orchestration.chart_substitution import substitution_note
+    chart_note = substitution_note(request.query, final_text, *(agent_outcome.artifacts if agent_outcome else []))
+    if chart_note:
+        limitations.append(chart_note)
+    if illustrative_diagram:
+        from app.orchestration.illustrative_diagram import illustration_wording
+        final_text = illustration_wording(final_text)
+        limitations.insert(0, ILLUSTRATION_NOTE)
     answer = ComposedAnswer(
         text=final_text,
         citations=rag_citations,
@@ -4453,6 +4587,66 @@ async def _record_answer_source_usages(
     )
 
 
+def _high_risk_instruction(has_attached_file: bool) -> str:
+    """What a HIGH-risk (the asker's own or a client's matter) answer is told.
+
+    pm_1.3: such a question is answered as general guidance, never as the
+    decision itself. Except about the user's attached file (product rule,
+    2026-10-21): "Prepare the journal entry for this year's depreciation"
+    with a fixed-asset register attached was told "general guidance only, do
+    NOT make the decision", so the model ignored the verified 137,085, wrote
+    about IAS 16 (which the file does not state) and that was pruned away.
+    The "General guidance only" limitation is still shown to the reader.
+    """
+    if has_attached_file:
+        return (
+            "\n\nThis question is about the user's own attached records. Prepare exactly what is "
+            "asked (the entry, statement, schedule or figures) from the attached file and the "
+            "verified figures computed from it, citing the file's [REF-N]. State any assumption "
+            "the file does not settle (for example: straight-line, no residual value, a full "
+            "year) in one short line. Do not certify, sign off or give tax or legal advice."
+        )
+    return (
+        "\n\nThis question concerns the asker's own or a client's specific matter. "
+        "Give general guidance only: explain the applicable rules and standards, the "
+        "factors that decide the outcome, worked illustrations where useful, and the "
+        "information a qualified professional would need to conclude. Do NOT make the "
+        "decision or give a definitive personal recommendation for their case."
+    )
+
+
+def _document_figures_evidence(figures_block: str, citations, sources) -> list[str]:
+    """The verified-figures block as evidence, once per attached file, under
+    the reference of that file's first cited excerpt."""
+    block = (figures_block or "").strip()
+    if not block:
+        return []
+    seen: set[str] = set()
+    evidence = []
+    for citation, source in zip(citations, sources):
+        file_key = source.source_id or source.title
+        if getattr(source, "provider", None) == "uploaded_document" and file_key not in seen:
+            seen.add(file_key)
+            evidence.append(f"[{citation.ref_id}] {block}")
+    return evidence
+
+
+def _evidence_scope(source_scope: str, sent_documents: bool, restored_documents_read: bool) -> str:
+    """Which retrieved sources an answer is composed and checked against.
+
+    A follow-up does not re-send the chat's file (the frontend sends only what
+    is in the composer, as WEB_ONLY), but the file is restored from the
+    conversation and read, and its verified figures reach the prompt. Checked
+    as web-only, an answer built from that file had no source: "Dr
+    Depreciation 137,085" from a fixed-asset register was escalated for
+    "no eligible sources". When the chat's file was restored and read, it is
+    evidence alongside the web.
+    """
+    if source_scope == "WEB_ONLY" and restored_documents_read and not sent_documents:
+        return "COMBINED"
+    return source_scope
+
+
 async def _verified_document_figures_context(
     db, query: str, document_ids, document_sources, document_plan, tenant_id: str, user_id: str,
 ) -> str:
@@ -4480,6 +4674,7 @@ async def _verified_document_figures_context(
 
 NOT_VERIFIED_MARKER = "No factual answer was verified"
 INCOMPLETE_MARKER = "Incomplete answer"
+REVIEW_WARNING_MARKER = "Not fully verified:"
 
 
 def answer_completeness(limitations: list[str]) -> str:
@@ -4494,7 +4689,10 @@ def answer_completeness(limitations: list[str]) -> str:
     # content the reader does not get as verified: the IFRS 15 answer that lost
     # a section to "Statements the cited sources do not support were removed"
     # was still called complete.
-    withheld = (INCOMPLETE_MARKER, _UNSUPPORTED_REMOVED_NOTE, _CLAIM_REMOVED_NOTE, _CLAIMS_UNCONFIRMED_NOTE)
+    # An answer released beside "Not fully verified" (review_release.py) failed
+    # a check: it was marked complete next to that warning.
+    withheld = (INCOMPLETE_MARKER, _UNSUPPORTED_REMOVED_NOTE, _CLAIM_REMOVED_NOTE, _CLAIMS_UNCONFIRMED_NOTE,
+                REVIEW_WARNING_MARKER)
     if any(marker in item for item in limitations or [] for marker in withheld):
         return "partial"
     return "complete"
