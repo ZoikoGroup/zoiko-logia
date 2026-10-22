@@ -274,3 +274,15 @@ def test_a_fixed_asset_register_gets_its_straight_line_depreciation():
 def test_no_depreciation_line_without_both_cost_and_useful_life():
     block = verified_document_figures([_src("Customer\tRevenue\tCost\nA\t100\t40\nB\t50\t20")])
     assert "straight-line" not in block
+
+
+def test_a_dated_ledger_gets_totals_per_month_in_date_order():
+    # "Show monthly totals as a bar chart" of a 600-row ledger was refused:
+    # the figures had no month totals.
+    rows = ["txn_id\tdate\tnominal_code\tamount",
+            "T1\t2026-02-03\tNominal 4000\t100.50", "T2\t2026-01-15\tNominal 4010\t200",
+            "T3\t2026-02-20\tNominal 4000\t50", "T4\t31/03/2026\tNominal 4010\t25"]
+    figures = verified_document_figures([WebSource(title="ledger.csv — Sheet1", url="", snippet="\n".join(rows), source_id="d1")])
+    assert "amount by month (from date): Jan 2026 = 200; Feb 2026 = 150.50; Mar 2026 = 25" in figures
+    assert "Rows by month (from date): Jan 2026 = 1; Feb 2026 = 2; Mar 2026 = 1" in figures
+    assert not unreconciled_figures("February 2026 total: 150.50", figures)

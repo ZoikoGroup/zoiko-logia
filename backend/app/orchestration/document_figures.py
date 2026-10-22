@@ -71,6 +71,12 @@ _COST_HEADER = re.compile(r"(?:^|[\s_])(?:gross[\s_]*|original[\s_]*|acquisition
 _NOT_COST = re.compile(r"accumulated|depreciat|net|total|book", re.IGNORECASE)
 MAX_ASSETS_LISTED = 40
 _YEAR = re.compile(r"^(19|20)\d{2}$")
+# A ledger's dated rows give totals per month, which the file never states:
+# "Show monthly totals as a bar chart" of a 600-row ledger was refused for
+# want of them.
+MAX_MONTHS_LISTED = 36
+_DATE_PARTS = re.compile(r"^(\d{1,4})[-/.](\d{1,2})[-/.](\d{1,4})")
+_MONTH_NAMES = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 def _to_number(cell: str) -> float | None:
@@ -304,6 +310,55 @@ def _straight_line_depreciation(table: Table, numeric: list[int], category: list
     return lines
 
 
+def _month_of(cell: str) -> tuple[int, int] | None:
+    """(year, month) of a date cell: 2026-01-31, 31/01/2026 (day first, as in
+    UK ledgers) or 01/31/2026 (when the second part cannot be a month)."""
+    match = _DATE_PARTS.match((cell or "").strip())
+    if not match:
+        return None
+    a, b, c = (int(part) for part in match.groups())
+    if len(match.group(1)) == 4:
+        year, month = a, b
+    elif len(match.group(3)) == 4:
+        year, month = c, (a if b > 12 else b)
+    else:
+        return None
+    return (year, month) if 1 <= month <= 12 else None
+
+
+def _monthly_lines(table: Table, totals: dict[int, float]) -> list[str]:
+    """Totals per calendar month, in date order, from the table's date column."""
+    name = lambda i: table.headers[i] or f"Column {i + 1}"  # noqa: E731
+    date_col = None
+    for i, header in enumerate(table.headers):
+        cells = [row[i] for row in table.rows if i < len(row) and row[i].strip()]
+        if cells and sum(_month_of(c) is not None for c in cells) / len(cells) >= 0.8:
+            date_col = i
+            break
+    if date_col is None:
+        return []
+    months = sorted({m for m in (_month_of(r[date_col]) for r in table.rows if date_col < len(r)) if m})
+    if len(months) < 2 or len(months) > MAX_MONTHS_LISTED:
+        return []
+    label = lambda m: f"{_MONTH_NAMES[m[1] - 1]} {m[0]}"  # noqa: E731
+    counts: dict[tuple[int, int], int] = defaultdict(int)
+    for r in table.rows:
+        month = _month_of(r[date_col]) if date_col < len(r) else None
+        if month:
+            counts[month] += 1
+    lines = [f"- Rows by month (from {name(date_col)}): " + "; ".join(f"{label(m)} = {counts[m]}" for m in months)]
+    for i in list(totals)[:3]:
+        groups: dict[tuple[int, int], float] = defaultdict(float)
+        for r in table.rows:
+            month = _month_of(r[date_col]) if date_col < len(r) else None
+            value = _to_number(r[i]) if i < len(r) else None
+            if month and value is not None:
+                groups[month] += value
+        lines.append(f"- {name(i)} by month (from {name(date_col)}): " + "; ".join(
+            f"{label(m)} = {_fmt(round(groups[m], 2))}" for m in months))
+    return lines
+
+
 def _table_lines(table: Table) -> list[str]:
     rows = [r for r in table.rows if not (r and _TOTAL_ROW.match(r[0] or ""))]
     if not rows:
@@ -327,6 +382,7 @@ def _table_lines(table: Table) -> list[str]:
         lines.append(f"- Total {name(i)} = {_fmt(totals[i])}; average {_fmt(totals[i] / len(values))}; "
                      f"highest {_fmt(max(values))}; lowest {_fmt(min(values))}")
     lines.extend(_straight_line_depreciation(table, numeric, category))
+    lines.extend(_monthly_lines(table, totals))
     keys = list(totals)
     for a in keys:
         for b in keys:
