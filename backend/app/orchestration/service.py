@@ -268,6 +268,16 @@ _MODEL_DOMAIN_REFUSAL_TEXT = (
     "global countries.\n\nPlease ask a question related to these topics."
 )
 _MODEL_PROVIDER_FAILURE = "Kriton is temporarily unable to reach the language model provider."
+# Prefix of the gateway's spend-limit message (_PROVIDER_SPEND_LIMIT_MESSAGE in
+# model_gateway/service.py). A substring check, so the gateway's longer,
+# user-facing sentence is recognised here.
+_MODEL_PROVIDER_SPEND_LIMIT = (
+    "Kriton is temporarily unavailable because the AI provider has reached its configured spending limit."
+)
+_MODEL_PROVIDER_SPEND_LIMIT_MESSAGE = (
+    "Kriton is temporarily unavailable because the AI provider has reached its "
+    "configured spending limit. Please try again later."
+)
 
 # High-confidence, consumer/general-knowledge requests that are plainly
 # outside Kriton's governed accounting and finance scope. Keeping this gate
@@ -2605,6 +2615,12 @@ async def ask_kriton(
             # user-safe text. At the orchestration boundary that text is still
             # a failed composition, never an "answered — source grounded"
             # result. Structured official-data paths above do not reach here.
+            # An account spending-limit block is a distinct, non-transient
+            # cause and is checked first so it gets its own message. Both are
+            # raised rather than returned, so they cannot be cached or shown as
+            # an answer.
+            if composed_text and _MODEL_PROVIDER_SPEND_LIMIT in composed_text:
+                raise RuntimeError("model_provider_spend_limit")
             if composed_text and _MODEL_PROVIDER_FAILURE in composed_text:
                 raise RuntimeError("model_provider_unavailable")
 
@@ -2623,6 +2639,11 @@ async def ask_kriton(
             actor_id=actor_id, error=str(exc),
         )
         # Degrade to clarification since composition failed
+        provider_message = (
+            _MODEL_PROVIDER_SPEND_LIMIT_MESSAGE
+            if "spend_limit" in str(exc)
+            else "Kriton™ could not compose a response at this time. Please try again shortly."
+        )
         response = AskKritonResponse(
             query_id=query_id, correlation_id=correlation_id,
             outcome="refused", route=ROUTE_REFUSAL,
@@ -2630,7 +2651,7 @@ async def ask_kriton(
             source_bundle=source_bundle, answer=None,
             next_action=NextAction(
                 type="composition_failed",
-                message="Kriton™ could not compose a response at this time. Please try again shortly.",
+                message=provider_message,
             ),
             audit_reference=AuditReference(audit_chain_id=audit_chain_id),
         )

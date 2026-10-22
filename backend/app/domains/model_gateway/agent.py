@@ -31,6 +31,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Literal
 
 from app.domains.model_gateway.tool_registry import PolicyDecision, ToolRegistry, ToolResult
+from app.domains.model_gateway.providers.errors import ProviderSpendLimitReached, spend_limit_reached
 from app.orchestration.figure_reconciliation import is_known, known_values, unreconciled_figures
 from app.orchestration.prescreen import embedded_instructions
 from app.domains.model_gateway.tools.chart_tool import ChartToolError, build_chart_fence
@@ -681,6 +682,14 @@ async def run_agent(
         try:
             response = await create("auto", remaining)
         except Exception as exc:
+            if spend_limit_reached(exc):
+                # The account spending ceiling is not a transient provider
+                # blip: no further step on this provider can succeed. Raise the
+                # distinct error so the caller reports the specific cause
+                # instead of a generic "could not compose".
+                raise ProviderSpendLimitReached(
+                    "Model provider blocked by its account spending limit"
+                ) from exc
             if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
                 # A slow model step used up the step budget. Raised, it threw
                 # away the evidence already gathered, and the request started

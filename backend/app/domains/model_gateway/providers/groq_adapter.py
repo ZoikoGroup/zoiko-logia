@@ -6,6 +6,7 @@ import os
 from groq import AsyncGroq, RateLimitError
 
 from app.domains.model_gateway.agent import rejected_tool_call
+from app.domains.model_gateway.providers.errors import SPEND_LIMIT_SENTINEL, spend_limit_reached
 from app.domains.model_gateway.tools.chart_tool import CHART_TOOL_SCHEMA, TOOL_NAME, ChartToolError, build_chart_fence
 
 logger = logging.getLogger(__name__)
@@ -239,6 +240,12 @@ class GroqAdapter:
                 return message.content or ""
             return await self._resolve_chart_tool_calls(model, messages, message, tool_calls)
         except RateLimitError as e:
+            # A 429 can also be a hard account-level block rather than a
+            # per-minute cap — retrying that can never succeed, so return the
+            # clean spend-limit sentinel without sleeping or retrying.
+            if spend_limit_reached(e):
+                logger.warning("Groq request blocked: account spend limit reached model=%s", model)
+                return SPEND_LIMIT_SENTINEL
             # The on-demand tier's tokens-per-minute cap (8000 TPM for
             # openai/gpt-oss-120b at time of writing) is easy to hit under
             # normal, non-abusive traffic — a handful of detailed accounting
@@ -259,8 +266,19 @@ class GroqAdapter:
             try:
                 return await self._call(model, messages)
             except Exception as retry_exc:
+                if spend_limit_reached(retry_exc):
+                    logger.warning("Groq request blocked: account spend limit reached model=%s", model)
+                    return SPEND_LIMIT_SENTINEL
                 return f"[Error connecting to Groq API: {str(retry_exc)}]"
         except Exception as e:
+            # An account spending ceiling is not transient and is
+            # account-wide, so every model on this key fails the same way.
+            # Return a clean sentinel (never the raw body, which carries
+            # account identifiers and a billing URL) so the gateway can stop
+            # retrying and try a different provider.
+            if spend_limit_reached(e):
+                logger.warning("Groq request blocked: account spend limit reached model=%s", model)
+                return SPEND_LIMIT_SENTINEL
             logger.warning(
                 "Groq request failed: error_type=%s status=%s model=%s",
                 type(e).__name__,
