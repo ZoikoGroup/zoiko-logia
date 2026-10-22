@@ -1165,9 +1165,6 @@ function VerifiedCalculation({ result }: { result: CalculationResult }) {
         {formatCalculationValue(result.output_value)}
         {unit && <span className="ml-1 text-sm font-medium text-muted">{unit}</span>}
       </div>
-      <div className="mt-1 text-[11px] text-muted">
-        {result.rule_version} · {result.rounding_mode} · {result.calculation_id}
-      </div>
     </section>
   );
 }

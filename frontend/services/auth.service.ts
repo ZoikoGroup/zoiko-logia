@@ -56,6 +56,23 @@ export function validateSignUp(fields: SignUpFields): FieldErrors {
 
 export class AuthError extends Error {}
 
+/** Supabase's gateway rejects a publishable (anon) key that is wrong, rolled
+ * or revoked with a bare "Invalid API key" (sb-error-code:
+ * UNAUTHORIZED_INVALID_API_KEY) before GoTrue ever sees the request — every
+ * email/password, sign-up and OAuth attempt fails identically no matter what
+ * the credentials are. That is a deployment-configuration failure, not a
+ * wrong password, so it gets its own actionable message instead of looking
+ * like a user error. */
+function publishableKeyRejected(message: string | undefined): boolean {
+  return /invalid api key/i.test(message ?? "");
+}
+
+const PUBLISHABLE_KEY_FIX =
+  "Sign-in is unavailable due to a server configuration problem: Supabase rejected this " +
+  "deployment's publishable key. An administrator must replace NEXT_PUBLIC_SUPABASE_ANON_KEY " +
+  "in frontend/.env with the current key from the Supabase Dashboard (Project Settings → " +
+  "API Keys) and restart the dev server. Your password was not the issue.";
+
 /** Supabase requires email verification before a session is issued (session
  * is null until the link is clicked, assuming "Confirm email" is enabled on
  * the project) — first_name/last_name/company_name are stashed in
@@ -87,6 +104,9 @@ export async function signUp(fields: SignUpFields): Promise<{ home: string | nul
     },
   });
   if (error) {
+    if (publishableKeyRejected(error.message)) {
+      throw new AuthError(PUBLISHABLE_KEY_FIX);
+    }
     const code = error.code?.toLowerCase() ?? "";
     const message = error.message ?? "";
     if (
@@ -153,6 +173,12 @@ export async function signInWithPassword(
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
   if (error) {
+    // The gateway rejected the API key itself — nothing about the email or
+    // password was even evaluated. Report the configuration problem instead
+    // of a misleading credential error.
+    if (publishableKeyRejected(error.message)) {
+      throw new AuthError(PUBLISHABLE_KEY_FIX);
+    }
     // With "Confirm email" on, Supabase refuses an unverified account with
     // its own code — reporting that as a wrong password sent people round in
     // circles resetting a password that was never the problem.
@@ -262,6 +288,9 @@ export async function signInWithOAuthProvider(provider: OAuthProvider): Promise<
     },
   });
   if (error) {
+    if (publishableKeyRejected(error.message)) {
+      throw new AuthError(PUBLISHABLE_KEY_FIX);
+    }
     throw new AuthError(`Could not start ${label} sign-in: ${error.message}`);
   }
   // When signInWithOAuth finishes without navigating (e.g. the SDK falls back

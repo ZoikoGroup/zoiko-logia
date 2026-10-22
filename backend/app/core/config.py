@@ -44,6 +44,21 @@ class Settings(BaseSettings):
     # other request failed with EMAXCONNSESSION ("database is busy").
     DB_POOL_SIZE: int = 3
     DB_MAX_OVERFLOW: int = 3
+    # The request pool (RLS role) keeps its connections instead of closing
+    # overflow ones after each burst: same maximum (6), but a burst no longer
+    # costs a fresh ~3 s TLS connection to the hosted pooler each time
+    # (2026-10-17: at 6 concurrent requests every round opened 3 new ones).
+    DB_REQUEST_POOL_SIZE: int = 6
+    DB_REQUEST_MAX_OVERFLOW: int = 0
+    # Per-request database timings in the log (app/core/db_timing.py): pool
+    # wait, new connections, pre-pings, each statement's kind and duration.
+    # Off by default; no SQL text, parameters or data are ever logged.
+    DB_TIMING_ENABLED: bool = False
+    # Per-process cache of governed source passage text (orchestration/
+    # passage_cache.py). Only text is cached, validated against a fresh
+    # manifest on every request; eligibility is never cached. 0 disables.
+    PASSAGE_CACHE_MAX_BYTES: int = 32 * 1024 * 1024
+    PASSAGE_CACHE_TTL_SECONDS: float = 600.0
 
     # ── CORS ─────────────────────────────────────────────────────────────
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001"]
@@ -138,6 +153,7 @@ class Settings(BaseSettings):
     ASYNC_DOCUMENT_INGESTION: bool = False
     RATE_LIMIT_STORAGE_URI: str = "memory://"
     MODEL_PROVIDER_CONCURRENCY: int = 8
+    MODEL_REQUEST_MAX_CALLS: int = 20
     DOCUMENT_RETENTION_DAYS: int = 30
     ARTIFACT_RETENTION_DAYS: int = 7
     FAILED_UPLOAD_RETENTION_HOURS: int = 24
@@ -175,9 +191,12 @@ class Settings(BaseSettings):
     # Must leave headroom under ASK_KRITON_TIMEOUT_SECONDS for retrieval
     # before composition and validation after it.
     AGENT_MAX_SECONDS: float = 75.0
-    # Total model tokens one agent run may use before it must stop calling
-    # tools and answer (ZL-ENG-AGT-01 §05.4 budget).
-    AGENT_MAX_TOKENS: int = 150000
+    # Cumulative agent allowance, including final/recovery generations.
+    # A generation that cannot fit returns verified work without another call.
+    AGENT_MAX_TOKENS: int = 64000
+    AGENT_MAX_COMPLETION_TOKENS: int = 4096
+    # Estimated input + generated output per request; tune to the provider tier.
+    AGENT_MAX_REQUEST_TOKENS: int = 8000
     # Local development only: start even when the shared database was set up
     # by another branch (different setup fingerprint). Never true in production.
     SKIP_STARTUP_FINGERPRINT_CHECK: bool = False

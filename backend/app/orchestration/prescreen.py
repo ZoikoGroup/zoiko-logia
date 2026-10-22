@@ -38,7 +38,7 @@ _PROMPT_INJECTION_PATTERNS = [
     r"override\s+(?:the\s+|your\s+)?(system|safety|governance|policy)",
     r"forget\s+(?:the\s+|your\s+|all\s+)*(everything|rules|instructions)",
     r"you\s+are\s+now\s+(a\s+)?(?:different|unrestricted|jailbreak)",
-    r"reveal\s+(?:the\s+|your\s+)*(system\s+prompt|internal|prompt|configuration)",
+    r"reveal\s+(?:the\s+|your\s+)*(system\s+prompt|hidden\s+instructions|internal|prompt|configuration)",
     r"print\s+(?:the\s+|your\s+)*(system\s+)?prompt",
     r"act\s+as\s+(if\s+you\s+have\s+no\s+|without\s+)?(restriction|limit|filter)",
     r"disregard\s+(?:the\s+|your\s+|all\s+|any\s+|previous\s+|prior\s+)*(safety|governance|rules?|instructions?)",
@@ -132,6 +132,15 @@ def run_prescreen(query: str) -> PreScreenResult:
     Returns PreScreenResult(passed=False, trigger=...) on failure.
     Pipeline MUST short-circuit immediately on failure — no retrieval or model work.
     """
+    # A clearly delimited document the user explicitly asks us to analyse as
+    # untrusted data is not itself a request to obey its embedded commands.
+    # Screen the surrounding request normally; this exception only separates
+    # quoted injection text from the user's actual instructions.
+    instruction_text = query
+    if re.search(r'\buntrusted\s+(?:document|data|text)\b', query, re.I):
+        outside_quotes = re.sub(r'“[^”]*”|"[^"]*"', '[quoted untrusted data]', query)
+        if re.search(r'\b(?:calculate|reconcile|review|identify|analyse|analyze|summarise|summarize)\b', outside_quotes, re.I):
+            instruction_text = outside_quotes
     for trigger, patterns in (
         ("prompt_injection", _INJECTION),
         ("data_exfiltration", _EXFILTRATION),
@@ -139,7 +148,7 @@ def run_prescreen(query: str) -> PreScreenResult:
         ("academic_integrity", _ACADEMIC_INTEGRITY),
     ):
         for pattern in patterns:
-            match = pattern.search(query)
+            match = pattern.search(instruction_text if trigger == 'prompt_injection' else query)
             if match:
                 return PreScreenResult(
                     passed=False,

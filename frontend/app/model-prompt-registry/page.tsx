@@ -158,7 +158,7 @@ export default function ModelPromptRegistryPage() {
       title="Model & Prompt Registry"
       subtitle="Track which models and prompt versions are active in production, staging, or pending approval."
     >
-      <LiveSourceStatus loading={loading} error="" signedOut={false} reload={load} />
+      <LiveSourceStatus showRefresh={false} loading={loading} error="" signedOut={false} reload={load} />
       <ContextStrip jurisdiction="Registered environments" framework="Models, prompts, tools & evaluation evidence" period="Current backend configuration" />
       <div className="overview-navy rounded-xl p-5 text-white"><p className="text-[10px] uppercase tracking-widest text-amber-300">Versioned · tested · human authorized</p><h2 className="mt-2 text-xl font-bold">Trace every Kriton release to its exact configuration.</h2><p className="mt-2 text-xs text-blue-100">Model and prompt records remain distinct from production release authorization.</p></div>
       <GovernedRegister title="Model & prompt register" inspector="Selected registry configuration" records={registryRecords} tabs={["Overview", "Lineage", "Gate evidence", "Audit history"]} doctrine="A release binds model, prompt, tool access, source bundles, policy versions, and evaluation evidence. Registered or active model status alone is not release authorization." metrics={[

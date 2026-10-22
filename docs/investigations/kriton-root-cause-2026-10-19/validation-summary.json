@@ -1,0 +1,21 @@
+{
+  "full_suite": {
+    "passed": 3246,
+    "skipped": 22,
+    "xfailed": 2,
+    "failed": 0,
+    "seconds": 56.15
+  },
+  "targeted_final": {
+    "passed": 18,
+    "seconds": 5.19,
+    "http_requests": 22
+  },
+  "latency_ms": {
+    "median": 66.07,
+    "max": 173.18
+  },
+  "unchanged_original_json_files": 102,
+  "live_provider_calls": 0,
+  "production_verified": false
+}

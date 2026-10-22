@@ -26,7 +26,7 @@ import {
 } from "lucide-react";
 import { AnswerRenderer } from "@/components/AnswerRenderer";
 import { AnswerFeedback } from "@/components/ask-kriton/AnswerFeedback";
-import { conversationHistory, followUpSubject, splitQuestions, usesAttachedFile } from "@/lib/kriton-conversation";
+import { conversationHistory, followUpContext, splitQuestions, usesAttachedFile } from "@/lib/kriton-conversation";
 import {
   askKritonStream,
   createSavedAnswer,
@@ -43,7 +43,7 @@ import {
   type WorkspaceDocument,
   type Engagement,
 } from "@/lib/api";
-import { stateForError, stateForResult, suppliedAnswerLabel } from "@/lib/answer-state";
+import { stateForError, stateForResult, suppliedAnswerLabel, visibleAnswerLimitations } from "@/lib/answer-state";
 import {
   answerBodyOnly,
   downloadTextFile,
@@ -96,6 +96,7 @@ const ROUTE_LABELS: Record<string, string> = {
 
 const OUTCOME_STYLES: Record<string, { label: string; dot: string; text: string }> = {
   answered: { label: "Answered", dot: "bg-ok", text: "text-ok" },
+  unavailable: { label: "Not answered", dot: "bg-warn", text: "text-warn" },
   clarification_required: { label: "Clarification needed", dot: "bg-info", text: "text-info" },
   escalated: { label: "Review pending", dot: "bg-warn", text: "text-warn" },
   limited_response: { label: "Limited", dot: "bg-warn", text: "text-warn" },
@@ -540,20 +541,30 @@ const ConversationTurn = memo(function ConversationTurn({
   const route = result?.route ?? null;
   const outcome = result?.outcome ?? null;
   const outcomeStyle = outcome ? OUTCOME_STYLES[outcome] : null;
-  const visibleLimitations = result?.answer?.limitations.filter(
-    (l) => l !== "This response is for educational purposes only. Consult a qualified professional.",
-  ) ?? [];
+  const visibleLimitations = visibleAnswerLimitations(result?.answer?.limitations);
   const citationCount = result?.answer?.citations.length ?? 0;
   // A provider/composition failure travels the refusal route, but it is not a
   // policy decision — saying "policy blocked" sent users looking for a rule.
-  const routeLabel = result?.next_action?.type === "composition_failed"
+  const routeLabel = result?.next_action?.type === "report_incomplete"
+    ? "Not answered — report incomplete"
+    : result?.next_action?.type === "provider_rate_limited"
+    ? "Not answered — AI provider usage allowance reached"
+    : result?.next_action?.type === "request_budget_exhausted"
+    ? "Not answered — request processing allowance reached"
+    : result?.next_action?.type === "provider_request_too_large"
+    ? "Not answered — AI request size limit reached"
+    : result?.next_action?.type === "provider_access_blocked"
+    ? "Not answered — AI service access blocked"
+    : result?.next_action?.type === "composition_failed"
     ? "Not answered — please try again"
+    : outcome === "unavailable"
+    ? "Not answered — service unavailable"
     // The backend's completeness is the value recorded in the audit trail;
     // the limitation text is the fallback for answers stored before it existed.
     : (result?.answer?.completeness ?? (visibleLimitations.some((limitation) => limitation.includes("No factual answer was verified")) ? "none" : null)) === "none"
       ? "Not answered — insufficient evidence"
     : (result?.answer?.completeness ?? (visibleLimitations.some((limitation) => limitation.includes("Incomplete answer")) ? "partial" : null)) === "partial"
-      ? "Partially answered — missing information"
+      ? "Partially answered — some parts incomplete"
     : route === "LLM"
     ? citationCount > 0
       ? "Answered — source grounded"
@@ -692,7 +703,6 @@ const ConversationTurn = memo(function ConversationTurn({
                     <div className="mt-4 space-y-2 border-t border-line pt-4">
                       {visibleLimitations.map((l, i) => (
                         <div key={i} className="flex items-start gap-2 text-xs leading-5 text-muted">
-                          <AlertTriangle size={13} className="mt-0.5 shrink-0 text-warn" />
                           {l}
                         </div>
                       ))}
@@ -891,7 +901,7 @@ export default function AskKritonPage() {
   /** Seeds the composer with the suggestion + the just-answered turn's own
    * question as context — never auto-submits, the user stays in control. */
   const handleFollowUp = useCallback((question: string, originalTurnQuery: string) => {
-    setQuery(`${question} Context: ${followUpSubject(originalTurnQuery)}`);
+    setQuery(`${question} Context: ${followUpContext(originalTurnQuery)}`);
   }, []);
 
   function selectConversation(id: string) {
@@ -997,6 +1007,8 @@ export default function AskKritonPage() {
         token,
         {
           query: turn.submittedQuery,
+          turn_id: turnId,
+          request_id: idempotencyKey,
           // Backend limit (AskKritonRequest.previous_query max_length): a long
           // pasted previous message otherwise rejects the whole request (422).
           previous_query: completedTurns.at(-1)?.submittedQuery.trim().slice(0, 4000) || undefined,

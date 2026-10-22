@@ -50,6 +50,19 @@ npm run dev
 ```
 *Open http://localhost:3000 to access the platform.*
 
+For dashboard use without development compilation pauses, build and run the
+optimized local preview instead:
+
+```bash
+cd frontend
+npm run build:preview
+npm run preview
+```
+
+Open http://localhost:3001. This uses `.next-preview` so it can run alongside
+the development server without sharing build files. Rebuild after code changes.
+It uses the same configured backend and authentication as the development app.
+
 ### Option B: Run Frontend Only (Offline Demo Mode)
 
 If you just want to view the UI and test basic routing logic without running the Python ML engine:

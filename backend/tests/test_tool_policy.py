@@ -76,6 +76,7 @@ async def test_a_role_revoked_mid_run_is_refused_at_the_next_call():
     assert [r.policy_reason for r in done] == ["allowed", "role_changed"]
     assert all(r.policy_decision_id and r.policy_decision_id.startswith("pd-") for r in done)
     assert "Policy refused 'lookup' (role_changed)" in client.requests[2]["messages"][-1]["content"]
+    assert client.requests[2]["tool_choice"] == "none"
 
 
 async def test_an_unknown_tool_proposed_by_the_model_is_refused_by_policy():
@@ -95,7 +96,7 @@ def test_every_production_tool_is_read_only():
     assert registry.names() and all(not registry.get(name).is_write_action for name in registry.names())
 
 
-async def test_a_run_over_its_token_budget_stops_calling_tools_and_answers():
+async def test_a_run_that_cannot_fit_its_prompt_does_not_spend_tokens():
     """§05.4: token budget enforced; the stop reason is recorded."""
     from types import SimpleNamespace
     from app.domains.model_gateway.agent import AgentLimits
@@ -111,8 +112,8 @@ async def test_a_run_over_its_token_budget_stops_calling_tools_and_answers():
     ])
     outcome = await _run(client, _registry(executed), limits=AgentLimits(max_total_tokens=500))
     assert executed == [] and outcome.stop_reason == "token_budget"
-    assert outcome.tokens_used == 950 and outcome.text == "Answer from what was gathered."
-    assert client.requests[-1]["tool_choice"] == "none"
+    assert outcome.tokens_used == 0 and outcome.model_calls == 0
+    assert outcome.incomplete_reason and client.requests == []
 
 
 def test_every_production_tool_has_an_explicit_role_list_and_refuses_unknown_roles():

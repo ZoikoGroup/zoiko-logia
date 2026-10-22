@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { ACCESS_DENIED_TEXT, stateForError, stateForResult, suppliedAnswerLabel } from "@/lib/answer-state";
+import { ACCESS_DENIED_TEXT, stateForError, stateForResult, suppliedAnswerLabel, visibleAnswerLimitations } from "@/lib/answer-state";
 
 const answer = (limitations: string[] = []) => ({ text: "", citations: [], limitations });
+
+it("hides repeated boilerplate while retaining concrete missing-work notices", () => {
+  const incomplete = "Incomplete answer: the current exchange rate could not be retrieved.";
+  expect(visibleAnswerLimitations([
+    "General guidance only — not advice on your or your client's specific matter. Consult a qualified professional before acting.",
+    "No matching source was found in your governed source library; this answer is based on live data and web sources. Verify figures against the official source.",
+    incomplete, incomplete,
+  ])).toEqual([incomplete]);
+});
 
 describe("answer states (ZL-ENG-AGT-01 §12)", () => {
   it("never leaks server detail on an access refusal", () => {
@@ -21,6 +30,11 @@ describe("answer states (ZL-ENG-AGT-01 §12)", () => {
     expect(stateForResult({ outcome: "escalated", next_action: null, answer: null })).toBe("review-pending");
     expect(stateForResult({ outcome: "refused", next_action: null, answer: null })).toBe("refused");
     expect(stateForResult({ outcome: "refused", next_action: { type: "composition_failed", message: "" }, answer: null })).toBe("service-unavailable");
+    expect(stateForResult({ outcome: "refused", next_action: { type: "provider_access_blocked", message: "" }, answer: null })).toBe("service-unavailable");
+    expect(stateForResult({ outcome: "refused", next_action: { type: "provider_request_too_large", message: "" }, answer: null })).toBe("service-unavailable");
+    expect(stateForResult({ outcome: "unavailable", next_action: null, answer: null })).toBe("service-unavailable");
+    expect(stateForResult({ outcome: "unavailable", next_action: { type: "provider_rate_limited", message: "" }, answer: null })).toBe("service-unavailable");
+    expect(stateForResult({ outcome: "unavailable", next_action: { type: "request_budget_exhausted", message: "" }, answer: null })).toBe("service-unavailable");
     expect(stateForResult({ outcome: "answered", next_action: null, answer: answer(["No factual answer was verified against the sources."]) })).toBe("sources-unavailable");
     expect(stateForResult({ outcome: "answered", next_action: null, answer: answer() })).toBe("answered");
   });

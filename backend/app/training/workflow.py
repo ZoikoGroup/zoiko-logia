@@ -19,14 +19,15 @@ from app.training.trainer import artifact_hash, run_training
 
 
 async def exportable_examples(*, tenant_id: str, user_id: str, data_use_approval: str) -> list[dict]:
-    from app.core.database import RequestSessionLocal, request_engine, restore_request_identity
+    from app.core.database import RequestSessionLocal, open_request_connection
     from app.training.data import collect_examples
-    # Bind to one connection: identity restoration commits, and an unbound
-    # session could then reacquire a different pooled connection for its reads.
-    async with request_engine.connect() as connection:
+    # One connection carrying the caller's identity for every read.
+    connection = await open_request_connection(tenant_id=tenant_id, user_id=user_id)
+    try:
         async with RequestSessionLocal(bind=connection) as db:
-            await restore_request_identity(db, tenant_id=tenant_id, user_id=user_id)
             examples = await collect_examples(db, tenant_id=tenant_id, data_use_approval=data_use_approval)
+    finally:
+        await connection.close()
     return exclude_shipped_benchmarks(examples)
 
 

@@ -121,7 +121,8 @@ export async function getMe(token: string): Promise<UserPublic> {
     return getMe(token);
   }
   if (!res.ok) {
-    throw new ApiError(res.status, "Could not fetch current user");
+    const body = await res.json().catch(() => null);
+    throw new ApiError(res.status, describeDetail(body?.detail) || "Could not fetch current user");
   }
 
   return res.json();
@@ -1554,6 +1555,8 @@ export async function getReplayManifest(token: string, correlationId: string): P
 // â”€â”€ Ask Kritonâ„¢ — ZL-ENG-02 Â§12 Canonical Response Contract â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export type AskKritonRequest = {
+  turn_id?: string;
+  request_id?: string;
   query: string;
   source_scope?: "WEB_ONLY" | "DOCUMENTS_ONLY" | "DOCUMENTS_THEN_WEB" | "COMBINED";
   /** Immediately preceding user query, used to resolve contextual follow-ups. */
@@ -1653,6 +1656,7 @@ export type WorkflowPlan = {
 
 export type OutcomeType =
   | "answered"
+  | "unavailable"
   | "refused"
   | "clarification_required"
   | "escalated"
@@ -1962,6 +1966,7 @@ export type VisualizationOHLCBar = {
 export type VisualizationNamedSeries = { name: string; data: VisualizationDataPoint[] };
 
 export type VisualizationSpec = {
+  user_requested_type?: string | null;
   version: string;
   id: string;
   type:

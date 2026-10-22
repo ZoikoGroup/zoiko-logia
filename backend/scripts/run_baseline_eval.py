@@ -98,9 +98,19 @@ def load_cases(only: str | None) -> list[dict]:
         # The 206 cases that predate the intelligence set, reported as one group.
         for dataset in ("baseline", "agent", "uk_vat", "uk_vat_holdout", "india_gst", "regression"):
             cases += [{**case, "group": "existing"} for case in load_cases(dataset)]
-    if only in ("intelligence", "everything"):
+    if only in ("intelligence", "everything", "shadow_eval"):
         for case in json.loads((EVALS / "intelligence_questions.json").read_text())["cases"]:
             cases.append({**case, "source": "intelligence", "group": "intelligence"})
+    # Intent planner shadow evaluation (build order step A): the labelled
+    # intelligence set plus planner-specific cases, reported as their own group.
+    if only in ("shadow_eval_v2", "shadow_eval_v3"):
+        # Versioned copies with corrected expectations (see their "changes").
+        name = "intelligence_questions_v2.json" if only == "shadow_eval_v2" else "intelligence_questions_v3.json"
+        for case in json.loads((EVALS / name).read_text())["cases"]:
+            cases.append({**case, "source": "intelligence", "group": "intelligence"})
+    if only in ("planner_shadow", "shadow_eval", "shadow_eval_v2", "shadow_eval_v3"):
+        for case in json.loads((EVALS / "planner_shadow_questions.json").read_text())["cases"]:
+            cases.append({**case, "source": "planner_shadow", "group": "planner_shadow"})
     if only in (None, "agent"):
         for case in json.loads((EVALS / "agent_questions.json").read_text())["cases"]:
             converted = {
@@ -186,12 +196,19 @@ def _reply_text(result: dict) -> str:
     return f"{answer.get('text') or ''}\n{action.get('message') or ''}"
 
 
+SCORING_VERSION = "v1"
+
+
 def _normalised(text: str) -> str:
     """Compare what a reader sees: "21{,}589.25" in LaTeX is 21,589.25, and the
     model's narrow no-break spaces and non-breaking hyphens ("IFRS\u202f15",
     "right\u2011of\u2011use") are ordinary ones. Without this, four correct
     answers failed the first baseline."""
     text = text.replace("{,}", ",").replace("\\%", "%")
+    if SCORING_VERSION == "v2":
+        # "192 000" (thousands grouped with spaces) is 192,000; v1 missed a
+        # correct answer written that way (int-doc-inconsistent).
+        text = re.sub(r"(?<=\d)[ \u00a0\u2009\u202f](?=\d{3}(?!\d))", ",", text)
     text = re.sub(r"[\u00a0\u2007\u2009\u202f]", " ", text)
     text = re.sub(r"(\d) +%", r"\1%", text)  # "5 %" is 5%
     # Markdown emphasis is not content: "did **not** modify" is "did not modify".
@@ -547,10 +564,14 @@ def main() -> None:
     parser.add_argument("--start-at", type=int, default=1, help="resume: skip cases before this 1-based index")
     parser.add_argument("--merge", nargs="*", help="earlier results JSON to include in the report (resumed runs)")
     parser.add_argument("--label", default="baseline", help="report file prefix, e.g. uk-vat-before")
+    parser.add_argument("--scoring", choices=["v1", "v2"], default="v1",
+                        help="v2 also reads space-grouped thousands (\"192 000\") as numbers")
     parser.add_argument("--only", choices=["baseline", "agent", "uk_vat", "uk_vat_holdout", "india_gst", "regression", "gold",
-                                           "existing", "intelligence", "everything"],
+                                           "existing", "intelligence", "everything", "planner_shadow", "shadow_eval", "shadow_eval_v2", "shadow_eval_v3"],
                         help="run one dataset (existing = all 206; everything = existing + intelligence)")
     args = parser.parse_args()
+    global SCORING_VERSION
+    SCORING_VERSION = args.scoring
     cases = load_cases(args.only)
     if args.ids:
         cases = [case for case in cases if case["id"] in set(args.ids)]

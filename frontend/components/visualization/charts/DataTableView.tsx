@@ -10,6 +10,10 @@ import type { VisualizationSpec } from "@/lib/api";
  * reads.
  */
 export function DataTableView({ viz }: { viz: VisualizationSpec }) {
+  return <div>{viz.unit && <p className="mb-2 text-xs text-muted">Units: {viz.unit}</p>}<DataTableContents viz={viz} /></div>;
+}
+
+function DataTableContents({ viz }: { viz: VisualizationSpec }) {
   const th = "border border-line px-3 py-2 font-semibold text-ink";
   const td = "border border-line px-3 py-2 align-top text-ink";
 

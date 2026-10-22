@@ -1,0 +1,61 @@
+{
+  "date": "2026-10-20",
+  "provider_calls": 0,
+  "groq_tokens_used": 0,
+  "deployed": false,
+  "production_configuration_changed": false,
+  "backend": {
+    "passed": 3300,
+    "skipped": 24,
+    "expected_failures": 2,
+    "warnings": 140,
+    "log": "backend-tests.log",
+    "seconds": 60.72
+  },
+  "targeted_regressions": {
+    "passed": 39,
+    "seconds": 9.83,
+    "log": "targeted-tests.log"
+  },
+  "frontend": {
+    "passed": 222,
+    "files": 48,
+    "seconds": 14.23,
+    "log": "frontend-tests.log"
+  },
+  "typescript": {
+    "exit_code": 0,
+    "log": "typescript.log"
+  },
+  "authenticated_socket_http": {
+    "passed": 2,
+    "seconds": 5.59,
+    "local_jwks": true,
+    "production_lifespan_enabled": false,
+    "log": "socket-tests.log"
+  },
+  "isolated_postgresql_rls": {
+    "passed": 7,
+    "seconds": 1.58,
+    "temporary_server_stopped": true,
+    "log": "postgres-rls-tests.log"
+  },
+  "real_svg_rendering": {
+    "passed": 2,
+    "geometry_mocked": true,
+    "chart_library_mocked": false
+  },
+  "original_benchmark": {
+    "scorer_passed": 48,
+    "scorer_failed": 32,
+    "actual_answered": 7,
+    "live_quality_verified": false,
+    "unchanged_manifest_files": 102
+  },
+  "limits": [
+    "No live-provider or production integration verification",
+    "Structural report checks do not establish semantic completeness",
+    "Full backend run skips optional integrations; isolated HTTP and PostgreSQL suites ran separately",
+    "Original omitted benchmark inputs cannot be reconstructed"
+  ]
+}

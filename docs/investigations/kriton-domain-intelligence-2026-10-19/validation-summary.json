@@ -1,0 +1,49 @@
+{
+  "scope": "local and isolated only; synthetic model transports; not production readiness",
+  "backend_full": {
+    "passed": 3277,
+    "failed": 0,
+    "skipped": 22,
+    "xfailed": 2,
+    "warnings": 140,
+    "seconds": 56.58
+  },
+  "targeted_final": {
+    "passed": 45,
+    "failed": 0,
+    "seconds": 6.51,
+    "recorded_http_requests": 29,
+    "new_domain_http_tests": 5,
+    "new_domain_calculation_tests": 26
+  },
+  "frontend_full": {
+    "passed": 216,
+    "test_files": 46,
+    "seconds": 14.85
+  },
+  "frontend_final_chart_checks": {
+    "passed": 26,
+    "test_files": 3,
+    "seconds": 1.82
+  },
+  "typescript": {
+    "exit_code": 0
+  },
+  "original_benchmark": {
+    "cases": 80,
+    "scorer_passed": 48,
+    "scorer_failed": 32,
+    "actually_answered": 7,
+    "execution_test_seconds": 83.02
+  },
+  "local_http_latency_ms": {
+    "median": 69.24,
+    "max": 188.26
+  },
+  "original_evaluation_json_files_unchanged": 102,
+  "live_provider_calls": 0,
+  "shared_database_writes": false,
+  "deployed": false,
+  "skips": "18 isolated PostgreSQL integrations; 2 live model tests; 1 missing OCR dependency; 1 opt-in benchmark (run separately)",
+  "expected_failures": "existing native-language Austria aliases"
+}

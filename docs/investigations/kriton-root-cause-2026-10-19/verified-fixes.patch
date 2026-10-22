@@ -1,0 +1,166 @@
+--- a/backend/app/orchestration/input_requirements.py
++++ b/backend/app/orchestration/input_requirements.py
+@@ -81,7 +81,10 @@
+ )
+ _SINGLE_COUNTRY_CURRENCY = re.compile(r"£|₹|\b(?:gbp|hmrc|sterling|inr|rupees?|aed|dirhams?|sar|riyals?)\b", re.I)
+ _SAME_RATE = re.compile(r"\b(?:all|every|each)\b[^.?]{0,40}\b(?:standard[- ]rated|at \d|same rate)|\bsame rate\b", re.I)
+-
++_EXPLICIT_SHARED_RATE = re.compile(
++    r'\b(?:apply|use)\s+(?:the\s+)?(?:supplied\s+)?\d+(?:\.\d+)?%\s+(?:(?:GST|VAT)\s+)?rate\s+to\s+'
++    r'(?:net\s+)?(?:sales\s+and\s+(?:net\s+)?purchases|purchases\s+and\s+(?:net\s+)?sales)\b', re.I,
++)
+ 
+ 
+ def _rate_per_item(query: str) -> bool:
+@@ -120,7 +123,7 @@
+         missing.append("which country the business is VAT-registered in")
+     if not has_rate:
+         missing.append("the VAT rate or rates that apply (standard, reduced, zero-rated or exempt)")
+-    elif sales_and_purchases and not _SAME_RATE.search(context) and not _rate_per_item(q):
++    elif sales_and_purchases and not _SAME_RATE.search(context) and not _EXPLICIT_SHARED_RATE.search(context) and not _rate_per_item(q):
+         missing.append("whether all the sales and purchases are at that rate, or some are zero-rated, exempt or outside VAT")
+     if not _TREATMENT.search(context):
+         missing.append("whether the amounts include VAT or exclude VAT")
+--- a/backend/app/orchestration/router.py
++++ b/backend/app/orchestration/router.py
+@@ -172,6 +172,14 @@
+     try:
+         async with asyncio.timeout(kwargs.get("deadline_seconds") or settings.ASK_KRITON_TIMEOUT_SECONDS):
+             result = await ask_kriton(**kwargs)
++            # A durable idempotency replay already carries the original
++            # receipt. Do not mint another receipt or replace the cached
++            # response's identity on every retry. Authentication and the
++            # scoped request-hash check have already run in ask_kriton.
++            reference = getattr(result, 'audit_reference', None)
++            if kwargs.get('idempotency_key') and getattr(reference, 'receipt_id', None):
++                discard_audit_batch(token)
++                return result
+             failed = bool(result.next_action and getattr(result.next_action, "type", "")
+                           in {"composition_failed", "provider_access_blocked", "provider_request_too_large", "provider_rate_limited", "request_budget_exhausted"})
+             run.finish(released=not failed)
+--- a/backend/app/orchestration/calculations/inventory_statement.py
++++ b/backend/app/orchestration/calculations/inventory_statement.py
+@@ -19,11 +19,17 @@
+         return None
+     inputs, spans, currencies = [], [], set()
+     for label in LABELS:
+-        matches = list(re.finditer(r'\b' + label + r'\b\s*(?:is|are|was|were|of|:|=)?\s*' + AMOUNT, query, re.I))
++        pattern = r'(?:sales returns|(?<!purchase )(?<!sales )returns)' if label == 'sales returns' else label
++        matches = list(re.finditer(r'\b' + pattern + r'\b\s*(?:is|are|was|were|of|:|=)?\s*' + AMOUNT, query, re.I))
+         if len(matches) > 1:
+             return None
+         if matches:
+             match = matches[0]
++            if label == 'sales returns' and match.group(0).lower().startswith('returns'):
++                preceding = re.findall(r'\b(revenue|sales|purchases|opening inventory|closing inventory)\b',
++                                       query[:match.start()], re.I)
++                if not preceding or preceding[-1].lower() not in {'revenue', 'sales'}:
++                    return None  # Unqualified returns cannot be assigned across purchase inputs.
+             if len(match['amount']) > 30:
+                 return None
+             value = Decimal(match['amount'].replace(',', ''))
+@@ -50,8 +56,9 @@
+     for label in ('sales_returns', 'interest'):
+         if re.search(r'\b' + label.replace('_', ' ') + r'\b', query, re.I) and label not in values:
+             return None
+-    if not any(name in values for name in ('salaries', 'wages', 'rent', 'utilities', 'depreciation', 'marketing', 'insurance')):
+-        return None
++    if (not any(name in values for name in ('salaries', 'wages', 'rent', 'utilities', 'depreciation', 'marketing', 'insurance'))
++            and re.search(r'\b(?:operating profit|operating expenses|profit before tax)\b', query, re.I)):
++        return None  # No invented zero operating-expense assumption.
+     currency = next(iter(currencies))
+     for item in inputs:
+         item.currency = currency
+@@ -81,9 +88,12 @@
+     add('cost_of_goods_sold', cost, f'{money(v["opening_inventory"])} + {money(v["purchases"])} − {money(v["closing_inventory"])}')
+     add('gross_profit', gross, f'{money(net)} − {money(cost)}')
+     add('gross_margin', gross / net * 100, f'{money(gross)} ÷ {money(net)} × 100', True)
+-    add('operating_expenses', opex, ' + '.join(money(item.value) for item in expenses))
+-    add('operating_profit', operating, f'{money(gross)} − {money(opex)}')
+-    add('profit_before_tax', operating - v.get('interest', 0), f'{money(operating)} − {money(v.get("interest", 0))} interest')
++    if expenses:
++        add('operating_expenses', opex, ' + '.join(money(item.value) for item in expenses))
++        add('operating_profit', operating, f'{money(gross)} − {money(opex)}')
++        if 'interest' in v:
++            add('finance_costs', v['interest'], money(v['interest']))
++        add('profit_before_tax', operating - v.get('interest', 0), f'{money(operating)} − {money(v.get("interest", 0))} interest')
+     return CalculationResult(matched=True, status='success', formula_ids=['inventory_operating_statement'],
+                              inputs=inputs, outputs=outputs, steps=steps, verification_status='passed', notes=[
+         'Interest is a finance expense deducted after operating profit; it is not included in operating expenses.',
+--- a/backend/app/orchestration/calculations/engine.py
++++ b/backend/app/orchestration/calculations/engine.py
+@@ -491,7 +491,19 @@
+                   else f"{rate_out:f}% on sales and {rate_in:f}% on purchases")
+     notes = [f"The amounts are taken as {treatment} VAT, as stated, at {rates_text}."]
+     if sales and purchases:
+-        output, input_vat = share(sales[0], rate_out), share(purchases[0], rate_in)
++        sales_returns = _find_value(q, ('sales returns', 'sales return'))
++        purchase_returns = _find_value(q, ('purchase returns', 'purchase return', 'purchases returns'))
++        returns = (sales_returns[0] if sales_returns else Decimal(0), purchase_returns[0] if purchase_returns else Decimal(0))
++        gross_sales, gross_purchases = sales[0], purchases[0]
++        for label, item in (('sales_returns', sales_returns), ('purchase_returns', purchase_returns)):
++            if item and (item[0] < 0 or (item[1] and currency and item[1] != currency)):
++                return CalculationResult(matched=True, status='clarification_required', error_code='INVALID_RETURNS',
++                                         message='Returns must be non-negative and use the same currency as the supplied amounts.')
++        net_sales, net_purchases = gross_sales - returns[0], gross_purchases - returns[1]
++        if net_sales < 0 or net_purchases < 0:
++            return CalculationResult(matched=True, status='clarification_required', error_code='INVALID_RETURNS',
++                                     message='Returns exceed the corresponding supplied sales or purchases; please check those inputs.')
++        output, input_vat = share(net_sales, rate_out), share(net_purchases, rate_in)
+         payable = output - input_vat
+         outputs = [
+             CalculationOutput(name="output_vat_on_sales", value=output, display_value=_money(output, currency), kind="money"),
+@@ -499,12 +511,38 @@
+             CalculationOutput(name="vat_payable" if payable >= 0 else "vat_repayable", value=abs(payable),
+                               display_value=_money(abs(payable), currency), kind="money"),
+         ]
+-        steps = [f"Output VAT = {_money(sales[0], currency)} {formula(rate_out)} = {_money(output, currency)}",
+-                 f"Input VAT = {_money(purchases[0], currency)} {formula(rate_in)} = {_money(input_vat, currency)}",
++        steps = [f"Output VAT = {_money(net_sales, currency)} {formula(rate_out)} = {_money(output, currency)}",
++                 f"Input VAT = {_money(net_purchases, currency)} {formula(rate_in)} = {_money(input_vat, currency)}",
+                  f"VAT {'payable' if payable >= 0 else 'repayable'} = {_money(output, currency)} − {_money(input_vat, currency)} = {_money(abs(payable), currency)}"]
+         notes.append("Input VAT is recoverable only on business purchases supported by valid VAT invoices, and not on "
+                      "blocked items or costs that relate to exempt supplies; confirm this before relying on the figure.")
+-        return _success_with_notes(["vat_liability"], outputs, steps, notes)
++        inputs = [_supplied('gross_sales', gross_sales, currency), _supplied('gross_purchases', gross_purchases, currency),
++                  _supplied('sales_rate', rate_out, kind='percentage'), _supplied('purchases_rate', rate_in, kind='percentage')]
++        if sales_returns or purchase_returns:
++            inputs.extend([_supplied('sales_returns', returns[0], currency), _supplied('purchase_returns', returns[1], currency)])
++            outputs.extend([CalculationOutput(name=name, value=value, display_value=_money(value, currency), kind='money')
++                            for name, value in [('net_sales', net_sales), ('net_purchases', net_purchases)]])
++            steps[:0] = [f'Net sales = {_money(gross_sales, currency)} − {_money(returns[0], currency)} = {_money(net_sales, currency)}',
++                         f'Net purchases = {_money(gross_purchases, currency)} − {_money(returns[1], currency)} = {_money(net_purchases, currency)}']
++        is_gst = bool(re.search(r'\bgst\b', q, re.I) and not re.search(r'\bvat\b', q, re.I))
++        if is_gst:
++            steps = [step.replace('Output VAT', 'Output GST').replace('Input VAT', 'Input tax credit').replace('VAT payable', 'GST payable').replace('VAT repayable', 'GST repayable') for step in steps]
++        for label, aliases, computed in (
++            ('Output GST' if is_gst else 'Output VAT', ('output GST ledger says', 'output GST ledger', 'output VAT ledger says', 'output VAT ledger'), output),
++            ('Input tax credit', ('input tax credit ledger says', 'input tax credit ledger', 'input VAT ledger says', 'input VAT ledger'), input_vat),
++        ):
++            reported = _find_value(q, aliases)
++            if reported:
++                if reported[1] and currency and reported[1] != currency:
++                    return CalculationResult(matched=True, status='clarification_required', error_code='CURRENCY_MISMATCH',
++                                             message='The ledger and calculation amounts must use the same currency.')
++                inputs.append(_supplied('reported_' + label.lower().replace(' ', '_'), reported[0], currency))
++                notes.append(f'{label} ledger {_money(reported[0], currency)} '
++                             + ('matches' if reported[0] == computed else 'does not match')
++                             + f' the calculated {_money(computed, currency)}.')
++        result = _success_with_notes(["vat_liability"], outputs, steps, notes)
++        result.inputs = inputs
++        return result
+     amount = single[0]
+     vat = share(amount, rate)
+     other = amount - vat if inclusive else amount + vat
+--- a/backend/app/orchestration/service.py
++++ b/backend/app/orchestration/service.py
+@@ -683,7 +683,8 @@
+ _DANGLING_REFERENCE = re.compile(
+     r"\b(?:those|these|the above|the same|the previous|the earlier|that|this)\s+"
+     r"(?:expenses?|costs?|figures?|numbers?|amounts?|values?|revenues?|sales|totals?|"
+-    r"calculations?|results?|data|invoices?|entries|budget|chart|table|ratios?)\b",
++    r"calculations?|results?|data|invoices?|entries|budget|chart|table|ratios?)\b"
++    r"|\b(?:using|based on|from)\b[^.!?]{0,60}\b(?:my|the|these|those)\s+(?:supplied|provided|earlier)\s+figures\b",
+     re.I,
+ )
+ 

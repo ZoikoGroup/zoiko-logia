@@ -15,9 +15,11 @@ from app.domains.model_gateway.providers.mock_adapter import MockProviderAdapter
 from app.domains.model_gateway.providers.groq_adapter import (
     _DEFAULT_MODEL as GROQ_DEFAULT_MODEL,
     KRITON_SYSTEM_PROMPT,
+    KRITON_AGENT_SYSTEM_PROMPT,
     GroqAdapter,
 )
 from app.domains.model_gateway.auxiliary import approved_providers
+from app.domains.model_gateway.errors import ProviderAccessBlocked, ProviderRequestRejected
 from app.domains.model_gateway.tool_registry import ToolRegistry, build_default_registry
 from app.domains.model_gateway.providers.google_adapter import GeminiAdapter
 from app.domains.model_gateway.providers.openai_adapter import OpenAIAdapter
@@ -84,28 +86,60 @@ _PROVIDER_FAILURE_MESSAGE = (
     "Please try again in a moment."
 )
 
+def _configured_adapters() -> list:
+    """Every real provider this deployment approves AND has credentials for, in
+    preference order. A provider missing here is never selected, even as a
+    fallback (§11.5, auxiliary.approved_providers)."""
+    approved = approved_providers()
+    adapters: list = []
+    if "gemini" in approved and (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+        adapters.append(GeminiAdapter())
+    if "groq" in approved and os.environ.get("GROQ_API_KEY"):
+        adapters.append(GroqAdapter())
+    if "openai" in approved and os.environ.get("OPENAI_API_KEY"):
+        adapters.append(OpenAIAdapter())
+    return adapters
+
+
+def _provider_candidates(primary) -> list:
+    """The primary adapter first, then every other configured provider once, so
+    a blocked or failing provider is skipped for a working one."""
+    candidates = [primary]
+    for adapter in _configured_adapters():
+        if any(
+            isinstance(adapter, type(existing)) or isinstance(existing, type(adapter))
+            for existing in candidates
+        ):
+            continue
+        candidates.append(adapter)
+    return candidates
+
 
 async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
-    """Answer via the preferred provider, and if that provider is Gemini and it
-    fails (network blip, quota, bad model id — adapters fail soft with an
-    "[Error…]" string), transparently fall back to Groq so the user still gets
-    an answer. The `model` override is a Groq-specific fast-model name, so it is
-    only forwarded when Groq is the one actually answering.
+    """Answer through the first configured provider that works, falling back to
+    the others in preference order.
 
-    If every attempted provider still failed (e.g. Groq itself hit a rate
-    limit with no further fallback configured), the raw "[Error…]" string —
-    which can include internal account/org identifiers and provider-internal
-    rate-limit detail — must never reach the composed answer. This is the one
-    choke point every caller goes through, so it's the one place that can
-    catch that and swap in a clean, generic message instead."""
-    adapter = _select_adapter()
-    is_gemini = isinstance(adapter, GeminiAdapter)
-    # A Gemini answer must not receive a Groq model id — only pass `model`
-    # through when the answering adapter is Groq.
+    Adapters fail soft by returning an "[Error…]" string, or raise a typed
+    ProviderRequestRejected. A transient failure on one provider moves on to
+    the next. An account spending-limit block (ProviderAccessBlocked), which no
+    retry or model switch on that provider can clear, also moves on to the
+    next provider at once; if every provider is blocked, that typed error is
+    raised so the caller shows its specific message. Any other typed failure
+    (request too large, authentication, rate limit) propagates unchanged.
+
+    The `model` override is a Groq-specific fast-model name, so it is only
+    forwarded to adapters that accept a Groq-style model id. The raw error
+    detail — which can include account identifiers and provider-internal
+    rate-limit text — never reaches a composed answer: this is the one choke
+    point every caller goes through."""
+    primary = _select_adapter()
+
     async def bounded_complete(provider, selected_model: str | None) -> str:
+        # A Gemini answer must not receive a Groq model id.
+        forward = None if isinstance(provider, GeminiAdapter) else selected_model
         try:
             output = await asyncio.wait_for(
-                _try_complete(provider, prompt, selected_model),
+                _try_complete(provider, prompt, forward),
                 timeout=_PROVIDER_TIMEOUT_SECONDS,
             )
         except TimeoutError:
@@ -120,29 +154,38 @@ async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
             return ""
         return output
 
-    output = await bounded_complete(adapter, None if is_gemini else model)
-    if _invalid_output(output) and not is_gemini and model:
-        # The fast model intermittently returns an empty answer on long
-        # prompts; the user saw "could not compose a response". The main
-        # model answers the same prompt, so try it once before failing.
-        logger.warning("Fast answer model %s failed; retrying with the main model", model)
-        output = await bounded_complete(adapter, None)
-    # Fall back only to a provider that is itself approved (§11.5).
-    if _invalid_output(output) and is_gemini and os.environ.get("GROQ_API_KEY") and "groq" in approved_providers():
-        logger.warning("Gemini answer generation failed; trying Groq")
-        output = await bounded_complete(GroqAdapter(), model)
-    if _invalid_output(output):
-        # Every provider available has failed (a provider that only returned a
-        # timeout or an "[Error…]" string). Raise rather than return text: a
-        # return value here is contractually an ANSWER, and a failure sentinel
-        # written as text can slip into a composed answer downstream. Callers
-        # that surface text to users (run_test_prompt, run_grounded_completion)
-        # translate this into the clean user-safe message themselves.
-        raise RuntimeError(
-            "Repeated provider failures: failed to generate an answer "
-            f"(last provider: {type(adapter).__name__})"
-        )
-    return output
+    blocked: ProviderAccessBlocked | None = None
+    last_provider = type(primary).__name__
+    for adapter in _provider_candidates(primary):
+        last_provider = type(adapter).__name__
+        try:
+            output = await bounded_complete(adapter, model)
+            if _invalid_output(output) and not isinstance(adapter, GeminiAdapter) and model:
+                # The fast model intermittently returns an empty answer on long
+                # prompts; the user saw "could not compose a response". The main
+                # model answers the same prompt, so try it once before moving on.
+                logger.warning("Fast answer model %s failed; retrying with the main model", model)
+                output = await bounded_complete(adapter, None)
+        except ProviderAccessBlocked as failure:
+            # Not transient and account-wide: do not retry this provider's
+            # other model, just try the next provider.
+            blocked = failure
+            logger.warning("%s blocked: account spend limit reached", last_provider)
+            continue
+        if not _invalid_output(output):
+            return output
+
+    if blocked is not None:
+        raise blocked
+    # Every provider available has failed (a timeout or an "[Error…]" string).
+    # Raise rather than return text: a return value here is contractually an
+    # ANSWER, and a failure sentinel written as text can slip into a composed
+    # answer downstream. Callers that surface text to users translate this into
+    # the clean message themselves.
+    raise RuntimeError(
+        "Repeated provider failures: failed to generate an answer "
+        f"(last provider: {last_provider})"
+    )
 
 
 async def list_models(db: AsyncSession) -> list[ModelDefinition]:
@@ -202,11 +245,21 @@ async def run_grounded_completion(input_text: str, model: str | None = None) -> 
     raising). Uses the preferred provider with Groq fallback."""
     try:
         return await _complete_with_fallback(input_text, model)
+    except ProviderRequestRejected:
+        raise
     except RuntimeError:
         # The gateway raises once every provider has failed; its callers that
         # hand text to users translate that into the one clean, generic
         # message (never the raw provider "[Error…]" string).
         return _PROVIDER_FAILURE_MESSAGE
+
+
+async def run_optional_completion(input_text: str, model: str | None = None) -> str:
+    """A failed repair must leave the existing answer for verification."""
+    try:
+        return await run_grounded_completion(input_text, model)
+    except ProviderRequestRejected:
+        return ''
 
 
 class AgentUnavailable(RuntimeError):
@@ -265,9 +318,13 @@ async def run_agentic_completion(
     authorize=None,
     request_id: str = "",
     planned_tools: tuple[str, ...] = (),
+    stated_facts: str | None = None,
+    figure_evidence: str | None = None,
     resume_key: str = "",
     require_evidence: bool = False,
+    available_tools: tuple[str, ...] | None = None,
     max_seconds: float | None = None,
+    extra_steps: int = 0,
 ) -> AgentOutcome:
     """Answer through the governed tool-calling loop. Raises on provider
     failure, AgentUnavailable when Groq isn't usable, and RuntimeError on an
@@ -278,18 +335,26 @@ async def run_agentic_completion(
     if adapter.client is None:
         raise AgentUnavailable("GROQ_API_KEY is not configured")
     settings = get_settings()
+    client = adapter.client
+    if hasattr(client, "with_options"):
+        # Agent retries are governed by its shared generation budget.
+        client = client.with_options(max_retries=0)
     outcome = await run_agent(
-        adapter.client,
+        client,
         model=model or GROQ_DEFAULT_MODEL,
-        system_prompt=KRITON_SYSTEM_PROMPT,
+        system_prompt=KRITON_AGENT_SYSTEM_PROMPT,
         user_prompt=input_text,
         registry=_tool_registry(),
         granted_permissions=granted_permissions,
         limits=AgentLimits(
-            max_steps=settings.AGENT_MAX_STEPS,
-            max_tool_calls=settings.AGENT_MAX_TOOL_CALLS,
+            # A long request with many deliverables may use a few more steps;
+            # the time budget (max_seconds) is unchanged, so latency stays capped.
+            max_steps=settings.AGENT_MAX_STEPS + extra_steps,
+            max_tool_calls=settings.AGENT_MAX_TOOL_CALLS + (extra_steps + 2 if extra_steps else 0),
             max_seconds=min(settings.AGENT_MAX_SECONDS, max_seconds) if max_seconds else settings.AGENT_MAX_SECONDS,
             max_total_tokens=settings.AGENT_MAX_TOKENS,
+            max_completion_tokens=settings.AGENT_MAX_COMPLETION_TOKENS,
+            max_request_tokens=settings.AGENT_MAX_REQUEST_TOKENS,
             max_cost_usd=settings.AGENT_MAX_COST_USD,
             price_per_million_tokens=settings.MODEL_PRICE_PER_MILLION_TOKENS,
         ),
@@ -301,8 +366,11 @@ async def run_agentic_completion(
         authorize=authorize,
         request_id=request_id,
         planned_tools=planned_tools,
+        stated_facts=stated_facts,
+        figure_evidence=figure_evidence,
         resume_key=resume_key,
         require_evidence=require_evidence,
+        available_tools=available_tools,
     )
     if not outcome.text.strip():
         raise RuntimeError("Agent produced an empty answer")
@@ -335,6 +403,8 @@ async def run_test_prompt(
     # _complete_with_fallback.
     try:
         output = await _complete_with_fallback(full_prompt, model)
+    except ProviderRequestRejected:
+        raise
     except RuntimeError:
         # Every provider failed — the prompt-studio test run surfaces the
         # clean user-safe message, not the raw provider error.

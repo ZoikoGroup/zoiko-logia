@@ -23,15 +23,22 @@ the caller treats as "fall back to the non-agent path".
 from __future__ import annotations
 
 import asyncio
+import logging
 import hashlib
 import json
 import re
+import math
 import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Literal
 
 from app.domains.model_gateway.tool_registry import PolicyDecision, ToolRegistry, ToolResult
-from app.orchestration.figure_reconciliation import is_known, known_values, unreconciled_figures
+from app.domains.model_gateway.agent_budget import GenerationBudget, GenerationBudgetExceeded
+from app.domains.model_gateway.errors import ProviderRequestRejected
+from app.orchestration.claim_verification import FIGURES_REMOVED_NOTE, remove_claims
+from app.orchestration.figure_reconciliation import (
+    hand_derived_figures, is_known, known_values, statements_with_figures, unreconciled_figures,
+)
 from app.orchestration.prescreen import embedded_instructions
 from app.domains.model_gateway.tools.chart_tool import ChartToolError, build_chart_fence
 from app.orchestration.series_summary import ground_series_summary
@@ -40,7 +47,9 @@ from app.orchestration.websearch import WebSource
 from app.orchestration.chart_intent import allows_automatic_chart
 from app.orchestration.calculation_service import validate_answer_calculations
 
-StopReason = Literal["final_answer", "max_steps", "time_budget", "token_budget", "cost_budget", "no_result"]
+StopReason = Literal["final_answer", "max_steps", "time_budget", "token_budget", "cost_budget", "no_result",
+                     "provider_error"]
+logger = logging.getLogger(__name__)
 
 # Minimum time kept back for the forced final answer after a limit is hit.
 _FINAL_ANSWER_RESERVE_SECONDS = 15.0
@@ -60,7 +69,9 @@ AGENT_TOOL_INSTRUCTIONS = (
     "what it needs rather than asking what was meant. Follow conditions in the question "
     "('if yes, chart…', 'otherwise…'): do only the branch that applies. "
     "Use `calculate` for every arithmetic result you state, including ratios, "
-    "differences and 'x times' comparisons. For a chart, call `render_chart` with figures "
+    "differences and 'x times' comparisons. Treat an amount as paid, received or due only "
+    "when the question says so (a fee or price is not a payment), and label anything you assume as an assumption "
+    "rather than computing a balance from it. For a chart, call `render_chart` with figures "
     "from the question, the conversation or tool results only — never write a ```chart block "
     "yourself. When the user asks for a chart without saying of what, or asks to change a "
     "chart ('make it a bar chart'), chart the figures from the most recent earlier answer in "
@@ -199,11 +210,16 @@ class AgentLimits:
     max_tool_calls: int = 8
     max_seconds: float = 75.0
     # Total prompt + completion tokens across the run's model calls.
-    max_total_tokens: int = 150_000
+    max_total_tokens: int = 64_000
+    max_completion_tokens: int = 4096
+    max_request_tokens: int = 8000
     # Spend budget in USD, active only when both values are set (> 0):
     # tokens × price_per_million_tokens / 1e6 may not exceed max_cost_usd.
     max_cost_usd: float = 0.0
     price_per_million_tokens: float = 0.0
+    # Calculations across the run, counting each item of a batched call: a
+    # batch counts once against max_tool_calls but its items count here.
+    max_calculations: int = 36
 
 
 @dataclass(frozen=True)
@@ -232,6 +248,12 @@ class ToolCallRecord:
     planned: bool | None = None
     # True when the result came from an earlier attempt of the same request.
     resumed: bool = False
+    # Every calculation a (batched) call produced, in item order;
+    # calculation_id is the first. items_failed counts items that did not
+    # evaluate, so a partly failed batch is visible in the audit.
+    calculation_ids: tuple[str, ...] = ()
+    items_total: int | None = None
+    items_failed: int | None = None
 
 
 @dataclass
@@ -243,6 +265,9 @@ class AgentOutcome:
     steps: int = 0
     stop_reason: StopReason = "final_answer"
     tokens_used: int = 0
+    # Conservative reservations for calls whose provider returned no usage.
+    estimated_tokens: int = 0
+    model_calls: int = 0
     cost_usd: float = 0.0
     # Tool results reused from an interrupted earlier attempt (safe resume).
     resumed_calls: int = 0
@@ -251,6 +276,48 @@ class AgentOutcome:
     unreconciled_figures: list[str] = field(default_factory=list)
     # Receipts of the calculations the run made (calc_tool), in order.
     calculation_receipts: list[dict] = field(default_factory=list)
+    # Set when the run could not finish (deadline, provider failure) and the
+    # answer is the verified work already done (run_agent).
+    incomplete_reason: str = ""
+    # Statements and table rows removed because they stated unreconciled
+    # figures; the rest of the answer was kept (selective withholding).
+    removed_statements: list[str] = field(default_factory=list)
+
+
+def _substantive(text: str) -> bool:
+    """Something besides headings and removal notes is left to read."""
+    from app.orchestration.claim_verification import _HEADING
+    return any(len(line.strip()) >= 15 and not _HEADING.fullmatch(line) and FIGURES_REMOVED_NOTE not in line
+               and not set(line.strip()) <= set("|-: ") for line in (text or "").splitlines())
+
+
+# Searching is for the facts the user did not supply. A projection already
+# worked out with calculate (£1,000,000 at 8% for three years = £1,259,712)
+# was replaced by "the sources do not contain this" after a search reminder
+# said to answer only from the search results (int-forecast-scenario).
+_KEEP_CALCULATIONS = (
+    " Keep every result the calculate tool already produced from the user's own figures and show it: "
+    "the search is only for facts the user did not supply. If the search finds nothing for those facts, "
+    "say exactly which part the sources do not establish, and still give the calculated results."
+)
+
+
+_REFUSAL_GUIDANCE = {
+    "no_user_figures": (
+        "Refused: the user gave no figures to calculate with, and an example with invented figures is not an "
+        "answer. Do not call calculate again. Answer the question in words from the evidence — call the search "
+        "tools from the plan if you have not — and if a number is needed, say which figures the user must supply."
+    ),
+}
+
+
+# Kriton's own notice when figures are withheld: a system statement, not a
+# factual claim for the release check (verification_service).
+WITHHELD_NOTICE = "The answer included figures that could not be matched to verified data, so it was withheld."
+
+
+def _calculated(outcome: "AgentOutcome") -> bool:
+    return any(call.tool == "calculate" and call.ok for call in outcome.tool_calls)
 
 
 ToolStartHook = Callable[[str], Awaitable[None]]
@@ -337,15 +404,30 @@ _PAIRWISE_MAX_NUMBERS = 60
 
 def _chart_values(spec: dict) -> list[float]:
     """The data values of a render_chart call — not axis maxima or indices."""
+    def items(value: Any) -> list:
+        return value if isinstance(value, list) else []
+
+    def numbers(value: Any) -> list[float]:
+        result = []
+        for item in items(value):
+            if isinstance(item, (int, float, str)) and not isinstance(item, bool):
+                try:
+                    result.append(float(item))
+                except ValueError:
+                    pass  # Schema validation reports malformed data.
+        return result
+
     values: list[float] = []
-    for series in spec.get("series") or []:
+    for series in items(spec.get("series")):
         if isinstance(series, dict):
-            values += [v for v in series.get("data") or [] if isinstance(v, (int, float))]
-            values += [v for point in series.get("points") or [] for v in point if isinstance(v, (int, float))]
+            values += numbers(series.get("data"))
+            values += [v for point in items(series.get("points")) for v in numbers(point)]
     for key in ("data", "links"):
-        values += [item["value"] for item in spec.get(key) or [] if isinstance(item, dict)
-                   and isinstance(item.get("value"), (int, float))]
-    values += [v for row in spec.get("ohlc") or [] for v in row if isinstance(v, (int, float))]
+        values += [v for item in items(spec.get(key)) if isinstance(item, dict)
+                   for v in numbers([item.get("value")])]
+    values += [v for row in items(spec.get("ohlc")) for v in numbers(row)]
+    values += [v for cell in items(spec.get("cells")) if isinstance(cell, list) and len(cell) == 3
+               for v in numbers(cell[2:])]
     return values
 
 
@@ -367,7 +449,7 @@ def unverified_chart_values(raw_arguments: str | None, evidence: str) -> list[fl
     return [value for value in _chart_values(spec) if not is_known(float(value), known)]
 
 
-def _final_text(content: str | None, outcome: AgentOutcome) -> str:
+def _final_text(content: str | None, outcome: AgentOutcome, *, evidence: str = "") -> str:
     """The answer text, with every chart in outcome.artifacts.
 
     Models copy the ```chart blocks they see in earlier answers and write one
@@ -379,6 +461,8 @@ def _final_text(content: str | None, outcome: AgentOutcome) -> str:
     for match in _CHART_FENCE.finditer(text):
         if outcome.artifacts:
             break
+        if unverified_chart_values(match.group(1), evidence):
+            continue
         try:
             outcome.artifacts.append(build_chart_fence(match.group(1)))
         except ChartToolError:
@@ -417,7 +501,161 @@ def _assistant_message(message: Any) -> dict:
     }
 
 
-async def run_agent(
+async def run_agent(client: Any, **kwargs: Any) -> AgentOutcome:
+    """The governed tool loop. If it cannot finish — the deadline runs out or
+    the model provider fails — after calculations were already verified, the
+    answer is that verified work rather than nothing. The FX scenario request
+    (live verification, 2026-10-16) computed every scenario with the
+    calculator, ran out of time, and the exception discarded all of it; a
+    second model call then timed out too and the user got "could not compose
+    a response" after 281 s. With no verified work the failure is raised as
+    before, so the caller's existing fallback still applies."""
+    progress: dict = {}
+    try:
+        return await _run_agent_loop(client, _progress=progress, **kwargs)
+    except GenerationBudgetExceeded as exc:
+        outcome = progress["outcome"]
+        outcome.stop_reason = exc.reason
+        outcome.incomplete_reason = f"the configured {'spending' if exc.reason == 'cost_budget' else 'token'} budget was reached"
+        working = verified_working(progress.get("executed") or {}, evidence=progress.get('figure_evidence'))
+        outcome.calculation_receipts = [r for r in outcome.calculation_receipts if _receipt_line(r) in working]
+        outcome.text = (
+            "The full written answer could not be completed because " + outcome.incomplete_reason + "."
+            + ("\n\nHere is the verified working:\n\n" + "\n\n".join(working) if working else
+               " No complete answer was generated within that budget.")
+        )
+        return outcome
+    except Exception as exc:  # noqa: BLE001 — narrowed in _recoverable
+        if not _recoverable(exc):
+            raise
+        recovered = _verified_work_outcome(progress, exc)
+        if recovered is None:
+            raise
+        logger.warning("Agent run did not finish (%s); returning the verified work already done", type(exc).__name__)
+        return recovered
+
+
+def _recoverable(exc: BaseException) -> bool:
+    """A deadline or a provider failure — not a programming error, which must
+    still surface."""
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ProviderRequestRejected)):
+        return True
+    name = type(exc).__name__
+    module = type(exc).__module__ or ""
+    return module.startswith(("groq", "httpx", "openai")) or name.endswith(("TimeoutError", "ConnectionError"))
+
+
+_VERIFIED_WORK_NOTICE = "The full written answer could not be completed"
+_DATA_TOOLS = ("get_exchange_rate", "get_economic_indicator", "get_market_data")
+
+
+def _calculation_items(arguments: str) -> int:
+    """How many calculations a calculate call asks for: one, or the items of
+    `expressions`. Unparseable arguments count as one (validation rejects them)."""
+    try:
+        parsed = json.loads(arguments or "{}")
+    except (ValueError, TypeError):
+        return 1
+    items = parsed.get("expressions") if isinstance(parsed, dict) else None
+    return len(items) if isinstance(items, list) and items else 1
+
+
+def _receipt_line(receipt):
+    label = (receipt.get('label') or '').strip()
+    units = f" {receipt['units']}" if receipt.get('units') else ''
+    return f"{label + ': ' if label else ''}{receipt.get('expression')} = {receipt.get('result')}{units}"
+
+
+def verified_working(executed: dict, *, evidence: str | None = None) -> list[str]:
+    """One line per verified calculation — every item of a batched call, in
+    order — as "Label: expression = result". Built from the receipts, never
+    from the tool's text, so a failed item is never shown as a result and no
+    item of a batch is dropped (the text was split once, keeping only the
+    first item)."""
+    lines = []
+    # Arithmetic correctness does not prove the operands belong to this task.
+    # Failure recovery must not promote an unrelated worked example to a
+    # verified answer just because the calculator evaluated it successfully.
+    from app.orchestration.figure_reconciliation import _plain_numbers, material_figures, is_known, _operand_tolerance
+    data = evidence
+    if data is not None:
+        data += '\n'+'\n'.join(r.content for (name,_),r in executed.items() if name != 'calculate' and r.ok)
+        known = _plain_numbers(data)+[value for _,value in material_figures(data)]+[0,1,2,12,100,365]
+        for rate in re.findall(r'(\d+(?:\.\d+)?)\s*%',data):
+            number=float(rate)
+            known += [number/100,1+number/100,1-number/100,100+number]
+    receipts = []
+    for (name, _), result in executed.items():
+        if name != "calculate" or not result.ok:
+            continue
+        if not result.all_receipts:
+            if evidence is not None:
+                for line in result.content.splitlines():
+                    if '(computed by the application' not in line:
+                        continue
+                    plain=line.split(' (computed by the application',1)[0].strip()
+                    parsed=re.fullmatch(r'(?:(?P<label>[^:=]+):\s*)?(?P<expression>[\d.,+\-*/()% ^]+)\s*=\s*(?P<result>-?[\d,.]+)',plain)
+                    if parsed:
+                        receipts.append({'label':parsed['label'] or '', 'expression':parsed['expression'].strip(), 'result':parsed['result'].replace(',','')})
+                continue
+            # A result without receipts (an older or test calculator): each
+            # line that reports a computed value, never an error line.
+            lines += [line.split(" (computed by the application", 1)[0].strip()
+                      for line in result.content.splitlines() if "(computed by the application" in line]
+            continue
+        receipts.extend(result.all_receipts)
+    if evidence is None:
+        return lines+[_receipt_line(r) for r in receipts]
+    pending=list(receipts)
+    while pending:
+        remaining=[]
+        for receipt in pending:
+            operands=_plain_numbers(str(receipt.get('expression','')))
+            if not operands or not all(is_known(abs(n),[abs(v) for v in known],_operand_tolerance(n)) for n in operands):
+                remaining.append(receipt)
+                continue
+            try:
+                number=float(receipt['result'])
+            except (KeyError,TypeError,ValueError):
+                remaining.append(receipt)
+                continue
+            if not math.isfinite(number):
+                continue
+            known.append(number)
+            lines.append(_receipt_line(receipt))
+        if len(remaining)==len(pending):
+            break
+        pending=remaining
+    return lines
+
+
+def _verified_work_outcome(progress: dict, exc: BaseException) -> "AgentOutcome | None":
+    """The verified calculations (and any retrieved data, with its sources)
+    as a deterministic answer. None when no calculation was verified: nothing
+    is invented."""
+    outcome, executed = progress.get("outcome"), progress.get("executed") or {}
+    if outcome is None:
+        return None
+    working = verified_working(executed,evidence=progress.get('figure_evidence'))
+    if not working:
+        return None
+    outcome.calculation_receipts = [r for r in outcome.calculation_receipts if _receipt_line(r) in working]
+    timed_out = isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or "Timeout" in type(exc).__name__
+    reason = "the AI model did not respond in time" if timed_out else "the AI model service failed"
+    lines = [f"{_VERIFIED_WORK_NOTICE} because {reason}. Here is the verified work already done.", "",
+             "**Calculations from the figures provided**", "", "| # | Working |", "| --- | --- |"]
+    lines += [f"| {index} | {line.replace('|', '/')} |" for index, line in enumerate(working, start=1)]
+    data = [result.content.strip() for (name, _), result in executed.items() if name in _DATA_TOOLS and result.ok]
+    if data:
+        lines += ["", "**Retrieved data (sourced)**", ""] + [f"- {entry.splitlines()[0][:300]}" for entry in data]
+    lines += ["", "Explanations and recommendations were not completed; ask again for them."]
+    outcome.text = "\n".join(lines)
+    outcome.stop_reason = "time_budget" if timed_out else "provider_error"   # type: ignore[assignment]
+    outcome.incomplete_reason = reason
+    return outcome
+
+
+async def _run_agent_loop(
     client: Any,
     *,
     model: str,
@@ -434,8 +672,17 @@ async def run_agent(
     authorize: Authorizer | None = None,
     request_id: str = "",
     planned_tools: tuple[str, ...] = (),
+    # The user's own figures (question and earlier user turns), apart from the
+    # prompt's instructions: what a derived figure may be computed from.
+    stated_facts: str | None = None,
+    # The evidence a figure may be verified against: the question, the
+    # conversation, documents and retrieved passages, without the prompt's
+    # instructions. None keeps the whole prompt (callers that do not split it).
+    figure_evidence: str | None = None,
     resume_key: str = "",
     require_evidence: bool = False,
+    available_tools: tuple[str, ...] | None = None,
+    _progress: dict | None = None,
 ) -> AgentOutcome:
     deadline = time.monotonic() + limits.max_seconds
     decisions: dict[tuple[str, str], PolicyDecision] = {}
@@ -465,39 +712,94 @@ async def run_agent(
     reminded_figures = False
     reminded_evidence = False
     reminded_planned_search = False
+    reminded_planned_calculation = False
+    reminded_hand_derived = False
     tools = registry.function_schemas(granted_permissions)
+    if available_tools is not None:
+        tools = [tool for tool in tools if tool["function"]["name"] in available_tools]
+    elif planned_tools:
+        # Offer the task's proposed capabilities rather than every connector
+        # on every turn. The registry still authorises/validates every actual
+        # call, including unplanned calls; this is prompt sizing, not access.
+        names = set(planned_tools) | {"calculate"}
+        if chart_requested:
+            names.add("render_chart")
+        tools = [tool for tool in tools if tool["function"]["name"] in names]
+    refused_tools: set[str] = set()
     messages: list[dict] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
     outcome = AgentOutcome(text="")
+    from app.domains.model_gateway.execution import current_budget
+    generation_budget = current_budget() or GenerationBudget(
+        max_total_tokens=limits.max_total_tokens, max_completion_tokens=limits.max_completion_tokens,
+        max_request_tokens=limits.max_request_tokens,
+        max_cost_usd=limits.max_cost_usd, price_per_million_tokens=limits.price_per_million_tokens,
+    )
     executed: dict[tuple[str, str], ToolResult] = {}
+    if _progress is not None:
+        _progress.update(outcome=outcome, executed=executed,
+                         figure_evidence=figure_evidence if figure_evidence is not None else user_prompt)
     executed_count = 0
+    calculations_used = 0
+    last_call_tokens = [0]               # the largest single model call so far
+
+    async def generate(*, seconds: float, **kwargs: Any):
+        before = generation_budget.tokens_used
+        try:
+            response = await generation_budget.create(client, seconds=seconds, **kwargs)
+            # A bounded completion can end mid-answer. Preserve that limitation
+            # so the caller cannot label a truncated response fully answered.
+            if any(getattr(choice, "finish_reason", None) == "length" for choice in response.choices):
+                outcome.incomplete_reason = "the model reached its output token limit"
+            elif outcome.incomplete_reason == "the model reached its output token limit":
+                outcome.incomplete_reason = ""  # A later generation completed the answer.
+            return response
+        finally:
+            outcome.tokens_used = generation_budget.tokens_used
+            outcome.estimated_tokens = generation_budget.estimated_tokens
+            outcome.model_calls = generation_budget.calls
+            outcome.cost_usd = generation_budget.cost_usd
+            last_call_tokens[0] = max(last_call_tokens[0], generation_budget.tokens_used - before)
 
     def evidence_text() -> str:
-        return user_prompt + "\n" + "\n".join(result.content for result in executed.values())
+        # Not the instructions: an instruction example's number is no evidence
+        # for a figure (£48,213.57 matched an example's 122).
+        base = figure_evidence if figure_evidence is not None else user_prompt
+        return base + "\n" + "\n".join(result.content for result in executed.values() if result.ok)
+
+    def calculations_text() -> str:
+        return "\n".join(result.content for (name, _), result in executed.items() if name == "calculate" and result.ok)
 
     def final_text(text: str) -> str:
-        unsupported = unreconciled_figures(text, evidence_text())
+        unsupported = unreconciled_figures(text, evidence_text(), calculations_text(), stated=stated_facts)
         if unsupported:
-            # Still unsupported after the correction round: withhold the
-            # answer rather than release unverified figures.
+            # Still unsupported after the correction round: remove the
+            # statements and rows that state them and keep the rest. Withheld
+            # whole, one hand-computed £155,000 cost a financial analysis its
+            # twelve verified figures and every explanation.
             outcome.unreconciled_figures = unsupported
-            working = [result.content.split(" (computed by the application", 1)[0]
-                       for (name, _), result in executed.items() if name == "calculate" and result.ok]
+            statements = statements_with_figures(text, unsupported)
+            pruned = remove_claims(text, statements, note=FIGURES_REMOVED_NOTE) if statements else ""
+            if _substantive(pruned) and not unreconciled_figures(pruned, evidence_text(), calculations_text(), stated=stated_facts):
+                outcome.removed_statements = statements
+                text = pruned
+                unsupported = []
+        if unsupported:
+            # Nothing substantive survives: withhold the answer rather than
+            # release unverified figures.
+            working = verified_working(executed)
             return _final_text(
-                "The answer included figures that could not be matched to verified data, so it was withheld."
+                WITHHELD_NOTICE
                 + ("\n\nHere is the verified working:\n\n" + "\n\n".join(working) if working else
                    " Please try again or ask for the calculation step by step."),
                 outcome,
+                evidence=evidence_text(),
             )
         if validate_answer_calculations(text):
             # Do not publish an incorrect equality after an unsuccessful repair.
-            working = []
-            for (name, _), result in executed.items():
-                if name == "calculate" and result.ok:
-                    value = result.content.split(" (computed by the application", 1)[0]
-                    working.append(value)
+            working = verified_working(executed)
             text = (
                 "The generated explanation could not be verified. Here is the verified working:\n\n"
                 + "\n\n".join(working)
@@ -537,22 +839,15 @@ async def run_agent(
         if periods:
             text += "\n\n| Retrieved data | Period |\n| --- | --- |\n"
             text += "\n".join(f"| {label.replace('|', '/')} | {period} |" for label, period in dict.fromkeys(periods))
-        return _final_text(text, outcome)
+        return _final_text(text, outcome, evidence=evidence_text())
 
     async def create(tool_choice: str, budget: float):
-        if budget <= 0:
-            raise asyncio.TimeoutError("Agent deadline exhausted")
-        response = await asyncio.wait_for(
-            client.chat.completions.create(
-                model=model, messages=messages, tools=tools, tool_choice=tool_choice, temperature=0.0,
-            ),
-            timeout=budget,
+        available_tools = [t for t in tools if t.get("function", {}).get("name") not in refused_tools]
+        return await generate(
+            seconds=budget, model=model, messages=messages,
+            tool_choice=tool_choice if available_tools else "none", temperature=0.0,
+            tools=available_tools or tools,
         )
-        usage = getattr(response, "usage", None)
-        outcome.tokens_used += int(getattr(usage, "total_tokens", 0) or 0) if usage else 0
-        if limits.price_per_million_tokens > 0:
-            outcome.cost_usd = outcome.tokens_used * limits.price_per_million_tokens / 1_000_000
-        return response
 
     async def execute(name: str, raw: str | None) -> tuple[ToolResult, int]:
         started = time.monotonic()
@@ -562,9 +857,16 @@ async def run_agent(
             decision = await authorize(name)
             decisions[(name, _canonical_arguments(raw))] = decision
             if not decision.allowed:
+                # A refused tool is not offered again in this run: told only
+                # "do not retry", the model called a refused calculate eight
+                # times until it ran out of steps and never searched
+                # (ps-std-depreciation-method-change).
+                refused_tools.add(name)
                 return ToolResult.failure(
                     "permission_denied",
-                    f"Policy refused '{name}' ({decision.reason_code}). Do not retry it; answer with what you have.",
+                    _REFUSAL_GUIDANCE.get(decision.reason_code,
+                                          f"Policy refused '{name}' ({decision.reason_code}). Do not retry it; "
+                                          "answer with what you have."),
                 ), int((time.monotonic() - started) * 1000)
         resume_id = (resume_key, name, _canonical_arguments(raw)) if resume_key else None
         if resume_id is not None:
@@ -586,12 +888,12 @@ async def run_agent(
         """Plan every call in the order proposed (duplicate and budget checks
         are order-dependent), run the genuinely new ones concurrently — a
         comparison fans out — then record each call's outcome in order."""
-        nonlocal executed_count
+        nonlocal executed_count, calculations_used
         keys = [(call.function.name, _canonical_arguments(call.function.arguments)) for call in calls]
         to_run: dict[tuple[str, str], Any] = {}
         budget_hit: set[int] = set()
         unverified: dict[int, list[float]] = {}
-        evidence = user_prompt + "\n" + "\n".join(result.content for result in executed.values())
+        evidence = evidence_text()
         for index, (call, key) in enumerate(zip(calls, keys)):
             if key in executed or key in to_run:
                 continue
@@ -603,7 +905,12 @@ async def run_agent(
             if executed_count >= limits.max_tool_calls:
                 budget_hit.add(index)
                 continue
+            items = _calculation_items(call.function.arguments) if key[0] == "calculate" else 0
+            if items and calculations_used + items > limits.max_calculations:
+                budget_hit.add(index)
+                continue
             executed_count += 1
+            calculations_used += items
             to_run[key] = call
 
         ran = await asyncio.gather(*(execute(call.function.name, call.function.arguments) for call in to_run.values()))
@@ -637,20 +944,20 @@ async def run_agent(
                     ))
                 if result.sources:
                     reference_text = "\n\n".join(
-                        f"[REF-{source_ref_offset + len(outcome.sources) + i + 1}] {source.title}\nURL: {source.url}\n{source.snippet}"
+                        f"[REF-{source_ref_offset + len(outcome.sources) + i + 1}] {source.title}\nURL: {source.url}"
+                        + ("\n" + source.snippet if source.snippet and source.snippet not in result.content else "")
                         for i, source in enumerate(result.sources)
                     )
                     result = replace(result, content=result.content + "\n\nSource evidence:\n" + reference_text)
                 executed[key] = result
-                if result.receipt:
-                    outcome.calculation_receipts.append(result.receipt)
+                outcome.calculation_receipts.extend(result.all_receipts)
                 outcome.sources.extend(result.sources)
                 outcome.artifacts.extend(result.artifacts)
             else:
                 earlier = executed[key]
                 result = ToolResult(
                     ok=earlier.ok, error_code="duplicate_call",
-                    content=f"Already called with the same arguments; that result was:\n{earlier.content}",
+                    content="Already called with the same arguments. Reuse its earlier tool result above; do not retry it.",
                 )
             arguments_hash = hashlib.sha256(key[1].encode()).hexdigest()[:32]
             record = ToolCallRecord(
@@ -665,6 +972,9 @@ async def run_agent(
                 planned=(key[0] in planned_tools) if planned_tools else None,
                 resumed=key in resumed_keys,
                 calculation_id=(result.receipt or {}).get("calculation_id") if result.error_code != "duplicate_call" else None,
+                calculation_ids=tuple(item["calculation_id"] for item in result.all_receipts)
+                if result.error_code != "duplicate_call" else (),
+                items_total=result.items_total, items_failed=result.items_failed,
             )
             outcome.tool_calls.append(record)
             if on_tool_done:
@@ -677,10 +987,25 @@ async def run_agent(
         if remaining <= 0:
             outcome.stop_reason = "time_budget"
             break
+        if step > 1 and outcome.tokens_used + 2 * last_call_tokens[0] > limits.max_total_tokens:
+            # Room is needed for this step and the final answer, each about the
+            # size of the largest call so far. Checked only after a call, the
+            # final answer turn took the financial analysis to 163k of 150k.
+            outcome.stop_reason = "token_budget"
+            break
         outcome.steps = step
         try:
             response = await create("auto", remaining)
+        except GenerationBudgetExceeded as exc:
+            outcome.stop_reason = exc.reason
+            break  # Try the smaller final-answer prompt before returning verified work.
         except Exception as exc:
+            if isinstance(exc, ProviderRequestRejected) and not isinstance(exc, TimeoutError):
+                # A typed provider failure (spending limit, authentication,
+                # request too large, rate limit) is not cured by another step:
+                # it propagates typed so the caller reports the specific cause
+                # and keeps verified work. A timeout uses the time budget below.
+                raise
             if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
                 # A slow model step used up the step budget. Raised, it threw
                 # away the evidence already gathered, and the request started
@@ -763,6 +1088,7 @@ async def run_agent(
                     f"No evidence has been gathered for this answer. Call {' and '.join(searches)} from the plan "
                     "first and answer only from what they return, citing it. If nothing relevant is found, say "
                     "that the sources found do not establish the answer."
+                    + _KEEP_CALCULATIONS * _calculated(outcome)
                 )})
                 continue
             planned_search = next((t for t in ("search_web", "search_knowledge_base")
@@ -785,9 +1111,42 @@ async def run_agent(
                     f"Before saying the sources do not establish this, call {planned_search} for the specific "
                     "point (for example the year asked about). Answer from its results, citing them; only if "
                     "it finds nothing relevant, say the sources found do not establish the answer."
+                    + _KEEP_CALCULATIONS * _calculated(outcome)
                 )})
                 continue
-            unsupported = unreconciled_figures(message.content or "", evidence_text())
+            if ("calculate" in planned_tools and not reminded_planned_calculation and step < limits.max_steps
+                    and not any(r.tool == "calculate" for r in outcome.tool_calls)
+                    and "calculate" not in refused_tools):
+                from app.orchestration.calculation_service import shows_arithmetic
+                from app.orchestration.verification_service import is_evidence_gap_statement
+                if is_evidence_gap_statement(message.content or ""):
+                    # "Calculate contribution, operating profit and break-even
+                    # from revenue £2,400,000 …" was answered "The sources provided
+                    # do not state this" for every part, with no tool call: the
+                    # question itself is the evidence for arithmetic on its figures.
+                    reminded_planned_calculation = True
+                    messages.append({"role": "assistant", "content": message.content})
+                    messages.append({"role": "user", "content": (
+                        "The question supplies the figures this needs, so arithmetic on them needs no source. "
+                        "Call calculate for each requested result using those figures, then answer with each "
+                        "formula and its result. Say the sources do not establish something only for a fact "
+                        "the figures given cannot produce (for example a tax rate or a legal rule)."
+                    )})
+                    continue
+                if shows_arithmetic(message.content or ""):
+                    # The IFRS 15 schedule (£24,000 ÷ 12 = £2,000 a month, £6,000
+                    # to 31 December, £18,000 deferred) was worked by hand: with no
+                    # calculator result behind it, every row was removed as uncited.
+                    reminded_planned_calculation = True
+                    messages.append({"role": "assistant", "content": message.content})
+                    messages.append({"role": "user", "content": (
+                        "The working in your answer was computed without the calculator. Call calculate for "
+                        "each figure you derived (including every schedule or table total), then give the "
+                        "same answer with the calculator's results, keeping its structure and citations."
+                    )})
+                    continue
+            unsupported = unreconciled_figures(message.content or "", evidence_text(), calculations_text(),
+                                               stated=stated_facts)
             if unsupported and not reminded_figures and step < limits.max_steps:
                 reminded_figures = True
                 messages.append({"role": "assistant", "content": message.content})
@@ -795,6 +1154,23 @@ async def run_agent(
                     "These figures in your answer do not match any number in the question or the tool "
                     "results: " + ", ".join(unsupported[:8]) + ". Every figure must come from the data: "
                     "call calculate for anything you derive, or remove the figure. Then give the final answer."
+                )})
+                continue
+            hand = ([figure for figure in hand_derived_figures(message.content or "", evidence_text(),
+                                                               calculations_text(), stated=stated_facts)
+                     if figure not in unsupported]
+                    if "calculate" in planned_tools and "calculate" not in refused_tools and not reminded_hand_derived
+                    and step < limits.max_steps and outcome.tokens_used < 0.6 * limits.max_total_tokens else [])
+            if 1 <= len(hand) <= 8:
+                # Worked by hand: a release check that requires the calculator
+                # would remove them (the FX scenarios at 1.20 and 1.30). One
+                # reminder, while the token budget allows another step.
+                reminded_hand_derived = True
+                messages.append({"role": "assistant", "content": message.content})
+                messages.append({"role": "user", "content": (
+                    "These figures in your answer were worked out without the calculator: " + ", ".join(hand)
+                    + ". Call calculate for each of them, then give the same answer with the calculator's "
+                    "results, keeping its structure and citations."
                 )})
                 continue
             if (
@@ -834,7 +1210,7 @@ async def run_agent(
             # Interrupted tool calls have no complete protocol response. Recover
             # from already recorded evidence in a fresh conversation instead.
             outcome.text = final_text(await _answer_from_evidence(
-                client, model, system_prompt, user_prompt, executed, deadline,
+                client, model, system_prompt, user_prompt, executed, deadline, generate=generate,
             ))
             return outcome
         for call, result in zip(message.tool_calls, results):
@@ -853,12 +1229,16 @@ async def run_agent(
     try:
         final = await create("none", deadline - time.monotonic())
         text = final.choices[0].message.content or ""
+    except GenerationBudgetExceeded:
+        pass  # Recovery omits tool schemas and may still fit the allowance.
+    except ProviderRequestRejected:
+        raise  # A different prompt cannot restore account-level access.
     except Exception:
         # The model still tried to call a tool (Groq: 400) — fall through to
         # a call with no tools declared at all.
         pass
     if not text.strip():
-        text = await _answer_from_evidence(client, model, system_prompt, user_prompt, executed, deadline)
+        text = await _answer_from_evidence(client, model, system_prompt, user_prompt, executed, deadline, generate=generate)
     outcome.text = final_text(text)
     return outcome
 
@@ -866,6 +1246,7 @@ async def run_agent(
 async def _answer_from_evidence(
     client: Any, model: str, system_prompt: str, user_prompt: str,
     executed: dict[tuple[str, str], ToolResult], deadline: float,
+    *, generate=None,
 ) -> str:
     """Last resort for a final answer: a fresh conversation with no tools
     declared, the gathered tool results pasted in as text. Two agent runs in
@@ -889,17 +1270,20 @@ async def _answer_from_evidence(
         if remaining <= 0:
             raise asyncio.TimeoutError("Agent deadline exhausted")
         try:
-            response = await asyncio.wait_for(
-                client.chat.completions.create(
-                    model=model, temperature=0.0,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": (
-                            f"{question}\n\n=== Data already retrieved (verified) ===\n{evidence}\n\n{instruction}"
-                        )},
-                    ],
-                ),
-                timeout=remaining,
+            if generate is None:
+                standalone_budget = GenerationBudget(max_total_tokens=AgentLimits().max_total_tokens)
+
+                async def generate(*, seconds, **kwargs):
+                    return await standalone_budget.create(client, seconds=seconds, **kwargs)
+
+            response = await generate(
+                seconds=remaining, model=model, temperature=0.0,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": (
+                        f"{question}\n\n=== Data already retrieved (verified) ===\n{evidence}\n\n{instruction}"
+                    )},
+                ],
             )
             return response.choices[0].message.content or ""
         except Exception as exc:

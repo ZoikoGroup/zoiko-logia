@@ -104,7 +104,7 @@ async def test_classify_query_llm_parses_valid_structured_response(monkeypatch):
     mock_client.chat.completions.create = mock_create
     monkeypatch.setattr(
         "app.domains.model_gateway.auxiliary.AsyncGroq",
-        lambda api_key: mock_client,
+        lambda api_key, **options: mock_client,
     )
 
     result = await classify_query_llm("Has UK tax gone up since 2020?")
@@ -128,7 +128,7 @@ async def test_classify_query_llm_fails_soft_on_malformed_json(monkeypatch):
     )
     monkeypatch.setattr(
         "app.domains.model_gateway.auxiliary.AsyncGroq",
-        lambda api_key: mock_client,
+        lambda api_key, **options: mock_client,
     )
     result = await classify_query_llm("Show UK inflation as a line chart.")
     assert result is None
@@ -141,7 +141,7 @@ async def test_classify_query_llm_fails_soft_on_network_error(monkeypatch):
     mock_client.chat.completions.create = AsyncMock(side_effect=ConnectionError("boom"))
     monkeypatch.setattr(
         "app.domains.model_gateway.auxiliary.AsyncGroq",
-        lambda api_key: mock_client,
+        lambda api_key, **options: mock_client,
     )
     result = await classify_query_llm("Show UK inflation as a line chart.")
     assert result is None

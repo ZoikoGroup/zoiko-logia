@@ -24,8 +24,11 @@ def _stop(*_args, **_kwargs):
 
 @pytest.mark.parametrize("chat_documents, checked", [(["doc-fixed-assets"], False), ([], True)])
 async def test_the_entries_check_is_skipped_when_the_chat_has_a_file(monkeypatch, chat_documents, checked):
-    from app.orchestration import input_requirements
+    from app.orchestration import conversation_memory, input_requirements
 
+    # Persisted conversation memory needs a real session; db=object() has none.
+    monkeypatch.setattr(conversation_memory, "load_turns", AsyncMock(return_value=[]))
+    monkeypatch.setattr(conversation_memory, "save_turn", AsyncMock())
     for name in dir(service):
         if name.startswith("audit_"):
             monkeypatch.setattr(service, name, AsyncMock())

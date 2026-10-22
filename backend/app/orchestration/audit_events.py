@@ -173,7 +173,7 @@ async def audit_composition_started(db, *, query_id, correlation_id, tenant_id, 
 
 async def audit_calculation_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id,
                                       actor_id, formula_ids: list[str], status: str,
-                                      verification_status: str, input_names: list[str]):
+                                      verification_status: str, input_names: list[str], input_sources: dict[str, str] | None = None):
     await _emit(
         db, "calculation_completed", query_id, correlation_id, tenant_id,
         audit_chain_id, actor_id,
@@ -183,7 +183,8 @@ async def audit_calculation_completed(db, *, query_id, correlation_id, tenant_id
             "status": status,
             "verification_status": verification_status,
             "input_names": input_names,
-            "input_source": "user_query",
+            "input_source": "mixed" if input_sources and any(v != "query" for v in input_sources.values()) else "user_query",
+            "input_sources": input_sources or {},
         },
         replay_relevance="REQUIRED",
     )
@@ -208,7 +209,9 @@ async def audit_agent_tool_called(db, *, query_id, correlation_id, tenant_id, au
                                   policy_decision_id: str | None = None, policy_reason: str | None = None,
                                   untrusted_instructions: str | None = None,
                                   idempotency_key: str | None = None, calculation_id: str | None = None,
-                                  planned: bool | None = None, resumed: bool = False):
+                                  planned: bool | None = None, resumed: bool = False,
+                                  calculation_ids: tuple[str, ...] | list[str] = (),
+                                  items_total: int | None = None, items_failed: int | None = None):
     # Arguments are recorded as a digest only (they can echo user text); the
     # tool name, outcome, evidence count and the policy decision that allowed
     # or refused the call are what replay needs.
@@ -219,7 +222,10 @@ async def audit_agent_tool_called(db, *, query_id, correlation_id, tenant_id, au
                  # A possible prompt injection found in tool/document content (§13 Demo C).
                  "untrusted_instructions": untrusted_instructions,
                  "idempotency_key": idempotency_key, "calculation_id": calculation_id, "planned": planned,
-                 "resumed": resumed},
+                 "resumed": resumed,
+                 # Every calculation of a batched call, and how many of its items failed.
+                 "calculation_ids": list(calculation_ids or ([calculation_id] if calculation_id else [])),
+                 "items_total": items_total, "items_failed": items_failed},
                 replay_relevance="REQUIRED")
 
 async def audit_calculation_receipt(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
@@ -228,8 +234,20 @@ async def audit_calculation_receipt(db, *, query_id, correlation_id, tenant_id, 
     stored only as a hash; the persisted calculation run holds the detail."""
     await _emit(db, "calculation_receipt_recorded", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {key: receipt.get(key) for key in ("calculation_id", "tool", "tool_version", "formula_version",
-                                                   "input_hash", "result", "rounding_rule", "warnings")},
+                                                   "input_hash", "result", "rounding_rule", "warnings",
+                                                   # Its place in a batched call (absent for one calculation).
+                                                   "batch_index", "batch_size")},
                 replay_relevance="REQUIRED")
+
+async def audit_answer_figure_provenance(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                         figures: list[dict]):
+    """Which calculation produced each figure of the released answer: the
+    statement (as a hash), the figure as shown, and the calculation ids whose
+    result it is — the link from the user's inputs (the calculation's input
+    hash) through the calculation to the answer's rows."""
+    await _emit(db, "answer_figure_provenance", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"figures": figures}, replay_relevance="REQUIRED")
+
 
 async def audit_agent_plan(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                            plan: dict, agent_mode: bool, approved_tools: list[str]):
@@ -243,11 +261,13 @@ async def audit_agent_plan(db, *, query_id, correlation_id, tenant_id, audit_cha
 async def audit_agent_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                 steps: int, stop_reason: str, tool_call_count: int,
                                 fell_back: bool, error: str | None = None, tokens_used: int | None = None,
-                                cost_usd: float | None = None, resumed_calls: int | None = None):
+                                cost_usd: float | None = None, resumed_calls: int | None = None,
+                                estimated_tokens: int | None = None, model_calls: int | None = None):
     await _emit(db, "agent_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"steps": steps, "stop_reason": stop_reason, "tool_call_count": tool_call_count,
                  "fell_back": fell_back, "error": error, "tokens_used": tokens_used,
-                 "cost_usd": cost_usd, "resumed_calls": resumed_calls},
+                 "cost_usd": cost_usd, "resumed_calls": resumed_calls,
+                 "estimated_tokens": estimated_tokens, "model_calls": model_calls},
                 replay_relevance="REQUIRED")
 
 async def audit_composition_failed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id, error: str):
@@ -316,10 +336,13 @@ async def audit_security_incident_recorded(db, *, query_id, correlation_id, tena
                 classification="SECURITY", replay_relevance="REQUIRED")
 
 async def audit_response_finalised(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
-                                    outcome: str, route: str, completeness: str | None = None):
+                                    outcome: str, route: str, completeness: str | None = None,
+                                    model_execution: dict | None = None):
     payload = {"outcome": outcome, "route": route}
     if completeness:
         payload["completeness"] = completeness
+    if model_execution is not None:
+        payload['model_execution'] = model_execution
     await _emit(db, "response_finalised", query_id, correlation_id, tenant_id, audit_chain_id, actor_id, payload)
 
 async def audit_answer_statements_removed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,

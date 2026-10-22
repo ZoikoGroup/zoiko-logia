@@ -148,7 +148,7 @@ function ClassificationPolicy() {
   return (
     <>
 
-      <LiveSourceStatus loading={loading} error={error} signedOut={false} reload={load} />
+      <LiveSourceStatus showRefresh={false} loading={loading} error={error} signedOut={false} reload={load} />
 
       <ContextStrip jurisdiction={policy?.scope || "Policy scope"} framework="Global baseline + applicable overlays" period={policy?.version ? `Policy ${policy.version}` : "No policy version recorded"} />
       {!error && view && <GovernedRegister title="Risk policy register" inspector="Selected control / policy inspector" records={policyRecords} tabs={["Decision & rule", "Applicability", "Tests & gates", "History"]} doctrine="Enforcement doctrine: policy classifications determine routing; missing evidence or approval cannot be replaced by a dashboard state. Changes must retain scope, authorization, and traceable approval." metrics={[

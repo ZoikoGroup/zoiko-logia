@@ -1,0 +1,15 @@
+{
+  "status": 200,
+  "latency_ms": 32.4,
+  "response": {
+    "revision": "development",
+    "commit": "1984fa9f78651f0830e3514c5f14b9695a884e30",
+    "source_hash": "dde2b95acd39320a5d5660018eab67a25dc75d39214e7f9af286083084f74b1f",
+    "build_id": "development:dde2b95acd39320a5d5660018eab67a25dc75d39214e7f9af286083084f74b1f",
+    "config_hash": "f6ccffb743fb9f62edbe0db9a84cbbde0a67d787a98cf000cef0e8cfd8f21fe7",
+    "captured_at": "2026-10-21T08:00:16.066656+00:00"
+  },
+  "build_header": "development:dde2b95acd39320a5d5660018eab67a25dc75d39214e7f9af286083084f74b1f",
+  "working_tree_source_hash": "dde2b95acd39320a5d5660018eab67a25dc75d39214e7f9af286083084f74b1f",
+  "runtime_matches_source": true
+}

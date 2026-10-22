@@ -14,7 +14,10 @@ def _call(name: str, args: dict, call_id: str = "c1"):
 
 
 def _reply(content: str = "", tool_calls=None):
-    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=tool_calls))])
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=tool_calls))],
+        usage=SimpleNamespace(total_tokens=110),
+    )
 
 
 class ScriptedClient:
@@ -289,8 +292,50 @@ async def test_chart_written_in_text_is_dropped_when_a_tool_chart_exists() -> No
 async def test_valid_chart_written_in_text_becomes_the_validated_chart() -> None:
     chart = {"type": "line", "title": "GDP", "categories": ["2025"], "series": [{"name": "Japan", "data": [1.19]}]}
     client = ScriptedClient([_reply("GDP below.\n\n```chart\n" + json.dumps(chart) + "\n```")])
-    outcome = await _run(client, _registry([]))
+    outcome = await _run(client, _registry([]), question="Japan grew 1.19%.")
     assert len(outcome.artifacts) == 1 and outcome.artifacts[0].startswith("```chart\n") and "```" not in outcome.text
+
+
+async def test_chart_written_in_answer_cannot_bypass_evidence_validation() -> None:
+    chart = {"type": "bar", "title": "Invented", "categories": ["A"],
+             "series": [{"name": "Value", "data": [987654.321]}]}
+    client = ScriptedClient([_reply("No verified data.\n\n```chart\n" + json.dumps(chart) + "\n```")])
+    outcome = await _run(client, _registry([]))
+    assert outcome.artifacts == []
+    assert "```chart" not in outcome.text
+
+
+async def test_prompt_examples_are_not_chart_evidence() -> None:
+    chart = {"type": "bar", "title": "Example", "categories": ["A"],
+             "series": [{"name": "Value", "data": [987654.321]}]}
+    client = ScriptedClient([
+        _reply(tool_calls=[_call("render_chart", chart)]), _reply("No verified data."),
+    ])
+    outcome = await _run(client, build_default_registry(),
+                         question="Instruction example: 987654.321", figure_evidence="No data supplied.")
+    assert outcome.artifacts == []
+    assert outcome.tool_calls[0].error_code == "unverified_figures"
+
+
+async def test_failed_tool_output_is_not_chart_evidence() -> None:
+    registry = build_default_registry()
+
+    async def failed_lookup(args):
+        return ToolResult.failure("no_data", "Invalid request example: 987654.321")
+
+    registry.register(ToolSpec(
+        name="lookup", version="1", description="Lookup", args_model=_LookupArgs,
+        handler=failed_lookup, data_source="test", risk_level="low", timeout_seconds=1,
+    ))
+    chart = {"type": "bar", "title": "Example", "categories": ["A"],
+             "series": [{"name": "Value", "data": [987654.321]}]}
+    client = ScriptedClient([
+        _reply(tool_calls=[_call("lookup", {"key": "missing"})]),
+        _reply(tool_calls=[_call("render_chart", chart)]), _reply("No verified data."),
+    ])
+    outcome = await _run(client, registry)
+    assert outcome.artifacts == []
+    assert outcome.tool_calls[-1].error_code == "unverified_figures"
 
 
 async def test_unparseable_generation_is_retried_not_fatal() -> None:
@@ -370,6 +415,22 @@ def test_chart_figures_match_question_tool_results_rounding_and_units() -> None:
     assert unverified_chart_values(json.dumps(chart), evidence) == []
     chart["series"][0]["data"].append(999.99)
     assert unverified_chart_values(json.dumps(chart), evidence) == [999.99]
+
+
+def test_heatmap_values_and_numeric_strings_require_evidence() -> None:
+    from app.domains.model_gateway.agent import unverified_chart_values
+
+    assert unverified_chart_values(json.dumps({"cells": [[0, 0, "987654.321"]]}), "") == [987654.321]
+    assert unverified_chart_values(json.dumps({"cells": [[0, 0, 42]]}), "Value: 42") == []
+    assert unverified_chart_values(json.dumps({"series": [{"data": ["987654.321"]}]}), "") == [987654.321]
+
+
+def test_malformed_chart_shapes_do_not_crash_evidence_check() -> None:
+    from app.domains.model_gateway.agent import unverified_chart_values
+
+    for spec in ({"series": 3}, {"series": [{"data": 2, "points": [None, 3]}]},
+                 {"ohlc": [None, 4]}, {"cells": [None, 3]}, {"links": 5}):
+        assert unverified_chart_values(json.dumps(spec), "") == []
 
 
 async def test_requested_chart_that_was_never_drawn_gets_one_reminder() -> None:

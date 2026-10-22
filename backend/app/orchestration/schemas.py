@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from datetime import date
 from typing import Literal, Optional, List
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, PrivateAttr
 from app.domains.calculations.schemas import (
     LiveObservation,
     VerifiedChartSpec,
@@ -121,7 +121,7 @@ class WorkflowPlan(BaseModel):
     steps: List[CapabilityStep] = Field(default_factory=list)
 
 from app.orchestration.visualization.spec import VisualizationSpec
-from app.orchestration.calculations.schemas import CalculationResult
+from app.orchestration.calculations.schemas import CalculationResult, CalculationTaskState
 
 
 # ── Request ──────────────────────────────────────────────────────────────────
@@ -160,6 +160,23 @@ class ConversationMessage(BaseModel):
 class AskKritonRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    _original_message: str = PrivateAttr(default='')
+
+    @model_validator(mode='wrap')
+    @classmethod
+    def _keep_original_message(cls, value, handler):
+        original = value.get('query', '') if isinstance(value, dict) else None
+        result = handler(value)
+        if original is not None and not result._original_message:
+            result._original_message = original
+        return result
+
+    @property
+    def original_message(self) -> str:
+        return self._original_message or self.query
+
+    turn_id: Optional[str] = Field(default=None, max_length=200)
+    request_id: Optional[str] = Field(default=None, max_length=200)
     query: str = Field(max_length=MAX_QUERY_CHARS)
     document_ids: List[str] = Field(default_factory=list)
     source_scope: Literal["WEB_ONLY", "DOCUMENTS_ONLY", "DOCUMENTS_THEN_WEB", "COMBINED"] = "DOCUMENTS_THEN_WEB"
@@ -464,10 +481,27 @@ class AuditReference(BaseModel):
 
 # ── Canonical Response Contract — §12 ────────────────────────────────────────
 
+from app.orchestration.visualization.router import VisualizationIntent
+from app.orchestration.answer_coverage import RequestedDeliverable
+
+
+class RequestIntegrity(BaseModel):
+    conversation_id: str | None = None
+    turn_id: str | None = None
+    request_id: str | None = None
+    current_message_sha256: str
+    relation: Literal['independent', 'follow_up', 'correction', 'multi_part']
+    changed_inputs: list[str] = Field(default_factory=list)
+
+
 class AskKritonResponse(BaseModel):
+    calculation_state: Optional[CalculationTaskState] = None
+    request_integrity: Optional[RequestIntegrity] = None
+    visualization_intent: Optional[VisualizationIntent] = None
+    requested_deliverables: List[RequestedDeliverable] = Field(default_factory=list)
     query_id: str
     correlation_id: str
-    outcome: str       # answered | refused | clarification_required | escalated | rejected
+    outcome: str       # answered | unavailable | refused | clarification_required | escalated | rejected
     route: str         # LLM | REFUSAL | CLARIFICATION | HUMAN_REVIEW | SECURITY_INCIDENT | REJECTED
     safety: SafetyState
     confidence_state: str

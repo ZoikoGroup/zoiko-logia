@@ -21,7 +21,7 @@ export function SyllabusCoveragePanel() {
 
   return (
     <>
-      <LiveSourceStatus loading={loading} error={error} signedOut={signedOut} reload={reload} />
+      <LiveSourceStatus showRefresh={false} loading={loading} error={error} signedOut={signedOut} reload={reload} />
 
       {error || signedOut ? null : loading && !data ? (
         <div className="flex items-center justify-center py-12 text-muted">

@@ -132,14 +132,26 @@ async def complete_auxiliary(
 
     started = time.monotonic()
     if provider == "groq":
-        call = AsyncGroq(api_key=api_key).chat.completions.create(
+        from app.domains.model_gateway.execution import current_budget
+        from app.domains.model_gateway.agent_budget import GenerationBudgetExceeded
+        from app.domains.model_gateway.errors import RequestBudgetExhausted
+        client = AsyncGroq(api_key=api_key, max_retries=0)
+        kwargs = dict(
             model=model,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0.0,
             **({"response_format": response_format} if response_format else {}),
             **(extra or {}),
         )
-        response = await (asyncio.wait_for(call, timeout=timeout) if timeout else call)
+        budget = current_budget()
+        try:
+            if budget is not None:
+                response = await budget.create(client, seconds=timeout or 25.0, **kwargs)
+            else:
+                call = client.chat.completions.create(**kwargs)
+                response = await (asyncio.wait_for(call, timeout=timeout) if timeout else call)
+        except GenerationBudgetExceeded:
+            raise RequestBudgetExhausted() from None
         usage = getattr(response, "usage", None)
         result = Completion(
             text=(response.choices[0].message.content or ""),

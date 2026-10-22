@@ -273,6 +273,12 @@ _JURISDICTION_ALIASES: dict[str, tuple[str, ...]] = {
     "GERMANY": ("germany", "german"),
     "FRANCE": ("france", "french"),
     "SOUTH_AFRICA": ("south africa", "south african"),
+    # The Crown Dependencies legislate their own taxes. "VAT … in the Isle of
+    # Man in 1987" was read as a UK question (bare "VAT" → UK) and answered
+    # with UK thresholds that no source said applied there.
+    "ISLE_OF_MAN": ("isle of man", "manx"),
+    "JERSEY": ("jersey",),
+    "GUERNSEY": ("guernsey", "bailiwick of guernsey"),
 }
 # Terms more than one country uses, counted only when the question names no
 # other country: "corporation tax" alone is the UK's, but "Irish corporation
@@ -284,7 +290,27 @@ _JURISDICTION_ALIASES: dict[str, tuple[str, ...]] = {
 _WEAK_ALIASES: dict[str, tuple[str, ...]] = {"UK": ("corporation tax", "vat"), "INDIA": ("gst",)}
 # Text before an alias that means a different jurisdiction: Northern Ireland
 # is part of the UK, and HMRC guidance mentions it constantly.
-_ALIAS_EXCLUDED_PREFIXES: dict[str, tuple[str, ...]] = {"IRELAND": ("northern ",)}
+_ALIAS_EXCLUDED_PREFIXES: dict[str, tuple[str, ...]] = {"IRELAND": ("northern ",), "JERSEY": ("new ",)}
+
+
+def source_jurisdiction(url: str | None) -> str | None:
+    """The jurisdiction whose authority published a source, from the trusted
+    domains above (gov.uk → UK). None for global bodies and unknown sites:
+    only a source known to belong to one jurisdiction can be a mismatch."""
+    host = _hostname(url or "")
+    if not host:
+        return None
+    for key, topics in _TRUSTED_DOMAINS.items():
+        if key == "GLOBAL":
+            continue
+        for domains in topics.values():
+            if any(host == domain or host.endswith("." + domain) for domain in domains):
+                return key
+    return None
+
+
+def jurisdiction_label(key: str) -> str:
+    return key if key in ("UK", "US", "EU", "UAE", "KSA") else key.replace("_", " ").title()
 
 
 def detect_jurisdictions(query: str, *, infer_from_tax_terms: bool = True) -> list[str]:

@@ -2,6 +2,27 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _block_live_model_transport(monkeypatch):
+    """Ordinary tests cannot spend model tokens using a developer's key."""
+    import os
+    if os.getenv("RUN_LIVE_LLM_TESTS") == "1":
+        return
+    for name in ("GROQ_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+                 "AZURE_OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    import groq
+
+    def blocked(*args, **kwargs):
+        pytest.fail("Live model transport is disabled in offline tests; mock the model response")
+
+    async def blocked_async(*args, **kwargs):
+        blocked()
+
+    monkeypatch.setattr(groq.Groq, "request", blocked)
+    monkeypatch.setattr(groq.AsyncGroq, "request", blocked_async)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_external_services(monkeypatch):
     # app/core/config.py loads backend/.env into os.environ, so a developer's
     # real Tavily key would otherwise send test searches to the paid API.
@@ -34,6 +55,39 @@ def _isolate_external_services(monkeypatch):
     from app.domains.source_library.embeddings import get_embedder
 
     get_embedder.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _block_live_http(request, monkeypatch):
+    """No offline test reaches a real website. The per-service stubs above
+    missed govuk.py's own search, so a prompt-size test grew from about 2,300
+    to 8,545 characters when GOV.UK's page changed (22 Oct 2026), and two more
+    test files were reading GOV.UK, DBnomics and Frankfurter live. Mock
+    transports and loopback servers are unaffected; tests marked live or
+    integration keep the network."""
+    import os
+
+    if os.getenv("RUN_LIVE_HTTP_TESTS") == "1" or request.node.get_closest_marker("live") \
+            or request.node.get_closest_marker("integration"):
+        return
+    import httpx
+
+    def offline(self, http_request):
+        if http_request.url.host in ("localhost", "127.0.0.1", "::1"):
+            return original_sync(self, http_request)
+        raise httpx.ConnectError(f"Live HTTP is disabled in offline tests: {http_request.url.host}",
+                                 request=http_request)
+
+    async def offline_async(self, http_request):
+        if http_request.url.host in ("localhost", "127.0.0.1", "::1"):
+            return await original_async(self, http_request)
+        raise httpx.ConnectError(f"Live HTTP is disabled in offline tests: {http_request.url.host}",
+                                 request=http_request)
+
+    original_sync = httpx.HTTPTransport.handle_request
+    original_async = httpx.AsyncHTTPTransport.handle_async_request
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", offline)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", offline_async)
 
 
 @pytest.fixture(autouse=True)

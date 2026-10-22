@@ -93,9 +93,10 @@ export async function validateOutput(text: string): Promise<{
   };
 }
 
+// Lists throw on failure (required) so a backend error shows as an error,
+// never as an empty ledger.
 export async function getEscalations(): Promise<Escalation[]> {
-  const remote = await tryBackend<Escalation[]>("/escalations");
-  return remote ?? [];
+  return (await tryBackend<Escalation[]>("/escalations", undefined, true))!;
 }
 
 export type EscalationStats = {
@@ -158,18 +159,15 @@ export async function createSafetyOverride(payload: {
 }
 
 export async function getSafetyEvents(): Promise<SafetyEvent[]> {
-  const remote = await tryBackend<SafetyEvent[]>("/events?limit=30");
-  if (remote) return remote;
-  return [];
+  return (await tryBackend<SafetyEvent[]>("/events?limit=30", undefined, true))!;
 }
 
 export async function getTemplates(): Promise<
   { template_id: string; title: string; body: string; safe_alternative: string; restricted_sub_class: string | null }[]
 > {
-  const remote = await tryBackend<
+  return (await tryBackend<
     { template_id: string; title: string; body: string; safe_alternative: string; restricted_sub_class: string | null }[]
-  >("/templates");
-  return remote ?? [];
+  >("/templates", undefined, true))!;
 }
 
 // ─── AI Governance views (live ledger data) ────────────────────────────────

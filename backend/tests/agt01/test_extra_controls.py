@@ -52,7 +52,7 @@ async def test_logs_hold_no_secrets_or_protected_prompt_content(monkeypatch, cap
         async def create(self, **kwargs):
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="LOW"))], usage=None)
 
-    monkeypatch.setattr(gateway, "AsyncGroq", lambda api_key: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())))
+    monkeypatch.setattr(gateway, "AsyncGroq", lambda api_key, **options: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())))
     monkeypatch.setenv("GROQ_API_KEY", "gsk_secret_value_123")
     with caplog.at_level(logging.DEBUG):
         await gateway.complete_auxiliary(purpose="risk_classification", model="m", system="s",

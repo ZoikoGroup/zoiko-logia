@@ -468,7 +468,7 @@ def boundary_view(db: Session, *, tenant_id: str) -> dict:
             })
 
     return {
-        "validator": "massarius.answer_validator (Checkpoint C)",
+        "validator": "Checkpoint C answer validator",
         "rules": boundary_rules(),
         "counts": {
             "answers_returned": event_counts.get("response_returned", 0),

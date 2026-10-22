@@ -158,6 +158,7 @@ class VisualizationSpec(BaseModel):
     # alternatives rather than a hardcoded per-type list.
     fallback_order: list[str] = Field(default_factory=list)
 
+    user_requested_type: str | None = None
     title: str | None = None
     summary: str | None = None   # accessibility text summary (spec §24)
     unit: str | None = None

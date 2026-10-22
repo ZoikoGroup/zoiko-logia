@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -12,6 +12,7 @@ from app.domains.model_gateway.schemas import (
     TestRunResponse,
 )
 from app.domains.model_gateway import registry_view
+from app.domains.model_gateway.errors import ProviderRequestRejected
 from app.domains.model_gateway.service import approve_prompt, list_models, list_prompts, run_test_prompt
 
 router = APIRouter(tags=["model_gateway"])
@@ -51,7 +52,10 @@ async def post_test_run(
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(require_permission(MODEL_MANAGE)),
 ) -> TestRunResponse:
-    prompt, output = await run_test_prompt(db, payload.prompt_id, payload.input_text, actor.id, tenant_id=actor.tenant_id)
+    try:
+        prompt, output = await run_test_prompt(db, payload.prompt_id, payload.input_text, actor.id, tenant_id=actor.tenant_id)
+    except ProviderRequestRejected as exc:
+        raise HTTPException(status_code=503, detail=exc.user_message) from None
     return TestRunResponse(prompt_id=prompt.id, prompt_name=prompt.name, output_text=output)
 
 

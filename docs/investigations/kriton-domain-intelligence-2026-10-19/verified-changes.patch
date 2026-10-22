@@ -1,0 +1,762 @@
+--- a/backend/app/orchestration/audit_events.py
++++ b/backend/app/orchestration/audit_events.py
+@@ -173,7 +173,7 @@
+ 
+ async def audit_calculation_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id,
+                                       actor_id, formula_ids: list[str], status: str,
+-                                      verification_status: str, input_names: list[str]):
++                                      verification_status: str, input_names: list[str], input_sources: dict[str, str] | None = None):
+     await _emit(
+         db, "calculation_completed", query_id, correlation_id, tenant_id,
+         audit_chain_id, actor_id,
+@@ -183,7 +183,8 @@
+             "status": status,
+             "verification_status": verification_status,
+             "input_names": input_names,
+-            "input_source": "user_query",
++            "input_source": "mixed" if input_sources and any(v != "query" for v in input_sources.values()) else "user_query",
++            "input_sources": input_sources or {},
+         },
+         replay_relevance="REQUIRED",
+     )
+--- a/backend/app/orchestration/calculations/engine.py
++++ b/backend/app/orchestration/calculations/engine.py
+@@ -165,8 +165,11 @@
+     return f"{value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):f}:1"
+ 
+ 
+-def _same_currency(inputs: list[CalculationInput]) -> bool:
++def _same_currency(inputs: list[CalculationInput], query: str = "") -> bool:
+     currencies = {item.currency for item in inputs if item.kind == "money" and item.currency}
++    if query:
++        currencies.update(code.upper() for code in re.findall(r"\b(?:GBP|USD|EUR|INR|AED)\b", query, re.I))
++        currencies.update(_CURRENCY_SYMBOLS[symbol] for symbol in re.findall(r"[£$€₹]", query))
+     return len(currencies) <= 1
+ 
+ 
+@@ -812,6 +815,123 @@
+         f"Total = {_money(principal, currency)} + {_money(interest, currency)} = {_money(principal + interest, currency)}"])
+ 
+ 
++def bank_reconciliation(query: str) -> CalculationResult | None:
++    """Reconcile explicitly labelled positive balances; never plug a difference."""
++    if not re.search(r'\bbank reconciliation\b', query, re.I) or not re.search(r'\d', query):
++        return None
++    labels = {
++        'bank_statement_balance': ('bank statement balance',),
++        'cash_book_balance': ('cash book balance', 'cashbook balance'),
++        'deposits_in_transit': ('deposits in transit', 'outstanding deposits'),
++        'outstanding_cheques': ('outstanding cheques', 'unpresented cheques', 'outstanding checks'),
++        'bank_charges': ('bank charges',),
++        'interest_received': ('interest received',),
++    }
++    for aliases in labels.values():
++        alias_pattern = '|'.join(re.escape(label) for label in aliases)
++        if len(re.findall(rf'\b(?:{alias_pattern})\s*(?:is|was|:|=)?\s*[£$€₹]?\s*{_NUMBER_TEXT}', query, re.I)) > 1:
++            return CalculationResult(matched=True, status='clarification_required', error_code='AMBIGUOUS_INPUTS',
++                                     message='Which version of the repeated reconciliation balance or adjustment should be used?')
++    masked = query
++    for aliases in labels.values():
++        for label in aliases:
++            masked = re.sub(rf'\b{re.escape(label)}\s*(?:is|was|:|=)?\s*[£$€₹]?\s*{_NUMBER_TEXT}', '', masked, flags=re.I)
++    if re.search(r'[£$€₹]\s*-?\d', masked, re.I):
++        return None
++    found = {key: _find_value(query, aliases) for key, aliases in labels.items()}
++    inputs = [_supplied(key, value[0], value[1]) for key, value in found.items() if value]
++    required = ['bank_statement_balance', 'cash_book_balance']
++    if not re.search(r'\bno other (?:reconciling )?items\b', query, re.I):
++        # Other corrections, errors and overdrafts need their own explicit direction.
++        return None
++    if re.search(r'\b(?:overdraft|dishonou?red|errors?|direct debit|standing order|unrecorded receipt)\b', query, re.I):
++        return None
++    missing = [key for key in required if found[key] is None]
++    if missing:
++        return _clarify('bank_reconciliation', inputs, missing)
++    if not _same_currency(inputs, query):
++        return CalculationResult(matched=True, status='clarification_required', error_code='CURRENCY_MISMATCH', message=_CURRENCY_MISMATCH_MESSAGE)
++    if any(i.value < 0 for i in inputs):
++        return None
++    v = {i.name: i.value for i in inputs}
++    currency = _currency(inputs)
++    bank = v['bank_statement_balance'] + v.get('deposits_in_transit', 0) - v.get('outstanding_cheques', 0)
++    book = v['cash_book_balance'] - v.get('bank_charges', 0) + v.get('interest_received', 0)
++    outputs = [CalculationOutput(name=k, value=a, display_value=_money(a, currency), kind='money') for k, a in (
++        ('adjusted_bank_balance', bank), ('adjusted_cash_book_balance', book), ('unreconciled_difference', bank-book))]
++    result = _success(['bank_reconciliation'], inputs, outputs, [
++        f'Adjusted bank balance = {v["bank_statement_balance"]:f} + {v.get("deposits_in_transit", 0):f} deposits in transit − {v.get("outstanding_cheques", 0):f} outstanding cheques = {bank:f}',
++        f'Adjusted cash book balance = {v["cash_book_balance"]:f} − {v.get("bank_charges", 0):f} bank charges + {v.get("interest_received", 0):f} interest received = {book:f}',
++        f'Unreconciled difference = {bank:f} − {book:f} = {bank-book:f}',
++    ])
++    result.notes = ['Timing items adjust the bank-statement side; unrecorded charges and interest adjust the cash-book side. '
++                    'No adjustment is counted on both sides. No other items are included, as explicitly supplied.',
++                    'A zero difference establishes arithmetic agreement only; compare bank records, dates and ledger entries before approving any adjustment.']
++    return result
++
++
++def periodic_inventory(query: str) -> CalculationResult | None:
++    """Explicit ordered cost layers for a single periodic sale, in the existing engine."""
++    if not re.search(r'\bFIFO\b|weighted[- ]average', query, re.I):
++        return None
++    # Moving-average inventory with interleaved sales needs dated transactions.
++    if not re.search(r'\bperiodic\b', query, re.I) or not re.search(r'all purchases (?:occurred |were )?before', query, re.I):
++        return None
++    pattern = re.compile(rf'\b(opening inventory|purchases?)\s+({_NUMBER_TEXT})\s+units?\s+at\s*([£$€₹])?\s*({_NUMBER_TEXT})\s*(?:each|per unit)?', re.I)
++    layers = list(pattern.finditer(query))
++    sold = _find_value(query, ('units sold',))
++    if not layers or sold is None:
++        return _clarify('periodic_inventory', [], ['ordered cost layers and units sold'])
++    # Do not silently drop a layer or a return the supported shape cannot parse.
++    if len(layers) != len(re.findall(r'\b(?:opening inventory|purchases?)\s+\d', query, re.I)) or re.search(r'\b(?:returns?|damaged|write[- ]down|freight)\b', query, re.I):
++        return None
++    if sum(layer[1].lower() == 'opening inventory' for layer in layers) > 1 or len(re.findall(r'\bunits sold\s+\d', query, re.I)) != 1:
++        return None
++    masked = pattern.sub('', query)
++    masked = re.sub(rf'\bunits sold\s+{_NUMBER_TEXT}', '', masked, flags=re.I)
++    if re.search(r'[£$€₹]\s*-?\d', masked):
++        return None
++    layers.sort(key=lambda layer: layer[1].lower() != 'opening inventory')
++    inputs, quantities, costs = [], [], []
++    for index, layer in enumerate(layers):
++        qty, cost = _decimal(layer[2]), _decimal(layer[4])
++        quantities.append(qty); costs.append(cost)
++        inputs += [_supplied(f'layer_{index+1}_units', qty, kind='units'),
++                   _supplied(f'layer_{index+1}_unit_cost', cost, _CURRENCY_SYMBOLS.get(layer[3] or ''))]
++    inputs.append(_supplied('units_sold', sold[0], kind='units'))
++    if not _same_currency(inputs, query):
++        return CalculationResult(matched=True, status='clarification_required', error_code='CURRENCY_MISMATCH', message=_CURRENCY_MISMATCH_MESSAGE)
++    total_units, total_cost = sum(quantities), sum(q*c for q,c in zip(quantities,costs))
++    if total_units <= 0 or sold[0] < 0 or sold[0] > total_units or any(x < 0 for x in quantities+costs):
++        return _clarify('periodic_inventory', inputs, ['valid non-negative layers and units sold not exceeding available units'])
++    remaining, fifo = sold[0], Decimal(0)
++    consumed = []
++    for qty, cost in zip(quantities, costs):
++        taken = min(remaining, qty)
++        fifo += taken*cost
++        remaining -= taken
++        if taken:
++            consumed.append(f"{taken:f} × {cost:f}")
++    average = total_cost/total_units
++    currency = _currency(inputs)
++    outputs, steps = [], []
++    def add(name, value, formula):
++        outputs.append(CalculationOutput(name=name, value=value, display_value=_money(value,currency), kind='money'))
++        steps.append(f'{name.replace("_", " ").capitalize()} = {formula} = {_money(value,currency)}')
++    if re.search(r'\bFIFO\b', query, re.I):
++        add('fifo_cost_of_goods_sold', fifo, ' + '.join(consumed) or '0 units sold')
++        add('fifo_closing_inventory', total_cost-fifo, f'{total_cost:f} available cost − {fifo:f} FIFO COGS')
++    if re.search(r'weighted[- ]average', query, re.I):
++        add('weighted_average_unit_cost', average, f'{total_cost:f} ÷ {total_units:f}')
++        add('weighted_average_cost_of_goods_sold', sold[0]*average, f'{sold[0]:f} × ({total_cost:f} ÷ {total_units:f})')
++        add('weighted_average_closing_inventory', (total_units-sold[0])*average, f'({total_units:f} − {sold[0]:f}) × ({total_cost:f} ÷ {total_units:f})')
++    result = _success(['periodic_inventory'], inputs, outputs, steps)
++    result.notes = ['Periodic valuation uses the supplied ordered cost layers; all purchases precede the only sale as stated. '
++                    'Each method conserves total cost: cost of goods sold plus closing inventory equals available cost. '
++                    'Arithmetic agreement does not validate stock counts or source records.']
++    return result
++
++
+ def calculate_from_query(query: str) -> CalculationResult:
+     """Recognize and execute supported self-contained accounting calculations."""
+     # "−20%" (U+2212) was not read as a number, so a rate the user gave — and
+@@ -825,8 +945,9 @@
+     statement = inventory_statement(q)
+     if statement is not None:
+         return statement
+-    if all(re.search(r'\b' + label + r'\b', q, re.I)
+-           for label in ('opening inventory', 'closing inventory', 'purchases')):
++    if (all(re.search(r'\b' + label + r'\b', q, re.I)
++            for label in ('opening inventory', 'closing inventory', 'purchases'))
++            and not re.search(r'\bFIFO\b|weighted[- ]average', q, re.I)):
+         # This is a derived cost-of-sales problem, not a missing COGS input.
+         # Unsupported extra adjustments belong to composition, where their
+         # relationships can be handled instead of asking for a subtotal.
+@@ -849,6 +970,10 @@
+         # An unsupported batch must never become one calculation using labels
+         # borrowed from different questions.
+         return CalculationResult()
++    for workflow in (bank_reconciliation, periodic_inventory):
++        result = workflow(q)
++        if result is not None:
++            return result
+     # The combined GST rate supplied by the user is an immutable input.
+     # Do not search for a different statutory percentage for this calculation.
+     if (re.search(r'\bcgst\b', q, re.I) and re.search(r'\bsgst\b', q, re.I)
+@@ -905,7 +1030,7 @@
+     # them (one question's "cost" used in another's formula). Not matched,
+     # so the model answers each and every arithmetic line is re-checked.
+     subscription_request = bool(re.search(r"\b(?:subscription|plan)\b", q, re.I) and re.search(r"\b(?:monthly|per month)\b", q, re.I) and re.search(r"\b(?:annually|annual|per year)\b", q, re.I))
+-    if (not _CALCULATION_HINT.search(q) and not subscription_request) or asks_several_questions(q):
++    if (not _CALCULATION_HINT.search(q) and not subscription_request and not re.search(r"straight[- ]line depreciation", q, re.I)) or asks_several_questions(q):
+         return CalculationResult()
+ 
+     # Subscription break-even is a time comparison, not contribution per unit.
+@@ -1188,8 +1313,10 @@
+     if re.search(r"\bstraight[- ]line depreciation\b", q, re.I):
+         cost = _input(q, "asset_cost")
+         residual = _input(q, "residual_value")
++        if residual is None and re.search(r"\b(?:no|zero) (?:resale|residual|salvage) value\b", q, re.I):
++            residual = _supplied("residual_value", Decimal(0), cost.currency if cost else None)
+         life = _input(q, "useful_life", kind="years")
+-        if life is None and (over := re.search(r"\bover\s+(\d+(?:\.\d+)?)\s+years?\b", q, re.I)):
++        if life is None and (over := re.search(r"\b(?:over|lasts?|useful life(?: is| of)?)\s+(\d+(?:\.\d+)?)\s+years?\b", q, re.I)):
+             # "…residual value over 5 years" is the useful life; it was asked for.
+             life = _supplied("useful_life", Decimal(over.group(1)), kind="years")
+         inputs = [item for item in (cost, residual, life) if item]
+@@ -1198,9 +1325,23 @@
+             return _clarify("straight_line_depreciation", inputs, missing)
+         if life.value <= 0:
+             return _undefined("straight_line_depreciation", inputs, "Annual depreciation is undefined because useful life must be greater than zero.")
++        if not _same_currency(inputs, q):
++            return CalculationResult(matched=True, status="clarification_required", error_code="CURRENCY_MISMATCH", message=_CURRENCY_MISMATCH_MESSAGE)
++        if cost.value < 0 or residual.value < 0 or residual.value > cost.value:
++            return _clarify("straight_line_depreciation", inputs, ["non-negative cost and residual value not exceeding cost"])
+         annual = (cost.value - residual.value) / life.value
+         currency = _currency(inputs)
+-        return _success(["straight_line_depreciation"], inputs, [CalculationOutput(name="annual_depreciation", value=annual, display_value=_money(annual, currency), kind="money")], [f"Annual depreciation = ({_money(cost.value, currency)} − {_money(residual.value, currency)}) ÷ {life.value:f} = {_money(annual, currency)}"])
++        if currency is None and len(codes := set(re.findall(r"\b(?:GBP|USD|EUR|INR|AED)\b", q, re.I))) == 1:
++            currency = next(iter(codes)).upper()
++            for item in inputs:
++                if item.kind == "money":
++                    item.currency = currency
++        outputs = [CalculationOutput(name="annual_depreciation", value=annual, display_value=_money(annual, currency), kind="money")]
++        steps = [f"Annual depreciation = ({_money(cost.value, currency)} − {_money(residual.value, currency)}) ÷ {life.value:f} = {_money(annual, currency)}"]
++        if re.search(r"\bmonthly\b|per month", q, re.I):
++            outputs.append(CalculationOutput(name="monthly_depreciation", value=annual/12, display_value=_money(annual/12, currency), kind="money"))
++            steps.append(f"Monthly depreciation = {_money(annual, currency)} ÷ 12 = {_money(annual/12, currency)}")
++        return _success(["straight_line_depreciation"], inputs, outputs, steps)
+ 
+     if re.search(r"\bbreak[- ]even\b", q, re.I):
+         price = _input(q, "selling_price")
+--- a/backend/app/orchestration/calculations/inventory_statement.py
++++ b/backend/app/orchestration/calculations/inventory_statement.py
+@@ -110,30 +110,43 @@
+                       and re.search(r'\b(?:original|corrected|correction)\b', query, re.I))
+     if not correction and not comparison:
+         return None
+-    baseline, prior_correction = None, None
++    baseline, revision_texts = None, []
+     for message in reversed(history or []):
+         if getattr(message, 'role', '') != 'user':
+             continue
+         text = message.content
+-        if comparison and prior_correction is None:
+-            prior_correction = re.search(r'closing inventory\s+(?:was\s+)?(overstated|understated)\s+by\s*[£$€₹]?\s*(\d[\d,]*(?:\.\d+)?)', text, re.I)
++        revision = re.search(r'closing inventory\s+(?:was\s+)?(overstated|understated)\s+by\s*[£$€₹]?\s*(\d[\d,]*(?:\.\d+)?)', text, re.I)
++        if revision:
++            revision_texts.insert(0, text)
++            continue
+         if len(re.findall(r'[£$€₹]\s*\d', text)) >= 2:
+             baseline = inventory_statement(text)
+             break
+     if baseline is None:
+         return None
+     if correction:
+-        direction, amount = correction['direction'].lower(), correction['amount']
+-    elif prior_correction:
+-        direction, amount = prior_correction[1].lower(), prior_correction[2]
+-    else:
++        revision_texts.append(query)
++    if not revision_texts:
+         return None
+-    amount = Decimal(amount.replace(',', ''))
+-    delta = -amount if direction == 'overstated' else amount
+-    inputs = [item.model_copy(update={'value': item.value + delta if item.name == 'closing_inventory' else item.value,
+-                                     'source_location': 'conversation_history'}) for item in baseline.inputs]
+-    if next(item.value for item in inputs if item.name == 'closing_inventory') < 0:
++    inputs = [item.model_copy(update={'source_location': 'conversation_history'}) for item in baseline.inputs]
++    original_closing = next(item.value for item in inputs if item.name == 'closing_inventory')
++    for revision_text in revision_texts:
++        revision = re.search(r'closing inventory\s+(?:was\s+)?(overstated|understated)\s+by\s*([£$€₹])?\s*(\d[\d,]*(?:\.\d+)?)', revision_text, re.I)
++        if revision is None:
++            return None
++        if revision[2] and {'£': 'GBP', '$': 'USD', '€': 'EUR', '₹': 'INR'}[revision[2]] != inputs[0].currency:
++            return None
++        change = Decimal(revision[3].replace(',', '')) * (-1 if revision[1].lower() == 'overstated' else 1)
++        inputs = [item.model_copy(update={
++            'value': item.value + change,
++            'display_value': str(item.value + change),
++            'source_location': 'query' if correction and revision_text is query else 'conversation_history',
++        }) if item.name == 'closing_inventory' else item for item in inputs]
++    closing = next(item.value for item in inputs if item.name == 'closing_inventory')
++    if closing < 0:
+         return None
++    delta = closing - original_closing
++    amount = abs(delta)
+     currency = inputs[0].currency
+     result = _render(inputs, currency)
+     if result is None:
+--- a/backend/app/orchestration/calculations/visuals.py
++++ b/backend/app/orchestration/calculations/visuals.py
+@@ -4,21 +4,75 @@
+ from app.orchestration.calculations.schemas import CalculationResult
+ from app.orchestration.response_planner import detect_explicit_visual_request
+ from app.orchestration.visualization.spec import (
+-    DonutSlice, EncodingField, VisualizationDataPoint, VisualizationEncoding, VisualizationSpec,
++    DonutSlice, EncodingField, VisualizationDataPoint, VisualizationEncoding, VisualizationSpec, NamedSeries,
+ )
+ from app.orchestration.visualization.validator import VisualizationValidator
+ 
+ 
+ def calculation_visual(result: CalculationResult, query: str, spec_id: str):
+-    if result.status != "success" or not detect_explicit_visual_request(query):
++    if result.status != "success" or result.verification_status != "passed":
++        return None, []
++    explicit = detect_explicit_visual_request(query)
++    # A comparison of validated scenarios benefits from aligned grouped bars.
++    # Do not infer a time series from unrelated accounting subtotals.
++    comparison = bool(re.search(r"\b(?:compare|comparison|differences?|side by side)\b", query, re.I))
++    if not explicit and not comparison:
+         return None, []
+     values = {item.name: item.value for item in result.outputs}
+     currency = next((item.currency for item in result.inputs if item.currency), None)
++    if explicit and re.search(r"\bwaterfall\b", query, re.I):
++        # The renderer already supports signed delta bars. Build a bridge only
++        # when its components reconcile exactly to a verified subtotal.
++        combined = {item.name: item.value for item in [*result.inputs, *result.outputs]}
++        prefix = "current_" if "current_net_sales" in combined else ""
++        revenue = combined.get(prefix + "net_sales", combined.get("revenue"))
++        cost = combined.get(prefix + "cost_of_goods_sold", combined.get("cost_of_sales"))
++        expenses = combined.get(prefix + "operating_expenses")
++        operating = combined.get(prefix + "operating_profit")
++        if all(v is not None for v in (revenue, cost, expenses, operating)) and revenue-cost-expenses == operating:
++            steps = [("Net sales", revenue), ("Cost of goods sold", -cost), ("Operating expenses", -expenses)]
++            final = combined.get(prefix + "profit_before_tax")
++            if final is not None:
++                steps.append(("Finance costs", -(operating-final)))
++            spec = VisualizationSpec(
++                id=spec_id, type="BAR", variant="WATERFALL_CHART", family="STATISTICAL", renderer="RECHARTS",
++                title="Revenue to profit", unit=currency,
++                summary="Signed movements bridge net sales to " + ("profit before tax." if final is not None else "operating profit."),
++                encoding=VisualizationEncoding(x=EncodingField(field="component", type="nominal"),
++                    y=EncodingField(field="movement", type="quantitative", unit=currency)),
++                data=[VisualizationDataPoint(x=label, y=float(value)) for label, value in steps],
++            )
++            if VisualizationValidator().validate(spec).passed:
++                return spec, []
++        return None, ["A waterfall needs reconciling components on one basis. The supplied results do not establish that bridge; the calculation table is available."]
++    groups = {}
++    for item in result.outputs:
++        match = re.fullmatch(r"(original|revised|current|previous|fifo|weighted_average)_(.+)", item.name)
++        if match and item.kind == "money" and item.value is not None:
++            groups.setdefault(match[1], {})[match[2]] = item.value
++    paired = next((pair for pair in (("original", "revised"), ("previous", "current"), ("fifo", "weighted_average"))
++                   if all(key in groups for key in pair)), None)
++    if paired and not re.search(r"\b(?:pie|donut|scatter|waterfall|stacked)\b", query, re.I):
++        metrics = [key for key in ("gross_profit", "operating_profit", "profit_before_tax", "cost_of_goods_sold", "closing_inventory")
++                   if all(key in groups[group] for group in paired)]
++        if len(metrics) >= 2:
++            spec = VisualizationSpec(
++                id=spec_id, type="GROUPED_BAR", variant="GROUPED_BAR_CHART",
++                family="COMPARISON", renderer="RECHARTS", unit=currency,
++                title="Inventory valuation comparison" if paired[0] == "fifo" else "Profit comparison",
++                summary="Compare validated measures across the supplied periods, scenarios or valuation methods. The groups are not stacked or added together.",
++                series=[NamedSeries(name=group.replace("_", " ").title(), data=[VisualizationDataPoint(
++                    x=metric.replace("_", " ").title(), y=float(groups[group][metric])) for metric in metrics]) for group in paired],
++            )
++            if VisualizationValidator().validate(spec).passed:
++                return spec, []
++    if not explicit:
++        return None, []
+     if re.search(r"\b(?:pie|donut)\b", query, re.I):
+         revenue = next((item.value for item in result.inputs if item.name == "revenue"), None)
+         expenses = next((item.value for item in result.inputs if item.name == "expenses"), None)
+         profit = values.get("profit")
+-        if revenue and expenses is not None and profit is not None and expenses >= 0 and profit >= 0:
++        if revenue and expenses is not None and profit is not None and expenses >= 0 and profit >= 0 and expenses + profit == revenue:
+             spec = VisualizationSpec(
+                 id=spec_id, type="DONUT", family="COMPOSITION", renderer="ECHARTS",
+                 title="Expenses and profit as shares of revenue", unit="%",
+@@ -44,7 +98,9 @@
+         )
+         if VisualizationValidator().validate(spec).passed:
+             return spec, []
+-    money = [item for item in result.outputs if item.kind == "money" and item.value is not None]
++    if "annual_depreciation" in values and "monthly_depreciation" in values:
++        return None, ["Annual and monthly depreciation use different time bases; the table shows both without implying comparable period totals."]
++    money = [item for item in result.outputs if item.kind == "money" and item.value is not None and not item.name.endswith("unit_cost")]
+     if not money:
+         return None, ["The requested chart needs compatible numeric results; the verified calculation is shown in the table."]
+     spec = VisualizationSpec(
+--- a/backend/app/orchestration/conversation_memory.py
++++ b/backend/app/orchestration/conversation_memory.py
+@@ -120,6 +120,30 @@
+     from app.orchestration.calculations.statements import operating_statement, _SCENARIO_CHANGE
+     from app.orchestration.numerical_facts import calculation_facts
+     snapshot = {'version': 1, 'facts': [f.model_dump(mode='json') for f in calculation_facts(result, query_id)]}
++    # Persist a descriptive contract in the existing scoped snapshot, without
++    # granting authority to history or changing routing/planner policy.
++    requested = [name for name, pattern in (
++        ('formulas', r'\bformulas?|working\b'),
++        ('table', r'\btable|side by side\b'),
++        ('visual', r'\bchart|graph|plot\b'),
++        ('explanation', r'\bexplain|why\b'),
++        ('management_questions', r'\bquestions? management\b'),
++    ) if re.search(pattern, query, re.I)]
++    snapshot['task_state'] = {
++        'task_type': result.formula_ids,
++        'current_intent': query,
++        'figure_version': query_id,
++        'has_referenced_inputs': any(i.source_location != 'query' for i in result.inputs),
++        'inputs': [i.model_dump(mode='json') for i in result.inputs],
++        'calculation_dependencies': {'formulas': result.formula_ids, 'input_names': [i.name for i in result.inputs]},
++        'derived_outputs': [o.model_dump(mode='json') for o in result.outputs],
++        'assumptions_and_limits': result.notes,
++        'clarification_reason': result.message if result.status == 'clarification_required' else None,
++        'requested_sections': requested,
++        # Calculation completion is not a claim that generated prose is complete.
++        'calculation_status': result.status,
++        'response_completion': 'pending_final_validation',
++    }
+     if _new_financial_context(query):
+         snapshot['reset_statement_context'] = True
+     if result.status != 'success':
+--- a/backend/app/orchestration/router.py
++++ b/backend/app/orchestration/router.py
+@@ -90,7 +90,21 @@
+     from app.orchestration.routing_matrix import POLICY_VERSION
+     answer = getattr(result, "answer", None)
+     safety = getattr(result, "safety", None)
++    visual = getattr(result, "visualization", None)
++    calculation = getattr(result, "calculation", None)
++    import hashlib
++    visual_provenance = None
++    if visual is not None:
++        dataset = visual.model_dump(mode="json", include={"data", "series", "donut", "scatter", "rows", "columns", "sources", "unit"})
++        visual_provenance = {
++            "visual_id": visual.id, "selected_type": visual.type,
++            "dataset_sha256": hashlib.sha256(json.dumps(dataset, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
++            "source_ids": visual.sources,
++            "formula_ids": calculation.formula_ids if calculation else [],
++            "calculation_sha256": hashlib.sha256(calculation.model_dump_json().encode()).hexdigest() if calculation else None,
++        }
+     return {
++        "visualization_provenance": visual_provenance,
+         "request_id": result.query_id,
+         "route": getattr(result, "route", None),
+         "risk": getattr(safety, "risk_level", None),
+--- a/backend/app/orchestration/service.py
++++ b/backend/app/orchestration/service.py
+@@ -1316,6 +1316,8 @@
+     planner_handle = None
+     shadow_facts: dict = {}
+ 
++    task_snapshot = None
++
+     async def finish(
+         response: AskKritonResponse, *, route: str | None = None, store: bool = True, json_dump: bool = False,
+     ) -> AskKritonResponse:
+@@ -1330,6 +1332,17 @@
+                             else answer_completeness(response.answer.limitations))
+             response = response.model_copy(update={"answer": response.answer.model_copy(
+                 update={"completeness": completeness})})
++        if task_snapshot is not None:
++            task_snapshot['task_state'].update(
++                response_completion=response.answer.completeness if response.answer else 'no_answer',
++                outcome=response.outcome,
++                remaining_limitations=list(response.answer.limitations) if response.answer else [],
++                visualization_id=response.visualization.id if response.visualization else None,
++            )
++            await conversation_memory.save_snapshot(
++                db, tenant_id=tenant_id, user_id=actor_id, conversation_id=conversation_id,
++                query_id=query_id, snapshot=task_snapshot,
++            )
+         if released_receipts and response.answer is not None and response.outcome == "answered":
+             from app.orchestration.figure_reconciliation import figure_provenance
+             figures = figure_provenance(response.answer.text or "", released_receipts)
+@@ -1687,9 +1700,10 @@
+         or calculate_from_query(expense_followup_query(
+             request.query, screened_history(request.conversation_history),
+         ))
++    task_snapshot = conversation_memory.snapshot_for(request.query, request.conversation_history, calculation_result, query_id)
+     await conversation_memory.save_snapshot(
+         db, tenant_id=tenant_id, user_id=actor_id, conversation_id=conversation_id, query_id=query_id,
+-        snapshot=conversation_memory.snapshot_for(request.query, request.conversation_history, calculation_result, query_id),
++        snapshot=task_snapshot,
+     )
+     if (calculation_result.status == "clarification_required"
+             and calculation_result.error_code == "MISSING_INPUT") and build_calculation(
+@@ -1761,6 +1775,7 @@
+             status=calculation_result.status,
+             verification_status=calculation_result.verification_status,
+             input_names=[item.name for item in calculation_result.inputs],
++            input_sources={item.name: item.source_location for item in calculation_result.inputs},
+         )
+         if calculation_result.status == "clarification_required":
+             response = AskKritonResponse(
+--- a/backend/tests/test_live_router_defects.py
++++ b/backend/tests/test_live_router_defects.py
+@@ -218,7 +218,7 @@
+ 
+ def test_a_chart_of_several_calculated_amounts_validates():
+     from app.orchestration.calculations.schemas import CalculationOutput, CalculationResult
+-    result = CalculationResult(matched=True, status="success", outputs=[
++    result = CalculationResult(matched=True, status="success", verification_status="passed", outputs=[
+         CalculationOutput(name="gross_profit", value=Decimal("42"), display_value="£42", kind="money"),
+         CalculationOutput(name="cost", value=Decimal("84"), display_value="£84", kind="money")])
+     spec, _ = calculation_visual(result, "show a bar chart", "spec")
+--- a/frontend/components/visualization/charts/ChartRenderer.tsx
++++ b/frontend/components/visualization/charts/ChartRenderer.tsx
+@@ -3,7 +3,7 @@
+ import { useRef, useState } from "react";
+ import { Download, Table2 } from "lucide-react";
+ import type { VisualizationSpec } from "@/lib/api";
+-import { engineFor, SAME_SHAPE_VIEW_ALTERNATIVES } from "./engineRouting";
++import { engineFor, validViewAlternatives } from "./engineRouting";
+ import { RechartsChart } from "./RechartsAdapter";
+ import { EChartsChart, type EChartsInstanceLike } from "./EChartsAdapter";
+ import { extraChartKind } from "./extraCharts";
+@@ -30,7 +30,7 @@
+   const containerRef = useRef<HTMLDivElement>(null);
+   const echartsInstanceRef = useRef<EChartsInstanceLike | null>(null);
+ 
+-  const alternatives = SAME_SHAPE_VIEW_ALTERNATIVES[originalViz.type] ?? [];
++  const alternatives = validViewAlternatives(originalViz);
+   const [defaultView] = useDefaultView(originalViz.type);
+   const initialType =
+     defaultView && alternatives.includes(defaultView as VisualizationSpec["type"])
+--- a/frontend/components/visualization/charts/engineRouting.ts
++++ b/frontend/components/visualization/charts/engineRouting.ts
+@@ -49,3 +49,17 @@
+   LINE: ["BAR"],
+   BAR: ["LINE"],
+ };
++
++/** Shape compatibility alone is insufficient: a line implies an ordered axis. */
++export function validViewAlternatives(viz: VisualizationSpec): VisualizationSpec["type"][] {
++  if (viz.variant === "WATERFALL_CHART") return [];
++  const candidates = SAME_SHAPE_VIEW_ALTERNATIVES[viz.type] ?? [];
++  return candidates.filter((type) => {
++    if (type !== "LINE") return true;
++    const points = viz.data ?? [];
++    const labels = points.map((p) => p.x);
++    return viz.encoding?.x.type === "temporal" && points.length >= 3
++      && new Set(labels).size === labels.length
++      && labels.every((label, i) => i === 0 || labels[i - 1] < label);
++  });
++}
+--- /dev/null
++++ b/backend/tests/test_domain_intelligence_http.py
+@@ -0,0 +1,81 @@
++"""Isolated authenticated domain workflows; no provider calls."""
++from tests.offline_http_support import offline_http  # noqa: F401
++
++DEPRECIATION = 'bought machine 24000 gbp lasts 6 years no resale value straight line depreciation yearly and monthly how much'
++BANK = ('Prepare a bank reconciliation. All amounts GBP. Bank statement balance £12,000, '
++        'cash book balance £12,600, deposits in transit £1,500, outstanding cheques £700, '
++        'bank charges £100, interest received £300. There are no other reconciling items. '
++        'Calculate both adjusted balances and any remaining discrepancy. Show adjustment directions.')
++INVENTORY = ('Use periodic FIFO and periodic weighted average. All purchases occurred before the only sale. '
++             'Opening inventory 100 units at £10 each; purchases 200 units at £13 each; units sold 180. '
++             'Calculate cost of goods sold and closing inventory for both methods. Show formulas.')
++
++
++def values(r):
++    return {x['name']: x['value'] for x in (r.body.get('calculation') or {}).get('outputs', [])}
++
++
++async def test_depreciation_natural_language_all_inputs_and_periods(offline_http):
++    r = await offline_http.ask(DEPRECIATION, case_id='depreciation-natural')
++    assert values(r)['annual_depreciation'] == '4000'
++    assert values(r)['monthly_depreciation'].startswith('333.333')
++    assert r.body['answer']['completeness'] == 'complete'
++    assert not r.trace['model_requests']
++
++
++async def test_bank_reconciliation_directions_and_residual(offline_http):
++    r = await offline_http.ask(BANK, case_id='bank-reconciliation')
++    assert values(r)['adjusted_bank_balance'] == '12800'
++    assert values(r)['adjusted_cash_book_balance'] == '12800'
++    assert values(r)['unreconciled_difference'] == '0'
++    assert r.body['answer']['completeness'] == 'complete'
++
++
++async def test_periodic_inventory_completes_both_methods(offline_http):
++    r = await offline_http.ask(INVENTORY, case_id='inventory-two-methods')
++    assert values(r)['fifo_cost_of_goods_sold'] == '2040'
++    assert values(r)['fifo_closing_inventory'] == '1560'
++    assert values(r)['weighted_average_cost_of_goods_sold'] == '2160'
++    assert values(r)['weighted_average_closing_inventory'] == '1440'
++    assert r.body['answer']['completeness'] == 'complete'
++
++
++async def test_inventory_revisions_accumulate_only_on_target(offline_http):
++    from tests.test_paid_manual_transcript import WHOLESALE, CORRECTION
++    await offline_http.ask(WHOLESALE, case_id='inventory-revision-base', conversation='revision')
++    await offline_http.ask(CORRECTION, case_id='inventory-revision-first', conversation='revision')
++    result = await offline_http.ask('Closing inventory was understated by £2,000. Correct only that figure and update the results.',
++                                    case_id='inventory-revision-second', conversation='revision')
++    assert values(result)['cost_of_goods_sold'] == '568000'
++    assert values(result)['operating_profit'] == '146000'
++    assert values(result)['finance_costs'] == '9000'
++    changed = {i['name']: i for i in result.body['calculation']['inputs']}
++    assert changed['closing_inventory']['value'] == '87000'
++    assert changed['closing_inventory']['source_location'] == 'query'
++    assert changed['purchases']['value'] == '570000'
++    assert changed['purchases']['source_location'] == 'conversation_history'
++
++
++async def test_chart_and_task_state_have_durable_provenance(offline_http):
++    import hashlib
++    import json
++    from sqlalchemy import select
++    from app.domains.orchestration_state.models import ConversationTurn
++    question = ('Revenue £900,000, cost of sales £500,000, operating expenses £150,000. '
++                'Calculate operating profit. Show a bar chart.')
++    result = await offline_http.ask(question, case_id='chart-audit', conversation='chart-task')
++    visual = result.body['visualization']
++    assert visual['type'] == 'BAR'
++    receipt = next(a['payload'] for a in result.trace['audit'] if a['event'] == 'answer_receipt')
++    provenance = receipt['visualization_provenance']
++    dataset = {key: visual[key] for key in ['data', 'series', 'donut', 'scatter', 'rows', 'columns', 'sources', 'unit']}
++    assert provenance['dataset_sha256'] == hashlib.sha256(json.dumps(dataset, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
++    assert provenance['formula_ids']
++    async with offline_http.sessions() as db:
++        turn = await db.scalar(select(ConversationTurn).where(ConversationTurn.query_id == result.body['query_id']))
++        state = turn.snapshot['task_state']
++    assert state['response_completion'] == 'complete'
++    assert state['figure_version'] == result.body['query_id']
++    assert state['visualization_id'] == visual['id']
++    assert state['requested_sections'] == ['visual']
++    assert not result.trace['model_requests']
+--- /dev/null
++++ b/backend/tests/test_domain_intelligence_calculations.py
+@@ -0,0 +1,110 @@
++from decimal import Decimal
++import pytest
++from app.orchestration.calculations.engine import calculate_from_query
++from app.orchestration.calculations.visuals import calculation_visual
++from tests.test_domain_intelligence_http import BANK, INVENTORY, DEPRECIATION
++
++
++def vals(result):
++    return {o.name: o.value for o in result.outputs}
++
++
++def test_bank_residual_is_not_forced_to_zero():
++    r = calculate_from_query(BANK.replace('£12,600', '£12,500'))
++    assert vals(r)['unreconciled_difference'] == 100
++    assert vals(r)['adjusted_cash_book_balance'] == 12700
++
++
++@pytest.mark.parametrize('extra', [' Bank error £200.', ' Direct debit £400.', ' Unexplained adjustment £500.'])
++def test_bank_additional_items_are_not_silently_ignored(extra):
++    assert calculate_from_query(BANK + extra).status != 'success'
++
++
++def test_bank_mixed_currency_is_not_verified():
++    assert calculate_from_query(BANK.replace('£700', '$700')).status != 'success'
++
++
++@pytest.mark.parametrize('sold', [0, 50, 180, 300])
++def test_inventory_conserves_cost_and_units(sold):
++    v = vals(calculate_from_query(INVENTORY.replace('sold 180', f'sold {sold}')))
++    for method in ['fifo', 'weighted_average']:
++        assert v[f'{method}_cost_of_goods_sold'] + v[f'{method}_closing_inventory'] == 3600
++    assert v['weighted_average_cost_of_goods_sold'] == Decimal(sold)*12
++
++
++@pytest.mark.parametrize('change', [lambda q: q.replace('sold 180','sold 301'),
++    lambda q: q.replace('£13','$13'), lambda q: q+' Purchase returns £50.',
++    lambda q: q.replace('All purchases occurred before the only sale.','Sales interleaved with purchases.')])
++def test_inventory_does_not_verify_invalid_or_unsupported_shapes(change):
++    assert calculate_from_query(change(INVENTORY)).status != 'success'
++
++
++@pytest.mark.parametrize('q', [
++    'Calculate straight-line depreciation. Asset cost £24,000, residual value £25,000, useful life 6 years.',
++    'Calculate straight-line depreciation. Asset cost £24,000, residual value $0, useful life 6 years.',
++    'Calculate straight-line depreciation. Asset cost £24,000, residual value £0, useful life 0 years.',
++])
++def test_depreciation_invalid_inputs_do_not_produce_success(q):
++    assert calculate_from_query(q).status != 'success'
++
++
++def test_depreciation_missing_residual_is_not_assumed_zero():
++    r = calculate_from_query(DEPRECIATION.replace('no resale value', ''))
++    assert r.status == 'clarification_required'
++    assert 'residual value' in r.message
++
++
++def test_adaptive_profit_comparison_uses_validated_values():
++    from tests.test_agent_request_size import QUESTION
++    r = calculate_from_query(QUESTION)
++    spec, notes = calculation_visual(r, QUESTION, 'profit-comparison')
++    assert spec.type == 'GROUPED_BAR'
++    assert spec.variant == 'GROUPED_BAR_CHART'
++    points = {s.name: {p.x: p.y for p in s.data} for s in spec.series}
++    assert points['Current'] == {'Gross Profit': 505000, 'Operating Profit': 191000}
++    assert points['Previous'] == {'Gross Profit': 440000, 'Operating Profit': 155000}
++    assert not notes
++
++
++def test_simple_depreciation_does_not_get_an_unhelpful_chart():
++    r = calculate_from_query(DEPRECIATION)
++    assert calculation_visual(r, DEPRECIATION, 'no-chart') == (None, [])
++    spec, notes = calculation_visual(r, DEPRECIATION+' Show a graph.', 'different-time-bases')
++    assert spec is None and notes
++
++
++def test_unverified_outputs_cannot_be_charted():
++    r = calculate_from_query(BANK)
++    r.verification_status = 'not_run'
++    assert calculation_visual(r, 'Show a bar chart.', 'unverified') == (None, [])
++
++
++def test_profit_waterfall_uses_signed_components_and_conserves_final_profit():
++    from tests.test_paid_manual_transcript import WHOLESALE
++    r = calculate_from_query(WHOLESALE)
++    spec, notes = calculation_visual(r, 'Show a waterfall chart.', 'bridge')
++    assert spec.variant == 'WATERFALL_CHART'
++    assert [p.y for p in spec.data] == [936000, -560000, -222000, -9000]
++    assert sum(p.y for p in spec.data) == vals(r)['profit_before_tax']
++    assert not notes
++
++
++def test_inventory_comparison_charts_methods_without_mixing_unit_cost_and_totals():
++    r = calculate_from_query(INVENTORY)
++    spec, _ = calculation_visual(r, 'Compare the two methods.', 'methods')
++    assert spec.type == 'GROUPED_BAR'
++    assert [p.y for p in spec.series[0].data] == [2040, 1560]
++    assert [p.y for p in spec.series[1].data] == [2160, 1440]
++
++
++@pytest.mark.parametrize('q', [BANK.replace('All amounts GBP', 'All amounts USD'),
++    INVENTORY.replace('Use periodic FIFO', 'All amounts USD. Use periodic FIFO'),
++    DEPRECIATION.replace('no resale value', 'residual value $0')])
++def test_declared_currency_cannot_contradict_the_figures(q):
++    assert calculate_from_query(q).status != 'success'
++
++
++def test_duplicate_bank_balance_requires_version_selection():
++    r = calculate_from_query(BANK + ' Bank statement balance £13,000.')
++    assert r.status == 'clarification_required'
++    assert r.error_code == 'AMBIGUOUS_INPUTS'
+--- /dev/null
++++ b/frontend/tests/chart-view-semantics.test.ts
+@@ -0,0 +1,26 @@
++import { describe, expect, it } from "vitest";
++import type { VisualizationSpec } from "@/lib/api";
++import { validViewAlternatives } from "@/components/visualization/charts/engineRouting";
++
++describe("valid chart views preserve the dataset and axis meaning", () => {
++  const spec = (axis: string, labels = ["2025-01", "2025-02", "2025-03"]) => ({
++    type: "BAR", encoding: { x: { type: axis } },
++    data: labels.map((x, i) => ({ x, y: i + 1 })),
++  }) as unknown as VisualizationSpec;
++
++  it("offers a line only for an ordered temporal series", () => {
++    const source = spec("temporal");
++    const before = JSON.stringify(source);
++    expect(validViewAlternatives(source)).toEqual(["LINE"]);
++    const switched = { ...source, type: "LINE" };
++    expect(switched.data).toBe(source.data);
++    expect(JSON.stringify(source)).toBe(before);
++  });
++  it("does not connect accounting categories or unordered/duplicate dates", () => {
++    expect(validViewAlternatives(spec("nominal"))).toEqual([]);
++    expect(validViewAlternatives({ ...spec("temporal"), variant: "WATERFALL_CHART" })).toEqual([]);
++    expect(validViewAlternatives(spec("temporal", ["2025-02", "2025-01", "2025-03"]))).toEqual([]);
++    expect(validViewAlternatives(spec("temporal", ["2025-01", "2025-01", "2025-03"]))).toEqual([]);
++    expect(validViewAlternatives(spec("temporal", ["2025-01", "2025-02"]))).toEqual([]);
++  });
++});

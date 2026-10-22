@@ -19,7 +19,7 @@ PROVIDER_SDKS = ("groq", "openai", "anthropic", "google.genai", "google.generati
 
 def _imports(path: Path) -> set[str]:
     names: set[str] = set()
-    for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
         if isinstance(node, ast.Import):
             names.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
@@ -68,7 +68,7 @@ async def test_protected_data_is_redacted_before_it_is_sent(monkeypatch):
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="LOW"))],
                                    usage=SimpleNamespace(prompt_tokens=5, completion_tokens=1, total_tokens=6))
 
-    monkeypatch.setattr(gateway, "AsyncGroq", lambda api_key: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())))
+    monkeypatch.setattr(gateway, "AsyncGroq", lambda api_key, **options: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())))
     monkeypatch.setenv("GROQ_API_KEY", "test")
     result = await gateway.complete_auxiliary(
         purpose="risk_classification", model="m", system="s",

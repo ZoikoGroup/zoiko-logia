@@ -90,3 +90,93 @@ def choose_visual_route(
         selected_type=selected.selected_type,
         confidence=selected.priority,
     )
+
+
+class VisualizationIntent(BaseModel):
+    """Selection contract describing the existing validated renderer payload."""
+    output_type: str
+    reason: str
+    dataset: list[dict] = []
+    x_field: str | None = None
+    y_fields: list[str] = []
+    title: str | None = None
+    currency: str | None = None
+    units: str | None = None
+    period: list[str] = []
+    legend: list[str] = []
+    user_requested_type: str | None = None
+    confidence: float
+    fallback_reason: str | None = None
+    renderer_payload: dict | None = None
+
+
+def describe_visualization(query, spec, *, calculation=None, limitations=(), legacy_text=""):
+    import re
+    requested = re.search(r'\b(line|bar|column|pie|donut|waterfall|flowchart|table|text)\b', query, re.I)
+    preference = requested[1].lower() if requested else None
+    if spec is None:
+        # Some established renderer families still use validated chart fences.
+        # Describe their real payload rather than incorrectly calling them text.
+        import json
+        from app.domains.model_gateway.tools.chart_tool import build_chart_fence, ChartToolError
+        fences = re.findall(r'```chart\s*\n(.*?)```', legacy_text, re.S)
+        if fences:
+            try:
+                legacy = json.loads(fences[-1])
+                build_chart_fence(json.dumps(legacy, allow_nan=False))
+                rows = legacy.get('data') or legacy.get('series') or legacy.get('cells') or legacy.get('links') or []
+                rows = [row if isinstance(row, dict) else {'value':row} for row in rows]
+                kind = {'line':'line_chart','area':'line_chart','bar':'bar_chart','pie':'pie_chart'}.get(legacy['type'], legacy['type'])
+                return VisualizationIntent(output_type=kind, reason='The existing validated renderer payload supplies this visual.',
+                    dataset=rows, renderer_payload=legacy, title=legacy.get('title'), confidence=1.0, user_requested_type=preference)
+            except (ValueError, KeyError, ChartToolError):
+                pass
+        rows = [{'metric':o.name, 'value':str(o.value), 'display_value':o.display_value, 'unit_kind':o.kind} for o in calculation.outputs] if calculation else []
+        currencies = {i.currency for i in calculation.inputs if i.currency} if calculation else set()
+        return VisualizationIntent(output_type='table' if len(rows)>1 else 'text', dataset=rows,
+            x_field='metric' if rows else None, y_fields=['value'] if rows else [],
+            currency=next(iter(currencies)) if len(currencies)==1 else None,
+            reason='Working and labelled results are clearer than an unnecessary chart.' if calculation else 'Text is the available response format.',
+            user_requested_type=preference, confidence=1.0,
+            fallback_reason='; '.join(limitations) or None)
+    from app.orchestration.visualization.validator import VisualizationValidator
+    if not VisualizationValidator().validate(spec).passed:
+        return VisualizationIntent(output_type='table', reason='The visual payload did not validate.',
+                                    confidence=1.0, user_requested_type=preference, fallback_reason='Use the readable results instead.')
+    kind = {'LINE':'line_chart','BAR':'bar_chart','DONUT':'pie_chart','GROUPED_BAR':'bar_chart',
+            'TABLE':'table','PROCESS_FLOW':'flowchart','EVIDENCE_GRAPH':'graph'}.get(spec.type, spec.type.lower())
+    if spec.variant == 'WATERFALL_CHART':
+        kind = 'waterfall'
+    data = [p.model_dump(mode='json') for p in spec.data]
+    if spec.series:
+        data = [{'series':s.name, **p.model_dump(mode='json')} for s in spec.series for p in s.data]
+    if spec.donut:
+        data = [p.model_dump(mode='json') for p in spec.donut]
+    if spec.rows:
+        data = spec.rows
+    if spec.nodes:
+        data = [{'kind':'node', **n.model_dump(mode='json')} for n in spec.nodes] + [{'kind':'edge', **e.model_dump(mode='json')} for e in spec.edges]
+    if spec.scatter:
+        data = [p.model_dump(mode='json') for p in spec.scatter]
+    if spec.cells:
+        data = [p.model_dump(mode='json') for p in spec.cells]
+    return VisualizationIntent(output_type=kind, reason=spec.summary or 'The validated data supports this format.',
+        dataset=data, x_field=spec.encoding.x.field if spec.encoding else None,
+        y_fields=[spec.encoding.y.field] if spec.encoding else [], title=spec.title,
+        currency=spec.unit if spec.unit in {'GBP','USD','EUR','INR','AED'} else None, units=spec.unit,
+        period=[p.x for p in spec.data] if spec.encoding and spec.encoding.x.type == 'temporal' else [],
+        legend=[s.name for s in spec.series], user_requested_type=preference, confidence=1.0)
+
+
+def switch_visual_view(spec, query):
+    """A presentation-only follow-up; never re-extract figures from prose."""
+    import re
+    from app.orchestration.visualization.validator import VisualizationValidator
+    requested = re.fullmatch(r'\s*(?:now\s+)?(?:make|show|change|switch|turn|convert)\s+(?:it|this|that|the chart)(?:\s+(?:as|to|into))?\s+(?:a\s+)?(bars?|columns?|line)(?:\s+chart)?[.!?]?(?:\s+Keep every value, month label and currency unchanged\.)?\s*', query, re.I)
+    if not requested or spec.type not in {'LINE','BAR'} or spec.variant == 'WATERFALL_CHART':
+        return None
+    desired = 'LINE' if requested[1].lower() == 'line' else 'BAR'
+    if desired == 'LINE' and (spec.encoding is None or spec.encoding.x.type != 'temporal'):
+        return None
+    changed = spec.model_copy(deep=True, update={'type':desired, 'variant':None, 'renderer':'RECHARTS'})
+    return changed if VisualizationValidator().validate(changed).passed else None

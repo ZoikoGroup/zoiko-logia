@@ -49,6 +49,20 @@ def expense_followup_query(query: str, history) -> str:
 
 
 def missing_tax_inputs(query: str) -> str | None:
+    if (re.search(r'\bincome tax\b',query,re.I)
+            and re.search(r'\b(?:how much|owe|should I pay|missing information)\b',query,re.I)
+            and not re.search(r'\d+(?:\.\d+)?\s*%',query)):
+        return ('An exact income-tax amount needs the country/jurisdiction, currency, tax year, '
+                'business or employment structure, other income and relevant deductible expenses, allowances and reliefs. '
+                'Receipts less stated expenses is not necessarily taxable income. Please confirm those details.')
+    if (re.search(r'\bcorporation tax\b', query, re.I)
+            and re.search(r'\b(?:owe|how much corporation tax|exact tax liability)\b', query, re.I)
+            and not re.search(r'\b(?:threshold|current rate|effective date)\b', query, re.I)
+            and not re.search(r'\d+(?:\.\d+)?\s*%', query)):
+        return ('An exact corporation-tax amount cannot be determined from accounting profit alone. '
+                'Please confirm the tax jurisdiction and accounting period, taxable profit after adjustments, '
+                'associated-company details where relevant, and applicable reliefs, losses and credits. '
+                'For arithmetic only, provide taxable profit and the rate to assume.')
     if (re.search(r"\b(?:register|registration)\b", query, re.I)
             and re.search(r"\bvat\b", query, re.I) and re.search(r"\b(?:my|our)\b", query, re.I)
             and not re.search(r"\b(?:uk|united kingdom|britain|ireland|uae|saudi|germany|france)\b", query, re.I)
@@ -80,7 +94,11 @@ _TREATMENT = re.compile(
     re.I,
 )
 _SINGLE_COUNTRY_CURRENCY = re.compile(r"£|₹|\b(?:gbp|hmrc|sterling|inr|rupees?|aed|dirhams?|sar|riyals?)\b", re.I)
-_SAME_RATE = re.compile(r"\b(?:all|every|each)\b[^.?]{0,40}\b(?:standard[- ]rated|at \d|same rate)|\bsame rate\b", re.I)
+_SAME_RATE = re.compile(r"\b(?:all|every|each)\b[^.?]{0,60}\b(?:standard[- ]rated|at \d|same rate|attracts?\s+\d+(?:\.\d+)?\s*%)|\bsame rate\b", re.I)
+_EXPLICIT_SHARED_RATE = re.compile(
+    r'\b(?:apply|use)\s+(?:the\s+)?(?:supplied\s+)?\d+(?:\.\d+)?%\s+(?:(?:GST|VAT)\s+)?rate\s+to\s+'
+    r'(?:net\s+)?(?:sales\s+and\s+(?:net\s+)?purchases|purchases\s+and\s+(?:net\s+)?sales)\b', re.I,
+)
 
 
 def _rate_per_item(query: str) -> bool:
@@ -89,10 +107,17 @@ def _rate_per_item(query: str) -> bool:
             and item_rate(query, ("purchases", "purchase", "inputs")) is not None)
 
 
-def missing_vat_inputs(query: str) -> str | None:
+def missing_vat_inputs(query: str, history=None) -> str | None:
     """The inputs a VAT/GST amount needs that the question does not give —
-    only those — or None when it can be calculated (or is not that question)."""
-    q = query or ""
+    only those — or None when it can be calculated (or is not that question).
+
+    The country, rate and treatment may have been stated in an earlier user
+    turn ("UK business, everything at 20%"); those are read too, never asked
+    again. Only what the user stated: nothing is assumed."""
+    q = re.sub(r'\b(?:ignore|disregard)\s+(?:VAT|GST)\b', '', query or '', flags=re.I)
+    earlier = " ".join(getattr(m, "content", "") or "" for m in list(history or [])[-6:]
+                       if getattr(m, "role", "user") == "user")
+    context = f"{earlier} {q}"
     if not (_VAT.search(q) and _VAT_AMOUNT_QUESTION.search(q) and re.search(r"\d", q)) or _VAT_LOOKUP_ONLY.search(q):
         return None
     if re.search(r"[-−–]\s*\d+(?:\.\d+)?\s*%", q):
@@ -104,17 +129,17 @@ def missing_vat_inputs(query: str) -> str | None:
         # question about input VAT or treatment the user did not ask about.
         return None
     from app.orchestration.source_taxonomy import detect_jurisdictions
-    has_rate = bool(re.search(r"\d+(?:\.\d+)?\s*%", q))
+    has_rate = bool(re.search(r"\d+(?:\.\d+)?\s*%", context))
     sales_and_purchases = bool(re.search(r"\b(?:sales|turnover|output)\b", q, re.I)
                                and re.search(r"\b(?:purchases?|costs?|expenses|input)\b", q, re.I))
     missing = []
-    if not detect_jurisdictions(q, infer_from_tax_terms=False) and not _SINGLE_COUNTRY_CURRENCY.search(q):
+    if not detect_jurisdictions(context, infer_from_tax_terms=False) and not _SINGLE_COUNTRY_CURRENCY.search(context):
         missing.append("which country the business is VAT-registered in")
     if not has_rate:
         missing.append("the VAT rate or rates that apply (standard, reduced, zero-rated or exempt)")
-    elif sales_and_purchases and not _SAME_RATE.search(q) and not _rate_per_item(q):
+    elif sales_and_purchases and not _SAME_RATE.search(context) and not _EXPLICIT_SHARED_RATE.search(context) and not _rate_per_item(q):
         missing.append("whether all the sales and purchases are at that rate, or some are zero-rated, exempt or outside VAT")
-    if not _TREATMENT.search(q):
+    if not _TREATMENT.search(context):
         missing.append("whether the amounts include VAT or exclude VAT")
     if not missing:
         return None
@@ -123,6 +148,17 @@ def missing_vat_inputs(query: str) -> str | None:
             if sales_and_purchases else "the VAT amount and the total")
     return (f"To work out the VAT I need: {items}. With those I can calculate {goal} — "
             "I won't assume a rate or whether the figures include VAT.")
+
+
+_ATTACHED_REFERENCE = re.compile(
+    r"\b(?:the|this|my|our|these)\s+(?:attached|uploaded|enclosed)\s+(?:\w+\s+){0,3}(?:report|file|document|statements?|accounts|spreadsheet|"
+    r"workbook|pdf|csv|balance sheet|p\s*&\s*l|ledger|trial balance|invoice)\b", re.I)
+
+
+def references_attachment(query: str) -> bool:
+    """The question is about a file the user says is attached ("Please review
+    the attached annual financial report …")."""
+    return bool(_ATTACHED_REFERENCE.search(query or ""))
 
 
 def needs_invoice_attachment(query: str) -> bool:
@@ -226,7 +262,8 @@ _QUESTION_START = re.compile(
 _REQUEST_WORD = re.compile(
     r"\b(?:calculate|compute|convert|show|explain|list|compare|find|give|tell|draw|create|plot|chart|"
     r"graph|prepare|summari[sz]e|check|verify|analy[sz]e|estimate|help|please|need|want|describe|define|"
-    r"translate|retrieve|get|make|write|draft|review|confirm|work\s+out|break\s+down|visuali[sz]e)\b", re.I)
+    r"translate|retrieve|get|make|write|draft|review|confirm|highlight|outline|identify|correct|update|"
+    r"work\s+out|break\s+down|visuali[sz]e)\b", re.I)
 _STATEMENT_VERB = re.compile(
     r"\b(?:is|are|was|were|came|comes|has|have|had|did|does\s+not|do\s+not|provided|states?|stated|said|"
     r"shows?|showed|reported|returned|gave|removed|failed|works?|worked)\b", re.I)

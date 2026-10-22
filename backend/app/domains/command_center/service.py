@@ -20,12 +20,12 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, case, func, literal, or_, select, text, union_all
+from sqlalchemy import and_, case, func, literal, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.core.config import get_settings
-from app.core.database import RequestSessionLocal, request_engine
+from app.core.database import RequestSessionLocal, open_request_connection
 
 from app.domains.audit_ledger import event_envelope
 from app.domains.audit_ledger.event_envelope import record_event_async
@@ -151,17 +151,12 @@ async def scoped_session(user: User) -> AsyncIterator[AsyncSession]:
     the independent parts of a dashboard run at the same time: the database
     is a ~200 ms round trip away, so running ~40 queries one after another
     is what made these pages take 10–25 seconds."""
-    connection = await request_engine.connect()
+    # The identity is set on the connection itself (session-level) and every
+    # later use of a pooled connection sets its own first, so it never leaks
+    # into another request; the statement also checks the connection is alive.
+    connection = await open_request_connection(tenant_id=user.tenant_id, user_id=user.id)
     try:
         async with RequestSessionLocal(bind=connection) as session:
-            if not settings.is_sqlite:
-                await session.execute(
-                    text("SELECT set_config('app.tenant_id', :tenant_id, false), set_config('app.user_id', :user_id, false)"),
-                    {"tenant_id": user.tenant_id, "user_id": user.id},
-                )
-                # Not committed: these sessions only read, and the rollback
-                # when the connection goes back to the pool clears the
-                # identity again, so it can never leak into another request.
             yield session
     finally:
         await connection.close()

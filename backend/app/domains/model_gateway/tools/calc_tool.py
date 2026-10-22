@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from dataclasses import replace
 
 from decimal import ROUND_HALF_UP, Decimal, DivisionUndefined, InvalidOperation
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domains.identity.permissions import KRITON_TOOL_ROLES
 from app.domains.model_gateway.tool_registry import ToolResult, ToolSpec
@@ -119,4 +120,96 @@ CALCULATE_TOOL = ToolSpec(
     allowed_roles=KRITON_TOOL_ROLES,
     tenant_scope="none",
     owner="Backend / Calculation",
+)
+
+
+# ── Batched calculations (optional form; not in the default registry) ───────
+# docs/kriton-batched-calculator-and-balance-provenance-design.md §1.2. The
+# single-expression form above is unchanged; this spec is registered only by
+# build_default_registry(batch_calculations=True).
+
+BATCH_TOOL_VERSION = "1.2"
+MAX_BATCH_ITEMS = 12
+_PRESERVE_NOTE = (" Preserve the exact operands above when displaying this working; "
+                  "do not replace them with rounded inputs while keeping the same result.")
+
+
+class CalculationItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expression: str = Field(min_length=1, max_length=240,
+                            description="Arithmetic using numbers, + - * /, ** for powers and parentheses only.")
+    label: str = Field(default="", max_length=120, description="What is being calculated.")
+
+
+class CalculateBatchArgs(BaseModel):
+    """Exactly one of `expression` (one calculation, as before) or
+    `expressions` (up to 12 independent calculations)."""
+    model_config = ConfigDict(extra="forbid")
+
+    expression: str | None = Field(
+        default=None, min_length=1, max_length=240,
+        description="One arithmetic expression, e.g. \"(500000 - 425000) / 500000 * 100\".")
+    label: str = Field(default="", max_length=120, description="What is being calculated (single form).")
+    expressions: list[CalculationItem] | None = Field(
+        default=None, min_length=1, max_length=MAX_BATCH_ITEMS,
+        description=("Up to 12 INDEPENDENT calculations in one call, each {label, expression}. Use it whenever "
+                     "you need several figures whose inputs you already have. No item may use another item's "
+                     "result; compute a dependent figure in a later call or as one combined expression."))
+
+    @model_validator(mode="after")
+    def _one_form(self) -> "CalculateBatchArgs":
+        if (self.expression is None) == (self.expressions is None):
+            raise ValueError("give either expression or expressions, not both and not neither")
+        return self
+
+
+async def _handle_batch(args: CalculateBatchArgs) -> ToolResult:
+    if args.expressions is None:
+        # The single form: exactly the existing behaviour.
+        return await _handle(CalculateArgs(expression=args.expression, label=args.label))
+    lines: list[str] = []
+    receipts: list[dict] = []
+    failures: list[str] = []
+    size = len(args.expressions)
+    for index, item in enumerate(args.expressions, start=1):
+        # Each item is evaluated on its own by the single-calculation path, so
+        # one bad item cannot affect another's result or receipt.
+        result = await _handle(CalculateArgs(expression=item.expression, label=item.label))
+        prefix = f"{item.label}: " if item.label else ""
+        if result.ok and result.receipt:
+            receipts.append({**result.receipt, "tool_version": BATCH_TOOL_VERSION,
+                             "batch_index": index, "batch_size": size})
+            lines.append(f"{index}. " + result.content.replace(_PRESERVE_NOTE, ""))
+        else:
+            failures.append(result.error_code or "invalid_arguments")
+            lines.append(f"{index}. {prefix}{item.expression} — NOT COMPUTED ({result.error_code}): {result.content} "
+                         "Do not state a result for this item.")
+    content = "\n".join(lines) + ("\n" + _PRESERVE_NOTE.strip() if receipts else "")
+    from app.domains.model_gateway.tool_registry import MAX_RESULT_CHARS
+    if len(content) > MAX_RESULT_CHARS - 200:
+        # The output limit would cut the last items off: one compact line each,
+        # every result kept (the receipts hold the full detail).
+        compact = []
+        for index, item in enumerate(args.expressions, start=1):
+            receipt = next((r for r in receipts if r["batch_index"] == index), None)
+            compact.append(f"{index}. {item.label[:60] + ': ' if item.label else ''}{item.expression} = "
+                           f"{receipt['result']} (computed by the application)" if receipt
+                           else f"{index}. {item.expression[:80]} — NOT COMPUTED. Do not state a result for this item.")
+        content = "\n".join(compact)
+    if not receipts:
+        return ToolResult(ok=False, content=content, error_code=failures[0] if failures else "invalid_arguments",
+                          items_total=size, items_failed=size)
+    return ToolResult(ok=True, content=content, receipt=receipts[0], receipts=tuple(receipts),
+                      items_total=size, items_failed=len(failures))
+
+
+CALCULATE_BATCH_TOOL = replace(
+    CALCULATE_TOOL,
+    version=BATCH_TOOL_VERSION,
+    description=CALCULATE_TOOL.description + (
+        " To compute several independent figures, pass them together in `expressions` (up to 12) in ONE "
+        "call instead of one call each."),
+    args_model=CalculateBatchArgs,
+    handler=_handle_batch,
 )

@@ -48,6 +48,9 @@ class CaseResult:
     steps: int = 0
     stop_reason: str = ""
     seconds: float = 0.0
+    tokens_used: int = 0
+    estimated_tokens: int = 0
+    model_calls: int = 0
     answer_preview: str = ""
 
 
@@ -80,7 +83,7 @@ async def run_case(case: dict) -> CaseResult:
     # The same prompt production sends in agent mode (domain gate, formatting
     # rules, tool instructions) — with no pre-fetched web sources, so the
     # eval isolates what the agent fetches itself.
-    prompt = with_agent_instructions(build_web_grounded_prompt(case["question"], []))
+    prompt = with_agent_instructions(build_web_grounded_prompt(case["question"], [], agent_mode=True))
     try:
         outcome = await gateway.run_agentic_completion(prompt, granted_permissions=frozenset())
     except Exception as exc:  # the report must cover every case
@@ -96,6 +99,7 @@ async def run_case(case: dict) -> CaseResult:
         tools_called=tools,
         tool_errors=[f"{c.tool}:{c.error_code}" for c in outcome.tool_calls if c.error_code],
         steps=outcome.steps, stop_reason=outcome.stop_reason,
+        tokens_used=outcome.tokens_used, estimated_tokens=outcome.estimated_tokens, model_calls=outcome.model_calls,
         seconds=round(time.monotonic() - started, 1),
         answer_preview=outcome.text.strip().replace("\n", " ")[:240],
     )

@@ -95,7 +95,11 @@ describe("Review, Escalation & Audit pages", () => {
       "audit-events": { events: [event], total: 1, offset: 0, families: {}, windowDays: 30, generatedAt: NOW },
     };
     render(<AuditLogsPage />);
-    expect(screen.getAllByText("140,332").length).toBeGreaterThan(0);
+    // Locale-independent: toLocaleString digit grouping differs by ICU locale
+    // (en-US "140,332" vs en-IN "1,40,332"), so compare with separators stripped.
+    expect(
+      screen.getAllByText((text) => text.replace(/[\s,]/g, "") === "140332").length,
+    ).toBeGreaterThan(0);
     expect(screen.getAllByText("Denied").length).toBeGreaterThan(0);
     expect(screen.getByText("No payload displayed")).toBeInTheDocument();
     expect(screen.queryByText(/EVT-2026-10518|svc-ret-02/)).not.toBeInTheDocument();

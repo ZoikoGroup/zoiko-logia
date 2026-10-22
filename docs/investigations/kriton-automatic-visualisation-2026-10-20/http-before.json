@@ -1,0 +1,381 @@
+{
+  "scope": "in-process isolated, synthetic external provider boundary",
+  "traces": [
+    {
+      "case_id": "visual-initial",
+      "request": {
+        "query": "Show monthly revenue as a line chart: January 2025 \u00a3100, February 2025 \u00a3120, March 2025 \u00a390.",
+        "conversation_id": "visual-follow",
+        "conversation_history": []
+      },
+      "actor": "actor-a",
+      "http_status": 200,
+      "latency_ms": 82.03,
+      "response": {
+        "query_id": "qry-09a4fe089fef",
+        "correlation_id": "corr-72703c4cd7e2",
+        "outcome": "answered",
+        "route": "CALCULATION",
+        "safety": {
+          "risk_level": "LOW",
+          "policy_state": "allowed",
+          "disclaimer_required": false
+        },
+        "confidence_state": "sufficient",
+        "source_bundle": null,
+        "answer": {
+          "text": "The chart uses the supplied figures.\n\n```chart\n{\"type\": \"line\", \"title\": \"Show monthly revenue as a line chart\", \"categories\": [\"January 2025\", \"February 2025\", \"March 2025\"], \"series\": [{\"name\": \"Show monthly revenue as a line chart\", \"data\": [100.0, 120.0, 90.0]}]}\n```",
+          "citations": [],
+          "limitations": [],
+          "calculation_widget": null,
+          "calculation_result": null,
+          "verified_charts": [],
+          "observations": [],
+          "computed_from_question": true,
+          "response_kind": "chart",
+          "completeness": "complete",
+          "prompt_id": "deterministic-supplied-chart-v1",
+          "prompt_name": "Supplied data chart",
+          "output_text": "The chart uses the supplied figures.\n\n```chart\n{\"type\": \"line\", \"title\": \"Show monthly revenue as a line chart\", \"categories\": [\"January 2025\", \"February 2025\", \"March 2025\"], \"series\": [{\"name\": \"Show monthly revenue as a line chart\", \"data\": [100.0, 120.0, 90.0]}]}\n```"
+        },
+        "next_action": null,
+        "artifacts": [],
+        "artifact_error": null,
+        "effective_context": {
+          "schema_version": "1.0",
+          "task_type": "general_question",
+          "task_spec_version": "f0.1",
+          "actor_id": "actor-a",
+          "tenant_id": "synthetic-a",
+          "actor_role": "Admin",
+          "engagement_id": null,
+          "purpose": "answer_user_query",
+          "jurisdiction": null,
+          "framework": null,
+          "entity": null,
+          "period_start": null,
+          "period_end": null,
+          "currency": null,
+          "language": "en",
+          "data_classification": "INTERNAL",
+          "intended_use": "research"
+        },
+        "context_decision": {
+          "status": "complete",
+          "missing_fields": [],
+          "invalid_fields": [],
+          "reason_codes": [],
+          "clarification_questions": [],
+          "resolved_context": {
+            "schema_version": "1.0",
+            "task_type": "general_question",
+            "task_spec_version": "f0.1",
+            "actor_id": "actor-a",
+            "tenant_id": "synthetic-a",
+            "actor_role": "Admin",
+            "engagement_id": null,
+            "purpose": "answer_user_query",
+            "jurisdiction": null,
+            "framework": null,
+            "entity": null,
+            "period_start": null,
+            "period_end": null,
+            "currency": null,
+            "language": "en",
+            "data_classification": "INTERNAL",
+            "intended_use": "research"
+          }
+        },
+        "workflow_plan": {
+          "version": "1.0",
+          "task_type": "general_question",
+          "detection": "automatic",
+          "confidence": 0.92,
+          "reason_codes": [
+            "GENERAL_INFORMATION_INTENT"
+          ],
+          "steps": [
+            {
+              "capability": "evidence.cite",
+              "reason": "Material claims must retain evidence provenance."
+            },
+            {
+              "capability": "chart.generate",
+              "reason": "The user requested a visual representation."
+            },
+            {
+              "capability": "response.compose",
+              "reason": "A governed user-facing response is required."
+            }
+          ]
+        },
+        "audit_reference": {
+          "audit_chain_id": "aud-86bc188dee0c",
+          "receipt_id": "evt-3b198550aa50424c"
+        },
+        "visualization": null,
+        "secondary_visualizations": [],
+        "calculation": null
+      },
+      "provider_boundary": "scripted only; no external transports",
+      "model_requests": [],
+      "model_exchanges": [],
+      "history_selection": [
+        {
+          "tenant_id": "synthetic-a",
+          "user_id": "actor-a",
+          "conversation_id": "visual-follow",
+          "turns": []
+        }
+      ],
+      "calculation": null,
+      "task_context": {
+        "status": "complete",
+        "missing_fields": [],
+        "invalid_fields": [],
+        "reason_codes": [],
+        "clarification_questions": [],
+        "resolved_context": {
+          "schema_version": "1.0",
+          "task_type": "general_question",
+          "task_spec_version": "f0.1",
+          "actor_id": "actor-a",
+          "tenant_id": "synthetic-a",
+          "actor_role": "Admin",
+          "engagement_id": null,
+          "purpose": "answer_user_query",
+          "jurisdiction": null,
+          "framework": null,
+          "entity": null,
+          "period_start": null,
+          "period_end": null,
+          "currency": null,
+          "language": "en",
+          "data_classification": "INTERNAL",
+          "intended_use": "research"
+        }
+      },
+      "audit": [
+        {
+          "id": "evt-29664340932d450a",
+          "event": "query_received",
+          "correlation_id": "corr-72703c4cd7e2",
+          "tenant_id": "synthetic-a",
+          "payload": {
+            "audit_chain_id": "aud-86bc188dee0c",
+            "classifier_version": "rc_1.0",
+            "policy_version": "pm_1.3",
+            "query_hash": "d2e947d29e01c08b9e5eac0fb57a55ff",
+            "conversation_id": "visual-follow"
+          },
+          "payload_hash": "bcd53a044c952e7d9b03d0952bf0377bf55dc0651c732ec5bab72084961bd4e6",
+          "chain_hash": "4467d8b7f517f70003628aa5c9e65f241c02a8beb881984641273874906ad8d2",
+          "previous_chain_hash": null
+        },
+        {
+          "id": "evt-794adc1a812f4aeb",
+          "event": "request_validated",
+          "correlation_id": "corr-72703c4cd7e2",
+          "tenant_id": "synthetic-a",
+          "payload": {
+            "audit_chain_id": "aud-86bc188dee0c",
+            "classifier_version": "rc_1.0",
+            "policy_version": "pm_1.3"
+          },
+          "payload_hash": "89ddc7bf66cc215e50a338892945ca487915eb535170bebf0de100c7cffe50b3",
+          "chain_hash": "92bde09e29d6a049bb2f3d0838642750de9d42e02562f550d2f3203486b2ef14",
+          "previous_chain_hash": "4467d8b7f517f70003628aa5c9e65f241c02a8beb881984641273874906ad8d2"
+        },
+        {
+          "id": "evt-c9b0a583883d43f9",
+          "event": "task_context_resolved",
+          "correlation_id": "corr-72703c4cd7e2",
+          "tenant_id": "synthetic-a",
+          "payload": {
+            "audit_chain_id": "aud-86bc188dee0c",
+            "classifier_version": "rc_1.0",
+            "policy_version": "pm_1.3",
+            "status": "complete",
+            "task_type": "general_question",
+            "task_spec_version": "f0.1",
+            "reason_codes": [],
+            "effective_context": {
+              "schema_version": "1.0",
+              "task_type": "general_question",
+              "task_spec_version": "f0.1",
+              "actor_id": "actor-a",
+              "tenant_id": "synthetic-a",
+              "actor_role": "Admin",
+              "engagement_id": null,
+              "purpose": "answer_user_query",
+              "jurisdiction": null,
+              "framework": null,
+              "entity": null,
+              "period_start": null,
+              "period_end": null,
+              "currency": null,
+              "language": "en",
+              "data_classification": "INTERNAL",
+              "intended_use": "research"
+            }
+          },
+          "payload_hash": "947081f5ea17ff1d78b54923f8345d593b20f7cbff6dbfc00c58da0d6dcbfd24",
+          "chain_hash": "1fcc4ba48affe331d8afbce5745fe31d55aebeb5a1336e857dbc35b0cc1eeef3",
+          "previous_chain_hash": "92bde09e29d6a049bb2f3d0838642750de9d42e02562f550d2f3203486b2ef14"
+        },
+        {
+          "id": "evt-2f3d286050cf401f",
+          "event": "pre_safety_screen_completed",
+          "correlation_id": "corr-72703c4cd7e2",
+          "tenant_id": "synthetic-a",
+          "payload": {
+            "audit_chain_id": "aud-86bc188dee0c",
+            "classifier_version": "rc_1.0",
+            "policy_version": "pm_1.3",
+            "passed": true,
+            "trigger": null
+          },
+          "payload_hash": "63aaa6374e4526f7977baf4ec1903cfcc3383ab16fe78b713bcaa29d55ad3b6c",
+          "chain_hash": "893067b9ebafc6785d69c5933f94a689b7ebabe9602c7297d19fc88d0b1535e3",
+          "previous_chain_hash": "1fcc4ba48affe331d8afbce5745fe31d55aebeb5a1336e857dbc35b0cc1eeef3"
+        },
+        {
+          "id": "evt-0a7a93a04cce4166",
+          "event": "risk_classified",
+          "correlation_id": "corr-72703c4cd7e2",
+          "tenant_id": "synthetic-a",
+          "payload": {
+            "audit_chain_id": "aud-86bc188dee0c",
+            "classifier_version": "rc_1.0",
+            "policy_version": "pm_1.3",
+            "risk_level": "LOW",
+            "confidence_state": "sufficient"
+          },
+          "payload_hash": "8d14c073dde7cdeee5d0ab45f79bdf64a80b672d96d3997485b661b57dca3245",
+          "chain_hash": "0c8886456b1ab199a71cdeda2a9115543fe2e38c385ce9bfde07dd3633a056d7",
+          "previous_chain_hash": "893067b9ebafc6785d69c5933f94a689b7ebabe9602c7297d19fc88d0b1535e3"
+        },
+        {
+          "id": "evt-5194dd4371194098",
+          "event": "route_selected",
+          "correlation_id": "corr-72703c4cd7e2",
+          "tenant_id": "synthetic-a",
+          "payload": {
+            "audit_chain_id": "aud-86bc188dee0c",
+            "classifier_version": "rc_1.0",
+            "policy_version": "pm_1.3",
+            "route": "CALCULATION",
+            "risk_level": "LOW",
+            "confidence_state": "sufficient"
+          },
+          "payload_hash": "052dae9d9323c22201423400c91f01c8ff2ad2d015719cc4787e8b9994482efb",
+          "chain_hash": "92e8875efaa8e3e62ce57650f04519849595b71f8c6f50f7728cc7d1eb025f6d",
+          "previous_chain_hash": "0c8886456b1ab199a71cdeda2a9115543fe2e38c385ce9bfde07dd3633a056d7"
+        },
+        {
+          "id": "evt-81b00ec05cc941cc",
+          "event": "response_finalised",
+          "correlation_id": "corr-72703c4cd7e2",
+          "tenant_id": "synthetic-a",
+          "payload": {
+            "audit_chain_id": "aud-86bc188dee0c",
+            "classifier_version": "rc_1.0",
+            "policy_version": "pm_1.3",
+            "outcome": "answered",
+            "route": "CALCULATION",
+            "completeness": "complete",
+            "model_execution": {
+              "calls": 0,
+              "tokens_used": 0,
+              "estimated_tokens": 0,
+              "max_calls": 20,
+              "max_total_tokens": 64000
+            }
+          },
+          "payload_hash": "1a7cdc95dc401ffd704b92bfba40a3df4abec1f5da3238a434a618942abb3d1a",
+          "chain_hash": "c41c71d4764f3691101331684121116b8112f14e93a7d1edb2fe8139c85747c2",
+          "previous_chain_hash": "92e8875efaa8e3e62ce57650f04519849595b71f8c6f50f7728cc7d1eb025f6d"
+        },
+        {
+          "id": "evt-d6c50302e27e4500",
+          "event": "response_returned",
+          "correlation_id": "corr-72703c4cd7e2",
+          "tenant_id": "synthetic-a",
+          "payload": {
+            "audit_chain_id": "aud-86bc188dee0c",
+            "classifier_version": "rc_1.0",
+            "policy_version": "pm_1.3",
+            "latency_ms": 21.36,
+            "stage_metrics": {
+              "workflow.plan": {
+                "duration_ms": 0.03,
+                "status": "ok"
+              },
+              "idempotency.lookup": {
+                "duration_ms": 0.74,
+                "status": "ok"
+              },
+              "idempotency.claim": {
+                "duration_ms": 2.49,
+                "status": "ok"
+              },
+              "context.resolve": {
+                "duration_ms": 2.98,
+                "status": "ok"
+              },
+              "safety.prescreen": {
+                "duration_ms": 0.11,
+                "status": "ok"
+              }
+            }
+          },
+          "payload_hash": "613a4b238887f4d9a490b7a0f0725e743e66d4a1ae350fe8313628c14118a4b8",
+          "chain_hash": "ec633f83cdb9c7fc0225e189abb7db6fb278401398e8547629a1f123246cb302",
+          "previous_chain_hash": "c41c71d4764f3691101331684121116b8112f14e93a7d1edb2fe8139c85747c2"
+        },
+        {
+          "id": "evt-85dcf96e01dc4cd0",
+          "event": "workflow_completed",
+          "correlation_id": "qry-09a4fe089fef",
+          "tenant_id": "synthetic-a",
+          "payload": {
+            "final_state": "released",
+            "path": [
+              "received",
+              "checked",
+              "released"
+            ],
+            "invalid_transitions": [],
+            "duration_ms": 24
+          },
+          "payload_hash": "5155a3e445d235ccace7de70f5cc6ffc74eb6f7e389050ce7d3b1c4221fe236e",
+          "chain_hash": "b00de5ba379ccc45764a46d05d03e18195d9f138184d8d340e3a7a2518d3708d",
+          "previous_chain_hash": "ec633f83cdb9c7fc0225e189abb7db6fb278401398e8547629a1f123246cb302"
+        },
+        {
+          "id": "evt-3b198550aa50424c",
+          "event": "answer_receipt",
+          "correlation_id": "qry-09a4fe089fef",
+          "tenant_id": "synthetic-a",
+          "payload": {
+            "visualization_provenance": null,
+            "request_id": "qry-09a4fe089fef",
+            "route": "CALCULATION",
+            "risk": "LOW",
+            "outcome": "answered",
+            "completeness": "complete",
+            "citation_ids": [],
+            "calculation_ids": [],
+            "citation_spans": {},
+            "review_required": false,
+            "policy_version": "pm_1.3",
+            "workflow_final_state": "released"
+          },
+          "payload_hash": "890096a88c82fbae9b598724768ebf74babf8da6714b561a8f4faa7a6729bab4",
+          "chain_hash": "6c525af1664cfa08485b513cbd3ff08b2fc6924273f332e7abb92062016980f3",
+          "previous_chain_hash": "b00de5ba379ccc45764a46d05d03e18195d9f138184d8d340e3a7a2518d3708d"
+        }
+      ]
+    }
+  ]
+}

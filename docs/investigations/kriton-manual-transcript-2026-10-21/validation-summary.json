@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-21",
+  "original_transcript_sha256": "87b56de6b9b2ab64d009ef96d4c44ba830f6365f7027e27c2879b7556af8bdb0",
+  "restored_original_queries": 15,
+  "initial_regressions": {
+    "failed": 9,
+    "seconds": 3.43
+  },
+  "final_new_regressions": {
+    "passed": 15,
+    "seconds": 5.27
+  },
+  "full_backend": {
+    "passed": 3344,
+    "skipped": 25,
+    "expected_failures": 2,
+    "warnings": 140,
+    "seconds": 64.3
+  },
+  "full_frontend": {
+    "passed": 222,
+    "files": 48,
+    "seconds": 11.9
+  },
+  "typescript_exit_code": 0,
+  "real_http_signed_jwt_postgres_rls": {
+    "passed": 3,
+    "seconds": 7.24,
+    "question_requests": 12,
+    "production_lifespan_enabled": false,
+    "uses_local_jwks": true,
+    "disposable_postgres_stopped": true
+  },
+  "source_hash": "dde2b95acd39320a5d5660018eab67a25dc75d39214e7f9af286083084f74b1f",
+  "running_backend_matches_tests": true,
+  "unchanged_baseline_files": 102,
+  "original_80_case_scorer_replayed_this_turn": false,
+  "live_model_calls": 0,
+  "groq_tokens_used": 0,
+  "production_deployed": false,
+  "shared_database_changed": false,
+  "remaining_limits": [
+    "Live-provider answer quality and account-specific limits not verified",
+    "Current-rule retrieval and full management-report narrative still need live verification",
+    "Shared database conversation_turns migration remains unapplied",
+    "Offline chart tests use real SVG with mocked geometry; no manual running-browser screenshot asserted"
+  ]
+}

@@ -15,6 +15,15 @@ export type AnswerState =
 
 export type StateMessage = { state: AnswerState; title: string; detail: string };
 
+/** Hide redundant boilerplate in saved answers; retain specific incompleteness. */
+export function visibleAnswerLimitations(limitations: string[] = []): string[] {
+  return [...new Set(limitations)].filter((text) =>
+    !/^This response is for educational purposes only\. Consult a qualified professional\.$/.test(text)
+    && !/^General guidance only\s*(?:—|:)/.test(text)
+    && !/^No matching source was found in your governed source library;/.test(text),
+  );
+}
+
 // Exact copy required by §12 for access refusals: no snippet, no detail.
 export const ACCESS_DENIED_TEXT = "This information is not available to your account.";
 
@@ -77,8 +86,10 @@ export function stateForError(status: number | null, serverDetail?: string | nul
 
 /** A result Kriton returned. */
 export function stateForResult(result: Pick<AskKritonResponse, "outcome" | "next_action" | "answer">): AnswerState {
-  if (result.next_action?.type === "composition_failed") return "service-unavailable";
+  if (["composition_failed", "provider_access_blocked", "provider_request_too_large", "provider_rate_limited", "request_budget_exhausted"].includes(result.next_action?.type ?? "")) return "service-unavailable";
   switch (result.outcome) {
+    case "unavailable":
+      return "service-unavailable";
     case "clarification_required":
       return "need-more-information";
     case "escalated":

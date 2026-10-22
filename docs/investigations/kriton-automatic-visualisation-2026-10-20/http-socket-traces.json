@@ -1,0 +1,1245 @@
+[
+  {
+    "request": {
+      "query": "Show monthly revenue as a line chart: January 2025 \u00a3100, February 2025 \u00a3120, March 2025 \u00a390.",
+      "conversation_id": "socket-task",
+      "turn_id": "turn-0",
+      "request_id": "request-0"
+    },
+    "http_status": 200,
+    "response": {
+      "calculation_state": null,
+      "request_integrity": {
+        "conversation_id": "socket-task",
+        "turn_id": "turn-0",
+        "request_id": "request-0",
+        "current_message_sha256": "d2e947d29e01c08b9e5eac0fb57a55ffa29fa834db497786998b5399646af953",
+        "relation": "independent",
+        "changed_inputs": []
+      },
+      "visualization_intent": {
+        "output_type": "line_chart",
+        "reason": "The chart uses the supplied figures.",
+        "dataset": [
+          {
+            "x": "2025-01",
+            "y": 100.0
+          },
+          {
+            "x": "2025-02",
+            "y": 120.0
+          },
+          {
+            "x": "2025-03",
+            "y": 90.0
+          }
+        ],
+        "x_field": "period",
+        "y_fields": [
+          "value"
+        ],
+        "title": "Show monthly revenue as a line chart",
+        "currency": "GBP",
+        "units": "GBP",
+        "period": [
+          "2025-01",
+          "2025-02",
+          "2025-03"
+        ],
+        "legend": [],
+        "user_requested_type": "line",
+        "confidence": 1.0,
+        "fallback_reason": null,
+        "renderer_payload": null
+      },
+      "requested_deliverables": [
+        {
+          "description": "Requested visual",
+          "status": "complete",
+          "reason": null
+        }
+      ],
+      "query_id": "qry-31443514dfb4",
+      "correlation_id": "corr-0e8477a3db0f",
+      "outcome": "answered",
+      "route": "CALCULATION",
+      "safety": {
+        "risk_level": "LOW",
+        "policy_state": "allowed",
+        "disclaimer_required": false
+      },
+      "confidence_state": "sufficient",
+      "source_bundle": null,
+      "answer": {
+        "text": "The chart uses the supplied figures.",
+        "citations": [],
+        "limitations": [],
+        "calculation_widget": null,
+        "calculation_result": null,
+        "verified_charts": [],
+        "observations": [],
+        "computed_from_question": true,
+        "response_kind": "chart",
+        "completeness": "complete",
+        "prompt_id": "deterministic-supplied-chart-v1",
+        "prompt_name": "Supplied data chart",
+        "output_text": "The chart uses the supplied figures."
+      },
+      "next_action": null,
+      "artifacts": [],
+      "artifact_error": null,
+      "effective_context": {
+        "schema_version": "1.0",
+        "task_type": "general_question",
+        "task_spec_version": "f0.1",
+        "actor_id": "socket-a",
+        "tenant_id": "socket-tenant-a",
+        "actor_role": "Admin",
+        "engagement_id": null,
+        "purpose": "answer_user_query",
+        "jurisdiction": null,
+        "framework": null,
+        "entity": null,
+        "period_start": null,
+        "period_end": null,
+        "currency": null,
+        "language": "en",
+        "data_classification": "INTERNAL",
+        "intended_use": "research"
+      },
+      "context_decision": {
+        "status": "complete",
+        "missing_fields": [],
+        "invalid_fields": [],
+        "reason_codes": [],
+        "clarification_questions": [],
+        "resolved_context": {
+          "schema_version": "1.0",
+          "task_type": "general_question",
+          "task_spec_version": "f0.1",
+          "actor_id": "socket-a",
+          "tenant_id": "socket-tenant-a",
+          "actor_role": "Admin",
+          "engagement_id": null,
+          "purpose": "answer_user_query",
+          "jurisdiction": null,
+          "framework": null,
+          "entity": null,
+          "period_start": null,
+          "period_end": null,
+          "currency": null,
+          "language": "en",
+          "data_classification": "INTERNAL",
+          "intended_use": "research"
+        }
+      },
+      "workflow_plan": {
+        "version": "1.0",
+        "task_type": "general_question",
+        "detection": "automatic",
+        "confidence": 0.92,
+        "reason_codes": [
+          "GENERAL_INFORMATION_INTENT"
+        ],
+        "steps": [
+          {
+            "capability": "evidence.cite",
+            "reason": "Material claims must retain evidence provenance."
+          },
+          {
+            "capability": "chart.generate",
+            "reason": "The user requested a visual representation."
+          },
+          {
+            "capability": "response.compose",
+            "reason": "A governed user-facing response is required."
+          }
+        ]
+      },
+      "audit_reference": {
+        "audit_chain_id": "aud-ed2e0dc90633",
+        "receipt_id": "evt-fed7a4e2e91f4fe8"
+      },
+      "visualization": {
+        "version": "1.0",
+        "id": "qry-31443514dfb4-supplied",
+        "type": "LINE",
+        "family": "STATISTICAL",
+        "renderer": "RECHARTS",
+        "capability_id": null,
+        "canonical": null,
+        "variant": null,
+        "domain_context": {
+          "domain": "GENERAL",
+          "subdomain": "GENERAL",
+          "intent": null
+        },
+        "fallback_order": [],
+        "user_requested_type": "line",
+        "title": "Show monthly revenue as a line chart",
+        "summary": "The chart uses the supplied figures.",
+        "unit": "GBP",
+        "encoding": {
+          "x": {
+            "field": "period",
+            "type": "temporal",
+            "unit": null
+          },
+          "y": {
+            "field": "value",
+            "type": "quantitative",
+            "unit": "GBP"
+          }
+        },
+        "data": [
+          {
+            "x": "2025-01",
+            "y": 100.0
+          },
+          {
+            "x": "2025-02",
+            "y": 120.0
+          },
+          {
+            "x": "2025-03",
+            "y": 90.0
+          }
+        ],
+        "value": null,
+        "label": null,
+        "target": null,
+        "target_label": null,
+        "nodes": [],
+        "edges": [],
+        "interactive": false,
+        "graph_engine": null,
+        "flow_engine": null,
+        "cells": [],
+        "box": null,
+        "scatter": [],
+        "correlation_coefficient": null,
+        "donut": [],
+        "candlestick": [],
+        "series": [],
+        "columns": [],
+        "rows": [],
+        "sources": []
+      },
+      "secondary_visualizations": [],
+      "calculation": null
+    },
+    "actor": "a"
+  },
+  {
+    "request": {
+      "query": "Make it a bar chart.",
+      "conversation_id": "socket-task",
+      "turn_id": "turn-1",
+      "request_id": "request-1"
+    },
+    "http_status": 200,
+    "response": {
+      "calculation_state": null,
+      "request_integrity": {
+        "conversation_id": "socket-task",
+        "turn_id": "turn-1",
+        "request_id": "request-1",
+        "current_message_sha256": "8a5af21c07a8b2644bd85c483705d90948d4d6211b56b65a7dca6ce3c7ae2ce0",
+        "relation": "independent",
+        "changed_inputs": []
+      },
+      "visualization_intent": {
+        "output_type": "bar_chart",
+        "reason": "The chart uses the supplied figures.",
+        "dataset": [
+          {
+            "x": "2025-01",
+            "y": 100.0
+          },
+          {
+            "x": "2025-02",
+            "y": 120.0
+          },
+          {
+            "x": "2025-03",
+            "y": 90.0
+          }
+        ],
+        "x_field": "period",
+        "y_fields": [
+          "value"
+        ],
+        "title": "Show monthly revenue as a line chart",
+        "currency": "GBP",
+        "units": "GBP",
+        "period": [
+          "2025-01",
+          "2025-02",
+          "2025-03"
+        ],
+        "legend": [],
+        "user_requested_type": "bar",
+        "confidence": 1.0,
+        "fallback_reason": null,
+        "renderer_payload": null
+      },
+      "requested_deliverables": [
+        {
+          "description": "Requested visual",
+          "status": "complete",
+          "reason": null
+        }
+      ],
+      "query_id": "qry-8a6cdfb4474d",
+      "correlation_id": "corr-b06e1e357842",
+      "outcome": "answered",
+      "route": "CALCULATION",
+      "safety": {
+        "risk_level": "LOW",
+        "policy_state": "allowed",
+        "disclaimer_required": false
+      },
+      "confidence_state": "sufficient",
+      "source_bundle": null,
+      "answer": {
+        "text": "The chart payload uses the same validated figures and units. Only its presentation has changed.",
+        "citations": [],
+        "limitations": [],
+        "calculation_widget": null,
+        "calculation_result": null,
+        "verified_charts": [],
+        "observations": [],
+        "computed_from_question": false,
+        "response_kind": null,
+        "completeness": "complete",
+        "prompt_id": "validated-chart-view-v1",
+        "prompt_name": "Validated chart view",
+        "output_text": "The chart payload uses the same validated figures and units. Only its presentation has changed."
+      },
+      "next_action": null,
+      "artifacts": [],
+      "artifact_error": null,
+      "effective_context": {
+        "schema_version": "1.0",
+        "task_type": "general_question",
+        "task_spec_version": "f0.1",
+        "actor_id": "socket-a",
+        "tenant_id": "socket-tenant-a",
+        "actor_role": "Admin",
+        "engagement_id": null,
+        "purpose": "answer_user_query",
+        "jurisdiction": null,
+        "framework": null,
+        "entity": null,
+        "period_start": null,
+        "period_end": null,
+        "currency": null,
+        "language": "en",
+        "data_classification": "INTERNAL",
+        "intended_use": "research"
+      },
+      "context_decision": {
+        "status": "complete",
+        "missing_fields": [],
+        "invalid_fields": [],
+        "reason_codes": [],
+        "clarification_questions": [],
+        "resolved_context": {
+          "schema_version": "1.0",
+          "task_type": "general_question",
+          "task_spec_version": "f0.1",
+          "actor_id": "socket-a",
+          "tenant_id": "socket-tenant-a",
+          "actor_role": "Admin",
+          "engagement_id": null,
+          "purpose": "answer_user_query",
+          "jurisdiction": null,
+          "framework": null,
+          "entity": null,
+          "period_start": null,
+          "period_end": null,
+          "currency": null,
+          "language": "en",
+          "data_classification": "INTERNAL",
+          "intended_use": "research"
+        }
+      },
+      "workflow_plan": {
+        "version": "1.0",
+        "task_type": "general_question",
+        "detection": "automatic",
+        "confidence": 0.92,
+        "reason_codes": [
+          "GENERAL_INFORMATION_INTENT"
+        ],
+        "steps": [
+          {
+            "capability": "evidence.cite",
+            "reason": "Material claims must retain evidence provenance."
+          },
+          {
+            "capability": "chart.generate",
+            "reason": "The user requested a visual representation."
+          },
+          {
+            "capability": "response.compose",
+            "reason": "A governed user-facing response is required."
+          }
+        ]
+      },
+      "audit_reference": {
+        "audit_chain_id": "aud-612a36143065",
+        "receipt_id": "evt-81c32bb452864b77"
+      },
+      "visualization": {
+        "version": "1.0",
+        "id": "qry-8a6cdfb4474d-view",
+        "type": "BAR",
+        "family": "STATISTICAL",
+        "renderer": "RECHARTS",
+        "capability_id": null,
+        "canonical": null,
+        "variant": null,
+        "domain_context": {
+          "domain": "GENERAL",
+          "subdomain": "GENERAL",
+          "intent": null
+        },
+        "fallback_order": [],
+        "user_requested_type": "bar",
+        "title": "Show monthly revenue as a line chart",
+        "summary": "The chart uses the supplied figures.",
+        "unit": "GBP",
+        "encoding": {
+          "x": {
+            "field": "period",
+            "type": "temporal",
+            "unit": null
+          },
+          "y": {
+            "field": "value",
+            "type": "quantitative",
+            "unit": "GBP"
+          }
+        },
+        "data": [
+          {
+            "x": "2025-01",
+            "y": 100.0
+          },
+          {
+            "x": "2025-02",
+            "y": 120.0
+          },
+          {
+            "x": "2025-03",
+            "y": 90.0
+          }
+        ],
+        "value": null,
+        "label": null,
+        "target": null,
+        "target_label": null,
+        "nodes": [],
+        "edges": [],
+        "interactive": false,
+        "graph_engine": null,
+        "flow_engine": null,
+        "cells": [],
+        "box": null,
+        "scatter": [],
+        "correlation_coefficient": null,
+        "donut": [],
+        "candlestick": [],
+        "series": [],
+        "columns": [],
+        "rows": [],
+        "sources": []
+      },
+      "secondary_visualizations": [],
+      "calculation": null
+    },
+    "actor": "a"
+  },
+  {
+    "request": {
+      "query": "Make it a bar chart.",
+      "conversation_id": "socket-task",
+      "turn_id": "turn-2",
+      "request_id": "request-2"
+    },
+    "http_status": 200,
+    "response": {
+      "calculation_state": null,
+      "request_integrity": {
+        "conversation_id": "socket-task",
+        "turn_id": "turn-2",
+        "request_id": "request-2",
+        "current_message_sha256": "8a5af21c07a8b2644bd85c483705d90948d4d6211b56b65a7dca6ce3c7ae2ce0",
+        "relation": "independent",
+        "changed_inputs": []
+      },
+      "visualization_intent": {
+        "output_type": "text",
+        "reason": "Text answers the current request.",
+        "dataset": [],
+        "x_field": null,
+        "y_fields": [],
+        "title": null,
+        "currency": null,
+        "units": null,
+        "period": [],
+        "legend": [],
+        "user_requested_type": "bar",
+        "confidence": 1.0,
+        "fallback_reason": "The requested chart could not be built from verified numeric data. See the table and source limitations for the available figures.",
+        "renderer_payload": null
+      },
+      "requested_deliverables": [
+        {
+          "description": "Requested visual",
+          "status": "incomplete",
+          "reason": "No renderable visual payload was returned."
+        }
+      ],
+      "query_id": "qry-1a479af72814",
+      "correlation_id": "corr-3f2209d859bc",
+      "outcome": "answered",
+      "route": "LLM",
+      "safety": {
+        "risk_level": "LOW",
+        "policy_state": "allowed",
+        "disclaimer_required": true
+      },
+      "confidence_state": "insufficient",
+      "source_bundle": {
+        "source_bundle_id": "sb-a6626968481b",
+        "retrieval_method": "lexical_passages_v1",
+        "eligible_source_count": 0,
+        "excluded_source_count": 0,
+        "sources": [],
+        "exclusion_reasons": [],
+        "jurisdiction": "",
+        "authority_level": "secondary",
+        "freshness_state": "unknown",
+        "licence_state": "unknown",
+        "confidence_state": "insufficient",
+        "source_display_states": {},
+        "index_version": "source-passages-lexical-v1",
+        "retrieval_plan": {
+          "retrieval_plan_id": "rp-a99bd408f5d7",
+          "version": "1.0",
+          "strategy": "rights_filtered_lexical_passages",
+          "methods": [
+            "keyword"
+          ],
+          "jurisdiction": "",
+          "framework": "",
+          "requires_tenant_private_sources": false,
+          "requires_current_sources": true,
+          "top_k": 8,
+          "index_version": "source-passages-lexical-v1",
+          "risk_notes": [
+            "Semantic retrieval unavailable (no embeddings or no vector index); keyword only."
+          ]
+        },
+        "passages": [],
+        "excluded_evidence": [],
+        "conflict_version_ids": [],
+        "as_of": "2026-10-20",
+        "manifest_version": "1.0"
+      },
+      "answer": {
+        "text": "I couldn't retrieve verified data for this chart request, so I haven't invented values or produced a misleading visualization. Please try again shortly or specify a source and date range.",
+        "citations": [],
+        "limitations": [
+          "The requested chart could not be built from verified numeric data. See the table and source limitations for the available figures.",
+          "Incomplete answer: Requested visual."
+        ],
+        "calculation_widget": null,
+        "calculation_result": null,
+        "verified_charts": [],
+        "observations": [],
+        "computed_from_question": false,
+        "response_kind": null,
+        "completeness": "partial",
+        "prompt_id": "inline",
+        "prompt_name": "Web-grounded Prompt",
+        "output_text": "I couldn't retrieve verified data for this chart request, so I haven't invented values or produced a misleading visualization. Please try again shortly or specify a source and date range."
+      },
+      "next_action": null,
+      "artifacts": [],
+      "artifact_error": null,
+      "effective_context": {
+        "schema_version": "1.0",
+        "task_type": "general_question",
+        "task_spec_version": "f0.1",
+        "actor_id": "socket-b",
+        "tenant_id": "socket-tenant-b",
+        "actor_role": "Admin",
+        "engagement_id": null,
+        "purpose": "answer_user_query",
+        "jurisdiction": null,
+        "framework": null,
+        "entity": null,
+        "period_start": null,
+        "period_end": null,
+        "currency": null,
+        "language": "en",
+        "data_classification": "INTERNAL",
+        "intended_use": "research"
+      },
+      "context_decision": {
+        "status": "complete",
+        "missing_fields": [],
+        "invalid_fields": [],
+        "reason_codes": [],
+        "clarification_questions": [],
+        "resolved_context": {
+          "schema_version": "1.0",
+          "task_type": "general_question",
+          "task_spec_version": "f0.1",
+          "actor_id": "socket-b",
+          "tenant_id": "socket-tenant-b",
+          "actor_role": "Admin",
+          "engagement_id": null,
+          "purpose": "answer_user_query",
+          "jurisdiction": null,
+          "framework": null,
+          "entity": null,
+          "period_start": null,
+          "period_end": null,
+          "currency": null,
+          "language": "en",
+          "data_classification": "INTERNAL",
+          "intended_use": "research"
+        }
+      },
+      "workflow_plan": {
+        "version": "1.0",
+        "task_type": "general_question",
+        "detection": "automatic",
+        "confidence": 0.92,
+        "reason_codes": [
+          "GENERAL_INFORMATION_INTENT"
+        ],
+        "steps": [
+          {
+            "capability": "evidence.cite",
+            "reason": "Material claims must retain evidence provenance."
+          },
+          {
+            "capability": "chart.generate",
+            "reason": "The user requested a visual representation."
+          },
+          {
+            "capability": "response.compose",
+            "reason": "A governed user-facing response is required."
+          }
+        ]
+      },
+      "audit_reference": {
+        "audit_chain_id": "aud-b43340998db4",
+        "receipt_id": "evt-96a1552dad7d47bc"
+      },
+      "visualization": null,
+      "secondary_visualizations": [],
+      "calculation": null
+    },
+    "actor": "b"
+  },
+  {
+    "request": {
+      "query": "Revenue \u00a3900,000, cost of sales \u00a3500,000, operating expenses \u00a3150,000. Calculate operating profit.",
+      "conversation_id": "socket-task",
+      "turn_id": "turn-3",
+      "request_id": "request-3"
+    },
+    "http_status": 200,
+    "response": {
+      "calculation_state": {
+        "task_type": [
+          "income_statement"
+        ],
+        "original_inputs": [
+          {
+            "name": "revenue",
+            "value": "900000",
+            "display_value": "900000",
+            "kind": "money",
+            "currency": "GBP",
+            "source_type": "user",
+            "source_location": "query"
+          },
+          {
+            "name": "cost_of_sales",
+            "value": "500000",
+            "display_value": "500000",
+            "kind": "money",
+            "currency": "GBP",
+            "source_type": "user",
+            "source_location": "query"
+          },
+          {
+            "name": "operating_expenses",
+            "value": "150000",
+            "display_value": "150000",
+            "kind": "money",
+            "currency": "GBP",
+            "source_type": "user",
+            "source_location": "query"
+          }
+        ],
+        "inputs": [
+          {
+            "name": "revenue",
+            "value": "900000",
+            "display_value": "900000",
+            "kind": "money",
+            "currency": "GBP",
+            "source_type": "user",
+            "source_location": "query"
+          },
+          {
+            "name": "cost_of_sales",
+            "value": "500000",
+            "display_value": "500000",
+            "kind": "money",
+            "currency": "GBP",
+            "source_type": "user",
+            "source_location": "query"
+          },
+          {
+            "name": "operating_expenses",
+            "value": "150000",
+            "display_value": "150000",
+            "kind": "money",
+            "currency": "GBP",
+            "source_type": "user",
+            "source_location": "query"
+          }
+        ],
+        "changed_inputs": [],
+        "assumptions": [],
+        "derived_results": [
+          {
+            "name": "revenue",
+            "value": "900000",
+            "display_value": "\u00a3900,000.00",
+            "kind": "money"
+          },
+          {
+            "name": "cost_of_sales",
+            "value": "500000",
+            "display_value": "\u00a3500,000.00",
+            "kind": "money"
+          },
+          {
+            "name": "gross_profit",
+            "value": "400000",
+            "display_value": "\u00a3400,000.00",
+            "kind": "money"
+          },
+          {
+            "name": "operating_expenses",
+            "value": "150000",
+            "display_value": "\u00a3150,000.00",
+            "kind": "money"
+          },
+          {
+            "name": "operating_profit",
+            "value": "250000",
+            "display_value": "\u00a3250,000.00",
+            "kind": "money"
+          }
+        ]
+      },
+      "request_integrity": {
+        "conversation_id": "socket-task",
+        "turn_id": "turn-3",
+        "request_id": "request-3",
+        "current_message_sha256": "89d0a5361eb72a3209e77e600c6de6bb5b2773b6dc3ae887f63b35a3f5abe297",
+        "relation": "independent",
+        "changed_inputs": []
+      },
+      "visualization_intent": {
+        "output_type": "table",
+        "reason": "Working and labelled results are clearer than an unnecessary chart.",
+        "dataset": [
+          {
+            "metric": "revenue",
+            "value": "900000",
+            "display_value": "\u00a3900,000.00",
+            "unit_kind": "money"
+          },
+          {
+            "metric": "cost_of_sales",
+            "value": "500000",
+            "display_value": "\u00a3500,000.00",
+            "unit_kind": "money"
+          },
+          {
+            "metric": "gross_profit",
+            "value": "400000",
+            "display_value": "\u00a3400,000.00",
+            "unit_kind": "money"
+          },
+          {
+            "metric": "operating_expenses",
+            "value": "150000",
+            "display_value": "\u00a3150,000.00",
+            "unit_kind": "money"
+          },
+          {
+            "metric": "operating_profit",
+            "value": "250000",
+            "display_value": "\u00a3250,000.00",
+            "unit_kind": "money"
+          }
+        ],
+        "x_field": "metric",
+        "y_fields": [
+          "value"
+        ],
+        "title": null,
+        "currency": "GBP",
+        "units": null,
+        "period": [],
+        "legend": [],
+        "user_requested_type": null,
+        "confidence": 1.0,
+        "fallback_reason": null,
+        "renderer_payload": null
+      },
+      "requested_deliverables": [],
+      "query_id": "qry-ce5762176d88",
+      "correlation_id": "corr-2b683ee5e38c",
+      "outcome": "answered",
+      "route": "CALCULATION",
+      "safety": {
+        "risk_level": "LOW",
+        "policy_state": "allowed",
+        "disclaimer_required": false
+      },
+      "confidence_state": "sufficient",
+      "source_bundle": null,
+      "answer": {
+        "text": "### Calculation\n- Gross profit = \u00a3900,000.00 \u2212 \u00a3500,000.00 = \u00a3400,000.00\n- Operating profit = \u00a3400,000.00 \u2212 \u00a3150,000.00 = \u00a3250,000.00\n\n### Result\n| Item | Value |\n| --- | --- |\n| Revenue | \u00a3900,000.00 |\n| Cost Of Sales | \u00a3500,000.00 |\n| Gross Profit | \u00a3400,000.00 |\n| Operating Expenses | \u00a3150,000.00 |\n| Operating Profit | \u00a3250,000.00 |",
+        "citations": [],
+        "limitations": [],
+        "calculation_widget": null,
+        "calculation_result": null,
+        "verified_charts": [],
+        "observations": [],
+        "computed_from_question": false,
+        "response_kind": null,
+        "completeness": "complete",
+        "prompt_id": "deterministic-calculation-v1",
+        "prompt_name": "Deterministic Calculation",
+        "output_text": "### Calculation\n- Gross profit = \u00a3900,000.00 \u2212 \u00a3500,000.00 = \u00a3400,000.00\n- Operating profit = \u00a3400,000.00 \u2212 \u00a3150,000.00 = \u00a3250,000.00\n\n### Result\n| Item | Value |\n| --- | --- |\n| Revenue | \u00a3900,000.00 |\n| Cost Of Sales | \u00a3500,000.00 |\n| Gross Profit | \u00a3400,000.00 |\n| Operating Expenses | \u00a3150,000.00 |\n| Operating Profit | \u00a3250,000.00 |"
+      },
+      "next_action": null,
+      "artifacts": [],
+      "artifact_error": null,
+      "effective_context": {
+        "schema_version": "1.0",
+        "task_type": "general_question",
+        "task_spec_version": "f0.1",
+        "actor_id": "socket-a",
+        "tenant_id": "socket-tenant-a",
+        "actor_role": "Admin",
+        "engagement_id": null,
+        "purpose": "answer_user_query",
+        "jurisdiction": null,
+        "framework": null,
+        "entity": null,
+        "period_start": null,
+        "period_end": null,
+        "currency": null,
+        "language": "en",
+        "data_classification": "INTERNAL",
+        "intended_use": "research"
+      },
+      "context_decision": {
+        "status": "complete",
+        "missing_fields": [],
+        "invalid_fields": [],
+        "reason_codes": [],
+        "clarification_questions": [],
+        "resolved_context": {
+          "schema_version": "1.0",
+          "task_type": "general_question",
+          "task_spec_version": "f0.1",
+          "actor_id": "socket-a",
+          "tenant_id": "socket-tenant-a",
+          "actor_role": "Admin",
+          "engagement_id": null,
+          "purpose": "answer_user_query",
+          "jurisdiction": null,
+          "framework": null,
+          "entity": null,
+          "period_start": null,
+          "period_end": null,
+          "currency": null,
+          "language": "en",
+          "data_classification": "INTERNAL",
+          "intended_use": "research"
+        }
+      },
+      "workflow_plan": {
+        "version": "1.0",
+        "task_type": "general_question",
+        "detection": "automatic",
+        "confidence": 0.92,
+        "reason_codes": [
+          "GENERAL_INFORMATION_INTENT"
+        ],
+        "steps": [
+          {
+            "capability": "numeric.calculate",
+            "reason": "The request contains an explicit calculation intent."
+          },
+          {
+            "capability": "evidence.cite",
+            "reason": "Material claims must retain evidence provenance."
+          },
+          {
+            "capability": "response.compose",
+            "reason": "A governed user-facing response is required."
+          }
+        ]
+      },
+      "audit_reference": {
+        "audit_chain_id": "aud-013a1b1fa2f8",
+        "receipt_id": "evt-b40458f3ef534ba2"
+      },
+      "visualization": null,
+      "secondary_visualizations": [],
+      "calculation": {
+        "matched": true,
+        "status": "success",
+        "formula_ids": [
+          "income_statement"
+        ],
+        "formula_version": "1.0",
+        "inputs": [
+          {
+            "name": "revenue",
+            "value": "900000",
+            "display_value": "900000",
+            "kind": "money",
+            "currency": "GBP",
+            "source_type": "user",
+            "source_location": "query"
+          },
+          {
+            "name": "cost_of_sales",
+            "value": "500000",
+            "display_value": "500000",
+            "kind": "money",
+            "currency": "GBP",
+            "source_type": "user",
+            "source_location": "query"
+          },
+          {
+            "name": "operating_expenses",
+            "value": "150000",
+            "display_value": "150000",
+            "kind": "money",
+            "currency": "GBP",
+            "source_type": "user",
+            "source_location": "query"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "revenue",
+            "value": "900000",
+            "display_value": "\u00a3900,000.00",
+            "kind": "money"
+          },
+          {
+            "name": "cost_of_sales",
+            "value": "500000",
+            "display_value": "\u00a3500,000.00",
+            "kind": "money"
+          },
+          {
+            "name": "gross_profit",
+            "value": "400000",
+            "display_value": "\u00a3400,000.00",
+            "kind": "money"
+          },
+          {
+            "name": "operating_expenses",
+            "value": "150000",
+            "display_value": "\u00a3150,000.00",
+            "kind": "money"
+          },
+          {
+            "name": "operating_profit",
+            "value": "250000",
+            "display_value": "\u00a3250,000.00",
+            "kind": "money"
+          }
+        ],
+        "steps": [
+          "Gross profit = \u00a3900,000.00 \u2212 \u00a3500,000.00 = \u00a3400,000.00",
+          "Operating profit = \u00a3400,000.00 \u2212 \u00a3150,000.00 = \u00a3250,000.00"
+        ],
+        "verification_status": "passed",
+        "error_code": null,
+        "message": "Calculation completed using values supplied directly by the user.",
+        "notes": []
+      }
+    },
+    "actor": "a"
+  },
+  {
+    "request": {
+      "query": "Revenue \u00a3100, cost of sales \u00a360. Calculate gross profit.",
+      "conversation_id": "socket-task",
+      "turn_id": "turn-4",
+      "request_id": "request-4"
+    },
+    "http_status": 200,
+    "response": {
+      "calculation_state": {
+        "task_type": [
+          "gross_profit"
+        ],
+        "original_inputs": [
+          {
+            "name": "revenue",
+            "value": "100",
+            "display_value": "100",
+            "kind": "money",
+            "currency": "GBP",
+            "source_type": "user",
+            "source_location": "query"
+          },
+          {
+            "name": "cost_of_sales",
+            "value": "60",
+            "display_value": "60",
+            "kind": "money",
+            "currency": "GBP",
+            "source_type": "user",
+            "source_location": "query"
+          }
+        ],
+        "inputs": [
+          {
+            "name": "revenue",
+            "value": "100",
+            "display_value": "100",
+            "kind": "money",
+            "currency": "GBP",
+            "source_type": "user",
+            "source_location": "query"
+          },
+          {
+            "name": "cost_of_sales",
+            "value": "60",
+            "display_value": "60",
+            "kind": "money",
+            "currency": "GBP",
+            "source_type": "user",
+            "source_location": "query"
+          }
+        ],
+        "changed_inputs": [],
+        "assumptions": [],
+        "derived_results": [
+          {
+            "name": "gross_profit",
+            "value": "40",
+            "display_value": "\u00a340.00",
+            "kind": "money"
+          }
+        ]
+      },
+      "request_integrity": {
+        "conversation_id": "socket-task",
+        "turn_id": "turn-4",
+        "request_id": "request-4",
+        "current_message_sha256": "4ed4f94ba210871d4f801a6a35034cd18cda4153073e6e2bf59cc752b61fdaae",
+        "relation": "independent",
+        "changed_inputs": []
+      },
+      "visualization_intent": {
+        "output_type": "text",
+        "reason": "Working and labelled results are clearer than an unnecessary chart.",
+        "dataset": [
+          {
+            "metric": "gross_profit",
+            "value": "40",
+            "display_value": "\u00a340.00",
+            "unit_kind": "money"
+          }
+        ],
+        "x_field": "metric",
+        "y_fields": [
+          "value"
+        ],
+        "title": null,
+        "currency": "GBP",
+        "units": null,
+        "period": [],
+        "legend": [],
+        "user_requested_type": null,
+        "confidence": 1.0,
+        "fallback_reason": null,
+        "renderer_payload": null
+      },
+      "requested_deliverables": [],
+      "query_id": "qry-15d02e0d5cf3",
+      "correlation_id": "corr-8727301fed2a",
+      "outcome": "answered",
+      "route": "CALCULATION",
+      "safety": {
+        "risk_level": "LOW",
+        "policy_state": "allowed",
+        "disclaimer_required": false
+      },
+      "confidence_state": "sufficient",
+      "source_bundle": null,
+      "answer": {
+        "text": "### Calculation\n- Gross profit = \u00a3100.00 \u2212 \u00a360.00 = \u00a340.00\n\n### Result\n| Item | Value |\n| --- | --- |\n| Gross Profit | \u00a340.00 |",
+        "citations": [],
+        "limitations": [],
+        "calculation_widget": null,
+        "calculation_result": null,
+        "verified_charts": [],
+        "observations": [],
+        "computed_from_question": false,
+        "response_kind": null,
+        "completeness": "complete",
+        "prompt_id": "deterministic-calculation-v1",
+        "prompt_name": "Deterministic Calculation",
+        "output_text": "### Calculation\n- Gross profit = \u00a3100.00 \u2212 \u00a360.00 = \u00a340.00\n\n### Result\n| Item | Value |\n| --- | --- |\n| Gross Profit | \u00a340.00 |"
+      },
+      "next_action": null,
+      "artifacts": [],
+      "artifact_error": null,
+      "effective_context": {
+        "schema_version": "1.0",
+        "task_type": "general_question",
+        "task_spec_version": "f0.1",
+        "actor_id": "socket-a",
+        "tenant_id": "socket-tenant-a",
+        "actor_role": "Admin",
+        "engagement_id": null,
+        "purpose": "answer_user_query",
+        "jurisdiction": null,
+        "framework": null,
+        "entity": null,
+        "period_start": null,
+        "period_end": null,
+        "currency": null,
+        "language": "en",
+        "data_classification": "INTERNAL",
+        "intended_use": "research"
+      },
+      "context_decision": {
+        "status": "complete",
+        "missing_fields": [],
+        "invalid_fields": [],
+        "reason_codes": [],
+        "clarification_questions": [],
+        "resolved_context": {
+          "schema_version": "1.0",
+          "task_type": "general_question",
+          "task_spec_version": "f0.1",
+          "actor_id": "socket-a",
+          "tenant_id": "socket-tenant-a",
+          "actor_role": "Admin",
+          "engagement_id": null,
+          "purpose": "answer_user_query",
+          "jurisdiction": null,
+          "framework": null,
+          "entity": null,
+          "period_start": null,
+          "period_end": null,
+          "currency": null,
+          "language": "en",
+          "data_classification": "INTERNAL",
+          "intended_use": "research"
+        }
+      },
+      "workflow_plan": {
+        "version": "1.0",
+        "task_type": "general_question",
+        "detection": "automatic",
+        "confidence": 0.92,
+        "reason_codes": [
+          "GENERAL_INFORMATION_INTENT"
+        ],
+        "steps": [
+          {
+            "capability": "numeric.calculate",
+            "reason": "The request contains an explicit calculation intent."
+          },
+          {
+            "capability": "evidence.cite",
+            "reason": "Material claims must retain evidence provenance."
+          },
+          {
+            "capability": "response.compose",
+            "reason": "A governed user-facing response is required."
+          }
+        ]
+      },
+      "audit_reference": {
+        "audit_chain_id": "aud-eccc6800acf4",
+        "receipt_id": "evt-d81f89938bd544c8"
+      },
+      "visualization": null,
+      "secondary_visualizations": [],
+      "calculation": {
+        "matched": true,
+        "status": "success",
+        "formula_ids": [
+          "gross_profit"
+        ],
+        "formula_version": "1.0",
+        "inputs": [
+          {
+            "name": "revenue",
+            "value": "100",
+            "display_value": "100",
+            "kind": "money",
+            "currency": "GBP",
+            "source_type": "user",
+            "source_location": "query"
+          },
+          {
+            "name": "cost_of_sales",
+            "value": "60",
+            "display_value": "60",
+            "kind": "money",
+            "currency": "GBP",
+            "source_type": "user",
+            "source_location": "query"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "gross_profit",
+            "value": "40",
+            "display_value": "\u00a340.00",
+            "kind": "money"
+          }
+        ],
+        "steps": [
+          "Gross profit = \u00a3100.00 \u2212 \u00a360.00 = \u00a340.00"
+        ],
+        "verification_status": "passed",
+        "error_code": null,
+        "message": "Calculation completed using values supplied directly by the user.",
+        "notes": []
+      }
+    },
+    "actor": "a"
+  }
+]
