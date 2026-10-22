@@ -25,3 +25,7 @@ def test_every_file_is_kept_when_the_question_names_none_or_several_equally():
     assert documents_for_question("Summarise these documents.", CHAT) is None
     assert documents_for_question("Compare payroll cost with sales.", CHAT) is None
     assert documents_for_question("Show the net book value of each asset category.", [ASSETS]) is None
+
+
+def test_a_misspelt_question_still_finds_its_file():
+    assert documents_for_question("give me the different types of assests", CHAT) == {"assets"}

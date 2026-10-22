@@ -48,6 +48,14 @@ def _vocabulary(sources: list[WebSource]) -> set[str]:
     return words
 
 
+def _matches(wanted: set[str], vocabulary: set[str]) -> int:
+    """Question words found in the file, allowing a misspelling of a longer
+    word: "assests" is "assets"."""
+    from difflib import SequenceMatcher
+    return sum(1 for word in wanted if word in vocabulary or (len(word) >= 5 and any(
+        len(known) >= 5 and SequenceMatcher(None, word, known).ratio() >= 0.8 for known in vocabulary)))
+
+
 def documents_for_question(query: str, sources: list[WebSource]) -> set[str] | None:
     """The source_ids of the files the question is about, or None to keep
     every file (one file, no file matching, or several matching equally)."""
@@ -57,7 +65,7 @@ def documents_for_question(query: str, sources: list[WebSource]) -> set[str] | N
     if len(by_file) < 2:
         return None
     wanted = _terms(query)
-    scores = {key: len(wanted & _vocabulary(group)) for key, group in by_file.items()}
+    scores = {key: _matches(wanted, _vocabulary(group)) for key, group in by_file.items()}
     best = max(scores.values())
     keep = {key for key, score in scores.items() if score == best}
     if best == 0 or len(keep) == len(scores):
