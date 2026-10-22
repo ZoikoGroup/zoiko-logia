@@ -19,6 +19,7 @@ and well-formed before anything touches a network.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import uuid
 import logging
@@ -61,6 +62,16 @@ class ToolResult:
     # version, from which inputs (by hash), with which rounding and warnings.
     # Persisted as a calculation run so figures can be traced (§07.3).
     receipt: dict | None = None
+    # Every receipt of a batched calculation, in item order (receipt is the
+    # first, so readers of a single calculation are unchanged).
+    receipts: tuple[dict, ...] = ()
+    # Items a batched calculation evaluated, and how many failed.
+    items_total: int | None = None
+    items_failed: int | None = None
+
+    @property
+    def all_receipts(self) -> tuple[dict, ...]:
+        return self.receipts or ((self.receipt,) if self.receipt else ())
 
     @classmethod
     def failure(cls, error_code: ErrorCode, content: str) -> "ToolResult":
@@ -217,11 +228,9 @@ class ToolRegistry:
                 logger.info("Retrying tool %s (attempt %d of %d)", name, attempt + 2, spec.max_retries + 1)
 
         if len(result.content) > MAX_RESULT_CHARS:
-            result = ToolResult(
-                ok=result.ok, content=result.content[:MAX_RESULT_CHARS] + " …[truncated]",
-                sources=result.sources, artifacts=result.artifacts, error_code=result.error_code,
-                receipt=result.receipt,
-            )
+            # Every other field is kept: rebuilt field by field, a long batched
+            # calculation lost all receipts but the first.
+            result = dataclasses.replace(result, content=result.content[:MAX_RESULT_CHARS] + " …[truncated]")
         return result
 
 
@@ -234,10 +243,15 @@ def _short_error(exc: Exception) -> str:
     return str(exc)
 
 
-def build_default_registry() -> ToolRegistry:
+def build_default_registry(*, batch_calculations: bool = False) -> ToolRegistry:
     """The production tool set. Imported lazily so the registry module itself
-    stays free of connector imports (and their network clients)."""
-    from app.domains.model_gateway.tools.calc_tool import CALCULATE_TOOL
+    stays free of connector imports (and their network clients).
+
+    batch_calculations swaps in the calculator that also accepts
+    `expressions` (calc_tool.CALCULATE_BATCH_TOOL). Off by default: production
+    routing keeps the single-expression calculator until the batch form is
+    reviewed (docs/kriton-batched-calculator-and-balance-provenance-design.md)."""
+    from app.domains.model_gateway.tools.calc_tool import CALCULATE_BATCH_TOOL, CALCULATE_TOOL
     from app.domains.model_gateway.tools.chart_tool import RENDER_CHART_TOOL
     from app.domains.model_gateway.tools.economic_tool import ECONOMIC_INDICATOR_TOOL
     from app.domains.model_gateway.tools.fx_tool import EXCHANGE_RATE_TOOL
@@ -247,6 +261,6 @@ def build_default_registry() -> ToolRegistry:
 
     registry = ToolRegistry()
     for spec in (KNOWLEDGE_BASE_TOOL, SEARCH_WEB_TOOL, EXCHANGE_RATE_TOOL, ECONOMIC_INDICATOR_TOOL, MARKET_DATA_TOOL,
-                 CALCULATE_TOOL, RENDER_CHART_TOOL):
+                 CALCULATE_BATCH_TOOL if batch_calculations else CALCULATE_TOOL, RENDER_CHART_TOOL):
         registry.register(spec)
     return registry

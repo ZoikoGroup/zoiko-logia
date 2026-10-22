@@ -1,0 +1,669 @@
+--- a/backend/app/domains/model_gateway/agent_budget.py
++++ b/backend/app/domains/model_gateway/agent_budget.py
+@@ -69,9 +69,11 @@
+         if completion <= 0:
+             raise GenerationBudgetExceeded(reason)
+         if self.max_request_tokens > 0:
+-            completion = min(completion, self.max_request_tokens - request_prompt_estimate(messages, tools))
++            estimate = request_prompt_estimate(messages, tools)
++            completion = min(completion, self.max_request_tokens - estimate)
+             if completion <= 0:
+-                raise ProviderRequestTooLarge()
++                raise ProviderRequestTooLarge(origin='local_preflight', input_estimate=estimate,
++                                              request_limit=self.max_request_tokens)
+         return prompt, completion
+ 
+     async def create(self, client: Any, *, seconds: float, **kwargs: Any) -> Any:
+--- a/backend/app/domains/model_gateway/errors.py
++++ b/backend/app/domains/model_gateway/errors.py
+@@ -20,6 +20,12 @@
+ 
+ 
+ class ProviderRequestTooLarge(ProviderRequestRejected):
++    def __init__(self, *, origin='provider', input_estimate=None, request_limit=None):
++        self.origin = origin
++        self.input_estimate = input_estimate
++        self.request_limit = request_limit
++        super().__init__()
++
+     code = "provider_request_too_large"
+     next_action_type = "provider_request_too_large"
+     user_message = (
+--- a/backend/app/orchestration/calculations/engine.py
++++ b/backend/app/orchestration/calculations/engine.py
+@@ -531,8 +531,8 @@
+         if is_gst:
+             steps = [step.replace('Output VAT', 'Output GST').replace('Input VAT', 'Input tax credit').replace('VAT payable', 'GST payable').replace('VAT repayable', 'GST repayable') for step in steps]
+         for label, aliases, computed, difference_name in (
+-            ('Output GST' if is_gst else 'Output VAT', ('output GST ledger says', 'output GST ledger', 'output VAT ledger says', 'output VAT ledger'), output, 'output_ledger_difference'),
+-            ('Input tax credit', ('input tax credit ledger says', 'input tax credit ledger', 'input VAT ledger says', 'input VAT ledger'), input_vat, 'input_ledger_difference'),
++            ('Output GST' if is_gst else 'Output VAT', ('output GST ledger shows', 'output GST ledger says', 'output GST ledger', 'output VAT ledger shows', 'output VAT ledger says', 'output VAT ledger'), output, 'output_ledger_difference'),
++            ('Input tax credit', ('input GST ledger shows', 'input GST ledger says', 'input GST ledger', 'input tax credit ledger says', 'input tax credit ledger', 'input VAT ledger shows', 'input VAT ledger says', 'input VAT ledger'), input_vat, 'input_ledger_difference'),
+         ):
+             reported = _find_value(q, aliases)
+             if reported:
+@@ -567,6 +567,73 @@
+     return result
+ 
+ 
++def vat_returns_followup(query, history):
++    """Revise a named return only, retaining supplied rates and ledger balances."""
++    change_pattern = r'\b(?:change|correct|set)\s+only\s+(sales returns|purchase returns)\s+to\s*([£$€₹])?\s*(\d[\d,]*(?:\.\d+)?)'
++    if not re.search(change_pattern, query, re.I):
++        return None
++    base = None
++    changes = []
++    for message in reversed(history):
++        if message.role != 'user':
++            continue
++        candidate = vat_amounts(message.content)
++        if candidate and candidate.status == 'success' and 'vat_liability' in candidate.formula_ids:
++            base = message.content
++            break
++        if re.search(change_pattern,message.content,re.I):
++            changes.insert(0,message.content)
++        else:
++            return None
++    if base is None:
++        return None
++    for text in [*changes,query]:
++        change = re.search(change_pattern,text,re.I)
++        old = _find_value(base,(change[1],))
++        if not old:
++            return None
++        if change[2] and _CURRENCY_SYMBOLS[change[2]] != old[1]:
++            return None
++        label = re.escape(change[1])
++        base, count = re.subn(r'\b'+label+r'\s*(?:(?:of|is|are|:)\s*)?[£$€₹]?\s*\d[\d,]*(?:\.\d+)?',
++                             change[1]+' '+(change[2] or '')+change[3],base,count=1,flags=re.I)
++        if count != 1:
++            return None
++    result = vat_amounts(base)
++    if result:
++        result.notes.append('Only the specified returns changed; the original rates, eligibility assumptions and recorded ledger balances were retained.')
++        for item in result.inputs:
++            item.source_location = 'query' if item.name == change[1].replace(' ','_') else 'conversation_history'
++    return result
++
++
++def supplied_accrual(query):
++    if not (re.search(r'\b(?:adjusting journal|accrual)\b',query,re.I)
++            and re.search(r'\bnot been invoiced,? paid or recorded\b',query,re.I)
++            and re.search(r'\bignore VAT\b',query,re.I)):
++        return None
++    expense = re.search(r'\b(electricity|rent|utilities|insurance)\s+costs\b',query,re.I)
++    if not expense:
++        return None
++    amount = _find_value(query,(expense[1]+' costs',))
++    if not amount or not amount[1] or amount[0] < 0:
++        return None
++    value,currency = amount
++    shown = _money(value,currency)
++    result = _success_with_notes(['unrecorded_expense_accrual'],[
++        CalculationOutput(name='expense_debit',value=value,display_value=shown,kind='money'),
++        CalculationOutput(name='accrued_expenses_credit',value=value,display_value=shown,kind='money'),
++        CalculationOutput(name='profit_change',value=-value,display_value=_money(-value,currency),kind='money'),
++        CalculationOutput(name='liabilities_change',value=value,display_value=shown,kind='money'),
++        CalculationOutput(name='cash_change',value=Decimal(0),display_value=_money(Decimal(0),currency),kind='money')],
++        [f'Proposed adjusting entry: debit {expense[1].lower()} expense {shown}; credit accrued expenses (liability) {shown}.'],
++        ['This entry is proposed, not posted. The stated expense belongs to December and VAT is ignored as requested.',
++         'Recording the accrual reduces profit and increases liabilities by the stated amount; cash is unchanged.',
++         'On later payment of the accrued amount: debit accrued expenses and credit cash/bank. Do not record the same expense again.'])
++    result.inputs = [_supplied('expense',value,currency)]
++    return result
++
++
+ _PERCENT_OF = re.compile(
+     r"(?<![\d.])(?P<pct>\d+(?:\.\d+)?)\s*%\s+of\s+(?P<symbol>[£$€₹])?\s*(?:(?P<code>GBP|USD|EUR|INR|AED)\s*)?"
+     r"(?P<amount>\d(?:[\d,]*\d)?(?:\.\d+)?)", re.I)
+@@ -951,8 +1018,14 @@
+     q = (query or "").replace("\u2212", "-").replace("\u2013", "-")
+     from app.orchestration.calculations.statements import operating_statement
+     statement = operating_statement(q)
++    if statement is None:
++        from app.orchestration.calculations.statements import structured_operating_statement
++        statement = structured_operating_statement(q)
+     if statement is not None:
+         return statement
++    accrual = supplied_accrual(q)
++    if accrual is not None:
++        return accrual
+     from .inventory_statement import inventory_statement
+     statement = inventory_statement(q)
+     if statement is not None:
+@@ -1170,6 +1243,12 @@
+ 
+     wants_gross_margin = bool(re.search(r"\bgross (?:profit )?margin\b", q, re.I))
+     wants_gross_profit = bool(re.search(r"\bgross profit\b", q, re.I))
++    if (re.search(r'\bsales returns\b',q,re.I)
++            and re.search(r'\b(?:operating profit|profit before tax|net sales)\b',q,re.I)):
++        # A complete supported statement was attempted above. If its inputs
++        # are unsupported/ambiguous, a gross-margin shortcut must not pretend
++        # to complete it using gross revenue or ignore the other deliverables.
++        return CalculationResult()
+     if wants_gross_margin or wants_gross_profit:
+         revenue = _input(q, "revenue")
+         cost = _input(q, "cost_of_sales")
+--- a/backend/app/orchestration/calculations/statements.py
++++ b/backend/app/orchestration/calculations/statements.py
+@@ -13,8 +13,142 @@
+ _PERIOD = re.compile(r'\b(?:for\s+)?(?:the\s+)?(?P<period>current|previous|prior)[ -]year\s*:', re.I)
+ _VALUE = r'\s*:\s*(?P<symbol>[£$€₹])?\s*(?P<value>-?\d(?:[\d,]*\d)?(?:\.\d+)?)'
+ _EXPENSES = ('salaries', 'rent', 'utilities', 'marketing', 'depreciation')
++
++
++def structured_operating_statement(query: str) -> CalculationResult | None:
++    """Complete labelled single/two-period statements; never just a subtotal."""
++    from .engine import _find_value, _money
++    if not re.search(r'\b(?:operating profit|profit before tax|management report)\b', query, re.I):
++        return None
++    if re.search(r'\b(?:opening inventory|closing inventory|purchases|forecast|projected)\b', query, re.I):
++        return None
++    periods = list(_PERIOD.finditer(query))
++    if periods and (len(periods) != 2 or periods[0]['period'].lower() != 'current'):
++        return None
++    sections = [('current_', query[periods[0].end():periods[1].start()]),
++                ('previous_', query[periods[1].end():])] if periods else [('', query)]
++    inputs, outputs, steps, notes = [], [], [], []
++    currencies = set()
++    computed = {}
++    for prefix, text in sections:
++        revenue = _find_value(text, ('revenue', 'gross sales'))
++        cost = _find_value(text, ('cost of goods sold', 'cost of sales'))
++        interest = _find_value(text, ('interest expense', 'interest'))
++        aggregate = _find_value(text, ('total operating expenses', 'operating expenses'))
++        components = [(name, _find_value(text, (name,))) for name in _EXPENSES]
++        # An aggregate and component amounts together require a reconciliation,
++        # not an assumption that the figures can be added or substituted.
++        if not revenue or not cost or not interest or (aggregate and any(v for _, v in components)):
++            return None
++        if not aggregate and not all(dict(components)[n] for n in ('salaries','rent','utilities','depreciation')):
++            return None
++        returns = _find_value(text, ('sales returns',))
++        supplied = [('revenue', revenue), ('cost_of_goods_sold', cost), ('finance_costs', interest)]
++        supplied += [('sales_returns', returns)] if returns else []
++        supplied += [('operating_expenses', aggregate)] if aggregate else [(n,v) for n,v in components if v]
++        if len(re.findall(r'[£$€₹]\s*\d[\d,]*(?:\.\d+)?',text)) > len(supplied):
++            return None
++        for name, (number, currency) in supplied:
++            if currency:
++                currencies.add(currency)
++            if number < 0:
++                return None
++            inputs.append(CalculationInput(name=prefix+name, value=number, currency=currency, kind='money', display_value=str(number)))
++        if len(currencies) != 1:
++            return None
++        currency = next(iter(currencies))
++        net = revenue[0] - (returns[0] if returns else Decimal(0))
++        if net < 0:
++            return None
++        gross = net - cost[0]
++        opex = aggregate[0] if aggregate else sum((v[0] for _,v in components if v), Decimal(0))
++        operating = gross - opex
++        result = {'net_sales':net, 'gross_profit':gross, 'operating_expenses':opex,
++                  'operating_profit':operating, 'finance_costs':interest[0], 'profit_before_tax':operating-interest[0]}
++        if net:
++            result.update(gross_margin=gross/net*100, operating_margin=operating/net*100)
++        computed[prefix] = result
++        for name, number in result.items():
++            percent = name.endswith('margin')
++            outputs.append(CalculationOutput(name=prefix+name, value=number, kind='percentage' if percent else 'money',
++                display_value=f'{number:.2f}%' if percent else _money(number,currency)))
++        p = prefix.replace('_',' ').strip().title()
++        operating_inputs = [aggregate[0]] if aggregate else [v[0] for _,v in components if v]
++        steps += [f'{p} net sales = {_money(revenue[0],currency)} − {_money(returns[0] if returns else Decimal(0),currency)} = {_money(net,currency)}',
++                  f'{p} gross profit = {_money(net,currency)} − {_money(cost[0],currency)} = {_money(gross,currency)}',
++                  f'{p} operating expenses = ' + ' + '.join(_money(v,currency) for v in operating_inputs) + f' = {_money(opex,currency)}',
++                  f'{p} operating profit = {_money(gross,currency)} − {_money(opex,currency)} = {_money(operating,currency)}',
++                  f'{p} profit before tax = {_money(operating,currency)} − {_money(interest[0],currency)} = {_money(operating-interest[0],currency)}']
++        if net:
++            steps += [f'{p} gross margin = {gross} ÷ {net} × 100 = {gross/net*100:.2f}%',
++                      f'{p} operating margin = {operating} ÷ {net} × 100 = {operating/net*100:.2f}%']
++    if len(computed) == 2:
++        current, previous = computed['current_'], computed['previous_']
++        for name in ('gross_profit','operating_profit','profit_before_tax','gross_margin','operating_margin'):
++            if name not in current or name not in previous:
++                continue
++            delta = current[name]-previous[name]
++            margin = name.endswith('margin')
++            outputs.append(CalculationOutput(name=name+'_change'+('_percentage_points' if margin else ''), value=delta,
++                kind='number' if margin else 'money', display_value=f'{delta:.2f} percentage points' if margin else _money(delta,currency)))
++            if not margin and previous[name] > 0:
++                percent = delta/previous[name]*100
++                outputs.append(CalculationOutput(name=name+'_change_percent',value=percent,kind='percentage',display_value=f'{percent:.2f}%'))
++                steps.append(f'{name} percentage change = ({current[name]} − {previous[name]}) ÷ {previous[name]} × 100 = {percent:.2f}%')
++    notes = ['Interest is deducted after operating profit. No tax has been calculated. The supplied figures do not establish business causes.']
++    return CalculationResult(matched=True,status='success',formula_ids=['structured_operating_statement'],
++        inputs=inputs,outputs=outputs,steps=steps,notes=notes,verification_status='passed')
+ 
+ 
++def structured_statement_followup(query: str, history) -> CalculationResult | None:
++    from .engine import _money
++    pattern = r'^\s*(?:correct|change|set)\s+(?:only\s+)?(depreciation|rent|utilities|salaries|marketing)\s+to\s*([£$€₹])?\s*(\d[\d,]*(?:\.\d+)?)(?:[.!]|$)'
++    change = re.match(pattern, query, re.I)
++    if not change:
++        return None
++    baseline = None
++    pending = []
++    for message in reversed(history):
++        if message.role != 'user':
++            continue
++        baseline = structured_operating_statement(message.content)
++        if baseline:
++            break
++        prior_change = re.match(pattern,message.content,re.I)
++        if prior_change:
++            pending.insert(0,prior_change)
++        else:
++            return None
++    if not baseline or any(i.name.startswith('current_') for i in baseline.inputs):
++        return None
++    currency = next(i.currency for i in baseline.inputs if i.currency)
++    symbol = {'GBP':'£','USD':'$','EUR':'€','INR':'₹'}[currency]
++    if change[2] and change[2] != symbol:
++        return None
++    supplied = {i.name:i.value for i in baseline.inputs}
++    labels = {'cost_of_goods_sold':'cost of goods sold','finance_costs':'interest','sales_returns':'sales returns','operating_expenses':'operating expenses'}
++    def calculate_active():
++        return structured_operating_statement('. '.join(f'{labels.get(k,k)} {symbol}{v}' for k,v in supplied.items()) + '. Calculate operating profit and profit before tax.')
++    for prior in pending:
++        if prior[1].lower() not in supplied or (prior[2] and prior[2] != symbol):
++            return None
++        supplied[prior[1].lower()] = Decimal(prior[3].replace(',',''))
++    baseline = calculate_active()
++    replacement = Decimal(change[3].replace(',',''))
++    if change[1].lower() not in supplied:
++        return None
++    supplied[change[1].lower()] = replacement
++    revised = calculate_active()
++    if not revised:
++        return None
++    revised.outputs = [CalculationOutput(name='original_'+o.name,value=o.value,display_value=o.display_value,kind=o.kind) for o in baseline.outputs] + revised.outputs
++    for item in revised.inputs:
++        item.source_location = 'query' if item.name == change[1].lower() else 'conversation_history'
++    revised.notes += [f'Changed only {change[1].lower()} to {_money(replacement,currency)}. Original and corrected values are shown.',
++                      'Gross margin is unchanged because sales, returns and cost of goods sold are unchanged. Operating margin changes because operating expenses changed.']
++    return revised
++
++
+ def operating_statement(query: str) -> CalculationResult | None:
+     """Recognise a full two-period statement, not an arbitrary word problem."""
+     periods = list(_PERIOD.finditer(query))
+--- a/backend/app/orchestration/chart_intent.py
++++ b/backend/app/orchestration/chart_intent.py
+@@ -3,6 +3,7 @@
+ 
+ 
+ def allows_automatic_chart(query: str) -> bool:
++    query = re.sub(r'\bif (?:chart )?rendering is unavailable,? say so explicitly[.!]?', '', query, flags=re.I)
+     if re.search(r"\b(?:only|just)\s+(?:(?:a|any|the)\s+)?(?:tables?|text)\b|\b(?:tables?|text)\s+only\b", query, re.I):
+         return False
+     # Conditions require a decision based on retrieved evidence. Keyword-based
+--- a/backend/app/orchestration/input_requirements.py
++++ b/backend/app/orchestration/input_requirements.py
+@@ -49,6 +49,14 @@
+ 
+ 
+ def missing_tax_inputs(query: str) -> str | None:
++    if (re.search(r'\bcorporation tax\b', query, re.I)
++            and re.search(r'\b(?:owe|how much corporation tax|exact tax liability)\b', query, re.I)
++            and not re.search(r'\b(?:threshold|current rate|effective date)\b', query, re.I)
++            and not re.search(r'\d+(?:\.\d+)?\s*%', query)):
++        return ('An exact corporation-tax amount cannot be determined from accounting profit alone. '
++                'Please confirm the tax jurisdiction and accounting period, taxable profit after adjustments, '
++                'associated-company details where relevant, and applicable reliefs, losses and credits. '
++                'For arithmetic only, provide taxable profit and the rate to assume.')
+     if (re.search(r"\b(?:register|registration)\b", query, re.I)
+             and re.search(r"\bvat\b", query, re.I) and re.search(r"\b(?:my|our)\b", query, re.I)
+             and not re.search(r"\b(?:uk|united kingdom|britain|ireland|uae|saudi|germany|france)\b", query, re.I)
+@@ -80,7 +88,7 @@
+     re.I,
+ )
+ _SINGLE_COUNTRY_CURRENCY = re.compile(r"£|₹|\b(?:gbp|hmrc|sterling|inr|rupees?|aed|dirhams?|sar|riyals?)\b", re.I)
+-_SAME_RATE = re.compile(r"\b(?:all|every|each)\b[^.?]{0,40}\b(?:standard[- ]rated|at \d|same rate)|\bsame rate\b", re.I)
++_SAME_RATE = re.compile(r"\b(?:all|every|each)\b[^.?]{0,60}\b(?:standard[- ]rated|at \d|same rate|attracts?\s+\d+(?:\.\d+)?\s*%)|\bsame rate\b", re.I)
+ _EXPLICIT_SHARED_RATE = re.compile(
+     r'\b(?:apply|use)\s+(?:the\s+)?(?:supplied\s+)?\d+(?:\.\d+)?%\s+(?:(?:GST|VAT)\s+)?rate\s+to\s+'
+     r'(?:net\s+)?(?:sales\s+and\s+(?:net\s+)?purchases|purchases\s+and\s+(?:net\s+)?sales)\b', re.I,
+@@ -100,7 +108,7 @@
+     The country, rate and treatment may have been stated in an earlier user
+     turn ("UK business, everything at 20%"); those are read too, never asked
+     again. Only what the user stated: nothing is assumed."""
+-    q = query or ""
++    q = re.sub(r'\b(?:ignore|disregard)\s+(?:VAT|GST)\b', '', query or '', flags=re.I)
+     earlier = " ".join(getattr(m, "content", "") or "" for m in list(history or [])[-6:]
+                        if getattr(m, "role", "user") == "user")
+     context = f"{earlier} {q}"
+--- a/backend/app/orchestration/service.py
++++ b/backend/app/orchestration/service.py
+@@ -229,6 +229,8 @@
+     from app.orchestration.calculations.inventory_statement import _inventory_revision
+     if _inventory_revision(text) is not None:
+         return True
++    if re.match(r'^\s*(?:(?:correct|change|set)\s+only\s+(?:depreciation|rent|utilities|salaries|marketing|purchase returns|sales returns)\b|(?:the )?actual invoice arrives\b|change the chart to\b)',text,re.I):
++        return True
+     if _SAME_DATA_REFERENCE.search(text) or _ELLIPTICAL_FOLLOW_UP.search(text):
+         return True
+     return bool(_UNDER_SPECIFIED_METRIC_FORMAT.search(text) and not countries_in_query(text))
+@@ -805,6 +807,8 @@
+     parts = []
+     for clause in _CLAUSE_SPLIT.split(query or ""):
+         clause = clause.strip()
++        if re.fullmatch(r"(?:do not|don't) claim to have verified (?:the )?(?:law|legal eligibility)[.!]?", clause, re.I):
++            continue
+         if not clause:
+             continue
+         figures = _RULE_REFERENCE.sub("", re.sub(r"\b(?:19|20)\d{2}\b", "", clause))
+@@ -852,6 +856,8 @@
+         return re.split(r'\s+Context:\s+', query, maxsplit=1)[0].strip()
+     for clause in _CLAUSE_SPLIT.split(query or ""):
+         clause = clause.strip()
++        if re.fullmatch(r"(?:do not|don't) claim to have verified (?:the )?(?:law|legal eligibility)[.!]?", clause, re.I):
++            continue
+         # A ticker, an amount or an observation year in a lookup clause does
+         # not make that clause answerable by the accounting calculator.
+         if _LIVE_CALCULATION_PART.search(clause) and _LIVE_CALCULATION_ASK.search(clause):
+@@ -1774,9 +1780,12 @@
+     # A follow-up that changes one earlier figure ("what if revenue increases
+     # by 15%?") is calculated from the earlier message's figures; it carried
+     # none of its own, so nothing was calculated (change_followup).
+-    from app.orchestration.calculations.statements import statement_followup
++    from app.orchestration.calculations.statements import statement_followup, structured_statement_followup
++    from app.orchestration.calculations.engine import vat_returns_followup
+     from app.orchestration.calculations.inventory_statement import inventory_followup, reconciliation_followup
+-    calculation_result = inventory_followup(request.query, screened_history(request.conversation_history)) \
++    calculation_result = vat_returns_followup(request.query, screened_history(request.conversation_history)) \
++        or structured_statement_followup(request.query, screened_history(request.conversation_history)) \
++        or inventory_followup(request.query, screened_history(request.conversation_history)) \
+         or reconciliation_followup(request.query, screened_history(request.conversation_history)) \
+         or statement_followup(request.query, screened_history(request.conversation_history)) \
+         or change_followup(request.query, screened_history(request.conversation_history)) \
+@@ -1817,7 +1826,13 @@
+         calculation_needs_evidence = True
+     supported_explanation = bool(set(calculation_result.formula_ids) & {
+         'inventory_operating_statement', 'inventory_statement_comparison', 'reconciliation_explanation',
+-    }) and not re.search(r'\b(?:retrieve|latest|benchmark|tax rate|exchange rate|IFRS|IAS)\b', request.query, re.I)
++        'unrecorded_expense_accrual',
++    }) and not re.search(r'\b(?:retrieve|latest|benchmark|tax rate|exchange rate|IFRS|IAS|legally|official source)\b', request.query, re.I)
++    if ('structured_operating_statement' in calculation_result.formula_ids
++            and re.fullmatch(r'Explain which margins change(?: and why)?[.!]?', uncalculated_part(request.query), re.I)):
++        supported_explanation = True
++    if re.search(r'\b(?:report|answer)\b[\s\S]{0,120}\b(?:sections|headings)\b', request.query, re.I):
++        supported_explanation = False
+     if ('gross_profit_reconciliation' in calculation_result.formula_ids
+             and re.search(r'\b(?:discrepancy|reconcile|reconciliation)\b', request.query, re.I)
+             and not re.search(r'\b(?:retrieve|latest|why|pricing|strategy|benchmark|tax rate|exchange rate|IFRS|IAS)\b', request.query, re.I)):
+@@ -2867,7 +2882,8 @@
+     # back. A standalone question that carries its own figures ("from a loss
+     # of £12,000 to a profit of £3,000") was answered with drivers drawn from
+     # an earlier break-even example in the same chat.
+-    history_block = "" if _standalone_with_figures(request.query) else conversation_prompt(request.conversation_history, max_chars=6000)
++    history_block = (conversation_prompt(request.conversation_history, max_chars=6000)
++                     if not _standalone_with_figures(request.query) and _looks_like_contextual_follow_up(request.query) else '')
+     history_start = len(grounded_input)
+     grounded_input += history_block
+     if history_block:
+@@ -3079,6 +3095,9 @@
+                 query_id, correlation_id, type(exc).__name__, str(exc)[:300],
+                 "provider request rejected; no composition retry" if provider_access_error else "using standard composition",
+             )
++            if getattr(exc, 'origin', None):
++                logger.warning('Request-size diagnostic correlation=%s origin=%s input_estimate=%s request_limit=%s',
++                               correlation_id, exc.origin, exc.input_estimate, exc.request_limit)
+             agent_outcome = None
+             await audit_agent_completed(
+                 db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+--- a/backend/app/orchestration/supplied_charts.py
++++ b/backend/app/orchestration/supplied_charts.py
+@@ -94,6 +94,30 @@
+ 
+ 
+ def _from_query(query: str) -> SuppliedChart | None:
++    # A declared contiguous month range and an equally sized "respectively"
++    # list is another complete supplied dataset, not a retrieval request.
++    months = ['January','February','March','April','May','June','July','August','September','October','November','December']
++    names = '|'.join(months)
++    ranged = re.search(r'\bMonthly (revenue|sales|profit|expenses) for ('+names+r')[–—-]('+names+r') (20\d{2}) is (.+?) respectively\.', query, re.I)
++    if ranged and not needs_lookup(query) and not _mixed_currencies(query):
++        start, end = [next(i for i,n in enumerate(months) if n.lower()==ranged[j].lower()) for j in (2,3)]
++        values = re.findall(_AMOUNT,ranged[5])
++        remainder = re.sub(_AMOUNT,'',ranged[5])
++        if start <= end and len(values) == end-start+1 and not re.sub(r'\band\b|[,\s]','',remainder):
++            points = [_number(v) for v in values]
++            labels = [m+' '+ranged[4] for m in months[start:end+1]]
++            currency = _currency(query)
++            text = '| Month | '+ranged[1].title()+' ('+(currency or 'units')+') |\n| --- | ---: |\n'
++            text += '\n'.join('| '+label+' | '+_format(value,money=True)+' |' for label,value in zip(labels,points))
++            text += '\n\nTotal '+ranged[1].lower()+': '+_format(sum(points),money=True)+'.'
++            if points[0]:
++                text += ' First-to-last percentage change: '+_format((points[-1]-points[0])/points[0]*100)+'%.'
++            else:
++                text += ' First-to-last percentage change is undefined because the opening value is zero.'
++            text += ' The series fluctuates; these figures do not establish business causes.'
++            kind = 'bar' if re.search(r'\bbar chart\b',query,re.I) else 'line'
++            return _validated(text,dict(type=kind,title='Monthly '+ranged[1].lower(),categories=labels,
++                series=[dict(name=ranged[1].title(),data=[float(v) for v in points])]))
+     kind_match = re.search(r"\b(waterfall|sankey|heatmap|scatter|line|bar|area|pie)\b", query, re.I)
+     automatic_monthly = (kind_match is None and re.search(r'\bmonthly\b', query, re.I)
+         and re.search(r'\b(?:revenue|sales|profit|expenses|cash flow)\b', query, re.I)
+--- a/backend/app/orchestration/visualization/router.py
++++ b/backend/app/orchestration/visualization/router.py
+@@ -172,7 +172,7 @@
+     """A presentation-only follow-up; never re-extract figures from prose."""
+     import re
+     from app.orchestration.visualization.validator import VisualizationValidator
+-    requested = re.fullmatch(r'\s*(?:now\s+)?(?:make|show|change|switch|turn|convert)\s+(?:it|this|that|the chart)(?:\s+(?:as|to|into))?\s+(?:a\s+)?(bar|column|line)\s+chart[.!?]?\s*', query, re.I)
++    requested = re.fullmatch(r'\s*(?:now\s+)?(?:make|show|change|switch|turn|convert)\s+(?:it|this|that|the chart)(?:\s+(?:as|to|into))?\s+(?:a\s+)?(bars?|columns?|line)(?:\s+chart)?[.!?]?(?:\s+Keep every value, month label and currency unchanged\.)?\s*', query, re.I)
+     if not requested or spec.type not in {'LINE','BAR'} or spec.variant == 'WATERFALL_CHART':
+         return None
+     desired = 'LINE' if requested[1].lower() == 'line' else 'BAR'
+--- a/backend/tests/test_visual_socket_http.py
++++ b/backend/tests/test_visual_socket_http.py
+@@ -123,6 +123,30 @@
+     assert '2025-01' not in str(other)
+ 
+ 
++def test_original_oct21_supplied_scenarios_over_authenticated_socket(server):
++    ask,_,_,_=server
++    q=json.loads((Path(__file__).parent/'fixtures/manual_transcript_20261021.json').read_text())['queries']
++    values=lambda response:{v['name']:v['value'] for v in response['calculation']['outputs']}
++    gst=ask(q['gst'],conversation='original-gst')
++    assert values(gst)['vat_payable']=='84600'
++    assert values(gst)['input_ledger_difference']=='0'
++    changed=ask(q['gst_followup'],conversation='original-gst')
++    assert values(changed)['vat_payable']=='86400'
++    assert values(changed)['input_ledger_difference']=='-1800'
++    accrual=ask(q['accrual'],conversation='original-accrual')
++    assert values(accrual)['expense_debit']=='4800'
++    assert accrual['answer']['completeness']=='complete'
++    income=ask(q['income'],conversation='original-income')
++    assert values(income)['profit_before_tax']=='101000'
++    revised=ask(q['depreciation_followup'],conversation='original-income')
++    assert values(revised)['profit_before_tax']=='97000'
++    chart=ask(q['monthly'],conversation='original-monthly')
++    bars=ask(q['bars'],conversation='original-monthly')
++    assert chart['visualization']['type']=='LINE'
++    assert bars['visualization']['type']=='BAR'
++    assert chart['visualization']['data']==bars['visualization']['data']
++
++
+ def test_real_http_new_task_and_database_rls(server):
+     from sqlalchemy import create_engine,text
+     ask,_,_,url=server
+--- a/frontend/app/ask-kriton/page.tsx
++++ b/frontend/app/ask-kriton/page.tsx
+@@ -545,7 +545,9 @@
+   const citationCount = result?.answer?.citations.length ?? 0;
+   // A provider/composition failure travels the refusal route, but it is not a
+   // policy decision — saying "policy blocked" sent users looking for a rule.
+-  const routeLabel = result?.next_action?.type === "provider_rate_limited"
++  const routeLabel = result?.next_action?.type === "report_incomplete"
++    ? "Not answered — report incomplete"
++    : result?.next_action?.type === "provider_rate_limited"
+     ? "Not answered — AI provider usage allowance reached"
+     : result?.next_action?.type === "request_budget_exhausted"
+     ? "Not answered — request processing allowance reached"
+@@ -555,6 +557,8 @@
+     ? "Not answered — AI service access blocked"
+     : result?.next_action?.type === "composition_failed"
+     ? "Not answered — please try again"
++    : outcome === "unavailable"
++    ? "Not answered — service unavailable"
+     // The backend's completeness is the value recorded in the audit trail;
+     // the limitation text is the fallback for answers stored before it existed.
+     : (result?.answer?.completeness ?? (visibleLimitations.some((limitation) => limitation.includes("No factual answer was verified")) ? "none" : null)) === "none"
+--- /dev/null
++++ b/backend/tests/test_manual_transcript_oct21.py
+@@ -0,0 +1,129 @@
++import json
++from pathlib import Path
++import pytest
++from tests.offline_http_support import offline_http  # noqa: F401
++from app.orchestration.input_requirements import missing_vat_inputs, missing_tax_inputs
++
++Q = json.loads((Path(__file__).parent/'fixtures/manual_transcript_20261021.json').read_text())['queries']
++
++
++def values(result):
++    return {v['name']: v['value'] for v in result.body['calculation']['outputs']}
++
++
++def test_shared_gst_assumptions_are_not_requested_again():
++    assert missing_vat_inputs(Q['gst']) is None
++
++
++def test_ignore_vat_does_not_turn_accrual_into_vat_question():
++    assert missing_vat_inputs(Q['accrual']) is None
++
++
++def test_accounting_profit_does_not_establish_corporation_tax():
++    assert missing_tax_inputs(Q['corporation'])
++
++
++@pytest.mark.parametrize('prior', [False, True])
++async def test_original_gst_and_one_variable_followup(offline_http, prior):
++    if prior:
++        await offline_http.ask(Q['income'], conversation='gst', case_id='gst-unrelated')
++    first = await offline_http.ask(Q['gst'], conversation='gst', case_id=f'exact-gst-{prior}')
++    assert first.body['outcome'] == 'answered'
++    assert values(first)['vat_payable'] == '84600'
++    assert values(first)['input_ledger_difference'] == '0'
++    assert values(first)['output_ledger_difference'] == '0'
++    second = await offline_http.ask(Q['gst_followup'], conversation='gst', case_id=f'exact-gst-change-{prior}')
++    assert values(second)['vat_payable'] == '86400'
++    assert values(second)['input_ledger_difference'] == '-1800'  # calculated minus recorded
++    assert values(second)['output_ledger_difference'] == '0'
++    assert second.body['answer']['completeness'] == 'complete'
++    assert not first.trace['model_requests'] and not second.trace['model_requests']
++
++
++async def test_full_income_statement_does_not_stop_after_gross_margin(offline_http):
++    r = await offline_http.ask(Q['income'], conversation='income', case_id='exact-income')
++    v = values(r)
++    assert v['net_sales'] == '780000'
++    assert v['gross_profit'] == '290000'
++    assert v['operating_profit'] == '110000'
++    assert v['profit_before_tax'] == '101000'
++    assert r.body['answer']['completeness'] == 'complete'
++    assert not r.trace['model_requests']
++    revised = await offline_http.ask(Q['depreciation_followup'], conversation='income', case_id='exact-depreciation-change')
++    assert values(revised)['profit_before_tax'] == '97000'
++    assert values(revised)['original_profit_before_tax'] == '101000'
++    assert not revised.trace['model_requests']
++
++
++async def test_month_range_respectively_actually_renders_and_preserves_dataset(offline_http):
++    r = await offline_http.ask(Q['monthly'], conversation='monthly', case_id='exact-monthly')
++    assert r.body['visualization'] is not None
++    assert '576,000' in r.body['answer']['text']
++    assert '40%' in r.body['answer']['text']
++    revised = await offline_http.ask(Q['bars'], conversation='monthly', case_id='exact-bars')
++    assert revised.body['visualization']['type'] == 'BAR'
++    assert revised.body['visualization']['data'] == r.body['visualization']['data']
++    assert not r.trace['model_requests'] and not revised.trace['model_requests']
++
++
++async def test_accrual_does_not_require_vat_or_claim_it_was_posted(offline_http):
++    r = await offline_http.ask(Q['accrual'], conversation='accrual', case_id='exact-accrual')
++    assert r.body['outcome'] == 'answered'
++    assert r.body['answer']['completeness'] == 'complete'
++    assert '4,800' in r.body['answer']['text']
++    assert not r.trace['model_requests']
++
++
++async def test_six_section_report_retains_supplied_calculations_on_provider_failure(offline_http):
++    r = await offline_http.ask(Q['report'], conversation='report', case_id='exact-report')
++    assert values(r)['current_profit_before_tax'] == '112000'
++    assert values(r)['previous_profit_before_tax'] == '110000'
++    assert r.body['outcome'] == 'unavailable'
++    assert r.body['next_action']['type'] == 'report_incomplete'
++
++
++async def test_independent_multi_part_answer_retains_gross_profit_and_margin(offline_http):
++    r = await offline_http.ask(Q['multipart'], conversation='multi', case_id='exact-multipart')
++    assert '280,000' in r.body['answer']['text']
++    assert '35' in r.body['answer']['text']
++    assert r.body['answer']['completeness'] == 'partial'
++
++
++async def test_independent_audit_question_does_not_send_old_statement_to_model(offline_http):
++    await offline_http.ask(Q['income'],conversation='audit',case_id='audit-old-income')
++    r = await offline_http.ask(Q['cutoff'],conversation='audit',case_id='exact-cutoff-no-old-history')
++    calls = [c for c in r.trace['model_requests'] if c.get('tools')]
++    assert calls
++    assert all('800,000' not in str(c['messages']) for c in calls)
++
++
++def test_successive_statement_corrections_retain_prior_changes():
++    from app.orchestration.schemas import ConversationMessage
++    from app.orchestration.calculations.statements import structured_statement_followup
++    result = structured_statement_followup('Change only rent to £40,000.',[
++        ConversationMessage(role='user',content=Q['income']),
++        ConversationMessage(role='user',content=Q['depreciation_followup'])])
++    assert {o.name:o.value for o in result.outputs}['profit_before_tax'] == 93000
++
++
++def test_local_request_size_failure_has_safe_origin_diagnostics():
++    from app.domains.model_gateway.agent_budget import GenerationBudget
++    from app.domains.model_gateway.errors import ProviderRequestTooLarge
++    with pytest.raises(ProviderRequestTooLarge) as failure:
++        GenerationBudget(max_total_tokens=64000,max_request_tokens=100).completion_allowance([
++            {'role':'user','content':'A sufficiently long local test prompt'}])
++    assert failure.value.origin == 'local_preflight'
++    assert failure.value.request_limit == 100
++    assert failure.value.input_estimate > 100
++
++
++def test_unknown_statement_expense_is_not_silently_dropped():
++    from app.orchestration.calculations.engine import calculate_from_query
++    assert calculate_from_query(Q['income']+' Insurance expense £1,000.').status == 'not_matched'
++
++
++async def test_unsourced_framework_rule_is_not_released_as_verified_audit_advice(offline_http):
++    from tests.test_agent_loop import _reply
++    offline_http.state.responses = [_reply('IFRS 15 and UK GAAP require a bill-and-hold liability whenever goods remain in the warehouse.')]
++    r = await offline_http.ask(Q['cutoff'],conversation='cutoff-rule',case_id='cutoff-unsourced-rule')
++    assert 'require a bill-and-hold liability' not in ((r.body.get('answer') or {}).get('text') or '')
+--- /dev/null
++++ b/backend/tests/fixtures/manual_transcript_20261021.json
+@@ -0,0 +1,20 @@
++{
++  "source_sha256": "87b56de6b9b2ab64d009ef96d4c44ba830f6365f7027e27c2879b7556af8bdb0",
++  "queries": {
++    "gst": "An Indian business has sales of ₹900,000, sales returns of ₹30,000, purchases of ₹420,000 and purchase returns of ₹20,000. All amounts exclude GST. Assume every transaction attracts 18% GST and all purchase GST is eligible input tax credit. The output GST ledger shows ₹156,600 and the input GST ledger shows ₹72,000. Calculate net sales, net purchases, output GST, eligible input GST, net GST payable and both ledger differences. Show formulas. Treat eligibility and the rate as supplied assumptions; do not claim to have verified the law.",
++    "gst_followup": "Change only purchase returns to ₹30,000. Keep both recorded ledger balances unchanged. Recalculate and identify any ledger discrepancy without asking me to repeat the original figures.",
++    "threshold": "What is the current UK VAT registration threshold? State the effective date, explain briefly how the threshold is measured, and link an official source. Clearly distinguish verified current information from anything you cannot verify.",
++    "corporation": "My company earned £180,000 profit this year. How much corporation tax do I owe? Identify the information you need before giving an exact answer. Do not assume that accounting profit equals taxable profit.",
++    "accrual": "At 31 December, a business has incurred £4,800 of electricity costs that have not been invoiced, paid or recorded. Assume the entire amount relates to December and ignore VAT. Give the adjusting journal entry, explain its effect on profit, liabilities and cash, and distinguish recording the accrual from paying it.",
++    "invoice": "The actual invoice arrives in January for £5,100, entirely for December electricity. December accounts remain open. Explain the additional adjustment and the eventual payment entry without recording the expense twice.",
++    "cutoff": "A manufacturer recorded a £75,000 sale on 30 December. The goods remained in its warehouse until 4 January. The contract, delivery terms, customer acceptance evidence and any bill-and-hold agreement are unavailable. Identify the audit risk, evidence required and possible accounting outcomes. Do not conclude that revenue is definitely misstated solely from the shipment date.",
++    "receivables": "A receivables ledger shows £62,000 due from a customer. The customer confirms £47,000. Management says the £15,000 difference is a payment in transit but provides no supporting evidence. Prepare an investigation table covering possible explanations, evidence needed and proposed audit procedures. Separate facts from hypotheses.",
++    "cash": "Explain how a profitable company can run short of cash. Use this example: revenue £200,000, expenses £160,000, customer cash receipts £120,000 and operating cash payments £145,000. Assume no other cash movements. Calculate profit and net operating cash movement, and explain why they differ without inventing the underlying causes.",
++    "income": "Revenue is £800,000, sales returns £20,000 and cost of goods sold £490,000. Operating expenses are salaries £110,000, rent £36,000, utilities £14,000 and depreciation £20,000. Interest expense is £9,000. Calculate net sales, gross profit, gross margin, operating profit, operating margin and profit before tax. Show formulas and keep interest separate from operating expenses.",
++    "depreciation_followup": "Correct only depreciation to £24,000. Show the original and corrected results side by side. Explain which margins change and why.",
++    "monthly": "Monthly revenue for January–June 2026 is £80,000, £92,000, £88,000, £105,000, £99,000 and £112,000 respectively. Display an actual line chart and a supporting data table. Calculate total revenue and the January-to-June percentage change. Describe the pattern without inventing business explanations. If rendering is unavailable, say so explicitly.",
++    "bars": "Change the chart to bars. Keep every value, month label and currency unchanged.",
++    "report": "Prepare a management report using only these figures. Current year: revenue £1,000,000, cost of goods sold £620,000, operating expenses £250,000 and interest £18,000. Previous year: revenue £900,000, cost of goods sold £540,000, operating expenses £235,000 and interest £15,000. Ignore tax. Include exactly these six sections:\n1. Executive summary\n2. Financial results and workings\n3. Key changes and interpretation\n4. Risks and limitations\n5. Management questions\n6. Recommended next steps\nCompare gross profit, operating profit, profit before tax and relevant margins. Distinguish percentage changes from percentage-point changes. Do not invent causes. If any section cannot be completed, identify it explicitly rather than presenting the report as complete.",
++    "multipart": "First, calculate gross profit and gross margin from revenue of £800,000 and cost of goods sold of £520,000. Second, retrieve the latest available USD/GBP reference rate, stating its direction, observation date and source. Third, find a share price for the fictional company “Kriton Example Manufacturing”, ticker “ZZZFICTIONAL123”. Complete every possible part and clearly identify anything unavailable. Do not invent a company, price or source."
++  }
++}

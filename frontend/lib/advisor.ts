@@ -3,9 +3,8 @@
  *
  *   Kriton™     — the only user-facing advisor name. Use everywhere in UI,
  *                 chat, notifications, tooltips, error states, help docs.
- *   Massarius™  — the backend/reasoning engine name. Never shown to users
- *                 except via ADVISOR.about.engineLine, and only inside an
- *                 About/Info panel or architecture section. Nowhere else.
+ *   The internal knowledge, source, evidence and provenance layer is never
+ *   named on any customer-facing surface — no exceptions.
  *
  * Do not hardcode advisor copy in components — import from here so the
  * naming rule stays enforceable in one place.
@@ -19,9 +18,5 @@ export const ADVISOR = {
   errorState: "Kriton™ could not complete this request.",
   tooltip: {
     default: "Ask Kriton™ about this figure, standard, or disclosure.",
-  },
-  about: {
-    // Approved for use ONLY in an About/Info panel or architecture section.
-    engineLine: "Kriton™ runs on Massarius™, ZoikoLogia's source-governed accounting intelligence engine.",
   },
 } as const;

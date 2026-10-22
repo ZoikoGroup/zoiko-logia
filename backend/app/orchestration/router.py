@@ -90,7 +90,24 @@ def answer_receipt(result, run: "workflow_state.WorkflowRun") -> dict:
     from app.orchestration.routing_matrix import POLICY_VERSION
     answer = getattr(result, "answer", None)
     safety = getattr(result, "safety", None)
+    visual = getattr(result, "visualization", None)
+    calculation = getattr(result, "calculation", None)
+    import hashlib
+    visual_provenance = None
+    if visual is not None:
+        dataset = visual.model_dump(mode="json", include={"data", "series", "donut", "scatter", "rows", "columns", "sources", "unit"})
+        visual_provenance = {
+            "visual_id": visual.id, "selected_type": visual.type,
+            "dataset_sha256": hashlib.sha256(json.dumps(dataset, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "source_ids": visual.sources,
+            "formula_ids": calculation.formula_ids if calculation else [],
+            "calculation_sha256": hashlib.sha256(calculation.model_dump_json().encode()).hexdigest() if calculation else None,
+        }
     return {
+        "visualization_provenance": visual_provenance,
+        "request_integrity": result.request_integrity.model_dump(mode="json") if getattr(result, "request_integrity", None) else None,
+        "visualization_intent": result.visualization_intent.model_dump(mode="json") if getattr(result, "visualization_intent", None) else None,
+        "requested_deliverables": [d.model_dump(mode="json") for d in getattr(result, "requested_deliverables", [])],
         "request_id": result.query_id,
         "route": getattr(result, "route", None),
         "risk": getattr(safety, "risk_level", None),
@@ -150,6 +167,13 @@ def stream_deadline(query: str) -> float:
 
 
 async def _run_with_deadline(**kwargs) -> AskKritonResponse:
+    request = kwargs.get('request')
+    client_key = kwargs.get('idempotency_key')
+    if request is not None and client_key:
+        if request.request_id and request.request_id != client_key:
+            raise HTTPException(status_code=400, detail='Request identifiers do not match.')
+        if request.request_id is None:
+            kwargs['request'] = request.model_copy(update={'request_id':client_key})
     if kwargs.get("idempotency_key"):
         request = kwargs.get("request")
         selection = request.task_context if request is not None else None
@@ -172,7 +196,16 @@ async def _run_with_deadline(**kwargs) -> AskKritonResponse:
     try:
         async with asyncio.timeout(kwargs.get("deadline_seconds") or settings.ASK_KRITON_TIMEOUT_SECONDS):
             result = await ask_kriton(**kwargs)
-            failed = bool(result.next_action and getattr(result.next_action, "type", "") == "composition_failed")
+            # A durable idempotency replay already carries the original
+            # receipt. Do not mint another receipt or replace the cached
+            # response's identity on every retry. Authentication and the
+            # scoped request-hash check have already run in ask_kriton.
+            reference = getattr(result, 'audit_reference', None)
+            if kwargs.get('idempotency_key') and getattr(reference, 'receipt_id', None):
+                discard_audit_batch(token)
+                return result
+            failed = bool(result.next_action and getattr(result.next_action, "type", "")
+                          in {"composition_failed", "provider_access_blocked", "provider_request_too_large", "provider_rate_limited", "request_budget_exhausted"})
             run.finish(released=not failed)
             # The request's state path is committed with its other audit
             # events, before the response leaves (ZL-ENG-AGT-01 §05.2).
@@ -352,7 +385,8 @@ async def post_ask_stream(
                 progress=progress,
                 deadline_seconds=stream_deadline(payload.query),
             )
-            failed = bool(result.next_action and result.next_action.type == "composition_failed")
+            failed = bool(result.next_action and result.next_action.type in
+                          {"composition_failed", "provider_access_blocked", "provider_request_too_large", "provider_rate_limited", "request_budget_exhausted"})
             request_log.info("ask %s id=%s query=%s outcome=%s route=%s seconds=%.1f",
                              "failed category=model_provider" if failed else "finished", request_id,
                              result.query_id, result.outcome, result.route, time.monotonic() - started)

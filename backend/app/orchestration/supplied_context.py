@@ -83,8 +83,24 @@ def _contains(wanted: str, material: str) -> bool:
     return wanted == "figures" and len(_AMOUNT.findall(material)) >= 2
 
 
+# Entries the user wants written, not entries they point to: "what are the
+# journal entries to record the right-of-use asset", "provide the journal
+# entry". The lease question was answered "the text contains no journal
+# entries — paste them".
+_PRODUCE_ENTRIES = re.compile(
+    r"\b(?:prepare|provide|write|draft|give|show|pass|post|record|make|create|journali[sz]e)\s+"
+    r"(?:\w+\s+){0,3}?(?:journal\s+)?entr(?:y|ies)\b"
+    r"|\bentr(?:y|ies)\s+(?:to|that|which|needed\s+to|required\s+to)\s+(?:record|recogni[sz]e|account\s+for|book)\b"
+    r"|\bentr(?:y|ies)\s+for\s+(?:the\s+)?(?:year|recording|recognition|initial|subsequent|day\s+one)\b",
+    re.I,
+)
+
+
 def _wanted(ask: str) -> Optional[str]:
     if _WANTS_ENTRIES.search(ask):
+        if _PRODUCE_ENTRIES.search(ask) and not re.search(
+                r"\b(?:original|incorrect|correcting|these|those|above)\s+entr", ask, re.I):
+            return None
         return "journal entries"
     if _WANTS_FIGURES.search(ask):
         return "figures"
@@ -107,5 +123,7 @@ def missing_in_supplied_context(query: str, history: Iterable[str] = ()) -> Opti
     wanted = _wanted(ask)
     if wanted is None or _contains(wanted, material):
         return None
+    # Name the most recent message: the oldest one in a long chat (another
+    # client's scenario) was quoted as "the text this refers to".
     return MissingInContext(wanted=wanted, title=_title(material if follow_up or is_pasted_material(text)
-                                                         else earlier[0]))
+                                                         else earlier[-1]))

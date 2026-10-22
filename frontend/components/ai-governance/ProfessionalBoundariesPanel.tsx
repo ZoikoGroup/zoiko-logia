@@ -153,7 +153,7 @@ export function ProfessionalBoundariesPanel() {
   return (
     <>
 
-      <LiveSourceStatus loading={loadingView} error={viewError} signedOut={false} reload={load} />
+      <LiveSourceStatus showRefresh={false} loading={loadingView} error={viewError} signedOut={false} reload={load} />
 
       <div className="space-y-6">
 

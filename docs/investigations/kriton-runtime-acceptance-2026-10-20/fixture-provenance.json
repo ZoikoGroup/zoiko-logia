@@ -1,0 +1,35 @@
+{
+  "searched_locations": [
+    "All 94 text attachments in the available Codex attachment directory",
+    "Current backend tests and investigation documentation"
+  ],
+  "missing_exact_originals": [
+    {
+      "name": "\u00a34,800 accrual journal",
+      "status": "blocked_missing_original_prompt",
+      "reason": "Only expected result supplied; original transaction details unavailable."
+    },
+    {
+      "name": "\u20b984,600 GST payable and zero ledger difference",
+      "status": "blocked_missing_original_prompt",
+      "reason": "Original sales, purchase, rate, eligibility assumptions and ledger figures unavailable."
+    },
+    {
+      "name": "Original six-section management report",
+      "status": "blocked_missing_original_prompt",
+      "reason": "Six section titles and original complete input payload unavailable."
+    }
+  ],
+  "new_report_fixture": {
+    "classification": "new regression, not a restored original",
+    "input_source": "Unchanged QUESTION from tests/test_agent_request_size.py",
+    "sections": [
+      "Executive summary",
+      "Financial results and workings",
+      "Key changes and interpretation",
+      "Risks and limitations",
+      "Management questions",
+      "Recommended next steps"
+    ]
+  }
+}

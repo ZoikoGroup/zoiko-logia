@@ -55,9 +55,9 @@ def pipeline(monkeypatch):
     rewrite = AsyncMock(return_value="")
     monkeypatch.setattr(service.model_gateway_service, "run_grounded_completion", rewrite)
 
-    async def ask(query: str, history=None):
+    async def ask(query: str, history=None, conversation_id=None):
         response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
-                                            request=AskKritonRequest(query=query, conversation_history=history or []))
+                                            request=AskKritonRequest(query=query, conversation_history=history or [], conversation_id=conversation_id))
         audited = finalise.await_args.kwargs if finalise.await_args else {}
         return response, SimpleNamespace(outcome=audited.get("outcome"), completeness=audited.get("completeness"))
 
@@ -261,8 +261,9 @@ def test_only_cited_sources_are_displayed():
 def test_an_answer_without_markers_keeps_only_provider_sources():
     # qry-28e5187219e5: a gross-margin answer citing nothing listed ten OECD papers.
     web = [SimpleNamespace(ref_id=f"REF-{n}", provider=None) for n in range(1, 4)]
-    fx = SimpleNamespace(ref_id="REF-4", provider="Frankfurter")
-    assert service.cited_only("£100 is €117.80 at today's rate.", web + [fx]) == [fx]
+    fx = SimpleNamespace(ref_id="REF-4", provider="Frankfurter", freshness="daily")
+    rule_text = SimpleNamespace(ref_id="REF-5", provider="GOV.UK", freshness=None)   # a prefetched rule, never cited
+    assert service.cited_only("£100 is €117.80 at today's rate.", web + [fx, rule_text]) == [fx]
 
 
 async def test_a_part_that_could_not_be_found_makes_the_answer_partial(pipeline):

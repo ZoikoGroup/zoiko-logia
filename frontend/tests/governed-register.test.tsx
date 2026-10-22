@@ -40,4 +40,12 @@ describe("Governed register interactions", () => {
     expect(screen.getByText("Select an available record to inspect it.")).toBeInTheDocument();
     expect(screen.queryByText("Issuer 0")).not.toBeInTheDocument();
   });
+  it("keeps the inspector on the visible page after selecting and paginating", () => {
+    setup();
+    fireEvent.click(screen.getByRole("button", { name: "Source 03" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    const inspector = within(screen.getByRole("complementary", { name: "Source inspector" }));
+    expect(inspector.getByText("Issuer 10")).toBeInTheDocument();
+    expect(inspector.queryByText("Issuer 3")).not.toBeInTheDocument();
+  });
 });

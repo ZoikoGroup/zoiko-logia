@@ -1,0 +1,63 @@
+{
+  "base_url": "http://127.0.0.1:8010",
+  "commit": "1984fa9f78651f0830e3514c5f14b9695a884e30",
+  "working_tree_source_hash": "49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447",
+  "runtime_source_matches_working_tree": null,
+  "records": [
+    {
+      "sample": 1,
+      "path": "/health/version",
+      "error": "ReadTimeout",
+      "latency_ms": 8003.83
+    },
+    {
+      "sample": 1,
+      "path": "/health/live",
+      "error": "ReadTimeout",
+      "latency_ms": 8004.204
+    },
+    {
+      "sample": 1,
+      "path": "/health/ready",
+      "error": "ReadTimeout",
+      "latency_ms": 8003.886
+    },
+    {
+      "sample": 2,
+      "path": "/health/version",
+      "error": "ReadTimeout",
+      "latency_ms": 8002.898
+    },
+    {
+      "sample": 2,
+      "path": "/health/live",
+      "error": "ReadTimeout",
+      "latency_ms": 8002.532
+    },
+    {
+      "sample": 2,
+      "path": "/health/ready",
+      "error": "ReadTimeout",
+      "latency_ms": 8002.908
+    },
+    {
+      "sample": 3,
+      "path": "/health/version",
+      "error": "ReadTimeout",
+      "latency_ms": 8003.23
+    },
+    {
+      "sample": 3,
+      "path": "/health/live",
+      "error": "ReadTimeout",
+      "latency_ms": 8003.405
+    },
+    {
+      "sample": 3,
+      "path": "/health/ready",
+      "error": "ReadError",
+      "latency_ms": 7425.742
+    }
+  ],
+  "provider_calls": 0
+}

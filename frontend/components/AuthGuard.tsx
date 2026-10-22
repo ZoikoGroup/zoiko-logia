@@ -15,7 +15,7 @@ const PUBLIC_PATHS = [
  * them (e.g. expired refresh token). Skips the same public paths
  * AppChrome already skips its own chrome for. */
 export function AuthGuard({ children }: { children: ReactNode }) {
-  const { session, loading } = useAuth();
+  const { session, loading, profile, profileLoading, profileError, refreshProfile, signOut } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const isPublic = PUBLIC_PATHS.includes(pathname);
@@ -32,6 +32,25 @@ export function AuthGuard({ children }: { children: ReactNode }) {
 
   if (loading || !session) {
     return null;
+  }
+
+  // A Supabase session alone does not establish access to a backend
+  // workspace. Do not mount pages or notification polling after /auth/me
+  // refuses it, or while the first profile verification is in flight.
+  if (!profile && profileLoading) return null;
+  if (!profile && profileError) {
+    return (
+      <main className="flex min-h-screen w-full items-center justify-center p-8">
+        <div className="max-w-md space-y-4">
+          <h1 className="text-xl font-semibold">Workspace access needs attention</h1>
+          <p role="alert">{profileError}</p>
+          <div className="flex gap-4">
+            <button type="button" onClick={() => void refreshProfile()}>Try again</button>
+            <button type="button" onClick={() => void signOut()}>Sign out</button>
+          </div>
+        </div>
+      </main>
+    );
   }
 
   return <>{children}</>;

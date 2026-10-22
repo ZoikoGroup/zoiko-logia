@@ -1,0 +1,53 @@
+{
+  "scope": "local, isolated, synthetic provider transport; exact missing original scenarios not accepted as passed",
+  "backend_full": {
+    "passed": 3287,
+    "failed": 0,
+    "skipped": 22,
+    "xfailed": 2,
+    "warnings": 140,
+    "seconds": 57.8
+  },
+  "backend_targeted": {
+    "passed": 177,
+    "failed": 0,
+    "warnings": 24,
+    "seconds": 8.71
+  },
+  "frontend_full": {
+    "passed": 220,
+    "test_files": 47,
+    "seconds": 13.17
+  },
+  "typescript_exit_code": 0,
+  "legacy_split_checks": "all passed",
+  "before_regressions": {
+    "backend_initial_failed": 3,
+    "frontend_initial_failed": 3,
+    "frontend_initial_passed": 1,
+    "timeout_probe_failed": 1,
+    "rejected_revision_probe_failed": 1,
+    "classifier_counterfactual_expected_failed": 1
+  },
+  "http_traces": {
+    "before": 9,
+    "after": 40,
+    "classifier_counterfactual": 2,
+    "after_latency_median_ms": 67.53,
+    "after_latency_max_ms": 179.16
+  },
+  "live_provider_calls": 0,
+  "shared_database_writes": false,
+  "deployment": false,
+  "unchanged_original_evaluation_json_files": 102,
+  "original_answer_quality_benchmark_rerun": false,
+  "skips": "18 PostgreSQL integration checks, 2 live-model checks, 1 missing OCR dependency, 1 opt-in original-benchmark replay",
+  "expected_failures": "Existing native-language Austria aliases",
+  "blocked_exact_cases": [
+    "New income-statement complete input payload",
+    "New \u00a3160,000 to \u00a3130,000 follow-up with its original statement",
+    "New bank-reconciliation raw balances and cash-book adjustments",
+    "\u00a34,560 inventory cost layers and sales",
+    "Six-section management report and actual provider exception"
+  ]
+}

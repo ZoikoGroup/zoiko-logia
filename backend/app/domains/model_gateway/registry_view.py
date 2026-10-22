@@ -112,11 +112,12 @@ def _instruction(name: str, used_by: str, text: str) -> dict:
 
 def system_instructions() -> list[dict]:
     from app.domains.model_gateway.agent import AGENT_TOOL_INSTRUCTIONS
-    from app.domains.model_gateway.providers.groq_adapter import KRITON_SYSTEM_PROMPT
+    from app.domains.model_gateway.providers.groq_adapter import KRITON_AGENT_SYSTEM_PROMPT, KRITON_SYSTEM_PROMPT
     from app.orchestration import claim_verification, query_classifier_llm, risk_llm
 
     return [
         _instruction("Kriton answer system prompt", "Gemini and Groq answer adapters", KRITON_SYSTEM_PROMPT),
+        _instruction("Kriton agent system prompt", "Governed agent loop", KRITON_AGENT_SYSTEM_PROMPT),
         _instruction("Agent tool instructions", "Agent mode (appended to the grounded prompt)", AGENT_TOOL_INSTRUCTIONS),
         _instruction("Claim verifier", "orchestration/claim_verification.py", claim_verification._SYSTEM),
         _instruction("Risk classifier", "orchestration/risk_llm.py", risk_llm._SYSTEM),

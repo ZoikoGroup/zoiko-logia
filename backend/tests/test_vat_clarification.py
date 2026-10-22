@@ -46,7 +46,7 @@ def test_exclusive_liability():
                              "at 20%, figures exclude VAT.")
     assert (out(r, "output_vat_on_sales"), out(r, "input_vat_on_purchases"), out(r, "vat_payable")) == \
         (Decimal("24000"), Decimal("9600"), Decimal("14400"))
-    assert any("valid VAT invoices" in note for note in r.notes)
+    assert any("does not establish legal eligibility or recoverability" in note for note in r.notes)
 
 
 def test_inclusive_liability():

@@ -9,7 +9,8 @@ type Fetcher<T> = (token: string, signal: AbortSignal, fresh: boolean) => Promis
 // Last result per page and user, kept in memory for this tab only (never in
 // storage, never on the server). Moving between Overview pages shows the
 // last numbers at once while the live request runs in the background.
-const memory = new Map<string, unknown>();
+const CACHE_MS = 30_000;
+const memory = new Map<string, { data: unknown; storedAt: number }>();
 /** Loads an Overview view model once the session is known, and again on
  * `reload()` (which bypasses the server's short cache). Shows the last result
  * for this page immediately when there is one. */
@@ -26,9 +27,14 @@ export function useLiveData<T>(key: string, fetcher: Fetcher<T>, timeoutMs = 45_
   // Loading, error and data are worked out from it during render, so the
   // effect never has to reset state before it fetches.
   const requestId = `${cacheKey}#${version}`;
-  const [snapshot, setSnapshot] = useState<{ key: string; data: T | null }>({ key: cacheKey, data: null });
+  const [snapshot, setSnapshot] = useState<{ key: string; data: T | null }>(() => ({
+    key: cacheKey, data: (memory.get(cacheKey)?.data as T | undefined) ?? null,
+  }));
   const [failure, setFailure] = useState<{ request: string; message: string }>({ request: "", message: "" });
-  const [settled, setSettled] = useState("");
+  const [settled, setSettled] = useState(() => {
+    const hit = memory.get(cacheKey);
+    return hit && Date.now() - hit.storedAt < CACHE_MS ? requestId : "";
+  });
   const fresh = useRef(false);
   const inFlight = useRef(false);
   const reload = useCallback(() => {
@@ -42,7 +48,7 @@ export function useLiveData<T>(key: string, fetcher: Fetcher<T>, timeoutMs = 45_
   // The last result for this page shows at once while the live request runs.
   const data = !session ? null
     : snapshot.key === cacheKey ? snapshot.data
-    : ((memory.get(cacheKey) as T | undefined) ?? null);
+    : ((memory.get(cacheKey)?.data as T | undefined) ?? null);
   const error = session && failure.request === requestId ? failure.message : "";
   const loading = waiting || (Boolean(token) && settled !== requestId);
 
@@ -51,9 +57,16 @@ export function useLiveData<T>(key: string, fetcher: Fetcher<T>, timeoutMs = 45_
       if (!authLoading && !token) memory.clear();
       return;
     }
-    const controller = new AbortController();
     const wantFresh = fresh.current;
     fresh.current = false;
+    const hit = memory.get(cacheKey);
+    if (!wantFresh && hit && Date.now() - hit.storedAt < CACHE_MS) {
+      inFlight.current = false;
+      // No request is needed when revisiting records loaded seconds ago.
+      setSettled(requestId);
+      return;
+    }
+    const controller = new AbortController();
     inFlight.current = true;
     let timer: ReturnType<typeof setTimeout>;
     const deadline = new Promise<never>((_, reject) => {
@@ -62,7 +75,7 @@ export function useLiveData<T>(key: string, fetcher: Fetcher<T>, timeoutMs = 45_
     Promise.race([fetcher(token, controller.signal, wantFresh), deadline])
       .then((result) => {
         if (controller.signal.aborted) return;
-        memory.set(cacheKey, result);
+        memory.set(cacheKey, { data: result, storedAt: Date.now() });
         setSnapshot({ key: cacheKey, data: result });
       })
       .catch((err: unknown) => {

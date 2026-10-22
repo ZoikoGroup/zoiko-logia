@@ -1,0 +1,16 @@
+{
+  "working_source_hash": "384a56c9402a3a3e12112313b7173adab45759d365ba957ec2ce3288088b7886",
+  "benchmark_files_checked": 102,
+  "changed_benchmark_files": [],
+  "socket_requests": 23,
+  "socket_build_identities": [
+    "{\"build_id\": \"development:384a56c9402a3a3e12112313b7173adab45759d365ba957ec2ce3288088b7886\", \"captured_at\": \"2026-10-21T10:04:45.802318+00:00\", \"commit\": \"1984fa9f78651f0830e3514c5f14b9695a884e30\", \"config_hash\": \"4016719195cd59f3f6b346216a6c4e6b2a534e54bb4aa8ef4ef379d18bffdbea\", \"revision\": \"development\", \"source_hash\": \"384a56c9402a3a3e12112313b7173adab45759d365ba957ec2ce3288088b7886\"}"
+  ],
+  "fixture_sha256": "5fa35f506b6ea180c9ff02cfda830aa04ef10cdaf3517215bd7e3434f62669e9",
+  "live_provider_calls": 0,
+  "backend_result": "3363 passed, 25 skipped, 2 xfailed",
+  "frontend_result": "223 passed",
+  "socket_result": "4 passed",
+  "svg_result": "3 passed",
+  "typescript_exit_code": 0
+}

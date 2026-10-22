@@ -94,12 +94,12 @@ never a production Supabase project.
 Two-tier advisor naming — enforce this the moment real code lands here:
 
 - **Kriton™** is the only name allowed on any customer-visible surface: API response bodies, error payloads/messages, OpenAPI docs, logs shipped to the frontend, exported files, analytics events.
-- **Massarius™** is the internal engine/reasoning-layer name. It may be used freely in internal module names, service boundaries, and code comments (e.g. `massarius_engine`, `massarius_reasoning_layer`, `massarius_evidence_chain`), but must **never** appear in anything a client or end user can see.
+- **Massarius™** is the internal, governed knowledge, source, evidence, and provenance infrastructure. It may be used freely in internal module names, service boundaries, and code comments (e.g. `massarius/license_gate.py`, `massarius/bundle_builder.py`, `massarius/answer_validator.py`), but must **never** appear in anything a client or end user can see.
 - Public API surface must use functional names instead: routes like `/advisor`, `/source-review`, `/evidence-trace`, `/standard-reference`; response fields like `advisor_service`, `accounting_intelligence`, `source_governed_reasoning`, `evidence_trace`, `source_review`, `standards_reference`.
 - `kriton_ui` is an acceptable internal name for the UI-facing module/service.
 - Before shipping any endpoint, grep its response models and error handlers for `massarius` — it should never match.
 
-The frontend side of this rule already exists at `frontend/lib/advisor.ts` — reuse that file's `ADVISOR.about.engineLine` string (the one place Massarius may be shown to a user, inside an About/Info panel) rather than inventing new copy.
+The frontend side of this rule lives in `frontend/lib/advisor.ts` — import advisor copy from there rather than inventing new strings. There is no approved user-facing mention of Massarius, including About/Info panels; `npm run check:command-center-copy` fails if the name appears anywhere under `frontend/app`, `frontend/components` or `frontend/lib`.
 
 ## Where the entity list came from
 

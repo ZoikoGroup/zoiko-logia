@@ -52,9 +52,10 @@ def test_pipeline_keeps_the_restored_steps_wired():
     assert "Give general guidance only" in inspect.getsource(service._high_risk_instruction)
     # 7d9cafa / 13ae7b8 said in a note what an unsourced answer rests on; that
     # note was removed on request, since the status line ("Answered — no cited
-    # sources") already says it. Web-sourced answers still carry their note.
+    # sources") already says it. The user also removed repeated web-source
+    # library boilerplate; citations and status carry that information.
     assert "No sources could be retrieved for this answer" not in source
-    assert "based on live data and web sources" in source
+    assert "No matching source was found in your governed source library" not in source
 
 
 def test_a_bare_number_is_not_a_verified_calculation():

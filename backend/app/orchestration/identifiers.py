@@ -73,7 +73,9 @@ async def check_idempotency(
     if row is None or row.response_json.get("status") == _RUNNING:
         return None
     envelope = row.response_json
-    if request_hash is not None and "request_hash" in envelope:
+    if request_hash is not None:
+        if "request_hash" not in envelope:
+            raise ValueError("This saved response cannot be matched safely to your current question. Please submit it again.")
         if envelope["request_hash"] != request_hash:
             raise ValueError("Idempotency-Key was already used for a different request")
         return envelope.get("response")
@@ -120,6 +122,10 @@ async def store_idempotency(
         IdempotencyRecord.idempotency_key == key,
     ))
     record = result.scalar_one_or_none()
+    if request_hash is None and record is not None:
+        # The router attaches the durable receipt after the service stores its
+        # hashed response. Updating that response must preserve its binding.
+        request_hash = record.response_json.get('request_hash')
     if request_hash is None:
         envelope = response
     else:

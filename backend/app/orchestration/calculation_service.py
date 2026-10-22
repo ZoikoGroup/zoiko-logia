@@ -196,8 +196,27 @@ _NEEDS_LOOKUP = re.compile(
 
 
 _ACCOUNTING_CURRENT = re.compile(
-    r"\bcurrent\s+(?:and\s+quick\s+)?(?:assets?|liabilit(?:y|ies)|ratios?|account|portion)\b", re.I,
+    r"\bcurrent\s+(?:and\s+quick\s+)?(?:assets?|liabilit(?:y|ies)|ratios?|account|portion)\b"
+    # The user's own model, not today's rate: "Our current annual revenue is
+    # £2,400,000 … calculate current contribution" was taken for a lookup, so
+    # the forecast's formulas needed citations and the answer was refused.
+    r"|\bcurrent\s+(?:annual\s+|monthly\s+|quarterly\s+)?(?:contribution|(?:operating\s+|net\s+|gross\s+)?profit|"
+    r"(?:contribution\s+)?margin|break[- ]?even|(?:fixed|variable|operating)\s+(?:operating\s+)?costs?|cost base)\b"
+    r"|\bcurrent\s+(?:[a-z-]+\s+){0,2}(?:is|are|was|were|of|at)\s+(?:[£$€₹]\s?|(?:rs\.?|inr|usd|gbp|eur)\s?)?\d"
+    # The income-tax split, not today's rate: "provision for income taxes
+    # (current vs. deferred expense)" was read as a current-rate lookup.
+    r"|\bcurrent\s+(?:vs\.?|versus|and|or|/)\s+deferred\b"
+    r"|\bcurrent\s+(?:income\s+)?tax\s+(?:expense|payable|liabilit(?:y|ies)|charge|provision)\b",
+    re.I,
 )
+
+
+_PERIOD = r"(?:financial\s+|fiscal\s+|accounting\s+|reporting\s+)?(?:year|period|quarter|month)"
+_OWN_PRIOR_PERIOD = re.compile(rf"\b(?:previous|prior|last|preceding|comparative)\s+{_PERIOD}\b", re.I)
+# The question's own figures for those periods: "£1,250,000", "₹8,00,000", "$1.2m".
+_STATED_AMOUNT = re.compile(r"(?:[£$€₹]|\b(?:rs\.?|inr|usd|gbp|eur)\s?)\s?\d[\d,]*(?:\.\d+)?", re.I)
+_CURRENT_PERIOD = re.compile(
+    rf"\bcurrent(?:\s+(?:and|or|vs\.?|versus|/)\s+(?:previous|prior|last|preceding))?[\s-]+{_PERIOD}'?s?\b", re.I)
 
 
 def needs_lookup(query: str) -> bool:
@@ -206,6 +225,12 @@ def needs_lookup(query: str) -> bool:
     # Accounting uses of "current" are labels on the user's own figures, not
     # a request for today's rate ("Current and quick ratio?").
     text = _ACCOUNTING_CURRENT.sub(" ", query or "")
+    if _OWN_PRIOR_PERIOD.search(text) and len(_STATED_AMOUNT.findall(text)) >= 2:
+        # "Calculate … for the current year … and for the previous financial
+        # year using the figures provided" compares the user's own periods
+        # (qry-f7c7ad8f72ff): read as a lookup, every line of the analysis
+        # needed a citation and the answer was "no factual answer verified".
+        text = _CURRENT_PERIOD.sub(" ", text)
     requested_fx = re.search(
         r'\b(?:find|fetch|get|look\s+up|retrieve)\b[^.?]*\b(?:exchange|fx|conversion|currency)\s+rates?\b',
         text, re.I,
@@ -240,6 +265,14 @@ def is_self_contained_calculation(query: str, history=()) -> bool:
 def build_calculation(query: str, history=()) -> DeterministicCalculation | None:
     from app.orchestration.calculations.engine import asks_several_questions
     if asks_several_questions(query):
+        return None
+    # The single-value widget cannot represent multiple periods or net sales
+    # adjustments. Matching the first "sales" and "COGS" here produced a
+    # misleading 43.20% alongside an otherwise unrelated financial report.
+    if re.search(r'\b(?:gross sales|sales returns)\b', query, re.I) or (
+        re.search(r'\b(?:current|this)[ -]year\b', query, re.I)
+        and re.search(r'\b(?:previous|prior|last)[ -]year\b', query, re.I)
+    ):
         return None
     expression: str | None = None
     formula_name = "Arithmetic calculation"
@@ -517,6 +550,15 @@ def _journal_balance_failures(answer_text: str) -> list[str]:
     return failures
 
 
+def shows_arithmetic(answer_text: str) -> bool:
+    """The answer shows a computed equation ("£24,000 ÷ 12 = £2,000"), read
+    the way validate_answer_calculations reads one."""
+    from app.orchestration.answer_formatting import latex_to_plain
+    normalized = _normalise_arithmetic(latex_to_plain(answer_text).replace("\\times", "*").replace("\\div", "/"))
+    return any(any(operator in match.group("expression") for operator in "+-*/×÷")
+               for match in _EQUATION.finditer(normalized))
+
+
 def validate_answer_calculations(answer_text: str) -> list[str]:
     """Return failures only for simple equations we can verify with certainty."""
     from app.orchestration.answer_formatting import latex_to_plain
@@ -539,6 +581,12 @@ def validate_answer_calculations(answer_text: str) -> list[str]:
         line_start = normalized.rfind("\n", 0, match.start()) + 1
         step_start = max(line_start, normalized.rfind("=", line_start, match.start()) + 1)
         if re.search(r"\^|\*\*", normalized[step_start:match.end()]):
+            continue
+        # An equation in an unknown is not arithmetic: "Revenue × (1 − 0.45) −
+        # 840,000 = 900,000" (the target-profit condition) was read from its
+        # first number as "(1 − 0.45) − 840,000 = 900,000", judged false, and
+        # a correct forecast follow-up was replaced by its working.
+        if re.search(r"[A-Za-z]\w*\)?\s*[*×/÷+\-]\s*\(?\s*$", normalized[step_start:match.start()]):
             continue
         try:
             expected = _evaluate(expression)

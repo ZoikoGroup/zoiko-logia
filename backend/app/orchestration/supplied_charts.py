@@ -94,12 +94,39 @@ def _validated(text: str, chart: dict) -> SuppliedChart | None:
 
 
 def _from_query(query: str) -> SuppliedChart | None:
+    # A declared contiguous month range and an equally sized "respectively"
+    # list is another complete supplied dataset, not a retrieval request.
+    months = ['January','February','March','April','May','June','July','August','September','October','November','December']
+    names = '|'.join(months)
+    ranged = re.search(r'\bMonthly (revenue|sales|profit|expenses) for ('+names+r')[–—-]('+names+r') (20\d{2}) is (.+?) respectively\.', query, re.I)
+    if ranged and not needs_lookup(query) and not _mixed_currencies(query):
+        start, end = [next(i for i,n in enumerate(months) if n.lower()==ranged[j].lower()) for j in (2,3)]
+        values = re.findall(_AMOUNT,ranged[5])
+        remainder = re.sub(_AMOUNT,'',ranged[5])
+        if start <= end and len(values) == end-start+1 and not re.sub(r'\band\b|[,\s]','',remainder):
+            points = [_number(v) for v in values]
+            labels = [m+' '+ranged[4] for m in months[start:end+1]]
+            currency = _currency(query)
+            text = '| Month | '+ranged[1].title()+' ('+(currency or 'units')+') |\n| --- | ---: |\n'
+            text += '\n'.join('| '+label+' | '+_format(value,money=True)+' |' for label,value in zip(labels,points))
+            text += '\n\nTotal '+ranged[1].lower()+': '+_format(sum(points),money=True)+'.'
+            if points[0]:
+                text += ' First-to-last percentage change: '+_format((points[-1]-points[0])/points[0]*100)+'%.'
+            else:
+                text += ' First-to-last percentage change is undefined because the opening value is zero.'
+            text += ' The series fluctuates; these figures do not establish business causes.'
+            kind = 'bar' if re.search(r'\bbar chart\b',query,re.I) else 'line'
+            return _validated(text,dict(type=kind,title='Monthly '+ranged[1].lower(),categories=labels,
+                series=[dict(name=ranged[1].title(),data=[float(v) for v in points])]))
     kind_match = re.search(r"\b(waterfall|sankey|heatmap|scatter|line|bar|area|pie)\b", query, re.I)
-    if not kind_match or needs_lookup(query):
+    automatic_monthly = (kind_match is None and re.search(r'\bmonthly\b', query, re.I)
+        and re.search(r'\b(?:revenue|sales|profit|expenses|cash flow)\b', query, re.I)
+        and len(re.findall(r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+20\d{2}\s+[£$€₹]?\s*\d', query, re.I)) >= 3)
+    if (not kind_match and not automatic_monthly) or needs_lookup(query):
         return None
-    kind = kind_match[1].lower()
+    kind = kind_match[1].lower() if kind_match else 'line'
     # Strip instructions after the supplied dataset, not arbitrary prose.
-    payload = re.split(r"\.\s+(?:show|compare|plot|draw|does|tell)\b", query, maxsplit=1, flags=re.I)[0].strip().rstrip(".")
+    payload = re.split(r"\.\s+(?:show|compare|plot|draw|does|tell|summari[sz]e)\b", query, maxsplit=1, flags=re.I)[0].strip().rstrip(".")
     title, colon, values = payload.partition(":")
     if not colon:
         title, values = "Supplied figures", payload
@@ -160,6 +187,11 @@ def _from_query(query: str) -> SuppliedChart | None:
     names = [n for n,_ in pairs]
     numbers = [float(v) for _,v in pairs]
     text = "The chart uses the supplied figures."
+    if automatic_monthly:
+        change = pairs[-1][1] - pairs[0][1]
+        text = (f'From {pairs[0][0]} ({_format(pairs[0][1], money=money)}) to '
+                f'{pairs[-1][0]} ({_format(pairs[-1][1], money=money)}), the change is {_format(change, money=money)}. '
+                'Only supplied observations are plotted; missing periods are not filled and no business cause is inferred.')
     if kind == "waterfall":
         label = "Closing balance" if re.search(r"opening cash|closing balance", query, re.I) else "Net profit" if re.search(r"net profit",query,re.I) else "Closing total"
         names.append(label)
@@ -265,7 +297,49 @@ def _supplied_total(query: str) -> SuppliedChart | None:
     )
 
 
+def _budget_actual_chart(query):
+    """A complete repeated category/budget/actual dataset, never a scalar."""
+    if needs_lookup(query):
+        return None
+    pattern = re.compile(r'\b(Q[1-4])\s+budget\s+('+_AMOUNT+r'),?\s+actual\s+('+_AMOUNT+r')',re.I)
+    matches = list(pattern.finditer(query))
+    if len(matches) < 2 or len(matches) != len(re.findall(r'\bQ\d+\b',query,re.I)):
+        return None
+    labels = [m[1].upper() for m in matches]
+    if len(set(labels)) != len(labels) or _mixed_currencies(query):
+        return None
+    budget,actual = [[_number(m[i]) for m in matches] for i in (2,3)]
+    if any(n < 0 for n in budget):
+        return None
+    currency = _currency(query)
+    text = '| Quarter | Budget'+(' ('+currency+')' if currency else '')+' | Actual | Actual minus budget | Variance % |\n| --- | ---: | ---: | ---: | ---: |\n'
+    for label,b,a in [*zip(labels,budget,actual),('Full year',sum(budget),sum(actual))]:
+        variance=a-b
+        percent=f'{variance/b*100:.2f}%' if b else 'Undefined (zero budget)'
+        text += f'| {label} | {b:,.2f} | {a:,.2f} | {variance:,.2f} | {percent} |\n'
+    text += '\nVariance = actual − budget. Variance percentage = (actual − budget) ÷ budget × 100. Positive expense variance is overspend; negative variance is underspend. No business causes are inferred.'
+    chart = None
+    if allows_automatic_chart(query):
+        chart = dict(type='bar',title='Operating expenses: budget and actual',categories=labels,
+                     series=[dict(name='Budget',data=[float(n) for n in budget]),dict(name='Actual',data=[float(n) for n in actual])])
+        validated = _validated(text,chart)
+        if validated is None:
+            return None
+    return SuppliedChart(text,chart,'calculation')
+
+
 def build_supplied_chart(query: str, history=()) -> SuppliedChart | None:
+    budget = _budget_actual_chart(query)
+    if budget is not None:
+        return budget
+    if re.match(r'^\s*(?:show|display|use)\s+only\s+(?:a\s+)?table\b',query,re.I):
+        for message in reversed(history):
+            if message.role != 'user':
+                continue
+            previous = _budget_actual_chart(message.content)
+            if previous is not None:
+                return SuppliedChart(previous.text,None,'calculation')
+            break
     total = _supplied_total(query)
     if total is not None:
         return total
@@ -314,3 +388,38 @@ def build_supplied_chart(query: str, history=()) -> SuppliedChart | None:
         if message.role == "user" and not _FOLLOWUP.fullmatch(message.content):
             return None
     return None
+
+
+def typed_supplied_chart(supplied, query, spec_id):
+    """Translate an already validated supplied-data chart into the shared spec."""
+    from datetime import datetime
+    from app.orchestration.visualization.spec import VisualizationSpec, VisualizationDataPoint, VisualizationEncoding, EncodingField, NamedSeries
+    from app.orchestration.visualization.validator import VisualizationValidator
+    chart = supplied.chart
+    if not chart or chart.get('type') not in {'line', 'bar', 'area'}:
+        return None
+    labels = list(chart['categories'])
+    periods = []
+    for label in labels:
+        parsed = None
+        for pattern in ('%B %Y', '%b %Y', '%Y-%m', '%Y-%m-%d', '%Y'):
+            try:
+                value = datetime.strptime(label, pattern)
+                parsed = value.strftime('%Y-%m-%d') if pattern == '%Y-%m-%d' else value.strftime('%Y-%m') if pattern != '%Y' else value.strftime('%Y')
+                break
+            except ValueError:
+                pass
+        periods.append(parsed)
+    temporal = all(periods)
+    labels = periods if temporal else labels
+    series = [NamedSeries(name=row['name'], data=[VisualizationDataPoint(x=x, y=y) for x,y in zip(labels,row['data'])]) for row in chart['series']]
+    kind = 'LINE' if chart['type'] in {'line','area'} else 'BAR'
+    if len(series) > 1 and kind == 'BAR':
+        kind = 'GROUPED_BAR'
+    spec = VisualizationSpec(id=spec_id, type=kind, family='STATISTICAL', renderer='RECHARTS',
+        variant='GROUPED_BAR_CHART' if kind == 'GROUPED_BAR' else None,
+        title=chart.get('title'), unit=_currency(query), summary=supplied.text,
+        encoding=VisualizationEncoding(x=EncodingField(field='period' if temporal else 'category', type='temporal' if temporal else 'nominal'),
+                                      y=EncodingField(field='value', type='quantitative', unit=_currency(query))),
+        data=series[0].data, series=series if len(series)>1 else [])
+    return spec if VisualizationValidator().validate(spec).passed else None

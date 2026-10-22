@@ -5,20 +5,21 @@ HTTP 400 `spend_limit_reached`. The gateway retried the same provider, the raw
 provider body (billing URL and all) leaked as the adapter's error string, and
 the user saw only the generic "could not compose a response".
 
-These tests pin the corrected behaviour, all mocking the provider so no live
-call is made:
+Merged on 22 Oct 2026 onto the typed provider errors (errors.py): a block is a
+ProviderAccessBlocked exception end to end, not a text sentinel. Groq's
+documented hard block is HTTP 400 `blocked_api_access`
+(console.groq.com/docs/spend-limits); a rate limit (429) and a model
+permission error (403) are different failures with different messages.
 
-  * an account spending block is recognised from the provider error,
-  * the block is reported as a clean sentinel, never the raw body,
-  * the blocked provider is not retried for its other model,
+These tests pin, all mocking the provider so no live call is made:
+
+  * an account spending block is recognised from the structured provider error,
+  * a rate limit, a warning or free text is not reported as a spend block,
+  * the adapter raises the typed error, never the raw body, and never retries,
   * a configured fallback provider is used instead,
-  * when no fallback is configured the specific spend-limit error is raised,
-  * ordinary provider failures are NOT reported as a spend limit,
-  * a timeout still degrades to the generic failure,
+  * when no fallback is configured the typed spend-limit error is raised,
+  * ordinary provider failures and timeouts degrade to the generic failure,
   * the specific, sanitized message reaches the orchestration boundary.
-
-asyncio.run() around each async call, matching this repo's pytest setup (no
-async-test plugin; see test_model_gateway_error_sanitization.py).
 """
 import asyncio
 from types import SimpleNamespace
@@ -27,71 +28,103 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.domains.model_gateway import service as gateway_service
-from app.domains.model_gateway.providers import groq_adapter
-from app.domains.model_gateway.providers.errors import (
-    SPEND_LIMIT_SENTINEL,
-    ProviderSpendLimitReached,
-    spend_limit_reached,
+from app.domains.model_gateway.errors import (
+    ProviderAccessBlocked, ProviderAuthenticationFailed, ProviderRateLimited,
+    provider_access_failure, provider_request_failure,
 )
+from app.domains.model_gateway.providers import groq_adapter
 from app.orchestration.schemas import MAX_QUERY_CHARS, AskKritonRequest
 
 
-class _GroqSpendLimitError(Exception):
-    """A stand-in for groq.BadRequestError carrying the real error body shape."""
-
-    status_code = 400
-    body = {
-        "error": {
-            "message": (
-                "Organization has blocked API access because a spend alert "
-                "threshold was met. Please visit "
-                "https://console.groq.com/settings/billing to manage your spend alerts."
-            ),
-            "type": "invalid_request_error",
-            "code": "spend_limit_reached",
-        }
-    }
+def _provider_error(status: int, code: str, message: str, kind: str = "invalid_request_error") -> Exception:
+    """A stand-in for a groq.APIStatusError carrying the real error body shape."""
+    error = Exception(f"Error code: {status}")
+    error.status_code = status
+    error.body = {"error": {"message": message, "type": kind, "code": code}}
+    return error
 
 
-# ── Detection ───────────────────────────────────────────────────────────────
-
-def test_spend_limit_is_detected_from_the_error_body():
-    assert spend_limit_reached(_GroqSpendLimitError())
-    assert spend_limit_reached(Exception("code: spend_limit_reached"))
-
-
-def test_an_ordinary_provider_error_is_not_a_spend_limit():
-    assert not spend_limit_reached(Exception("429 rate limit reached; try again in 3s"))
-    assert not spend_limit_reached(Exception("connection reset by peer"))
+# The 2026-10-19 incident body, verbatim apart from the account details.
+INCIDENT = lambda: _provider_error(  # noqa: E731
+    400, "spend_limit_reached",
+    "Organization has blocked API access because a spend alert threshold was met. Please visit "
+    "https://console.groq.com/settings/billing to manage your spend alerts.",
+)
 
 
-# ── Adapter: clean sentinel, no leaked detail, no retry ──────────────────────
+# ── Detection: structured first, conservative fallback ──────────────────────
 
-def test_groq_spend_limit_returns_a_clean_sentinel(monkeypatch):
+@pytest.mark.parametrize("error", [
+    INCIDENT(),
+    _provider_error(400, "blocked_api_access", "API access blocked: spend limit reached."),
+    _provider_error(400, "", "Your organization's spending limit has been reached."),
+    _provider_error(400, "", "Organization has blocked API access because a spend alert threshold was met."),
+], ids=["incident", "documented-code", "wording-limit-reached", "wording-blocked-access"])
+def test_an_account_spend_block_is_recognised_from_the_provider_error(error):
+    assert isinstance(provider_request_failure(error), ProviderAccessBlocked)
+
+
+def test_a_rate_limit_is_not_a_spend_block():
+    failure = provider_request_failure(_provider_error(429, "rate_limit_exceeded", "Rate limit reached; try again in 3s."))
+    assert isinstance(failure, ProviderRateLimited) and not isinstance(failure, ProviderAccessBlocked)
+
+
+def test_a_spend_alert_that_did_not_block_the_request_is_not_a_spend_block():
+    # A notification threshold alongside an ordinary rate limit.
+    warning = _provider_error(429, "rate_limit_exceeded", "Rate limit reached. Note: a spend alert threshold was met.")
+    assert provider_access_failure(warning) is None
+    assert isinstance(provider_request_failure(warning), ProviderRateLimited)
+
+
+def test_a_model_permission_error_is_an_access_error_not_a_spend_block():
+    failure = provider_request_failure(_provider_error(403, "permissions_error", "Model not permitted.", "permissions_error"))
+    assert isinstance(failure, ProviderAuthenticationFailed)
+
+
+def test_free_text_never_counts_as_a_spend_block():
+    assert provider_access_failure(Exception("code: spend_limit_reached")) is None
+    assert provider_access_failure(Exception("connection reset by peer")) is None
+
+
+# ── Adapter: typed error, no leaked detail, no retry ────────────────────────
+
+def _adapter(monkeypatch, failure):
+    calls = []
+
     class _Completions:
         async def create(self, **kwargs):
-            raise _GroqSpendLimitError()
+            calls.append(kwargs)
+            raise failure
 
     monkeypatch.setenv("GROQ_API_KEY", "test")
     adapter = groq_adapter.GroqAdapter()
     adapter.client = SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+    return adapter, calls
 
-    out = asyncio.run(adapter.complete("hi"))
 
-    assert out == SPEND_LIMIT_SENTINEL
-    assert "spend alert" not in out
-    assert "console.groq.com" not in out
-    assert SPEND_LIMIT_SENTINEL.lstrip().startswith("[Error")
+def test_groq_spend_block_raises_the_typed_error_without_the_raw_body(monkeypatch):
+    adapter, calls = _adapter(monkeypatch, INCIDENT())
+    with pytest.raises(ProviderAccessBlocked) as raised:
+        asyncio.run(adapter.complete("hi"))
+    assert len(calls) == 1
+    assert "console.groq.com" not in str(raised.value) and "spend alert" not in str(raised.value)
+    assert "console.groq.com" not in ProviderAccessBlocked.user_message
+
+
+def test_groq_rate_limit_is_reported_once_without_sleeping_or_retrying(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock(side_effect=lambda seconds: sleeps.append(seconds)))
+    adapter, calls = _adapter(monkeypatch, _provider_error(429, "rate_limit_exceeded", "Rate limit reached."))
+    with pytest.raises(ProviderRateLimited):
+        asyncio.run(adapter.complete("hi"))
+    assert len(calls) == 1 and sleeps == []
 
 
 # ── Gateway: fallback chain and terminal behaviour ───────────────────────────
 
 class _BlockedAdapter:
-    def __init__(self, name="Blocked"):
-        self.name = name
-
     async def complete(self, prompt, model=None):
-        return SPEND_LIMIT_SENTINEL
+        raise ProviderAccessBlocked()
 
 
 class _WorkingAdapter:
@@ -102,25 +135,22 @@ class _WorkingAdapter:
         return self._answer
 
 
-def test_all_providers_blocked_raises_the_spend_limit_error(monkeypatch):
+def test_all_providers_blocked_raises_the_typed_spend_limit_error(monkeypatch):
     monkeypatch.setattr(gateway_service, "_select_adapter", lambda: _BlockedAdapter())
     monkeypatch.setattr(gateway_service, "_configured_adapters", lambda: [])
-
-    with pytest.raises(ProviderSpendLimitReached):
+    with pytest.raises(ProviderAccessBlocked):
         asyncio.run(gateway_service._complete_with_fallback("q"))
 
 
-def test_missing_fallback_credentials_also_raise_the_spend_limit_error(monkeypatch):
+def test_missing_fallback_credentials_also_raise_the_typed_spend_limit_error(monkeypatch):
     # Only the blocked provider is configured (no other key), which is exactly
-    # the live situation: the configured secondary providers had empty keys.
-    # GROQ_API_KEY is cleared too: load_dotenv() puts backend/.env's real key
-    # into os.environ, and _configured_adapters() would otherwise build a real
-    # GroqAdapter from it and make a live call inside this test.
+    # the live situation. GROQ_API_KEY is cleared too: load_dotenv() puts
+    # backend/.env's real key into os.environ, and _configured_adapters() would
+    # otherwise build a real GroqAdapter from it and make a live call.
     monkeypatch.setattr(gateway_service, "_select_adapter", lambda: _BlockedAdapter())
     for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "GROQ_API_KEY"):
         monkeypatch.delenv(name, raising=False)
-
-    with pytest.raises(ProviderSpendLimitReached):
+    with pytest.raises(ProviderAccessBlocked):
         asyncio.run(gateway_service._complete_with_fallback("q"))
 
 
@@ -128,9 +158,7 @@ def test_a_blocked_provider_falls_back_to_a_configured_provider(monkeypatch):
     fallback = _WorkingAdapter("Grounded answer from the fallback provider.")
     monkeypatch.setattr(gateway_service, "_select_adapter", lambda: _BlockedAdapter())
     monkeypatch.setattr(gateway_service, "_configured_adapters", lambda: [fallback])
-
-    assert asyncio.run(gateway_service._complete_with_fallback("q")) == \
-        "Grounded answer from the fallback provider."
+    assert asyncio.run(gateway_service._complete_with_fallback("q")) == "Grounded answer from the fallback provider."
 
 
 def test_generic_failure_is_not_reported_as_a_spend_limit(monkeypatch):
@@ -140,13 +168,10 @@ def test_generic_failure_is_not_reported_as_a_spend_limit(monkeypatch):
 
     monkeypatch.setattr(gateway_service, "_select_adapter", lambda: _GenericFailing())
     monkeypatch.setattr(gateway_service, "_configured_adapters", lambda: [])
-
     with pytest.raises(RuntimeError) as excinfo:
         asyncio.run(gateway_service._complete_with_fallback("q"))
-
-    assert not isinstance(excinfo.value, ProviderSpendLimitReached)
-    assert "429" not in str(excinfo.value)
-    assert "[Error" not in str(excinfo.value)
+    assert not isinstance(excinfo.value, ProviderAccessBlocked)
+    assert "429" not in str(excinfo.value) and "[Error" not in str(excinfo.value)
 
 
 def test_provider_timeout_degrades_to_a_generic_failure(monkeypatch):
@@ -158,25 +183,18 @@ def test_provider_timeout_degrades_to_a_generic_failure(monkeypatch):
     monkeypatch.setattr(gateway_service, "_select_adapter", lambda: _SlowAdapter())
     monkeypatch.setattr(gateway_service, "_configured_adapters", lambda: [])
     monkeypatch.setattr(gateway_service, "_PROVIDER_TIMEOUT_SECONDS", 0.05)
-
     with pytest.raises(RuntimeError) as excinfo:
         asyncio.run(gateway_service._complete_with_fallback("q"))
-    assert not isinstance(excinfo.value, ProviderSpendLimitReached)
+    assert not isinstance(excinfo.value, ProviderAccessBlocked)
 
 
-# ── The message that reaches the user ────────────────────────────────────────
-
-def test_grounded_completion_returns_the_specific_sanitized_message(monkeypatch):
+def test_grounded_completion_keeps_the_spend_block_typed(monkeypatch):
     async def _raise(prompt, model=None):
-        raise ProviderSpendLimitReached("blocked")
+        raise ProviderAccessBlocked()
 
     monkeypatch.setattr(gateway_service, "_complete_with_fallback", _raise)
-
-    out = asyncio.run(gateway_service.run_grounded_completion("q"))
-
-    assert out == gateway_service._PROVIDER_SPEND_LIMIT_MESSAGE
-    assert "spending limit" in out and "try again later" in out
-    assert "spend_limit_reached" not in out and "console.groq.com" not in out
+    with pytest.raises(ProviderAccessBlocked):
+        asyncio.run(gateway_service.run_grounded_completion("q"))
 
 
 # ── Invalid input is rejected before any model call ──────────────────────────
@@ -186,7 +204,7 @@ def test_an_overlong_query_is_rejected_by_the_request_schema():
         AskKritonRequest(query="x" * (MAX_QUERY_CHARS + 1))
 
 
-# ── The orchestration boundary returns composition_failed with the cause ─────
+# ── The orchestration boundary names the cause, sanitized ────────────────────
 
 @pytest.fixture
 def pipeline(monkeypatch):
@@ -203,11 +221,8 @@ def pipeline(monkeypatch):
     monkeypatch.setattr(service, "web_search_each", AsyncMock(return_value=[]))
     monkeypatch.setattr(service, "select_prompt", AsyncMock(return_value=None))
     monkeypatch.setattr(service.model_gateway_service, "agent_mode_active", lambda: False)
-
-    async def _spend_limit(prompt, *args, **kwargs):
-        return service.model_gateway_service._PROVIDER_SPEND_LIMIT_MESSAGE
-
-    monkeypatch.setattr(service.model_gateway_service, "run_grounded_completion", _spend_limit)
+    monkeypatch.setattr(service.model_gateway_service, "run_grounded_completion",
+                        AsyncMock(side_effect=ProviderAccessBlocked()))
     return service
 
 
@@ -216,26 +231,20 @@ async def test_composition_failure_names_the_spend_limit(pipeline):
         AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
         request=AskKritonRequest(query="What is the accrual basis of accounting?"),
     )
-
     assert response.answer is None
-    assert response.outcome == "refused"
     assert response.next_action is not None
-    assert response.next_action.type == "composition_failed"
-    assert response.next_action.message == pipeline._MODEL_PROVIDER_SPEND_LIMIT_MESSAGE
+    assert response.next_action.type == "provider_access_blocked"
+    assert response.next_action.message == ProviderAccessBlocked.user_message
     assert "spending limit" in response.next_action.message
     assert "spend_limit_reached" not in response.next_action.message
 
 
 async def test_generic_composition_failure_keeps_the_generic_message(pipeline, monkeypatch):
-    async def _generic(prompt, *args, **kwargs):
-        return pipeline.model_gateway_service._PROVIDER_FAILURE_MESSAGE
-
-    monkeypatch.setattr(pipeline.model_gateway_service, "run_grounded_completion", _generic)
-
+    monkeypatch.setattr(pipeline.model_gateway_service, "run_grounded_completion",
+                        AsyncMock(return_value=pipeline.model_gateway_service._PROVIDER_FAILURE_MESSAGE))
     response = await pipeline.ask_kriton(
         AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
         request=AskKritonRequest(query="What is the accrual basis of accounting?"),
     )
-
-    assert response.next_action.type == "composition_failed"
+    assert response.next_action is not None and response.next_action.type == "composition_failed"
     assert "spending limit" not in response.next_action.message

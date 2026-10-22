@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 from fastapi import Request
 from sqlalchemy import create_engine, text
@@ -168,10 +169,30 @@ AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 # RLS to actually apply. Falls back to the same URL when APP_DATABASE_URL
 # isn't set (SQLite, or a Postgres instance without the low-priv role).
 request_db_url = to_async_url(settings.APP_DATABASE_URL or settings.DATABASE_URL)
+
+
+def _request_engine_options(url: str) -> dict:
+    """The request pool: connections kept, not churned, and no pre-ping.
+    Every user of this pool sets the RLS identity first
+    (open_request_connection), and that statement is the liveness check: a
+    pre-ping was one more round trip (~0.5 s measured) before it on every
+    request. A dead connection is detected there and replaced."""
+    options = _async_engine_options(url)
+    if url.startswith("sqlite"):
+        return options
+    return {**options, "pool_size": settings.DB_REQUEST_POOL_SIZE,
+            "max_overflow": settings.DB_REQUEST_MAX_OVERFLOW, "pool_pre_ping": False}
+
+
 request_engine = create_async_engine(
-    request_db_url, echo=False, **_async_engine_options(request_db_url)
+    request_db_url, echo=False, **_request_engine_options(request_db_url)
 )
 RequestSessionLocal = async_sessionmaker(request_engine, expire_on_commit=False)
+
+if settings.DB_TIMING_ENABLED:
+    from app.core import db_timing
+    for _engine in (engine, async_engine, request_engine):
+        db_timing.attach(_engine)
 
 def _identity_from_request(request: Request) -> tuple[str, str]:
     """Pull (user_id, tenant_id) straight off the caller's Supabase JWT,
@@ -196,14 +217,77 @@ async def _open_request_connection() -> AsyncConnection:
     the retry a moment later usually succeeds, where the failure used to reach
     the browser as a bare 500 (reported there as a CORS error)."""
     attempts = max(1, settings.DB_CONNECT_ATTEMPTS)
+    started = time.monotonic()
     for attempt in range(1, attempts + 1):
         try:
-            return await request_engine.connect()
-        except (TimeoutError, OSError, SQLAlchemyError):
+            connection = await request_engine.connect()
+            if settings.DB_TIMING_ENABLED:
+                from app.core import db_timing
+                db_timing.record_pool_wait((time.monotonic() - started) * 1000, retries=attempt - 1)
+            return connection
+        except (TimeoutError, OSError, SQLAlchemyError) as exc:
+            if settings.DB_TIMING_ENABLED:
+                from app.core import db_timing
+                db_timing.record_error(f"connect:{type(exc).__name__}")
             if attempt == attempts:
                 raise
             await asyncio.sleep(0.3 * attempt)
     raise RuntimeError("unreachable")
+
+
+def _is_dead_connection(exc: BaseException) -> bool:
+    """The pooled connection is gone (closed by the pooler while idle, reset
+    by the network), as opposed to a statement error."""
+    if isinstance(exc, (ConnectionError, OSError, EOFError)):
+        return True
+    try:
+        import asyncpg
+    except ImportError:  # pragma: no cover
+        return False
+    return isinstance(exc, (asyncpg.exceptions.ConnectionDoesNotExistError, asyncpg.exceptions.InterfaceError))
+
+
+async def open_request_connection(*, tenant_id: str, user_id: str) -> AsyncConnection:
+    """A request-pool connection carrying this caller's RLS identity.
+
+    Setting the identity is the connection's first statement and doubles as
+    its health check (the pool does not pre-ping). If the pooled connection
+    is dead, it is invalidated, the pool's other idle connections — likely
+    stale the same way — are replaced, and a fresh connection is opened."""
+    for attempt in (1, 2):
+        connection = await _open_request_connection()
+        if settings.is_sqlite:
+            return connection
+        try:
+            raw = await connection.get_raw_connection()
+            # Set straight on the driver connection, before SQLAlchemy opens a
+            # transaction on it: one round trip instead of BEGIN + SELECT +
+            # COMMIT. Session-level (is_local=false), so it persists for every
+            # transaction this request runs; always called, even with "", so a
+            # reused connection never carries a prior request's identity.
+            await raw.driver_connection.execute(
+                "SELECT set_config('app.tenant_id', $1, false), set_config('app.user_id', $2, false)",
+                tenant_id, user_id,
+            )
+            return connection
+        except BaseException as exc:
+            dead = _is_dead_connection(exc)
+            if dead:
+                await connection.invalidate()
+            await connection.close()
+            if not dead or attempt == 2:
+                raise
+            if settings.DB_TIMING_ENABLED:
+                from app.core import db_timing
+                db_timing.record_error(f"dead_connection:{type(exc).__name__}")
+            await _refresh_request_pool()
+    raise RuntimeError("unreachable")
+
+
+async def _refresh_request_pool() -> None:
+    """Replace the request pool's idle connections (likely stale together);
+    connections already checked out stay valid for their requests."""
+    await request_engine.dispose(close=False)
 
 
 async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
@@ -240,28 +324,15 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
     next UPDATE on that same row matched zero rows — the row was real, the
     policy was right, and the new connection simply had no identity on it.
     Holding one connection for the request removes the possibility."""
-    connection = await _open_request_connection()
+    identity = ("", "")
+    if not settings.is_sqlite:
+        user_id, tenant_id = _identity_from_request(request)
+        identity = (tenant_id, user_id)
+    # The identity is set on the connection before any transaction, and is
+    # session-level, so a later rollback cannot undo it (the governed-
+    # retrieval timeout handler's rollback used to erase app.tenant_id).
+    connection = await open_request_connection(tenant_id=identity[0], user_id=identity[1])
     try:
-        identity = ("", "")
-        if not settings.is_sqlite:
-            user_id, tenant_id = _identity_from_request(request)
-            identity = (tenant_id, user_id)
-            # Set straight on the driver connection, before SQLAlchemy opens
-            # a transaction on it: asyncpg runs a statement outside a
-            # transaction in autocommit, so this is one round trip (~0.3s to
-            # the hosted database) instead of BEGIN + SELECT + COMMIT. The
-            # settings are session-level (is_local=false), so they persist for
-            # every transaction this request runs and can't be undone by a
-            # later rollback (the governed-retrieval timeout handler's rollback
-            # used to erase app.tenant_id, failing the next insert's RLS check).
-            # Always called, even with "", so a connection reused from the
-            # pool never carries a prior request's identity into one that has
-            # none. set_config takes bound parameters, unlike SET.
-            raw = await connection.get_raw_connection()
-            await raw.driver_connection.execute(
-                "SELECT set_config('app.tenant_id', $1, false), set_config('app.user_id', $2, false)",
-                tenant_id, user_id,
-            )
         async with RequestSessionLocal(bind=connection) as session:
             # Lets rbac skip re-setting an identity that is already in place.
             session.info["rls_identity"] = identity

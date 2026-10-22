@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.domains.kriton_workspace.models import Document, GeneratedArtifact
+from app.domains.orchestration_state.models import ConversationTurn
 from app.domains.kriton_workspace.storage import delete_object
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[3]
@@ -55,7 +56,10 @@ async def cleanup_expired_workspace(db: AsyncSession, *, now: datetime | None = 
         ).order_by(GeneratedArtifact.expires_at).limit(limit)
     )).scalars().all())
 
-    counts = {"documents": 0, "artifacts": 0}
+    turns = list((await db.execute(select(ConversationTurn.id).where(
+        ConversationTurn.expires_at <= deadline,
+    ).order_by(ConversationTurn.expires_at).limit(limit))).scalars().all())
+    counts = {"documents": 0, "artifacts": 0, "conversation_turns": 0}
     for document in documents:
         await _remove_stored_file(document)
         await db.execute(delete(Document).where(Document.id == document.id))
@@ -64,5 +68,8 @@ async def cleanup_expired_workspace(db: AsyncSession, *, now: datetime | None = 
         await _remove_stored_file(artifact)
         await db.execute(delete(GeneratedArtifact).where(GeneratedArtifact.id == artifact.id))
         counts["artifacts"] += 1
+    if turns:
+        await db.execute(delete(ConversationTurn).where(ConversationTurn.id.in_(turns)))
+        counts['conversation_turns'] = len(turns)
     await db.commit()
     return counts

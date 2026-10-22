@@ -6,7 +6,7 @@ retrieval/classification/composition/audit.
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, JSON, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, JSON, String, Text, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -29,3 +29,21 @@ class IdempotencyRecord(Base):
     idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
     response_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class ConversationTurn(Base):
+    """Server-owned user inputs and calculation snapshots, never model prose."""
+    __tablename__ = 'conversation_turns'
+    __table_args__ = (
+        UniqueConstraint('tenant_id', 'user_id', 'query_id', name='uq_conversation_turn_query'),
+        Index('ix_conversation_turn_scope', 'tenant_id', 'user_id', 'conversation_id', 'created_at'),
+    )
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    conversation_id: Mapped[str] = mapped_column(String, nullable=False)
+    query_id: Mapped[str] = mapped_column(String, nullable=False)
+    user_text: Mapped[str] = mapped_column(Text, nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

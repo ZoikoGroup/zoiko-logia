@@ -4,6 +4,7 @@ import { createContext, useCallback, useEffect, useRef, useState, type ReactNode
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { setCurrentAccessToken } from "@/lib/session-token";
+import { isSessionRefreshInProgress } from "@/lib/auth-fetch";
 import { signOut as signOutService } from "@/services/auth.service";
 import { ApiError, getMe, type UserPublic } from "@/lib/api";
 import { PROFILE_PRIMED_EVENT, clearCachedProfile, readCachedProfile, writeCachedProfile } from "@/lib/profile-cache";
@@ -19,6 +20,7 @@ export type AuthContextValue = {
   /** True while a GET /auth/me for the current session is in flight — so UI
    * never gates on a role that simply hasn't arrived yet. */
   profileLoading: boolean;
+  profileError?: string;
   refreshProfile: () => Promise<void>;
   signOut: () => Promise<void>;
 };
@@ -36,13 +38,14 @@ const PROFILE_RETRY_DELAYS_MS = [1500, 4000];
 
 /** /auth/me with retries for transient failures only. Returns the profile,
  * "refused" when the server said no, or "unavailable" when it never answered. */
-async function fetchProfile(accessToken: string): Promise<UserPublic | "refused" | "unavailable"> {
+async function fetchProfile(accessToken: string): Promise<UserPublic | { failure: "refused" | "unavailable"; message: string }> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await getMe(accessToken);
     } catch (err) {
-      if (isDefinitiveRefusal(err)) return "refused";
-      if (attempt >= PROFILE_RETRY_DELAYS_MS.length) return "unavailable";
+      const message = err instanceof Error ? err.message : "Your workspace could not be verified. Please try again.";
+      if (isDefinitiveRefusal(err)) return { failure: "refused", message };
+      if (attempt >= PROFILE_RETRY_DELAYS_MS.length) return { failure: "unavailable", message };
       await new Promise((resolve) => setTimeout(resolve, PROFILE_RETRY_DELAYS_MS[attempt]));
     }
   }
@@ -53,6 +56,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<UserPublic | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [profileLoading, setProfileLoading] = useState(false);
+  const [profileError, setProfileError] = useState("");
   // Sign-in fires several auth events back to back (SIGNED_IN, then
   // TOKEN_REFRESHED once /auth/provision has run), each starting its own
   // getMe. Only the latest request may write the profile — otherwise a slow
@@ -68,6 +72,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!currentSession || !accessToken) {
       clearCachedProfile();
       setProfile(null);
+      profileRef.current = null;
+      setProfileError("");
       setProfileLoading(false);
       return;
     }
@@ -77,15 +83,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const cached = readCachedProfile(currentSession.user.id);
     if (cached) setProfile((prev) => (prev?.id === cached.id ? prev : cached));
     setProfileLoading(true);
+    setProfileError("");
     const result = await fetchProfile(accessToken);
     if (requestId !== latestProfileRequest.current) return;
     let next: UserPublic | null;
-    if (result === "refused") {
+    if ("failure" in result && result.failure === "refused") {
       // 401 when the local profile row doesn't exist yet (very first sign-in,
       // before /auth/provision runs) or the session expired: there is no
       // real role to gate on.
       next = null;
-    } else if (result === "unavailable") {
+    } else if ("failure" in result) {
       // The backend never answered. Keep this same user's last verified
       // profile rather than dropping a signed-in Admin to the fail-closed
       // Learner view for the rest of the session; the backend still enforces
@@ -94,6 +101,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } else {
       next = result;
     }
+    setProfileError(!next && "failure" in result ? result.message : "");
     if (next) writeCachedProfile(next);
     else clearCachedProfile();
     profileRef.current = next;
@@ -127,6 +135,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         prev && newSession && prev.access_token === newSession.access_token && prev.user.id === newSession.user.id
           ? prev
           : newSession);
+      // The request that renewed this token will retry with it itself.
+      // Starting another /auth/me here creates an unbounded refresh loop
+      // when the backend rejects even a newly issued token.
+      if (event === "TOKEN_REFRESHED" && isSessionRefreshInProgress()) return;
       // The provision flow refreshes right after writing app_metadata, so this
       // fires again with the refreshed token — which is what finally lets
       // /auth/me return the tenant_id/role just provisioned. Once a profile is
@@ -160,6 +172,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     profile,
     loading: sessionLoading,
     profileLoading,
+    profileError,
     refreshProfile,
     signOut: signOutService,
   };

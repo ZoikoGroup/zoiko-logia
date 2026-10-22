@@ -39,3 +39,12 @@ class CalculationResult(BaseModel):
     # the preparer can confirm, an input carried from an earlier message.
     notes: list[str] = Field(default_factory=list)
 
+
+
+class CalculationTaskState(BaseModel):
+    task_type: list[str] = Field(default_factory=list)
+    original_inputs: list[CalculationInput] = Field(default_factory=list)
+    inputs: list[CalculationInput] = Field(default_factory=list)
+    changed_inputs: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    derived_results: list[CalculationOutput] = Field(default_factory=list)

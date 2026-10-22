@@ -1,0 +1,1067 @@
+--- a/backend/app/orchestration/answer_coverage.py
++++ b/backend/app/orchestration/answer_coverage.py
+@@ -46,3 +46,55 @@
+             if not has(pattern):
+                 gaps.append('export-of-services qualification: ' + topic)
+     return gaps
++
++
++from pydantic import BaseModel
++
++
++class RequestedDeliverable(BaseModel):
++    description: str
++    status: str
++    reason: str | None = None
++
++
++def check_requested_deliverables(question, answer, *, has_visual=False):
++    """Check explicit report headings and conclusively incomplete structures.
++
++    Semantic claims retain the existing evidence and calculation validators.
++    This checker does not infer that plausible prose fulfils an arbitrary task.
++    """
++    checks = []
++    normal = lambda text: ' '.join(re.findall(r'[a-z0-9]+', text.lower()))
++    anchor = re.search(r'\b(?:report|answer)\b[\s\S]{0,120}\b(?:sections|headings)\b', question, re.I)
++    if anchor:
++        names = re.findall(r'^\s*(?:\d+[.)]|[-*])\s+([^\n]{2,90})$', question[anchor.end():], re.M)
++        headings = {normal(re.sub(r'^\d+[.)]\s+', '', line.strip(' #*:'))) for line in answer.splitlines() if line.strip()}
++        for name in names:
++            name = name.strip(' *').rstrip(':')
++            present = normal(name) in headings
++            checks.append(RequestedDeliverable(description=name, status='complete' if present else 'incomplete',
++                reason=None if present else 'Requested report section is absent.'))
++    # Do not treat an open Markdown table or an unfinished connective as complete.
++    text = answer.rstrip()
++    if re.search(r'\b(?:and|because|which|with|the|an?|to)\s*$|(?:\.\.\.|…)\s*$', text, re.I):
++        checks.append(RequestedDeliverable(description='Finished response', status='incomplete', reason='The response ends mid-thought.'))
++    header_columns = None
++    for line in answer.splitlines():
++        if not line.strip().startswith('|'):
++            header_columns = None
++            continue
++        columns = len(line.strip().strip('|').split('|'))
++        if header_columns is not None and columns != header_columns:
++            checks.append(RequestedDeliverable(description='Complete table', status='incomplete', reason='A table row is truncated or has missing cells.'))
++            break
++        header_columns = columns
++    from app.orchestration.chart_intent import allows_automatic_chart
++    from app.orchestration.response_planner import detect_explicit_visual_request
++    if detect_explicit_visual_request(question) and allows_automatic_chart(question):
++        # Legacy validated chart fences are still supported by AnswerRenderer.
++        present = has_visual or bool(re.search(r'```chart\s*\n[\s\S]+?```', answer))
++        if present:
++            checks.append(RequestedDeliverable(description='Requested visual', status='complete'))
++        elif not re.search(r'chart[^.\n]{0,70}(?:need|cannot|could not|not available|not establish|not support)|(?:need|cannot)[^.\n]{0,70}chart', answer, re.I):
++            checks.append(RequestedDeliverable(description='Requested visual', status='incomplete', reason='No renderable visual payload was returned.'))
++    return checks
+--- a/backend/app/orchestration/calculations/schemas.py
++++ b/backend/app/orchestration/calculations/schemas.py
+@@ -39,3 +39,12 @@
+     # the preparer can confirm, an input carried from an earlier message.
+     notes: list[str] = Field(default_factory=list)
+ 
++
++
++class CalculationTaskState(BaseModel):
++    task_type: list[str] = Field(default_factory=list)
++    original_inputs: list[CalculationInput] = Field(default_factory=list)
++    inputs: list[CalculationInput] = Field(default_factory=list)
++    changed_inputs: list[str] = Field(default_factory=list)
++    assumptions: list[str] = Field(default_factory=list)
++    derived_results: list[CalculationOutput] = Field(default_factory=list)
+--- a/backend/app/orchestration/calculations/visuals.py
++++ b/backend/app/orchestration/calculations/visuals.py
+@@ -12,6 +12,9 @@
+ def calculation_visual(result: CalculationResult, query: str, spec_id: str):
+     if result.status != "success" or result.verification_status != "passed":
+         return None, []
++    from app.orchestration.chart_intent import allows_automatic_chart
++    if not allows_automatic_chart(query) or re.search(r"\b(?:only|just)\s+(?:a\s+)?(?:table|text)\b|\b(?:table|text)\s+only\b", query, re.I):
++        return None, []
+     explicit = detect_explicit_visual_request(query)
+     # A comparison of validated scenarios benefits from aligned grouped bars.
+     # Do not infer a time series from unrelated accounting subtotals.
+--- a/backend/app/orchestration/chart_intent.py
++++ b/backend/app/orchestration/chart_intent.py
+@@ -3,13 +3,15 @@
+ 
+ 
+ def allows_automatic_chart(query: str) -> bool:
++    if re.search(r"\b(?:only|just)\s+(?:(?:a|any|the)\s+)?(?:tables?|text)\b|\b(?:tables?|text)\s+only\b", query, re.I):
++        return False
+     # Conditions require a decision based on retrieved evidence. Keyword-based
+     # reminders and fallbacks cannot resolve them and must defer to the agent.
+     if re.search(r"\b(if|unless|otherwise|only when|provided that)\b", query, re.I):
+         return False
+     return not re.search(
+         r"\b(no|without|skip|omit)\s+(?:a\s+|any\s+|the\s+)?(?:charts?|graphs?|plots?)\b"
+-        r"|\b(?:do not|don't|don’t|never)\s+(?:(?:draw|show|make|include|create)\s+(?:a\s+)?)?"
+-        r"(?:chart|graph|plot)\b",
++        r"|\b(?:do not|don't|don’t|never)\s+(?:(?:draw|show|make|include|create)\s+(?:(?:a|any|the)\s+)?)?"
++        r"(?:charts?|graphs?|plots?)\b",
+         query, re.I,
+     )
+--- a/backend/app/orchestration/conversation_memory.py
++++ b/backend/app/orchestration/conversation_memory.py
+@@ -216,3 +216,38 @@
+     except SQLAlchemyError as exc:
+         await _restore_failed_session(db, tenant_id, user_id)
+         logger.warning('Conversation facts could not be retained (%s)', type(exc).__name__)
++
++
++def active_visualization(turns):
++    from app.orchestration.visualization.spec import VisualizationSpec
++    from app.orchestration.visualization.validator import VisualizationValidator
++    from pydantic import ValidationError
++    for turn in reversed(turns):
++        data = turn.snapshot.get('visualization')
++        if data:
++            try:
++                spec = VisualizationSpec.model_validate(data)
++            except ValidationError:
++                return None
++            # External evidence must be re-authorised by normal retrieval.
++            return spec if not spec.sources and VisualizationValidator().validate(spec).passed else None
++        state = turn.snapshot.get('task_state', {})
++        if turn.snapshot.get('calculation') or turn.snapshot.get('reset_statement_context') or state.get('relation') == 'independent':
++            return None
++    return None
++
++
++def active_calculation_state(turns):
++    """Read the last server-validated typed state, retaining the root inputs."""
++    from app.orchestration.calculations.schemas import CalculationTaskState
++    from pydantic import ValidationError
++    for turn in reversed(turns):
++        data = turn.snapshot.get('calculation_state')
++        if data:
++            try:
++                return CalculationTaskState.model_validate(data)
++            except ValidationError:
++                return None
++        if turn.snapshot.get('calculation') or turn.snapshot.get('reset_statement_context'):
++            return None
++    return None
+--- a/backend/app/orchestration/identifiers.py
++++ b/backend/app/orchestration/identifiers.py
+@@ -73,7 +73,9 @@
+     if row is None or row.response_json.get("status") == _RUNNING:
+         return None
+     envelope = row.response_json
+-    if request_hash is not None and "request_hash" in envelope:
++    if request_hash is not None:
++        if "request_hash" not in envelope:
++            raise ValueError("This saved response cannot be matched safely to your current question. Please submit it again.")
+         if envelope["request_hash"] != request_hash:
+             raise ValueError("Idempotency-Key was already used for a different request")
+         return envelope.get("response")
+@@ -120,6 +122,10 @@
+         IdempotencyRecord.idempotency_key == key,
+     ))
+     record = result.scalar_one_or_none()
++    if request_hash is None and record is not None:
++        # The router attaches the durable receipt after the service stores its
++        # hashed response. Updating that response must preserve its binding.
++        request_hash = record.response_json.get('request_hash')
+     if request_hash is None:
+         envelope = response
+     else:
+--- a/backend/app/orchestration/router.py
++++ b/backend/app/orchestration/router.py
+@@ -105,6 +105,9 @@
+         }
+     return {
+         "visualization_provenance": visual_provenance,
++        "request_integrity": result.request_integrity.model_dump(mode="json") if getattr(result, "request_integrity", None) else None,
++        "visualization_intent": result.visualization_intent.model_dump(mode="json") if getattr(result, "visualization_intent", None) else None,
++        "requested_deliverables": [d.model_dump(mode="json") for d in getattr(result, "requested_deliverables", [])],
+         "request_id": result.query_id,
+         "route": getattr(result, "route", None),
+         "risk": getattr(safety, "risk_level", None),
+@@ -164,6 +167,13 @@
+ 
+ 
+ async def _run_with_deadline(**kwargs) -> AskKritonResponse:
++    request = kwargs.get('request')
++    client_key = kwargs.get('idempotency_key')
++    if request is not None and client_key:
++        if request.request_id and request.request_id != client_key:
++            raise HTTPException(status_code=400, detail='Request identifiers do not match.')
++        if request.request_id is None:
++            kwargs['request'] = request.model_copy(update={'request_id':client_key})
+     if kwargs.get("idempotency_key"):
+         request = kwargs.get("request")
+         selection = request.task_context if request is not None else None
+--- a/backend/app/orchestration/schemas.py
++++ b/backend/app/orchestration/schemas.py
+@@ -10,7 +10,7 @@
+ import re
+ from datetime import date
+ from typing import Literal, Optional, List
+-from pydantic import BaseModel, ConfigDict, Field, field_validator
++from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, PrivateAttr
+ from app.domains.calculations.schemas import (
+     LiveObservation,
+     VerifiedChartSpec,
+@@ -121,7 +121,7 @@
+     steps: List[CapabilityStep] = Field(default_factory=list)
+ 
+ from app.orchestration.visualization.spec import VisualizationSpec
+-from app.orchestration.calculations.schemas import CalculationResult
++from app.orchestration.calculations.schemas import CalculationResult, CalculationTaskState
+ 
+ 
+ # ── Request ──────────────────────────────────────────────────────────────────
+@@ -159,7 +159,24 @@
+ 
+ class AskKritonRequest(BaseModel):
+     model_config = ConfigDict(extra="forbid")
++
++    _original_message: str = PrivateAttr(default='')
++
++    @model_validator(mode='wrap')
++    @classmethod
++    def _keep_original_message(cls, value, handler):
++        original = value.get('query', '') if isinstance(value, dict) else None
++        result = handler(value)
++        if original is not None and not result._original_message:
++            result._original_message = original
++        return result
++
++    @property
++    def original_message(self) -> str:
++        return self._original_message or self.query
+ 
++    turn_id: Optional[str] = Field(default=None, max_length=200)
++    request_id: Optional[str] = Field(default=None, max_length=200)
+     query: str = Field(max_length=MAX_QUERY_CHARS)
+     document_ids: List[str] = Field(default_factory=list)
+     source_scope: Literal["WEB_ONLY", "DOCUMENTS_ONLY", "DOCUMENTS_THEN_WEB", "COMBINED"] = "DOCUMENTS_THEN_WEB"
+@@ -464,7 +481,24 @@
+ 
+ # ── Canonical Response Contract — §12 ────────────────────────────────────────
+ 
++from app.orchestration.visualization.router import VisualizationIntent
++from app.orchestration.answer_coverage import RequestedDeliverable
++
++
++class RequestIntegrity(BaseModel):
++    conversation_id: str | None = None
++    turn_id: str | None = None
++    request_id: str | None = None
++    current_message_sha256: str
++    relation: Literal['independent', 'follow_up', 'correction', 'multi_part']
++    changed_inputs: list[str] = Field(default_factory=list)
++
++
+ class AskKritonResponse(BaseModel):
++    calculation_state: Optional[CalculationTaskState] = None
++    request_integrity: Optional[RequestIntegrity] = None
++    visualization_intent: Optional[VisualizationIntent] = None
++    requested_deliverables: List[RequestedDeliverable] = Field(default_factory=list)
+     query_id: str
+     correlation_id: str
+     outcome: str       # answered | unavailable | refused | clarification_required | escalated | rejected
+--- a/backend/app/orchestration/service.py
++++ b/backend/app/orchestration/service.py
+@@ -26,6 +26,7 @@
+ import os
+ from datetime import date
+ import re
++import json
+ from contextvars import ContextVar
+ from collections.abc import Awaitable, Callable
+ from typing import Optional
+@@ -845,6 +846,8 @@
+     """A clause of a calculation request that the calculator cannot answer:
+     it carries no figures of its own and asks for an outside fact or an
+     explanation. "" when every clause is arithmetic on the given figures."""
++    if re.search(r'\b(?:report|answer)\b[\s\S]{0,120}\b(?:sections|headings)\b', query or '', re.I):
++        return 'Complete the explicitly requested report sections.'
+     if _DERIVED_COMPARISON_ASK.search(query or ''):
+         return re.split(r'\s+Context:\s+', query, maxsplit=1)[0].strip()
+     for clause in _CLAUSE_SPLIT.split(query or ""):
+@@ -1243,7 +1246,7 @@
+         authorized_engagement_id = requested_engagement_id
+ 
+     # ── Idempotency check ─────────────────────────────────────────────────────
+-    request_hash = hashlib.sha256(request.model_dump_json().encode("utf-8")).hexdigest()
++    request_hash = hashlib.sha256(json.dumps({**request.model_dump(mode="json"), "query":request.original_message}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+     if idempotency_key:
+         try:
+             cached = await metrics.run(
+@@ -1261,7 +1264,7 @@
+     query_id = generate_query_id()
+     correlation_id = generate_correlation_id()
+     audit_chain_id = generate_audit_chain_id()
+-    query_hash = _hash_query(effective_query)
++    query_hash = _hash_query(request.original_message)
+ 
+     # Audit: query_received — first event, before any processing
+     await audit_query_received(
+@@ -1320,6 +1323,8 @@
+     shadow_facts: dict = {}
+ 
+     task_snapshot = None
++    prior_calculation = None
++    prior_calculation_state = None
+ 
+     async def finish(
+         response: AskKritonResponse, *, route: str | None = None, store: bool = True, json_dump: bool = False,
+@@ -1327,16 +1332,58 @@
+         """Finalise the audit trail, keep the response for idempotent retries
+         and return it in its request context. Every terminal response is
+         retained for consistent idempotent retries."""
++        nonlocal task_snapshot
++        from app.orchestration.visualization.router import describe_visualization
++        from app.orchestration.schemas import RequestIntegrity
++        from app.orchestration.answer_coverage import check_requested_deliverables
++        from app.orchestration.calculations.schemas import CalculationTaskState
++        from app.orchestration.calculations.inventory_statement import _inventory_revision
++        relation = ('correction' if _inventory_revision(request.query) is not None or re.match(r'^\s*(?:increase|decrease|correct|recalculate)\b', request.query, re.I)
++                    else 'follow_up' if _looks_like_contextual_follow_up(request.query)
++                    else 'multi_part' if len(_DELIVERABLE.findall(request.query)) >= 3 else 'independent')
++        result = response.calculation
++        family = lambda ids: {name.removesuffix('_scenario').removesuffix('_comparison') for name in ids}
++        compatible_previous = bool(result and prior_calculation and family(result.formula_ids) & family(prior_calculation.formula_ids))
++        previous = {i.name:i for i in prior_calculation.inputs} if compatible_previous and relation in {'correction','follow_up'} else {}
++        changed = [i.name for i in result.inputs if i.name in previous and (i.value, i.currency, i.kind) != (previous[i.name].value, previous[i.name].currency, previous[i.name].kind)] if result else []
++        response.request_integrity = RequestIntegrity(conversation_id=conversation_id, turn_id=request.turn_id, request_id=request.request_id,
++            current_message_sha256=hashlib.sha256(request.original_message.encode("utf-8")).hexdigest(), relation=relation, changed_inputs=changed)
++        if result:
++            response.calculation_state = CalculationTaskState(task_type=result.formula_ids, inputs=result.inputs,
++                original_inputs=(prior_calculation_state.original_inputs if prior_calculation_state else prior_calculation.inputs) if previous else result.inputs, changed_inputs=changed,
++                assumptions=result.notes, derived_results=result.outputs)
++        response.visualization_intent = describe_visualization(request.query, response.visualization,
++            calculation=result, limitations=response.answer.limitations if response.answer else [], legacy_text=response.answer.text if response.answer else "")
++        preference = response.visualization_intent.user_requested_type
++        if response.visualization is not None and preference in {'line','bar','column','pie','donut','waterfall','flowchart'} and detect_explicit_visual_request(request.query):
++            response.visualization.user_requested_type = preference
+         if response.answer is not None:
++            response.requested_deliverables = check_requested_deliverables(request.query, response.answer.text or '',
++                has_visual=bool(response.visualization or response.secondary_visualizations))
++            missing = [d.description for d in response.requested_deliverables if d.status == 'incomplete']
++            if missing:
++                response.answer = response.answer.model_copy(update={'limitations':[*response.answer.limitations,
++                    'Incomplete answer: ' + '; '.join(missing) + '.']})
++                if response.visualization is None:
++                    response.visualization_intent.fallback_reason = '; '.join(response.answer.limitations)
+             # A refusal, rejection or escalation carries no substantive answer
+             # even when it has an answer body (a refusal notice was recorded
+             # as "complete" in the 78-case run).
+             completeness = ("none" if response.outcome in ("refused", "rejected", "escalated")
+                             else answer_completeness(response.answer.limitations))
++            if completeness == 'complete' and response.answer.completeness in {'partial','none'}:
++                completeness = response.answer.completeness
+             response = response.model_copy(update={"answer": response.answer.model_copy(
+                 update={"completeness": completeness})})
++        if task_snapshot is None and response.visualization is not None:
++            task_snapshot = {'version':1, 'task_state':{}}
+         if task_snapshot is not None:
++            if response.calculation_state is not None:
++                task_snapshot['calculation_state'] = response.calculation_state.model_dump(mode='json')
++            if response.visualization is not None:
++                task_snapshot['visualization'] = response.visualization.model_dump(mode='json')
+             task_snapshot['task_state'].update(
++                relation=relation, changed_inputs=changed,
+                 response_completion=response.answer.completeness if response.answer else 'no_answer',
+                 outcome=response.outcome,
+                 remaining_limitations=list(response.answer.limitations) if response.answer else [],
+@@ -1522,6 +1569,8 @@
+         request = request.model_copy(update={'conversation_history': []})
+     remembered_calculation = (conversation_memory.active_calculation(remembered_turns)
+                               if not _standalone_with_figures(request.query) and _looks_like_contextual_follow_up(request.query) else None)
++    prior_calculation = conversation_memory.active_calculation(remembered_turns) if not _standalone_with_figures(request.query) else None
++    prior_calculation_state = conversation_memory.active_calculation_state(remembered_turns) if prior_calculation else None
+     memory_facts_text = conversation_memory.calculation_context(remembered_calculation)
+     await conversation_memory.save_turn(
+         db, tenant_id=tenant_id, user_id=actor_id, conversation_id=conversation_id,
+@@ -1632,7 +1681,18 @@
+     # Complete supplied datasets are formatting/arithmetic tasks. Handle them
+     # after safety checks but before retrieval so unrelated web results cannot
+     # turn the user's own figures into an evidence-gap refusal.
+-    from app.orchestration.supplied_charts import build_supplied_chart
++    from app.orchestration.supplied_charts import build_supplied_chart, typed_supplied_chart
++    from app.orchestration.visualization.router import switch_visual_view
++    previous_visual = conversation_memory.active_visualization(remembered_turns)
++    switched = switch_visual_view(previous_visual, request.query) if previous_visual and not request.document_ids and request.source_scope != 'DOCUMENTS_ONLY' else None
++    if switched is not None:
++        switched.id = f'{query_id}-view'
++        text = 'The chart payload uses the same validated figures and units. Only its presentation has changed.'
++        return await finish(AskKritonResponse(query_id=query_id, correlation_id=correlation_id,
++            outcome='answered', route='CALCULATION', confidence_state=CONF_SUFFICIENT,
++            safety=SafetyState(risk_level='LOW', policy_state='allowed'),
++            answer=ComposedAnswer(text=text, output_text=text, citations=[], prompt_id='validated-chart-view-v1', prompt_name='Validated chart view'),
++            visualization=switched, audit_reference=AuditReference(audit_chain_id=audit_chain_id)), json_dump=True)
+     supplied_chart = None
+     if not request.document_ids and request.source_scope != "DOCUMENTS_ONLY":
+         supplied_chart = build_supplied_chart(
+@@ -1669,7 +1729,8 @@
+             actor_id=actor_id, route="CALCULATION", risk_level="LOW",
+             confidence_state=CONF_SUFFICIENT,
+         )
+-        text = supplied_chart.markdown()
++        typed_visual = typed_supplied_chart(supplied_chart, request.query, f'{query_id}-supplied')
++        text = supplied_chart.text if typed_visual is not None else supplied_chart.markdown()
+         return await finish(AskKritonResponse(
+             query_id=query_id, correlation_id=correlation_id,
+             outcome="answered", route="CALCULATION",
+@@ -1684,6 +1745,7 @@
+                 prompt_id="deterministic-supplied-chart-v1",
+                 prompt_name="Supplied data chart",
+             ),
++            visualization=typed_visual,
+             audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+         ), json_dump=True)
+ 
+--- a/backend/app/orchestration/supplied_charts.py
++++ b/backend/app/orchestration/supplied_charts.py
+@@ -95,11 +95,14 @@
+ 
+ def _from_query(query: str) -> SuppliedChart | None:
+     kind_match = re.search(r"\b(waterfall|sankey|heatmap|scatter|line|bar|area|pie)\b", query, re.I)
+-    if not kind_match or needs_lookup(query):
++    automatic_monthly = (kind_match is None and re.search(r'\bmonthly\b', query, re.I)
++        and re.search(r'\b(?:revenue|sales|profit|expenses|cash flow)\b', query, re.I)
++        and len(re.findall(r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+20\d{2}\s+[£$€₹]?\s*\d', query, re.I)) >= 3)
++    if (not kind_match and not automatic_monthly) or needs_lookup(query):
+         return None
+-    kind = kind_match[1].lower()
++    kind = kind_match[1].lower() if kind_match else 'line'
+     # Strip instructions after the supplied dataset, not arbitrary prose.
+-    payload = re.split(r"\.\s+(?:show|compare|plot|draw|does|tell)\b", query, maxsplit=1, flags=re.I)[0].strip().rstrip(".")
++    payload = re.split(r"\.\s+(?:show|compare|plot|draw|does|tell|summari[sz]e)\b", query, maxsplit=1, flags=re.I)[0].strip().rstrip(".")
+     title, colon, values = payload.partition(":")
+     if not colon:
+         title, values = "Supplied figures", payload
+@@ -160,6 +163,11 @@
+     names = [n for n,_ in pairs]
+     numbers = [float(v) for _,v in pairs]
+     text = "The chart uses the supplied figures."
++    if automatic_monthly:
++        change = pairs[-1][1] - pairs[0][1]
++        text = (f'From {pairs[0][0]} ({_format(pairs[0][1], money=money)}) to '
++                f'{pairs[-1][0]} ({_format(pairs[-1][1], money=money)}), the change is {_format(change, money=money)}. '
++                'Only supplied observations are plotted; missing periods are not filled and no business cause is inferred.')
+     if kind == "waterfall":
+         label = "Closing balance" if re.search(r"opening cash|closing balance", query, re.I) else "Net profit" if re.search(r"net profit",query,re.I) else "Closing total"
+         names.append(label)
+@@ -314,3 +322,38 @@
+         if message.role == "user" and not _FOLLOWUP.fullmatch(message.content):
+             return None
+     return None
++
++
++def typed_supplied_chart(supplied, query, spec_id):
++    """Translate an already validated supplied-data chart into the shared spec."""
++    from datetime import datetime
++    from app.orchestration.visualization.spec import VisualizationSpec, VisualizationDataPoint, VisualizationEncoding, EncodingField, NamedSeries
++    from app.orchestration.visualization.validator import VisualizationValidator
++    chart = supplied.chart
++    if not chart or chart.get('type') not in {'line', 'bar', 'area'}:
++        return None
++    labels = list(chart['categories'])
++    periods = []
++    for label in labels:
++        parsed = None
++        for pattern in ('%B %Y', '%b %Y', '%Y-%m', '%Y-%m-%d', '%Y'):
++            try:
++                value = datetime.strptime(label, pattern)
++                parsed = value.strftime('%Y-%m-%d') if pattern == '%Y-%m-%d' else value.strftime('%Y-%m') if pattern != '%Y' else value.strftime('%Y')
++                break
++            except ValueError:
++                pass
++        periods.append(parsed)
++    temporal = all(periods)
++    labels = periods if temporal else labels
++    series = [NamedSeries(name=row['name'], data=[VisualizationDataPoint(x=x, y=y) for x,y in zip(labels,row['data'])]) for row in chart['series']]
++    kind = 'LINE' if chart['type'] in {'line','area'} else 'BAR'
++    if len(series) > 1 and kind == 'BAR':
++        kind = 'GROUPED_BAR'
++    spec = VisualizationSpec(id=spec_id, type=kind, family='STATISTICAL', renderer='RECHARTS',
++        variant='GROUPED_BAR_CHART' if kind == 'GROUPED_BAR' else None,
++        title=chart.get('title'), unit=_currency(query), summary=supplied.text,
++        encoding=VisualizationEncoding(x=EncodingField(field='period' if temporal else 'category', type='temporal' if temporal else 'nominal'),
++                                      y=EncodingField(field='value', type='quantitative', unit=_currency(query))),
++        data=series[0].data, series=series if len(series)>1 else [])
++    return spec if VisualizationValidator().validate(spec).passed else None
+--- a/backend/app/orchestration/visualization/router.py
++++ b/backend/app/orchestration/visualization/router.py
+@@ -90,3 +90,93 @@
+         selected_type=selected.selected_type,
+         confidence=selected.priority,
+     )
++
++
++class VisualizationIntent(BaseModel):
++    """Selection contract describing the existing validated renderer payload."""
++    output_type: str
++    reason: str
++    dataset: list[dict] = []
++    x_field: str | None = None
++    y_fields: list[str] = []
++    title: str | None = None
++    currency: str | None = None
++    units: str | None = None
++    period: list[str] = []
++    legend: list[str] = []
++    user_requested_type: str | None = None
++    confidence: float
++    fallback_reason: str | None = None
++    renderer_payload: dict | None = None
++
++
++def describe_visualization(query, spec, *, calculation=None, limitations=(), legacy_text=""):
++    import re
++    requested = re.search(r'\b(line|bar|column|pie|donut|waterfall|flowchart|table|text)\b', query, re.I)
++    preference = requested[1].lower() if requested else None
++    if spec is None:
++        # Some established renderer families still use validated chart fences.
++        # Describe their real payload rather than incorrectly calling them text.
++        import json
++        from app.domains.model_gateway.tools.chart_tool import build_chart_fence, ChartToolError
++        fences = re.findall(r'```chart\s*\n(.*?)```', legacy_text, re.S)
++        if fences:
++            try:
++                legacy = json.loads(fences[-1])
++                build_chart_fence(json.dumps(legacy, allow_nan=False))
++                rows = legacy.get('data') or legacy.get('series') or legacy.get('cells') or legacy.get('links') or []
++                rows = [row if isinstance(row, dict) else {'value':row} for row in rows]
++                kind = {'line':'line_chart','area':'line_chart','bar':'bar_chart','pie':'pie_chart'}.get(legacy['type'], legacy['type'])
++                return VisualizationIntent(output_type=kind, reason='The existing validated renderer payload supplies this visual.',
++                    dataset=rows, renderer_payload=legacy, title=legacy.get('title'), confidence=1.0, user_requested_type=preference)
++            except (ValueError, KeyError, ChartToolError):
++                pass
++        rows = [{'metric':o.name, 'value':str(o.value), 'display_value':o.display_value, 'unit_kind':o.kind} for o in calculation.outputs] if calculation else []
++        currencies = {i.currency for i in calculation.inputs if i.currency} if calculation else set()
++        return VisualizationIntent(output_type='table' if len(rows)>1 else 'text', dataset=rows,
++            x_field='metric' if rows else None, y_fields=['value'] if rows else [],
++            currency=next(iter(currencies)) if len(currencies)==1 else None,
++            reason='Working and labelled results are clearer than an unnecessary chart.' if calculation else 'Text is the available response format.',
++            user_requested_type=preference, confidence=1.0,
++            fallback_reason='; '.join(limitations) or None)
++    from app.orchestration.visualization.validator import VisualizationValidator
++    if not VisualizationValidator().validate(spec).passed:
++        return VisualizationIntent(output_type='table', reason='The visual payload did not validate.',
++                                    confidence=1.0, user_requested_type=preference, fallback_reason='Use the readable results instead.')
++    kind = {'LINE':'line_chart','BAR':'bar_chart','DONUT':'pie_chart','GROUPED_BAR':'bar_chart',
++            'TABLE':'table','PROCESS_FLOW':'flowchart','EVIDENCE_GRAPH':'graph'}.get(spec.type, spec.type.lower())
++    if spec.variant == 'WATERFALL_CHART':
++        kind = 'waterfall'
++    data = [p.model_dump(mode='json') for p in spec.data]
++    if spec.series:
++        data = [{'series':s.name, **p.model_dump(mode='json')} for s in spec.series for p in s.data]
++    if spec.donut:
++        data = [p.model_dump(mode='json') for p in spec.donut]
++    if spec.rows:
++        data = spec.rows
++    if spec.nodes:
++        data = [{'kind':'node', **n.model_dump(mode='json')} for n in spec.nodes] + [{'kind':'edge', **e.model_dump(mode='json')} for e in spec.edges]
++    if spec.scatter:
++        data = [p.model_dump(mode='json') for p in spec.scatter]
++    if spec.cells:
++        data = [p.model_dump(mode='json') for p in spec.cells]
++    return VisualizationIntent(output_type=kind, reason=spec.summary or 'The validated data supports this format.',
++        dataset=data, x_field=spec.encoding.x.field if spec.encoding else None,
++        y_fields=[spec.encoding.y.field] if spec.encoding else [], title=spec.title,
++        currency=spec.unit if spec.unit in {'GBP','USD','EUR','INR','AED'} else None, units=spec.unit,
++        period=[p.x for p in spec.data] if spec.encoding and spec.encoding.x.type == 'temporal' else [],
++        legend=[s.name for s in spec.series], user_requested_type=preference, confidence=1.0)
++
++
++def switch_visual_view(spec, query):
++    """A presentation-only follow-up; never re-extract figures from prose."""
++    import re
++    from app.orchestration.visualization.validator import VisualizationValidator
++    requested = re.fullmatch(r'\s*(?:now\s+)?(?:make|show|change|switch|turn|convert)\s+(?:it|this|that|the chart)(?:\s+(?:as|to|into))?\s+(?:a\s+)?(bar|column|line)\s+chart[.!?]?\s*', query, re.I)
++    if not requested or spec.type not in {'LINE','BAR'} or spec.variant == 'WATERFALL_CHART':
++        return None
++    desired = 'LINE' if requested[1].lower() == 'line' else 'BAR'
++    if desired == 'LINE' and (spec.encoding is None or spec.encoding.x.type != 'temporal'):
++        return None
++    changed = spec.model_copy(deep=True, update={'type':desired, 'variant':None, 'renderer':'RECHARTS'})
++    return changed if VisualizationValidator().validate(changed).passed else None
+--- a/backend/app/orchestration/visualization/spec.py
++++ b/backend/app/orchestration/visualization/spec.py
+@@ -158,6 +158,7 @@
+     # alternatives rather than a hardcoded per-type list.
+     fallback_order: list[str] = Field(default_factory=list)
+ 
++    user_requested_type: str | None = None
+     title: str | None = None
+     summary: str | None = None   # accessibility text summary (spec §24)
+     unit: str | None = None
+--- a/frontend/app/ask-kriton/page.tsx
++++ b/frontend/app/ask-kriton/page.tsx
+@@ -1003,6 +1003,8 @@
+         token,
+         {
+           query: turn.submittedQuery,
++          turn_id: turnId,
++          request_id: idempotencyKey,
+           // Backend limit (AskKritonRequest.previous_query max_length): a long
+           // pasted previous message otherwise rejects the whole request (422).
+           previous_query: completedTurns.at(-1)?.submittedQuery.trim().slice(0, 4000) || undefined,
+--- a/frontend/components/visualization/charts/ChartRenderer.tsx
++++ b/frontend/components/visualization/charts/ChartRenderer.tsx
+@@ -33,7 +33,7 @@
+   const alternatives = validViewAlternatives(originalViz);
+   const [defaultView] = useDefaultView(originalViz.type);
+   const initialType =
+-    defaultView && alternatives.includes(defaultView as VisualizationSpec["type"])
++    !originalViz.user_requested_type && defaultView && alternatives.includes(defaultView as VisualizationSpec["type"])
+       ? (defaultView as VisualizationSpec["type"])
+       : originalViz.type;
+ 
+@@ -107,7 +107,7 @@
+   }
+ 
+   // State 3: a saved preference says "prefer table over chart" for this shape.
+-  if (preferTable) {
++  if (preferTable && !originalViz.user_requested_type) {
+     return (
+       <div className="my-4 min-w-0 overflow-hidden rounded-2xl border border-line bg-panel shadow-sm">
+         <div className="p-3 sm:p-4">
+@@ -127,6 +127,13 @@
+     );
+   }
+ 
++  if (!engine) {
++    return <div role="alert" className="my-4 rounded-2xl border border-line p-4">
++      <p>This chart could not be rendered. The underlying data is shown below.</p>
++      <DataTableView viz={originalViz} />
++    </div>;
++  }
++
+   // State 4: normal.
+   return (
+     <section className="my-4 min-w-0 overflow-hidden rounded-2xl border border-line bg-panel shadow-sm">
+--- a/frontend/components/visualization/charts/DataTableView.tsx
++++ b/frontend/components/visualization/charts/DataTableView.tsx
+@@ -10,6 +10,10 @@
+  * reads.
+  */
+ export function DataTableView({ viz }: { viz: VisualizationSpec }) {
++  return <div>{viz.unit && <p className="mb-2 text-xs text-muted">Units: {viz.unit}</p>}<DataTableContents viz={viz} /></div>;
++}
++
++function DataTableContents({ viz }: { viz: VisualizationSpec }) {
+   const th = "border border-line px-3 py-2 font-semibold text-ink";
+   const td = "border border-line px-3 py-2 align-top text-ink";
+ 
+--- a/frontend/components/visualization/charts/useChartPreferences.ts
++++ b/frontend/components/visualization/charts/useChartPreferences.ts
+@@ -20,12 +20,12 @@
+ 
+ function readBool(key: string): boolean {
+   if (typeof window === "undefined") return false;
+-  return window.localStorage.getItem(key) === "1";
++  try { return window.localStorage?.getItem(key) === "1"; } catch { return false; }
+ }
+ 
+ function readString(key: string): string | null {
+   if (typeof window === "undefined") return null;
+-  return window.localStorage.getItem(key);
++  try { return window.localStorage?.getItem(key) ?? null; } catch { return null; }
+ }
+ 
+ export function usePreferTable(type: VisualizationSpec["type"]) {
+@@ -33,7 +33,7 @@
+   const setPreferTable = useCallback((value: boolean) => {
+     setPreferTableState(value);
+     if (typeof window !== "undefined") {
+-      window.localStorage.setItem(PREFER_TABLE_KEY(type), value ? "1" : "0");
++      try { window.localStorage?.setItem(PREFER_TABLE_KEY(type), value ? "1" : "0"); } catch { /* Session state still works when storage is blocked. */ }
+     }
+   }, [type]);
+   return [preferTable, setPreferTable] as const;
+@@ -44,7 +44,7 @@
+   const setDefaultView = useCallback((value: string) => {
+     setDefaultViewState(value);
+     if (typeof window !== "undefined") {
+-      window.localStorage.setItem(DEFAULT_VIEW_KEY(type), value);
++      try { window.localStorage?.setItem(DEFAULT_VIEW_KEY(type), value); } catch { /* Session state still works when storage is blocked. */ }
+     }
+   }, [type]);
+   return [defaultView, setDefaultView] as const;
+--- a/frontend/lib/api.ts
++++ b/frontend/lib/api.ts
+@@ -1555,6 +1555,8 @@
+ // â”€â”€ Ask Kritonâ„¢ — ZL-ENG-02 Â§12 Canonical Response Contract â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ 
+ export type AskKritonRequest = {
++  turn_id?: string;
++  request_id?: string;
+   query: string;
+   source_scope?: "WEB_ONLY" | "DOCUMENTS_ONLY" | "DOCUMENTS_THEN_WEB" | "COMBINED";
+   /** Immediately preceding user query, used to resolve contextual follow-ups. */
+@@ -1964,6 +1966,7 @@
+ export type VisualizationNamedSeries = { name: string; data: VisualizationDataPoint[] };
+ 
+ export type VisualizationSpec = {
++  user_requested_type?: string | null;
+   version: string;
+   id: string;
+   type:
+--- /dev/null
++++ b/backend/tests/test_automatic_visual_integrity.py
+@@ -0,0 +1,132 @@
++from tests.offline_http_support import offline_http  # noqa: F401
++from tests.test_agent_request_size import QUESTION
++from app.orchestration.calculations.engine import calculate_from_query
++from app.orchestration.calculations.visuals import calculation_visual
++
++
++def test_explicit_table_preference_wins_over_automatic_comparison():
++    result = calculate_from_query(QUESTION)
++    spec, _ = calculation_visual(result, QUESTION+' Use only text and tables, no charts.', 'explicit-table')
++    assert spec is None
++    for preference in ['Do not include charts.', 'Do not include any charts.', 'Tables only.']:
++        assert calculation_visual(result, QUESTION+' '+preference, 'preference')[0] is None
++
++
++async def test_exact_message_and_turn_identity_survive_normalisation(offline_http):
++    result = await offline_http.client.post('/api/v1/orchestration/ask', json={
++        'query': 'Revenue £100 and cost of sales £60. Calculate gross profit.',
++        'conversation_id': 'identity', 'turn_id': 'turn-test', 'request_id': 'client-test'},
++        headers={'Authorization': 'Bearer offline-actor-a', 'Idempotency-Key': 'client-test'})
++    assert result.status_code == 200, result.json()
++    identity = result.json()['request_integrity']
++    assert identity['turn_id'] == 'turn-test' and identity['request_id'] == 'client-test'
++    assert identity['conversation_id'] == 'identity'
++    assert identity['relation'] == 'independent'
++
++
++async def test_chart_view_followup_reuses_server_dataset_without_model(offline_http):
++    initial = await offline_http.ask('Show monthly revenue as a line chart: January 2025 £100, February 2025 £120, March 2025 £90.',
++                                      case_id='visual-initial', conversation='visual-follow')
++    assert initial.body['visualization'], initial.body
++    revised = await offline_http.ask('Make it a bar chart.', case_id='visual-view-change', conversation='visual-follow')
++    assert revised.body['visualization']['type'] == 'BAR'
++    assert revised.body['visualization']['data'] == initial.body['visualization']['data']
++    assert revised.body['visualization']['unit'] == initial.body['visualization']['unit']
++    assert not revised.trace['model_requests']
++    assert revised.body['visualization_intent']['output_type'] == 'bar_chart'
++
++
++def test_report_sections_and_unfinished_table_are_checked():
++    from app.orchestration.answer_coverage import check_requested_deliverables
++    question = 'Prepare a report with these sections:\n1. Executive summary\n2. Financial analysis\n3. Next steps'
++    checks = check_requested_deliverables(question, '## Executive summary\nFigures provided.\n## Next steps\nReview records.')
++    assert [c.description for c in checks if c.status == 'incomplete'] == ['Financial analysis']
++    assert any(c.status == 'incomplete' for c in check_requested_deliverables('Show results.', '| Item | Amount |\n| --- | --- |\n| Revenue'))
++
++
++def test_original_message_remains_exact_after_internal_normalisation():
++    from app.orchestration.schemas import AskKritonRequest
++    request = AskKritonRequest(query='IAS 1and explain')
++    assert request.query == 'IAS 1 and explain'
++    assert request.original_message == 'IAS 1and explain'
++    assert request.model_copy(update={'jurisdiction':'GB'}).original_message == 'IAS 1and explain'
++
++
++async def test_chart_history_cannot_cross_tenants(offline_http):
++    await offline_http.ask('Show revenue as a line chart: January 2025 £100, February 2025 £120, March 2025 £90.', case_id='chart-tenant-a', conversation='shared-chart')
++    other = await offline_http.ask('Make it a bar chart.', case_id='chart-tenant-b', conversation='shared-chart', actor='actor-b')
++    assert other.body['visualization'] is None
++    assert not any(r['turns'] for r in other.trace['history_selection'])
++
++
++async def test_missing_report_section_is_partial_through_http(offline_http):
++    from tests.test_agent_loop import _reply, _call
++    question = 'Revenue £100, cost of sales £60. Calculate gross profit. Prepare a report with these sections:\n1. Calculation\n2. Explanation\n3. Next steps'
++    offline_http.state.responses = [_reply(tool_calls=[_call('calculate', {'expression':'100-60'})]), _reply('## Calculation\nGross profit = £100 - £60 = £40.\n## Next steps\nReview the supplied records.')]
++    result = await offline_http.ask(question, case_id='missing-section', conversation='report-sections')
++    assert result.body['answer']['completeness'] == 'partial'
++    assert any(d['description']=='Explanation' and d['status']=='incomplete' for d in result.body['requested_deliverables'])
++    assert 'Explanation' in result.body['visualization_intent']['fallback_reason']
++
++
++async def test_correction_typed_state_names_only_changed_input(offline_http):
++    from tests.test_paid_manual_transcript import WHOLESALE
++    await offline_http.ask(WHOLESALE, case_id='typed-state-before', conversation='typed-state')
++    changed = await offline_http.ask('Change closing inventory to £85,000.', case_id='typed-state-after', conversation='typed-state')
++    assert changed.body['request_integrity']['relation'] == 'correction'
++    assert changed.body['calculation_state']['changed_inputs'] == ['closing_inventory']
++    assert {i['name']:i['value'] for i in changed.body['calculation_state']['original_inputs']}['closing_inventory'] == '95000'
++
++
++async def test_idempotency_is_bound_to_exact_original_message(offline_http):
++    body={'query':'Revenue £100, cost of sales £60and calculate gross profit.', 'conversation_id':'original-hash'}
++    headers={'Authorization':'Bearer offline-actor-a','Idempotency-Key':'exact-original'}
++    first=await offline_http.client.post('/api/v1/orchestration/ask',json=body,headers=headers)
++    assert first.status_code==200
++    import hashlib
++    assert first.json()['request_integrity']['current_message_sha256'] == hashlib.sha256(body['query'].encode()).hexdigest(), first.json()['request_integrity']
++    second=await offline_http.client.post('/api/v1/orchestration/ask',json={**body,'query':body['query'].replace('60and','60 and')},headers=headers)
++    assert second.status_code==409
++
++
++async def test_monthly_performance_selects_real_chart_without_chart_instruction(offline_http):
++    result=await offline_http.ask('Monthly revenue: January 2025 £100, February 2025 £120, March 2025 £90. Summarize changes.',
++                                  case_id='automatic-monthly',conversation='monthly-default')
++    assert result.body['visualization']['type']=='LINE'
++    assert [p['y'] for p in result.body['visualization']['data']]==[100,120,90]
++    assert result.body['visualization_intent']['currency']=='GBP'
++    assert not result.trace['model_requests']
++
++
++def test_existing_inline_families_have_truthful_structured_selection():
++    from app.orchestration.supplied_charts import build_supplied_chart
++    from app.orchestration.visualization.router import describe_visualization
++    query='Show a pie chart: Payroll £60, Rent £40.'
++    chart=build_supplied_chart(query)
++    intent=describe_visualization(query,None,legacy_text=chart.markdown())
++    assert intent.output_type=='pie_chart'
++    assert intent.renderer_payload==chart.chart
++    assert intent.dataset==chart.chart['data']
++
++
++async def test_older_unbound_cached_answer_cannot_replace_current_question(offline_http):
++    from app.orchestration.identifiers import store_idempotency, scope_idempotency_key
++    key=scope_idempotency_key('legacy-unbound',None,'actor-a')
++    async with offline_http.sessions() as db:
++        await store_idempotency(db,key,'synthetic-a',{'query_id':'older-unbound-response'})
++        await db.commit()
++    response=await offline_http.client.post('/api/v1/orchestration/ask',json={'query':'Revenue £100, cost of sales £60. Calculate gross profit.'},
++        headers={'Authorization':'Bearer offline-actor-a','Idempotency-Key':'legacy-unbound'})
++    assert response.status_code==409
++    assert 'older-unbound-response' not in response.text
++
++
++async def test_multiple_corrections_retain_root_original_inputs(offline_http):
++    from tests.test_paid_manual_transcript import WHOLESALE
++    await offline_http.ask(WHOLESALE,case_id='root-state-base',conversation='root-state')
++    await offline_http.ask('Change closing inventory to £85,000.',case_id='root-state-first',conversation='root-state')
++    second=await offline_http.ask('Change closing inventory to £80,000.',case_id='root-state-second',conversation='root-state')
++    state=second.body['calculation_state']
++    assert {i['name']:i['value'] for i in state['original_inputs']}['closing_inventory']=='95000'
++    assert {i['name']:i['value'] for i in state['inputs']}['closing_inventory']=='80000'
++    assert state['changed_inputs']==['closing_inventory']
+--- /dev/null
++++ b/backend/tests/test_visual_socket_http.py
+@@ -0,0 +1,147 @@
++"""Opt-in real socket, real signed JWT, real PostgreSQL/RLS integration."""
++import asyncio
++import json
++import os
++from pathlib import Path
++import socket
++import subprocess
++import sys
++import threading
++import time
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++
++import httpx
++import jwt
++import pytest
++from cryptography.hazmat.primitives.asymmetric import rsa
++
++pytestmark = pytest.mark.skipif(os.getenv('RUN_SOCKET_HTTP_TESTS') != '1', reason='Requires explicitly provisioned isolated PostgreSQL')
++
++@pytest.fixture(scope='module')
++def server(tmp_path_factory):
++    folder = tmp_path_factory.mktemp('socket-http')
++    admin_url = os.environ['SOCKET_TEST_ADMIN_URL']
++    app_url = os.environ['SOCKET_TEST_APP_URL']
++    assert '/kriton_http?' in admin_url and 'host=/private/tmp/kriton-visual-' in admin_url
++    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
++    public = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(key.public_key()))
++    public['kid'] = 'isolated-test-key'
++    class JWKS(BaseHTTPRequestHandler):
++        def do_GET(self):
++            body=json.dumps({'keys':[public]}).encode()
++            self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers();self.wfile.write(body)
++        def log_message(self,*args): pass
++    jwks = ThreadingHTTPServer(('127.0.0.1',0), JWKS)
++    threading.Thread(target=jwks.serve_forever,daemon=True).start()
++    with socket.socket() as reserve:
++        reserve.bind(('127.0.0.1',0));port=reserve.getsockname()[1]
++    env={**os.environ, 'DATABASE_URL':admin_url, 'APP_DATABASE_URL':app_url,
++         'SUPABASE_URL':f'http://127.0.0.1:{jwks.server_port}', 'SOCKET_TEST_PORT':str(port),
++         'EMBEDDING_PROVIDER':'none','CLAIM_VERIFICATION':'off','HEALTH_SAMPLER_ENABLED':'false',
++         'NO_PROXY':'127.0.0.1,localhost','PYTHONPATH':str(Path(__file__).resolve().parents[1])}
++    for name in ('GROQ_API_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY','TAVILY_API_KEY','GEMINI_API_KEY','GOOGLE_API_KEY'):
++        env[name]=''
++    setup='''
++import asyncio
++from sqlalchemy import text
++from app import main
++from app.core.database import async_engine, AsyncSessionLocal
++from app.db.base import Base
++from app.domains.identity.models import Tenant, User
++async def setup():
++    async with async_engine.begin() as c:
++        await c.execute(text('DROP SCHEMA public CASCADE'))
++        await c.execute(text('CREATE SCHEMA public'))
++        await c.run_sync(Base.metadata.create_all)
++    async with AsyncSessionLocal() as db:
++        for suffix in ['a','b']:
++            db.add(Tenant(id='socket-tenant-'+suffix,name='Socket '+suffix))
++        await db.flush()
++        for suffix in ['a','b']:
++            db.add(User(id='socket-'+suffix,tenant_id='socket-tenant-'+suffix,email=suffix+'@example.test',full_name='Socket '+suffix,role='Admin'))
++        await db.commit()
++    await main._setup_user_rls()
++    await main._setup_source_rls()
++    await async_engine.dispose()
++asyncio.run(setup())
++'''
++    result=subprocess.run([sys.executable,'-c',setup],env=env,capture_output=True,text=True)
++    assert result.returncode == 0, result.stderr
++    log=open(folder/'worker.log','w')
++    process=subprocess.Popen([sys.executable,'-m','tests.socket_http_worker'],env=env,stdout=log,stderr=log)
++    base=f'http://127.0.0.1:{port}'
++    try:
++        for _ in range(100):
++            if process.poll() is not None:
++                raise AssertionError((folder/'worker.log').read_text())
++            try:
++                if httpx.get(base+'/__isolated_ready',timeout=.5).status_code == 200: break
++            except httpx.HTTPError: pass
++            time.sleep(.1)
++        else: raise AssertionError('Isolated HTTP worker did not start')
++        def token(actor):
++            return jwt.encode({'sub':'socket-'+actor,'aud':'authenticated','iat':int(time.time()),'exp':int(time.time())+600,
++                'app_metadata':{'tenant_id':'socket-tenant-'+actor,'role':'Admin'}},key,algorithm='RS256',headers={'kid':'isolated-test-key'})
++        traces=[]
++        def ask(query, actor='a', conversation='socket-task'):
++            index=len(traces)
++            payload={'query':query,'conversation_id':conversation,'turn_id':f'turn-{index}','request_id':f'request-{index}'}
++            response=httpx.post(base+'/api/v1/orchestration/ask',json=payload,headers={'Authorization':'Bearer '+token(actor),'Idempotency-Key':f'request-{index}'},timeout=30)
++            traces.append({'request':payload,'http_status':response.status_code,'response':response.json(),'actor':actor})
++            assert response.status_code == 200,response.text
++            return response.json()
++        yield ask,base,traces,app_url
++    finally:
++        process.terminate()
++        try: process.wait(timeout=5)
++        except subprocess.TimeoutExpired: process.kill();process.wait()
++        log.close();jwks.shutdown();jwks.server_close()
++        if destination:=os.getenv('SOCKET_TEST_TRACE_DIR'):
++            dest=Path(destination);dest.mkdir(parents=True,exist_ok=True)
++            (dest/'http-socket-traces.json').write_text(json.dumps(traces,indent=2))
++            (dest/'http-worker.log').write_text((folder/'worker.log').read_text())
++
++
++def test_real_http_auth_and_chart_followup(server):
++    ask,base,_,_=server
++    assert httpx.post(base+'/api/v1/orchestration/ask',json={'query':'Calculate profit.'},headers={'Authorization':'Bearer invalid'},timeout=5).status_code==401
++    first=ask('Show monthly revenue as a line chart: January 2025 £100, February 2025 £120, March 2025 £90.')
++    assert first['visualization']['type']=='LINE'
++    second=ask('Make it a bar chart.')
++    assert second['visualization']['type']=='BAR'
++    assert second['visualization']['data']==first['visualization']['data']
++    assert second['request_integrity']['turn_id']=='turn-1'
++    other=ask('Make it a bar chart.',actor='b')
++    assert other['visualization'] is None
++    assert '2025-01' not in str(other)
++
++
++def test_real_http_new_task_and_database_rls(server):
++    from sqlalchemy import create_engine,text
++    ask,_,_,url=server
++    first=ask('Revenue £900,000, cost of sales £500,000, operating expenses £150,000. Calculate operating profit.')
++    second=ask('Revenue £100, cost of sales £60. Calculate gross profit.')
++    assert {o['name']:o['value'] for o in first['calculation']['outputs']}['operating_profit']=='250000'
++    assert {o['name']:o['value'] for o in second['calculation']['outputs']}['gross_profit']=='40'
++    assert '900,000' not in second['answer']['text']
++    engine=create_engine(url.replace('+asyncpg','+psycopg2'))
++    with engine.begin() as c:
++        c.execute(text("SELECT set_config('app.tenant_id','socket-tenant-b',false),set_config('app.user_id','socket-b',false)"))
++        rows=c.execute(text('SELECT DISTINCT tenant_id,user_id FROM conversation_turns')).all()
++        assert rows and all(tuple(r)==('socket-tenant-b','socket-b') for r in rows)
++        assert not c.execute(text('SELECT rolbypassrls OR rolsuper FROM pg_roles WHERE rolname=current_user')).scalar()
++    from sqlalchemy.orm import Session
++    from sqlalchemy import select
++    from app.domains.audit_ledger.models import AuditEvent
++    from app.domains.audit_ledger.chain_integrity import compute_payload_hash, compute_chain_hash
++    with Session(engine) as db:
++        db.execute(text("SELECT set_config('app.tenant_id','socket-tenant-a',false),set_config('app.user_id','socket-a',false)"))
++        rows=db.scalars(select(AuditEvent).where(AuditEvent.subject_id==second['query_id'])).all()
++        assert rows and any(row.event_name=='answer_receipt' for row in rows)
++        for row in rows:
++            assert row.tenant_id=='socket-tenant-a'
++            assert row.payload_hash==compute_payload_hash(row.payload)
++            assert row.chain_hash==compute_chain_hash(row.id,row.event_name,row.payload_hash,row.previous_chain_hash)
++        receipt=next(row.payload for row in rows if row.event_name=='answer_receipt')
++        assert receipt['request_integrity']==second['request_integrity']
++    engine.dispose()
+--- /dev/null
++++ b/backend/tests/socket_http_worker.py
+@@ -0,0 +1,28 @@
++"""Test-only real HTTP worker. No identity/DB overrides; no external transports."""
++import os
++import socket
++import groq
++
++_original_connect = socket.socket.connect
++
++def _local_only(sock, address):
++    if isinstance(address, tuple) and address[0] not in {'127.0.0.1', '::1'}:
++        raise RuntimeError('External transport forbidden in socket integration test')
++    if isinstance(address, str) and not address.startswith('/private/tmp/kriton-visual-'):
++        raise RuntimeError('Non-test Unix socket forbidden')
++    return _original_connect(sock, address)
++
++socket.socket.connect = _local_only
++async def _no_provider(*args, **kwargs):
++    raise RuntimeError('Live model transport forbidden in socket integration test')
++groq.AsyncGroq.request = _no_provider
++from app.main import create_app
++app = create_app()
++
++@app.get('/__isolated_ready')
++def ready():
++    return {'isolated':True}
++
++if __name__ == '__main__':
++    import uvicorn
++    uvicorn.run(app, host='127.0.0.1', port=int(os.environ['SOCKET_TEST_PORT']), lifespan='off', log_level='warning')
+--- /dev/null
++++ b/frontend/tests/real-chart-rendering.test.tsx
+@@ -0,0 +1,41 @@
++import React from "react";
++import { afterEach, beforeEach, expect, it, vi } from "vitest";
++import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
++import * as Adapter from "@/components/visualization/charts/RechartsAdapter";
++import { ChartRenderer } from "@/components/visualization/charts/ChartRenderer";
++import type { VisualizationSpec } from "@/lib/api";
++vi.mock("@/lib/telemetry", () => ({ trackVisualizationInteraction: vi.fn() }));
++
++beforeEach(() => {
++  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width:800, height:300, top:0, left:0, right:800, bottom:300, x:0, y:0, toJSON(){} });
++  vi.stubGlobal("ResizeObserver", class { callback: ResizeObserverCallback; constructor(cb:ResizeObserverCallback){this.callback=cb;} observe(target: Element){ this.callback([{ target, contentRect:{ width:800,height:300 } } as ResizeObserverEntry], this as unknown as ResizeObserver); } unobserve(){} disconnect(){} });
++});
++afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
++
++it("renders real SVG and switches the same validated series from line to bars", async () => {
++  vi.stubGlobal("localStorage", { getItem:(key:string) => key.includes("default-view") ? "BAR" : "1", setItem:vi.fn() });
++  const viz = { user_requested_type:"line", id:"render-real", type:"LINE", family:"STATISTICAL", renderer:"RECHARTS", title:"Monthly revenue", unit:"GBP",
++    encoding:{ x:{field:"period",type:"temporal"}, y:{field:"revenue",type:"quantitative",unit:"GBP"} },
++    data:[{x:"2025-01",y:100},{x:"2025-02",y:120},{x:"2025-03",y:90}], series:[], sources:[] } as unknown as VisualizationSpec;
++  const before = JSON.stringify(viz);
++  const { container } = render(<ChartRenderer viz={viz}/>);
++  await waitFor(() => expect(container.querySelector("svg.recharts-surface")).toBeTruthy());
++  expect(container.querySelector(".recharts-line-curve")).toBeTruthy();
++  fireEvent.click(screen.getByRole("button", { name:"View" }));
++  fireEvent.click(screen.getByRole("menuitemradio", {name:"Bar"}));
++  await waitFor(() => expect(container.querySelectorAll(".recharts-bar-rectangle").length).toBe(3));
++  fireEvent.click(screen.getByRole("button", {name:/View as table/}));
++  expect(screen.getByRole("cell", { name:"2025-01" })).toBeInTheDocument();
++  for (const amount of ["100", "120", "90"]) expect(screen.getByRole("cell", {name:amount})).toBeInTheDocument();
++  expect(screen.getByText("Units: GBP")).toBeInTheDocument();
++  expect(JSON.stringify(viz)).toBe(before);
++});
++
++it("reports a renderer exception and keeps the readable dataset", () => {
++  vi.spyOn(console, "error").mockImplementation(() => {});
++  vi.spyOn(Adapter, "RechartsChart").mockImplementation(() => { throw new Error("synthetic render failure"); });
++  const viz = { id:"failure", type:"BAR", family:"STATISTICAL", renderer:"RECHARTS", title:"Revenue", data:[{x:"January",y:100},{x:"February",y:120}] } as unknown as VisualizationSpec;
++  render(<ChartRenderer viz={viz}/>);
++  expect(screen.getByText(/This chart could not be displayed/)).toBeInTheDocument();
++  expect(screen.getByRole("cell", {name:"January"})).toBeInTheDocument();
++});

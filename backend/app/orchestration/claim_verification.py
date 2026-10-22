@@ -294,7 +294,7 @@ def correction_request(answer: str, contradictions: list[Contradiction]) -> str:
     )
 
 
-def remove_claims(answer: str, claims: list[str]) -> str:
+def remove_claims(answer: str, claims: list[str], note: str | None = None) -> str:
     """The answer without the given verbatim statements (sentences or table
     rows). Used only when a corrected answer still contradicts the evidence."""
     lines = []
@@ -318,29 +318,75 @@ def remove_claims(answer: str, claims: list[str]) -> str:
         if line != original and not line.strip(" -*•\t"):
             continue
         lines.append(line)
-    return mark_emptied_headings(re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip())
+    lines = _without_emptied_tables(lines, answer.splitlines())
+    return mark_emptied_headings(re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip(), before=answer, note=note)
+
+
+def _without_emptied_tables(lines: list[str], before: list[str]) -> list[str]:
+    """A table whose every data row was removed is dropped with its header;
+    left behind, the IFRS 15 "worked schedule" was a header over nothing."""
+    def is_row(line: str) -> bool:
+        return line.lstrip().startswith("|")
+
+    def separator(line: str) -> bool:
+        return is_row(line) and set(line.strip()) <= set("|-: ")
+    had_rows = {before[i].strip() for i in range(len(before) - 2)
+                if is_row(before[i]) and separator(before[i + 1]) and is_row(before[i + 2])}
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        block_end = index
+        while block_end < len(lines) and is_row(lines[block_end]):
+            block_end += 1
+        block = lines[index:block_end]
+        if (len(block) == 2 and separator(block[1]) and block[0].strip() in had_rows):
+            index = block_end
+            continue
+        out.extend(block or [lines[index]])
+        index = block_end if block else index + 1
+    return out
 
 
 _HEADING = re.compile(r"\s*(?:#{1,6}\s+\S.*|(\*\*|__)[^*_]+\1)\s*")
 _EMPTIED_NOTE = "The sources provided do not confirm this."
+# A heading emptied because its figures failed reconciliation: no source was
+# consulted for them, so "the sources do not confirm this" would mislead.
+FIGURES_REMOVED_NOTE = "Removed: the figures in this part did not match verified data."
+FIGURE_MISATTRIBUTED_NOTE = "Removed: a figure here belongs to a different period or scenario."
 # A bold heading whose same-line answer was removed: "**5. TDS on rent** – ".
 _DANGLING_HEADING = re.compile(r"\s*((?:\*\*|__)[^*_]+(?:\*\*|__))\s*[–—:-]\s*")
 
 
-def mark_emptied_headings(answer: str) -> str:
-    """A heading whose content was all removed is followed by a short note,
-    so the question it answered is acknowledged rather than left blank."""
-    lines = answer.splitlines()
-    out: list[str] = []
+def _empty_headings(lines: list[str]) -> set[str]:
+    empty = set()
     for index, line in enumerate(lines):
+        if _DANGLING_HEADING.fullmatch(line):
+            empty.add(line)
+        elif _HEADING.fullmatch(line):
+            following = next((later for later in lines[index + 1:] if later.strip(" -*•\t")), None)
+            if following is None or _HEADING.fullmatch(following):
+                empty.add(line)
+    return empty
+
+
+def mark_emptied_headings(answer: str, before: str | None = None, note: str | None = None) -> str:
+    """A heading whose content was all removed is followed by a short note,
+    so the question it answered is acknowledged rather than left blank.
+    With `before` (the answer before the removal), a heading that was already
+    empty there — a title straight above its first section — is left alone:
+    it was marked "The sources provided do not confirm this." and the whole
+    financial performance analysis reported as partly unverified."""
+    lines = answer.splitlines()
+    already = _empty_headings(before.splitlines()) if before is not None else set()
+    marked = _empty_headings(lines) - already
+    note = note or _EMPTIED_NOTE
+    out: list[str] = []
+    for line in lines:
         dangling = _DANGLING_HEADING.fullmatch(line)
-        if dangling:
-            out.append(f"{dangling.group(1)} – {_EMPTIED_NOTE}")
+        if dangling and line in marked:
+            out.append(f"{dangling.group(1)} – {note}")
             continue
         out.append(line)
-        if not _HEADING.fullmatch(line):
-            continue
-        following = next((later for later in lines[index + 1:] if later.strip(" -*•\t")), None)
-        if following is None or _HEADING.fullmatch(following):
-            out.append(_EMPTIED_NOTE)
+        if line in marked and not dangling:
+            out.append(note)
     return "\n".join(out)

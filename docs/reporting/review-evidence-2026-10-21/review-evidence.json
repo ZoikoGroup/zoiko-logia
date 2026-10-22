@@ -1,0 +1,90 @@
+{
+  "review_date": "2026-10-21",
+  "scope": "Verification and plan update only; no reporting implementation or test changes",
+  "sources": [
+    {
+      "name": "report_catalog.csv",
+      "source_path": "/Users/kailanaresh/Downloads/report_catalog.csv",
+      "sha256": "ba61a1d4a3c2657ff70d6b548f7974dfc1130696b77770c20356d24f0de0ab12"
+    },
+    {
+      "name": "reconciliation_rules.csv",
+      "source_path": "/Users/kailanaresh/Downloads/reconciliation_rules.csv",
+      "sha256": "9512750b3b80bb6d4e1ac326b931deb1e7e7259e5976a706c55f0c78b1e02d37"
+    },
+    {
+      "name": "acceptance_test_cases.csv",
+      "source_path": "/Users/kailanaresh/Downloads/acceptance_test_cases.csv",
+      "sha256": "26455c9d68ec263e287601f45ab368e75200c3bb48b43b5b37e0fbe33e578e45"
+    },
+    {
+      "name": "report_request.schema.json",
+      "source_path": "/Users/kailanaresh/Downloads/report_request.schema.json",
+      "sha256": "f0b833d7ac89047b7e5be51f91102ba08571c9a26ead73e7b646a7a169f62212"
+    },
+    {
+      "name": "financial_fact.schema.json",
+      "source_path": "/Users/kailanaresh/Downloads/financial_fact.schema.json",
+      "sha256": "feec003d8628a8b218799dd5a2ec5df4e71c220ef644d917571e6aa7dcb3996d"
+    },
+    {
+      "name": "report_manifest.schema.json",
+      "source_path": "/Users/kailanaresh/Downloads/report_manifest.schema.json",
+      "sha256": "fa346953bc3e99fa6250013b5c69665474355cd9fab4e84c142fe55c58946ce8"
+    },
+    {
+      "name": "synthetic_display_example.json",
+      "source_path": "/Users/kailanaresh/Downloads/synthetic_display_example.json",
+      "sha256": "ff9382c48c6cceb19b0d4d0fac9f7d5670ae29b26739dd0ebe89426eec7df0ab"
+    },
+    {
+      "name": "ZL-RPT-002_Report_Catalog_and_Presentation.docx",
+      "source_path": "/Users/kailanaresh/Downloads/ZL-RPT-002_Report_Catalog_and_Presentation.docx",
+      "sha256": "f8ffd80b4464d0b028efa77db876ad487698a299866a0da29e57a2b6c9493e66"
+    },
+    {
+      "name": "ZL-RPT-003_Data_Calculation_API_Contracts.docx",
+      "source_path": "/Users/kailanaresh/Downloads/ZL-RPT-003_Data_Calculation_API_Contracts.docx",
+      "sha256": "05617271a62ebe52e79a2740b0e2996bbd12a2669e6a9275b7dec840928e1f4f"
+    },
+    {
+      "name": "ZL-RPT-004_Accounting_Framework_Rule_Packs.docx",
+      "source_path": "/Users/kailanaresh/Downloads/ZL-RPT-004_Accounting_Framework_Rule_Packs.docx",
+      "sha256": "360c1dd688cfda401ab23db82fb9dd2f300963a6454ad80d29410704bee54f29"
+    },
+    {
+      "name": "ZL-RPT-005_QA_Benchmark_Release_Gates.docx",
+      "source_path": "/Users/kailanaresh/Downloads/ZL-RPT-005_QA_Benchmark_Release_Gates.docx",
+      "sha256": "15179226b8f64d2563c9ade671f322252fd45343cba76f4e6661ece6fa81fd66"
+    },
+    {
+      "name": "ZL-RPT-006_Production_Template_Blueprints.docx",
+      "source_path": "/Users/kailanaresh/Downloads/ZL-RPT-006_Production_Template_Blueprints.docx",
+      "sha256": "a6d07d0f893c57dbc5e9976096f00a65a0ac9b91cc7da4b3bec65790611eb8a3"
+    },
+    {
+      "name": "ZL-RPT-007_Master_Engineering_Implementation_Playbook_v1.docx",
+      "source_path": "/Users/kailanaresh/Downloads/ZL-RPT-007_Master_Engineering_Implementation_Playbook_v1.docx",
+      "sha256": "387fe93c5baaf4368ba402b5bd3b67c08c9360c3d5f33a84c94aef2665bc0896"
+    }
+  ],
+  "outstanding_document": "ZL-RPT-001",
+  "counts": {
+    "csv_json_assets": 7,
+    "catalog_rows": 90,
+    "reconciliation_rules": 10,
+    "acceptance_rows": 58,
+    "acceptance_suites": 11
+  },
+  "existing_test_run": {
+    "command": "RUN_LIVE_LLM_TESTS=0 .venv/bin/pytest -q tests/test_reporting_golden_route.py",
+    "cwd": "backend",
+    "passed": 20,
+    "seconds": 0.85,
+    "log": "golden-route-tests.log"
+  },
+  "provider_calls": 0,
+  "downloads_changed": false,
+  "spec_assets_copied": false,
+  "proposed_decisions_approved": false
+}

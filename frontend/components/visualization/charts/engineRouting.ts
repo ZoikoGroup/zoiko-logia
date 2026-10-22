@@ -49,3 +49,17 @@ export const SAME_SHAPE_VIEW_ALTERNATIVES: Partial<Record<VisualizationSpec["typ
   LINE: ["BAR"],
   BAR: ["LINE"],
 };
+
+/** Shape compatibility alone is insufficient: a line implies an ordered axis. */
+export function validViewAlternatives(viz: VisualizationSpec): VisualizationSpec["type"][] {
+  if (viz.variant === "WATERFALL_CHART") return [];
+  const candidates = SAME_SHAPE_VIEW_ALTERNATIVES[viz.type] ?? [];
+  return candidates.filter((type) => {
+    if (type !== "LINE") return true;
+    const points = viz.data ?? [];
+    const labels = points.map((p) => p.x);
+    return viz.encoding?.x.type === "temporal" && points.length >= 3
+      && new Set(labels).size === labels.length
+      && labels.every((label, i) => i === 0 || labels[i - 1] < label);
+  });
+}

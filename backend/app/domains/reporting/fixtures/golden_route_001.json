@@ -1,0 +1,67 @@
+{
+  "_about": "Synthetic golden route 001 (ZL-RPT-007 §18.1). One entity, one period, one currency, controlled synthetic ledger. Not real company data. Reconciled-draft output only; it does not establish compliance with any framework's presentation or disclosure rules.",
+  "ledger": {
+    "entity": "Synthetic Trading Co (golden route 001)",
+    "currency": "USD",
+    "period_start": "2026-01-01",
+    "period_end": "2026-12-31",
+    "metadata": {"synthetic": true, "framework": "unresolved — G3 rule packs not yet active"},
+    "accounts": [
+      {"code": "1000", "name": "Cash at bank", "type": "asset", "is_cash": true},
+      {"code": "1100", "name": "Trade receivables", "type": "asset"},
+      {"code": "1500", "name": "Property, plant and equipment", "type": "asset"},
+      {"code": "2000", "name": "Trade payables", "type": "liability"},
+      {"code": "2500", "name": "Bank loan", "type": "liability"},
+      {"code": "3000", "name": "Share capital", "type": "equity"},
+      {"code": "3100", "name": "Retained earnings", "type": "equity"},
+      {"code": "4000", "name": "Revenue", "type": "revenue"},
+      {"code": "5000", "name": "Operating expenses", "type": "expense"},
+      {"code": "5100", "name": "Depreciation", "type": "expense"}
+    ],
+    "journals": [
+      {"source_id": "OB-2025", "version": 1, "posted_on": "2025-12-31", "description": "Opening balances",
+       "lines": [
+         {"account": "1000", "debit": "150000.00"},
+         {"account": "1100", "debit": "80000.00"},
+         {"account": "1500", "debit": "460000.00"},
+         {"account": "2000", "credit": "60000.00"},
+         {"account": "2500", "credit": "200000.00"},
+         {"account": "3000", "credit": "250000.00"},
+         {"account": "3100", "credit": "180000.00"}
+       ]},
+      {"source_id": "JNL-001", "version": 1, "posted_on": "2026-03-31", "description": "Sales on credit",
+       "lines": [{"account": "1100", "debit": "500000.00"}, {"account": "4000", "credit": "500000.00"}]},
+      {"source_id": "JNL-002", "version": 1, "posted_on": "2026-06-30", "description": "Cash collected from customers",
+       "lines": [{"account": "1000", "debit": "470000.00"}, {"account": "1100", "credit": "470000.00"}]},
+      {"source_id": "JNL-003", "version": 1, "posted_on": "2026-04-30", "description": "Operating expenses on credit",
+       "lines": [{"account": "5000", "debit": "300000.00"}, {"account": "2000", "credit": "300000.00"}]},
+      {"source_id": "JNL-004", "version": 1, "posted_on": "2026-07-31", "description": "Suppliers paid",
+       "lines": [{"account": "2000", "debit": "330000.00"}, {"account": "1000", "credit": "330000.00"}]},
+      {"source_id": "JNL-005", "version": 1, "posted_on": "2026-12-31", "description": "Depreciation for the year",
+       "lines": [{"account": "5100", "debit": "40000.00"}, {"account": "1500", "credit": "40000.00"}]},
+      {"source_id": "JNL-006", "version": 1, "posted_on": "2026-09-15", "description": "Equipment purchased",
+       "lines": [{"account": "1500", "debit": "50000.00"}, {"account": "1000", "credit": "50000.00"}]},
+      {"source_id": "JNL-007", "version": 1, "posted_on": "2026-10-31", "description": "Loan repayment",
+       "lines": [{"account": "2500", "debit": "25000.00"}, {"account": "1000", "credit": "25000.00"}]},
+      {"source_id": "JNL-008", "version": 1, "posted_on": "2026-11-30", "description": "Dividend paid",
+       "lines": [{"account": "3100", "debit": "15000.00"}, {"account": "1000", "credit": "15000.00"}]},
+      {"source_id": "JNL-901", "version": 1, "posted_on": "2027-01-05", "description": "Next-period sale (after cutoff)",
+       "lines": [{"account": "1000", "debit": "9999.00"}, {"account": "4000", "credit": "9999.00"}]}
+    ]
+  },
+  "account_map": {
+    "version": "golden-route-001/map-v1",
+    "accounts": {
+      "1000": {"line": "bs.cash", "label": "Cash and cash equivalents"},
+      "1100": {"line": "bs.trade_receivables", "label": "Trade receivables", "cash_flow": "operating"},
+      "1500": {"line": "bs.ppe", "label": "Property, plant and equipment", "cash_flow": "investing"},
+      "2000": {"line": "bs.trade_payables", "label": "Trade payables", "cash_flow": "operating"},
+      "2500": {"line": "bs.borrowings", "label": "Borrowings", "cash_flow": "financing"},
+      "3000": {"line": "bs.share_capital", "label": "Share capital", "cash_flow": "financing", "equity_movement": "contributions"},
+      "3100": {"line": "bs.retained_earnings", "label": "Retained earnings", "cash_flow": "financing", "equity_movement": "distributions"},
+      "4000": {"line": "pl.revenue", "label": "Revenue", "cash_flow": "operating"},
+      "5000": {"line": "pl.operating_expenses", "label": "Operating expenses", "cash_flow": "operating"},
+      "5100": {"line": "pl.depreciation", "label": "Depreciation", "cash_flow": "operating"}
+    }
+  }
+}

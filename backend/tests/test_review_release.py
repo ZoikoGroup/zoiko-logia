@@ -64,3 +64,39 @@ def test_the_warning_names_what_could_not_be_verified():
     assert "did not pass every automatic check" in release_warning(["Something new"])
     assert release_warning(["Grounding check failed: x", "Required authoritative evidence is unavailable"]).count(
         "no source was found") == 1
+
+
+# ── A disproved figure is removed, not shown with a warning (22 Oct 2026) ──
+
+from app.orchestration.review_release import remove_disproved_figures  # noqa: E402
+
+_MISMATCH = "Calculation mismatch: 780,000 ÷ 0.55 equals 1418181.82, not 1560000."
+_ANSWER = ("Required revenue = £780,000 ÷ 0.55 = £1,560,000.00.\n"
+           "Current revenue is £2,400,000 and profit is £540,000.")
+
+
+def test_only_the_disproved_statement_is_removed_and_the_verified_result_is_named():
+    cleaned, notes = remove_disproved_figures(_ANSWER, [_MISMATCH])
+    assert "£1,560,000" not in cleaned
+    assert "£2,400,000" in cleaned and "£540,000" in cleaned
+    assert notes == ["£1,560,000.00 (780,000 ÷ 0.55 equals 1418181.82)"]
+
+
+def test_an_unverifiable_figure_is_left_for_the_warning():
+    failures = ["unreconciled_figures: £9,999", "Grounding check failed: no citation"]
+    assert remove_disproved_figures(_ANSWER, failures) == (_ANSWER, [])
+
+
+def test_the_warning_says_the_figure_was_removed_not_that_it_could_not_be_checked():
+    removed = release_warning([_MISMATCH], disproved_removed=True)
+    assert "did not match its own calculation was removed" in removed and "re-checked" not in removed
+    assert "could not be re-checked" in release_warning([_MISMATCH])
+
+
+@pytest.mark.parametrize("reply", [
+    "Required revenue = £780,000 ÷ 0.55 = £1,560,000.00.",
+    "## Forecast\nRequired revenue = £780,000 ÷ 0.55 = £1,560,000.00.",
+])
+def test_a_reply_that_is_only_the_disproved_statement_leaves_nothing_to_release(reply):
+    # Empty text sends the answer to review instead of releasing a heading.
+    assert remove_disproved_figures(reply, [_MISMATCH]) == ("", ["£1,560,000.00 (780,000 ÷ 0.55 equals 1418181.82)"])

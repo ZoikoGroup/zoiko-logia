@@ -201,7 +201,7 @@ _SCALE_SUFFIX = r"k|bn|b|m|thousand|million|billion"
 _TARGET_PAIR = re.compile(
     rf"(?P<label>[A-Za-z][\w &/().'’-]{{0,59}}?)\s*(?::|=|–|—|-|of|was|is|at)?\s*"
     rf"{_CURRENCY_MARKER}?\s*"
-    rf"(?P<actual>{_PLAIN_NUMBER})\s*(?P<actual_scale>{_SCALE_SUFFIX})?\s*(?P<actual_pct>%)?"
+    rf"(?<![A-Za-z0-9_])(?P<actual>{_PLAIN_NUMBER})\s*(?P<actual_scale>{_SCALE_SUFFIX})?\s*(?P<actual_pct>%)?"
     r"[^0-9%]{0,40}?"
     r"\b(?:target|targeted|budget|budgeted|goal|plan)\b\s*(?:of|is|was|:|=|at)?\s*"
     rf"{_CURRENCY_MARKER}?\s*"

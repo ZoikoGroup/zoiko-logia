@@ -1,0 +1,73 @@
+{
+  "commit": "1984fa9f78651f0830e3514c5f14b9695a884e30",
+  "source_hash": "49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447",
+  "build_id": "development:49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447",
+  "dirty_working_tree": true,
+  "live_runtime_source_matches_tests": true,
+  "backend": {
+    "passed": 3309,
+    "skipped": 24,
+    "xfailed": 2,
+    "warnings": 140,
+    "seconds": 74.12
+  },
+  "frontend": {
+    "passed": 222,
+    "seconds": 11.43
+  },
+  "typescript": {
+    "exit_code": 0
+  },
+  "authenticated_http": {
+    "passed": 2,
+    "seconds": 6.53,
+    "request_count": 5,
+    "external_identity_provider": "local signed JWT/JWKS",
+    "production_lifespan_enabled": false
+  },
+  "isolated_postgres_rls": {
+    "passed": 7,
+    "seconds": 1.75,
+    "server_stopped": true
+  },
+  "original_benchmark": {
+    "total": 80,
+    "scorer_passed": 48,
+    "scorer_failed": 32,
+    "actual_answered": 7,
+    "unchanged_manifest_files": 102
+  },
+  "runtime": {
+    "final_health_checks": 9,
+    "final_health_checks_passed": 9,
+    "read_only_select_1_ms": 3765.09,
+    "previous_error": "Startup security-policy database query timed out; serving child exited while reload supervisor kept listening",
+    "recovery": "Restarted only the local development reload supervisor through its existing dev.mjs supervisor",
+    "database_latency_cause_resolved": false
+  },
+  "provider_calls": 0,
+  "groq_tokens_used": 0,
+  "production_deployed": false,
+  "shared_database_mutations": false,
+  "blocked_acceptance_cases": [
+    {
+      "name": "\u00a34,800 accrual journal",
+      "status": "blocked_missing_original_prompt",
+      "reason": "Only expected result supplied; original transaction details unavailable."
+    },
+    {
+      "name": "\u20b984,600 GST payable and zero ledger difference",
+      "status": "blocked_missing_original_prompt",
+      "reason": "Original sales, purchase, rate, eligibility assumptions and ledger figures unavailable."
+    },
+    {
+      "name": "Original six-section management report",
+      "status": "blocked_missing_original_prompt",
+      "reason": "Six section titles and original complete input payload unavailable."
+    }
+  ],
+  "targeted_final": {
+    "passed": 14,
+    "seconds": 4.97
+  }
+}

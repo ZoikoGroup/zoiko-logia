@@ -24,7 +24,9 @@ AutoTokenizer.from_pretrained('BAAI/bge-small-en-v1.5'); AutoModel.from_pretrain
 
 COPY app app
 COPY scripts scripts
-COPY data data
+# Runtime storage is created in the image: a clean checkout has no data/
+# directory, and local uploads must not be baked into a deployment.
+RUN mkdir -p data
 COPY alembic alembic
 COPY alembic.ini alembic.ini
 COPY evals evals
