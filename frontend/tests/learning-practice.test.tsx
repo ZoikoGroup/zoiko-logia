@@ -47,6 +47,7 @@ beforeEach(() => {
 describe("Learning & Practice", () => {
   it("asks with the chosen jurisdiction and shows a formatted answer with each source once", async () => {
     render(<LearningPracticePage />);
+    fireEvent.click(screen.getByRole("button", { name: "My Learning" }));
     fireEvent.change(await screen.findByLabelText("Jurisdiction"), { target: { value: "UK" } });
     fireEvent.change(document.getElementById("learning-ask-input")!, { target: { value: "What is deferred revenue?" } });
     fireEvent.click(screen.getByRole("button", { name: "Ask" }));
@@ -58,6 +59,7 @@ describe("Learning & Practice", () => {
 
   it("shows pathway progress from CPD and fills the Ask box from a topic", async () => {
     render(<LearningPracticePage />);
+    fireEvent.click(screen.getByRole("button", { name: "My Learning" }));
     expect(await screen.findByText("1 of 2 studied")).toBeInTheDocument();
     expect(screen.getByRole("progressbar", { name: "Pathway progress" })).toHaveAttribute("aria-valuenow", "1");
     fireEvent.click(screen.getAllByRole("button", { name: /Ask Kriton/ })[1]);
@@ -67,6 +69,7 @@ describe("Learning & Practice", () => {
 
   it("links a prerequisite to its topic, or to Ask Kriton when there is none", async () => {
     render(<LearningPracticePage />);
+    fireEvent.click(screen.getByRole("button", { name: "My Learning" }));
     fireEvent.click(await screen.findByRole("button", { name: "Accruals" }));
     expect(document.getElementById("topic-n2")?.className).toContain("ring-1");
     fireEvent.click(screen.getByRole("button", { name: "Revenue Recognition" }));
@@ -75,6 +78,7 @@ describe("Learning & Practice", () => {
 
   it("totals CPD by topic and month, and deletes an entry", async () => {
     render(<LearningPracticePage />);
+    fireEvent.click(screen.getByRole("button", { name: "Progress" }));
     await screen.findByText("By topic");
     expect(within(screen.getByText("By topic").parentElement!).getByText("1.5h")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Delete CPD entry Deferred Revenue" }));
