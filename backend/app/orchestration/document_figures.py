@@ -360,7 +360,14 @@ def _monthly_lines(table: Table, totals: dict[int, float]) -> list[str]:
     return lines
 
 
-def _table_lines(table: Table) -> list[str]:
+# "Top N together" lines are about 40% of the block and answer only ranking
+# questions; with them, "Show total sales by month as a bar chart" of a
+# 40-row sales file went over the model's request-size limit.
+_RANKING_QUESTION = re.compile(r"\btop\b|largest|biggest|highest|lowest|smallest|rank|share|concentrat|most|least|"
+                               r"major|main|key\s+customers?|pareto|80\s*/\s*20", re.IGNORECASE)
+
+
+def _table_lines(table: Table, include_top_n: bool = True) -> list[str]:
     rows = [r for r in table.rows if not (r and _TOTAL_ROW.match(r[0] or ""))]
     if not rows:
         return []
@@ -411,7 +418,7 @@ def _table_lines(table: Table) -> list[str]:
             lines.append(f"- {name(i)} by {name(c)}: " + "; ".join(
                 f"{k} = {_fmt(v)} ({_pct(v, total)})" for k, v in ranked[:MAX_GROUPS_LISTED]))
             running = 0.0
-            for n, (_, v) in enumerate(ranked, start=1):
+            for n, (_, v) in enumerate(ranked if include_top_n else [], start=1):
                 running += v
                 if n in TOP_N and n < len(ranked):
                     rest = total - running
@@ -520,13 +527,15 @@ def _trial_balance_lines(table: Table) -> list[str]:
     return lines
 
 
-def verified_document_figures(sources: list[WebSource]) -> str:
+def verified_document_figures(sources: list[WebSource], query: str | None = None) -> str:
     """A bounded prompt block of figures computed from the documents' tables,
-    or "" when the documents hold no numeric table."""
+    or "" when the documents hold no numeric table. With a question, the
+    "top N together" lines are kept only for a ranking question."""
+    include_top_n = query is None or bool(_RANKING_QUESTION.search(query))
     lines: list[str] = []
     for table in tables_from_sources(sources):
         lines.extend(_trial_balance_lines(table))
-        lines.extend(_table_lines(table))
+        lines.extend(_table_lines(table, include_top_n))
         if len(lines) >= MAX_LINES:
             break
     if not lines:

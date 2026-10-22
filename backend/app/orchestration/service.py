@@ -4670,7 +4670,7 @@ async def _verified_document_figures_context(
                 sources = await retrieve_document_sources(
                     db, query=query, document_ids=document_ids, tenant_id=tenant_id, user_id=user_id, full_document=True,
                 )
-        return verified_document_figures(sources)
+        return verified_document_figures(sources, query)
     except Exception:  # noqa: BLE001 - extra figures must never fail the answer
         logger.exception("Could not compute verified document figures")
         return ""
