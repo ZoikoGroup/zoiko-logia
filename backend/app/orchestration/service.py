@@ -3117,8 +3117,11 @@ async def ask_kriton(
                     planned_tools=agent_plan.tools,
                     stated_facts="\n".join([request.query, *(m.content for m in request.conversation_history
                                                               if m.role == "user")]),
+                    # With the totals computed from the attached files: a trial
+                    # balance's own 7,026,500 total was removed as unverified.
                     figure_evidence=figure_evidence_text(request, web_sources, governed_passages, document_sources,
-                                                         calculation_result, remembered_calculation),
+                                                         calculation_result, remembered_calculation)
+                    + document_figures_block,
                     resume_key=idempotency_key or "",
                     # The plan searches, and nothing was retrieved beforehand:
                     # the agent must gather evidence before it answers.

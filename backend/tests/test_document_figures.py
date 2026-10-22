@@ -286,3 +286,29 @@ def test_a_dated_ledger_gets_totals_per_month_in_date_order():
     assert "amount by month (from date): Jan 2026 = 200; Feb 2026 = 150.50; Mar 2026 = 25" in figures
     assert "Rows by month (from date): Jan 2026 = 1; Feb 2026 = 2; Mar 2026 = 1" in figures
     assert not unreconciled_figures("February 2026 total: 150.50", figures)
+
+
+def test_a_trial_balance_gets_its_statements_and_the_suspense_account_is_flagged():
+    # "Prepare the financial statements" put revenue and interest in the
+    # balance sheet and stated no profit: the model classified the accounts.
+    rows = ["account_code\taccount_name\tdebit\tcredit",
+            "1000\tProperty, plant and equipment\t1265000\t", "1200\tInventory\t418000\t",
+            "1300\tTrade receivables\t703000\t", "1400\tCash at bank\t512000\t",
+            "2000\tTrade payables\t\t389000", "2200\tDeferred tax liability\t\t87000",
+            "3000\tShare capital\t\t100000", "3100\tRetained earnings\t\t1000000",
+            "4000\tRevenue\t\t4182000", "5000\tCost of sales\t2431000\t", "6000\tAdministrative expenses\t300000\t",
+            "6100\tInterest payable\t62000\t", "8000\tSuspense\t67000\t"]
+    figures = verified_document_figures([WebSource(title="tb.csv — Sheet1", url="", snippet="\n".join(rows), source_id="d1")])
+    assert "total debits = 5,758,000; total credits = 5,758,000; difference = 0" in figures
+    assert "Gross profit = 1,751,000" in figures and "Finance costs = 62,000 (Interest payable 62,000)" in figures
+    assert "Profit for the year = 1,389,000" in figures
+    assert "Total assets = 2,898,000" in figures and "Total liabilities = 476,000" in figures
+    assert "Suspense account balance = 67,000" in figures
+    assert "Total account_code" not in figures   # a code is not an amount
+
+
+def test_an_account_the_rules_cannot_place_stops_the_statement_totals():
+    rows = ["account_name\tdebit\tcredit", "Revenue\t\t500", "Mystery account\t500\t"]
+    figures = verified_document_figures([WebSource(title="tb.csv — Sheet1", url="", snippet="\n".join(rows), source_id="d1")])
+    assert "Accounts not classified" in figures and "Mystery account" in figures
+    assert "Profit for the year" not in figures

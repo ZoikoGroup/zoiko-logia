@@ -259,7 +259,8 @@ def _columns(table: Table) -> tuple[list[int], list[int], set[int]]:
         numbers = [_to_number(c) for c in cells]
         share_numeric = sum(n is not None for n in numbers) / len(cells)
         distinct = len(set(cells))
-        if (share_numeric >= 0.8 and any(numbers) and not re.search(r"\b(id|year|no|number|code|date)\b", header, re.IGNORECASE)):
+        # "account_code" is a code, not an amount: \b alone missed it after "_".
+        if (share_numeric >= 0.8 and any(numbers) and not re.search(r"(?:\b|_)(id|year|no|number|code|date)(?:\b|_)", header, re.IGNORECASE)):
             numeric.append(i)
             if (_RATE_HEADER.search(header) or _LIFE_HEADER.search(header)
                     or sum(c.strip().endswith("%") for c in cells) >= len(cells) / 2):
@@ -419,11 +420,112 @@ def _table_lines(table: Table) -> list[str]:
     return lines
 
 
+# A trial balance (account name, debit, credit) gives the primary statements.
+# "Prepare the financial statements from this trial balance" was answered
+# with revenue and interest in the balance sheet and no profit figures: the
+# model classified and summed the accounts itself. Accounts are classified
+# here by name and balance side, in this order; one the rules cannot place
+# is named, and then no statement totals are given.
+_DEBIT_HEADER = re.compile(r"^\s*(?:debit|dr)\b", re.IGNORECASE)
+_CREDIT_HEADER = re.compile(r"^\s*(?:credit|cr)\b", re.IGNORECASE)
+_NAME_HEADER = re.compile(r"name|account|description|ledger", re.IGNORECASE)
+_TB_RULES: tuple[tuple[str, str, re.Pattern], ...] = (
+    ("suspense", "any", re.compile(r"suspense", re.I)),
+    ("tax_charge", "debit", re.compile(r"tax\s+(?:charge|expense)|income\s+tax\b(?!.*payable)", re.I)),
+    ("finance_cost", "debit", re.compile(r"interest|finance\s+(?:cost|charge)|bank\s+charges", re.I)),
+    ("cost_of_sales", "debit", re.compile(r"cost\s+of\s+(?:sales|goods)|purchases|direct\s+costs?", re.I)),
+    ("revenue", "credit", re.compile(r"revenue|sales|turnover|fee\s+income", re.I)),
+    ("other_income", "credit", re.compile(r"income|gain", re.I)),
+    ("equity", "credit", re.compile(r"share\s+capital|share\s+premium|retained\s+earnings|reserves?|capital\s+account", re.I)),
+    ("non_current_liability", "credit", re.compile(r"deferred\s+tax|long[\s-]term|non[\s-]current|mortgage|debenture|bond", re.I)),
+    ("current_liability", "credit", re.compile(r"payable|accrual|overdraft|vat|paye|provision|deferred\s+income|loan|tax", re.I)),
+    ("non_current_asset", "debit", re.compile(r"property|plant|equipment|intangible|goodwill|investment|right[\s-]of[\s-]use|vehicles?|fixtures|machinery", re.I)),
+    ("current_asset", "debit", re.compile(r"inventor|stock|receivable|debtors|cash|bank|prepayment", re.I)),
+    ("operating_expense", "debit", re.compile(r"expense|administrat|distribution|selling|wages|salar|rent|depreciation|amortisation|utilities|marketing|insurance", re.I)),
+)
+_TB_LABEL = {
+    "revenue": "Revenue", "other_income": "Other income", "cost_of_sales": "Cost of sales",
+    "operating_expense": "Operating expenses", "finance_cost": "Finance costs", "tax_charge": "Tax charge",
+    "non_current_asset": "Non-current assets", "current_asset": "Current assets",
+    "current_liability": "Current liabilities", "non_current_liability": "Non-current liabilities", "equity": "Equity",
+}
+
+
+def _trial_balance_lines(table: Table) -> list[str]:
+    headers = table.headers
+    debit = next((i for i, h in enumerate(headers) if _DEBIT_HEADER.search(h or "")), None)
+    credit = next((i for i, h in enumerate(headers) if _CREDIT_HEADER.search(h or "")), None)
+    if debit is None or credit is None:
+        return []
+    name = next((i for i, h in enumerate(headers) if i not in (debit, credit) and _NAME_HEADER.search(h or "")
+                 and not re.search(r"code|number|no\b", h or "", re.I)), None)
+    if name is None:
+        return []
+    groups: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    unplaced, total_dr, total_cr = [], 0.0, 0.0
+    for row in table.rows:
+        label = row[name].strip() if name < len(row) else ""
+        if not label or _TOTAL_ROW.match(label):
+            continue
+        dr = (_to_number(row[debit]) if debit < len(row) else None) or 0.0
+        cr = (_to_number(row[credit]) if credit < len(row) else None) or 0.0
+        total_dr, total_cr = total_dr + dr, total_cr + cr
+        side, amount = ("debit", dr - cr) if dr >= cr else ("credit", cr - dr)
+        group = next((g for g, s, pattern in _TB_RULES if (s in (side, "any")) and pattern.search(label)), None)
+        if group is None:
+            unplaced.append(label)
+            continue
+        groups[group].append((label, amount))
+    lines = [f"Trial balance '{table.title}': total debits = {_fmt(round(total_dr, 2))}; total credits = "
+             f"{_fmt(round(total_cr, 2))}; difference = {_fmt(round(total_dr - total_cr, 2))}"]
+    if unplaced:
+        lines.append("- Accounts not classified (state them, and give no statement totals): " + "; ".join(unplaced))
+        return lines
+    total = lambda g: round(sum(v for _, v in groups.get(g, [])), 2)  # noqa: E731
+    def line(g: str) -> str:
+        members = ", ".join(f"{k} {_fmt(v)}" for k, v in groups.get(g, []))
+        return f"{_TB_LABEL[g]} = {_fmt(total(g))}" + (f" ({members})" if members else "")
+    revenue, gross = total("revenue"), round(total("revenue") - total("cost_of_sales"), 2)
+    operating = round(gross + total("other_income") - total("operating_expense"), 2)
+    before_tax = round(operating - total("finance_cost"), 2)
+    after_tax = round(before_tax - total("tax_charge"), 2)
+    lines.append("- Income statement (accounts classified by name; check against the chart of accounts): "
+                 + "; ".join([line("revenue"), line("cost_of_sales"), f"Gross profit = {_fmt(gross)}",
+                              *([line("other_income")] if groups.get("other_income") else []),
+                              line("operating_expense"), f"Operating profit = {_fmt(operating)}",
+                              line("finance_cost"), f"Profit before tax = {_fmt(before_tax)}",
+                              line("tax_charge"), f"Profit for the year = {_fmt(after_tax)}"]))
+    assets = round(total("non_current_asset") + total("current_asset"), 2)
+    liabilities = round(total("current_liability") + total("non_current_liability"), 2)
+    net_assets = round(assets - liabilities, 2)
+    equity_close = round(total("equity") + after_tax, 2)
+    lines.append("- Statement of financial position: " + "; ".join([
+        line("non_current_asset"), line("current_asset"), f"Total assets = {_fmt(assets)}",
+        line("current_liability"), line("non_current_liability"), f"Total liabilities = {_fmt(liabilities)}",
+        f"Net assets = {_fmt(net_assets)}", line("equity") + " (before the profit for the year)",
+        f"Equity including the profit for the year = {_fmt(equity_close)}"]))
+    if revenue:
+        lines.append(f"- Gross margin = {_pct(gross, revenue)}; operating margin = {_pct(operating, revenue)}; "
+                     f"net margin = {_pct(after_tax, revenue)}")
+    if total("current_liability"):
+        inventory = sum(v for k, v in groups.get("current_asset", []) if re.search(r"inventor|stock", k, re.I))
+        lines.append(f"- Current ratio = {total('current_asset') / total('current_liability'):.2f}; quick ratio = "
+                     f"{(total('current_asset') - inventory) / total('current_liability'):.2f}")
+    if groups.get("suspense"):
+        suspense = total("suspense")
+        lines.append(f"- Suspense account balance = {_fmt(suspense)} ({'; '.join(k for k, _ in groups['suspense'])}): "
+                     f"unexplained; it must be investigated and cleared before the statements are final. "
+                     f"Net assets ({_fmt(net_assets)}) and equity including the profit for the year "
+                     f"({_fmt(equity_close)}) differ by {_fmt(round(abs(equity_close - net_assets), 2))}.")
+    return lines
+
+
 def verified_document_figures(sources: list[WebSource]) -> str:
     """A bounded prompt block of figures computed from the documents' tables,
     or "" when the documents hold no numeric table."""
     lines: list[str] = []
     for table in tables_from_sources(sources):
+        lines.extend(_trial_balance_lines(table))
         lines.extend(_table_lines(table))
         if len(lines) >= MAX_LINES:
             break
