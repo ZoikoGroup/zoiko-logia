@@ -11,6 +11,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from app.domains.audit_ledger.chain_integrity import compute_payload_hash
 from app.domains.risk_safety import risk_classifier
 from app.domains.risk_safety import refusal_templates
 from app.domains.risk_safety import professional_boundary
@@ -376,6 +377,12 @@ def _create_escalation(db: Session, request: ClassifyRequest, result: dict) -> N
     db.commit()
 
 
+def _available_context_hash(request: ClassifyRequest) -> str:
+    """SHA-256 of the context the classifier decided on. The question text and
+    user id are left out so the audit payload carries no user content."""
+    return compute_payload_hash(request.model_dump(exclude={"query", "user_id"}))
+
+
 def _log_safety_event(db: Session, request: ClassifyRequest, result: dict, template_id: Optional[str] = None) -> None:
     """Exact payloads from Section 15."""
     query_id = result["query_id"]
@@ -385,7 +392,7 @@ def _log_safety_event(db: Session, request: ClassifyRequest, result: dict, templ
         payload = {
             "classifier_version": result.get("classifier_version"),
             "classifier_confidence": result["confidence"],
-            "available_context_hash": "hash_placeholder",
+            "available_context_hash": _available_context_hash(request),
             "conservative_path_taken": True
         }
     elif not result["allowed"] and result.get("restricted_sub_class"):

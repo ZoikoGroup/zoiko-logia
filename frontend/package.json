@@ -6,6 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "build:preview": "NEXT_DIST_DIR=.next-preview next build",
+    "preview": "NEXT_DIST_DIR=.next-preview next start -p 3001",
     "lint": "eslint",
     "check:command-center-copy": "node scripts/check-command-center-copy.mjs",
     "test": "vitest run",

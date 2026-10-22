@@ -1491,7 +1491,7 @@ def _focused_excerpt(text: str, query: str, allowance: int) -> str:
     return " ".join(pieces[i] for i in sorted(keep))
 
 
-def _context_allowances(sources: list[WebSource]) -> list[int]:
+def _context_allowances(sources: list[WebSource], char_budget: int | None = None) -> list[int]:
     """Characters each source may contribute, shared out fairly.
 
     Sources under their equal share give the remainder back, so a handful of
@@ -1502,7 +1502,8 @@ def _context_allowances(sources: list[WebSource]) -> list[int]:
     """
     if not sources:
         return []
-    budget = _context_budget()
+    budget = _context_budget() if char_budget is None else max(0, char_budget)
+    minimum = _MIN_SOURCE_CHARS if char_budget is None else min(_MIN_SOURCE_CHARS, budget // len(sources))
     lengths = [len(s.snippet or "") for s in sources]
     if sum(lengths) <= budget:
         return lengths
@@ -1510,7 +1511,7 @@ def _context_allowances(sources: list[WebSource]) -> list[int]:
     allowances = [0] * len(sources)
     remaining = set(range(len(sources)))
     while remaining:
-        share = max(_MIN_SOURCE_CHARS, budget // len(remaining))
+        share = max(minimum, budget // len(remaining))
         fitting = {i for i in remaining if lengths[i] <= share}
         if not fitting:
             for i in remaining:
@@ -1523,8 +1524,39 @@ def _context_allowances(sources: list[WebSource]) -> list[int]:
     return allowances
 
 
-def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
+def _grounded_context(query: str, sources: list[WebSource], char_budget: int | None = None) -> str:
+    blocks = []
+    truncated_any = False
+    for i, (source, allowance) in enumerate(zip(sources, _context_allowances(sources, char_budget)), start=1):
+        location = f"URL: {source.url}" if source.url else f"Document ID: {source.source_id or 'uploaded'}"
+        snippet = source.snippet or ""
+        if len(snippet) > allowance:
+            snippet = _focused_excerpt(snippet, query, allowance) + "\n[…this source was shortened to fit the request budget]"
+            truncated_any = True
+        blocks.append(f"[REF-{i}] {source.title}\n{location}\n{snippet}")
+    context = "\n\n".join(blocks)
+    if truncated_any:
+        context += "\n\n[Some sources above were shortened. If the question needs detail that was cut, say so rather than guessing at it.]"
+    return context
+
+
+def build_web_grounded_prompt(query: str, sources: list[WebSource], *, agent_mode: bool = False,
+                              compact: bool = False, context_char_budget: int | None = None) -> str:
     """Assemble a grounded prompt from document, live-data, or web evidence."""
+    if agent_mode or compact:
+        context = _grounded_context(query, sources, context_char_budget) if sources else "No evidence was retrieved yet."
+        return (
+            "Answer every requested part. The user's figures are valid inputs for arithmetic without an external source. "
+            "Use supplied evidence for external facts, citing exact [REF-N] identifiers; retrieve missing current figures "
+            "or professional rules with the available tools. Never invent evidence or claim an unsupported fact is verified. "
+            "When evidence covers only part, retain verified calculations and explanations and name the specific gap. "
+            "Use requested tables, formulas and units. Render data charts through the chart tool, not handwritten chart JSON. "
+            "Follow the user's requested scope and do not search for matters explicitly excluded.\n"
+            "If a current figure or rule cannot be verified with the available evidence or tools, "
+            "say so clearly and explain what official information to check. Stable concepts may "
+            "be explained from professional knowledge without claiming external verification.\n"
+            + f"\n=== Evidence Sources ===\n{context}\n\n=== User Question ===\n{query}"
+        )
     if not sources:
         # Retrieval came back empty. Answer from professional knowledge rather
         # than refusing: retrieval fails soft (an unreachable SearXNG returns
@@ -1568,21 +1600,7 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource]) -> str:
             + formatting_instructions(query)
             + f"\n=== User Question ===\n{query}"
         )
-    blocks = []
-    truncated_any = False
-    for i, (s, allowance) in enumerate(zip(sources, _context_allowances(sources)), start=1):
-        source_location = f"URL: {s.url}" if s.url else f"Document ID: {s.source_id or 'uploaded'}"
-        snippet = s.snippet or ""
-        if len(snippet) > allowance:
-            snippet = _focused_excerpt(snippet, query, allowance) + "\n[…this source was shortened to fit the request budget]"
-            truncated_any = True
-        blocks.append(f"[REF-{i}] {s.title}\n{source_location}\n{snippet}")
-    context = "\n\n".join(blocks)
-    if truncated_any:
-        context += (
-            "\n\n[Some sources above were shortened. If the question needs "
-            "detail that was cut, say so rather than guessing at it.]"
-        )
+    context = _grounded_context(query, sources)
     return (
         _DOMAIN_GATE
         + "Answer the user's question using ONLY the numbered evidence sources below. "

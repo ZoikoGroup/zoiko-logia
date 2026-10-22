@@ -20,6 +20,13 @@ const violations = roots.flatMap(files).flatMap((file) => {
   return banned.filter((phrase) => content.includes(phrase)).map((phrase) => `${file}: banned copy "${phrase}"`);
 });
 
+// The internal knowledge/provenance layer's name must not reach any
+// customer-facing surface, so it is checked across the whole frontend.
+const internalNameViolations = ["app", "components", "lib"].flatMap(files)
+  .filter((file) => readFileSync(file, "utf8").toLowerCase().includes("massarius"))
+  .map((file) => `${file}: internal name "massarius" in frontend code`);
+violations.push(...internalNameViolations);
+
 if (violations.length) {
   console.error(violations.join("\n"));
   process.exit(1);

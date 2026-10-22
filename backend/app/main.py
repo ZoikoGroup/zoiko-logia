@@ -75,6 +75,7 @@ _log_problems_to_file()
 _TENANT_SCOPED_TABLES = (
     "sources", "source_versions", "workspace_documents", "workspace_document_chunks", "workspace_artifacts",
     "workspace_conversation_documents",
+    "conversation_turns",
 )
 
 # RLS predicate per tenant-scoped table. Not a strict tenant_id equality:
@@ -95,6 +96,10 @@ _TENANT_SCOPED_TABLES = (
 # guarantee explicit so it survives the OR clause.
 _HAS_TENANT_CONTEXT = "current_setting('app.tenant_id', true) IS NOT NULL AND current_setting('app.tenant_id', true) != ''"
 _TENANT_POLICY_USING = {
+    "conversation_turns": (
+        f"({_HAS_TENANT_CONTEXT} AND tenant_id = current_setting('app.tenant_id', true) "
+        "AND user_id = current_setting('app.user_id', true))"
+    ),
     "sources": f"({_HAS_TENANT_CONTEXT} AND (NOT is_tenant_private OR tenant_id = current_setting('app.tenant_id', true)))",
     "source_versions": (
         f"({_HAS_TENANT_CONTEXT} AND ("
@@ -948,9 +953,32 @@ async def _verify_security_policies() -> None:
             LEFT JOIN pg_policy p ON p.polrelid = c.oid
             WHERE n.nspname = 'public'
         """))).all()
+    _check_security_policy_rows(
+        rows, expected,
+        allow_unmigrated_memory=settings.SKIP_STARTUP_FINGERPRINT_CHECK,
+    )
+
+
+def _check_security_policy_rows(rows, expected, *, allow_unmigrated_memory=False) -> None:
+    expected = dict(expected)
+    present = {table for table, _, _, _ in rows}
+    # Local development already permits a different schema fingerprint.
+    # Durable memory is additive and its DAO supports missing-schema fallback;
+    # an absent table must not take the entire local API offline. Once the
+    # table exists, its full security requirements still apply in every mode.
+    if allow_unmigrated_memory and "conversation_turns" not in present:
+        expected.pop("conversation_turns", None)
+        logger.warning(
+            "Durable conversation memory is unavailable: conversation_turns migration "
+            "has not been applied. Local development will use supplied history."
+        )
     applied = {(table, policy) for table, enabled, forced, policy in rows if enabled and forced}
-    if any((table, policy) not in applied for table, policy in expected.items()):
-        raise RuntimeError("Required database security policies are missing. Run scripts/setup_database.py.")
+    missing = sorted(table for table, policy in expected.items() if (table, policy) not in applied)
+    if missing:
+        raise RuntimeError(
+            "Required database security policies are missing for: "
+            + ", ".join(missing) + ". Run scripts/setup_database.py."
+        )
 
 
 class _ErrorResponseMiddleware:
@@ -996,18 +1024,30 @@ class _ErrorResponseMiddleware:
 
 
 def create_app() -> FastAPI:
+    from app.core.build_identity import process_build_identity
+    build_identity = dict(process_build_identity())
     app = FastAPI(
         title="ZoikoLogia API & Safety Service",
         description="AI Governance, Safety, Risk Classification & Escalation Service.",
         version="1.0.0",
         lifespan=lifespan
     )
+    app.state.build_identity = build_identity
+
+    @app.middleware("http")
+    async def identify_serving_build(request, call_next):
+        response = await call_next(request)
+        response.headers['X-Kriton-Build'] = build_identity['build_id']
+        return response
 
     # Registered before CORSMiddleware, so CORS wraps it: an unhandled error is
     # turned into a JSON response INSIDE the CORS layer and carries its
     # headers. Before this, any crash reached the browser as a misleading
     # "blocked by CORS policy" message instead of the real error.
     app.add_middleware(_ErrorResponseMiddleware)
+    if get_settings().DB_TIMING_ENABLED:
+        from app.core.db_timing import DbTimingMiddleware
+        app.add_middleware(DbTimingMiddleware)
     @app.middleware("http")
     async def impersonation_is_read_only(request, call_next):
         # Admin "view as" sessions (identity/governance.py) may only read. One
@@ -1097,13 +1137,7 @@ def create_app() -> FastAPI:
 
     @app.get("/health/version", tags=["Health"])
     async def health_version() -> dict[str, str]:
-        from pathlib import Path
-        revision = os.getenv("APP_REVISION", "unknown")
-        if revision == "unknown":
-            revision_file = Path(__file__).resolve().parents[1] / "release_revision.txt"
-            revision = revision_file.read_text().strip() if revision_file.exists() else os.getenv("RAILWAY_GIT_COMMIT_SHA", "unknown")
-        from app.domains.evaluation.gold_set_contamination import runtime_config_hash
-        return {"revision": revision, "config_hash": runtime_config_hash(Path(__file__).resolve().parent)}
+        return dict(build_identity)
 
     @app.get("/health/agent", tags=["Health"])
     async def health_agent() -> dict:

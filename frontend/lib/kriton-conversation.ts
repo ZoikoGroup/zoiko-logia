@@ -75,8 +75,14 @@ const FOLLOW_UP_SUBJECT_CHARS = 500;
 /** Backend websearch.LONG_INPUT_CHARS: longer is pasted material, not a question. */
 const PASTED_MATERIAL_CHARS = 1500;
 
+/** Submission context must retain every original task and qualifier.
+ * followUpSubject is a short topic preview and must not be sent as the task. */
+export function followUpContext(query: string): string {
+  return query.split(FOLLOW_UP_CONTEXT_MARKER).at(-1)!.trim();
+}
+
 export function followUpSubject(query: string): string {
-  let subject = query.split(FOLLOW_UP_CONTEXT_MARKER).at(-1)!.trim();
+  let subject = followUpContext(query);
   if (subject.length > PASTED_MATERIAL_CHARS) {
     // A pasted document's topic is its title, not its first 500 characters
     // ("# Critical Analysis: … ## 1. Overall Assessment **Verdict: …").
@@ -112,10 +118,16 @@ export function splitQuestions(text: string): string[] {
   const tree = unified().use(remarkParse).parse(normalized);
   const lists = tree.children.filter((node) => node.type === "list" && node.ordered);
   if (!lists.length) return [text];
-  const outsideAsksSomething = tree.children.some(
-    (node) => node.type === "paragraph" && toString(node).includes("?"),
-  );
-  if (outsideAsksSomething) return [text];
+  // Outside text can contain shared figures or instructions without a "?".
+  // Splitting it away changes the actual request before the backend sees it.
+  const hasSharedContext = tree.children.some((node) => {
+    if (node.type === "list" && node.ordered) return false;
+    const content = toString(node).trim();
+    if (!content) return node.type !== "paragraph" && node.type !== "heading";
+    // Only purely structural labels may be discarded when splitting a batch.
+    return !/^(?:questions|follow[- ]ups?(?:\s*\(ask right after #\d+\))?)$/i.test(content);
+  });
+  if (hasSharedContext) return [text];
 
   const items = lists.flatMap((list) => (list.type === "list" ? list.children : []));
   if (items.length < 2 || items.length > MAX_SPLIT_QUESTIONS) return [text];

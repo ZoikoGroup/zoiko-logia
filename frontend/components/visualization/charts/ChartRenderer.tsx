@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import { Download, Table2 } from "lucide-react";
 import type { VisualizationSpec } from "@/lib/api";
-import { engineFor, SAME_SHAPE_VIEW_ALTERNATIVES } from "./engineRouting";
+import { engineFor, validViewAlternatives } from "./engineRouting";
 import { RechartsChart } from "./RechartsAdapter";
 import { EChartsChart, type EChartsInstanceLike } from "./EChartsAdapter";
 import { extraChartKind } from "./extraCharts";
@@ -30,10 +30,10 @@ export function ChartRenderer({ viz: rawViz }: { viz: VisualizationSpec }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const echartsInstanceRef = useRef<EChartsInstanceLike | null>(null);
 
-  const alternatives = SAME_SHAPE_VIEW_ALTERNATIVES[originalViz.type] ?? [];
+  const alternatives = validViewAlternatives(originalViz);
   const [defaultView] = useDefaultView(originalViz.type);
   const initialType =
-    defaultView && alternatives.includes(defaultView as VisualizationSpec["type"])
+    !originalViz.user_requested_type && defaultView && alternatives.includes(defaultView as VisualizationSpec["type"])
       ? (defaultView as VisualizationSpec["type"])
       : originalViz.type;
 
@@ -107,7 +107,7 @@ export function ChartRenderer({ viz: rawViz }: { viz: VisualizationSpec }) {
   }
 
   // State 3: a saved preference says "prefer table over chart" for this shape.
-  if (preferTable) {
+  if (preferTable && !originalViz.user_requested_type) {
     return (
       <div className="my-4 min-w-0 overflow-hidden rounded-2xl border border-line bg-panel shadow-sm">
         <div className="p-3 sm:p-4">
@@ -125,6 +125,13 @@ export function ChartRenderer({ viz: rawViz }: { viz: VisualizationSpec }) {
         </div>
       </div>
     );
+  }
+
+  if (!engine) {
+    return <div role="alert" className="my-4 rounded-2xl border border-line p-4">
+      <p>This chart could not be rendered. The underlying data is shown below.</p>
+      <DataTableView viz={originalViz} />
+    </div>;
   }
 
   // State 4: normal.

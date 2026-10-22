@@ -1,6 +1,6 @@
 # Kriton™ Implementation README
 
-This document outlines the implementation details, functional architecture, run commands, and external services utilized in the Kriton™ Backend system (powered by the Massarius™ engine).
+This document outlines the implementation details, functional architecture, run commands, and external services utilized in the Kriton™ Backend system (backed by the internal Massarius™ knowledge, source, evidence and provenance layer).
 
 ## 1. System Overview and Functioning
 
@@ -70,5 +70,6 @@ REQUIRE_SUPABASE_CONFIG=false
 ```
 
 ## 5. Architectural Naming Conventions (ZL-ENG-01)
-- **Kriton™**: The public-facing name used on all customer-visible surfaces, UI, and API responses.
-- **Massarius™**: The internal reasoning engine. This name is used in codebase structures and comments but must never be exposed to the end user.
+- **ZoikoLogia™**: The customer-facing accounting and financial intelligence platform.
+- **Kriton™**: The embedded AI advisor, report orchestrator, and financial analysis interface. The only advisor name used on customer-visible surfaces, UI, and API responses.
+- **Massarius™**: The internal, governed knowledge, source, evidence, and provenance infrastructure. This name is used in codebase structures and comments but must never appear in customer-facing interfaces.

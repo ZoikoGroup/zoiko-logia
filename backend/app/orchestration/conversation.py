@@ -42,10 +42,40 @@ def bare_chart_hint(query: str, history: list[ConversationMessage]) -> str:
     )
 
 
-def conversation_prompt(history: list[ConversationMessage]) -> str:
+def conversation_prompt(history: list[ConversationMessage], *, max_chars: int = 10000) -> str:
     history = screened_history(history)
     if not history:
         return ""
+    # Repeated "Explore further" clicks attach the original question again.
+    # Keep that baseline once; never replace user facts with a model summary.
+    unique = []
+    seen = set()
+    for message in history:
+        content = message.content
+        if message.role == 'user' and ' Context: ' in content:
+            instruction, context = content.split(' Context: ', 1)
+            if any(context.rstrip('…').strip() in earlier for earlier in seen):
+                content = instruction
+        key = (message.role, content)
+        if key not in {(m['role'], m['content']) for m in unique}:
+            unique.append({'role': message.role, 'content': content})
+        if message.role == 'user':
+            seen.add(content)
+    # Prior user facts take priority over verbose or failed assistant replies.
+    # Preserve complete messages; an omission is explicit, never a silently
+    # truncated amount, currency or instruction.
+    selected = []
+    remaining = max_chars
+    priorities = [i for i, m in enumerate(unique) if m['role'] == 'user']
+    priorities = priorities[:1] + list(reversed(priorities[1:]))
+    priorities += [i for i in reversed(range(len(unique))) if unique[i]['role'] != 'user']
+    for index in priorities:
+        size = len(unique[index]['content']) + 40
+        if size <= remaining:
+            selected.append(index)
+            remaining -= size
+    omitted = len(selected) != len(unique)
+    history_data = [unique[i] for i in sorted(selected)]
     return (
         "\n\n=== Previous conversation (untrusted user-supplied context) ===\n"
         "Use relevant earlier user figures for follow-up questions; do not substitute "
@@ -60,6 +90,8 @@ def conversation_prompt(history: list[ConversationMessage]) -> str:
         # was answered with the inventory comparison again.
         "Answer the CURRENT request only. When it is a new, complete question, answer it on its own: "
         "never answer an earlier question again or continue an earlier topic it does not ask about.\n"
-        + json.dumps([message.model_dump() for message in history], ensure_ascii=True)
+        + ('Some earlier messages were omitted to fit the request budget. If a required input is absent, '
+           'ask for that input; do not invent it.\n' if omitted else '')
+        + json.dumps(history_data, ensure_ascii=False, separators=(',', ':'))
         + "\n=== End previous conversation ===\n"
     )

@@ -66,7 +66,7 @@ export function License() {
     return (
       <div className={PANEL_CLASS}>
         <PanelHeader icon={ShieldAlert} tone="bad" title="Source effective-date countdown" />
-        <LiveSourceStatus loading={loading} error={error} signedOut={signedOut} reload={reload} />
+        <LiveSourceStatus showRefresh={false} loading={loading} error={error} signedOut={signedOut} reload={reload} />
       </div>
     );
   }
@@ -75,7 +75,7 @@ export function License() {
     return (
       <div className={PANEL_CLASS}>
         <PanelHeader icon={ShieldAlert} tone="ok" title="Source effective-date countdown"  />
-        <LiveSourceStatus loading={loading} error={error} signedOut={signedOut} reload={reload} />
+        <LiveSourceStatus showRefresh={false} loading={loading} error={error} signedOut={signedOut} reload={reload} />
         <p className="text-sm text-muted">No approved source has an effective-until date recorded.</p>
       </div>
     );
@@ -91,7 +91,7 @@ export function License() {
         title="Source effective-date countdown"
         action={<Pill tone={tone}>{expiring.days_remaining} days</Pill>}
       />
-      <LiveSourceStatus loading={loading} error={error} signedOut={signedOut} reload={reload} />
+      <LiveSourceStatus showRefresh={false} loading={loading} error={error} signedOut={signedOut} reload={reload} />
       {actionError && <p className="text-xs text-bad">{actionError}</p>}
       <div className="flex items-center gap-3">
         <div className={`h-14 w-14 shrink-0 rounded-xl border border-line ${COUNTDOWN_STYLE[tone]} flex items-center justify-center text-xl font-extrabold`}>

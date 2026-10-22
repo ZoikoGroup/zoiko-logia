@@ -7,6 +7,35 @@ import { ApiError } from "@/lib/api";
 import { useLiveData } from "@/components/overview/useLiveData";
 beforeEach(() => { auth.current = {session:{user:{id:"overview-a"}},profile:{tenant_id:"t1",role:"Admin"},loading:false}; });
 describe("live overview data", () => {
+  it("reuses recently loaded data on return without another request or spinner", async () => {
+    const first = renderHook(() => useLiveData("return-to-page", vi.fn().mockResolvedValue({ count: 12 })));
+    await waitFor(() => expect(first.result.current.data).toEqual({ count: 12 }));
+    first.unmount();
+    let resolve!: (value: { count: number }) => void;
+    const fetcher = vi.fn().mockImplementation(() => new Promise(r => { resolve = r; }));
+    const second = renderHook(() => useLiveData("return-to-page", fetcher));
+    expect(second.result.current.data).toEqual({ count: 12 });
+    expect(second.result.current.loading).toBe(false);
+    expect(fetcher).not.toHaveBeenCalled();
+    act(() => second.result.current.reload());
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await act(async () => resolve({ count: 15 }));
+    await waitFor(() => expect(second.result.current.data).toEqual({ count: 15 }));
+  });
+  it("revalidates expired data in the background on return", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    try {
+      const first = renderHook(() => useLiveData("expired-page", vi.fn().mockResolvedValue({ count: 1 })));
+      await waitFor(() => expect(first.result.current.data).toEqual({ count: 1 }));
+      first.unmount();
+      clock.mockReturnValue(32_000);
+      const fetcher = vi.fn().mockResolvedValue({ count: 2 });
+      const second = renderHook(() => useLiveData("expired-page", fetcher));
+      expect(second.result.current.data).toEqual({ count: 1 });
+      await waitFor(() => expect(second.result.current.data).toEqual({ count: 2 }));
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    } finally { clock.mockRestore(); }
+  });
   it("refetches when filters change without displaying the previous scope", async () => {
     const first = vi.fn().mockResolvedValue({count:12});
     let resolve: (value:{count:number}) => void = () => {};

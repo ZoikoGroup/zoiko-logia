@@ -3,6 +3,11 @@ import { getCurrentAccessToken, setCurrentAccessToken } from "@/lib/session-toke
 
 let pendingRefresh: Promise<string> | null = null;
 
+/** A request is already handling the auth event emitted by its own refresh. */
+export function isSessionRefreshInProgress(): boolean {
+  return pendingRefresh !== null;
+}
+
 async function refreshToken(): Promise<string> {
   if (!pendingRefresh) {
     pendingRefresh = supabase.auth.refreshSession().then(({ data, error }) => {

@@ -20,12 +20,12 @@ const DEFAULT_VIEW_KEY = (type: string) => `kriton:chart-pref:default-view:${typ
 
 function readBool(key: string): boolean {
   if (typeof window === "undefined") return false;
-  return window.localStorage.getItem(key) === "1";
+  try { return window.localStorage?.getItem(key) === "1"; } catch { return false; }
 }
 
 function readString(key: string): string | null {
   if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(key);
+  try { return window.localStorage?.getItem(key) ?? null; } catch { return null; }
 }
 
 export function usePreferTable(type: VisualizationSpec["type"]) {
@@ -33,7 +33,7 @@ export function usePreferTable(type: VisualizationSpec["type"]) {
   const setPreferTable = useCallback((value: boolean) => {
     setPreferTableState(value);
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(PREFER_TABLE_KEY(type), value ? "1" : "0");
+      try { window.localStorage?.setItem(PREFER_TABLE_KEY(type), value ? "1" : "0"); } catch { /* Session state still works when storage is blocked. */ }
     }
   }, [type]);
   return [preferTable, setPreferTable] as const;
@@ -44,7 +44,7 @@ export function useDefaultView(type: VisualizationSpec["type"]) {
   const setDefaultView = useCallback((value: string) => {
     setDefaultViewState(value);
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(DEFAULT_VIEW_KEY(type), value);
+      try { window.localStorage?.setItem(DEFAULT_VIEW_KEY(type), value); } catch { /* Session state still works when storage is blocked. */ }
     }
   }, [type]);
   return [defaultView, setDefaultView] as const;

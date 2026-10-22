@@ -1,0 +1,114 @@
+{
+  "base_url": "http://127.0.0.1:8010",
+  "commit": "1984fa9f78651f0830e3514c5f14b9695a884e30",
+  "working_tree_source_hash": "49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447",
+  "runtime_source_matches_working_tree": true,
+  "records": [
+    {
+      "sample": 1,
+      "path": "/health/version",
+      "status": 200,
+      "latency_ms": 3.74,
+      "body": {
+        "revision": "development",
+        "commit": "1984fa9f78651f0830e3514c5f14b9695a884e30",
+        "source_hash": "49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447",
+        "build_id": "development:49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447",
+        "config_hash": "362dc01d92eb358c509cf89a593759c1c927b8e2a42bd0bb2ca49f149d2eea42",
+        "captured_at": "2026-10-20T08:52:29.720559+00:00"
+      },
+      "build_id": "development:49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447"
+    },
+    {
+      "sample": 1,
+      "path": "/health/live",
+      "status": 200,
+      "latency_ms": 1.031,
+      "body": {
+        "status": "alive"
+      },
+      "build_id": "development:49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447"
+    },
+    {
+      "sample": 1,
+      "path": "/health/ready",
+      "status": 200,
+      "latency_ms": 1149.234,
+      "body": {
+        "status": "ready"
+      },
+      "build_id": "development:49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447"
+    },
+    {
+      "sample": 2,
+      "path": "/health/version",
+      "status": 200,
+      "latency_ms": 1.637,
+      "body": {
+        "revision": "development",
+        "commit": "1984fa9f78651f0830e3514c5f14b9695a884e30",
+        "source_hash": "49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447",
+        "build_id": "development:49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447",
+        "config_hash": "362dc01d92eb358c509cf89a593759c1c927b8e2a42bd0bb2ca49f149d2eea42",
+        "captured_at": "2026-10-20T08:52:29.720559+00:00"
+      },
+      "build_id": "development:49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447"
+    },
+    {
+      "sample": 2,
+      "path": "/health/live",
+      "status": 200,
+      "latency_ms": 0.986,
+      "body": {
+        "status": "alive"
+      },
+      "build_id": "development:49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447"
+    },
+    {
+      "sample": 2,
+      "path": "/health/ready",
+      "status": 200,
+      "latency_ms": 974.872,
+      "body": {
+        "status": "ready"
+      },
+      "build_id": "development:49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447"
+    },
+    {
+      "sample": 3,
+      "path": "/health/version",
+      "status": 200,
+      "latency_ms": 1.878,
+      "body": {
+        "revision": "development",
+        "commit": "1984fa9f78651f0830e3514c5f14b9695a884e30",
+        "source_hash": "49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447",
+        "build_id": "development:49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447",
+        "config_hash": "362dc01d92eb358c509cf89a593759c1c927b8e2a42bd0bb2ca49f149d2eea42",
+        "captured_at": "2026-10-20T08:52:29.720559+00:00"
+      },
+      "build_id": "development:49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447"
+    },
+    {
+      "sample": 3,
+      "path": "/health/live",
+      "status": 200,
+      "latency_ms": 1.806,
+      "body": {
+        "status": "alive"
+      },
+      "build_id": "development:49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447"
+    },
+    {
+      "sample": 3,
+      "path": "/health/ready",
+      "status": 200,
+      "latency_ms": 1236.14,
+      "body": {
+        "status": "ready"
+      },
+      "build_id": "development:49cdee0f61f348407961638b04e1f8efb40100999c2cd808c79953809815e447"
+    }
+  ],
+  "provider_calls": 0
+}

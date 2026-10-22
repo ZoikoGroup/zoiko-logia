@@ -137,3 +137,46 @@ def test_startup_fingerprint_is_stable_and_tracks_the_schema():
 
     assert main._startup_fingerprint() == main._startup_fingerprint()
     assert len(main._startup_fingerprint()) == 64
+
+
+def test_local_missing_memory_table_uses_legacy_history_without_skipping_other_policies():
+    from app.main import _check_security_policy_rows
+    expected = {'sources': 'tenant_isolation_sources',
+                'conversation_turns': 'tenant_isolation_conversation_turns'}
+    rows = [('sources', True, True, 'tenant_isolation_sources')]
+    _check_security_policy_rows(rows, expected, allow_unmigrated_memory=True)
+    assert 'conversation_turns' in expected  # caller's requirements stay intact
+    with pytest.raises(RuntimeError, match='sources'):
+        _check_security_policy_rows([], expected, allow_unmigrated_memory=True)
+
+
+def test_production_requires_memory_migration():
+    from app.main import _check_security_policy_rows
+    with pytest.raises(RuntimeError, match='conversation_turns'):
+        _check_security_policy_rows([], {'conversation_turns': 'tenant_isolation_conversation_turns'})
+
+
+@pytest.mark.parametrize('enabled,forced,policy', [
+    (False, True, 'tenant_isolation_conversation_turns'),
+    (True, False, 'tenant_isolation_conversation_turns'),
+    (True, True, None),
+    (True, True, 'incorrect_policy'),
+])
+def test_local_existing_memory_table_must_be_secured(enabled, forced, policy):
+    from app.main import _check_security_policy_rows
+    with pytest.raises(RuntimeError, match='conversation_turns'):
+        _check_security_policy_rows(
+            [('conversation_turns', enabled, forced, policy)],
+            {'conversation_turns': 'tenant_isolation_conversation_turns'},
+            allow_unmigrated_memory=True,
+        )
+
+
+def test_secured_memory_table_passes_in_every_mode():
+    from app.main import _check_security_policy_rows
+    for local_mode in (False, True):
+        _check_security_policy_rows(
+            [('conversation_turns', True, True, 'tenant_isolation_conversation_turns')],
+            {'conversation_turns': 'tenant_isolation_conversation_turns'},
+            allow_unmigrated_memory=local_mode,
+        )

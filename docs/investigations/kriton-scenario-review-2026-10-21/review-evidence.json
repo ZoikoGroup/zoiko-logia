@@ -1,0 +1,36 @@
+{
+  "scope": "Read-only code probes; no model/provider calls; no implementation changes",
+  "source_sha256": "2ccd512dfc47df3aeb9266356057342a5fad1daf8708d4332e6bde2faea0da34",
+  "probes": {
+    "bank": {
+      "status": "not_matched",
+      "formula_ids": [],
+      "message": ""
+    },
+    "break_even": {
+      "status": "clarification_required",
+      "formula_ids": [
+        "break_even_units"
+      ],
+      "message": "Please provide the following calculation input(s): selling price."
+    },
+    "refund": {
+      "status": "not_matched",
+      "formula_ids": [],
+      "message": ""
+    },
+    "loan": {
+      "status": "not_matched",
+      "formula_ids": [],
+      "message": ""
+    },
+    "quarter_target": [
+      "Q",
+      1.0,
+      80000.0,
+      ""
+    ],
+    "income_tax_missing_input_guard": null,
+    "bank_false_attribution_minimal_probe": "Not reproduced with a simplified table; historical guard event/request trace is still needed."
+  }
+}

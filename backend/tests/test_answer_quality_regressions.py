@@ -9,7 +9,10 @@ from app.domains.calculations.schemas import LiveObservation
 
 
 def reply(text="", calls=None):
-    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=calls))])
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=calls))],
+        usage=SimpleNamespace(total_tokens=110),
+    )
 
 
 def call(name, args):

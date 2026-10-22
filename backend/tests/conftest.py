@@ -2,6 +2,27 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _block_live_model_transport(monkeypatch):
+    """Ordinary tests cannot spend model tokens using a developer's key."""
+    import os
+    if os.getenv("RUN_LIVE_LLM_TESTS") == "1":
+        return
+    for name in ("GROQ_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+                 "AZURE_OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    import groq
+
+    def blocked(*args, **kwargs):
+        pytest.fail("Live model transport is disabled in offline tests; mock the model response")
+
+    async def blocked_async(*args, **kwargs):
+        blocked()
+
+    monkeypatch.setattr(groq.Groq, "request", blocked)
+    monkeypatch.setattr(groq.AsyncGroq, "request", blocked_async)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_external_services(monkeypatch):
     # app/core/config.py loads backend/.env into os.environ, so a developer's
     # real Tavily key would otherwise send test searches to the paid API.

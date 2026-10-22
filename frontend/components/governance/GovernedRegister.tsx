@@ -30,7 +30,7 @@ export function GovernedRegister({ title, inspector, records, metrics, doctrine,
   const pageCount = Math.max(1, Math.ceil(sorted.length / 10));
   const currentPage = Math.min(page, pageCount);
   const visible = sorted.slice((currentPage - 1) * 10, currentPage * 10);
-  const selected = filtered.find(r => r.id === selectedId) ?? visible[0];
+  const selected = visible.find(r => r.id === selectedId) ?? visible[0];
   const change = () => setPage(1);
   const reset = () => { setQuery(""); setCategory("All"); setState("All states"); setScope("All scopes"); setSort("Default"); change(); };
   const flagged = records.filter(r => /block|fail|restrict|pending|review|partial/i.test(r.state));
@@ -60,7 +60,7 @@ export function GovernedRegister({ title, inspector, records, metrics, doctrine,
         </> : <NoItems>Select an available record to inspect it.</NoItems>}
       </aside>
     </div>
-    <div className="grid gap-3 lg:grid-cols-3"><OverviewPanel title="Priority governance watch" subtitle="Records requiring further attention.">{flagged.length ? flagged.slice(0, 4).map(r => <button key={r.id} onClick={() => { reset(); setSelectedId(r.id); }} className="flex w-full items-start justify-between gap-2 border-b border-line py-3 text-left last:border-0"><span className="text-[11px] font-semibold text-ink">{r.title}</span><Status>{r.state}</Status></button>) : <NoItems>No pending or blocked states reported in the loaded register.</NoItems>}</OverviewPanel>
+    <div className="grid gap-3 lg:grid-cols-3"><OverviewPanel title="Priority governance watch" subtitle="Records requiring further attention.">{flagged.length ? flagged.slice(0, 4).map(r => <button key={r.id} onClick={() => { reset(); setPage(Math.floor(records.findIndex(record => record.id === r.id) / 10) + 1); setSelectedId(r.id); setTab(tabs[0]); }} className="flex w-full items-start justify-between gap-2 border-b border-line py-3 text-left last:border-0"><span className="text-[11px] font-semibold text-ink">{r.title}</span><Status>{r.state}</Status></button>) : <NoItems>No pending or blocked states reported in the loaded register.</NoItems>}</OverviewPanel>
       <OverviewPanel title={footerTitle} subtitle="Independent checks before governed release."><div className="my-5 flex justify-between gap-1">{["Scope", "Integrity", "Rights", "Review", "Release"].map((s, i) => <div key={s} className="text-center"><span className="mx-auto flex h-7 w-7 items-center justify-center rounded-full bg-soft text-xs text-brand">{i + 1}</span><span className="mt-2 block text-[9px] text-muted">{s}</span></div>)}</div><p className="text-[10px] leading-4 text-muted">Required workflow stages; completion is not asserted without recorded gate evidence.</p></OverviewPanel>
       <OverviewPanel title="Record evidence & traceability" subtitle="Trace selected metadata to its recorded source.">{selected ? <><p className="flex items-center gap-2 text-xs font-semibold text-ink"><FileText size={14} />{selected.title}</p><Evidence lines={selected.history?.length ? selected.history : selected.evidence} /></> : <NoItems>No record selected.</NoItems>}</OverviewPanel>
     </div>{children}

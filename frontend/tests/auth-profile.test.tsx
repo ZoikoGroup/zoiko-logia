@@ -5,10 +5,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // One signed-in session; /auth/me is scripted per test.
 const SESSION = { access_token: "tok", user: { id: "u1" } };
 const me = vi.hoisted(() => ({ results: [] as (unknown | Error)[], calls: 0 }));
+const authEvents = vi.hoisted(() => ({
+  refreshing: false,
+  listener: null as null | ((event: string, session: typeof SESSION) => void),
+}));
+vi.mock("@/lib/auth-fetch", () => ({ isSessionRefreshInProgress: () => authEvents.refreshing }));
 vi.mock("@/lib/supabase", () => ({
   supabase: { auth: {
     getSession: () => Promise.resolve({ data: { session: SESSION } }),
-    onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
+    onAuthStateChange: (listener: typeof authEvents.listener) => {
+      authEvents.listener = listener;
+      return { data: { subscription: { unsubscribe: () => {} } } };
+    },
   } },
 }));
 vi.mock("@/services/auth.service", () => ({ signOut: () => Promise.resolve() }));
@@ -39,8 +47,19 @@ async function mount() {
 }
 
 describe("Profile loading", () => {
-  beforeEach(() => { vi.useFakeTimers(); me.calls = 0; localStorage.clear(); });
-  afterEach(() => vi.useRealTimers());
+  beforeEach(() => {
+    vi.useFakeTimers();
+    me.calls = 0;
+    authEvents.refreshing = false;
+    const storage = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+      clear: () => storage.clear(),
+    });
+  });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
   it("retries a transient failure instead of dropping to Learner", async () => {
     me.results = [new TypeError("Failed to fetch"), ADMIN];
@@ -69,5 +88,26 @@ describe("Profile loading", () => {
     me.results = [new TypeError("Failed to fetch")];
     await mount();
     expect(screen.getByText("no profile")).toBeInTheDocument();
+  });
+
+  it("does not reload a refused profile for a request's own token refresh", async () => {
+    me.results = [new ApiError(401, "Unauthorized")];
+    await mount();
+    authEvents.refreshing = true;
+    await act(async () => {
+      authEvents.listener?.("TOKEN_REFRESHED", { ...SESSION, access_token: "renewed" });
+    });
+    expect(me.calls).toBe(1);
+    expect(screen.getByText("no profile")).toBeInTheDocument();
+  });
+
+  it("reloads a missing profile after an independent provisioning refresh", async () => {
+    me.results = [new ApiError(401, "Unauthorized"), ADMIN];
+    await mount();
+    await act(async () => {
+      authEvents.listener?.("TOKEN_REFRESHED", { ...SESSION, access_token: "provisioned" });
+    });
+    expect(me.calls).toBe(2);
+    expect(screen.getByText("Admin")).toBeInTheDocument();
   });
 });

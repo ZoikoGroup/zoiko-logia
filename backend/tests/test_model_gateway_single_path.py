@@ -68,7 +68,7 @@ async def test_protected_data_is_redacted_before_it_is_sent(monkeypatch):
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="LOW"))],
                                    usage=SimpleNamespace(prompt_tokens=5, completion_tokens=1, total_tokens=6))
 
-    monkeypatch.setattr(gateway, "AsyncGroq", lambda api_key: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())))
+    monkeypatch.setattr(gateway, "AsyncGroq", lambda api_key, **options: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())))
     monkeypatch.setenv("GROQ_API_KEY", "test")
     result = await gateway.complete_auxiliary(
         purpose="risk_classification", model="m", system="s",

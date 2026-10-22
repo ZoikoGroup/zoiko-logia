@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ApiError, describeDetail } from "@/lib/api";
-import { conversationHistory, followUpSubject, splitQuestions } from "@/lib/kriton-conversation";
+import { conversationHistory, followUpContext, followUpSubject, splitQuestions } from "@/lib/kriton-conversation";
 import type { Turn } from "@/lib/ask-kriton-storage";
 
 function answered(query: string, text: string): Turn {
@@ -34,6 +34,18 @@ describe("API error text", () => {
 });
 
 describe("follow-up context", () => {
+  it("preserves the complete multipart request when submitting a follow-up", () => {
+    const original = "Calculate gross profit from revenue of £800,000 and costs of £520,000. "
+      + "Retrieve the latest USD/GBP reference rate and its observation date. "
+      + "Retrieve the price of fictional ticker ZZZFICTIONAL123. "
+      + "Explain each limitation clearly. ".repeat(15)
+      + "Complete every possible part without inventing missing market data.";
+    expect(original.length).toBeGreaterThan(500);
+    expect(followUpContext(original)).toBe(original);
+    expect(followUpContext(`Explain this with an example. Context: ${original}`)).toBe(original);
+    expect(followUpContext(original)).toContain("without inventing missing market data.");
+  });
+
   it("keeps the original subject instead of nesting Context: layers", () => {
     const first = `Explain this with a grounded example. Context: ${followUpSubject("the relationship between IFRS 18 and IAS 1")}`;
     const second = `Summarize this as a checklist. Context: ${followUpSubject(first)}`;

@@ -101,7 +101,7 @@ export function SourceLicensingPanel() {
 
   return (
     <>
-      <LiveSourceStatus loading={loading} error={error} signedOut={signedOut} reload={reload} />
+      <LiveSourceStatus showRefresh={false} loading={loading} error={error} signedOut={signedOut} reload={reload} />
 
       <div className="grid grid-cols-1 xl:grid-cols-[1.35fr_.9fr] gap-6 min-w-0 items-start">
         <div className="min-w-0 space-y-4">

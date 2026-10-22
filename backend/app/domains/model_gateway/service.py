@@ -15,9 +15,11 @@ from app.domains.model_gateway.providers.mock_adapter import MockProviderAdapter
 from app.domains.model_gateway.providers.groq_adapter import (
     _DEFAULT_MODEL as GROQ_DEFAULT_MODEL,
     KRITON_SYSTEM_PROMPT,
+    KRITON_AGENT_SYSTEM_PROMPT,
     GroqAdapter,
 )
 from app.domains.model_gateway.auxiliary import approved_providers
+from app.domains.model_gateway.errors import ProviderRequestRejected
 from app.domains.model_gateway.tool_registry import ToolRegistry, build_default_registry
 from app.domains.model_gateway.providers.google_adapter import GeminiAdapter
 from app.domains.model_gateway.providers.openai_adapter import OpenAIAdapter
@@ -202,11 +204,21 @@ async def run_grounded_completion(input_text: str, model: str | None = None) -> 
     raising). Uses the preferred provider with Groq fallback."""
     try:
         return await _complete_with_fallback(input_text, model)
+    except ProviderRequestRejected:
+        raise
     except RuntimeError:
         # The gateway raises once every provider has failed; its callers that
         # hand text to users translate that into the one clean, generic
         # message (never the raw provider "[Error…]" string).
         return _PROVIDER_FAILURE_MESSAGE
+
+
+async def run_optional_completion(input_text: str, model: str | None = None) -> str:
+    """A failed repair must leave the existing answer for verification."""
+    try:
+        return await run_grounded_completion(input_text, model)
+    except ProviderRequestRejected:
+        return ''
 
 
 class AgentUnavailable(RuntimeError):
@@ -265,9 +277,13 @@ async def run_agentic_completion(
     authorize=None,
     request_id: str = "",
     planned_tools: tuple[str, ...] = (),
+    stated_facts: str | None = None,
+    figure_evidence: str | None = None,
     resume_key: str = "",
     require_evidence: bool = False,
+    available_tools: tuple[str, ...] | None = None,
     max_seconds: float | None = None,
+    extra_steps: int = 0,
 ) -> AgentOutcome:
     """Answer through the governed tool-calling loop. Raises on provider
     failure, AgentUnavailable when Groq isn't usable, and RuntimeError on an
@@ -278,18 +294,26 @@ async def run_agentic_completion(
     if adapter.client is None:
         raise AgentUnavailable("GROQ_API_KEY is not configured")
     settings = get_settings()
+    client = adapter.client
+    if hasattr(client, "with_options"):
+        # Agent retries are governed by its shared generation budget.
+        client = client.with_options(max_retries=0)
     outcome = await run_agent(
-        adapter.client,
+        client,
         model=model or GROQ_DEFAULT_MODEL,
-        system_prompt=KRITON_SYSTEM_PROMPT,
+        system_prompt=KRITON_AGENT_SYSTEM_PROMPT,
         user_prompt=input_text,
         registry=_tool_registry(),
         granted_permissions=granted_permissions,
         limits=AgentLimits(
-            max_steps=settings.AGENT_MAX_STEPS,
-            max_tool_calls=settings.AGENT_MAX_TOOL_CALLS,
+            # A long request with many deliverables may use a few more steps;
+            # the time budget (max_seconds) is unchanged, so latency stays capped.
+            max_steps=settings.AGENT_MAX_STEPS + extra_steps,
+            max_tool_calls=settings.AGENT_MAX_TOOL_CALLS + (extra_steps + 2 if extra_steps else 0),
             max_seconds=min(settings.AGENT_MAX_SECONDS, max_seconds) if max_seconds else settings.AGENT_MAX_SECONDS,
             max_total_tokens=settings.AGENT_MAX_TOKENS,
+            max_completion_tokens=settings.AGENT_MAX_COMPLETION_TOKENS,
+            max_request_tokens=settings.AGENT_MAX_REQUEST_TOKENS,
             max_cost_usd=settings.AGENT_MAX_COST_USD,
             price_per_million_tokens=settings.MODEL_PRICE_PER_MILLION_TOKENS,
         ),
@@ -301,8 +325,11 @@ async def run_agentic_completion(
         authorize=authorize,
         request_id=request_id,
         planned_tools=planned_tools,
+        stated_facts=stated_facts,
+        figure_evidence=figure_evidence,
         resume_key=resume_key,
         require_evidence=require_evidence,
+        available_tools=available_tools,
     )
     if not outcome.text.strip():
         raise RuntimeError("Agent produced an empty answer")
@@ -335,6 +362,8 @@ async def run_test_prompt(
     # _complete_with_fallback.
     try:
         output = await _complete_with_fallback(full_prompt, model)
+    except ProviderRequestRejected:
+        raise
     except RuntimeError:
         # Every provider failed — the prompt-studio test run surfaces the
         # clean user-safe message, not the raw provider error.

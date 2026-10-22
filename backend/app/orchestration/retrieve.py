@@ -15,9 +15,10 @@ from sqlalchemy import bindparam, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domains.source_library.embeddings import embed_query, vector_literal
+from app.orchestration.passage_cache import passage_cache
 
 from app.domains.source_library.licensing import SourceUseContext, can_use_many, can_use_many_operations
-from app.domains.source_library.models import Source, SourcePassage, SourceRelationship, SourceVersion
+from app.domains.source_library.models import Source, SourceRelationship, SourceVersion
 from app.orchestration.dbnomics import countries_in_query
 from app.orchestration.procedures import is_other_procedure
 from app.orchestration.ranking import bm25, rerank, diversify
@@ -314,14 +315,9 @@ async def build_source_bundle(
     # Only now is source text loaded: every version in this query has already
     # passed tenant, status, date, framework, jurisdiction and retrieval-right checks.
     version_ids = [version.id for _, version in eligible_rows]
-    passages: list[SourcePassage] = []
-    if version_ids:
-        result = await db.execute(
-            select(SourcePassage)
-            .where(SourcePassage.source_version_id.in_(version_ids))
-            .order_by(SourcePassage.source_version_id, SourcePassage.sequence)
-        )
-        passages = list(result.scalars().all())
+    # Text of the eligible versions only, from the per-process passage cache
+    # when a fresh manifest (read under this request's RLS) shows it unchanged.
+    passages = await passage_cache.load(db, tenant_id=tenant_id, version_ids=version_ids)
 
     version_to_source = {version.id: source for source, version in eligible_rows}
     # Evidence about a different procedure on the same tax (a VAT refund

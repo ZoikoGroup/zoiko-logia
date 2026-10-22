@@ -56,6 +56,9 @@ _EXPLICIT_CHART_HINTS = re.compile(
     r"(?:line|bar|column)\s*(?:chart|graph|plot)|"
     # Not "chart of accounts": an accounting term, not a chart request.
     r"chart (?:of|for)(?!\s+accounts?\b)|plot (?:this|it|the|a)|give me a chart|only the chart|show only the chart|"
+    # "chart"/"graph" as verbs, like "plot": "…for both years and chart the
+    # change" drew nothing (int-multistep-ratio-chart).
+    r"(?:chart|graph) (?:the|this|it|them|these|those)\b(?!\s+of\s+accounts?\b)|"
     r"plain line|dashed line|dotted line|dash[ -]?dot line|value[ -]?labell?ed line|"
     r"area (chart )?with markers?|area \+ markers?|vertical bar|horizontal bar|"
     r"clustered bar|diverging bar|waterfall chart|scatter\s*plot|scatter chart|"
