@@ -31,6 +31,10 @@ def pipeline(monkeypatch):
     monkeypatch.setattr(service, "web_search_each", AsyncMock(return_value=[]))
     monkeypatch.setattr(service, "select_prompt", AsyncMock(return_value=SimpleNamespace(
         id="prompt-test", mode="agent", template="{query}", version="1", model_hint=None)))
+    # The reported case: a question about the user's own figures, rated HIGH.
+    # Pinned so the test never calls the live risk classifier (CI has no key).
+    monkeypatch.setattr(service, "classify_risk", AsyncMock(return_value="HIGH"))
+    monkeypatch.setattr(service, "classify_risk_gemini", AsyncMock(return_value=None))
     monkeypatch.setattr(service.model_gateway_service, "agent_mode_active", lambda: True)
     monkeypatch.setattr(service.model_gateway_service, "run_agentic_completion", AsyncMock(return_value=AgentOutcome(text=ANSWER)))
     monkeypatch.setattr(service.model_gateway_service, "run_grounded_completion", AsyncMock(return_value=""))
