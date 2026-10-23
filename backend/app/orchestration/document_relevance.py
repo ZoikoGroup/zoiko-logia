@@ -56,6 +56,41 @@ def _matches(wanted: set[str], vocabulary: set[str]) -> int:
         len(known) >= 5 and SequenceMatcher(None, word, known).ratio() >= 0.8 for known in vocabulary)))
 
 
+# "Summarise the document", "explain the above table", "analyse this".
+_DOCUMENT_REFERENCE = re.compile(
+    r"\b(?:document|doc|file|attach\w*|upload\w*|spreadsheet|workbook|sheet|tab|table|rows?|columns?|"
+    r"above|previous|earlier|same\s+data)\b"
+    r"|\b(?:summari[sz]e|analy[sz]e|review|check|explain|describe|translate)\s+(?:this|it|that|them|these)\b",
+    re.IGNORECASE)
+# Question words that say nothing about a file's content.
+_GENERAL = frozenset((
+    "what", "explain", "about", "define", "definition", "meaning", "mean", "difference", "between", "should",
+    "would", "could", "where", "when", "there", "their", "under", "current", "latest", "rule", "rules", "tell",
+    "know", "does", "work", "works", "example", "examples", "today", "news", "india", "united", "kingdom",
+    # A bare follow-up to the previous answer ("Why?", "Explain more").
+    "why", "how", "more", "again", "yes", "okay", "thanks", "continue", "detail", "details", "elaborate",
+))
+
+
+def question_is_about_documents(query: str, sources: list[WebSource]) -> bool:
+    """Whether a follow-up with no new upload is about the chat's files. One
+    that is not ("What is IPR?" after a VAT file) is answered as a new
+    question, not from the files. When unsure, the files are kept."""
+    if _DOCUMENT_REFERENCE.search(query or ""):
+        return True
+    wanted = _terms(query) - _GENERAL
+    if not wanted:
+        return True      # "why?", "and the total?": nothing new to ask about
+    by_file: dict[str, list[WebSource]] = {}
+    for source in sources:
+        by_file.setdefault(source.source_id or _file(source), []).append(source)
+    if any(_matches(wanted, _vocabulary(group)) for group in by_file.values()):
+        return True
+    # A name or term in the file's rows: "What did Harbour Kitchens pay?"
+    content = " ".join((source.snippet or "").lower() for source in sources)
+    return any(len(word) >= 4 and word in content for word in wanted)
+
+
 def documents_for_question(query: str, sources: list[WebSource]) -> set[str] | None:
     """The source_ids of the files the question is about, or None to keep
     every file (one file, no file matching, or several matching equally)."""

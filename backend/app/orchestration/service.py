@@ -2114,11 +2114,31 @@ async def ask_kriton(
     if not request.document_ids and document_sources:
         # A follow-up restores every file attached earlier in the chat; only
         # the ones the question is about are used (document_relevance.py).
-        from app.orchestration.document_relevance import documents_for_question
+        from app.orchestration.document_relevance import documents_for_question, question_is_about_documents
         relevant = documents_for_question(request.query, document_sources)
-        if relevant:
+        if request.source_scope != "DOCUMENTS_ONLY" and not (
+                _looks_like_contextual_follow_up(request.query)
+                or question_is_about_documents(request.query, document_sources)):
+            # "What is IPR?" in a chat with a VAT file was answered from the
+            # file ("the sources provided do not state this"). An unrelated
+            # question is answered on its own; the file stays in the chat
+            # for the next question that is about it.
+            document_sources, resolved_document_ids = [], []
+        elif relevant:
             document_sources = [s for s in document_sources if s.source_id in relevant]
             resolved_document_ids = [d for d in resolved_document_ids if d in relevant]
+    # A diagram asked of an attached file is drawn from the file's own steps
+    # and names (illustrative_diagram.document_query), never from general
+    # practice; when the file describes none, the answer says so.
+    document_diagram: bool | None = None
+    if document_sources and not illustrative_diagram and needs_illustration(request.query):
+        from app.orchestration.illustrative_diagram import document_query
+        drawn = await document_query(
+            request.query, "\n".join(s.snippet or "" for s in document_sources),
+            model_gateway_service.run_grounded_completion, _MODEL_PROVIDER_FAILURE)
+        document_diagram = bool(drawn)
+        if drawn:
+            request = request.model_copy(update={"query": drawn})
     await audit_document_retrieval(
         db,
         query_id=query_id,
@@ -4386,6 +4406,9 @@ async def ask_kriton(
         from app.orchestration.illustrative_diagram import illustration_wording
         final_text = illustration_wording(final_text)
         limitations.insert(0, ILLUSTRATION_NOTE)
+    if document_diagram is not None:
+        from app.orchestration.illustrative_diagram import DOCUMENT_NOTE, NOT_IN_DOCUMENT_NOTE
+        limitations.insert(0, DOCUMENT_NOTE if document_diagram else NOT_IN_DOCUMENT_NOTE)
     answer = ComposedAnswer(
         text=final_text,
         citations=rag_citations,
