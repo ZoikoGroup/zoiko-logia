@@ -94,6 +94,63 @@ async def illustrated_query(query: str, complete: Callable[[str], Awaitable[str]
         reply = (await complete(_PROMPT.format(label=label, format=form, question=query))) or ""
     except Exception:  # noqa: BLE001 — no illustration is the old behaviour
         return ""
+    return _with_structure(query, kind, reply, provider_failure)
+
+
+# A diagram asked of an attached file is drawn from the file, never from
+# general practice: with a file attached nothing was drawn at all, and a
+# standard process beside the user's own file would read as theirs.
+DOCUMENT_NOTE = ("Diagram drawn from the steps and names in your attached file. "
+                 "Check it against the file before relying on it.")
+NOT_IN_DOCUMENT_NOTE = ("No diagram was drawn: the attached file does not describe the steps or structure this "
+                        "diagram needs. Type the steps in your question to draw them.")
+MAX_DOCUMENT_CHARS = 6000
+_NONE = "NONE"
+_DOCUMENT_PROMPT = (
+    "You are Kriton, an accounting, audit, tax and finance assistant. Using ONLY the document below, write the "
+    "{label} requested, in exactly this format: {format}.\n"
+    "Rules: take every step, role, entity or name from the document's own words; add nothing the document does "
+    "not state; plain words only; no colons except where the format uses them; no quotes, brackets (unless the "
+    "format uses them), semicolons (unless the format uses them), numbers, amounts or dates; each label under "
+    "40 characters; between 3 and 12 steps or elements. If the document does not describe this, reply {none}. "
+    "Reply with the structure only, on one line.\n\n"
+    "Request: {question}\n\nDocument:\n{document}"
+)
+# A label is from the document when one of its words is; most must be.
+_MIN_GROUNDED_SHARE = 0.8
+
+
+def _grounded(payload: str, document: str) -> bool:
+    text = document.lower()
+    labels = [part for part in re.split(r"->|;|,|:|\(|\)", payload) if re.search(r"[A-Za-z]{4,}", part)]
+    if not labels:
+        return False
+    found = sum(any(word in text for word in re.findall(r"[a-z]{4,}", label.lower())) for label in labels)
+    return found / len(labels) >= _MIN_GROUNDED_SHARE
+
+
+async def document_query(query: str, document: str, complete: Callable[[str], Awaitable[str]],
+                         provider_failure: str) -> str:
+    """The question with the structure the attached file describes appended in
+    the typed form, or "" when the file describes none, or the reply does not
+    parse completely or is not taken from the file."""
+    kind = requested_kind(query)
+    if kind is None or not (document or "").strip():
+        return ""
+    label, form = _FORMATS[kind]
+    document = document[:MAX_DOCUMENT_CHARS]
+    try:
+        reply = (await complete(_DOCUMENT_PROMPT.format(
+            label=label, format=form, none=_NONE, question=query, document=document))) or ""
+    except Exception:  # noqa: BLE001 — no diagram is the old behaviour
+        return ""
+    if reply.strip().strip("`.").upper() == _NONE or not _grounded(reply, document):
+        return ""
+    return _with_structure(query, kind, reply, provider_failure)
+
+
+def _with_structure(query: str, kind: str, reply: str, provider_failure: str) -> str:
+    label, _ = _FORMATS[kind]
     payload = " ".join(reply.strip().strip("`").split())
     if not payload or provider_failure in payload or len(payload) > MAX_PAYLOAD_CHARS or re.search(r"\d", payload):
         return ""

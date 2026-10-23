@@ -1384,7 +1384,11 @@ def _calculate_from_query(query: str) -> CalculationResult:
                 formulas.append("profit_margin")
             return _success(formulas, inputs, outputs, steps)
 
-    if re.search(r"\bvat\b", q, re.I) and re.search(r"\b(calculate|compute|gross total|vat amount|reverse vat)\b", q, re.I):
+    # A VAT calculation needs an amount: ten concept questions in one message
+    # ("How does VAT work in the UK? … How do businesses calculate corporate
+    # income tax?") were asked for a VAT rate.
+    if (re.search(r"\bvat\b", q, re.I) and re.search(r"\b(calculate|compute|gross total|vat amount|reverse vat)\b", q, re.I)
+            and re.search(r"\d", q)):
         net = _input(q, "net_amount")
         gross = _input(q, "gross_amount")
         rate = _input(q, "vat_rate", kind="percentage", percentage=True) or _vat_rate_at(q)

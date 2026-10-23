@@ -1087,6 +1087,21 @@ def _dated_fx_question(query: str) -> bool:
     return len(_find_currencies(query)) >= 2 and requested_rate_date(query) is not None
 
 
+# Official rates the agent has no tool for: the Bank of England, Bank of
+# Canada, RBA, Federal Reserve and US Treasury connectors run only in the
+# pre-fetch (live_data.py), which agent mode skips. "Show the Bank of England
+# base rate over the last 3 years as a line chart" was answered "I'm unable to
+# retrieve the Bank of England base rate" while the connector had the series.
+_OFFICIAL_RATE_QUESTION = re.compile(
+    r"\b(?:base|bank|policy|cash|overnight|official|repo)\s+rates?\b|\bfed(?:eral)?\s+funds\b|"
+    r"\btreasury\s+(?:yields?|rates?|bills?|notes?|bonds?)\b|\bgilt\s+yields?\b|\binterest\s+rate\s+decisions?\b",
+    re.I)
+
+
+def _official_rate_question(query: str) -> bool:
+    return bool(_OFFICIAL_RATE_QUESTION.search(query or ""))
+
+
 async def _record_calculation_receipts(db, *, receipts: list[dict], query_id: str, correlation_id: str,
                                        tenant_id: str, audit_chain_id: str, actor_id: str) -> None:
     """Save each agent calculation as a calculation run (the immutable
@@ -2068,7 +2083,8 @@ async def ask_kriton(
                 timeout=25.0,
             )
         )
-        if needs_web and (not run_agent_loop or _dated_fx_question(request.query)) else None
+        if needs_web and (not run_agent_loop or _dated_fx_question(request.query)
+                          or _official_rate_question(request.query)) else None
     )
     # These are speculative child tasks. Tie their lifetime to this request so
     # an early refusal, client disconnect, or end-to-end timeout cannot leave
@@ -2111,6 +2127,34 @@ async def ask_kriton(
     except Exception as exc:
         document_sources = []
         document_retrieval_error = str(exc)[:1000]
+    if not request.document_ids and document_sources:
+        # A follow-up restores every file attached earlier in the chat; only
+        # the ones the question is about are used (document_relevance.py).
+        from app.orchestration.document_relevance import documents_for_question, question_is_about_documents
+        relevant = documents_for_question(request.query, document_sources)
+        if request.source_scope != "DOCUMENTS_ONLY" and not (
+                _looks_like_contextual_follow_up(request.query)
+                or question_is_about_documents(request.query, document_sources)):
+            # "What is IPR?" in a chat with a VAT file was answered from the
+            # file ("the sources provided do not state this"). An unrelated
+            # question is answered on its own; the file stays in the chat
+            # for the next question that is about it.
+            document_sources, resolved_document_ids = [], []
+        elif relevant:
+            document_sources = [s for s in document_sources if s.source_id in relevant]
+            resolved_document_ids = [d for d in resolved_document_ids if d in relevant]
+    # A diagram asked of an attached file is drawn from the file's own steps
+    # and names (illustrative_diagram.document_query), never from general
+    # practice; when the file describes none, the answer says so.
+    document_diagram: bool | None = None
+    if document_sources and not illustrative_diagram and needs_illustration(request.query):
+        from app.orchestration.illustrative_diagram import document_query
+        drawn = await document_query(
+            request.query, "\n".join(s.snippet or "" for s in document_sources),
+            model_gateway_service.run_grounded_completion, _MODEL_PROVIDER_FAILURE)
+        document_diagram = bool(drawn)
+        if drawn:
+            request = request.model_copy(update={"query": drawn})
     await audit_document_retrieval(
         db,
         query_id=query_id,
@@ -3117,8 +3161,11 @@ async def ask_kriton(
                     planned_tools=agent_plan.tools,
                     stated_facts="\n".join([request.query, *(m.content for m in request.conversation_history
                                                               if m.role == "user")]),
+                    # With the totals computed from the attached files: a trial
+                    # balance's own 7,026,500 total was removed as unverified.
                     figure_evidence=figure_evidence_text(request, web_sources, governed_passages, document_sources,
-                                                         calculation_result, remembered_calculation),
+                                                         calculation_result, remembered_calculation)
+                    + document_figures_block,
                     resume_key=idempotency_key or "",
                     # The plan searches, and nothing was retrieved beforehand:
                     # the agent must gather evidence before it answers.
@@ -3691,7 +3738,13 @@ async def ask_kriton(
     # Pasted material plus "comment on the above": the instruction decides
     # whether statutory sources are needed, not the words in the material.
     from app.orchestration.pasted_material import review_instruction
-    requires_authority = authority_required and not self_contained_calculation
+    # A summary of the user's own attached file, whose totals are the verified
+    # document figures, is arithmetic over their figures like a self-contained
+    # calculation: "Prepare the VAT summary for this period" of a sales file
+    # was withheld for want of an HMRC source. A tax rule it states still needs
+    # a source and is removed without one (unsourced_rule_statements below).
+    document_calculation = bool(document_figures_block)
+    requires_authority = authority_required and not (self_contained_calculation or document_calculation)
     release_review_required = False
     general_background_kept = False
     if (not uses_user_supplied_structure and not uses_deterministic_summary
@@ -3713,6 +3766,11 @@ async def ask_kriton(
             question="\n".join([request.query, *(m.content for m in request.conversation_history if m.role == "user"),
                                 *release_evidence]) + memory_facts_text + _agent_tool_evidence(agent_outcome, len(rag_citations)),
             receipts=agent_outcome.calculation_receipts if agent_outcome else None)
+        if document_figures_block:
+            # The totals computed from the attached files are verified results,
+            # like calculator receipts: "Output VAT: 62,070" from a sales file
+            # was removed as a tax statement with no source.
+            release_calculated.results |= calculated_figures(None, question=document_figures_block).inputs
         # A research citation on arithmetic over the user's own figures is
         # not its source; the calculator is (unbind_arithmetic_citations).
         composed_text = unbind_arithmetic_citations(
@@ -3751,7 +3809,7 @@ async def ask_kriton(
                     [(statement, "figure_misattributed", {}) for statement in statements], rag_citations))
                 composed_text = pruned
                 service_misattributed = list(dict.fromkeys(why for _, _, why in misattributed))
-        if self_contained_calculation and not requires_authority:
+        if (self_contained_calculation or document_calculation) and not requires_authority:
             # The arithmetic needs no source, but a tax or legal statement added
             # to it does, and this answer has none: removed, the rest kept.
             from app.orchestration.verification_service import unsourced_rule_statements
@@ -3939,8 +3997,11 @@ async def ask_kriton(
         # missing here and a verified "4.17%" change was withheld.
         calculator_results = "".join(f"\n{r.get('expression')} = {r.get('result')} (rounded {r.get('rounded')})"
                                      for r in (agent_outcome.calculation_receipts if agent_outcome else []))
+        # With the totals computed from the attached files, cited or not: a VAT
+        # summary's 62,070 from a sales file was withheld as unsourced.
         figure_evidence = "\n".join([figure_evidence_text(request, web_sources, governed_passages, document_sources,
-                                                         calculation_result, remembered_calculation), *release_evidence])
+                                                         calculation_result, remembered_calculation), *release_evidence,
+                                     document_figures_block])
         unsupported_figures = unreconciled_figures(
             composed_text,
             figure_evidence + _agent_tool_evidence(agent_outcome, len(rag_citations)) + calculator_results,
@@ -4361,6 +4422,9 @@ async def ask_kriton(
         from app.orchestration.illustrative_diagram import illustration_wording
         final_text = illustration_wording(final_text)
         limitations.insert(0, ILLUSTRATION_NOTE)
+    if document_diagram is not None:
+        from app.orchestration.illustrative_diagram import DOCUMENT_NOTE, NOT_IN_DOCUMENT_NOTE
+        limitations.insert(0, DOCUMENT_NOTE if document_diagram else NOT_IN_DOCUMENT_NOTE)
     answer = ComposedAnswer(
         text=final_text,
         citations=rag_citations,
@@ -4667,7 +4731,7 @@ async def _verified_document_figures_context(
                 sources = await retrieve_document_sources(
                     db, query=query, document_ids=document_ids, tenant_id=tenant_id, user_id=user_id, full_document=True,
                 )
-        return verified_document_figures(sources)
+        return verified_document_figures(sources, query)
     except Exception:  # noqa: BLE001 - extra figures must never fail the answer
         logger.exception("Could not compute verified document figures")
         return ""

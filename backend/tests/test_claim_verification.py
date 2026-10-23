@@ -184,6 +184,19 @@ async def test_a_contradiction_that_survives_the_rewrite_is_removed(monkeypatch)
     assert "£1.35 million" not in answer and note == service._CLAIM_REMOVED_NOTE
 
 
+async def test_a_cut_off_rewrite_keeps_the_answer_with_a_note(monkeypatch):
+    # A long audit-pack answer's rewrite hit the output limit, and the
+    # unhandled ProviderResponseIncomplete threw the whole answer away.
+    from app.domains.model_gateway.errors import ProviderResponseIncomplete
+    from app.orchestration import verification_service
+    claim = "Turnover over £1.35 million means you must leave."
+    _verdicts(monkeypatch, cv.VerificationResult(checked=1, contradicted=[cv.Contradiction(claim, "£1.6 million")], ran=True))
+    monkeypatch.setattr(service.model_gateway_service, "run_grounded_completion",
+                        AsyncMock(side_effect=ProviderResponseIncomplete()))
+    answer, note = await _run()
+    assert answer == claim and note == verification_service._CLAIM_UNCORRECTED_NOTE
+
+
 async def test_unconfirmed_figures_for_a_current_rate_question_are_flagged(monkeypatch):
     _verdicts(monkeypatch, cv.VerificationResult(checked=3, not_in_evidence=3, ran=True))
     answer, note = await _run("Up to ₹3,00,000 is nil. ₹3,00,001-₹7,00,000 is 5%. Above that 10%.",
