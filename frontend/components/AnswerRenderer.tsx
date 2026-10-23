@@ -105,7 +105,7 @@ function TableViz({ viz }: { viz: VisualizationSpec }) {
   );
 }
 
-function VisualizationRenderer({ viz: rawViz }: { viz: VisualizationSpec }) {
+export function VisualizationRenderer({ viz: rawViz }: { viz: VisualizationSpec }) {
   const viz = normalizeVisualizationSpec(rawViz);
   // Defensive re-check before any family-specific rendering: catches specs
   // whose shape has drifted from what this frontend build expects (e.g. an

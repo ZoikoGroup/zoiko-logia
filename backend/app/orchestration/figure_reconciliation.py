@@ -240,7 +240,7 @@ def _derivation_base(facts: str, calculations: str) -> list[float]:
     calculated = [float(token.replace(",", "")) for token in _NUMBER.findall(_readable(calculations))]
     amounts = [amount for shown, value in material_figures(text) if (amount := _absolute(shown, value)) is not None]
     for candidate in (
-        [float(token.replace(",", "")) for token in _NUMBER.findall(text) if not _YEAR.fullmatch(token)],
+        [float(token.replace(",", "")) for token in _NUMBER.findall(text) if not _YEAR.fullmatch(token.rstrip(","))],
         [value for _, value in material_figures(text)],
     ):
         base = list(dict.fromkeys(candidate + amounts + calculated))
@@ -278,17 +278,29 @@ def _fact_groups(facts: str) -> list[list[float]]:
 def _plain_numbers(text: str) -> list[float]:
     """Numbers that are not material figures but are operands: an exchange
     rate written "US$1.30", a multiplier, a count. Years are not."""
+    # A token keeps a trailing comma ("January 1, 2026, Nexus"): stripped
+    # before the year test, or 2026 became an operand.
     return [float(token.replace(",", "")) for token in _NUMBER.findall(_readable(text).replace("−", "-"))
-            if not _YEAR.fullmatch(token.lstrip("-"))]
+            if not _YEAR.fullmatch(token.lstrip("-").rstrip(","))]
 
 
-def _equation_results(piece: str) -> list[tuple[float, list[float]]]:
-    """(result, operands) of each equation the statement shows and that holds:
-    "Profit = 6,000 × £18 − £72,000 = £36,000" → (36,000, [6,000, 18, 72,000]).
-    Read and evaluated as validate_answer_calculations reads them."""
-    from app.orchestration.answer_formatting import latex_to_plain
-    from app.orchestration.calculation_service import _EQUATION, _evaluate, _normalise_arithmetic
-    normalized = _normalise_arithmetic(latex_to_plain(piece).replace("\\times", "*").replace("\\div", "/"))
+# A chain of rounded factors misses its exact result by a little: "9.00% ×
+# 1.68 × 1.77 = 26.74%" (26.76). Within this, an equation is not evidence
+# either way.
+_ROUNDING_SLACK = 0.005
+
+
+def _equations(piece: str) -> list[tuple[float, list[float], str]]:
+    """(result, operands, verdict) of each equation the statement shows:
+    "holds", "rounding" (off by no more than rounded factors explain) or
+    "fails". "Profit = 6,000 × £18 − £72,000 = £36,000" → (36,000, [6,000, 18,
+    72,000], "holds"). Read and evaluated as validate_answer_calculations
+    reads them."""
+    from app.orchestration.calculation_service import _EQUATION, _evaluate, _normalise_arithmetic, plain_arithmetic
+    # As the arithmetic check reads it: "= **26.74 %**" was not read as a
+    # result, and a correct ROE was removed (22 Oct 2026).
+    plain = plain_arithmetic(piece)
+    normalized = _normalise_arithmetic(plain.replace("\\times", "*").replace("\\div", "/"))
     found = []
     for match in _EQUATION.finditer(normalized):
         expression = match.group("expression")
@@ -300,16 +312,118 @@ def _equation_results(piece: str) -> list[tuple[float, list[float]]]:
         except (SyntaxError, ValueError, ArithmeticError, TypeError):
             continue
         percent = bool(match.group("percent"))
-        if abs(computed - stated) <= max(abs(stated) * 0.0005, 0.006) or (
-                percent and abs(computed * 100 - stated) <= max(abs(stated) * 0.0005, 0.006)):
-            operands = [float(token.replace(",", "")) for token in _NUMBER.findall(expression)]
-            found.append((stated, [abs(operand) for operand in operands]))
+        candidates = [computed, computed * 100] if percent else [computed]
+        miss = min(abs(candidate - stated) for candidate in candidates)
+        if miss <= max(abs(stated) * 0.0005, 0.006):
+            verdict = "holds"
+        elif miss <= max(abs(stated) * _ROUNDING_SLACK, 0.006):
+            verdict = "rounding"
+        else:
+            verdict = "fails"
+        # "6.0%" was normalised to "(6.0/100)": that 100 is notation, not an
+        # operand to verify (a correct CAPM cost of equity was removed).
+        operands = [float(token.replace(",", "")) for token in _NUMBER.findall(re.sub(r"/100\)", ")", expression))]
+        found.append((stated, [abs(operand) for operand in operands], verdict))
     return found
+
+
+def _equation_results(piece: str) -> list[tuple[float, list[float]]]:
+    """(result, operands) of each equation the statement shows and that holds."""
+    return [(stated, operands) for stated, operands, verdict in _equations(piece) if verdict == "holds"]
 
 
 def _amount(shown: str, value: float) -> float:
     absolute = _absolute(shown, value)
     return value if absolute is None else absolute
+
+
+_PAIR_SEARCH_MIN_DIGITS = 6
+
+
+def reference_percentages(statement: str) -> list[float]:
+    from app.orchestration.accounting_concepts import reference_percentages as published
+    return published(statement)
+
+
+def _significant_digits(shown: str) -> int:
+    """Digits a figure states: "42,123.64" has 7, "£1,560,000" has 3, "83%" 2."""
+    digits = re.sub(r"[^\d.]", "", shown or "")
+    if "." in digits:
+        return len(digits.replace(".", "").lstrip("0"))
+    return len(digits.lstrip("0").rstrip("0"))
+
+
+_TWO_STEP_MIN_DIGITS = 7
+_TWO_STEP_MAX_OPERANDS = 16
+
+
+# Adding or subtracting a count to an amount is not a financial step:
+# "$210,608" passed as 210,618 − 5 − 5 (the 5 of "5-year"), a near-miss of the
+# real present value — the error a typo or slip produces. In the derivation
+# rules below, a sum or difference needs operands of comparable size.
+_ADDITIVE_MIN_RATIO = 0.01
+
+
+def _comparable(a: float, b: float) -> bool:
+    big, small = max(abs(a), abs(b)), min(abs(a), abs(b))
+    return big == 0 or small / big >= _ADDITIVE_MIN_RATIO
+
+
+def _derived_values(a: float, b: float) -> list[float]:
+    values = [a * b]
+    if _comparable(a, b):
+        values += [a + b, a - b, b - a]
+    if b:
+        values.append(a / b)
+    if a:
+        values.append(b / a)
+    return values
+
+
+def _one_step_values(numbers: list[float]) -> list[float]:
+    """Every a ± b (of comparable size), a × b and a ÷ b over the numbers:
+    the intermediates of a two-step figure."""
+    values = []
+    for a in numbers:
+        for b in numbers:
+            values += _derived_values(a, b)
+    return list(dict.fromkeys(values))
+
+
+def _derived_in_one_step(value: float, tolerance: float, numbers: list[float]) -> bool:
+    target = abs(value)
+    return any(abs(target - abs(x)) <= tolerance for a in numbers for b in numbers for x in _derived_values(a, b))
+
+
+def _two_step_from(value: float, tolerance: float, steps: list[float], operands: list[float]) -> bool:
+    """One more operation on an intermediate: (a op b) op c, c a verified
+    number. Intermediates × operands only — about 16k pairs at the operand
+    limit, not intermediates × intermediates."""
+    target = abs(value)
+    return any(abs(target - abs(x)) <= tolerance for p in steps for c in operands for x in _derived_values(p, c))
+
+
+# "5-year", "6 years", "36 months", "10,000 options": a count with its unit.
+_LIKE_QUANTITY = re.compile(
+    r"\b(\d[\d,]*(?:\.\d+)?)[- ]?(years?|months?|weeks?|days?|units?|employees?|shares?|options?|accounts?|items?)\b",
+    re.I,
+)
+
+
+def _share_of_like_quantities(value: float, tolerance: float, statement: str, facts: str) -> bool:
+    """The percentage states one user-given quantity as a share of another of
+    the same unit, and the statement says what it is a share of."""
+    if not re.search(r"%\s*(?:of|is)\b|\bof (?:the|its)\b", statement or "", re.I):
+        return False
+    by_unit: dict[str, list[float]] = {}
+    for number, unit in _LIKE_QUANTITY.findall(_readable(facts)):
+        by_unit.setdefault(unit.lower().rstrip("s"), []).append(float(number.replace(",", "")))
+    for quantities in by_unit.values():
+        for a in quantities:
+            for b in quantities:
+                if a != b and b and abs(value - a / b * 100) <= max(tolerance, 0.5):
+                    return True
+    return False
 
 
 def _one_step_from(value: float, tolerance: float, local: list[float], base: list[float]) -> bool:
@@ -320,7 +434,8 @@ def _one_step_from(value: float, tolerance: float, local: list[float], base: lis
     fabricated figures (2026-10-17)."""
     for a in local:
         for b in list(dict.fromkeys(base + local)):
-            candidates = [a + b, a - b, b - a, a * b]
+            # "| Senior debt | $7,000,000 | 7% | $490,000 |": an amount at a rate.
+            candidates = [a + b, a - b, b - a, a * b, a * b / 100]
             if b:
                 candidates += [a / b, a / b * 100, (a - b) / b * 100]
             if a:
@@ -328,6 +443,110 @@ def _one_step_from(value: float, tolerance: float, local: list[float], base: lis
             if any(abs(abs(value) - abs(c)) <= tolerance for c in candidates):
                 return True
     return False
+
+
+_MONEY = re.compile(r"[£$€₹¥]|\b(?:USD|GBP|EUR|INR|AUD|CAD|JPY|SGD|AED)\b")
+# An opening and a closing balance are of similar size; within 2× keeps a
+# line's prices, units and costs from being averaged with one another.
+_AVERAGE_MIN_RATIO = 0.5
+
+
+def _money_groups(facts: str) -> list[list[float]]:
+    """The user's money amounts, line by line ("Total Equity $1,600,000
+    $1,900,000")."""
+    groups = []
+    for line in _readable(facts).splitlines():
+        amounts = list(dict.fromkeys(_amount(shown, value) for shown, value in material_figures(line)
+                                     if _MONEY.search(shown)))
+        if 2 <= len(amounts) <= 8:
+            groups.append(amounts)
+    return groups
+
+
+def _average_of_pair(value: float, tolerance: float, group: list[float]) -> bool:
+    """The average of two money amounts the user gave on one line: opening
+    and closing balances of a comparative table row ("Total Equity
+    $1,600,000 $1,900,000" → average equity $1,750,000). The DuPont answer's
+    average equity and assets, and every ratio built on them, were removed as
+    unverified (22 Oct 2026)."""
+    target = abs(value)
+    return any(abs(target - abs(a + b) / 2) <= tolerance
+               for i, a in enumerate(group) for b in group[i + 1:]
+               if a != b and min(abs(a), abs(b)) >= _AVERAGE_MIN_RATIO * max(abs(a), abs(b)))
+
+
+_ROW_MAX_OPERANDS = 8
+
+
+def _column_runs(text: str) -> dict[str, list[list[float]]]:
+    """For each table cell's figure, the runs of figures directly above it in
+    its column: "| Total pre-tax interest | | | $790,000 |" under $490,000 and
+    $300,000."""
+    runs: dict[str, list[list[float]]] = {}
+    table: list[list[str]] = []
+    for line in (text or "").splitlines() + [""]:
+        stripped = line.strip()
+        if stripped.startswith("|"):
+            if not re.fullmatch(r"\|?[\s:|-]+\|?", stripped):
+                table.append([cell.strip() for cell in stripped.strip("|").split("|")])
+            continue
+        for row_index, row in enumerate(table):
+            for column, cell in enumerate(row):
+                figures = material_figures(cell)
+                if len(figures) != 1:
+                    continue
+                above = []
+                for earlier in reversed(table[:row_index]):
+                    cell_above = material_figures(earlier[column]) if column < len(earlier) else []
+                    if len(cell_above) != 1:
+                        break
+                    above.append(_amount(*cell_above[0]))
+                    if len(above) >= 2:
+                        runs.setdefault(figures[0][0], []).append(list(above))
+        table = []
+    return runs
+
+
+def _row_combination(value: float, tolerance: float, operands: list[float]) -> bool:
+    """A table cell that adds or subtracts verified cells of its own row:
+    "| 1 | 500,000 | 200,000 | 160,000 | 140,000 | 29,400 | 270,600 |" (EBIT
+    500,000 − 200,000 − 160,000; cash flow 140,000 − 29,400 + 160,000). The
+    NPV answer's Years 1, 3 and 4 were removed for lack of this (22 Oct 2026).
+    Operands of comparable size only (a year number is not one)."""
+    from itertools import product
+    usable = [operand for operand in dict.fromkeys(operands) if operand and _comparable(operand, value)]
+    if not 2 <= len(usable) <= _ROW_MAX_OPERANDS:
+        return False
+    target = abs(value)
+    for signs in product((-1, 0, 1), repeat=len(usable)):
+        if sum(1 for sign in signs if sign) >= 2 and abs(target - abs(sum(
+                sign * operand for sign, operand in zip(signs, usable)))) <= tolerance:
+            return True
+    return False
+
+
+def _stated_rates(facts: str) -> tuple[list[float], list[float]]:
+    """The question's money amounts and its percentages."""
+    amounts, rates = [], []
+    for shown, value in material_figures(_readable(facts)):
+        if _is_percentage(shown):
+            rates.append(value)
+        elif _MONEY.search(shown):
+            amounts.append(_amount(shown, value))
+    return list(dict.fromkeys(amounts)), list(dict.fromkeys(rates))
+
+
+def _rate_of_stated_amount(value: float, tolerance: float, amounts: list[float], rates: list[float]) -> bool:
+    """An amount the question states at a percentage it states: MACRS
+    depreciation $800,000 × 19.2% = 153,600 (the rates and the cost share a
+    line too long for the same-line rule; 22 Oct 2026)."""
+    return any(abs(abs(value) - abs(amount * rate / 100)) <= tolerance for amount in amounts for rate in rates)
+
+
+def _restates_own_decimal(amount: float, tolerance: float, accepted: list[float]) -> bool:
+    """A percentage restating a decimal this answer verified: WACC 0.103218
+    shown as 10.32%, a weight 0.285714 as 29% (removed, 22 Oct 2026)."""
+    return any(0 < abs(value) < 1 and abs(abs(amount) / 100 - abs(value)) <= tolerance / 100 for value in accepted)
 
 
 def _change_between(value: float, tolerance: float, verified: list[float]) -> bool:
@@ -370,10 +589,24 @@ def unreconciled_figures(text: str, evidence: str, calculations: str = "", state
     approximates: list[tuple[str, float, float]] = []
     accepted: list[float] = []
     equations: list[tuple[float, list[float]]] = []
+    # Figures whose own statement shows the equation for them: that equation
+    # decides (it holds and its every operand is verified), never a pair rule.
+    # "WACC = 28.57% × 5.98% + 3.76% × 8.00% + 67.67% × 12.3% = 11.33%" (the
+    # sum is 10.33%) passed as one step from two other figures of the line;
+    # "7.57% × (1 − 0.25) = 5.68%" with a 21% tax rate likewise.
+    bound: set[int] = set()
+    # Results of an equation that does not hold are the arithmetic check's
+    # (validate_answer_calculations): it names the correct result, where
+    # this check could only call the figure unverified.
+    miscalculated: set[int] = set()
+    row_items: set[int] = set()
+    column_runs = _column_runs(body)
     for piece in _statements(body):
         figures = material_figures(piece)
         amounts = [_amount(shown, value) for shown, value in figures]
-        equations += _equation_results(piece)
+        shown_equations = _equations(piece)
+        equations += [(stated_result, operands) for stated_result, operands, verdict in shown_equations
+                      if verdict == "holds"]
         for index, (shown, value) in enumerate(figures):
             amount, tolerance = amounts[index], _scaled_tolerance(shown, value)
             approximate = _approximate_tolerance(piece, shown, value, amount)
@@ -383,7 +616,10 @@ def unreconciled_figures(text: str, evidence: str, calculations: str = "", state
                 continue
             # A percentage may restate a fraction (0.4156 as 41.56%); an amount
             # never restates a hundred times another (£48,000 is not £4.8m).
-            if is_known(amount, direct_percent if _is_percentage(shown) else direct, tolerance):
+            # A published reference value in its own statement's context: ASC
+            # 842's 75%/90% bright lines, sampling confidence levels.
+            if (is_known(amount, direct_percent if _is_percentage(shown) else direct, tolerance)
+                    or (_is_percentage(shown) and is_known(amount, reference_percentages(piece), tolerance))):
                 accepted.append(amount)
             elif _absolute(shown, value) is not None:
                 # "£4.8m" is a rounded display: accepted as a rounding of a
@@ -395,7 +631,18 @@ def unreconciled_figures(text: str, evidence: str, calculations: str = "", state
                 # figure is never its own operand.
                 others = amounts[:index] + amounts[index + 1:]
                 others += [number for number in _plain_numbers(piece) if number not in amounts and number not in others]
-                pending.append((shown, amount, others, tolerance))
+                item = (shown, amount, others, tolerance)
+                pending.append(item)
+                if piece.lstrip().startswith("|"):
+                    row_items.add(id(item))
+                # A rounding-only miss ("9.00% × 1.68 × 1.77 = 26.74%") is not
+                # evidence either way; the other rules still apply to it.
+                verdicts = {verdict for result, _operands, verdict in shown_equations
+                            if abs(abs(amount) - abs(result)) <= tolerance}
+                if verdicts - {"rounding"}:
+                    bound.add(id(item))
+                if verdicts == {"fails"}:
+                    miscalculated.add(id(item))
     # One step between two figures the user stated together, in one sentence
     # or line: "rose from £20,000 to £22,260" (£2,260 more), "net sales were
     # £1,100,000, cost of goods sold was £660,000" (£440,000), "sales
@@ -404,19 +651,45 @@ def unreconciled_figures(text: str, evidence: str, calculations: str = "", state
     for group in _fact_groups(facts):
         still = []
         for item in pending:
-            if _one_step_from(item[1], item[3], group, group):
+            if id(item) not in bound and _one_step_from(item[1], item[3], group, group):
                 accepted.append(item[1])
             else:
                 still.append(item)
         pending = still
+    for group in _money_groups(facts):
+        still = []
+        for item in pending:
+            if id(item) not in bound and _average_of_pair(item[1], item[3], group):
+                accepted.append(item[1])
+            else:
+                still.append(item)
+        pending = still
+    stated_amounts, stated_rates = _stated_rates(facts)
+    still = []
+    for item in pending:
+        if id(item) not in bound and _rate_of_stated_amount(item[1], item[3], stated_amounts, stated_rates):
+            accepted.append(item[1])
+        else:
+            still.append(item)
+    pending = still
     for _ in range(6):
         progressed = False
         # A worked equation that holds and whose every operand is verified.
         verified_operands = list(dict.fromkeys(accepted + base))
         for item in list(pending):
             if any(abs(abs(item[1]) - abs(result)) <= item[3] and operands
-                   and all(is_known(operand, verified_operands + direct, _operand_tolerance(operand))
+                   and all(_operand_verified(operand, verified_operands + direct)
                            for operand in operands) for result, operands in equations):
+                pending.remove(item)
+                accepted.append(item[1])
+                progressed = True
+            # The same verified result as a percentage: "ROE = 0.08 × 1.6667 ×
+            # 2.00 = 0.2667 (or 26.67%)", then "ROE (DuPont): 26.67%". A
+            # correct DuPont ROE was removed as unverified (23 Oct 2026).
+            elif _is_percentage(item[0]) and any(
+                    abs(result) < 10 and abs(abs(item[1]) - abs(result) * 100) <= max(item[3], 0.005)
+                    and operands and all(_operand_verified(operand, verified_operands + direct)
+                                         for operand in operands) for result, operands in equations):
                 pending.remove(item)
                 accepted.append(item[1])
                 progressed = True
@@ -427,8 +700,19 @@ def unreconciled_figures(text: str, evidence: str, calculations: str = "", state
             # unverified figures vouch for each other.
             verified_here = [value for value in others
                              if is_known(value, accepted + direct + base, _operand_tolerance(value))]
-            if base and verified_here and _one_step_from(amount, tolerance, verified_here,
+            if id(item) not in bound and base and verified_here and _one_step_from(amount, tolerance, verified_here,
                                                          list(dict.fromkeys(base + accepted))):
+                pending.remove(item)
+                accepted.append(amount)
+                progressed = True
+            elif id(item) not in bound and id(item) in row_items and _row_combination(amount, tolerance, verified_here):
+                pending.remove(item)
+                accepted.append(amount)
+                progressed = True
+            elif id(item) not in bound and any(
+                    abs(abs(amount) - abs(sum(run))) <= tolerance
+                    and all(is_known(value, accepted + direct + base, _operand_tolerance(value)) for value in run)
+                    for run in column_runs.get(shown, [])):
                 pending.remove(item)
                 accepted.append(amount)
                 progressed = True
@@ -438,19 +722,75 @@ def unreconciled_figures(text: str, evidence: str, calculations: str = "", state
         verified = list(dict.fromkeys(accepted))
         if len(verified) <= _BASE_MAX:
             for item in list(pending):
-                if _change_between(item[1], item[3], verified):
+                if id(item) not in bound and _change_between(item[1], item[3], verified):
                     pending.remove(item)
                     accepted.append(item[1])
                     progressed = True
         if not progressed or not pending:
             break
+    # A high-precision figure one step from two verified figures, whether or
+    # not the operand is on the same line: "annual amortisation $42,123.64"
+    # (210,618.19 ÷ 5) was removed from a lease answer because the sentence
+    # did not repeat $210,618 (2026-10-22). At six or more significant digits
+    # a fabricated figure essentially never lands on a pair result
+    # (test_figure_reconciliation measures it); shorter figures — "83%",
+    # "£42,124" — keep the same-line rule above, where pair search accepted
+    # most fabricated values.
+    # Built on figures verified this way too ("Year 1 expense $54,760.73" =
+    # interest + that amortisation), for a few rounds.
+    for _ in range(3):
+        progressed = False
+        operands = list(dict.fromkeys(base + accepted)) if base else []
+        for item in list(pending):
+            shown, amount, _others, tolerance = item
+            if (id(item) not in bound and operands and _significant_digits(shown) >= _PAIR_SEARCH_MIN_DIGITS
+                    and _derived_in_one_step(amount, tolerance, operands)):
+                pending.remove(item)
+                accepted.append(amount)
+                progressed = True
+        if not progressed:
+            break
+    # Two steps when the answer does not show the intermediate: the closing
+    # lease liability $173,255.28 (210,618.19 + 12,637.09 − 50,000). Only at
+    # seven or more significant digits and over a short list of verified
+    # numbers, where the candidates stay few (measured in
+    # test_accounting_validation).
+    operands = list(dict.fromkeys(base + accepted)) if base else []
+    if operands and len(operands) <= _TWO_STEP_MAX_OPERANDS:
+        steps = _one_step_values(operands)
+        for item in list(pending):
+            shown, amount, _others, tolerance = item
+            if (id(item) not in bound and _significant_digits(shown) >= _TWO_STEP_MIN_DIGITS
+                    and _two_step_from(amount, tolerance, steps, operands)):
+                pending.remove(item)
+                accepted.append(amount)
+    # Decimals are not material figures: those of the answer's equations that
+    # hold on verified inputs ("= 0.103218"), and the calculator's.
+    known_here = accepted + direct + base
+    decimals = accepted + [float(token.replace(",", "")) for token in _NUMBER.findall(_readable(calculations))] + [
+        result for result, operands in equations if all(_operand_verified(operand, known_here) for operand in operands)]
+    for item in list(pending):
+        shown, amount, _others, tolerance = item
+        if id(item) not in bound and _is_percentage(shown) and _restates_own_decimal(amount, tolerance, decimals):
+            pending.remove(item)
+            accepted.append(amount)
+    # A share of a like quantity the user gave: "83% of the economic life"
+    # with a 5-year lease and a 6-year life. Only between two figures of the
+    # same unit, so few pairs exist to match by chance.
+    for item in list(pending):
+        shown, amount, _others, tolerance = item
+        statement = next((piece for piece in _statements(body) if shown in piece), "")
+        if id(item) not in bound and _is_percentage(shown) and _share_of_like_quantities(amount, tolerance, statement, facts):
+            pending.remove(item)
+            accepted.append(amount)
     # An approximate figure may round only a figure that matters here — one of
     # the user's amounts, a calculator result, or a figure this answer already
     # verified — not any number in the evidence: "about £1.3m" matched a
     # rounding of some unrelated number one time in five.
     calculated = [float(token.replace(",", "")) for token in _NUMBER.findall(_readable(calculations))]
     rounding_of = [_amount(shown, value) for shown, value in material_figures(_readable(facts))] + calculated + accepted
-    rough = [shown for shown, amount, tolerance in approximates if not is_known(amount, rounding_of, tolerance)]
+    rough = [shown for shown, amount, tolerance in approximates if not is_known(amount, rounding_of, tolerance)
+             and not (_is_percentage(shown) and _restates_own_decimal(amount, tolerance, decimals))]
     # An unmarked rounding — "operating profit rose 23%" after "operating
     # profit rose £36,000 (23.23%)" — is the correct rounding, at the precision
     # written, of a figure this answer already verified *for the same thing*:
@@ -471,7 +811,8 @@ def unreconciled_figures(text: str, evidence: str, calculations: str = "", state
         return any(abs(abs(amount) - abs(value)) <= tolerance and any(len(words & other) >= 2 for other in sets)
                    for value, sets in contexts.items())
 
-    pending = [item for item in pending if not rounds_same_thing(item[0], item[1])]
+    pending = [item for item in pending if id(item) not in miscalculated
+               and (id(item) in bound or not rounds_same_thing(item[0], item[1]))]
     coarse = [shown for shown, amount in coarse if not rounds_same_thing(shown, amount)]
     return list(dict.fromkeys(coarse + rough + [item[0] for item in pending]))
 
@@ -520,6 +861,18 @@ def _approximate_tolerance(piece: str, shown: str, value: float, amount: float) 
     half_unit = 0.5 * 10 ** (-len(decimals) if decimals else zeros)
     scale = abs(amount / float(written)) if float(written) else 1.0
     return min(half_unit * scale, abs(amount) * _APPROXIMATE_CAP)
+
+
+# Constants of a formula's form, not inputs: the 1 of "(1 − t)", the 2 of an
+# average, the 100 of a percentage.
+_FORMULA_CONSTANTS = (1.0, 2.0, 100.0)
+
+
+def _operand_verified(operand: float, known: list[float]) -> bool:
+    """A verified number, a formula constant, or a verified percentage written
+    as a fraction: 0.21 for a stated 21% tax rate ("7.57% × (1 − 0.21)")."""
+    return (operand in _FORMULA_CONSTANTS or is_known(operand, known, _operand_tolerance(operand))
+            or (0 < abs(operand) < 1 and is_known(operand * 100, known, _operand_tolerance(operand * 100))))
 
 
 def _operand_tolerance(value: float) -> float:
@@ -651,6 +1004,7 @@ def hand_derived_figures(text: str, evidence: str, calculations: str = "", state
             if _absolute(shown, value) is not None:
                 continue
             amount, tolerance = _amount(shown, value), _scaled_tolerance(shown, value)
-            if not is_known(amount, direct_percent if _is_percentage(shown) else direct, tolerance):
+            if not (is_known(amount, direct_percent if _is_percentage(shown) else direct, tolerance)
+                    or (_is_percentage(shown) and is_known(amount, reference_percentages(piece), tolerance))):
                 found.append(shown)
     return list(dict.fromkeys(found))

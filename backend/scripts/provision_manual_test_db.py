@@ -1,0 +1,607 @@
+"""Provision the local manual-test database (Option A), one step at a time.
+
+    python scripts/provision_manual_test_db.py STEP --test-env PATH --shared-env PATH [options]
+
+Steps (run separately, in this order; `plan` is the default and connects nowhere):
+  plan      print what every step would do
+  size      READ-ONLY: count and size the shared knowledge base to be copied
+  create    local superuser: the two roles, the database, pgvector
+  setup     scripts/setup_database.py against the test database only
+  marker    marker table and row; the request role may only SELECT it
+  lookup    READ-ONLY: your shared profile by the email in a private file, saved for seed
+  seed      a new test tenant and your profile (from lookup, or --user-id, --email, --name)
+  copy-kb   non-private knowledge base, read-only from the shared database
+  check     run_manual_test_server.py --check
+
+Every step first re-runs the manual-test guard (app/core/manual_test_server.py):
+a missing, shared or unverifiable test database stops it before any
+connection. The shared database is only ever opened read-only (size, copy-kb),
+and nothing is dropped, updated or deleted anywhere: an existing role,
+database, profile or knowledge base makes a step stop instead.
+
+Approved source versions and passages are immutable by trigger, so copy-kb
+inserts parents before children and never updates a row.
+"""
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import os
+import re
+import subprocess
+import sys
+import uuid
+from collections.abc import Iterable
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+BACKEND = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BACKEND))
+
+from app.core.manual_test_server import (  # noqa: E402  (no settings imported)
+    MARKER_PURPOSE, MARKER_TABLE, ManualTestBlocked, build_environment, database_identity, describe_database,
+)
+
+TEST_TENANT_NAME = "Kriton manual test"
+STUB_TENANT_NAME = "Knowledge-base provenance (stub)"
+_IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+# Copied in this order; each entry: table, filter on rows already selected.
+KB_TABLES = ("sources", "source_versions", "source_rights", "source_passages", "source_relationships")
+# Self-references: a row is inserted after the row it points to.
+SELF_REFERENCES = {"source_versions": ("translation_of_version_id", "superseded_by_version_id"),
+                   "source_passages": ("derived_from_passage_id",)}
+USER_REFERENCES = {"source_versions": ("submitted_by", "approved_by"), "source_rights": ("granted_by",),
+                   "source_relationships": ("created_by",)}
+
+
+class StepRefused(RuntimeError):
+    pass
+
+
+# ── Pure helpers (tested offline) ────────────────────────────────────────
+
+def identifier(name: str, what: str) -> str:
+    if not _IDENTIFIER.fullmatch(name or ""):
+        raise StepRefused(f"{what} {name!r} is not a plain lowercase identifier")
+    return name
+
+
+def url_parts(url: str) -> tuple[str, str, str]:
+    """(role, password, database) of a PostgreSQL URL."""
+    parts = urlsplit(url)
+    return unquote(parts.username or ""), unquote(parts.password or ""), parts.path.lstrip("/")
+
+
+def require_local(url: str, what: str) -> None:
+    if database_identity(url)[0] != "localhost":
+        raise StepRefused(f"{what} must be on this machine (Option A); got {database_identity(url)[0]}")
+
+
+def psycopg_url(url: str) -> str:
+    scheme, rest = url.split("://", 1)
+    return "postgresql://" + rest if scheme.split("+")[0] in {"postgres", "postgresql"} else url
+
+
+def read_only_options() -> dict:
+    """Connection settings for the shared database: every transaction read-only."""
+    return {"options": "-c default_transaction_read_only=on -c statement_timeout=120000"}
+
+
+def dependency_order(rows: list[dict], id_column: str, references: Iterable[str]) -> list[dict]:
+    """Rows with every in-set reference after the row it points to. A cycle
+    cannot be inserted without an update, so it stops the copy."""
+    references = tuple(references)
+    by_id = {row[id_column]: row for row in rows}
+    placed: set = set()
+    ordered: list[dict] = []
+    pending = list(rows)
+    while pending:
+        still = []
+        for row in pending:
+            parents = [row[ref] for ref in references if row.get(ref) in by_id and row.get(ref) != row[id_column]]
+            if all(parent in placed for parent in parents):
+                ordered.append(row)
+                placed.add(row[id_column])
+            else:
+                still.append(row)
+        if len(still) == len(pending):
+            raise StepRefused(f"{len(still)} rows reference each other in a cycle; they cannot be inserted in order")
+        pending = still
+    return ordered
+
+
+def column_plan(table: str, source_columns: list[str], target: list[dict]) -> list[str]:
+    """Columns to copy: present in both, not generated by the target. A
+    required target column the source lacks stops the copy."""
+    copy = [c["name"] for c in target if c["name"] in source_columns and not c["generated"]]
+    missing = [c["name"] for c in target if c["name"] not in source_columns and not c["generated"]
+               and not c["nullable"] and not c["has_default"]]
+    if missing:
+        raise StepRefused(f"{table}: the test schema requires {', '.join(missing)}, which the shared rows lack")
+    return copy
+
+
+def referenced_users(rows_by_table: dict[str, list[dict]]) -> set[str]:
+    users = set()
+    for table, columns in USER_REFERENCES.items():
+        for row in rows_by_table.get(table, []):
+            users.update(row[c] for c in columns if row.get(c))
+    return users
+
+
+def scram_verifier(password: str, *, salt: bytes | None = None, iterations: int = 4096) -> str:
+    """A SCRAM-SHA-256 verifier, the form PostgreSQL stores. Sent in place of
+    the password, so the plaintext never reaches the server or its logs."""
+    import base64
+    import hashlib
+    import hmac
+    salt = salt or os.urandom(16)
+    salted = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
+    client_key = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+    server_key = hmac.new(salted, b"Server Key", hashlib.sha256).digest()
+    b64 = lambda data: base64.b64encode(data).decode()  # noqa: E731
+    return (f"SCRAM-SHA-256${iterations}:{b64(salt)}"
+            f"${b64(hashlib.sha256(client_key).digest())}:{b64(server_key)}")
+
+
+def setup_environment(env: dict[str, str]) -> dict[str, str]:
+    """The only variables setup_database.py receives: the test database URLs."""
+    return {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ.get("HOME", ""),
+            "DATABASE_URL": env["DATABASE_URL"], "APP_DATABASE_URL": env["APP_DATABASE_URL"],
+            "SKIP_STARTUP_FINGERPRINT_CHECK": "false", "HEALTH_SAMPLER_ENABLED": "false"}
+
+
+# ── Steps ────────────────────────────────────────────────────────────────
+
+def _connect(url: str, **options):
+    import psycopg2
+    return psycopg2.connect(psycopg_url(url), connect_timeout=10, **options)
+
+
+def _shared_read_only(url: str):
+    """The shared database, read-only three ways: the session default (a
+    pooler may drop startup options), every transaction begun READ ONLY by
+    the driver, and the live setting checked before anything else runs."""
+    conn = _connect(url, **read_only_options())
+    conn.set_session(readonly=True, autocommit=False)
+    with conn.cursor() as cur:
+        cur.execute("SHOW transaction_read_only")
+        state = cur.fetchone()[0]
+    if state != "on":
+        conn.close()
+        raise StepRefused(f"the shared connection reports transaction_read_only={state}; nothing was run")
+    return conn
+
+
+def expected_columns() -> dict[str, set[str]]:
+    """Knowledge-base columns this code defines (models plus the pgvector
+    column added in main.py), for the schema comparison."""
+    from app.domains.source_library import models
+    tables = {t: models.Base.metadata.tables[t] for t in KB_TABLES}
+    columns = {t: {c.name for c in table.columns} for t, table in tables.items()}
+    columns["source_passages"].add("embedding")
+    return columns
+
+
+def compatibility(expected: dict[str, set[str]], shared: dict[str, set[str]]) -> list[str]:
+    notes = []
+    for table, columns in expected.items():
+        if table not in shared:
+            notes.append(f"{table}: missing in the shared database")
+            continue
+        if missing := sorted(columns - shared[table]):
+            notes.append(f"{table}: shared database lacks {', '.join(missing)}")
+        if extra := sorted(shared[table] - columns):
+            notes.append(f"{table}: shared database has extra {', '.join(extra)} (not copied)")
+    return notes
+
+
+def _superuser_url(env: dict[str, str], given: str | None) -> str:
+    port = database_identity(env["DATABASE_URL"])[1]
+    url = given or f"postgresql://{getpass.getuser()}@127.0.0.1:{port}/postgres"
+    require_local(url, "the superuser connection")
+    return url
+
+
+def step_plan(env: dict[str, str], args) -> None:
+    owner, _, database = url_parts(env["DATABASE_URL"])
+    app, _, _ = url_parts(env["APP_DATABASE_URL"])
+    print(f"""Test database: {describe_database(env['DATABASE_URL'])}; request role {app}
+size     SELECT counts and sizes of {', '.join(KB_TABLES)} in the shared database (read-only)
+create   CREATE ROLE {owner} LOGIN BYPASSRLS NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD <SCRAM verifier>
+         CREATE ROLE {app} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD <SCRAM verifier>
+         CREATE DATABASE {database} OWNER {owner}
+         REVOKE ALL ON DATABASE {database} FROM PUBLIC; GRANT CONNECT ON DATABASE {database} TO {app}
+         in it: CREATE EXTENSION vector
+         (stops if either role or the database already exists; plaintext passwords are never sent)
+setup    scripts/setup_database.py with only DATABASE_URL / APP_DATABASE_URL set to the test database
+marker   CREATE TABLE {MARKER_TABLE}; insert the marker; REVOKE ALL, GRANT SELECT to {app}
+seed     INSERT a new tenant '{TEST_TENANT_NAME}' and your users row (stops if the profile exists)
+copy-kb  read-only SELECT of non-private sources and their versions, rights, passages, relationships;
+         INSERT into the test database in one transaction, parents first; stub provenance users
+         (placeholder email, inactive) in a separate tenant '{STUB_TENANT_NAME}'
+         (stops if the test database already has sources)
+check    run_manual_test_server.py --check (SELECTs only)""")
+
+
+_SUBSET = {
+    "sources": "SELECT {cols} FROM sources s WHERE s.is_tenant_private = false",
+    "source_versions": "SELECT {cols} FROM source_versions s JOIN sources o ON o.id = s.source_id "
+                       "WHERE o.is_tenant_private = false",
+    "source_rights": "SELECT {cols} FROM source_rights s JOIN source_versions v ON v.id = s.source_version_id "
+                     "JOIN sources o ON o.id = v.source_id WHERE o.is_tenant_private = false",
+    "source_passages": "SELECT {cols} FROM source_passages s JOIN source_versions v ON v.id = s.source_version_id "
+                       "JOIN sources o ON o.id = v.source_id WHERE o.is_tenant_private = false",
+    "source_relationships": "SELECT {cols} FROM source_relationships s "
+                            "JOIN source_versions a ON a.id = s.from_version_id JOIN sources oa ON oa.id = a.source_id "
+                            "JOIN source_versions b ON b.id = s.to_version_id JOIN sources ob ON ob.id = b.source_id "
+                            "WHERE oa.is_tenant_private = false AND ob.is_tenant_private = false",
+}
+MB = 1024 * 1024
+
+
+def step_size(env: dict[str, str], args) -> None:
+    conn = _shared_read_only(args.shared_values["DATABASE_URL"])
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT current_setting('server_version'), "
+                        "(SELECT extversion FROM pg_extension WHERE extname = 'vector')")
+            server, vector = cur.fetchone()
+            print(f"Shared database (read-only session verified): PostgreSQL {server}, pgvector {vector}")
+            cur.execute("SELECT table_name, column_name FROM information_schema.columns "
+                        "WHERE table_schema = 'public' AND table_name = ANY(%s)", (list(KB_TABLES),))
+            shared_columns: dict[str, set[str]] = {}
+            for table, column in cur.fetchall():
+                shared_columns.setdefault(table, set()).add(column)
+            cur.execute("SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
+                        "WHERE attrelid = 'source_passages'::regclass AND attname = 'embedding' AND NOT attisdropped")
+            row = cur.fetchone()
+            embedding_type = row[0] if row else None
+            copy_bytes = whole_bytes = index_bytes = 0
+            print(f"{'table':22} {'all rows':>10} {'heap MB':>8} {'index MB':>9} {'total MB':>9} {'to copy':>9} "
+                  f"{'copy MB':>8}")
+            for table in KB_TABLES:
+                cur.execute("SELECT count(*), pg_relation_size(%s::regclass), pg_indexes_size(%s::regclass), "
+                            "pg_total_relation_size(%s::regclass) FROM " + table, (table, table, table))
+                rows_all, heap, indexes, total = cur.fetchone()
+                cur.execute(_SUBSET[table].format(cols="count(*), coalesce(sum(pg_column_size(s.*)), 0)"))
+                rows_copy, bytes_copy = cur.fetchone()
+                copy_bytes += bytes_copy
+                whole_bytes += total
+                index_bytes += indexes
+                print(f"{table:22} {rows_all:>10,} {heap / MB:>8.1f} {indexes / MB:>9.1f} {total / MB:>9.1f} "
+                      f"{rows_copy:>9,} {bytes_copy / MB:>8.1f}")
+            if embedding_type:
+                cur.execute(_SUBSET["source_passages"].format(
+                    cols="count(s.embedding), coalesce(sum(pg_column_size(s.embedding)), 0), "
+                         "coalesce(sum(octet_length(s.content)), 0)"))
+                with_embedding, embedding_bytes, text_bytes = cur.fetchone()
+                print(f"passages to copy with an embedding: {with_embedding:,}; embedding storage "
+                      f"{embedding_bytes / MB:.1f} MB; passage text {text_bytes / MB:.1f} MB")
+            cur.execute(_SUBSET["source_versions"].format(cols="s.status, count(*)") + " GROUP BY s.status ORDER BY 2 DESC")
+            print("versions to copy by status: " + ", ".join(f"{s} {n:,}" for s, n in cur.fetchall()))
+        conn.rollback()
+    finally:
+        conn.close()
+
+    print(f"embedding column: {embedding_type or 'ABSENT'} (this code expects vector(384))")
+    notes = compatibility(expected_columns(), shared_columns)
+    print("schema: " + ("matches this code" if not notes else "\n  - " + "\n  - ".join(notes)))
+    # Rows plus indexes in the same proportion as the shared tables, twice
+    # over for write-ahead log during the load, plus the empty schema.
+    index_ratio = index_bytes / max(1, whole_bytes - index_bytes)
+    estimate = copy_bytes * (1 + index_ratio) * 2 + 100 * MB
+    print(f"estimated local disk: {estimate / MB:,.0f} MB (copy {copy_bytes / MB:.1f} MB, index ratio "
+          f"{index_ratio:.2f}, x2 for write-ahead log, +100 MB schema)")
+
+
+def step_create(env: dict[str, str], args) -> None:
+    from psycopg2 import sql
+    require_local(env["DATABASE_URL"], "the test database")
+    owner, owner_password, database = url_parts(env["DATABASE_URL"])
+    app, app_password, _ = url_parts(env["APP_DATABASE_URL"])
+    for name, what in ((owner, "owner role"), (app, "request role"), (database, "database")):
+        identifier(name, what)
+    admin = _superuser_url(env, args.superuser_url)
+    conn = _connect(admin)
+    conn.autocommit = True   # CREATE DATABASE cannot run in a transaction
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT rolname FROM pg_roles WHERE rolname IN (%s, %s)", (owner, app))
+            existing = [f"role {r[0]}" for r in cur.fetchall()]
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (database,))
+            if cur.fetchone():
+                existing.append(f"database {database}")
+            if existing:
+                raise StepRefused(f"already exists: {', '.join(existing)} — nothing was changed")
+            cur.execute(sql.SQL("CREATE ROLE {} LOGIN BYPASSRLS NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION "
+                                "PASSWORD %s").format(sql.Identifier(owner)), (scram_verifier(owner_password),))
+            cur.execute(sql.SQL("CREATE ROLE {} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION "
+                                "PASSWORD %s").format(sql.Identifier(app)), (scram_verifier(app_password),))
+            cur.execute(sql.SQL("CREATE DATABASE {} OWNER {}").format(sql.Identifier(database), sql.Identifier(owner)))
+            # Only the two test roles may connect; no temporary tables for anyone else.
+            cur.execute(sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(sql.Identifier(database)))
+            cur.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(sql.Identifier(database),
+                                                                             sql.Identifier(app)))
+    finally:
+        conn.close()
+    in_db = admin.rsplit("/", 1)[0] + "/" + database
+    with _connect(in_db) as conn, conn.cursor() as cur:
+        # PostgreSQL 15+: the database owner already owns the public schema.
+        cur.execute("CREATE EXTENSION vector")
+    print(f"Created roles {owner}, {app} and database {database} with pgvector.")
+
+
+def step_setup(env: dict[str, str], args) -> None:
+    require_local(env["DATABASE_URL"], "the test database")
+    if (BACKEND / ".env").exists():
+        raise StepRefused(f"{BACKEND / '.env'} exists and could be loaded; remove it from the worktree first")
+    result = subprocess.run([sys.executable, "scripts/setup_database.py"], cwd=BACKEND,
+                            env=setup_environment(env), check=False)
+    if result.returncode != 0:
+        raise StepRefused(f"setup_database.py failed (exit {result.returncode})")
+
+
+def step_marker(env: dict[str, str], args) -> None:
+    from psycopg2 import sql
+    require_local(env["DATABASE_URL"], "the test database")
+    app, _, _ = url_parts(env["APP_DATABASE_URL"])
+    owner, _, database = url_parts(env["DATABASE_URL"])
+    with _connect(env["DATABASE_URL"]) as conn, conn.cursor() as cur:
+        cur.execute("SELECT current_database(), current_user")
+        if cur.fetchone() != (database, owner):
+            raise StepRefused(f"the live connection is not {database} as {owner} — nothing was written")
+        cur.execute(f"CREATE TABLE IF NOT EXISTS {MARKER_TABLE} (marker text PRIMARY KEY, purpose text NOT NULL, "
+                    "created_at timestamptz NOT NULL DEFAULT now())")
+        cur.execute(f"INSERT INTO {MARKER_TABLE} (marker, purpose) VALUES (%s, %s) ON CONFLICT (marker) DO NOTHING",
+                    (env["MANUAL_TEST_DATABASE_MARKER"], MARKER_PURPOSE))
+        cur.execute(sql.SQL("REVOKE ALL ON {} FROM {}").format(sql.Identifier(MARKER_TABLE), sql.Identifier(app)))
+        cur.execute(sql.SQL("GRANT SELECT ON {} TO {}").format(sql.Identifier(MARKER_TABLE), sql.Identifier(app)))
+    print("Marker written to the test database.")
+
+
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+DEFAULT_IDENTITY_FILE = Path.home() / ".kriton-manual-test" / "seed-identity.json"
+
+
+def known_roles() -> frozenset[str]:
+    from app.domains.identity.permissions import ROLE_PERMISSIONS
+    return frozenset(ROLE_PERMISSIONS)
+
+
+def short_id(value: str) -> str:
+    return f"{value[:8]}…"
+
+
+def mask_email(email: str) -> str:
+    local, _, domain = email.partition("@")
+    host, _, tld = domain.rpartition(".")
+    return f"{local[:1]}***@{host[:1]}***.{tld}"
+
+
+def validate_identity(user_id: str | None, email: str | None, name: str | None, role: str | None,
+                      roles: frozenset[str]) -> tuple[str, str, str, str]:
+    """(user_id, email, name, role), normalised, or StepRefused naming every problem."""
+    problems = []
+    try:
+        user_id = str(uuid.UUID((user_id or "").strip()))
+    except ValueError:
+        problems.append("the user ID is not a UUID (it is the Supabase Auth user ID)")
+    email = (email or "").strip().lower()
+    if not _EMAIL.fullmatch(email):
+        problems.append("the email is not a valid address")
+    name = " ".join((name or "").split())
+    if not name or len(name) > MAX_NAME:
+        problems.append("the name is empty or longer than 200 characters")
+    if role not in roles:
+        problems.append(f"role {role!r} is not one of: {', '.join(sorted(roles))}")
+    if problems:
+        raise StepRefused("; ".join(problems) + " — nothing was changed")
+    return user_id, email, name, role
+
+
+FALLBACK_NAME = "Kriton manual tester"
+MAX_NAME = 200
+
+
+def display_name(name: str | None) -> tuple[str, bool]:
+    """(name to use, whether the fallback was needed): the profile's own name
+    unless it is empty or longer than MAX_NAME characters."""
+    collapsed = " ".join((name or "").split())
+    if not collapsed or len(collapsed) > MAX_NAME:
+        return FALLBACK_NAME, True
+    return collapsed, False
+
+
+def _private_file(path: Path, what: str) -> Path:
+    if not path.is_file():
+        raise StepRefused(f"{what} {path} does not exist")
+    if path.stat().st_mode & 0o077:
+        raise StepRefused(f"{what} {path} is readable by other users; run: chmod 600 {path}")
+    return path
+
+
+def step_lookup(env: dict[str, str], args) -> None:
+    """READ-ONLY: your existing profile in the shared database, by the email
+    in --email-file. Exactly one active match is required; the identity is
+    saved for `seed` in a private file and only masked fields are printed."""
+    email = _private_file(args.email_file, "the email file").read_text().strip().lower()
+    if not _EMAIL.fullmatch(email):
+        raise StepRefused("the email file does not hold one valid address")
+    conn = _shared_read_only(args.shared_values["DATABASE_URL"])
+    print("shared session: transaction_read_only=on verified before querying")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, email, full_name, role, is_active FROM users WHERE lower(email) = %s", (email,))
+            rows = cur.fetchall()
+        conn.rollback()
+    finally:
+        conn.close()
+    if len(rows) != 1:
+        raise StepRefused(f"{len(rows)} profiles match that email; exactly one is required — nothing was saved")
+    user_id, found_email, name, role, active = rows[0]
+    if not active:
+        raise StepRefused("the matching profile is inactive — nothing was saved")
+    # The name is display-only (sign-in matches the user ID). A shared profile
+    # without a usable one gets a neutral test name rather than none.
+    name, fallback = display_name(name)
+    user_id, found_email, name, role = validate_identity(user_id, found_email, name, role, known_roles())
+    target = args.identity_file
+    target.parent.mkdir(mode=0o700, exist_ok=True)
+    handle = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(handle, "w") as out:
+        json.dump({"user_id": user_id, "email": found_email, "name": name, "role": role}, out)
+    os.chmod(target, 0o600)
+    print(f"1 active profile: user {short_id(user_id)}, email {mask_email(found_email)}, role {role}, "
+          f"fallback name used: {'yes' if fallback else 'no'}. Saved for seed in {target} (mode 600).")
+
+
+def step_seed(env: dict[str, str], args) -> None:
+    require_local(env["DATABASE_URL"], "the test database")
+    if args.identity_file.is_file() and not (args.user_id or args.email or args.name):
+        saved = json.loads(_private_file(args.identity_file, "the identity file").read_text())
+        values = (saved.get("user_id"), saved.get("email"), saved.get("name"), args.role or saved.get("role"))
+    elif args.user_id or args.email or args.name:
+        values = (args.user_id, args.email, args.name, args.role or "Admin")
+    else:
+        raise StepRefused("seed needs the identity from `lookup`, or --user-id, --email and --name")
+    user_id, email, name, role = validate_identity(*values, known_roles())
+    first, _, last = name.partition(" ")
+    owner, _, database = url_parts(env["DATABASE_URL"])
+    now = datetime.now(timezone.utc)
+    with _connect(env["DATABASE_URL"]) as conn, conn.cursor() as cur:
+        cur.execute("SELECT current_database(), current_user")
+        if cur.fetchone() != (database, owner):
+            raise StepRefused(f"the live connection is not {database} as {owner} — nothing was written")
+        cur.execute("SELECT 1 FROM users WHERE id = %s OR lower(email) = %s", (user_id, email))
+        if cur.fetchone():
+            raise StepRefused("that profile already exists in the test database — nothing was changed")
+        tenant = str(uuid.uuid4())
+        cur.execute("INSERT INTO tenants (id, name) VALUES (%s, %s)", (tenant, TEST_TENANT_NAME))
+        cur.execute("INSERT INTO users (id, tenant_id, email, first_name, last_name, full_name, role, is_active, "
+                    "created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, true, %s, %s)",
+                    (user_id, tenant, email, first, last, name, role, now, now))
+    print(f"Seeded test tenant {short_id(tenant)} and profile {short_id(user_id)} ({role}).")
+
+
+def _target_columns(cur, table: str) -> list[dict]:
+    cur.execute("SELECT column_name, is_nullable = 'YES', column_default IS NOT NULL, is_generated = 'ALWAYS', "
+                "udt_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = %s "
+                "ORDER BY ordinal_position", (table,))
+    return [{"name": n, "nullable": nl, "has_default": d, "generated": g, "type": t} for n, nl, d, g, t in cur]
+
+
+def _select(cur, table: str, where: str, params: tuple) -> tuple[list[str], list[dict]]:
+    cur.execute(f"SELECT * FROM {table} WHERE false")
+    columns = [d.name for d in cur.description]
+    vectors = {c for c in columns if c == "embedding"}
+    select = ", ".join(f"{c}::text AS {c}" if c in vectors else c for c in columns)
+    cur.execute(f"SELECT {select} FROM {table} WHERE {where}", params)
+    return columns, [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def step_copy_kb(env: dict[str, str], args) -> None:
+    from psycopg2.extras import execute_values
+    require_local(env["DATABASE_URL"], "the test database")
+    shared = args.shared_values["DATABASE_URL"]
+    rows: dict[str, list[dict]] = {}
+    source_columns: dict[str, list[str]] = {}
+    with _shared_read_only(shared) as conn, conn.cursor() as cur:
+        source_columns["sources"], rows["sources"] = _select(cur, "sources", "is_tenant_private = false", ())
+        source_ids = tuple(r["id"] for r in rows["sources"]) or ("",)
+        source_columns["source_versions"], rows["source_versions"] = _select(
+            cur, "source_versions", "source_id IN %s", (source_ids,))
+        version_ids = tuple(r["id"] for r in rows["source_versions"]) or ("",)
+        for table in ("source_rights", "source_passages"):
+            source_columns[table], rows[table] = _select(cur, table, "source_version_id IN %s", (version_ids,))
+        source_columns["source_relationships"], rows["source_relationships"] = _select(
+            cur, "source_relationships", "from_version_id IN %s AND to_version_id IN %s", (version_ids, version_ids))
+        conn.rollback()
+    stubs = sorted(referenced_users(rows))
+    print("Read (read-only): " + ", ".join(f"{t} {len(rows[t]):,}" for t in KB_TABLES)
+          + f"; provenance users {len(stubs)}")
+
+    now = datetime.now(timezone.utc)
+    owner, _, database = url_parts(env["DATABASE_URL"])
+    with _connect(env["DATABASE_URL"]) as conn, conn.cursor() as cur:   # one transaction
+        cur.execute("SELECT current_database(), current_user")
+        if cur.fetchone() != (database, owner):
+            raise StepRefused(f"the live connection is not {database} as {owner} — nothing was written")
+        cur.execute("SELECT count(*) FROM sources")
+        if cur.fetchone()[0]:
+            raise StepRefused("the test database already has sources — nothing was changed")
+        cur.execute("SELECT id FROM users WHERE id = ANY(%s)", (stubs,))
+        present = {r[0] for r in cur.fetchall()}
+        missing = [u for u in stubs if u not in present]
+        if missing:
+            stub_tenant = str(uuid.uuid4())
+            cur.execute("INSERT INTO tenants (id, name) VALUES (%s, %s)", (stub_tenant, STUB_TENANT_NAME))
+            execute_values(cur, "INSERT INTO users (id, tenant_id, email, first_name, last_name, full_name, role, "
+                                "is_active, created_at, updated_at) VALUES %s",
+                           [(u, stub_tenant, f"provenance-{u}@kriton-test.invalid", "", "", "Provenance stub",
+                             "Learner", False, now, now) for u in missing])
+        for table in KB_TABLES:
+            columns = column_plan(table, source_columns[table], _target_columns(cur, table))
+            ordered = (dependency_order(rows[table], "id", SELF_REFERENCES[table])
+                       if table in SELF_REFERENCES else rows[table])
+            if not ordered:
+                continue
+            template = "(" + ", ".join("%s::vector" if c == "embedding" else "%s" for c in columns) + ")"
+            execute_values(cur, f"INSERT INTO {table} ({', '.join(columns)}) VALUES %s",
+                           [tuple(r[c] for c in columns) for r in ordered], template=template, page_size=500)
+    print("Knowledge base copied into the test database.")
+
+
+def step_check(env: dict[str, str], args) -> None:
+    result = subprocess.run([sys.executable, "scripts/run_manual_test_server.py", "--test-env", str(args.test_env),
+                             "--shared-env", str(args.shared_env), "--check"], cwd=BACKEND, check=False)
+    if result.returncode != 0:
+        raise StepRefused("the isolation check did not pass")
+
+
+STEPS = {"plan": step_plan, "size": step_size, "create": step_create, "setup": step_setup, "marker": step_marker,
+         "lookup": step_lookup, "seed": step_seed, "copy-kb": step_copy_kb, "check": step_check}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("step", nargs="?", default="plan", choices=list(STEPS))
+    parser.add_argument("--test-env", type=Path, required=True)
+    parser.add_argument("--shared-env", type=Path, required=True)
+    parser.add_argument("--superuser-url", help="local superuser connection (default: your macOS user, trust auth)")
+    parser.add_argument("--user-id")
+    parser.add_argument("--email")
+    parser.add_argument("--name")
+    parser.add_argument("--role", help="default: the role found by lookup, else Admin")
+    parser.add_argument("--email-file", type=Path, default=Path.home() / ".kriton-manual-test" / "lookup-email",
+                        help="lookup: a private file holding your account email")
+    parser.add_argument("--identity-file", type=Path, default=DEFAULT_IDENTITY_FILE,
+                        help="written by lookup, read by seed")
+    args = parser.parse_args(argv)
+
+    from dotenv import dotenv_values
+    try:
+        for path in (args.test_env, args.shared_env):
+            if not path.is_file():
+                raise StepRefused(f"{path} does not exist")
+        args.shared_values = {k: v for k, v in dotenv_values(args.shared_env).items() if v is not None}
+        env = build_environment(dotenv_values(args.test_env), args.shared_values)
+        STEPS[args.step](env, args)
+    except ManualTestBlocked as blocked:
+        print(f"{args.step}: NOT run:", *[f"  - {reason}" for reason in blocked.reasons], sep="\n")
+        return 2
+    except StepRefused as refused:
+        print(f"{args.step}: stopped: {refused}")
+        return 2
+    except Exception as exc:  # a database error: the step's transaction was not committed
+        if type(exc).__module__.split(".")[0] != "psycopg2":
+            raise
+        print(f"{args.step}: stopped by a database error ({type(exc).__name__}): {str(exc).strip()[:300]}")
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

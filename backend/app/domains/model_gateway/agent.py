@@ -46,6 +46,7 @@ from app.orchestration.evidence_narrative import ground_economic_narrative
 from app.orchestration.websearch import WebSource
 from app.orchestration.chart_intent import allows_automatic_chart
 from app.orchestration.calculation_service import validate_answer_calculations
+from app.orchestration.answer_formatting import latex_to_plain
 
 StopReason = Literal["final_answer", "max_steps", "time_budget", "token_budget", "cost_budget", "no_result",
                      "provider_error"]
@@ -282,12 +283,19 @@ class AgentOutcome:
     # Statements and table rows removed because they stated unreconciled
     # figures; the rest of the answer was kept (selective withholding).
     removed_statements: list[str] = field(default_factory=list)
+    # Statements whose equation did not hold, removed with the correct
+    # result named ("£1,560,000 (780,000 ÷ 0.55 equals 1418181.82)").
+    disproved_notes: list[str] = field(default_factory=list)
+    # What the final checks did and why (audited): the failed lines, figures
+    # with no support, and which fallback was chosen. The 23 Oct hedge
+    # fallback could not be explained because none of this was recorded.
+    validation: dict = field(default_factory=dict)
 
 
 def _substantive(text: str) -> bool:
     """Something besides headings and removal notes is left to read."""
-    from app.orchestration.claim_verification import _HEADING
-    return any(len(line.strip()) >= 15 and not _HEADING.fullmatch(line) and FIGURES_REMOVED_NOTE not in line
+    from app.orchestration.claim_verification import _HEADING, is_removal_note
+    return any(len(line.strip()) >= 15 and not _HEADING.fullmatch(line) and not is_removal_note(line)
                and not set(line.strip()) <= set("|-: ") for line in (text or "").splitlines())
 
 
@@ -501,6 +509,15 @@ def _assistant_message(message: Any) -> dict:
     }
 
 
+# Asked for "the same answer … keeping its structure", the model narrated the
+# revision to the reader: "Updated answer with calculator-verified numbers
+# (structure unchanged)", "(calculation 5)" (23 Oct 2026).
+FINAL_ANSWER_ONLY = (
+    " Write it for the reader as the answer itself: do not mention this request, a revision, an update, "
+    "recalculation, the calculator, calculation numbers or the answer's structure."
+)
+
+
 async def run_agent(client: Any, **kwargs: Any) -> AgentOutcome:
     """The governed tool loop. If it cannot finish — the deadline runs out or
     the model provider fails — after calculations were already verified, the
@@ -558,6 +575,58 @@ def _calculation_items(arguments: str) -> int:
         return 1
     items = parsed.get("expressions") if isinstance(parsed, dict) else None
     return len(items) if isinstance(items, list) and items else 1
+
+
+# A search that rephrases one which already found nothing is not run again: on
+# 23 Oct 2026 the hedge and inventory runs each spent two web searches (about
+# ten seconds each) on the same point, both empty, and the hedge ran out of
+# time. A search for a different point still runs.
+_SEARCH_TOOLS = frozenset({"search_web", "search_knowledge_base"})
+_QUERY_STOPWORDS = frozenset(
+    "the a an of for and or to in on under with by what how is are does do which per from at as be when".split())
+REPEAT_SEARCH_GUIDANCE = (
+    "Not searched: a near-identical search in this request already returned no data. "
+    "Reuse that result. Search a different specific point if new evidence is needed. "
+    "Do not claim verification or citations from this empty result. Where authoritative evidence "
+    "is required but unavailable, clearly state that limitation; existing evidence policy still applies.")
+
+
+def _singular(word: str) -> str:
+    """Singular and plural are one term ("entry", "entries"); nothing else is
+    stemmed, so "hedge" and "hedging" stay distinct."""
+    if len(word) > 4 and word.endswith("ies"):
+        return word[:-3] + "y"
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def _query_terms(arguments: str) -> frozenset[str]:
+    """Normalise word order and grammatical fillers, retaining frameworks,
+    negation, dates and standard identifiers so different evidence stays distinct."""
+    try:
+        parsed = json.loads(arguments or "{}")
+    except (ValueError, TypeError):
+        return frozenset()
+    query = parsed.get("query") if isinstance(parsed, dict) else None
+    terms = {_singular(word) for word in re.findall(r"[a-z0-9]+(?:[-.][a-z0-9]+)*", str(query or "").lower())
+             if word not in _QUERY_STOPWORDS}
+    # The same words for a different jurisdiction or effective date need a
+    # separate search. Preserve every non-default retrieval qualifier.
+    if isinstance(parsed, dict):
+        for key, value in parsed.items():
+            if key != "query" and value not in (None, ""):
+                terms.add("scope:" + key + "=" + json.dumps(value, sort_keys=True))
+    return frozenset(terms)
+
+
+def _repeats_empty_search(terms: frozenset[str], empty: list[frozenset[str]]) -> bool:
+    """The search repeats one that found nothing: the same terms and scope
+    (jurisdiction, date), only reordered, with filler words, or singular for
+    plural. A new term (a standard, a date, "not", "disclosure") is a
+    different point, and dropping terms is a broader search that may find
+    what the narrow one did not; both run."""
+    return bool(terms) and terms in empty
 
 
 def _receipt_line(receipt):
@@ -738,6 +807,8 @@ async def _run_agent_loop(
         max_cost_usd=limits.max_cost_usd, price_per_million_tokens=limits.price_per_million_tokens,
     )
     executed: dict[tuple[str, str], ToolResult] = {}
+    # Query terms of searches that found nothing, per search tool.
+    empty_searches: dict[str, list[frozenset[str]]] = {}
     if _progress is not None:
         _progress.update(outcome=outcome, executed=executed,
                          figure_evidence=figure_evidence if figure_evidence is not None else user_prompt)
@@ -773,6 +844,10 @@ async def _run_agent_loop(
         return "\n".join(result.content for (name, _), result in executed.items() if name == "calculate" and result.ok)
 
     def final_text(text: str) -> str:
+        # Checked as the reader sees it: "\\$468{,}000" was read as "$468" and
+        # a correct DuPont margin removed (22 Oct 2026). The release step
+        # converts LaTeX anyway.
+        text = latex_to_plain(text)
         unsupported = unreconciled_figures(text, evidence_text(), calculations_text(), stated=stated_facts)
         if unsupported:
             # Still unsupported after the correction round: remove the
@@ -789,6 +864,8 @@ async def _run_agent_loop(
         if unsupported:
             # Nothing substantive survives: withhold the answer rather than
             # release unverified figures.
+            outcome.validation = {"unsupported_figures": list(unsupported)[:20], "fallback": "withheld_unsupported"}
+            logger.warning("Agent answer withheld: unsupported figures %s", list(unsupported)[:8])
             working = verified_working(executed)
             return _final_text(
                 WITHHELD_NOTICE
@@ -797,14 +874,33 @@ async def _run_agent_loop(
                 outcome,
                 evidence=evidence_text(),
             )
-        if validate_answer_calculations(text):
-            # Do not publish an incorrect equality after an unsuccessful repair.
-            working = verified_working(executed)
-            text = (
-                "The generated explanation could not be verified. Here is the verified working:\n\n"
-                + "\n\n".join(working)
-                if working else "The numerical working could not be verified. Please retry the calculation."
-            )
+        failures = validate_answer_calculations(text)
+        if failures:
+            # Do not publish an incorrect equality after an unsuccessful repair,
+            # but remove only the statements it is in: one wrong line replaced
+            # whole explanations of a hedge, a debt restructuring and a cash
+            # conversion cycle with bare calculator steps (23 Oct 2026).
+            from app.orchestration.review_release import remove_disproved_figures
+            cleaned, notes = remove_disproved_figures(text, failures)
+            remaining = validate_answer_calculations(cleaned) if cleaned else []
+            outcome.validation = {"failed_lines": failures[:20], "remaining_after_removal": remaining[:20],
+                                  "fallback": "removed_statements" if cleaned and notes and not remaining
+                                  else "verified_working",
+                                  "reason": "" if cleaned and notes and not remaining
+                                  else ("no figure in the failures could be located" if not notes
+                                        else "nothing substantive left" if not cleaned
+                                        else "other lines still fail after removal")}
+            logger.warning("Agent calculation check: %s (failures: %s)", outcome.validation["fallback"], failures[:5])
+            if cleaned and notes and not remaining:
+                text = cleaned
+                outcome.disproved_notes = notes
+            else:
+                working = verified_working(executed)
+                text = (
+                    "The generated explanation could not be verified. Here is the verified working:\n\n"
+                    + "\n\n".join(working)
+                    if working else "The numerical working could not be verified. Please retry the calculation."
+                )
         if any(name == "get_economic_indicator" and result.ok
                for (name, _), result in executed.items()):
             text = ground_economic_narrative(text, list(executed.values()))
@@ -893,9 +989,13 @@ async def _run_agent_loop(
         to_run: dict[tuple[str, str], Any] = {}
         budget_hit: set[int] = set()
         unverified: dict[int, list[float]] = {}
+        repeated_search: set[int] = set()
         evidence = evidence_text()
         for index, (call, key) in enumerate(zip(calls, keys)):
             if key in executed or key in to_run:
+                continue
+            if key[0] in _SEARCH_TOOLS and _repeats_empty_search(_query_terms(key[1]), empty_searches.get(key[0], [])):
+                repeated_search.add(index)
                 continue
             if key[0] == "render_chart":
                 missing = unverified_chart_values(call.function.arguments, evidence)
@@ -924,6 +1024,8 @@ async def _run_agent_loop(
                 result = ToolResult.failure(
                     "budget_exhausted", "Tool-call limit reached. Answer now with the information already gathered.",
                 )
+            elif index in repeated_search:
+                result = ToolResult.failure("repeat_search", REPEAT_SEARCH_GUIDANCE)
             elif index in unverified:
                 shown = ", ".join(f"{value:g}" for value in unverified[index][:6])
                 result = ToolResult.failure(
@@ -950,6 +1052,8 @@ async def _run_agent_loop(
                     )
                     result = replace(result, content=result.content + "\n\nSource evidence:\n" + reference_text)
                 executed[key] = result
+                if key[0] in _SEARCH_TOOLS and result.error_code == "no_data":
+                    empty_searches.setdefault(key[0], []).append(_query_terms(key[1]))
                 outcome.calculation_receipts.extend(result.all_receipts)
                 outcome.sources.extend(result.sources)
                 outcome.artifacts.extend(result.artifacts)
@@ -1143,10 +1247,11 @@ async def _run_agent_loop(
                         "The working in your answer was computed without the calculator. Call calculate for "
                         "each figure you derived (including every schedule or table total), then give the "
                         "same answer with the calculator's results, keeping its structure and citations."
+                        + FINAL_ANSWER_ONLY
                     )})
                     continue
-            unsupported = unreconciled_figures(message.content or "", evidence_text(), calculations_text(),
-                                               stated=stated_facts)
+            unsupported = unreconciled_figures(latex_to_plain(message.content or ""), evidence_text(),
+                                               calculations_text(), stated=stated_facts)
             if unsupported and not reminded_figures and step < limits.max_steps:
                 reminded_figures = True
                 messages.append({"role": "assistant", "content": message.content})
@@ -1154,6 +1259,7 @@ async def _run_agent_loop(
                     "These figures in your answer do not match any number in the question or the tool "
                     "results: " + ", ".join(unsupported[:8]) + ". Every figure must come from the data: "
                     "call calculate for anything you derive, or remove the figure. Then give the final answer."
+                    + FINAL_ANSWER_ONLY
                 )})
                 continue
             hand = ([figure for figure in hand_derived_figures(message.content or "", evidence_text(),
@@ -1170,7 +1276,7 @@ async def _run_agent_loop(
                 messages.append({"role": "user", "content": (
                     "These figures in your answer were worked out without the calculator: " + ", ".join(hand)
                     + ". Call calculate for each of them, then give the same answer with the calculator's "
-                    "results, keeping its structure and citations."
+                    "results, keeping its structure and citations." + FINAL_ANSWER_ONLY
                 )})
                 continue
             if (

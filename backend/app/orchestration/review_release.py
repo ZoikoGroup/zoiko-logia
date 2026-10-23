@@ -28,7 +28,7 @@ def remove_disproved_figures(answer: str, failures: list[str]) -> tuple[str, lis
     = £1,560,000" was released, marked complete, beside a warning that "a
     calculation could not be re-checked". Only the disproved statements go;
     the rest of the answer stays."""
-    from app.orchestration.claim_verification import FIGURES_REMOVED_NOTE, remove_claims
+    from app.orchestration.claim_verification import FIGURE_DISPROVED_NOTE, is_removal_note, remove_claims
     from app.orchestration.figure_reconciliation import material_figures, statements_with_figures
 
     shown_figures = material_figures(answer or "")
@@ -49,9 +49,9 @@ def remove_disproved_figures(answer: str, failures: list[str]) -> tuple[str, lis
     if not disproved:
         return answer, []
     statements = statements_with_figures(answer, list(dict.fromkeys(disproved)))
-    cleaned = remove_claims(answer, statements, FIGURES_REMOVED_NOTE)
+    cleaned = remove_claims(answer, statements, FIGURE_DISPROVED_NOTE)
     substantive = [line for line in cleaned.splitlines()
-                   if line.strip() and not line.lstrip().startswith("#") and FIGURES_REMOVED_NOTE not in line
+                   if line.strip() and not line.lstrip().startswith("#") and not is_removal_note(line)
                    and not re.fullmatch(r"[\s|:\-]+", line)]
     # Headings over removal notes are not an answer: the caller sends it to review.
     return (cleaned if substantive else ""), notes

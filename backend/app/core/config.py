@@ -197,9 +197,21 @@ class Settings(BaseSettings):
     AGENT_MAX_COMPLETION_TOKENS: int = 4096
     # Estimated input + generated output per request; tune to the provider tier.
     AGENT_MAX_REQUEST_TOKENS: int = 8000
+    # GPT-OSS reasoning effort on agent calls: "" keeps the provider default
+    # (medium); "low" saves output tokens but is opt-in (see agent_budget).
+    AGENT_REASONING_EFFORT: str = ""
+    # The batched calculator (up to 12 calculations per call; design in
+    # docs/kriton-batched-calculator-and-balance-provenance-design.md). Off by
+    # default until reviewed; one calculation per step ran multi-part answers
+    # out of steps (23 Oct 2026).
+    AGENT_BATCH_CALCULATIONS: bool = False
     # Local development only: start even when the shared database was set up
     # by another branch (different setup fingerprint). Never true in production.
     SKIP_STARTUP_FINGERPRINT_CHECK: bool = False
+    # Isolated manual-test server only (scripts/run_manual_test_server.py):
+    # startup refuses any database without the provisioned test marker.
+    MANUAL_TEST_SERVER: bool = False
+    MANUAL_TEST_DATABASE_MARKER: str = ""
     # Spend budget per agent run in USD; off unless both are set (> 0).
     AGENT_MAX_COST_USD: float = 0.0
     MODEL_PRICE_PER_MILLION_TOKENS: float = 0.0

@@ -8,6 +8,7 @@ explains the verified result.
 from __future__ import annotations
 
 import hashlib
+import re
 import uuid
 from dataclasses import replace
 
@@ -22,7 +23,7 @@ from app.orchestration.calculation_service import evaluate_expression
 TOOL_NAME = "calculate"
 TOOL_VERSION = "1.1"
 # The AST-whitelisted evaluator in calculation_service.evaluate_expression.
-FORMULA_VERSION = "expression-evaluator-1.0"
+FORMULA_VERSION = "expression-evaluator-1.1"
 
 
 class CalculateArgs(BaseModel):
@@ -128,7 +129,7 @@ CALCULATE_TOOL = ToolSpec(
 # single-expression form above is unchanged; this spec is registered only by
 # build_default_registry(batch_calculations=True).
 
-BATCH_TOOL_VERSION = "1.2"
+BATCH_TOOL_VERSION = "1.3"
 MAX_BATCH_ITEMS = 12
 _PRESERVE_NOTE = (" Preserve the exact operands above when displaying this working; "
                   "do not replace them with rounded inputs while keeping the same result.")
@@ -138,13 +139,16 @@ class CalculationItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     expression: str = Field(min_length=1, max_length=240,
-                            description="Arithmetic using numbers, + - * /, ** for powers and parentheses only.")
+                            description=("Arithmetic using numbers, + - * /, ** for powers and parentheses only. "
+                                         "May use an EARLIER item's result as {id}, e.g. \"3500000 / {s1}\"."))
     label: str = Field(default="", max_length=120, description="What is being calculated.")
+    id: str = Field(default="", pattern=r"^(?:[A-Za-z][A-Za-z0-9_]{0,15})?$",
+                    description="Optional short name (e.g. \"s1\") that later items use as {s1}.")
 
 
 class CalculateBatchArgs(BaseModel):
     """Exactly one of `expression` (one calculation, as before) or
-    `expressions` (up to 12 independent calculations)."""
+    `expressions` (up to 12 ordered calculations)."""
     model_config = ConfigDict(extra="forbid")
 
     expression: str | None = Field(
@@ -153,15 +157,36 @@ class CalculateBatchArgs(BaseModel):
     label: str = Field(default="", max_length=120, description="What is being calculated (single form).")
     expressions: list[CalculationItem] | None = Field(
         default=None, min_length=1, max_length=MAX_BATCH_ITEMS,
-        description=("Up to 12 INDEPENDENT calculations in one call, each {label, expression}. Use it whenever "
-                     "you need several figures whose inputs you already have. No item may use another item's "
-                     "result; compute a dependent figure in a later call or as one combined expression."))
+        description=("Up to 12 calculations in one call, each {label, expression, optional id}, evaluated in "
+                     "order. Use it whenever you need several figures. An item may use the result of an EARLIER "
+                     "item by writing its id in braces, e.g. items {id: \"s1\", expression: \"5 * 1.06 / 1.025\"} "
+                     "then {expression: \"3500000 / {s1}\"}; a whole chain (rates, conversions, present values, "
+                     "total) fits in one call."))
 
     @model_validator(mode="after")
     def _one_form(self) -> "CalculateBatchArgs":
         if (self.expression is None) == (self.expressions is None):
             raise ValueError("give either expression or expressions, not both and not neither")
+        ids = [item.id for item in self.expressions or () if item.id]
+        if len(ids) != len(set(ids)):
+            raise ValueError("each item id must be unique")
         return self
+
+
+# "{s1}" in an item's expression: the result of the earlier item with id s1.
+_REFERENCE = re.compile(r"\{([A-Za-z][A-Za-z0-9_]{0,15})\}")
+
+
+def _operand(rendered: str) -> str:
+    return f"({rendered})" if rendered.startswith("-") else rendered
+
+
+def _carried(value: Decimal) -> str:
+    """A referenced result at the evaluator's full precision: a chain gives
+    the same result as one combined expression. The receipt records the
+    expression as evaluated."""
+    rendered = format(value, "f")
+    return _operand(rendered.rstrip("0").rstrip(".") if "." in rendered else rendered)
 
 
 async def _handle_batch(args: CalculateBatchArgs) -> ToolResult:
@@ -172,15 +197,43 @@ async def _handle_batch(args: CalculateBatchArgs) -> ToolResult:
     receipts: list[dict] = []
     failures: list[str] = []
     size = len(args.expressions)
+    # Results of earlier items by id. Items run in the order given, so a
+    # reference can only reach back: a dependent chain (PPP rates → dollar
+    # cash flows → present values → NPV) took one call per stage and the
+    # Brazil run reached the step limit (23 Oct 2026).
+    values: dict[str, Decimal] = {}
     for index, item in enumerate(args.expressions, start=1):
-        # Each item is evaluated on its own by the single-calculation path, so
-        # one bad item cannot affect another's result or receipt.
-        result = await _handle(CalculateArgs(expression=item.expression, label=item.label))
         prefix = f"{item.label}: " if item.label else ""
+        references = _REFERENCE.findall(item.expression)
+        missing = [name for name in references if name not in values]
+        if missing:
+            failures.append("unresolved_reference")
+            lines.append(f"{index}. {prefix}{item.expression} — NOT COMPUTED (unresolved_reference): "
+                         f"{', '.join('{' + name + '}' for name in missing)} is not the id of an earlier item "
+                         "computed in this call. Do not state a result for this item.")
+            continue
+        resolved = _REFERENCE.sub(lambda match: _carried(values[match.group(1)]), item.expression)
+        # Keep the original evaluator and input limits after substitution.
+        if len(resolved) > 240:
+            failures.append("invalid_arguments")
+            lines.append(f"{index}. {prefix}{item.expression} — NOT COMPUTED (invalid_arguments): "
+                         "expanded expression exceeds 240 characters. Split this calculation into smaller stages.")
+            continue
+        result = await _handle(CalculateArgs(expression=resolved, label=item.label))
         if result.ok and result.receipt:
+            if item.id:
+                values[item.id] = evaluate_expression(resolved)
             receipts.append({**result.receipt, "tool_version": BATCH_TOOL_VERSION,
-                             "batch_index": index, "batch_size": size})
-            lines.append(f"{index}. " + result.content.replace(_PRESERVE_NOTE, ""))
+                             "batch_index": index, "batch_size": size,
+                             **({"item_id": item.id} if item.id else {}),
+                             **({"expression_template": item.expression, "depends_on": list(dict.fromkeys(references))}
+                                if references else {})})
+            content = result.content.replace(_PRESERVE_NOTE, "")
+            if references:
+                # Symbolic references avoid false working with rounded inputs.
+                content = content.replace(resolved, item.expression, 1)
+                content += " References use earlier results before display rounding; do not substitute rounded operands."
+            lines.append(f"{index}. " + content)
         else:
             failures.append(result.error_code or "invalid_arguments")
             lines.append(f"{index}. {prefix}{item.expression} — NOT COMPUTED ({result.error_code}): {result.content} "
@@ -208,8 +261,9 @@ CALCULATE_BATCH_TOOL = replace(
     CALCULATE_TOOL,
     version=BATCH_TOOL_VERSION,
     description=CALCULATE_TOOL.description + (
-        " To compute several independent figures, pass them together in `expressions` (up to 12) in ONE "
-        "call instead of one call each."),
+        " To compute several figures, pass them together in `expressions` (up to 12) in ONE call instead of "
+        "one call each. A figure that needs an earlier one names it: give the earlier item an id and write "
+        "{id} in the later expression; items run in order."),
     args_model=CalculateBatchArgs,
     handler=_handle_batch,
 )

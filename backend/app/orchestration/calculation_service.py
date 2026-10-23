@@ -121,7 +121,10 @@ def _evaluate(expression: str) -> Decimal:
         if isinstance(node, ast.Expression):
             return visit(node.body)
         if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-            return Decimal(str(node.value))
+            # AST constants containing decimals have already been converted to
+            # binary numbers by Python. Read the whitelisted source literal so
+            # dependent calculator results retain their Decimal precision.
+            return Decimal(ast.get_source_segment(cleaned, node))
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
             value = visit(node.operand)
             return value if isinstance(node.op, ast.UAdd) else -value
@@ -188,7 +191,9 @@ _FINANCE_FORMULA = re.compile(
 _NEEDS_LOOKUP = re.compile(
     # "current" alone, not "current assets/liabilities/ratio": a ratio question
     # was taken for a rate lookup, so its calculations were refused as uncited.
-    r"\b(?:current(?!\s+(?:assets?|liabilit(?:y|ies)|ratio|account|portion))|currently|today|latest|prevailing|this year'?s|repo|rbi|federal reserve|bank rate|"
+    # Time words ("current", "today", "latest") are decided by
+    # live_data_requested, not by this list.
+    r"\b(?:repo|rbi|federal reserve|bank rate|"
     r"tax (?:rate|slab|bracket)s?|slabs?|thresholds?|limits?|gst rate|vat rate|according to|as per|"
     r"under section|act|rules?|standard|ifrs|ind as|gaap)\b",
     re.I,
@@ -202,13 +207,107 @@ _ACCOUNTING_CURRENT = re.compile(
     # the forecast's formulas needed citations and the answer was refused.
     r"|\bcurrent\s+(?:annual\s+|monthly\s+|quarterly\s+)?(?:contribution|(?:operating\s+|net\s+|gross\s+)?profit|"
     r"(?:contribution\s+)?margin|break[- ]?even|(?:fixed|variable|operating)\s+(?:operating\s+)?costs?|cost base)\b"
-    r"|\bcurrent\s+(?:[a-z-]+\s+){0,2}(?:is|are|was|were|of|at)\s+(?:[£$€₹]\s?|(?:rs\.?|inr|usd|gbp|eur)\s?)?\d"
+    # "the current year-end spot rate is $1.35" (22 Oct 2026).
+    # "current TTM (Trailing Twelve Months) EBITDA is $2,000,000".
+    r"|\bcurrent\b[^.\n]{0,80}?\b(?:is|are|was|were|of|at)\s+(?:[£$€₹]\s?|(?:rs\.?|inr|usd|gbp|eur)\s?)?\d"
     # The income-tax split, not today's rate: "provision for income taxes
     # (current vs. deferred expense)" was read as a current-rate lookup.
     r"|\bcurrent\s+(?:vs\.?|versus|and|or|/)\s+deferred\b"
+    # A price the user gives: "currently trading at $950 per bond".
+    r"|\bcurrently\s+(?:trading|priced|quoted|valued|selling|listed)\s+at\s+(?:[£$€₹]\s?|(?:rs\.?|inr|usd|gbp|eur)\s?)?\d"
     r"|\bcurrent\s+(?:income\s+)?tax\s+(?:expense|payable|liabilit(?:y|ies)|charge|provision)\b",
     re.I,
 )
+
+
+# A threshold or limit the user gives is a fact of the scenario, not a
+# statutory limit to look up: "just below a $3,000 manager approval
+# threshold" sent a Benford question to strict sourcing (22 Oct 2026).
+_SUPPLIED_LIMIT = re.compile(
+    r"(?:[£$€₹]|\b(?:rs\.?|inr|usd|gbp|eur)\s?)\s?\d[\d,]*(?:\.\d+)?\s+(?:[a-z-]+\s+){0,3}(?:thresholds?|limits?)\b"
+    r"|\b(?:thresholds?|limits?)\s+(?:of|at|is)\s+(?:[£$€₹]|\b(?:rs\.?|inr|usd|gbp|eur)\s?)\s?\d"
+    # "The total materiality threshold for the entire financial audit is set at
+    # $750,000" sent an AS 2501 question to strict sourcing (23 Oct 2026).
+    r"|\b(?:materiality|tolerable|performance|approval|authori[sz]ation|clearly\s+trivial)\s+(?:thresholds?|limits?)\b"
+    r"[^.\n]{0,60}?\b(?:is|was|of|at|=)\s+(?:set\s+at\s+)?(?:[£$€₹]|\b(?:rs\.?|inr|usd|gbp|eur)\s?)\s?\d", re.I)
+# "The corporate tax rate is 21%", "a 25% tax rate": a rate the question
+# supplies, not one to look up. A diluted-EPS question planned a live search
+# for it (23 Oct 2026).
+_SUPPLIED_TAX_RATE = re.compile(
+    r"\b(?:(?:corporate|income|effective|marginal|statutory|applicable)\s+)?tax\s+rates?\s+(?:is|was|of|at|=|:)\s*"
+    r"\d+(?:\.\d+)?\s?%"
+    r"|\b\d+(?:\.\d+)?\s?%\s+(?:(?:corporate|income|effective|marginal|statutory)\s+)?tax\s+rates?\b", re.I)
+# A request not to check or retrieve something: "Use the supplied rate without
+# checking the current repo rate", "Do not retrieve a live rate" (23 Oct 2026).
+# The clause is an instruction about tools, not a request for the fact.
+NEGATED_LOOKUP = re.compile(
+    r"\b(?:without|do\s+not|don'?t|never|no\s+need\s+to|need\s+not)\s+(?:\w+\s+){0,2}?"
+    r"(?:check\w*|verif\w*|confirm\w*|validat\w*|look\w*\s+up|retriev\w*|fetch\w*|search\w*|use)\b[^.?!\n]*", re.I)
+
+
+# Asking whether a rate is right is a lookup, whatever figure the question
+# quotes: "Is the current repo rate at 6.5%?" and "Is the current exchange
+# rate of 83 INR per USD correct?" read as the user's own figures (review R1,
+# 22 Oct 2026). Giving a rate to work with ("the current spot rate is $1.35")
+# is not a question about it.
+_VERIFY_OPENER = re.compile(
+    r"^\W*(?:is|are|was|were|has|have|does|do|did|can\s+you\s+confirm|please\s+confirm|confirm|check|verify|validate)\b",
+    re.I)
+_VERIFY_ASK = re.compile(
+    r"\b(?:correct|accurate|right|valid|true|up[- ]to[- ]date|in\s+force|still\s+appl(?:y|ies)|still\s+(?:the\s+)?(?:same|current))\b",
+    re.I)
+# A verifying verb anywhere, with the time word after it: "Could you verify
+# whether the current repo rate is 6.5%?", "Kindly confirm the current GST
+# rate …", "I need to know whether the current SOFR rate is still 5.3%". The
+# order keeps "Using the current repo rate of 6.5%, compute … and check that
+# the interest is correct" a calculation (final review, 22 Oct 2026).
+_VERIFY_PHRASE = re.compile(
+    # Not a bare "know" or "tell me": "I know the current rate is 7%" and
+    # "tell me the interest using …" supply a rate (v4 review).
+    r"\b(?:verify|confirm|check|validate|find\s+out|know\s+(?:whether|if)"
+    r"|tell\s+me\s+(?:whether|if))\b"
+    r"(?:\s+(?:whether|if|that))?[^.?!\n]{0,40}?"
+    r"\b(?:current(?:ly)?|latest|today'?s?|prevailing|present|still|now)\b", re.I)
+_TIME_WORD = re.compile(r"\b(?:current(?:ly)?|latest|today'?s?|now|still|prevailing|present|this\s+year'?s?)\b", re.I)
+_FACT_WORD = re.compile(
+    r"\b(?:rates?|prices?|thresholds?|limits?|wages?|yields?|slabs?|ceilings?|caps?|exemptions?|allowances?|"
+    r"repo|sofr|libor|euribor|base\s+rate|fx|exchange|gst|vat|tds)\b", re.I)
+# The sentence asks about a calculation on the rate, not whether the rate is
+# right: "does the current exchange rate of $1.12 create a gain", "is the
+# current price of $45 above book value", "was … 8% applied correctly",
+# "compute interest" (v4 review). Such a sentence is never a verification.
+_CALCULATION_ASK = re.compile(
+    r"\b(?:comput\w*|calculat\w*|appl(?:y|ies|ied|ying)|creat\w*|translat\w*|above|below|compar\w*|"
+    r"determin\w*|estimat\w*|us(?:e|ed|es|ing)|based\s+on|exceed\w*|record\w*|recogni[sz]\w*|measur\w*|"
+    r"impact|effect|gain|loss|interest\s+(?:on|for|of)\b)\b", re.I)
+# A yes/no question about a rate with its figure, no time word needed: "Is the
+# repo rate 6.5%?", "Repo rate still 6.5%?", "The repo rate is 6.5% now,
+# isn't it?". Not a wh-question ("What is the cost if the rate is 21%?").
+_YES_NO = re.compile(r"^\W*(?:is|are|was|were|has|have|does|do|did)\b", re.I)
+_WH_OR_TASK = re.compile(r"^\W*(?:what|how|which|why|when|where|who|calculate|compute|determine|find|prepare)\b",
+                         re.I)
+# "…, isn't it?", "…, right?", and a bare "Repo rate still 6.5%?".
+_TAG_QUESTION = re.compile(r",\s*(?:isn'?t\s+it|is\s+it\s+not|right|correct|yes)\s*\?\s*$", re.I)
+_ELLIPTICAL = re.compile(r"^\W*(?:the\s+)?[\w/ ]{0,30}?\b(?:rate|price|threshold|limit|wage|yield)s?\s+(?:still|now)\b",
+                         re.I)
+_STATED_FIGURE = re.compile(r"\d+(?:\.\d+)?\s?%|[£$€₹¥]\s?\d|\b\d+(?:\.\d+)?\b")
+
+
+def verifies_current_fact(text: str) -> bool:
+    """A sentence asks whether a current rate, price, threshold or limit is
+    right, rather than supplying one to calculate with."""
+    for sentence in re.split(r"(?<=[.?!])\s+|\n", NEGATED_LOOKUP.sub(" ", text or "")):
+        if not _FACT_WORD.search(sentence) or _CALCULATION_ASK.search(sentence):
+            continue
+        asks = (_VERIFY_OPENER.match(sentence) or _VERIFY_PHRASE.search(sentence)
+                or (sentence.rstrip().endswith("?") and _VERIFY_ASK.search(sentence)))
+        if asks and _TIME_WORD.search(sentence):
+            return True
+        question = sentence.rstrip().endswith("?") and not _WH_OR_TASK.match(sentence)
+        if question and (_YES_NO.match(sentence) or _TAG_QUESTION.search(sentence) or _ELLIPTICAL.match(sentence)) \
+                and _STATED_FIGURE.search(sentence):
+            return True
+    return False
 
 
 _PERIOD = r"(?:financial\s+|fiscal\s+|accounting\s+|reporting\s+)?(?:year|period|quarter|month)"
@@ -219,12 +318,94 @@ _CURRENT_PERIOD = re.compile(
     rf"\bcurrent(?:\s+(?:and|or|vs\.?|versus|/)\s+(?:previous|prior|last|preceding))?[\s-]+{_PERIOD}'?s?\b", re.I)
 
 
+# One decision for every "does this question need live data?" check
+# (needs_lookup, the planner, the FX latest-rate gate). Three detectors each
+# kept their own exception lists, so every new phrasing broke one of them:
+# "currently pays an annual dividend of $1.20", "the value per share today
+# (Year 0)", "the current spot rate is 5.00 BRL per $1" (22-23 Oct 2026).
+_TIME_WORDS = re.compile(
+    r"\b(?:current(?:ly)?|latest|today'?s?|prevailing|live|this\s+(?:week|month|year)'?s?|at\s+present|present[- ]day)\b"
+    # "now" and "present" are also ordinary words ("the team must now
+    # perform", "present the following details"): only beside a figure word.
+    r"|\b(?:rates?|prices?|quotes?|yields?|values?|levels?)\s+(?:right\s+)?now\b|\bpresent\s+(?:rates?|prices?|market)\b",
+    re.I)
+_FIGURE = r"(?:[£$€₹¥]\s?|(?:rs\.?|inr|usd|gbp|eur)\s?)?\d"
+_LINKING = r"\b(?:is|are|was|were|of|at|=|pays?|paying|trades?|trading|earns?|stands?|costs?|totals?|equals?)\s+"
+_LOOKUP_NOUN = r"\b(?:rates?|prices?|quotes?|yields?|index|cpi|inflation|thresholds?|limits?|levels?)\b"
+_CLAUSE = r"(?:(?!\b(?:and|if|but|while|whereas|then|or)\b)[^.;?!\n])"
+# The time word's own clause gives the figure: "currently pays … $1.20",
+# "the current spot rate is 5.00", "this year: rent £36,000", "this month I
+# expect £6,000". A rate or price word before the figure needs a linking verb
+# ("the current repo rate on ₹10 lakh" asks for the rate); a conjunction or
+# condition starts another clause ("today and its P/E if EPS is 6.1").
+# A period ("52-week high", "5 years") is not a value, and a comparison
+# ("trading above $100") is a condition to check, not a supplied figure.
+_VALUE = rf"{_FIGURE}(?![\d,.]*\s*-?\s*(?:weeks?|days?|months?|years?|quarters?|hours?)\b)"
+_COMPARISON = r"\b(?:above|below|over|under|exceed\w*|more\s+than|less\s+than|higher|lower)\b"
+_SUPPLIED_AFTER = re.compile(
+    rf"^{_CLAUSE}{{0,80}}?{_LINKING}(?:about\s+|approximately\s+)?{_VALUE}"
+    rf"|^(?:(?!{_LOOKUP_NOUN}|{_COMPARISON}){_CLAUSE}){{0,60}}?{_VALUE}", re.I)
+# What the question asks to compute, not an input to fetch: "the intrinsic
+# current value per share today (Year 0)", "present value".
+_COMPUTED_TARGET = re.compile(
+    r"^\s*(?:\(?year\s*0\)?|value\b|worth\b|(?:intrinsic|fair|present|net\s+present)\s+value\b)", re.I)
+_VALUATION_TASK = re.compile(r"\b(?:discount\w*|valu(?:e|ation)|intrinsic|present\s+value|year\s*0)\b", re.I)
+
+
+def supplied_fact_kinds(text: str) -> set[str]:
+    """Kinds of figure ("price", "rate") the text gives a current value for:
+    "the current spot rate is 5.00" supplies a rate."""
+    supplied: set[str] = set()
+    for sentence in re.split(r"(?<=[.?!])\s+|\n", NEGATED_LOOKUP.sub(" ", text or "")):
+        for match in _TIME_WORDS.finditer(sentence):
+            after = sentence[match.end():]
+            if _SUPPLIED_AFTER.search(after):
+                supplied.update(_fact_nouns(re.split(r"\d", after, maxsplit=1)[0]))
+    return supplied
+
+
+def live_data_requested(text: str, context: str | None = None) -> bool:
+    """A time word asks for live data only when it qualifies something whose
+    value the question does not give and that is not the result being
+    computed; "without checking …" and "do not retrieve …" never do."""
+    text = NEGATED_LOOKUP.sub(" ", text or "")
+    # Facts the question itself gives a current value for: "The current
+    # market price of the stock is $48" supplies a price, so a later "based
+    # on the current underlying stock price" means that $48, not a live
+    # quote (the convertible question planned a market lookup, 23 Oct 2026).
+    # `context` is the full question when `text` has had phrases removed.
+    supplied = supplied_fact_kinds(context if context is not None else text)
+    for sentence in re.split(r"(?<=[.?!])\s+|\n", text):
+        for match in _TIME_WORDS.finditer(sentence):
+            after = sentence[match.end():]
+            if _SUPPLIED_AFTER.search(after):
+                continue
+            if _VALUATION_TASK.search(sentence) and (
+                    _COMPUTED_TARGET.search(after) or re.search(r"\(\s*year\s*0\s*\)", after[:30], re.I)):
+                continue
+            # The phrase the time word qualifies, up to the clause's end.
+            named = _fact_nouns(re.split(r"[,;:()]|\b(?:and|or|if|but|then)\b", after, maxsplit=1)[0][:60])
+            if named and named <= supplied:
+                continue
+            return True
+    return False
+
+
+def _fact_nouns(phrase: str) -> set[str]:
+    """The kinds of figure a phrase names, singular: {"price"}, {"rate"}."""
+    return {re.sub(r"s$", "", word.lower()) for word in re.findall(
+        r"\b(?:rates?|prices?|quotes?|yields?|thresholds?|limits?|levels?|index)\b", phrase or "", re.I)}
+
+
 def needs_lookup(query: str) -> bool:
     """The question asks for something that must be looked up — a current or
     statutory rate, slab, threshold or provision — rather than computed."""
+    query = NEGATED_LOOKUP.sub(" ", query or "")
+    if verifies_current_fact(query):
+        return True
     # Accounting uses of "current" are labels on the user's own figures, not
     # a request for today's rate ("Current and quick ratio?").
-    text = _ACCOUNTING_CURRENT.sub(" ", query or "")
+    text = _SUPPLIED_TAX_RATE.sub(" ", _SUPPLIED_LIMIT.sub(" ", _ACCOUNTING_CURRENT.sub(" ", query or "")))
     if _OWN_PRIOR_PERIOD.search(text) and len(_STATED_AMOUNT.findall(text)) >= 2:
         # "Calculate … for the current year … and for the previous financial
         # year using the figures provided" compares the user's own periods
@@ -235,7 +416,7 @@ def needs_lookup(query: str) -> bool:
         r'\b(?:find|fetch|get|look\s+up|retrieve)\b[^.?]*\b(?:exchange|fx|conversion|currency)\s+rates?\b',
         text, re.I,
     )
-    return bool(_NEEDS_LOOKUP.search(text) or requested_fx)
+    return bool(_NEEDS_LOOKUP.search(text) or requested_fx or live_data_requested(text, context=query))
 
 
 def is_self_contained_calculation(query: str, history=()) -> bool:
@@ -550,26 +731,52 @@ def _journal_balance_failures(answer_text: str) -> list[str]:
     return failures
 
 
+def plain_arithmetic(answer_text: str) -> str:
+    """Answer text as the equation checks read it. LaTeX becomes plain text;
+    emphasis and a spaced percent sign are presentation: "= **27.74 %**" (a
+    narrow no-break space before %) was not read as a result at all, so a
+    wrong bold figure passed every check (22 Oct 2026)."""
+    from app.orchestration.answer_formatting import latex_to_plain
+    # Not the power operator: "1.728/(1.09**2) = 1.454423" became "1.092" and
+    # four correct present values were reported as mismatches (23 Oct 2026),
+    # and "1 / (1.1 ** 4)", written with spaces, lost its operator too.
+    text = latex_to_plain(answer_text)
+    return re.sub(r"(\d)[ \u00a0\u202f]+%", r"\1%", re.sub(r"\*\*", lambda match: _bold_or_power(text, match), text))
+
+
+def _bold_or_power(text: str, match: re.Match) -> str:
+    """"**" between an operand and a number or "(" is a power, kept; any
+    other "**" is emphasis, removed."""
+    before = text[:match.start()].rstrip(" ")
+    after = text[match.end():].lstrip(" ")
+    power = bool(before) and (before[-1].isdigit() or before[-1] == ")") and bool(after) and (
+        after[0].isdigit() or after[0] in "(-")
+    return match.group(0) if power else ""
+
+
 def shows_arithmetic(answer_text: str) -> bool:
     """The answer shows a computed equation ("£24,000 ÷ 12 = £2,000"), read
     the way validate_answer_calculations reads one."""
-    from app.orchestration.answer_formatting import latex_to_plain
-    normalized = _normalise_arithmetic(latex_to_plain(answer_text).replace("\\times", "*").replace("\\div", "/"))
+    normalized = _normalise_arithmetic(plain_arithmetic(answer_text).replace("\\times", "*").replace("\\div", "/"))
     return any(any(operator in match.group("expression") for operator in "+-*/×÷")
                for match in _EQUATION.finditer(normalized))
 
 
 def validate_answer_calculations(answer_text: str) -> list[str]:
     """Return failures only for simple equations we can verify with certainty."""
-    from app.orchestration.answer_formatting import latex_to_plain
     # "10{,}000 \times 1.1025 = 10{,}025" was unreadable here, and a wrong
     # compound-interest result ($10,025 for $11,025) was released.
-    answer_text = latex_to_plain(answer_text)
+    answer_text = plain_arithmetic(answer_text)
     failures: list[str] = []
     normalized = _normalise_arithmetic(answer_text.replace("\\times", "*").replace("\\div", "/"))
     for match in _EQUATION.finditer(normalized):
         expression = match.group("expression").strip()
-        if not any(operator in expression for operator in "+-*/×÷"):
+        line_start = normalized.rfind("\n", 0, match.start()) + 1
+        step_start = max(line_start, normalized.rfind("=", line_start, match.start()) + 1)
+        # A step with a power counts even when the match starts after the
+        # "^" at a bare number ("10,000 × (1 + 0.05)^2 = 12,000").
+        has_power = bool(re.search(r"\^|\*\*", normalized[step_start:match.end()]))
+        if not any(operator in expression for operator in "+-*/×÷") and not has_power:
             continue
         # Powers are outside what this checker evaluates, and the match
         # starts after the exponent: "(150,000 ÷ 100,000)^(1/3) − 1 =
@@ -578,10 +785,15 @@ def validate_answer_calculations(answer_text: str) -> list[str]:
         # Only this step of a chain counts: in "FV = 10,000 × (1 + 0.05)^2 =
         # 10,000 × 1.1025 = 10,025" the power in the first step hid the wrong
         # final step ($10,025 for $11,025) from the check.
-        line_start = normalized.rfind("\n", 0, match.start()) + 1
-        step_start = max(line_start, normalized.rfind("=", line_start, match.start()) + 1)
-        if re.search(r"\^|\*\*", normalized[step_start:match.end()]):
-            continue
+        if has_power:
+            # The whole step is checked when it is plain arithmetic: skipping
+            # every power let "1.728/(1.09**2) = 1.60" (1.454423) through
+            # (23 Oct 2026). A step with words or units is still skipped.
+            equals = normalized.rfind("=", match.start(), match.start("result"))
+            whole = normalized[step_start:equals].strip()
+            if not re.fullmatch(r"[0-9,.()\s+\-*/×÷^]+", whole) or not re.search(r"\^|\*\*", whole):
+                continue
+            expression = whole
         # An equation in an unknown is not arithmetic: "Revenue × (1 − 0.45) −
         # 840,000 = 900,000" (the target-profit condition) was read from its
         # first number as "(1 − 0.45) − 840,000 = 900,000", judged false, and

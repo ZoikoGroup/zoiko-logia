@@ -110,11 +110,100 @@ _CITATION_VARIANT = re.compile(
 
 
 _INVENTED_MARKER = re.compile(
-    r"\s?(?:【[^】\n]{0,30}】|[\[［]\s*(?:CALC|CALCULATION|SRC|SOURCE)[\s\-‐‑‒–—_]?\d+\s*[\]］])", re.I,
+    # Fullwidth brackets never belong in an answer: "【calculate Misstatement
+    # to materiality ratio】" (39 characters) passed the earlier 30 limit.
+    r"\s?(?:【[^】\n]{0,160}】|[\[［]\s*(?:CALC|CALCULATION|SRC|SOURCE)[\s\-‐‑‒–—_]?\d+\s*[\]］])", re.I,
 )
 
 
 _CALCULATED_TAG = re.compile(r"\[\s*calculat\w*(?:\s+result)?\s*[:=]?\s*([^\]\n]{0,40})\]", re.I)
+# A tool call written into the answer as text instead of made: '【calculate:
+# expression="180000 * 20000 / 200000", label="Allocated price"}】', sometimes
+# unclosed. Shown to users in table cells on 22 Oct 2026. Needs a tool name and
+# key="value" arguments, so ordinary prose ("calculate: the formula is…") stays.
+_TOOL_CALL_TEXT = re.compile(
+    r"\s?【?\s*(?:functions\.)?(?:calculate|render_chart|search_web|search_knowledge_base|get_exchange_rate|"
+    r"get_market_data|get_economic_indicator)\s*[:(]\s*\{?\s*\w+\s*=\s*\"[^】\n]*?(?:\}(?:\s*】)?|】)",
+)
+
+
+# Kriton's own tool tags, in the forms the model wrote them on 22 Oct 2026:
+# "(calculated with tool – see calculation “NRV total A”)", "(tool – “Total
+# inventory”)", "(derived manually)", and sentences about "the exact
+# calculation tool". Only these forms: ordinary prose — "use a calculation tool
+# such as Excel", "(machine tool – depreciated over 5 years)", "(a machine
+# tool: cost $50,000)" — is never touched.
+_LABEL = r"[“\"][^”\"\n]{1,60}[”\"]"
+_TOOL_MENTION = re.compile(
+    r"[ \t]*\(\s*(?:"
+    rf"tool\s*[–—-]\s*{_LABEL}"
+    rf"|calculated\s+with\s+(?:the\s+)?(?:exact\s+)?(?:calculation\s+)?tool\s*[–—-]\s*see\s+calculation\s+{_LABEL}"
+    rf"|see\s+calculation\s+{_LABEL}"
+    r"|derived\s+manually|calculated\s+(?:directly|manually)|computed\s+manually"
+    r")\s*\)",
+    re.I,
+)
+_TOOL_SENTENCE = re.compile(
+    r"(?:(?<=^)|(?<=[.!?]\s)|(?<=\n))[ \t]*[^.!?\n|]*\bthe\s+exact\s+calculation\s+tool\b[^.!?\n|]*[.!?](?=\s|$)",
+    re.I | re.M,
+)
+
+
+# Calculator arguments written out instead of called: a JSON object with an
+# "expression" key, fenced or bare (an inventory answer showed
+# {"expression": "120000 + 45000", "label": "Total inventory to remove"}).
+_TOOL_ARGUMENTS_JSON = re.compile(
+    r"```(?:json)?[ \t]*\n?\s*\{[^{}]*\"expressions?\"\s*:[^{}]*\}\s*```"
+    r"|(?m:^[ \t]*\{[^{}]*\"expressions?\"\s*:[^{}]*\}[ \t]*$)")
+
+
+# "Aggregate = 180,000 + 140,000 + 210,000 = 530,000 [The sources provided do
+# not state this]": the gap sentence the citation rule asks for, misused as a
+# bracketed tag on the answer's own arithmetic and table cells (23 Oct 2026).
+# Only the bracketed tag goes; a gap sentence on its own line stays.
+_INLINE_GAP_TAG = re.compile(
+    r"[ \t]*[\[(]\s*the\s+sources?\s+provided\s+do(?:es)?\s+not\s+state\s+this\.?\s*[\])]", re.I)
+
+
+# The correction round narrated to the reader (23 Oct 2026): a "Re-calculated
+# figures (using the calculator tool)" preamble before "Updated answer with
+# calculator-verified numbers (structure unchanged)", "preserving the original
+# structure and citations", "(calculation 5)", "(see calculations 1‑3)".
+_H = r"[-‑‐–]"
+_REVISION_PREAMBLE_END = re.compile(
+    r"^[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*|__)?[ \t]*(?:updated|revised|corrected)\s+answer\b[^\n]*\n?", re.I | re.M)
+_REVISION_PREAMBLE = re.compile(rf"\bre{_H}?\s?calculated\b|\bcalculator\b", re.I)
+_REVISION_SENTENCE = re.compile(
+    rf"[^.\n|]*(?:\b(?:preserv|retain|keep)\w*\s+(?:the\s+)?(?:original\s+|same\s+)?structure\s+and\s+citations\b|"
+    rf"\b(?:preserv|retain|keep)\w*\s+the\s+(?:original|same)\s+structure\b|\bhave\s+been\s+incorporated\s+throughout\b|\bnow\s+(?:shown|use|uses|reflect\w*)\s+(?:as\s+)?the\s+"
+    rf"(?:exact\s+)?(?:results?|figures)\s+of\s+the\s+calculator|\bnow\s+use\s+the\s+calculator{_H}?\s?generated\b"
+    rf"|\bremains?\s+the\s+same\s+because\s+the\s+[\w\s]{{0,30}}?\s+(?:are|is)\s+unchanged\b)[^.\n|]*[.]?[ \t]*", re.I)
+_CALCULATION_NUMBER = re.compile(
+    rf"[ \t]*[\[(](?:see\s+)?calc(?:ulation)?s?\.?\s*(?:id\s*)?\d+(?:\s*(?:{_H}|,|and)\s*\d+)*[\])]"
+    rf"|[ \t]*\((?:calculator{_H}?\s?derived\s+)?(?:amounts|figures|results)\s+unchanged\)"
+    rf"|[ \t]*\(structure\s+unchanged\)", re.I)
+# "IAS 33 §13‑13": a paragraph range whose end is not after its start.
+_BAD_PARAGRAPH_RANGE = re.compile(
+    rf"(\b(?:IAS|IFRS|ASC|FRS|ISA|AS|SA)\s?\d+(?:{_H}\d+)*)[ \t]*(?:§|¶|para(?:graph)?s?\.?)[ \t]*(\d+){_H}[ \t]*(?:§|¶)?(\d+)")
+
+
+def _strip_revision_narration(text: str) -> str:
+    ends = list(_REVISION_PREAMBLE_END.finditer(text))
+    if ends and ends[0].start() < 2000 and _REVISION_PREAMBLE.search(text[:ends[0].start()]):
+        text = text[ends[0].end():].lstrip("\n")
+    text = _REVISION_SENTENCE.sub("", text)
+    text = re.sub(r"\n{3,}", "\n\n", _CALCULATION_NUMBER.sub("", text))
+    return _BAD_PARAGRAPH_RANGE.sub(
+        lambda m: m.group(1) if int(m.group(3)) <= int(m.group(2)) else m.group(0), text)
+
+
+def remove_tool_mentions(text: str) -> str:
+    """The answer without remarks about Kriton's own tools."""
+    text = _strip_revision_narration(text or "")
+    text = _TOOL_ARGUMENTS_JSON.sub("", text)
+    text = _TOOL_MENTION.sub("", text)
+    text = _TOOL_SENTENCE.sub("", text)
+    return re.sub(r"([.!?]) {2,}(?=\S)", r"\1 ", re.sub(r"[ \t]+\n", "\n", text))
 
 
 def normalize_citations(answer: str, valid_refs: set[str]) -> str:
@@ -137,7 +226,9 @@ def normalize_citations(answer: str, valid_refs: set[str]) -> str:
     # Markers the model invents ("【CALC-1】" after a calculation) cite
     # nothing; fullwidth brackets never belong in an answer once real
     # references have been rewritten to [REF-N] above.
-    text = _INVENTED_MARKER.sub("", _CITATION_VARIANT.sub(canonical, answer or ""))
+    text = remove_tool_mentions(_TOOL_CALL_TEXT.sub("", answer or ""))
+    text = _INLINE_GAP_TAG.sub("", text)
+    text = _INVENTED_MARKER.sub("", _CITATION_VARIANT.sub(canonical, text))
     # "[calculate result £6,486]": keep the figure, drop the bracket label.
     return _CALCULATED_TAG.sub(lambda m: m.group(1).strip(), text)
 
@@ -304,6 +395,15 @@ _BALANCE = re.compile(r"\b(?:contract liabilit\w*|deferred (?:revenue|income)|un
 _RECEIVED = re.compile(r"\b(?:paid|pays|received|receives|collected|prepaid|pre-paid|upfront|up-front|in advance|"
                        r"deposit|invoiced|billed|due)\b", re.I)
 BALANCE_NOT_ESTABLISHED = "Not established (consideration received or due not stated)"
+_FULL_PAYMENT = re.compile(
+    r"\b(?:full|entire|whole|total)\s+(?:payment|amount|price|consideration|contract\s+price|fee)\b[^.\n]{0,30}?"
+    r"\b(?:upfront|up-front|in\s+advance|paid|collected|received|on\s+signing)\b"
+    r"|\b(?:paid|collected|received|settled)\s+in\s+full\b"
+    r"|\b(?:full|entire)\s+payment\b", re.I)
+_CONTRACT_TOTAL = re.compile(
+    r"(?:[$£€₹])\s?(\d[\d,]*(?:\.\d+)?)\s+contract\b"
+    r"|\b(?:total\s+)?(?:contract|transaction)\s+(?:price|value|consideration)\s+(?:of|is|was|=)\s*"
+    r"(?:[$£€₹])\s?(\d[\d,]*(?:\.\d+)?)", re.I)
 
 
 def received_consideration(question: str) -> list[float]:
@@ -315,6 +415,12 @@ def received_consideration(question: str) -> list[float]:
     for sentence in re.split(r"(?<=[.!?])\s+|\n", question or ""):
         if _RECEIVED.search(sentence):
             found += [value for shown, value in material_figures(sentence) if not shown.endswith("%")]
+    if _FULL_PAYMENT.search(question or ""):
+        # "assuming full payment upfront" names no amount: the whole contract
+        # price was received. Without it, a correct $72,000 contract liability
+        # was removed and the answer marked partial (23 Oct 2026).
+        found += [float(next(group for group in m.groups() if group).replace(",", ""))
+                  for m in _CONTRACT_TOTAL.finditer(question or "")]
     return list(dict.fromkeys(found))
 
 
@@ -945,19 +1051,143 @@ _ABOUT_THE_AUTHORITY = re.compile(
 _SUPPLIED_RATE = re.compile(
     r"\b(?:tax|vat|gst|rate)\b[^.%\n]{0,40}?\d+(?:\.\d+)?\s?%|\d+(?:\.\d+)?\s?%\s*(?:tax|vat|gst|rate)\b", re.I,
 )
+_APPLIED_GUIDANCE = re.compile(
+    r"\b(?:rules?|requirements?|guidance|principles?|methods?|methodology|frameworks?|approach)\b", re.I)
 _TAX_WORDS = re.compile(r"\b(?:tax(?:es|ation|able)?|vat|gst|pre-tax)\b", re.I)
+# Only with its own stated amount: "determine the net deferred tax asset"
+# with no tax rate given still needs a source for the rate.
+_TAX_LINE_ITEM = re.compile(
+    r"\b(?:(?:income|sales|deferred|payroll|current|corporate)\s+)?tax(?:es)?\s+"
+    r"(?:payable|receivable|expense|liabilit(?:y|ies)|assets?|provision|paid|refundable|benefit)\b"
+    r"(?=[^.\n;]{0,40}?(?:[£$€₹]\s?\d|\b\d{1,3}(?:,\d{2,3})+\b))", re.I)
+_AUDIT_OPINION = re.compile(r"\baudit\s+opinion\b", re.I)
 _SCENARIO_FIGURE = re.compile(r"[£$€₹]\s?\d|\b\d[\d,]*(?:\.\d+)?\s?%|\b\d{1,3}(?:,\d{2,3})+\b")
 
 
 def applies_to_supplied_facts(question: str, context: str) -> bool:
     """The authority terms in the question only name the framework a supplied
     scenario is worked under, or a tax the user gave the rate for."""
-    if _ABOUT_THE_AUTHORITY.search(question) or len(_SCENARIO_FIGURE.findall(context or "")) < 2:
+    from app.orchestration.calculation_service import verifies_current_fact
+    # Confirming that a quoted rate is still current needs a current source,
+    # however many figures the scenario supplies (review R1).
+    if (_ABOUT_THE_AUTHORITY.search(question) or verifies_current_fact(question)
+            or len(_SCENARIO_FIGURE.findall(context or "")) < 2):
         return False
-    residual = _ANALYTICAL_LIMIT.sub(" ", _FRAMEWORK_REFERENCE.sub(" ", question))
+    from app.orchestration.calculation_service import _ACCOUNTING_CURRENT
+    # Line items first: removing "tax" below left "Current Income Payable",
+    # which then read as a request for a current rate (22 Oct 2026).
+    residual = _ANALYTICAL_LIMIT.sub(" ", _FRAMEWORK_REFERENCE.sub(" ", _ACCOUNTING_CURRENT.sub(" ", question)))
+    if _FRAMEWORK_REFERENCE.search(question):
+        # "applying US GAAP Lower of Cost or NRV rules" to the supplied
+        # inventory: the framework's rules are what is being applied.
+        residual = _APPLIED_GUIDANCE.sub(" ", residual)
     if _SUPPLIED_RATE.search(context):
         residual = _TAX_WORDS.sub(" ", residual)
+    # A balance-sheet or income-statement line, not a tax rule: "Income Tax
+    # Payable decreased by $12,000" made a cash-flow reconciliation strictly
+    # sourced, and its correct steps were pruned as uncited (23 Oct 2026).
+    residual = _TAX_LINE_ITEM.sub(" ", residual)
+    if supplies_a_professional_scenario(context):
+        # The opinion consequence of the scenario's own misstatements is
+        # applying auditing standards to supplied facts: a materiality
+        # question was answered with gap tags and no opinion (23 Oct 2026).
+        residual = _AUDIT_OPINION.sub(" ", residual)
     return not _authority_terms(residual)
+
+
+_REF = re.compile(r"\[REF-\d+\]")
+_PROSE_HEADING = re.compile(r"^\s*(?:#{1,6}\s|(?:\*\*|__)[^*_]+(?:\*\*|__):?\s*$)")
+
+
+_TABLE_SEPARATOR = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)*\|?\s*$")
+_LIST_MARKER = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
+# A lead-in ("Key points:", "Journal entry on 1 January:") introduces content;
+# it states nothing itself.
+_LEAD_IN = re.compile(r"^[^.!?]{1,80}:\s*$")
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+")
+# Short statements that point elsewhere or answer nothing themselves.
+_NON_CLAIM = re.compile(
+    r"^\W*(?:see|refer\s+to|as)\s+(?:above|below|note|table)|^\W*(?:not\s+applicable|n/?a|none|continued|"
+    r"to\s+be\s+confirmed|tbc|yes|no)\W*$", re.I)
+# The last word of a two-word sentence that makes it an assertion: a past
+# tense ("Rates increased.") or a verb from this list ("Titan qualifies.").
+# A suffix guess could not tell "qualifies" from "entries" or "points".
+_SHORT_CLAIM_VERBS = frozenset(
+    "rose fell grew rise rises fall falls grow grows apply applies exist exists hold holds held paid sold "
+    "lost won met is are was were has have had does do did remain remains stand stands stood "
+    "qualify qualifies consolidate consolidates control controls own owns exceed exceeds meet meets fail fails "
+    "pass passes increase increases decrease decreases vary varies depend depends matter matters "
+    "recognise recognises recognize recognizes capitalise capitalises capitalize capitalizes "
+    "accrue accrues lapse lapses mature matures default defaults".split())
+
+
+def _is_short_claim(statement: str, words: list[str]) -> bool:
+    """A complete assertion under three words: "Rates increased.", "Revenue
+    rose." — not a pointer ("See above.") or a label ("Journal entries.")."""
+    if len(words) != 2 or _NON_CLAIM.search(statement) or not re.search(r"[.!]\s*$", statement):
+        return False
+    last = words[-1].lower()
+    return last.endswith("ed") or last in _SHORT_CLAIM_VERBS
+
+
+def uncited_explanations(text: str) -> list[str]:
+    """Claims without a [REF-N] marker: each sentence and each table body row.
+    Not headings, lead-ins, table header rows, removal notes or calculations on
+    the user's figures (checked by the calculation checks, not by a source).
+    A short claim counts ("Titan consolidates Silo." — the final review found
+    a six-word minimum let it through), two-word ones too ("Rates
+    increased."); pointers and labels ("See above.", "Journal entries.") and
+    one-word replies do not."""
+    from app.orchestration.calculation_service import shows_arithmetic
+    from app.orchestration.claim_verification import is_removal_note
+    lines = (text or "").splitlines()
+    statements: list[str] = []
+    in_fence = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence or not stripped or _PROSE_HEADING.match(stripped) or _LEAD_IN.match(stripped):
+            continue
+        if stripped.startswith("|"):
+            following = lines[index + 1].strip() if index + 1 < len(lines) else ""
+            if not _TABLE_SEPARATOR.match(stripped) and not _TABLE_SEPARATOR.match(following):
+                statements.append(stripped)
+            continue
+        statements += _SENTENCE_BREAK.split(_LIST_MARKER.sub("", stripped))
+    found = []
+    for statement in statements:
+        words = re.findall(r"[A-Za-z]{2,}", statement)
+        if ((len(words) < 3 and not _is_short_claim(statement, words)) or _REF.search(statement)
+                or is_removal_note(statement)
+                or shows_arithmetic(statement) or _LEAD_IN.match(statement)):
+            continue
+        found.append(statement)
+    return found
+
+
+# An accounting or audit task on facts the question supplies, with no named
+# standard: "the following items are noticed at the inventory count …
+# determine whether each lot is included … draft the adjusting entry" was
+# forced to answer from searches that returned nothing (23 Oct 2026).
+_PROFESSIONAL_TASK = re.compile(
+    r"\b(?:journal\s+entr(?:y|ies)|adjusting\s+entr(?:y|ies)|classify|recogni[sz]e|measure|include[sd]?|"
+    r"exclude[sd]?|present(?:ed|ation)?|disclos\w*|audit\w*|auditor|misstatement|inventory|receivables?|"
+    r"provision|liabilit(?:y|ies)|revenue|lease|impair\w*|consolidat\w*|hedge|derivative|pension|"
+    r"segment|restructur\w*|deferred\s+tax|depreciat\w*|amorti[sz]\w*|fair\s+value)\b", re.I)
+
+
+def supplies_a_professional_scenario(question: str) -> bool:
+    """The question sets out its own facts (two or more figures) and asks for
+    an accounting or audit treatment of them."""
+    return len(_SCENARIO_FIGURE.findall(question or "")) >= 2 and bool(_PROFESSIONAL_TASK.search(question or ""))
+
+
+def names_an_authority(question: str) -> bool:
+    """The wording calls for an authority or names a framework: a standard,
+    rule, US GAAP, PCAOB, ASC 810."""
+    return _authority_terms(question) or bool(_FRAMEWORK_REFERENCE.search(question or ""))
 
 
 def requires_authoritative_evidence(question: str, context: str = "") -> bool:

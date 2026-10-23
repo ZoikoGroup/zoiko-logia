@@ -2084,6 +2084,19 @@ export type AskKritonResponse = {
    * line), never a redundant alternate chart type. */
   secondary_visualizations?: VisualizationSpec[];
   calculation?: FormulaCalculationResult | null;
+  /** A chart Kriton suggests for this answer's figures; drawn only if the
+   * user accepts (sends `question`). Absent when nothing is worth charting. */
+  chart_offer?: ChartOffer | null;
+};
+
+export type ChartOffer = {
+  chart_type: "line" | "bar" | "pie";
+  title: string;
+  question: string;
+  reason: string;
+  /** The chart itself, built from the answer's table: shown under the
+   *  answer on request, with no new question. */
+  chart?: VisualizationSpec | null;
 };
 
 export async function downloadKritonArtifact(token: string, artifact: GeneratedArtifact): Promise<void> {

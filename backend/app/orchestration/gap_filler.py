@@ -78,6 +78,21 @@ async def fill_explanation_gaps(text: str, question: str, complete: Callable[[st
             continue
         index, explanation = int(numbered.group(1)) - 1, numbered.group(2).strip()
         if 0 <= index < len(gaps) and len(explanation) >= 20 and not _FIGURE.search(explanation):
-            text = text.replace(gaps[index], f"{LABEL} {explanation}", 1)
+            text = _replace_sentence(text, gaps[index], f"{LABEL} {explanation}")
             filled = True
     return text, filled
+
+
+def _replace_sentence(text: str, gap: str, replacement: str) -> str:
+    """Replace the whole sentence the gap ends: replacing the gap alone left
+    "Consequently, General explanation: …" and "Because General explanation:
+    …" mid-sentence (22 Oct 2026)."""
+    at = text.find(gap)
+    if at < 0:
+        return text
+    line_start = text.rfind("\n", 0, at) + 1
+    # A list marker or heading prefix on the line stays.
+    prefix = re.match(r"[ \t]*(?:[-*•]|\d+[.)]|#{1,6})?[ \t]*", text[line_start:at]).end() + line_start
+    ends = [m.end() for m in re.finditer(r"[.!?:](?:\s+|$)", text[prefix:at])]
+    start = prefix + ends[-1] if ends else prefix
+    return text[:start] + replacement + text[at + len(gap):]

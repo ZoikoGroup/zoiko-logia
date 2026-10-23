@@ -73,6 +73,12 @@ class ProviderResponseIncomplete(ProviderRequestRejected):
         "Any independently verified work is retained; the remaining parts could not be completed."
     )
 
+    def __init__(self, partial_text: str = ""):
+        # The prose written before the limit, for the caller to judge: it is
+        # never an answer as it stands (orchestration/partial_output.py).
+        self.partial_text = partial_text or ""
+        super().__init__()
+
 
 # Documented hard blocks: Groq answers 400 `blocked_api_access` once the
 # organisation's spend limit is reached (console.groq.com/docs/spend-limits).

@@ -235,7 +235,18 @@ def _table_chart(text: str) -> SuppliedChart | None:
             series=[dict(name=name, data=[float(_number(row[i])) for row in data])
                     for i, name in enumerate(header[1:], start=1)],
         ))
-    return None
+    # A worked answer's table ("1.44 = 1.20 × 1.20", "676,886.75", a formula
+    # column): the chart the answer offered (chart_offer.py), read the same
+    # way, so "Show this as a line chart" draws exactly what was offered.
+    from app.orchestration.chart_offer import chart_from_answer
+    chosen = chart_from_answer(text)
+    if chosen is None:
+        return None
+    chart = chosen[1]
+    if chart["type"] == "pie":
+        chart = dict(type="bar", title=chart["title"], categories=[s["name"] for s in chart["data"]],
+                     series=[dict(name=chart["title"].split(" by ")[0], data=[s["value"] for s in chart["data"]])])
+    return _validated("", chart)
 
 
 def _supplied_total(query: str) -> SuppliedChart | None:

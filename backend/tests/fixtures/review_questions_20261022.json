@@ -1,0 +1,579 @@
+{
+ "questions": {
+  "recap": "A private equity portfolio company has an equity value of $5,000,000 and zero debt. The company generates a stable annual net income of $800,000. The sponsor executes a dividend recapitalization by causing the company to issue $3,000,000 in new debt at an 8% annual interest rate.\nThe entirety of the $3,000,000 cash proceeds is immediately distributed to the private equity sponsor as a special dividend. The corporate tax rate is 21%.\nTask for the Bot:\n1. Calculate the company’s new Net Income in the year following the dividend recapitalization, accounting for the after-tax cost of the new debt interest.\n2. Calculate the sponsor's Cash-on-Cash Return on its remaining net invested equity capital in the company for the first year post-recap, assuming the sponsor's initial equity investment was $5,000,000.\n3. Explain the directional impact of this transaction on the company’s Altman Z-Score or default probability indicators.",
+  "carveout": "Matrix Group owns 100% of Legacy Retail and 100% of NewTech Solutions. Matrix Group is evaluating two structural pathways to unlock equity value from NewTech Solutions:\n• Option A (Spin-Off): Distribute 100% of NewTech shares to existing Matrix Group shareholders pro-rata.\n• Option B (Equity Carve-Out): Sell 20% of NewTech Solutions via an initial public offering (IPO) to public markets for $500,000 cash, while maintaining an 80% controlling stake. NewTech's standalone book value of net assets is $1,500,000.\nTask for the Bot:\n1. Compare the immediate cash flow and tax implications to the parent company (Matrix Group) under Option A versus Option B under US tax code principles.\n2. Provide the US GAAP journal entries required on Matrix Group’s parent-only books if Option B is executed, specifying whether a gain/loss is recorded in Net Income or directly within Equity.\n3. Explain how the noncontrolling interest (NCI) will be initially quantified and presented on the consolidated financial statements following Option B.",
+  "convertible": "Quantum Systems issues a convertible bond with a face value of $1,000, a coupon rate of 4%, and a maturity of 10 years.\n• The bond’s conversion price is fixed at $40 per share.\n• The current market price of Quantum Systems' underlying common stock is $48 per share.\n• The convertible bond is currently trading in the secondary market at a quote of 125 (which equals $1,250 per bond).\nTask for the Bot:\n1. Calculate the Conversion Ratio of the bond.\n2. Calculate the Conversion Value (or Parity Value) of the convertible bond based on the current underlying stock price.\n3. Determine the Market Conversion Premium per share and identify if a profitable cross-market arbitrage opportunity exists if an investor could purchase the bond and convert it immediately.",
+  "lbo": "Leveraged Buyout (LBO) Debt Sizing & Valuation Modelling\n\nScenario: A private equity firm plans to acquire TargetCo for an Enterprise Value of $10,000,000. TargetCo's current TTM (Trailing Twelve Months) EBITDA is $2,000,000. The acquisition will be funded using a combination of debt and equity:\n• Senior Secured Debt: 3.5× EBITDA at a 7% interest rate.\n• Subordinated Debt: 1.5× EBITDA at a 10% interest rate.\n• Sponsor Equity: The remaining balance of the purchase price.\n• TargetCo’s Free Cash Flow to Firm (FCFF) before debt service in Year 1 is projected to be $1,400,000. The corporate tax rate is 21%. Assume interest expense is fully tax-deductible.\nTask for the Bot:\n1. Calculate the exact dollar amounts of Senior Secured Debt, Subordinated Debt, and Sponsor Equity required at closing (Year 0).\n2. Calculate the total pre-tax and after-tax interest expense incurred by the company during Year 1.\n3. Determine the remaining cash available for equity holders (Free Cash Flow to Equity) at the end of Year 1, assuming all excess cash after mandatory interest payments is kept on the balance sheet.",
+  "controls": "During the walkthrough phase of the sales-to-cash cycle at a mid-sized e-commerce corporation, the audit team observes that the IT system automatically generates shipping logs, but the invoicing department manually inputs pricing data from an unencrypted Excel sheet shared across a local network. Additionally, the same accounting clerk who processes customer checks in the mail room also posts entries to the Accounts Receivable subsidiary ledger.\nTask for the Bot:\n1. Identify the two specific internal control deficiencies in this scenario and classify them (e.g., Deficiency, Significant Deficiency, or Material Weakness) under PCAOB standards.\n2. Explain the risk of material misstatement (RMM) associated with these vulnerabilities.\n3. Design two specific substantive audit procedures the team must now perform to mitigate the lack of segregation of duties and manual pricing controls.",
+  "audit_risk": "An auditor is planning the substantive testing sample size for the accounts receivable confirmations of a manufacturing client. The following parameters have been set:\n• Inherent Risk (IR) is assessed as High (80%).\n• Control Risk (CR) is assessed as Moderate (50%).\n• The engagement partner mandates that the overall acceptable Audit Risk (AR) must not exceed 4%.\n• The population contains 2,500 accounts totaling $5,000,000 in value.\n• Tolerable misstatement is $150,000, and expected misstatement is $30,000. The confidence factor based on the required Detection Risk is determined to be 2.5.\nTask for the Bot:\n1. Use the Audit Risk Model formula (AR = IR × CR × DR) to calculate the precise maximum allowable Detection Risk (DR).\n2. Explain what this resulting Detection Risk percentage implies about the nature, timing, and extent of the substantive procedures.\n3. Calculate the required sample size using a standard monetary-unit sampling (MUS) approach given the confidence factor of 2.5 and tolerable minus expected misstatement metrics (\\(Sample\\ Size = (Population \\times Confidence\\ Factor) / (Tolerable\\ Misstatement - Expected\\ Misstatement)\\)).",
+  "pension": "At the start of 2026, Millennium Corp. maintains a defined benefit pension plan with a Projected Benefit Obligation (PBO) of $4,500,000 and plan assets valued at Fair Value of $4,100,000. For the fiscal year ended December 31, 2026, the actuary provides the following data:\n• Service cost: $280,000\n• Discount rate / Settlement rate: 5.5%\n• Expected rate of return on plan assets: 7.0%\n• Actual return on plan assets: $310,000\n• Amortization of prior service cost (from an amendment): $45,000\n• Employer contributions made to the plan during the year: $350,000\n• Benefits paid to retirees during the year: $190,000\nTask for the Bot:\n1. Calculate the Net Periodic Pension Cost reported on the 2026 Income Statement.\n2. Determine the ending balances of the PBO and the Fair Value of Plan Assets as of December 31, 2026.\n3. Calculate the final funded status of the plan at year-end and specify how it must be presented on the December 31, 2026 Balance Sheet.",
+  "segments": "OmniCorp operates five distinct operating business segments globally. For the fiscal year, the financial metrics across these segments are distributed as follows:\n\nSegment\tUnaffiliated Sales\tIntersegment Sales\tSegment Profit (Loss)\tSegment Assets\nCloud Computing\t$6,000,000\t$1,500,000\t$1,200,000\t$8,000,000\nHardware Devices\t$2,500,000\t$500,000\t($300,000)\t$3,000,000\nConsulting Services\t$900,000\t$0\t$150,000\t$800,000\nLogistics\t$400,000\t$200,000\t($50,000)\t$500,000\nDigital Media\t$200,000\t$100,000\t$20,000\t$200,000\n\nTask for the Bot:\n1. Apply the 10% Revenue Test to determine which segments are reportable.\n2. Apply the 10% Profit or Loss Test and the 10% Asset Test to identify any additional reportable segments.\n3. Evaluate if the identified reportable segments meet the 75% Consolidated Revenue Test constraint, and explain what steps OmniCorp must take if they do not.",
+  "tdr": "Due to intense liquidity constraints, Genesis Corp. is unable to pay its $2,000,000, 8% note payable held by First National Bank. The note has $160,000 in accrued, unpaid interest as of December 31, 2026. The bank agrees to a restructuring plan with the following terms:\n• Forgive the $160,000 accrued interest completely.\n• Reduce the principal balance from $2,000,000 down to $1,500,000.\n• Extend the maturity date by 3 years.\n• Reduce the nominal annual interest rate from 8% down to 4% (payable annually).\nTask for the Bot:\n1. Calculate the total future cash flows (principal + interest) under the newly modified terms.\n2. Determine whether this transaction qualifies as a Troubled Debt Restructuring (TDR) under US GAAP principles.\n3. Calculate the gain or loss on restructuring that Genesis Corp. will recognize on December 31, 2026, and calculate the new effective interest rate for subsequent periods.",
+  "dividend": "A high-growth technology company currently pays an annual dividend of $1.20 per share.\n• Due to a new product cycle, the dividend is projected to grow rapidly at a rate of 20% per year for the next 3 years (Years 1, 2, and 3).\n• In Year 4, the growth rate will drop to 12%.\n• Starting in Year 5 and continuing indefinitely, the company will reach maturity, and the dividend growth rate will stabilize at a constant 5% per year.\n• The market capitalization equity risk premium requires an investor cost of equity capital (Ke) of 9%.\nTask for the Bot:\n1. Calculate the projected annual dividends per share for Years 1, 2, 3, 4, and 5.\n2. Calculate the Terminal Value of the stock at the end of Year 4 using the Gordon Growth Model based on the Year 5 dividend.\n3. Discount all intermediate cash flows and the terminal value back to evaluate the intrinsic current value per share today (Year 0).",
+  "hedge": "On October 1, 2026, Apex Refining estimates that it will purchase 100,000 barrels of crude oil on February 1, 2027. To hedge the risk of increasing oil prices, Apex enters into a futures contract to buy 100,000 barrels of oil at a forward rate of $75 per barrel. The contract is designated as a Cash Flow Hedge. The spot and forward rates fluctuate as follows:\n• October 1, 2026: Forward Rate = $75\n• December 31, 2026 (Year-End): Forward Rate = $79\n• February 1, 2027 (Settlement/Purchase Date): Spot Rate = $78\nTask for the Bot:\n1. Provide the necessary journal entries on December 31, 2026, to record the change in the fair value of the derivative instrument. Specify the exact balance sheet or income statement accounts impacted.\n2. Provide the journal entries on February 1, 2027, to record the settlement of the derivative, the purchase of the physical oil inventory, and the ultimate recognition of the hedge effect when the oil is fully sold to customers on February 15, 2027, for $95 per barrel.\n3. Explain how any hedge ineffectiveness would be calculated and treated under US GAAP if the correlation was not perfect.",
+  "level3": "A commercial bank audit client holds a complex portfolio of MBS (Mortgage-Backed Securities) and hard-to-value Level 3 derivative contracts. Management uses an internally generated discounted cash flow model utilizing unobservable historical prepayment speeds, proprietary default curves, and an adjusted SOFR discount curve to value these Level 3 instruments at $14,500,000. The total materiality threshold for the entire financial audit is set at $750,000.\nTask for the Bot:\n1. Under PCAOB AS 2501, outline the three primary approaches an auditor can take to audit this accounting estimate.\n2. If the auditor decides to develop an independent expectation of the fair value using a different, third-party industry pricing database and computes a value of $13,600,000, calculate the resulting misstatement.\n3. Determine if this variance represents a known or projected misstatement, whether it exceeds materiality, and what specific reporting obligations the auditor has to the Audit Committee.",
+  "inventory_count": "An audit team is conducting the physical inventory count observation for a manufacturing client on December 31, 2026. During the walkthrough, the following items are noticed in the shipping/receiving yard:\n• Item Lot X: Valued at $85,000, marked as \"Bill-and-Hold\" for a client. The invoice was processed on Dec 29, 2026, but the goods physically remain in the warehouse.\n• Item Lot Y: Valued at $120,000, arriving via truck on Dec 31, 2026. The shipment terms are FOB Destination. The invoice from the vendor is dated Jan 3, 2027.\n• Item Lot Z: Valued at $45,000, loaded on a freight car ready to ship out. The shipping document shows it was signed out on Dec 30, 2026, under FOB Shipping Point terms.\nTask for the Bot:\n1. Determine whether Item Lots X, Y, and Z should be physically included or excluded from the client's final inventory ledger count on December 31, 2026.\n2. Detail the specific double-direction test (\"Dock to Ledger\" and \"Ledger to Dock\") to verify completeness and existence.\n3. Draft the required year-end adjustment journal entry if management included all three lots in their raw ending inventory balances.",
+  "brazil": "A US multinational firm is evaluating a building factory project in Brazil. The project requires an initial outlay of 10,000,000 Brazilian Reais (BRL). The project will generate free cash flows of 3,500,000 BRL annually for 4 years.\n• The current spot rate is 5.00 BRL per $1 USD.\n• The inflation rate in the US is 2.5%, while the inflation rate in Brazil is expected to remain stable at 6.0%.\n• The parent firm's US-dollar-denominated WACC for this risk class is 10%.\nTask for the Bot:\n1. Calculate the expected future spot exchange rates (BRL/$) for Years 1 through 4 using the Relative Purchasing Power Parity (PPP) framework.\n2. Convert the Brazilian Real project cash flows into US dollars using these projected rates.\n3. Calculate the Net Present Value (NPV) in US Dollars using the US parent company's discount rate, and state whether the firm should deploy capital to Brazil."
+ },
+ "answer_keys": {
+  "recap": {
+   "interest 240,000": [
+    "(?<![\\d,.])240,000(?![\\d]|[.,]\\d)"
+   ],
+   "after-tax interest 189,600": [
+    "(?<![\\d,.])189,600(?![\\d]|[.,]\\d)"
+   ],
+   "net income 610,400": [
+    "(?<![\\d,.])610,400(?![\\d]|[.,]\\d)"
+   ],
+   "cash-on-cash 30.52% (awaiting review)": [
+    "(?<![\\d,.])30\\.52(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])30\\.5%(?![\\d]|[.,]\\d)"
+   ],
+   "interest coverage ~4.22x": [
+    "(?<![\\d,.])4\\.22(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])4\\.2×(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])4\\.2x(?![\\d]|[.,]\\d)"
+   ]
+  },
+  "carveout": {
+   "NCI 300,000 (awaiting review)": [
+    "(?<![\\d,.])300,000(?![\\d]|[.,]\\d)"
+   ],
+   "APIC 200,000 (awaiting review)": [
+    "(?<![\\d,.])200,000(?![\\d]|[.,]\\d)"
+   ],
+   "gain recorded in equity, not net income": [
+    "equity transaction",
+    "\\bno gain\\b",
+    "not (?:recogni[sz]ed|recorded) in net income",
+    "additional paid-in capital",
+    "\\bAPIC\\b"
+   ]
+  },
+  "convertible": {
+   "ratio 25": [
+    "conversion ratio[^\\n]{0,80}?(?<![\\d,.])25(?![\\d]|[.,]\\d)"
+   ],
+   "conversion value 1,200": [
+    "(?<![\\d,.])1,200(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])1200(?![\\d]|[.,]\\d)"
+   ],
+   "premium $2 per share": [
+    "premium[^\\n]{0,80}?(?<![\\d,.])\\$?2(?:\\.00)?(?![\\d]|[.,]\\d)"
+   ],
+   "no arbitrage": [
+    "\\bno (?:profitable )?arbitrage",
+    "not profitable",
+    "\\bno profit"
+   ]
+  },
+  "lbo": {
+   "senior 7,000,000": [
+    "(?<![\\d,.])7,000,000(?![\\d]|[.,]\\d)"
+   ],
+   "sub 3,000,000": [
+    "(?<![\\d,.])3,000,000(?![\\d]|[.,]\\d)"
+   ],
+   "sponsor equity 0": [
+    "sponsor equity[^\\n]{0,120}?(?:=\\s*\\$?0(?![\\d]|[.,]\\d)|\\$0(?![\\d]|[.,]\\d)|\\bzero\\b|\\bnil\\b|\\bnone\\b)"
+   ],
+   "pre-tax interest 790,000": [
+    "(?<![\\d,.])790,000(?![\\d]|[.,]\\d)"
+   ],
+   "after-tax interest 624,100": [
+    "(?<![\\d,.])624,100(?![\\d]|[.,]\\d)"
+   ],
+   "FCFE 775,900": [
+    "(?<![\\d,.])775,900(?![\\d]|[.,]\\d)"
+   ]
+  },
+  "controls": {
+   "segregation of duties": [
+    "\\bsegregation of duties"
+   ],
+   "pricing control": [
+    "\\bpricing"
+   ],
+   "classified": [
+    "\\bmaterial weakness",
+    "\\bsignificant deficiency"
+   ],
+   "confirmations": [
+    "\\bconfirm"
+   ]
+  },
+  "audit_risk": {
+   "DR 10%": [
+    "(?<![\\d,.])10%(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])0\\.10(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])10\\ %(?![\\d]|[.,]\\d)"
+   ],
+   "sample 105": [
+    "(?<![\\d,.])105(?![\\d]|[.,]\\d)"
+   ]
+  },
+  "nexus": {
+   "108,000": [
+    "(?<![\\d,.])108,000(?![\\d]|[.,]\\d)"
+   ],
+   "54,000": [
+    "(?<![\\d,.])54,000(?![\\d]|[.,]\\d)"
+   ],
+   "18,000": [
+    "(?<![\\d,.])18,000(?![\\d]|[.,]\\d)"
+   ],
+   "153,000": [
+    "(?<![\\d,.])153,000(?![\\d]|[.,]\\d)"
+   ],
+   "deferred 27,000": [
+    "(?<![\\d,.])27,000(?![\\d]|[.,]\\d)"
+   ]
+  },
+  "lcnrv": {
+   "928,000": [
+    "(?<![\\d,.])928,000(?![\\d]|[.,]\\d)"
+   ],
+   "write-down 15,500": [
+    "(?<![\\d,.])15,500(?![\\d]|[.,]\\d)"
+   ],
+   "reporting date 31 Dec 2026": [
+    "december\\s+31,?\\s+2026",
+    "31\\s+december\\s+2026",
+    "dec\\.?\\s+31,?\\s+2026",
+    "31\\s+dec\\.?\\s+2026"
+   ]
+  },
+  "vanguard": {
+   "A recognized (Type 1)": [
+    "(?:event\\s*a\\b|\\|\\s*a\\b)[^\\n]{0,200}?(?:(?<![A-Za-z-])(?<!non-)(?<!not )(?<!un)recogni[sz]ed\\b|type\\s*(?:1|i)\\b)"
+   ],
+   "B nonrecognized (Type 2)": [
+    "(?:event\\s*b\\b|\\|\\s*b\\b)[^\\n]{0,200}?(?:non-?recogni[sz]ed\\b|type\\s*(?:2|ii)\\b)"
+   ],
+   "bad debt 400,000": [
+    "(?<![\\d,.])400,000(?![\\d]|[.,]\\d)"
+   ],
+   "settlement 250,000": [
+    "(?<![\\d,.])250,000(?![\\d]|[.,]\\d)"
+   ],
+   "fire 650,000 disclosed": [
+    "(?<![\\d,.])650,000(?![\\d]|[.,]\\d)"
+   ]
+  },
+  "npv": {
+   "OCF Y1 270,600": [
+    "(?<![\\d,.])270,600(?![\\d]|[.,]\\d)"
+   ],
+   "OCF Y3 269,256": [
+    "(?<![\\d,.])269,256(?![\\d]|[.,]\\d)"
+   ],
+   "FCF Y4 306,353.6 (awaiting review)": [
+    "(?<![\\d,.])306,353\\.6(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])306,353\\.60(?![\\d]|[.,]\\d)"
+   ],
+   "NPV 47,837 (awaiting review)": [
+    "(?<![\\d,.])47,837\\.17(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])47,837(?![\\d]|[.,]\\d)"
+   ]
+  },
+  "wacc": {
+   "wd 28.57%": [
+    "(?<![\\d,.])28\\.57(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])0\\.2857(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])0\\.285714(?![\\d]|[.,]\\d)"
+   ],
+   "ke 12.3%": [
+    "(?<![\\d,.])12\\.3(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])0\\.123(?![\\d]|[.,]\\d)"
+   ],
+   "kp 8%": [
+    "(?<![\\d,.])8%(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])0\\.08(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])8\\.0%(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])8\\.00%(?![\\d]|[.,]\\d)"
+   ],
+   "WACC 10.33% or 10.32% (awaiting review)": [
+    "(?<![\\d,.])10\\.33(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])10\\.32(?![\\d]|[.,]\\d)"
+   ]
+  },
+  "dupont": {
+   "ROE 26.74%": [
+    "(?<![\\d,.])26\\.74(?![\\d]|[.,]\\d)"
+   ],
+   "NPM 9%": [
+    "(?<![\\d,.])9\\.00%(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])9%(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])0\\.09(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])9\\.00\\ %(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])9\\ %(?![\\d]|[.,]\\d)"
+   ],
+   "ATO 1.68": [
+    "(?<![\\d,.])1\\.68(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])1\\.677(?![\\d]|[.,]\\d)"
+   ],
+   "EM 1.77": [
+    "(?<![\\d,.])1\\.77(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])1\\.771(?![\\d]|[.,]\\d)"
+   ]
+  },
+  "eps": {
+   "basic 2.76": [
+    "(?<![\\d,.])2\\.76(?![\\d]|[.,]\\d)"
+   ],
+   "diluted 2.56": [
+    "(?<![\\d,.])2\\.56(?![\\d]|[.,]\\d)"
+   ],
+   "bond shares 60,000": [
+    "(?<![\\d,.])60,000(?![\\d]|[.,]\\d)"
+   ],
+   "option shares 10,000": [
+    "(?<![\\d,.])10,000(?![\\d]|[.,]\\d)"
+   ]
+  },
+  "fx": {
+   "Nov 1 receivable 540,000": [
+    "(?<![\\d,.])540,000(?![\\d]|[.,]\\d)"
+   ],
+   "Dec 31 gain 20,000": [
+    "(?<![\\d,.])20,000(?![\\d]|[.,]\\d)"
+   ],
+   "Feb 1 loss 10,000": [
+    "(?<![\\d,.])10,000(?![\\d]|[.,]\\d)"
+   ],
+   "translation gain 40,000 in OCI": [
+    "(?<![\\d,.])40,000(?![\\d]|[.,]\\d)"
+   ]
+  },
+  "nol_va": {
+   "taxable income 500,000": [
+    "(?<![\\d,.])500,000(?![\\d]|[.,]\\d)"
+   ],
+   "tax payable 105,000": [
+    "(?<![\\d,.])105,000(?![\\d]|[.,]\\d)"
+   ],
+   "DTL 42,000": [
+    "(?<![\\d,.])42,000(?![\\d]|[.,]\\d)"
+   ],
+   "net tax expense 147,000": [
+    "(?<![\\d,.])147,000(?![\\d]|[.,]\\d)"
+   ]
+  },
+  "impairment_group": {
+   "loss 1,000,000": [
+    "(?<![\\d,.])1,000,000(?![\\d]|[.,]\\d)"
+   ],
+   "building 633,333": [
+    "(?<![\\d,.])633,333\\.33(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])633,333(?![\\d]|[.,]\\d)"
+   ],
+   "machinery 316,667": [
+    "(?<![\\d,.])316,666\\.67(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])316,667(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])316,666(?![\\d]|[.,]\\d)"
+   ],
+   "equipment 50,000": [
+    "(?<![\\d,.])50,000(?![\\d]|[.,]\\d)"
+   ]
+  },
+  "benford": {
+   "expected d1 3,612": [
+    "(?<![\\d,.])3,612(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])3612(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])3,612\\.36(?![\\d]|[.,]\\d)"
+   ],
+   "expected d2 2,113": [
+    "(?<![\\d,.])2,113(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])2113(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])2,113\\.1(?![\\d]|[.,]\\d)"
+   ],
+   "expected d3 1,499": [
+    "(?<![\\d,.])1,499(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])1499(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])1,499\\.3(?![\\d]|[.,]\\d)"
+   ],
+   "digit 1 largest deviation": [
+    "digit\\s*1\\b[^\\n]{0,120}?(?:larg|most|great|sever)",
+    "(?:larg|most|great|sever)[^\\n]{0,120}?digit\\s*1\\b"
+   ]
+  },
+  "vie": {
+   "VIE": [
+    "variable interest entity",
+    "\\bVIE\\b"
+   ],
+   "insufficient equity": [
+    "insufficient",
+    "(?<![\\d.])5\\s?%"
+   ],
+   "Titan primary beneficiary": [
+    "primary beneficiary"
+   ],
+   "consolidate": [
+    "consolidat"
+   ]
+  },
+  "pension": {
+   "net periodic pension cost 285,500": [
+    "(?<![\\d,.])285,500(?![\\d]|[.,]\\d)"
+   ],
+   "ending PBO 4,837,500 (awaiting review)": [
+    "(?<![\\d,.])4,837,500(?![\\d]|[.,]\\d)"
+   ],
+   "ending plan assets 4,570,000": [
+    "(?<![\\d,.])4,570,000(?![\\d]|[.,]\\d)"
+   ],
+   "funded status -267,500 (awaiting review)": [
+    "(?<![\\d,.])267,500(?![\\d]|[.,]\\d)"
+   ]
+  },
+  "segments": {
+   "revenue threshold 1,230,000": [
+    "(?<![\\d,.])1,230,000(?![\\d]|[.,]\\d)"
+   ],
+   "profit threshold 137,000 (awaiting review)": [
+    "(?<![\\d,.])137,000(?![\\d]|[.,]\\d)"
+   ],
+   "asset threshold 1,250,000": [
+    "(?<![\\d,.])1,250,000(?![\\d]|[.,]\\d)"
+   ],
+   "external revenue 94% (awaiting review)": [
+    "(?<![\\d,.])94%(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])94\\ %(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])94\\.0%(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])0\\.94(?![\\d]|[.,]\\d)"
+   ]
+  },
+  "tdr": {
+   "future cash flows 1,680,000": [
+    "(?<![\\d,.])1,680,000(?![\\d]|[.,]\\d)"
+   ],
+   "gain 480,000 (awaiting review)": [
+    "(?<![\\d,.])480,000(?![\\d]|[.,]\\d)"
+   ],
+   "effective rate 0% (awaiting review)": [
+    "(?:effective|new)\\s+(?:interest\\s+)?rate[^\\n]{0,60}?(?<![\\d.])0(?:\\.0+)?\\s?%",
+    "\\bzero\\s+(?:percent|effective)"
+   ]
+  },
+  "dividend": {
+   "D5 2.4386": [
+    "(?<![\\d,.])2\\.4386(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])2\\.44(?![\\d]|[.,]\\d)"
+   ],
+   "terminal value 60.96": [
+    "(?<![\\d,.])60\\.96(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])60\\.9638(?![\\d]|[.,]\\d)"
+   ],
+   "value 49.21": [
+    "(?<![\\d,.])49\\.21(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])49\\.2103(?![\\d]|[.,]\\d)"
+   ]
+  },
+  "hedge": {
+   "Dec 31 gain 400,000 in OCI": [
+    "(?<![\\d,.])400,000(?![\\d])[^\\n]{0,120}?\\bOCI\\b|\\bOCI\\b[^\\n]{0,120}?(?<![\\d,.])400,000(?![\\d])",
+    "other comprehensive income[^\\n]{0,80}?400,000"
+   ],
+   "Feb 1 OCI loss 100,000": [
+    "(?<![\\d,.])100,000(?![\\d]|[.,]\\d)"
+   ],
+   "settlement cash 300,000": [
+    "(?<![\\d,.])300,000(?![\\d]|[.,]\\d)"
+   ],
+   "inventory 7,800,000": [
+    "(?<![\\d,.])7,800,000(?![\\d]|[.,]\\d)"
+   ],
+   "sales 9,500,000": [
+    "(?<![\\d,.])9,500,000(?![\\d]|[.,]\\d)"
+   ],
+   "reclassified to COGS / cost of sales (awaiting review)": [
+    "reclassif\\w*[^\\n]{0,80}?(?:cost of (?:goods )?sold|COGS|cost of sales)",
+    "(?:COGS|cost of (?:goods )?sold|cost of sales)[^\\n]{0,80}?reclassif"
+   ]
+  },
+  "level3": {
+   "misstatement 900,000": [
+    "(?<![\\d,.])900,000(?![\\d]|[.,]\\d)"
+   ],
+   "exceeds 750,000 materiality": [
+    "exceed\\w*[^\\n]{0,60}?750,000|750,000[^\\n]{0,60}?exceed"
+   ],
+   "judgmental (not known/projected) (awaiting review)": [
+    "\\bjudg(?:e)?mental\\b"
+   ],
+   "audit committee (AS 1301) (awaiting review)": [
+    "\\bAS\\s*1301\\b"
+   ],
+   "subsequent events approach (awaiting review)": [
+    "subsequent\\s+events?|events\\s+occurring\\s+(?:up\\s+to|after)"
+   ]
+  },
+  "inventory_count": {
+   "Z excluded": [
+    "\\bZ\\b[^\\n]{0,160}?\\bexclud"
+   ],
+   "X excluded (awaiting review)": [
+    "\\bX\\b[^\\n]{0,160}?\\bexclud"
+   ],
+   "Y included (awaiting review)": [
+    "\\bY\\b[^\\n]{0,160}?\\binclud"
+   ],
+   "adjustment 130,000 (awaiting review)": [
+    "(?<![\\d,.])130,000(?![\\d]|[.,]\\d)"
+   ]
+  },
+  "brazil": {
+   "S1 5.1707": [
+    "(?<![\\d,.])5\\.1707(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])5\\.171(?![\\d]|[.,]\\d)"
+   ],
+   "S4 5.7187": [
+    "(?<![\\d,.])5\\.7187(?![\\d]|[.,]\\d)",
+    "(?<![\\d,.])5\\.719(?![\\d]|[.,]\\d)"
+   ],
+   "accept": [
+    "\\baccept\\b|\\bshould\\s+(?:deploy|proceed|invest)"
+   ],
+   "NPV ~49,839 (awaiting review)": [
+    "(?<![\\d,.])49,8[34]\\d(?![\\d])",
+    "(?<![\\d,.])49\\.8\\d?k"
+   ]
+  }
+ },
+ "contradictions": {
+  "nol_va": {
+   "NOL ignored: taxable income 1,500,000": "taxable income[^\\n]{0,80}?(?<![\\d,.])1,500,000",
+   "tax payable 315,000": "(?<![\\d,.])315,000(?![\\d]|[.,]\\d)",
+   "net tax expense 273,000": "(?<![\\d,.])273,000(?![\\d]|[.,]\\d)",
+   "temporary difference booked as a DTA": "\\bDTA\\b[^\\n]{0,40}?=\\s*\\$?200,000\\s*×"
+  },
+  "recap": {
+   "coverage 3.33 → 2.33": "(?<![\\d.])3\\.33\\b[^\\n]{0,40}?(?<![\\d.])2\\.33\\b"
+  },
+  "dupont": {
+   "invented FY2024 balances (2025 averages)": "\\(\\s*\\$?(?:2[.,]8|1[.,]6)\\d*\\s*M?\\s*\\+\\s*\\$?(?:3[.,]0|1[.,]75)\\d*\\s*M?\\s*\\)\\s*/\\s*2"
+  },
+  "lcnrv": {
+   "wrong reporting date 12 Dec": "\\b12\\s+dec(?:ember)?\\b|\\bdec(?:ember)?\\.?\\s+12\\b"
+  },
+  "vanguard": {
+   "A classified Type 2": "(?:event\\s*a\\b|\\|\\s*a\\b)[^\\n]{0,120}?(?:non-?recogni[sz]ed\\b|type\\s*(?:2|ii)\\b)",
+   "B classified Type 1": "(?:event\\s*b\\b|\\|\\s*b\\b)[^\\n]{0,120}?(?:(?<![A-Za-z-])(?<!non-)(?<!not )(?<!un)recogni[sz]ed subsequent|type\\s*(?:1|i)\\b)"
+  },
+  "convertible": {
+   "arbitrage claimed": "(?<!no )(?<!not a )profitable arbitrage (?:opportunity )?exists"
+  },
+  "pension": {
+   "PSC amortisation deducted from PBO (4,792,500)": "(?<![\\d,.])4,792,500(?![\\d]|[.,]\\d)",
+   "funded status -222,500": "(?<![\\d,.])222,500(?![\\d]|[.,]\\d)"
+  },
+  "segments": {
+   "profit test on net profit (102,000)": "(?<![\\d,.])102,000(?![\\d]|[.,]\\d)",
+   "75% test on total incl. intersegment (92.68%)": "(?<![\\d,.])92\\.68(?![\\d]|[.,]\\d)"
+  },
+  "tdr": {
+   "restructuring loss from an 8% present value (814,626)": "(?<![\\d,.])814,6\\d\\d"
+  },
+  "hedge": {
+   "400,000 called a loss": "(?:fair value|derivative)\\s+(?:loss)[^\\n]{0,40}?400,?000|400,?000[^\\n]{0,20}?\\bloss\\b"
+  },
+  "level3": {
+   "classified as a known misstatement": "\\bknown\\s+misstatement\\b(?![^\\n]{0,40}?\\bnot\\b)",
+   "AS 3105 cited for audit committee": "\\bAS\\s*3105\\b"
+  },
+  "inventory_count": {
+   "bill-and-hold lot X included": "\\bX\\b[^\\n]{0,200}?\\binclude\\s+in\\s+the\\s+client",
+   "lot Y excluded": "\\bY\\b[^\\n]{0,200}?\\bexclude\\s+from"
+  }
+ },
+ "review_status": {
+  "recap": {
+   "status": "awaiting accountant review",
+   "keys": [
+    "cash-on-cash 30.52% (awaiting review)"
+   ],
+   "assumption": "Cash-on-cash = first-year net income $610,400 ÷ remaining net invested equity $2,000,000. The $3,000,000 dividend is treated as a return of capital, not first-year return; the alternative reading (3,000,000 ÷ 2,000,000 = 150%) is not accepted."
+  },
+  "carveout": {
+   "status": "awaiting accountant review",
+   "keys": [
+    "NCI 300,000 (awaiting review)",
+    "APIC 200,000 (awaiting review)"
+   ],
+   "assumption": "Matrix sells existing NewTech shares (secondary sale), so the cash goes to the parent and NCI = 20% × $1,500,000. If NewTech issues new shares, net assets become $2,000,000, NCI $400,000 and APIC $100,000. The parent-only book treatment (equity vs gain under the equity method) is unresolved."
+  },
+  "wacc": {
+   "status": "awaiting accountant review",
+   "keys": [
+    "WACC 10.33% or 10.32% (awaiting review)"
+   ],
+   "assumption": "Both the exact YTM (≈7.57%, WACC ≈10.33%) and the approximation formula (≈7.52%, WACC ≈10.32%) are accepted; the question says 'YTM method', which may require the exact yield."
+  },
+  "npv": {
+   "status": "awaiting accountant review",
+   "keys": [
+    "FCF Y4 306,353.6 (awaiting review)",
+    "NPV 47,837 (awaiting review)"
+   ],
+   "assumption": "No salvage value and no tax shield on the machine's remaining book value ($138,240) at the end of Year 4; only the $50,000 NWC is recovered. Including the write-off shield ($29,030) changes FCF Y4 and NPV."
+  },
+  "pension": {
+   "status": "awaiting accountant review",
+   "keys": [
+    "ending PBO 4,837,500 (awaiting review)",
+    "funded status -267,500 (awaiting review)"
+   ],
+   "assumption": "US GAAP (ASC 715) terms: amortisation of prior service cost is a component of pension cost, not a reduction of the PBO; PBO = 4,500,000 + 280,000 + 247,500 − 190,000. No actuarial gain or loss on the PBO is given."
+  },
+  "segments": {
+   "status": "awaiting accountant review",
+   "keys": [
+    "profit threshold 137,000 (awaiting review)",
+    "external revenue 94% (awaiting review)"
+   ],
+   "assumption": "ASC 280: the profit test compares each segment with 10% of the greater of total profits of profitable segments ($1,370,000) and total losses of loss-making segments ($350,000); the 75% test uses external (unaffiliated) revenue ($9,400,000 of $10,000,000)."
+  },
+  "tdr": {
+   "status": "awaiting accountant review",
+   "keys": [
+    "gain 480,000 (awaiting review)",
+    "effective rate 0% (awaiting review)"
+   ],
+   "assumption": "Pre-ASU-2015 ASC 470-60 debtor accounting: undiscounted future payments ($1,680,000) are below the carrying amount ($2,160,000), so the debtor recognises a $480,000 gain and a 0% effective rate; every later payment reduces the carrying amount."
+  },
+  "hedge": {
+   "status": "awaiting accountant review",
+   "keys": [
+    "reclassified to COGS / cost of sales (awaiting review)"
+   ],
+   "assumption": "ASC 815-30 after ASU 2017-12: the entire change in the hedging instrument's fair value is recorded in OCI and reclassified to earnings (cost of sales) when the hedged forecast purchase affects earnings; ineffectiveness is not separately measured for a highly effective hedge. References: ASC 815-30-35-3, ASC 815-30-35-38."
+  },
+  "level3": {
+   "status": "awaiting accountant review",
+   "keys": [
+    "judgmental (not known/projected) (awaiting review)",
+    "audit committee (AS 1301) (awaiting review)",
+    "subsequent events approach (awaiting review)"
+   ],
+   "assumption": "PCAOB AS 2501.15-.27: test management's process, develop an independent expectation, or evaluate audit evidence from events occurring after the measurement date. A difference between management's estimate and the auditor's point estimate is a judgmental misstatement (AS 2810.13), neither known nor projected. Communication: AS 1301 (Communications with Audit Committees) and AS 2810 for uncorrected misstatements."
+  },
+  "inventory_count": {
+   "status": "awaiting accountant review",
+   "keys": [
+    "X excluded (awaiting review)",
+    "Y included (awaiting review)",
+    "adjustment 130,000 (awaiting review)"
+   ],
+   "assumption": "Lot X: if the bill-and-hold criteria (ASC 606-10-55-83) are met, control has passed to the customer, so it is excluded from the seller's inventory. Lot Y: FOB destination and delivered to the client's yard on Dec 31, so title passed on arrival and it is included (with the payable). Lot Z: FOB shipping point, shipped Dec 30, excluded. Adjustment if all three were included: remove X and Z, $130,000."
+  },
+  "brazil": {
+   "status": "awaiting accountant review",
+   "keys": [
+    "NPV ~49,839 (awaiting review)"
+   ],
+   "assumption": "Relative PPP: S_t = 5.00 × (1.06 / 1.025)^t BRL per USD; USD cash flows discounted at the 10% USD WACC; initial outlay 10,000,000 / 5.00 = $2,000,000. This is a capital-budgeting question, not a Brazilian tax or accounting one."
+  }
+ }
+}

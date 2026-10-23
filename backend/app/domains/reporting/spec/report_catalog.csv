@@ -1,0 +1,91 @@
+report_id,report_name,family,report_class,phase,minimum_evidence,certification_required
+RPT-001,Statement of financial position,statements,STATUTORY_DRAFT,P1,Ledger + applicable framework + note requirements + approvals,YES
+RPT-002,Statement of profit or loss,statements,STATUTORY_DRAFT,P1,Ledger + applicable framework + note requirements + approvals,YES
+RPT-003,Statement of profit or loss and OCI,statements,STATUTORY_DRAFT,P1,Ledger + applicable framework + note requirements + approvals,YES
+RPT-004,Statement of cash flows - indirect,statements,STATUTORY_DRAFT,P1,Ledger + applicable framework + note requirements + approvals,YES
+RPT-005,Statement of cash flows - direct,statements,STATUTORY_DRAFT,P1,Ledger + applicable framework + note requirements + approvals,YES
+RPT-006,Statement of changes in equity,statements,STATUTORY_DRAFT,P1,Ledger + applicable framework + note requirements + approvals,YES
+RPT-007,Statement notes and accounting policies,statements,STATUTORY_DRAFT,P1,Ledger + applicable framework + note requirements + approvals,YES
+RPT-008,Complete annual financial statements,statements,STATUTORY_DRAFT,P1,Ledger + applicable framework + note requirements + approvals,YES
+RPT-009,Condensed interim IFRS financial statements,statements,STATUTORY_DRAFT,P1,Ledger + applicable framework + note requirements + approvals,YES
+RPT-010,Consolidated annual financial statements,statements,STATUTORY_DRAFT,P1,Ledger + applicable framework + note requirements + approvals,YES
+RPT-011,Separate company annual statements,statements,STATUTORY_DRAFT,P1,Ledger + applicable framework + note requirements + approvals,YES
+RPT-012,Comparative multi-year statements,statements,STATUTORY_DRAFT,P1,Ledger + applicable framework + note requirements + approvals,YES
+RPT-013,Trial balance,close,AUDIT_WORKPAPER,P1,Posted ledger + reconciliation evidence,REVIEW_POLICY
+RPT-014,Adjusted trial balance,close,AUDIT_WORKPAPER,P1,Posted ledger + reconciliation evidence,REVIEW_POLICY
+RPT-015,General ledger detail,close,AUDIT_WORKPAPER,P1,Posted ledger + reconciliation evidence,REVIEW_POLICY
+RPT-016,Close package,close,AUDIT_WORKPAPER,P1,Posted ledger + reconciliation evidence,REVIEW_POLICY
+RPT-017,Journal entry listing,close,AUDIT_WORKPAPER,P1,Posted ledger + reconciliation evidence,REVIEW_POLICY
+RPT-018,Reconciliation register,close,AUDIT_WORKPAPER,P1,Posted ledger + reconciliation evidence,REVIEW_POLICY
+RPT-019,Suspense account analysis,close,AUDIT_WORKPAPER,P1,Posted ledger + reconciliation evidence,REVIEW_POLICY
+RPT-020,Bank reconciliation,close,AUDIT_WORKPAPER,P1,Posted ledger + reconciliation evidence,REVIEW_POLICY
+RPT-021,Intercompany reconciliation,close,AUDIT_WORKPAPER,P1,Posted ledger + reconciliation evidence,REVIEW_POLICY
+RPT-022,Disclosure support lead schedule,close,AUDIT_WORKPAPER,P1,Posted ledger + reconciliation evidence,REVIEW_POLICY
+RPT-023,Audit PBC index,close,AUDIT_WORKPAPER,P1,Posted ledger + reconciliation evidence,REVIEW_POLICY
+RPT-024,Balance sheet account substantiation,close,AUDIT_WORKPAPER,P1,Posted ledger + reconciliation evidence,REVIEW_POLICY
+RPT-025,Monthly management accounts,management,MANAGEMENT,P2,Validated finance facts + KPI dictionary,REVIEW_POLICY
+RPT-026,Quarterly management accounts,management,MANAGEMENT,P2,Validated finance facts + KPI dictionary,REVIEW_POLICY
+RPT-027,Board financial pack,management,MANAGEMENT,P2,Validated finance facts + KPI dictionary,REVIEW_POLICY
+RPT-028,CFO executive summary,management,MANAGEMENT,P2,Validated finance facts + KPI dictionary,REVIEW_POLICY
+RPT-029,Budget versus actual,management,MANAGEMENT,P2,Validated finance facts + KPI dictionary,REVIEW_POLICY
+RPT-030,Rolling twelve month earnings,management,MANAGEMENT,P2,Validated finance facts + KPI dictionary,REVIEW_POLICY
+RPT-031,Gross profit analysis,management,MANAGEMENT,P2,Validated finance facts + KPI dictionary,REVIEW_POLICY
+RPT-032,EBITDA bridge,management,MANAGEMENT,P2,Validated finance facts + KPI dictionary,REVIEW_POLICY
+RPT-033,Operating expense analysis,management,MANAGEMENT,P2,Validated finance facts + KPI dictionary,REVIEW_POLICY
+RPT-034,Variance waterfall,management,MANAGEMENT,P2,Validated finance facts + KPI dictionary,REVIEW_POLICY
+RPT-035,Revenue driver bridge,management,MANAGEMENT,P2,Validated finance facts + KPI dictionary,REVIEW_POLICY
+RPT-036,Product profitability,management,MANAGEMENT,P2,Validated finance facts + KPI dictionary,REVIEW_POLICY
+RPT-037,Customer profitability,management,MANAGEMENT,P2,Validated finance facts + KPI dictionary,REVIEW_POLICY
+RPT-038,Department cost analysis,management,MANAGEMENT,P2,Validated finance facts + KPI dictionary,REVIEW_POLICY
+RPT-039,Geographic segment performance,management,MANAGEMENT,P2,Validated finance facts + KPI dictionary,REVIEW_POLICY
+RPT-040,KPI scorecard,management,MANAGEMENT,P2,Validated finance facts + KPI dictionary,REVIEW_POLICY
+RPT-041,Earnings quality analysis,management,MANAGEMENT,P2,Validated finance facts + KPI dictionary,REVIEW_POLICY
+RPT-042,Daily cash position,treasury,MANAGEMENT,P2,Cash accounts + receivables/payables + explicit liquidity definitions,REVIEW_POLICY
+RPT-043,13-week cash forecast,treasury,MANAGEMENT,P2,Cash accounts + receivables/payables + explicit liquidity definitions,REVIEW_POLICY
+RPT-044,Cash flow forecast,treasury,MANAGEMENT,P2,Cash accounts + receivables/payables + explicit liquidity definitions,REVIEW_POLICY
+RPT-045,Cash conversion cycle,treasury,MANAGEMENT,P2,Cash accounts + receivables/payables + explicit liquidity definitions,REVIEW_POLICY
+RPT-046,Working capital dashboard,treasury,MANAGEMENT,P2,Cash accounts + receivables/payables + explicit liquidity definitions,REVIEW_POLICY
+RPT-047,Accounts receivable aging,treasury,MANAGEMENT,P2,Cash accounts + receivables/payables + explicit liquidity definitions,REVIEW_POLICY
+RPT-048,Accounts payable aging,treasury,MANAGEMENT,P2,Cash accounts + receivables/payables + explicit liquidity definitions,REVIEW_POLICY
+RPT-049,Inventory aging,treasury,MANAGEMENT,P2,Cash accounts + receivables/payables + explicit liquidity definitions,REVIEW_POLICY
+RPT-050,DSO-DPO-DIO analysis,treasury,MANAGEMENT,P2,Cash accounts + receivables/payables + explicit liquidity definitions,REVIEW_POLICY
+RPT-051,Debt maturity ladder,treasury,MANAGEMENT,P2,Cash accounts + receivables/payables + explicit liquidity definitions,REVIEW_POLICY
+RPT-052,Covenant headroom,treasury,MANAGEMENT,P2,Cash accounts + receivables/payables + explicit liquidity definitions,REVIEW_POLICY
+RPT-053,Liquidity runway,treasury,MANAGEMENT,P2,Cash accounts + receivables/payables + explicit liquidity definitions,REVIEW_POLICY
+RPT-054,Capital allocation analysis,treasury,MANAGEMENT,P2,Cash accounts + receivables/payables + explicit liquidity definitions,REVIEW_POLICY
+RPT-055,Annual operating budget,forecasting,FORECAST,P3,Model inputs + scenario assumptions + forecast boundary,REVIEW_POLICY
+RPT-056,Three-statement forecast,forecasting,FORECAST,P3,Model inputs + scenario assumptions + forecast boundary,REVIEW_POLICY
+RPT-057,Base-upside-downside scenario,forecasting,FORECAST,P3,Model inputs + scenario assumptions + forecast boundary,REVIEW_POLICY
+RPT-058,Sensitivity analysis,forecasting,FORECAST,P3,Model inputs + scenario assumptions + forecast boundary,REVIEW_POLICY
+RPT-059,Break-even analysis,forecasting,FORECAST,P3,Model inputs + scenario assumptions + forecast boundary,REVIEW_POLICY
+RPT-060,Rolling quarterly forecast,forecasting,FORECAST,P3,Model inputs + scenario assumptions + forecast boundary,REVIEW_POLICY
+RPT-061,Capex plan,forecasting,FORECAST,P3,Model inputs + scenario assumptions + forecast boundary,REVIEW_POLICY
+RPT-062,Headcount expense plan,forecasting,FORECAST,P3,Model inputs + scenario assumptions + forecast boundary,REVIEW_POLICY
+RPT-063,FX risk scenario,forecasting,FORECAST,P3,Model inputs + scenario assumptions + forecast boundary,REVIEW_POLICY
+RPT-064,Valuation scenario,forecasting,FORECAST,P3,Model inputs + scenario assumptions + forecast boundary,REVIEW_POLICY
+RPT-065,Fixed asset register,assets_liabilities,AUDIT_WORKPAPER,P3,Approved subledger and measurement methods,REVIEW_POLICY
+RPT-066,Depreciation rollforward,assets_liabilities,AUDIT_WORKPAPER,P3,Approved subledger and measurement methods,REVIEW_POLICY
+RPT-067,Lease obligation rollforward,assets_liabilities,AUDIT_WORKPAPER,P3,Approved subledger and measurement methods,REVIEW_POLICY
+RPT-068,Credit loss allowance schedule,assets_liabilities,AUDIT_WORKPAPER,P3,Approved subledger and measurement methods,REVIEW_POLICY
+RPT-069,Inventory valuation analysis,assets_liabilities,AUDIT_WORKPAPER,P3,Approved subledger and measurement methods,REVIEW_POLICY
+RPT-070,Impairment model workpaper,assets_liabilities,AUDIT_WORKPAPER,P3,Approved subledger and measurement methods,REVIEW_POLICY
+RPT-071,Provision rollforward,assets_liabilities,AUDIT_WORKPAPER,P3,Approved subledger and measurement methods,REVIEW_POLICY
+RPT-072,Intangible asset rollforward,assets_liabilities,AUDIT_WORKPAPER,P3,Approved subledger and measurement methods,REVIEW_POLICY
+RPT-073,Deferred revenue schedule,assets_liabilities,AUDIT_WORKPAPER,P3,Approved subledger and measurement methods,REVIEW_POLICY
+RPT-074,Deferred tax movement workpaper,assets_liabilities,AUDIT_WORKPAPER,P3,Approved subledger and measurement methods,REVIEW_POLICY
+RPT-075,Debt amortization schedule,assets_liabilities,AUDIT_WORKPAPER,P3,Approved subledger and measurement methods,REVIEW_POLICY
+RPT-076,Income tax provision draft,tax_regulatory,STATUTORY_DRAFT,P4,Jurisdiction-licensed authority + tax specialist review,YES
+RPT-077,Deferred tax note support,tax_regulatory,STATUTORY_DRAFT,P4,Jurisdiction-licensed authority + tax specialist review,YES
+RPT-078,VAT or GST return support,tax_regulatory,STATUTORY_DRAFT,P4,Jurisdiction-licensed authority + tax specialist review,YES
+RPT-079,Book-to-tax bridge,tax_regulatory,STATUTORY_DRAFT,P4,Jurisdiction-licensed authority + tax specialist review,YES
+RPT-080,Related party disclosure support,tax_regulatory,STATUTORY_DRAFT,P4,Jurisdiction-licensed authority + tax specialist review,YES
+RPT-081,Segment note support,tax_regulatory,STATUTORY_DRAFT,P4,Jurisdiction-licensed authority + tax specialist review,YES
+RPT-082,Going concern assumption checklist,tax_regulatory,STATUTORY_DRAFT,P4,Jurisdiction-licensed authority + tax specialist review,YES
+RPT-083,SEC iXBRL financial filing payload,reg_filing,REGULATORY_DATA,P4,Certified regulator+filing taxonomy and review,YES
+RPT-084,ESEF iXBRL financial filing package,reg_filing,REGULATORY_DATA,P4,Certified regulator+filing taxonomy and review,YES
+RPT-085,Standalone XBRL instance and taxonomy reference,reg_filing,REGULATORY_DATA,P4,Certified regulator+filing taxonomy and review,YES
+RPT-086,Illustrative balance sheet walk-through,education,EDUCATIONAL,P2,Synthetic case data and clear educational watermark,REVIEW_POLICY
+RPT-087,Synthetic accounting case study,education,EDUCATIONAL,P2,Synthetic case data and clear educational watermark,REVIEW_POLICY
+RPT-088,Journal-to-financial-statement explanation,education,EDUCATIONAL,P2,Synthetic case data and clear educational watermark,REVIEW_POLICY
+RPT-089,Ratio calculation teaching pack,education,EDUCATIONAL,P2,Synthetic case data and clear educational watermark,REVIEW_POLICY
+RPT-090,Cash flow reconciliation teaching pack,education,EDUCATIONAL,P2,Synthetic case data and clear educational watermark,REVIEW_POLICY

@@ -47,8 +47,9 @@ export type Conversation = {
 
 const CONVERSATIONS_KEY = "kriton_conversations_v3";
 const LEGACY_CONVERSATIONS_KEY = "kriton_conversations";
-const ACTIVE_CONVERSATION_KEY = "kriton_active_conversation_v1";
 export const MAX_CONVERSATIONS = 30;
+/** The open chat lives in the URL (?chat=<id>), not in storage. */
+export const CHAT_PARAM = "chat";
 
 type LegacyTurn = { id: string; question: string; result: AskKritonResponse | null; error: string | null; loading: boolean };
 type LegacyConversation = { id: string; title: string; turns: LegacyTurn[]; createdAt: number };
@@ -115,22 +116,20 @@ export function persistConversations(conversations: Conversation[]): void {
   }
 }
 
-export function loadActiveConversationId(conversations: Conversation[]): string | null {
-  try {
-    const id = localStorage.getItem(ACTIVE_CONVERSATION_KEY);
-    return id && conversations.some((conversation) => conversation.id === id) ? id : null;
-  } catch {
-    return null;
-  }
+/** The chat a page load shows: the one named in the URL, so a reload keeps
+ * it. A plain /ask-kriton (the dashboard, sidebar and page links) starts a new
+ * chat; reading the last chat from storage reopened it on every visit. */
+export function chatIdFromUrl(search: string, conversations: Conversation[]): string | null {
+  const id = new URLSearchParams(search).get(CHAT_PARAM);
+  return id && conversations.some((conversation) => conversation.id === id) ? id : null;
 }
 
-export function persistActiveConversationId(id: string | null): void {
-  try {
-    if (id) localStorage.setItem(ACTIVE_CONVERSATION_KEY, id);
-    else localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
-  } catch {
-    /* ignore storage write failures */
-  }
+/** The current address with ?chat=<id> set, or removed for a new chat. */
+export function chatUrl(currentHref: string, id: string | null): string {
+  const url = new URL(currentHref);
+  if (id) url.searchParams.set(CHAT_PARAM, id);
+  else url.searchParams.delete(CHAT_PARAM);
+  return url.pathname + url.search + url.hash;
 }
 
 /** Pinned first, then most-recently-updated. */

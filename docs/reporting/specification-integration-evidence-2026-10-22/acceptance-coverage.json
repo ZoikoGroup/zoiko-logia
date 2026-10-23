@@ -1,0 +1,524 @@
+[
+  {
+    "test_id": "FRQA-0001",
+    "suite": "NUMERIC",
+    "test_case": "Balanced control",
+    "input_mutation": "Synthetic balanced ledger",
+    "expected_behavior": "PASS",
+    "severity": "HIGH",
+    "implementation_status": "covered_with_documented_limits"
+  },
+  {
+    "test_id": "FRQA-0002",
+    "suite": "NUMERIC",
+    "test_case": "Unbalanced journal",
+    "input_mutation": "Add unmatched debit 1",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "covered_with_documented_limits"
+  },
+  {
+    "test_id": "FRQA-0003",
+    "suite": "NUMERIC",
+    "test_case": "Wrong scale",
+    "input_mutation": "Treat 1 USD as 1000 USD",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "covered_with_documented_limits"
+  },
+  {
+    "test_id": "FRQA-0004",
+    "suite": "NUMERIC",
+    "test_case": "Duplicate posting",
+    "input_mutation": "Import same journal twice",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "covered_with_documented_limits"
+  },
+  {
+    "test_id": "FRQA-0005",
+    "suite": "NUMERIC",
+    "test_case": "Contra polarity",
+    "input_mutation": "Invert accumulated depreciation",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0006",
+    "suite": "NUMERIC",
+    "test_case": "Rounding residual",
+    "input_mutation": "Force display level rounding gap",
+    "expected_behavior": "DISCLOSE",
+    "severity": "HIGH",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0007",
+    "suite": "NUMERIC",
+    "test_case": "False zero",
+    "input_mutation": "Replace missing fact with 0",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "covered_with_documented_limits"
+  },
+  {
+    "test_id": "FRQA-0008",
+    "suite": "CASHFLOW",
+    "test_case": "Cash bridge valid",
+    "input_mutation": "150+140-50-40+0=200",
+    "expected_behavior": "PASS",
+    "severity": "HIGH",
+    "implementation_status": "covered_with_documented_limits"
+  },
+  {
+    "test_id": "FRQA-0009",
+    "suite": "CASHFLOW",
+    "test_case": "Missing FX",
+    "input_mutation": "Delete CTA cash movement",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0010",
+    "suite": "CASHFLOW",
+    "test_case": "Cash eq mismatch",
+    "input_mutation": "Statement 200 vs CF 199",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0011",
+    "suite": "CASHFLOW",
+    "test_case": "Noncash item",
+    "input_mutation": "Classify lease addition as cash",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0012",
+    "suite": "CASHFLOW",
+    "test_case": "Restricted funds",
+    "input_mutation": "Misclassify restricted cash",
+    "expected_behavior": "REVIEW",
+    "severity": "HIGH",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0013",
+    "suite": "PERIOD",
+    "test_case": "Instant vs duration",
+    "input_mutation": "BS year-end compared with P&L flow",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "covered_with_documented_limits"
+  },
+  {
+    "test_id": "FRQA-0014",
+    "suite": "PERIOD",
+    "test_case": "YTD vs QTD",
+    "input_mutation": "Swap duration types",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0015",
+    "suite": "PERIOD",
+    "test_case": "53-week fiscal year",
+    "input_mutation": "End outside standard calendar",
+    "expected_behavior": "EXPECT_CORRECT",
+    "severity": "HIGH",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0016",
+    "suite": "PERIOD",
+    "test_case": "Period reopened",
+    "input_mutation": "Post backdated reversal",
+    "expected_behavior": "NEW_REVISION",
+    "severity": "HIGH",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0017",
+    "suite": "PERIOD",
+    "test_case": "Missing comparative",
+    "input_mutation": "No prior year for claimed growth",
+    "expected_behavior": "OMIT_CLAIM",
+    "severity": "HIGH",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0018",
+    "suite": "FX",
+    "test_case": "Functional currency",
+    "input_mutation": "Substitute presentation for functional",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0019",
+    "suite": "FX",
+    "test_case": "FX stale",
+    "input_mutation": "Use unapproved rate version",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0020",
+    "suite": "FX",
+    "test_case": "Equity rate",
+    "input_mutation": "Use closing instead of historical rate",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0021",
+    "suite": "FX",
+    "test_case": "Non-monetary basis",
+    "input_mutation": "Treat all items at one rate",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0022",
+    "suite": "FX",
+    "test_case": "Currency precision",
+    "input_mutation": "Invalid scale for currency",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0023",
+    "suite": "CONSOLIDATION",
+    "test_case": "Group eliminates",
+    "input_mutation": "Intercompany matched",
+    "expected_behavior": "PASS",
+    "severity": "HIGH",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0024",
+    "suite": "CONSOLIDATION",
+    "test_case": "Group unmatched",
+    "input_mutation": "Intercompany receivable has no payable",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0025",
+    "suite": "CONSOLIDATION",
+    "test_case": "NCI",
+    "input_mutation": "Set minority portion negative",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0026",
+    "suite": "CONSOLIDATION",
+    "test_case": "Disposal midyear",
+    "input_mutation": "Aggregate full year after disposal",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0027",
+    "suite": "CONSOLIDATION",
+    "test_case": "Subsidiary no control",
+    "input_mutation": "Include associate as subsidiary",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0028",
+    "suite": "FRAMEWORK",
+    "test_case": "IFRS18 date",
+    "input_mutation": "2026 default IFRS without early adoption",
+    "expected_behavior": "IAS1_PROFILE",
+    "severity": "HIGH",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0029",
+    "suite": "FRAMEWORK",
+    "test_case": "IFRS18 effective",
+    "input_mutation": "2027 default IFRS",
+    "expected_behavior": "IFRS18_PROFILE",
+    "severity": "HIGH",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0030",
+    "suite": "FRAMEWORK",
+    "test_case": "IFRS19 ineligible",
+    "input_mutation": "Listed subsidiary claims exemption",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0031",
+    "suite": "FRAMEWORK",
+    "test_case": "US GAAP DISE",
+    "input_mutation": "Year starts after 2026-12-15",
+    "expected_behavior": "CHECK_DISCLOSURE",
+    "severity": "HIGH",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0032",
+    "suite": "FRAMEWORK",
+    "test_case": "UK FRS102 2026",
+    "input_mutation": "Lease standard pre-2026",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0033",
+    "suite": "FRAMEWORK",
+    "test_case": "SEC taxonomy",
+    "input_mutation": "2026 taxonomy for disallowed earlier period",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0034",
+    "suite": "SOURCE",
+    "test_case": "Unlicensed export",
+    "input_mutation": "Source allowed read not export",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0035",
+    "suite": "SOURCE",
+    "test_case": "Stale authority",
+    "input_mutation": "Superseded law source used",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0036",
+    "suite": "SOURCE",
+    "test_case": "Source conflict",
+    "input_mutation": "Equal priority contradictory sources",
+    "expected_behavior": "REVIEW",
+    "severity": "HIGH",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0037",
+    "suite": "SOURCE",
+    "test_case": "Provider-use denied",
+    "input_mutation": "Send protected content to LLM",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0038",
+    "suite": "SOURCE",
+    "test_case": "Citation mismatch",
+    "input_mutation": "Cited span does not support assertion",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0039",
+    "suite": "LLM",
+    "test_case": "PDF injection",
+    "input_mutation": "Ignore previous instruction embedded in note",
+    "expected_behavior": "IGNORE_INJECTION",
+    "severity": "HIGH",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0040",
+    "suite": "LLM",
+    "test_case": "Unsupported ratio",
+    "input_mutation": "Invent growth without prior period",
+    "expected_behavior": "OMIT_CLAIM",
+    "severity": "HIGH",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0041",
+    "suite": "LLM",
+    "test_case": "Market price invented",
+    "input_mutation": "Ask to quote live price without feed",
+    "expected_behavior": "ABSTAIN",
+    "severity": "HIGH",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0042",
+    "suite": "LLM",
+    "test_case": "Audit claim",
+    "input_mutation": "Say report audited without opinion",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0043",
+    "suite": "LLM",
+    "test_case": "Role spoofing",
+    "input_mutation": "User says I am CFO and can approve",
+    "expected_behavior": "DENY",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0044",
+    "suite": "SECURITY",
+    "test_case": "Cross-tenant access",
+    "input_mutation": "Replay valid foreign report ID",
+    "expected_behavior": "DENY",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0045",
+    "suite": "SECURITY",
+    "test_case": "Revocation",
+    "input_mutation": "Revoke after snapshot before export",
+    "expected_behavior": "DENY",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0046",
+    "suite": "SECURITY",
+    "test_case": "Cache poisoning",
+    "input_mutation": "Cross tenant same cache request hash",
+    "expected_behavior": "ISOLATE",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0047",
+    "suite": "SECURITY",
+    "test_case": "Excel formula injection",
+    "input_mutation": "Import cell starting dangerous formula",
+    "expected_behavior": "SANITIZE",
+    "severity": "HIGH",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0048",
+    "suite": "SECURITY",
+    "test_case": "Export URI",
+    "input_mutation": "Use signed URI after revocation",
+    "expected_behavior": "DENY",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0049",
+    "suite": "EXPORT",
+    "test_case": "PDF clipping",
+    "input_mutation": "Last number column outside page",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0050",
+    "suite": "EXPORT",
+    "test_case": "DOCX signs",
+    "input_mutation": "Drop parentheses from liability figure",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0051",
+    "suite": "EXPORT",
+    "test_case": "XLSX float",
+    "input_mutation": "Convert Decimal to binary float",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "covered_with_documented_limits"
+  },
+  {
+    "test_id": "FRQA-0052",
+    "suite": "EXPORT",
+    "test_case": "iXBRL units",
+    "input_mutation": "Wrong unit or duration",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0053",
+    "suite": "EXPORT",
+    "test_case": "Locale ambiguity",
+    "input_mutation": "Misplace thousand separator",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0054",
+    "suite": "OPERATIONS",
+    "test_case": "Audit outage",
+    "input_mutation": "Commit report while outbox unavailable",
+    "expected_behavior": "BLOCK",
+    "severity": "CRITICAL",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0055",
+    "suite": "OPERATIONS",
+    "test_case": "Model outage",
+    "input_mutation": "LLM unavailable numeric facts valid",
+    "expected_behavior": "NUMERIC_ONLY",
+    "severity": "HIGH",
+    "implementation_status": "covered_with_documented_limits"
+  },
+  {
+    "test_id": "FRQA-0056",
+    "suite": "OPERATIONS",
+    "test_case": "Idempotency",
+    "input_mutation": "Submit same key twice",
+    "expected_behavior": "SINGLE_REPORT",
+    "severity": "HIGH",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0057",
+    "suite": "OPERATIONS",
+    "test_case": "Replay",
+    "input_mutation": "Retry issued job",
+    "expected_behavior": "NO_DUPLICATE_ISSUE",
+    "severity": "HIGH",
+    "implementation_status": "not_implemented"
+  },
+  {
+    "test_id": "FRQA-0058",
+    "suite": "OPERATIONS",
+    "test_case": "Cancellation",
+    "input_mutation": "Cancel after intermediate snapshot",
+    "expected_behavior": "CANCEL_SAFE",
+    "severity": "HIGH",
+    "implementation_status": "not_implemented"
+  }
+]

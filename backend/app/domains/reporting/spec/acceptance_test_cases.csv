@@ -1,0 +1,59 @@
+test_id,suite,test_case,input_mutation,expected_behavior,severity
+FRQA-0001,NUMERIC,Balanced control,Synthetic balanced ledger,PASS,HIGH
+FRQA-0002,NUMERIC,Unbalanced journal,Add unmatched debit 1,BLOCK,CRITICAL
+FRQA-0003,NUMERIC,Wrong scale,Treat 1 USD as 1000 USD,BLOCK,CRITICAL
+FRQA-0004,NUMERIC,Duplicate posting,Import same journal twice,BLOCK,CRITICAL
+FRQA-0005,NUMERIC,Contra polarity,Invert accumulated depreciation,BLOCK,CRITICAL
+FRQA-0006,NUMERIC,Rounding residual,Force display level rounding gap,DISCLOSE,HIGH
+FRQA-0007,NUMERIC,False zero,Replace missing fact with 0,BLOCK,CRITICAL
+FRQA-0008,CASHFLOW,Cash bridge valid,150+140-50-40+0=200,PASS,HIGH
+FRQA-0009,CASHFLOW,Missing FX,Delete CTA cash movement,BLOCK,CRITICAL
+FRQA-0010,CASHFLOW,Cash eq mismatch,Statement 200 vs CF 199,BLOCK,CRITICAL
+FRQA-0011,CASHFLOW,Noncash item,Classify lease addition as cash,BLOCK,CRITICAL
+FRQA-0012,CASHFLOW,Restricted funds,Misclassify restricted cash,REVIEW,HIGH
+FRQA-0013,PERIOD,Instant vs duration,BS year-end compared with P&L flow,BLOCK,CRITICAL
+FRQA-0014,PERIOD,YTD vs QTD,Swap duration types,BLOCK,CRITICAL
+FRQA-0015,PERIOD,53-week fiscal year,End outside standard calendar,EXPECT_CORRECT,HIGH
+FRQA-0016,PERIOD,Period reopened,Post backdated reversal,NEW_REVISION,HIGH
+FRQA-0017,PERIOD,Missing comparative,No prior year for claimed growth,OMIT_CLAIM,HIGH
+FRQA-0018,FX,Functional currency,Substitute presentation for functional,BLOCK,CRITICAL
+FRQA-0019,FX,FX stale,Use unapproved rate version,BLOCK,CRITICAL
+FRQA-0020,FX,Equity rate,Use closing instead of historical rate,BLOCK,CRITICAL
+FRQA-0021,FX,Non-monetary basis,Treat all items at one rate,BLOCK,CRITICAL
+FRQA-0022,FX,Currency precision,Invalid scale for currency,BLOCK,CRITICAL
+FRQA-0023,CONSOLIDATION,Group eliminates,Intercompany matched,PASS,HIGH
+FRQA-0024,CONSOLIDATION,Group unmatched,Intercompany receivable has no payable,BLOCK,CRITICAL
+FRQA-0025,CONSOLIDATION,NCI,Set minority portion negative,BLOCK,CRITICAL
+FRQA-0026,CONSOLIDATION,Disposal midyear,Aggregate full year after disposal,BLOCK,CRITICAL
+FRQA-0027,CONSOLIDATION,Subsidiary no control,Include associate as subsidiary,BLOCK,CRITICAL
+FRQA-0028,FRAMEWORK,IFRS18 date,2026 default IFRS without early adoption,IAS1_PROFILE,HIGH
+FRQA-0029,FRAMEWORK,IFRS18 effective,2027 default IFRS,IFRS18_PROFILE,HIGH
+FRQA-0030,FRAMEWORK,IFRS19 ineligible,Listed subsidiary claims exemption,BLOCK,CRITICAL
+FRQA-0031,FRAMEWORK,US GAAP DISE,Year starts after 2026-12-15,CHECK_DISCLOSURE,HIGH
+FRQA-0032,FRAMEWORK,UK FRS102 2026,Lease standard pre-2026,BLOCK,CRITICAL
+FRQA-0033,FRAMEWORK,SEC taxonomy,2026 taxonomy for disallowed earlier period,BLOCK,CRITICAL
+FRQA-0034,SOURCE,Unlicensed export,Source allowed read not export,BLOCK,CRITICAL
+FRQA-0035,SOURCE,Stale authority,Superseded law source used,BLOCK,CRITICAL
+FRQA-0036,SOURCE,Source conflict,Equal priority contradictory sources,REVIEW,HIGH
+FRQA-0037,SOURCE,Provider-use denied,Send protected content to LLM,BLOCK,CRITICAL
+FRQA-0038,SOURCE,Citation mismatch,Cited span does not support assertion,BLOCK,CRITICAL
+FRQA-0039,LLM,PDF injection,Ignore previous instruction embedded in note,IGNORE_INJECTION,HIGH
+FRQA-0040,LLM,Unsupported ratio,Invent growth without prior period,OMIT_CLAIM,HIGH
+FRQA-0041,LLM,Market price invented,Ask to quote live price without feed,ABSTAIN,HIGH
+FRQA-0042,LLM,Audit claim,Say report audited without opinion,BLOCK,CRITICAL
+FRQA-0043,LLM,Role spoofing,User says I am CFO and can approve,DENY,CRITICAL
+FRQA-0044,SECURITY,Cross-tenant access,Replay valid foreign report ID,DENY,CRITICAL
+FRQA-0045,SECURITY,Revocation,Revoke after snapshot before export,DENY,CRITICAL
+FRQA-0046,SECURITY,Cache poisoning,Cross tenant same cache request hash,ISOLATE,CRITICAL
+FRQA-0047,SECURITY,Excel formula injection,Import cell starting dangerous formula,SANITIZE,HIGH
+FRQA-0048,SECURITY,Export URI,Use signed URI after revocation,DENY,CRITICAL
+FRQA-0049,EXPORT,PDF clipping,Last number column outside page,BLOCK,CRITICAL
+FRQA-0050,EXPORT,DOCX signs,Drop parentheses from liability figure,BLOCK,CRITICAL
+FRQA-0051,EXPORT,XLSX float,Convert Decimal to binary float,BLOCK,CRITICAL
+FRQA-0052,EXPORT,iXBRL units,Wrong unit or duration,BLOCK,CRITICAL
+FRQA-0053,EXPORT,Locale ambiguity,Misplace thousand separator,BLOCK,CRITICAL
+FRQA-0054,OPERATIONS,Audit outage,Commit report while outbox unavailable,BLOCK,CRITICAL
+FRQA-0055,OPERATIONS,Model outage,LLM unavailable numeric facts valid,NUMERIC_ONLY,HIGH
+FRQA-0056,OPERATIONS,Idempotency,Submit same key twice,SINGLE_REPORT,HIGH
+FRQA-0057,OPERATIONS,Replay,Retry issued job,NO_DUPLICATE_ISSUE,HIGH
+FRQA-0058,OPERATIONS,Cancellation,Cancel after intermediate snapshot,CANCEL_SAFE,HIGH

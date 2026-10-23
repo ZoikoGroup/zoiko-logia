@@ -351,7 +351,19 @@ _HEADING = re.compile(r"\s*(?:#{1,6}\s+\S.*|(\*\*|__)[^*_]+\1)\s*")
 _EMPTIED_NOTE = "The sources provided do not confirm this."
 # A heading emptied because its figures failed reconciliation: no source was
 # consulted for them, so "the sources do not confirm this" would mislead.
-FIGURES_REMOVED_NOTE = "Removed: the figures in this part did not match verified data."
+# Unchecked, not shown wrong: correct diluted-EPS figures ($79,000, $1,459,000)
+# were removed beside "did not match verified data" (22 Oct 2026).
+FIGURES_REMOVED_NOTE = "Removed: the figures in this part could not be checked against the question or a calculation."
+# A figure the calculator showed to be wrong (review_release.remove_disproved_figures).
+FIGURE_DISPROVED_NOTE = "Removed: a figure in this part did not match its own calculation."
+# Lines that say something was removed are not answer content.
+REMOVAL_NOTES = (FIGURES_REMOVED_NOTE, FIGURE_DISPROVED_NOTE)
+
+
+def is_removal_note(line: str) -> bool:
+    return any(note in (line or "") for note in REMOVAL_NOTES)
+
+
 FIGURE_MISATTRIBUTED_NOTE = "Removed: a figure here belongs to a different period or scenario."
 # A bold heading whose same-line answer was removed: "**5. TDS on rent** – ".
 _DANGLING_HEADING = re.compile(r"\s*((?:\*\*|__)[^*_]+(?:\*\*|__))\s*[–—:-]\s*")

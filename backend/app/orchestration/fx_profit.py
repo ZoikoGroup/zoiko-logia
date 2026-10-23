@@ -10,22 +10,34 @@ _NAMED_DATE = re.compile(
     r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{4}\b"
     r"|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}\b", re.I,
 )
-_NEGATED_LATEST = re.compile(r"\b(?:do\s+not|don'?t|never|not)\s+(?:use\s+)?(?:the\s+)?(?:latest|current|today'?s?|newest)\b", re.I)
+_NEGATED_LATEST = re.compile(r"\b(?:do\s+not|don'?t|never|not)\s+(?:use\s+)?(?:the\s+)?(?:latest|current|today'?s?|newest)\b"
+                             r"|\b(?:do\s+not|don'?t|never|without)\s+(?:\w+\s+){0,2}?(?:retriev\w*|fetch\w*|look\w*\s+up|check\w*)"
+                             r"\s+(?:a\s+|the\s+)?(?:live|latest|current|market)\b", re.I)
+# A rate the question supplies: "The current spot rate is 5.00 BRL per $1",
+# "a conversion rate of 1.10 USD per EUR", "₹83.20 per USD" (23 Oct 2026: a
+# Brazil PPP question was refused for want of a "sufficiently recent" rate).
+SUPPLIED_FX_RATE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:[A-Z]{3}\s+)?per\s+(?:[£$€₹¥]\s?1\b|1\s*[A-Z]{3}\b|[A-Z]{3}\b|[£$€₹¥]\s?1)"
+    r"|[£$€₹¥]\s?\d+(?:\.\d+)?\s+per\s+(?:[£$€₹¥]\s?1|[A-Z]{3}|1\s*[A-Z]{3})\b"
+    r"|\b(?:spot|exchange|conversion|fx)\s+rates?\b[^.\n]{0,30}?\b(?:is|of|at|=)\s+[£$€₹¥]?\s?\d+(?:\.\d+)?",
+    re.I)
 
 
 def latest_fx_requested(question):
     """"Convert at the latest rate". Not "the rate for 31 December 2024. Do
     not use today's rate": the word "today" made that a latest-rate request,
     and the dated rate the user asked for was refused as stale."""
-    if _NAMED_DATE.search(question) or _NEGATED_LATEST.search(question):
+    if _NAMED_DATE.search(question) or _NEGATED_LATEST.search(question) or SUPPLIED_FX_RATE.search(question):
         return False
     # "latest/current" must qualify an exchange rate or a conversion: "Current
     # assets ₹2,50,000 … Total liabilities £300,000" named two currencies and
     # the word "current", and nine ratio answers were replaced with "no
     # sufficiently recent exchange rate".
     text = re.sub(r'\bcurrent\s+(?:assets|liabilities|ratio|value|and\s+quick\s+ratio)\b', '', question, flags=re.I)
+    from app.orchestration.calculation_service import live_data_requested
+    # The shared live-data decision, plus "newest" for rates.
     return (len(_find_currencies(question)) >= 2
-            and bool(re.search(r"\b(?:latest|current|today'?s?|newest|live)\b", text, re.I))
+            and (live_data_requested(text) or bool(re.search(r"\bnewest\b", text, re.I)))
             and bool(re.search(r'\b(?:rates?|convert|conversion|exchange|fx)\b', text, re.I)))
 
 
