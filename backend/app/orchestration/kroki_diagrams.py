@@ -281,11 +281,42 @@ def _extract_tasks(query: str) -> list[str] | None:
     for statement in statements:
         match = _TASK_STATEMENT.match(statement)
         if not match:
-            return None
+            return _natural_tasks(_payload(query, GANTT) or "")
         start, end = _parse_date(match.group(2)), _parse_date(match.group(3))
         if start is None or end is None:
             return None
         labels.append(f"{match.group(1).strip()}: {start.isoformat()} to {end.isoformat()}")
+    return labels if _tasks(labels) else None
+
+
+# Tasks as people write them: "Planning 1–10 Jan, Fieldwork 11 Jan–15 Feb,
+# Review 16–28 Feb, Report 1–10 Mar" — commas, no colon, a range within one
+# month, no year. The strict form above did not read it, no Gantt chart was
+# drawn and a bar chart of durations was shown instead. A missing year is the
+# current one; a range that runs past December ends in the next year.
+_NATURAL_TASK = re.compile(
+    rf"^\s*(?P<name>{_NAME})\s*:?\s+(?:from\s+)?(?P<d1>\d{{1,2}})(?:\s+(?P<m1>[A-Za-z]{{3,9}}))?(?:\s+(?P<y1>\d{{4}}))?"
+    r"\s*(?:to|until|-|–|—)\s*(?P<d2>\d{1,2})\s+(?P<m2>[A-Za-z]{3,9})(?:\s+(?P<y2>\d{4}))?\s*$", re.I)
+
+
+def _natural_tasks(payload: str, *, today: date | None = None) -> list[str] | None:
+    items = [part for part in re.split(r"\s*(?:;|\n|,)\s*", payload.strip().strip("\"'“”").strip()) if part]
+    if not items:
+        return None
+    labels = []
+    year = (today or date.today()).year
+    for item in items:
+        match = _NATURAL_TASK.match(item.strip().strip("\"'“”."))
+        if not match:
+            return None
+        end_year = int(match["y2"] or match["y1"] or year)
+        start = _parse_date(f"{match['d1']} {match['m1'] or match['m2']} {match['y1'] or end_year}")
+        end = _parse_date(f"{match['d2']} {match['m2']} {end_year}")
+        if start and end and end < start and not match["y1"]:
+            start = _parse_date(f"{match['d1']} {match['m1'] or match['m2']} {end_year - 1}")
+        if start is None or end is None:
+            return None
+        labels.append(f"{match['name'].strip()}: {start.isoformat()} to {end.isoformat()}")
     return labels if _tasks(labels) else None
 
 
