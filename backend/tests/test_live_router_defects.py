@@ -290,3 +290,12 @@ async def test_an_attached_document_counts_as_supplied_figures(pipeline, monkeyp
         pass  # document loading is not faked here; only the authorizer's input matters
     assert seen["figures_supplied"] is True
     assert service.supplies_figures("Review the attached P&L for arithmetic errors.", []) is False
+
+
+def test_concept_questions_naming_vat_and_calculate_are_not_a_vat_calculation():
+    # Ten concept questions in one message were asked for "vat rate".
+    questions = ("How does Value Added Tax (VAT) work in the United Kingdom? "
+                 "How do businesses calculate and report corporate income tax?")
+    result = calculate_from_query(questions)
+    assert result.error_code != "MISSING_INPUT" or "vat" not in (result.message or "").lower()
+    assert calculate_from_query("Calculate VAT on £500.").error_code == "MISSING_INPUT"   # an amount still needs its rate
