@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from app.orchestration import claim_verification
 from app.orchestration.telemetry import StageMetrics
 from app.domains.model_gateway import service as model_gateway_service
+from app.domains.model_gateway.errors import ProviderResponseIncomplete
 from app.orchestration.calculation_service import needs_lookup
 from app.orchestration.derived_output import is_illustration_heading, is_scenario_sentence
 
@@ -29,6 +30,10 @@ _UNVERIFIED_REMOVED_NOTE = (
 _UNVERIFIED_ANSWER_NOTE = (
     "Kriton could not check this answer against its sources, so it is unverified. "
     "Check the official source before relying on it."
+)
+_CLAIM_UNCORRECTED_NOTE = (
+    "A statement in this answer may conflict with the cited sources and could not be corrected. "
+    "Check the sources before relying on it."
 )
 _CLAIMS_UNCONFIRMED_NOTE = (
     "Some figures in this answer could not be confirmed in the sources retrieved for it "
@@ -68,12 +73,18 @@ async def _verify_answer_claims(
     )
     if verdict.contradicted:
         await report("correcting", "Correcting a statement the sources contradict")
-        corrected = await metrics.run(
-            "composition.claim_correction",
-            model_gateway_service.run_grounded_completion(
-                grounded_input + claim_verification.correction_request(answer, verdict.contradicted),
-            ),
-        )
+        try:
+            corrected = await metrics.run(
+                "composition.claim_correction",
+                model_gateway_service.run_grounded_completion(
+                    grounded_input + claim_verification.correction_request(answer, verdict.contradicted),
+                ),
+            )
+        except ProviderResponseIncomplete:
+            # The rewrite of a long, three-question answer was cut off at the
+            # output limit, and the whole answer was lost as an internal error.
+            # The rewrite is optional: keep the answer and say it is unchecked.
+            return answer, _CLAIM_UNCORRECTED_NOTE
         if not corrected or not corrected.strip() or _MODEL_PROVIDER_FAILURE in corrected:
             return answer, None
         recheck = await claim_verification.verify_claims(
