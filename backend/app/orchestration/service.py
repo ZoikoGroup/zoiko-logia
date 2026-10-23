@@ -1087,6 +1087,21 @@ def _dated_fx_question(query: str) -> bool:
     return len(_find_currencies(query)) >= 2 and requested_rate_date(query) is not None
 
 
+# Official rates the agent has no tool for: the Bank of England, Bank of
+# Canada, RBA, Federal Reserve and US Treasury connectors run only in the
+# pre-fetch (live_data.py), which agent mode skips. "Show the Bank of England
+# base rate over the last 3 years as a line chart" was answered "I'm unable to
+# retrieve the Bank of England base rate" while the connector had the series.
+_OFFICIAL_RATE_QUESTION = re.compile(
+    r"\b(?:base|bank|policy|cash|overnight|official|repo)\s+rates?\b|\bfed(?:eral)?\s+funds\b|"
+    r"\btreasury\s+(?:yields?|rates?|bills?|notes?|bonds?)\b|\bgilt\s+yields?\b|\binterest\s+rate\s+decisions?\b",
+    re.I)
+
+
+def _official_rate_question(query: str) -> bool:
+    return bool(_OFFICIAL_RATE_QUESTION.search(query or ""))
+
+
 async def _record_calculation_receipts(db, *, receipts: list[dict], query_id: str, correlation_id: str,
                                        tenant_id: str, audit_chain_id: str, actor_id: str) -> None:
     """Save each agent calculation as a calculation run (the immutable
@@ -2068,7 +2083,8 @@ async def ask_kriton(
                 timeout=25.0,
             )
         )
-        if needs_web and (not run_agent_loop or _dated_fx_question(request.query)) else None
+        if needs_web and (not run_agent_loop or _dated_fx_question(request.query)
+                          or _official_rate_question(request.query)) else None
     )
     # These are speculative child tasks. Tie their lifetime to this request so
     # an early refusal, client disconnect, or end-to-end timeout cannot leave
