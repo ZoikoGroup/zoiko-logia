@@ -14,6 +14,7 @@ from .mapping import mapping_exceptions, parse_account_map
 from .reconcile import ReconcilerOutcome, reconcile
 from .snapshot import ImportReceipt, seal_snapshot
 from .states import ReportState
+from .specification import SpecificationError
 
 # Request-level problems: the report basis itself is unsupported.
 _UNAVAILABLE_CODES = frozenset({"context_invalid", "period_invalid", "fx_missing_or_inapplicable"})
@@ -43,7 +44,12 @@ def build_draft(ledger: dict, account_map: dict) -> ReportDraft:
         return ReportDraft(state=state, error_code=error.code, error_detail=str(error))
 
     compiled = compile_report(snapshot, parsed_map, mapping_exceptions(snapshot.accounts, parsed_map))
-    outcomes = reconcile(compiled)
+    try:
+        outcomes = reconcile(compiled)
+    except (SpecificationError, OSError) as error:
+        return ReportDraft(state=ReportState.DRAFT_INCOMPLETE, error_code="specification_invalid",
+                           error_detail=str(error), snapshot_hash=snapshot.snapshot_hash,
+                           receipt=snapshot.receipt, compiled=compiled)
     if compiled.exceptions:
         state, code = ReportState.DRAFT_INCOMPLETE, "snapshot_incomplete"
     elif not all(outcome.passed for outcome in outcomes):

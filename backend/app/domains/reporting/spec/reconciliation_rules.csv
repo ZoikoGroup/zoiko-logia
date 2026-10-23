@@ -1,0 +1,11 @@
+rule_id,area,invariant,default_severity
+BS-001,balance sheet,assets - liabilities - equity = 0,CRITICAL
+TB-001,trial balance,debits - credits = 0,CRITICAL
+CF-001,cash flow,opening + CFO + CFI + CFF + FX = closing,CRITICAL
+EQ-001,equity,opening + movements = closing,CRITICAL
+CI-001,comprehensive income,net profit + OCI = comprehensive income,CRITICAL
+INT-001,comparatives,prior closing = current opening or approved restatement,HIGH
+FMT-001,exports,export fact parity by line/period/scale,CRITICAL
+AUTH-001,security,no cross-tenant/source access,CRITICAL
+DISC-001,disclosure,all required applicability resolved,HIGH
+TXT-001,narrative,all material numerical claims resolve to facts,CRITICAL

@@ -42,6 +42,8 @@ _REQUEST_VERB = (
     r"assess|record|recommend|compare|list|analy[sz]e|work\s+out|estimate|reconcile|draft|write|give|tell|"
     r"discuss|outline|summari[sz]e|journali[sz]e|quantify|measure|allocate|recogni[sz]e|present"
 )
+_COMPUTE_VERB = (r"calculate|compute|determine|prepare|record|journali[sz]e|work\s+out|estimate|reconcile|"
+                 r"quantify|measure|allocate|recogni[sz]e|draft|construct")
 # A sentence that asks: a question mark, a leading request verb or question
 # word, or a request verb straight after an introductory phrase
 # ("Using the indirect method, compute …").
@@ -60,6 +62,24 @@ _DEMONSTRATIVE = re.compile(
     re.I,
 )
 _MONEY = re.compile(r"[£$€₹]\s?\d|\b\d[\d,]*(?:\.\d+)?\s?(?:USD|GBP|EUR|INR|AED)\b", re.I)
+# "that amount", "that lease": a reference when the noun names a figure or an
+# item an earlier message set out. Not "conclude that revenue is …", where
+# "that" opens a clause after a verb of saying or concluding.
+_QUANTITY_NOUN = r"amounts?|figures?|totals?|sums?|balances?|numbers?|results?|values?"
+_ITEM_NOUN = (r"profits?|loss(?:es)?|income|payments?|prices?|leases?|contracts?|assets?|liabilit(?:y|ies)|loans?|"
+              r"scenarios?|transactions?|entr(?:y|ies)|calculations?|acquisitions?|investments?|projects?|bonds?|"
+              r"awards?|options?|grants?|deals?|compan(?:y|ies)|entit(?:y|ies)|clients?|invoices?|machines?|equipment")
+_THAT_REFERENCE = re.compile(rf"\b(\w+)?\s*\bthat\s+(?:[a-z][\w-]*\s+)?({_QUANTITY_NOUN}|{_ITEM_NOUN})\b", re.I)
+_CLAUSE_VERBS = frozenset("""conclude concludes concluded say says said show shows showed ensure ensures note notes
+believe believes mean means assume assumes given so such than state states confirm confirms find finds
+argue argues suggest suggests indicate indicates claim claims""".split())
+# "it"/"them" as the object of a task: "Show the journal entry for it",
+# "record it". Not a dummy subject ("Why is it important to …").
+_PRONOUN_OBJECT = re.compile(
+    r"\b(?:for|of|on|to|with|from|about|into|record|show|explain|calculate|compute|post|journali[sz]e|allocate|"
+    r"recogni[sz]e|book|classify|measure|use|apply|present|disclose|reverse|adjust)\s+(?:it|them)\b", re.I)
+# Opens a step on what came before: "Now calculate …", "Next, …".
+_CONTINUATION = re.compile(r"^\W*(?:ok(?:ay)?,?\s+)?(?:now|next)\b", re.I)
 # Capitalised words that are not party names.
 _NOT_NAMES = frozenset("""
 The This That These Those A An In On At For From To By Of With Without During Using Under Based After Before
@@ -92,13 +112,21 @@ class ResolvedFact:
 
 @dataclass(frozen=True)
 class ConversationResolution:
-    kind: str                         # first_turn | standalone | scenario_only | follow_up
+    kind: str                         # first_turn | standalone | scenario_only | follow_up | ambiguous
     reasons: tuple[str, ...] = ()
     relevant_turns: tuple[int, ...] = ()   # history indices, in order
     anchor_turn: int | None = None    # the scenario message the request builds on
     facts: tuple[ResolvedFact, ...] = ()
     # The narrow phrase patterns matched: earlier behaviour (whole history) is kept.
     legacy_follow_up: bool = False
+    # A phrase-pattern follow-up whose own chain holds no figures keeps the
+    # whole history, as before; otherwise only its chain is used, so a later
+    # "And at 30%?" cannot bring back a scenario the user did not choose.
+    whole_history: bool = False
+    # kind == "ambiguous": the earlier scenarios the reference could mean, and
+    # the question to ask instead of choosing one.
+    candidates: tuple[int, ...] = ()
+    clarification: str = ""
     _history: tuple = field(default=(), repr=False, compare=False)
 
     @property
@@ -110,7 +138,7 @@ class ConversationResolution:
         messages = list(history if history is not None else self._history)
         if not self.follows_up:
             return []
-        if self.legacy_follow_up:
+        if self.whole_history:
             return messages
         return [messages[index] for index in self.relevant_turns if index < len(messages)]
 
@@ -157,18 +185,46 @@ def is_scenario_only(text: str) -> bool:
     return not asks_something(text) and (bool(amounts(text)) or len(words) >= 25) and len(words) >= 8
 
 
-def _names(text: str) -> set[str]:
-    """Party names: capitalised words that are not sentence openers or common terms."""
-    found = set()
-    for sentence in _sentences(text):
-        for match in re.finditer(r"\b([A-Z][a-z]{2,})\b", sentence):
-            if match.start() == 0 or match.group(1) in _NOT_NAMES:
-                continue
-            found.add(match.group(1))
-        lead = re.match(r"^\W*([A-Z][a-z]{2,})\s+(?:Inc|Corp|Ltd|LLC|Co|plc|Group|Manufacturing|Holdings)\b", sentence)
-        if lead and lead.group(1) not in _NOT_NAMES:
-            found.add(lead.group(1))
-    return found
+# Entities are matched by their whole name. A name token is capitalised and
+# may be CamelCase ("Meridian", "EuroTech", "ParentCorp"). An entity is
+# introduced with a legal or trade suffix ("Meridian Inc.", "Titan
+# Development corp", "Matrix Distributing") or is CamelCase on its own
+# ("SubCorp", "Apex BioTech"). Capitalised words alone are never entities:
+# "Task for the Bot:" chained ten unrelated questions (22 Oct 2026).
+_NAME_TOKEN = r"[A-Z][A-Za-z]*[a-z][A-Za-z]*"
+_SUFFIX = (r"(?:Inc|Corp|Corporation|Ltd|Limited|LLC|LLP|plc|PLC|Co|Company|Group|Holdings|Manufacturing|"
+           r"Industries|Industrial|Global|Energy|Retailers|Distributing|Partners|Technologies|Bank|Enterprises|"
+           r"Trading|Services|(?i:corp|inc|ltd|llc|plc))")
+_ENTITY_WITH_SUFFIX = re.compile(rf"\b((?:{_NAME_TOKEN}\s+){{0,2}}{_NAME_TOKEN})\s+{_SUFFIX}\b\.?")
+_CAMEL_ENTITY = re.compile(r"\b((?:[A-Z][a-z]+\s+)?[A-Z][a-z]+[A-Z][A-Za-z]*)\b")
+
+
+def _entities(text: str) -> set[tuple[str, ...]]:
+    """Entities the text introduces, each as its full tuple of name tokens."""
+    found: set[tuple[str, ...]] = set()
+    for pattern in (_ENTITY_WITH_SUFFIX, _CAMEL_ENTITY):
+        for match in pattern.finditer(text or ""):
+            # The whole name is the identity: "Vanguard Industrial" and
+            # "Vanguard Energy" are different companies.
+            tokens = tuple(word for word in match.group(1).split() if word not in _NOT_NAMES)
+            if tokens:
+                found.add(tokens)
+    # "Apex BioTech" also matches "BioTech" alone: keep the longest name only.
+    return {entity for entity in found
+            if not any(other != entity and len(other) > len(entity) and other[-len(entity):] == entity for other in found)}
+
+
+def _mentions(current: str, entity: tuple[str, ...], current_entities: set[tuple[str, ...]]) -> bool:
+    """The message refers to an earlier entity: by its full name, or by its
+    first name when nothing in the message names a different entity with the
+    same first name ("Apex BioTech" is not "Apex Manufacturing")."""
+    # A different entity with the same first name in this message decides it,
+    # even though the shared word appears ("Apex BioTech" contains "Apex").
+    if any(other != entity and other[0] == entity[0] for other in current_entities):
+        return False
+    if re.search(r"\b" + r"\s+".join(map(re.escape, entity)) + r"\b", current or ""):
+        return True
+    return bool(re.search(rf"\b{re.escape(entity[0])}\b", current or ""))
 
 
 # Framework and country acronyms appear in unrelated questions alike.
@@ -194,12 +250,50 @@ def _content_words(text: str) -> set[str]:
 
 def _refers_to(current: str, earlier: str) -> bool:
     """A demonstrative reference in the current message names something the
-    earlier message describes ("this lease" ↔ "a 5-year equipment lease")."""
+    earlier message describes ("this lease" ↔ "a 5-year equipment lease";
+    "that amount" ↔ an earlier message's figure)."""
     earlier_words = _content_words(earlier)
     for match in _DEMONSTRATIVE.finditer(current or ""):
         if _content_words(match.group(1)) & earlier_words:
             return True
+    for match in _THAT_REFERENCE.finditer(current or ""):
+        if (match.group(1) or "").lower() in _CLAUSE_VERBS:
+            continue
+        noun = match.group(2)
+        if re.fullmatch(_QUANTITY_NOUN, noun, re.I):
+            if scenario_figures(earlier):
+                return True
+        elif _content_words(noun) & earlier_words:
+            return True
     return False
+
+
+def _quantity_reference(text: str) -> bool:
+    """"that amount", "this figure", "the above total": a reference to a
+    figure that names nothing else to identify it by."""
+    for match in _THAT_REFERENCE.finditer(text or ""):
+        if (match.group(1) or "").lower() not in _CLAUSE_VERBS and re.fullmatch(_QUANTITY_NOUN, match.group(2), re.I):
+            return True
+    return bool(re.search(rf"\b(?:this|these|those|the\s+(?:above|same|said))\s+(?:{_QUANTITY_NOUN})\b", text or "", re.I))
+
+
+def _clarification(history: Sequence, roots: list[int]) -> str:
+    """A short question naming each candidate scenario by its first figure."""
+    lines = ["Earlier messages set out more than one scenario with figures:"]
+    for index in roots[:3]:
+        text = " ".join(_content(history[index]).split())
+        figures = scenario_figures(text)
+        snippet = text if len(text) <= 70 else text[:67].rstrip() + "…"
+        lines.append(f"• {figures[0] if figures else 'figures'} — “{snippet}”")
+    # Ends with the question, so the reply is read as its answer.
+    lines.append("Which amount or scenario do you mean?")
+    return "\n".join(lines)
+
+
+def scenario_figures(text: str) -> list[str]:
+    """Figures that set out a scenario: amounts and counts, not percentages or
+    rates, which are parameters of a task ("…the tax on that amount at 25%")."""
+    return [figure for figure in amounts(text) if not figure.rstrip().endswith("%")]
 
 
 def _clarification_reply(current: str, history: Sequence) -> bool:
@@ -223,20 +317,35 @@ def _depends_on(current: str, users: list[tuple[int, str]], history: Sequence,
     if _clarification_reply(current, history):
         return previous_index, ["clarification_reply"], False
 
-    names = _names(current)
-    for index, text in reversed(users):
-        shared = names & _names(text)
-        if shared:
-            return index, [f"named_party:{sorted(shared)[0]}"], False
-    # A message bringing its own money figures sets out its own scenario; only
-    # a named party links it back. "A manufacturer recorded a £75,000 sale …"
-    # after an income statement is a new audit question.
+    # Identity: an entity the message names, matched by its whole name.
+    current_entities = _entities(current)
+    earlier_entities = [(index, _entities(text)) for index, text in users]
+    known = {entity for _, entities in earlier_entities for entity in entities}
+    for index, entities in reversed(earlier_entities):
+        for entity in sorted(entities):
+            if _mentions(current, entity, current_entities):
+                return index, [f"named_party:{' '.join(entity)}"], False
+    own = scenario_figures(current)
+    # A different entity with its own figures is a new task, whatever else its
+    # wording shares with earlier messages ("Apex BioTech" after "Apex
+    # Manufacturing").
+    if current_entities - known and len(own) >= 2:
+        return None, [], False
+    with_figures = [(index, text) for index, text in users if scenario_figures(text)]
+    # The previous message's own scenario, not merely the latest message with
+    # figures: after a clarification choice those differ.
+    if _CONTINUATION.match(current or "") and asks_something(current) and with_figures:
+        return previous_index, ["continuation"], False
+    if _PRONOUN_OBJECT.search(current or "") and not own and with_figures:
+        return previous_index, ["pronoun_reference"], False
+    # A reference to something set out earlier ("this lease", "that amount").
+    # A message bringing its own money figures sets out its own scenario
+    # instead: "A manufacturer recorded a £75,000 sale …".
     if not _MONEY.search(current or ""):
         for index, text in reversed(users):
             if _refers_to(current, text):
                 return index, ["demonstrative_reference"], False
 
-    own = amounts(current)
     # A message with its own figures and no reference is a new task, not a follow-up.
     if standalone is not None and standalone(current):
         return None, [], False
@@ -253,7 +362,13 @@ def _depends_on(current: str, users: list[tuple[int, str]], history: Sequence,
         if overlap or (not own and not needs_lookup(current)):
             reasons.append("answers_previous_scenario")
             return previous_index, reasons, False
-    if asks and task and not own and amounts(previous_text):
+    # A computation with no figures of its own works on the previous ones
+    # ("compute the cash flow step by step"). A conceptual question ("explain
+    # why auditors treat revenue as a fraud risk") does not inherit them.
+    # "Why is it important to reconcile …" asks for an explanation, whatever its verb.
+    computes = (bool(re.search(rf"\b(?:{_COMPUTE_VERB})\b", current or "", re.I))
+                and not re.match(r"^\W*why\b", current or "", re.I))
+    if asks and computes and not own and scenario_figures(previous_text):
         return previous_index, ["task_without_own_figures"], False
     return None, [], False
 
@@ -271,14 +386,9 @@ def resolve_conversation(query: str, history: Sequence | None, *,
     # Link every earlier user turn to the one it built on, so a chain
     # (scenario → question → "and the journal entry?") stays together.
     parent: dict[int, int | None] = {}
-    for position, (index, text) in enumerate(user_turns):
-        anchor, _, _ = _depends_on(text, user_turns[:position], history[:index], legacy_follow_up, standalone)
-        parent[index] = anchor
-
-    anchor, reasons, legacy = _depends_on(query, user_turns, history, legacy_follow_up, standalone)
-    if anchor is None:
-        kind = "scenario_only" if is_scenario_only(query) else "standalone"
-        return ConversationResolution(kind=kind, _history=tuple(history))
+    # Questions answered by a choice: the clarification after them lists every
+    # candidate scenario and is not passed on once answered.
+    answered_questions: set[int] = set()
 
     def root(index: int) -> int:
         seen = set()
@@ -287,17 +397,98 @@ def resolve_conversation(query: str, history: Sequence | None, *,
             index = parent[index]
         return index
 
-    chain_root = root(anchor)
-    chain_users = [index for index, _ in user_turns if root(index) == chain_root]
+    def candidate_scenarios(question: str, earlier: list[tuple[int, str]]) -> list[int]:
+        """Earlier scenarios a bare "that amount" could mean, most recent first;
+        empty when it is clear. Clear: one scenario with figures, or the message
+        just before states exactly one amount."""
+        if not _quantity_reference(question) or not earlier:
+            return []
+        # The message just before settles it when it states exactly one amount,
+        # or when it set out a scenario and asked nothing and the reference is
+        # to its figures as a set ("…using these figures"). A single "that
+        # amount" beside a scenario of several amounts is still asked about.
+        previous = earlier[-1][1]
+        collective = re.search(rf"\b(?:these|those|the\s+(?:above|same|said))\s+(?:{_QUANTITY_NOUN})\b", question, re.I)
+        if len(_MONEY.findall(previous)) == 1 or (collective and is_scenario_only(previous)):
+            return []
+        roots = list(dict.fromkeys(root(index) for index, text in reversed(earlier) if scenario_figures(text)))
+        return roots if len(roots) > 1 else []
+
+    def choice(reply: str, position: int) -> int | None:
+        """The scenario a short reply picks for the ambiguous question just
+        before it (position is the reply's place among user turns). Read from
+        the user's own messages: the page does not send the clarification back."""
+        if position < 1 or not _is_choice_reply(reply):
+            return None
+        options = candidate_scenarios(user_turns[position - 1][1], user_turns[:position - 1])
+        chosen = [index for index in options if _chooses(reply, _content(history[index]))]
+        return chosen[0] if options and len(chosen) == 1 else None
+
+    for position, (index, text) in enumerate(user_turns):
+        picked = choice(text, position)
+        if picked is not None:
+            # The question and its answer belong to the chosen scenario, so
+            # later follow-ups stay on it.
+            parent[user_turns[position - 1][0]] = picked
+            parent[index] = user_turns[position - 1][0]
+            answered_questions.add(user_turns[position - 1][0])
+            continue
+        anchor, _, _ = _depends_on(text, user_turns[:position], history[:index], legacy_follow_up, standalone)
+        parent[index] = anchor
+
+    picked = choice(query, len(user_turns))
+    if picked is not None:
+        question_index = user_turns[-1][0]
+        parent[question_index] = picked
+        answered_questions.add(question_index)
+        anchor, reasons, legacy = question_index, ["clarification_reply", f"chose_scenario:{picked}"], False
+    else:
+        anchor, reasons, legacy = _depends_on(query, user_turns, history, legacy_follow_up, standalone)
+    if anchor is None:
+        kind = "scenario_only" if is_scenario_only(query) else "standalone"
+        return ConversationResolution(kind=kind, _history=tuple(history))
+
+    chain_roots = [root(anchor)]
+    anchor_extra: list[int] = []
+    if not legacy and not (reasons and reasons[0].startswith(("named_party", "clarification_reply"))):
+        options = candidate_scenarios(query, user_turns)
+        if options:
+            # Several earlier scenarios could be meant: ask, never guess.
+            return ConversationResolution(
+                kind="ambiguous", reasons=("ambiguous_reference",), candidates=tuple(options),
+                clarification=_clarification(history, options), _history=tuple(history),
+            )
+
+    chain_users = [index for index, _ in user_turns if root(index) in chain_roots or index in chain_roots + anchor_extra]
     relevant: list[int] = []
     for index in chain_users:
         relevant.append(index)
-        # The reply to that turn, when it is the very next message.
-        if index + 1 < len(history) and _role(history[index + 1]) == "assistant":
+        # The reply to that turn, when it is the very next message (not a
+        # clarification that has been answered).
+        if (index + 1 < len(history) and _role(history[index + 1]) == "assistant"
+                and index not in answered_questions):
             relevant.append(index + 1)
     facts = tuple(ResolvedFact(turn_index=index, text=figure)
                   for index in chain_users for figure in amounts(_content(history[index])))
     return ConversationResolution(
         kind="follow_up", reasons=tuple(reasons), relevant_turns=tuple(sorted(set(relevant))),
-        anchor_turn=anchor, facts=facts, legacy_follow_up=legacy, _history=tuple(history),
+        anchor_turn=anchor, facts=facts, legacy_follow_up=legacy,
+        whole_history=legacy and not any(scenario_figures(_content(history[index])) for index in chain_users),
+        _history=tuple(history),
     )
+
+
+def _is_choice_reply(text: str) -> bool:
+    """A short answer naming a figure or a scenario, not a new task: "The
+    $180,000 profit.", "I mean the Nexus contract"."""
+    words = re.findall(r"[A-Za-z$£€₹\d][\w,.$£€₹%-]*", text or "")
+    return 0 < len(words) <= 12 and not re.search(rf"\b(?:{_COMPUTE_VERB})\b", text or "", re.I)
+
+
+def _chooses(reply: str, scenario: str) -> bool:
+    """The reply names this scenario: one of its figures, or its wording."""
+    digits = lambda value: re.sub(r"[^\d.]", "", value)  # noqa: E731
+    reply_figures = {digits(figure) for figure in amounts(reply)}
+    if reply_figures & {digits(figure) for figure in amounts(scenario)}:
+        return True
+    return bool(_content_words(reply) & _content_words(scenario))

@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zoiko.example/internal/report-request.v1.schema.json",
+  "title": "Proposed ReportRequest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "template_id",
+    "report_class",
+    "entity_scope",
+    "framework",
+    "period",
+    "basis",
+    "presentation",
+    "outputs"
+  ],
+  "properties": {
+    "template_id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 100
+    },
+    "report_class": {
+      "enum": [
+        "STATUTORY_DRAFT",
+        "MANAGEMENT",
+        "FORECAST",
+        "AUDIT_WORKPAPER",
+        "EDUCATIONAL",
+        "REGULATORY_DATA"
+      ]
+    },
+    "entity_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entity_ids",
+        "scope_type"
+      ],
+      "properties": {
+        "entity_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "scope_type": {
+          "enum": [
+            "SEPARATE",
+            "CONSOLIDATED",
+            "SEGMENT"
+          ]
+        }
+      }
+    },
+    "framework": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "adoption_mode"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "IFRS",
+            "US_GAAP",
+            "UK_FRS_102",
+            "UK_FRS_101",
+            "UK_FRS_105",
+            "LOCAL_APPROVED",
+            "MANAGEMENT_BASIS"
+          ]
+        },
+        "adoption_mode": {
+          "enum": [
+            "DEFAULT",
+            "EARLY_ADOPTED",
+            "APPROVED_EXCEPTION"
+          ]
+        },
+        "rule_pack_id": {
+          "type": "string"
+        }
+      }
+    },
+    "period": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
+      ],
+      "properties": {
+        "start": {
+          "type": "string",
+          "format": "date"
+        },
+        "end": {
+          "type": "string",
+          "format": "date"
+        },
+        "comparison": {
+          "enum": [
+            "NONE",
+            "PRIOR_YEAR",
+            "PRIOR_PERIOD",
+            "BUDGET",
+            "FORECAST"
+          ]
+        },
+        "fiscal_calendar_id": {
+          "type": "string"
+        }
+      }
+    },
+    "basis": {
+      "enum": [
+        "ACTUAL_POSTED",
+        "ACTUAL_ADJUSTED",
+        "BUDGET",
+        "FORECAST",
+        "SCENARIO",
+        "SYNTHETIC"
+      ]
+    },
+    "presentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "currency",
+        "scale",
+        "locale"
+      ],
+      "properties": {
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "scale": {
+          "enum": [
+            1,
+            1000,
+            1000000,
+            1000000000
+          ]
+        },
+        "locale": {
+          "type": "string",
+          "minLength": 2
+        },
+        "negative_style": {
+          "enum": [
+            "PARENTHESES",
+            "MINUS"
+          ]
+        }
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "HTML",
+          "PDF",
+          "DOCX",
+          "XLSX",
+          "CSV",
+          "JSON",
+          "IXBRL"
+        ]
+      }
+    }
+  },
+  "$comment": "Authorization scope, tenant_id and user_id must be server-resolved; example .example domain is intentionally nonoperational."
+}

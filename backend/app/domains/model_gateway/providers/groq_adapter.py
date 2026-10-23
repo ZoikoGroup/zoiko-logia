@@ -269,7 +269,11 @@ class GroqAdapter:
         if any(getattr(choice, 'finish_reason', None) == 'length'
                for choice in response.choices):
             from app.domains.model_gateway.errors import ProviderResponseIncomplete
-            raise ProviderResponseIncomplete()
+            # The prose written so far travels with the failure; a cut-off
+            # tool call carries none (its arguments are not usable).
+            message = response.choices[0].message if response.choices else None
+            partial = "" if getattr(message, "tool_calls", None) else (getattr(message, "content", None) or "")
+            raise ProviderResponseIncomplete(partial_text=partial)
         return response
 
     async def _call(self, model: str, messages: list[dict]) -> str:

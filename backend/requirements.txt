@@ -49,3 +49,6 @@ celery
 # under pytest as well as standalone via their own main().
 pytest
 pytest-asyncio
+
+# Controlled reporting contracts (JSON Schema Draft 2020-12)
+jsonschema[format]>=4.23,<5

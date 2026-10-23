@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from app.domains.model_gateway.errors import ProviderRequestRejected, ProviderRequestTooLarge, provider_request_failure
+
+
+logger = logging.getLogger(__name__)
 
 
 class GenerationBudgetExceeded(Exception):
@@ -52,6 +56,9 @@ class GenerationBudget:
     closed: bool = False
     terminal_failure: ProviderRequestRejected | None = None
     rate_failures: dict[str, ProviderRequestRejected] = field(default_factory=dict)
+    # Sent to GPT-OSS agent calls only when set (AGENT_REASONING_EFFORT).
+    # Empty keeps the provider default (medium).
+    reasoning_effort: str = ""
 
     @property
     def cost_usd(self) -> float:
@@ -90,6 +97,12 @@ class GenerationBudget:
             seconds = min(seconds, self.deadline - time.monotonic())
         if seconds <= 0:
             raise asyncio.TimeoutError("Agent deadline exhausted")
+        # Forcing "low" here by default (21-22 Oct 2026) coincided with the
+        # agent refusing plain accounting questions in its own words in the
+        # approved live check, which the medium-reasoning server answered.
+        # Low reasoning is therefore opt-in; a caller's own value wins.
+        if self.reasoning_effort and "gpt-oss" in str(kwargs.get("model") or ""):
+            kwargs.setdefault("reasoning_effort", self.reasoning_effort)
         prompt, completion = self.completion_allowance(kwargs["messages"], kwargs.get("tools"))
         requested = kwargs.pop('max_completion_tokens', kwargs.pop('max_tokens', None))
         if isinstance(requested, int) and requested > 0:
@@ -105,6 +118,11 @@ class GenerationBudget:
                 client.chat.completions.create(**kwargs, max_completion_tokens=completion), timeout=seconds,
             )
         except Exception as exc:
+            # The reservation is kept (a failed call may still be billed); say
+            # so, or a run that stops on token_budget cannot be explained
+            # (23 Oct 2026: 28,000 and 31,689 reserved tokens never released).
+            logger.info("Model call failed (%s); %d reserved tokens kept in the run budget",
+                        type(exc).__name__, reserved)
             failure = provider_request_failure(exc)
             if failure is not None:
                 if failure.code in {'spend_limit_reached', 'provider_authentication_failed'}:

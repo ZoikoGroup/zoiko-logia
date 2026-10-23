@@ -877,6 +877,15 @@ async def lifespan(app: FastAPI):
     """Serve only an explicitly prepared database; never execute startup DDL."""
     _require_supabase_config()
     try:
+        if settings.MANUAL_TEST_SERVER:
+            # Before anything reads or writes (the health sampler included):
+            # every engine must reach the provisioned test database.
+            from app.core import manual_test_server
+            from app.core.database import engine, request_engine
+            await manual_test_server.verify_database(
+                settings.MANUAL_TEST_DATABASE_MARKER, admin_engine=async_engine,
+                request_engine=request_engine, sync_engine=engine,
+            )
         database_reachable = True
         try:
             stored = await _stored_fingerprint()

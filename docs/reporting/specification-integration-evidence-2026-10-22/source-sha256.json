@@ -1,0 +1,8 @@
+{
+  "acceptance_test_cases.csv": "26455c9d68ec263e287601f45ab368e75200c3bb48b43b5b37e0fbe33e578e45",
+  "reconciliation_rules.csv": "9512750b3b80bb6d4e1ac326b931deb1e7e7259e5976a706c55f0c78b1e02d37",
+  "report_catalog.csv": "ba61a1d4a3c2657ff70d6b548f7974dfc1130696b77770c20356d24f0de0ab12",
+  "schemas/financial_fact.schema.json": "feec003d8628a8b218799dd5a2ec5df4e71c220ef644d917571e6aa7dcb3996d",
+  "schemas/report_manifest.schema.json": "fa346953bc3e99fa6250013b5c69665474355cd9fab4e84c142fe55c58946ce8",
+  "schemas/report_request.schema.json": "f0b833d7ac89047b7e5be51f91102ba08571c9a26ead73e7b646a7a169f62212"
+}

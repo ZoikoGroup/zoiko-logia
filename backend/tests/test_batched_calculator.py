@@ -26,14 +26,18 @@ from tests.test_verified_work_fallback import FailingAfter
 
 # A real FX answer carries the retrieved rate: its tool call and a dated
 # observation (fx_profit.fresh_fx_sources needs one within 7 days).
-from datetime import date
+from datetime import datetime, timezone
 
 from app.domains.calculations.schemas import LiveObservation
 
+# The UTC date, as the freshness check uses: the local date failed these tests
+# between 00:00 and 05:30 IST, when it is a day ahead of UTC (22 Oct 2026).
+_TODAY = datetime.now(timezone.utc).date().isoformat()
+
 ECB = WebSource(title="ECB GBP/USD reference rate", url="https://www.ecb.europa.eu/stats/eurofxref",
-                snippet=f"GBP/USD 1.3335308 on {date.today().isoformat()}", provider="ECB", freshness="daily",
+                snippet=f"GBP/USD 1.3335308 on {_TODAY}", provider="ECB", freshness="daily",
                 observation=LiveObservation(observation_id="o1", indicator="GBP/USD exchange rate", value="1.3335308",
-                                            unit="USD per GBP", period=date.today().isoformat(), provider="ECB",
+                                            unit="USD per GBP", period=_TODAY, provider="ECB",
                                             source_url="https://www.ecb.europa.eu/stats/eurofxref", freshness="daily"))
 RATE_CALL = ToolCallRecord(1, "get_exchange_rate", "h", True, None, 5, 1)
 

@@ -15,4 +15,11 @@ When adding a file, record it below.
 
 | File | Source document / version | Received | Approval status |
 |---|---|---|---|
-| _none yet_ | | | |
+| `report_catalog.csv` | Founder-supplied; version not declared | Copied 2026-10-22 | Received; certification not established |
+| `reconciliation_rules.csv` | Founder-supplied; version not declared | Copied 2026-10-22 | Received; PL-001 omission documented |
+| `acceptance_test_cases.csv` | Founder-supplied; version not declared | Copied 2026-10-22 | Received; 9 covered, 49 pending |
+| `schemas/report_request.schema.json` | Proposed ReportRequest v1 | Copied 2026-10-22 | Received; not an approval |
+| `schemas/financial_fact.schema.json` | Proposed FinancialFact v1 | Copied 2026-10-22 | Received; decimal compatibility correction documented |
+| `schemas/report_manifest.schema.json` | Proposed ReportManifest v1 | Copied 2026-10-22 | Received; issue workflow not implemented |
+
+Integration scope and controlled-file differences: see `docs/reporting/specification-integration-2026-10-22.md` at the repository root.

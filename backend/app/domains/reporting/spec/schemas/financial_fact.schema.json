@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zoiko.example/internal/financial-fact.v1.schema.json",
+  "title": "Proposed FinancialFact v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "fact_id",
+    "entity_id",
+    "concept_id",
+    "basis",
+    "period",
+    "value",
+    "currency",
+    "source_snapshot_id",
+    "value_status"
+  ],
+  "properties": {
+    "fact_id": {
+      "type": "string"
+    },
+    "entity_id": {
+      "type": "string"
+    },
+    "concept_id": {
+      "type": "string"
+    },
+    "basis": {
+      "enum": [
+        "ACTUAL_POSTED",
+        "ACTUAL_ADJUSTED",
+        "BUDGET",
+        "FORECAST",
+        "SCENARIO",
+        "SYNTHETIC"
+      ]
+    },
+    "period": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "instant"
+          ],
+          "properties": {
+            "instant": {
+              "type": "string",
+              "format": "date"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "start",
+            "end"
+          ],
+          "properties": {
+            "start": {
+              "type": "string",
+              "format": "date"
+            },
+            "end": {
+              "type": "string",
+              "format": "date"
+            }
+          }
+        }
+      ]
+    },
+    "value": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$"
+    },
+    "value_status": {
+      "enum": [
+        "PRESENT",
+        "ZERO",
+        "MISSING",
+        "NOT_APPLICABLE",
+        "REDACTED",
+        "STALE",
+        "UNRESOLVED"
+      ]
+    },
+    "dimensions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "source_snapshot_id": {
+      "type": "string"
+    },
+    "calculation_id": {
+      "type": "string"
+    },
+    "fx_rate_set_id": {
+      "type": "string"
+    },
+    "sign_convention": {
+      "type": "string"
+    },
+    "account_map_version": {
+      "type": "string"
+    }
+  }
+}

@@ -236,7 +236,9 @@ async def audit_calculation_receipt(db, *, query_id, correlation_id, tenant_id, 
                 {key: receipt.get(key) for key in ("calculation_id", "tool", "tool_version", "formula_version",
                                                    "input_hash", "result", "rounding_rule", "warnings",
                                                    # Its place in a batched call (absent for one calculation).
-                                                   "batch_index", "batch_size")},
+                                                   "batch_index", "batch_size",
+                                                   # Which earlier batch items it used ({s1}), by id only.
+                                                   "item_id", "depends_on")},
                 replay_relevance="REQUIRED")
 
 async def audit_answer_figure_provenance(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
@@ -262,12 +264,15 @@ async def audit_agent_completed(db, *, query_id, correlation_id, tenant_id, audi
                                 steps: int, stop_reason: str, tool_call_count: int,
                                 fell_back: bool, error: str | None = None, tokens_used: int | None = None,
                                 cost_usd: float | None = None, resumed_calls: int | None = None,
-                                estimated_tokens: int | None = None, model_calls: int | None = None):
+                                estimated_tokens: int | None = None, model_calls: int | None = None,
+                                validation: dict | None = None):
     await _emit(db, "agent_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"steps": steps, "stop_reason": stop_reason, "tool_call_count": tool_call_count,
                  "fell_back": fell_back, "error": error, "tokens_used": tokens_used,
                  "cost_usd": cost_usd, "resumed_calls": resumed_calls,
-                 "estimated_tokens": estimated_tokens, "model_calls": model_calls},
+                 "estimated_tokens": estimated_tokens, "model_calls": model_calls,
+                 # Final-check outcome: failed lines, fallback and its reason.
+                 "validation": validation or {}},
                 replay_relevance="REQUIRED")
 
 async def audit_composition_failed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id, error: str):

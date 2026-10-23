@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from .compiler import ZERO, CompiledReport
+from .specification import SpecificationError, load_table
 
 RULES = ("TB-001", "BS-001", "PL-001", "CF-001", "EQ-001")
 
@@ -21,6 +22,8 @@ class ReconcilerOutcome:
     passed: bool
     delta: Decimal
     detail: str
+    severity: str = "CRITICAL"
+    specification_source: str = "internal"
 
 
 def _ledger_journals(report: CompiledReport):
@@ -109,5 +112,18 @@ def check_equity(report: CompiledReport) -> ReconcilerOutcome:
 
 
 def reconcile(report: CompiledReport) -> list[ReconcilerOutcome]:
-    return [check(report) for check in (check_trial_balance, check_balance_sheet, check_profit_or_loss,
-                                        check_cash_flow, check_equity)]
+    from dataclasses import replace
+    rules = {row["rule_id"]: row for row in load_table("reconciliation_rules")}
+    outcomes = []
+    for check in (check_trial_balance, check_balance_sheet, check_profit_or_loss, check_cash_flow, check_equity):
+        outcome = check(report)
+        # PL-001 predates the supplied catalogue and must not be silently removed.
+        if outcome.rule_id == "PL-001":
+            outcomes.append(outcome)
+            continue
+        rule = rules.get(outcome.rule_id)
+        if rule is None or rule["default_severity"] not in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}:
+            raise SpecificationError(f"Missing or invalid specification for {outcome.rule_id}")
+        outcomes.append(replace(outcome, severity=rule["default_severity"],
+                                specification_source="reconciliation_rules.csv"))
+    return outcomes

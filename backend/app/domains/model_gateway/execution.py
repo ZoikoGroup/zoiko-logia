@@ -26,8 +26,17 @@ def request_execution_scope(func):
             max_cost_usd=settings.AGENT_MAX_COST_USD,
             price_per_million_tokens=settings.MODEL_PRICE_PER_MILLION_TOKENS,
             max_calls=settings.MODEL_REQUEST_MAX_CALLS,
+            reasoning_effort=getattr(settings, "AGENT_REASONING_EFFORT", ""),
             deadline=time.monotonic() + (kwargs.get('deadline_seconds') or settings.ASK_KRITON_TIMEOUT_SECONDS),
         )
+        # Each call reserves up to its request limit before it is sent, so a
+        # run budget below a few full requests stops after a handful of calls
+        # (the test server's 16,000-token requests under a 64,000 budget).
+        if budget.max_request_tokens and budget.max_total_tokens < 6 * budget.max_request_tokens:
+            import logging
+            logging.getLogger(__name__).warning(
+                "AGENT_MAX_TOKENS=%d allows fewer than 6 requests of AGENT_MAX_REQUEST_TOKENS=%d per question",
+                budget.max_total_tokens, budget.max_request_tokens)
         token = _current.set(budget)
         try:
             return await func(*args, **kwargs)

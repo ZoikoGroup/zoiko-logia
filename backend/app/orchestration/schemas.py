@@ -494,6 +494,18 @@ class RequestIntegrity(BaseModel):
     changed_inputs: list[str] = Field(default_factory=list)
 
 
+class ChartOfferPublic(BaseModel):
+    """A chart Kriton suggests for the answer's figures, drawn only if the
+    user asks (chart_offer.py)."""
+    chart_type: Literal['line', 'bar', 'pie']
+    title: str
+    question: str
+    reason: str
+    # The chart itself, built from the answer's own table: accepting the
+    # offer shows it under the answer, with no new question (23 Oct 2026).
+    chart: Optional[VisualizationSpec] = None
+
+
 class AskKritonResponse(BaseModel):
     calculation_state: Optional[CalculationTaskState] = None
     request_integrity: Optional[RequestIntegrity] = None
@@ -530,6 +542,9 @@ class AskKritonResponse(BaseModel):
     # Present only when trusted local code, rather than a model, handled a
     # self-contained calculation. Additive for backward-compatible clients.
     calculation: Optional[CalculationResult] = None
+    # A chart that would show this answer's figures, offered for the user to
+    # choose; nothing is drawn unless they ask. Additive and optional.
+    chart_offer: Optional[ChartOfferPublic] = None
 
 
 # ── Frontend visualization-interaction telemetry ─────────────────────────────

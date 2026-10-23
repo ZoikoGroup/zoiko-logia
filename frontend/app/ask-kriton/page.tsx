@@ -56,12 +56,13 @@ import { ThinkingIndicator } from "@/components/ask-kriton/ThinkingIndicator";
 import { DesktopSidebar, MobileDrawer } from "@/components/ask-kriton/Sidebar";
 import { Composer, attachmentFromDocument, type AttachmentState } from "@/components/ask-kriton/Composer";
 import { ExploreFurther } from "@/components/ask-kriton/ExploreFurther";
+import { ChartOfferPrompt } from "@/components/ask-kriton/ChartOfferPrompt";
 import { useConversationScroll } from "@/hooks/useConversationScroll";
 import { useAuth } from "@/hooks/useAuth";
 import {
-  loadActiveConversationId,
+  chatIdFromUrl,
+  chatUrl,
   loadConversations,
-  persistActiveConversationId,
   persistConversations,
   sortConversations,
   type Conversation,
@@ -744,6 +745,13 @@ const ConversationTurn = memo(function ConversationTurn({
                 />
               )}
 
+              {result.chart_offer && (
+                <ChartOfferPrompt
+                  offer={result.chart_offer}
+                  onAccept={onFollowUp ? (question) => onFollowUp(question, submittedQuery) : undefined}
+                />
+              )}
+
               <ExploreFurther
                 questions={followUps}
                 onFollowUp={onFollowUp ? (question) => onFollowUp(question, submittedQuery) : undefined}
@@ -790,9 +798,11 @@ export default function AskKritonPage() {
   const [conversations, setConversations] = useState<Conversation[]>(() =>
     typeof window === "undefined" ? [] : loadConversations(),
   );
+  // The URL names the open chat, so a reload keeps it while arriving from the
+  // dashboard or sidebar (plain /ask-kriton) starts a new one.
   const [activeId, setActiveIdState] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
-    return loadActiveConversationId(loadConversations());
+    return chatIdFromUrl(window.location.search, loadConversations());
   });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [sidebarPanel, setSidebarPanel] = useState<"chats" | "projects" | "sources" | null>(null);
@@ -848,7 +858,9 @@ export default function AskKritonPage() {
 
   function setActiveId(id: string | null) {
     setActiveIdState(id);
-    persistActiveConversationId(id);
+    // Native replaceState integrates with the Next.js router (no reload, no
+    // extra history entry per chat switch).
+    window.history.replaceState(null, "", chatUrl(window.location.href, id));
   }
 
   function persist(next: Conversation[]) {

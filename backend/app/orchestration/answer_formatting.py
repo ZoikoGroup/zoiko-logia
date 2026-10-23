@@ -31,6 +31,26 @@ def normalize_markdown_tables(text: str) -> str:
     return '\n'.join(lines)
 
 
+_BOLD_HEADING = re.compile(r"^\s*(?:\*\*|__)[^*_\n]{1,80}(?:\*\*|__)\s*:?\s*$")
+
+
+def separate_headings(text: str) -> str:
+    """A blank line after a line that is only a bold heading. Markdown joins
+    "**Conversion Ratio**" and the next line into one paragraph, shown as
+    "Conversion Ratio Conversion Ratio = 1000 ÷ 40 = 25" (22 Oct 2026)."""
+    lines = text.splitlines()
+    out: list[str] = []
+    in_fence = False
+    for i, line in enumerate(lines):
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+        out.append(line)
+        following = lines[i + 1] if i + 1 < len(lines) else ""
+        if not in_fence and _BOLD_HEADING.match(line) and following.strip() and not following.lstrip().startswith("|"):
+            out.append("")
+    return "\n".join(out)
+
+
 def has_retained_agent_chart(text: str, artifacts: list[str]) -> bool:
     """Only an exact artifact from the validated chart tool counts as a visual."""
     return any(artifact.strip().startswith('```chart\n') and artifact.strip() in text
@@ -132,7 +152,31 @@ _LATEX_SYMBOLS = (
     # Layout-only commands: "\displaystyle (£100,000) ÷ (£25,000) = 4" was
     # shown with the command visible.
     ("\\displaystyle", ""), ("\\textstyle", ""), ("\\qquad", " "), ("\\quad", " "),
+    # Sizing only: "\\big/ \\big((1000+950)/2\\big)" in a WACC answer (22 Oct 2026).
+    ("\\Bigl", ""), ("\\Bigr", ""), ("\\bigl", ""), ("\\bigr", ""), ("\\Big", ""), ("\\big", ""),
+    ("\\cdots", "…"), ("\\ldots", "…"), ("\\dots", "…"), ("\\sum", "Σ"), ("\\log", "log"), ("\\ln", "ln"),
+    ("\\neq", "≠"), ("\\pm", "±"), ("\\to", "→"), ("\\rightarrow", "→"),
 )
+# Greek letters as symbols: "(1-\\tau)" in an NPV answer.
+# "\\DeltaDays": a capital letter after the name starts the next word.
+_GREEK = re.compile(r"\\(alpha|beta|gamma|delta|Delta|epsilon|theta|lambda|mu|pi|rho|sigma|Sigma|tau|phi|omega)(?![a-z])")
+_GREEK_LETTERS = {"alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "Delta": "Δ", "epsilon": "ε", "theta": "θ",
+                  "lambda": "λ", "mu": "μ", "pi": "π", "rho": "ρ", "sigma": "σ", "Sigma": "Σ", "tau": "τ",
+                  "phi": "φ", "omega": "ω"}
+_SQRT = re.compile(r"\\sqrt\{([^{}]*)\}")
+# Formatting wrappers whose content is the meaning.
+_WRAPPER = re.compile(r"\\(?:text|mathrm|textbf|textit|mathbf|mathit|boxed|operatorname|bm)\{([^{}]*)\}")
+# "\underbrace{(Net Income) ÷ (Sales)}_{Net Profit Margin}" was shown raw in a
+# DuPont answer (22 Oct 2026). The label follows in brackets: in parentheses
+# it would read as a multiplication.
+_BRACE_LABEL = re.compile(r"\\(?:under|over)brace\{([^{}]*)\}(?:[_^](?:\{([^{}]*)\}|(\w)))?(\()?")
+_ENVIRONMENT = re.compile(r"\\(?:begin|end)\{(?:aligned|align\*?|equation\*?|array|gathered|split|cases)\}(?:\{[^{}]*\})?")
+
+
+def _labelled(match: re.Match) -> str:
+    body, label = match.group(1).strip(), (match.group(2) or match.group(3) or "").strip()
+    # "[Label](" would be a Markdown link.
+    return (f"{body} [{label}]" if label else body) + (" (" if match.group(4) else "")
 
 
 def latex_to_plain(text: str) -> str:
@@ -147,12 +191,32 @@ def latex_to_plain(text: str) -> str:
         if line.strip().startswith("```"):
             in_fence = not in_fence
         if not in_fence:
-            line = re.sub(r"\\(?:text|mathrm|textbf)\{([^{}]*)\}", r"\1", line)
-            for _ in range(3):  # nested fractions
+            # Before fractions: "\frac{468{,}000}{5{,}200{,}000}" has braces inside.
+            line = line.replace("{,}", ",")
+            for _ in range(3):  # nested: \underbrace{\frac{\text{A}}{B}}_{\text{C}}
+                line = _WRAPPER.sub(r"\1", line)
                 line = _FRAC.sub(r"(\1) ÷ (\2)", line)
-            for latex, plain in _LATEX_SYMBOLS:
+                line = _BRACE_LABEL.sub(_labelled, line)
+            # An unclosed one (a formula split over lines, or cut off): the
+            # command goes, its content stays.
+            line = re.sub(r"\\(?:under|over)brace\{", "", line)
+            line = _ENVIRONMENT.sub("", line)
+            # An aligned row: "&=" is "=", "\\" a line break (in a table row, a
+            # semicolon). Other "&" stay ("R&D", "Profit & Loss").
+            line = re.sub(r"\s*&\s*=", " =", line)
+            line = re.sub(r"\s*\\\\\s*$", "", line)
+            if "\\\\" in line:
+                line = re.sub(r"\s*\\\\\s*", "; " if line.lstrip().startswith("|") else "\n", line)
+            line = _SQRT.sub(r"√(\1)", line)
+            # Longest first: "\\rightarrow" before "\\right", "\\Bigl" before "\\Big".
+            for latex, plain in sorted(_LATEX_SYMBOLS, key=lambda pair: -len(pair[0])):
                 line = line.replace(latex, plain)
+            # "Depreciation\\tau" is a product: keep the letter apart from the word.
+            line = _GREEK.sub(lambda m: (" " if m.start() and line[m.start() - 1].isalnum() else "")
+                              + _GREEK_LETTERS[m.group(1)], line)
+            line = re.sub(r"_\{([^{}]*)\}", r"_\1", line)
             line = re.sub(r"\^\{([^{}]*)\}", r"^\1", line)
+            line = _SQRT.sub(r"√(\1)", line)
             line = re.sub(r"\\[()\[\]]", "", line)
             line = line.replace("$$", "")
         out.append(line)

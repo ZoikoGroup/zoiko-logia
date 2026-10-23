@@ -25,14 +25,53 @@ from dataclasses import dataclass, field
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
 _PERIOD = re.compile(r"\b\d+\s*(?:years?|months?|days?|quarters?|weeks?)\b|\b(?:19|20)\d{2}\b|\bFY\s?\d{2,4}\b", re.I)
 _CHART = re.compile(r"\b(chart|graph|plot|visuali[sz]e|trend line|bar|pie|histogram)\b", re.I)
-_FX = re.compile(r"\b(convert|exchange rate|fx|forex|in (?:usd|eur|gbp|inr|aud|cad|jpy)|to (?:usd|eur|gbp|inr|aud|cad|jpy))\b", re.I)
+# Not a convertible bond converted into shares: "purchase the bond and
+# convert it immediately" planned an exchange-rate lookup (22 Oct 2026). "it"
+# with a currency after it is a conversion: "Convert it to pounds at the
+# latest rate" (the benchmark check, 23 Oct 2026).
+_CURRENCY_TARGET = (r"(?:to|into|in)\s+(?:[A-Z]{3}\b|pounds?|sterling|euros?|dollars?|rupees?|yen|yuan|francs?|"
+                    r"dirhams?|riyals?|reais|real)")
+_FX = re.compile(r"\b(convert(?!ible)(?!\s+(?:it|them)\b(?![^.\n]{0,30}?\b" + _CURRENCY_TARGET + r"))"
+                 r"(?![^.\n]{0,40}\b(?:shares?|stock|equity)\b)|exchange rate|fx|forex|in (?:usd|eur|gbp|inr|aud|cad|jpy)|to (?:usd|eur|gbp|inr|aud|cad|jpy))\b", re.I)
 _DECLARED_UNITS = re.compile(
     r"\ball\s+(?:amounts|figures|values)(?:\s+(?:below|above|shown|provided|quoted))?\s+"
     r"(?:are\s+)?(?:stated\s+|expressed\s+)?in\s+(?:USD|EUR|GBP|INR|AUD|CAD|JPY)\b", re.I,
 )
-_ECONOMY = re.compile(r"\b(gdp|inflation|cpi|unemployment|interest rate|repo rate|base rate|debt[- ]to[- ]gdp|economic growth|fiscal)\b", re.I)
+_ECONOMY = re.compile(r"\b(gdp|inflation|cpi|unemployment|interest rate|repo rate|base rate|debt[- ]to[- ]gdp|economic growth|fiscal(?![\s-]+(?:years?|year-end|periods?|quarters?|months?)))\b", re.I)
 _MARKET = re.compile(r"\b(stock|share price|shares|market cap|ticker|nasdaq|nyse|10-k|annual report|revenue of [A-Z]|earnings|dividend)\b", re.I)
-_COMPUTE = re.compile(r"\b(calculate|compute|how much|total|margin|ratio|percentage|growth rate|difference|variance|"
+# Share-capital wording in a supplied scenario is accounting, not a market
+# lookup: "2,000,000 outstanding shares", "20,000 shares of preferred stock",
+# "stock options", "earnings per share". On 22 Oct 2026 WACC and diluted-EPS
+# questions about invented companies were planned a market-data fetch, which
+# found nothing, and the answer said the supplied prices were unavailable.
+# Removed before _MARKET is tested; "Apple's share price", a ticker or a
+# market cap still plans the fetch.
+_SHARE_CAPITAL_TERMS = re.compile(
+    r"\b(?:\d[\d,.]*\s*(?:million\s+|m\s+)?(?:outstanding\s+|common\s+|ordinary\s+|preferred\s+|preference\s+)?shares"
+    r"|shares\s+(?:of|outstanding|issued|authori[sz]ed|in\s+issue)|(?:outstanding|treasury)\s+shares"
+    r"|(?:common|preferred|preference|ordinary|treasury|capital|voting|non-voting)\s+(?:stock|shares?)"
+    r"|stock[- ](?:options?|dividends?|splits?|based|compensation)|share[- ](?:based|capital|options?)"
+    r"|(?:annual|cash|preferred|quarterly|interim|final)\s+dividends?|dividends?\s+(?:of|paid|declared|per|payable)"
+    r"|retained\s+earnings|(?:basic\s+|diluted\s+)?earnings\s+per\s+share)\b", re.I)
+# A rate the question gives is an input, not an indicator to fetch: "issue
+# $3,000,000 in new debt at an 8% annual interest rate" planned an economic
+# data lookup (22 Oct 2026).
+_SUPPLIED_INTEREST_RATE = re.compile(
+    r"\d+(?:\.\d+)?\s?%\s+(?:annual\s+|fixed\s+|nominal\s+|coupon\s+)?interest\s+rate"
+    r"|\binterest\s+rate\s+(?:of|is|at)\s+\d+(?:\.\d+)?\s?%"
+    # "interest rate from 8% down to 4%", "the inflation rate in Brazil is
+    # expected to remain stable at 6.0%" (23 Oct 2026).
+    r"|\b(?:nominal\s+|annual\s+)?(?:interest|inflation|repo|base)\s+rates?\b[^.\n%]{0,50}?\d+(?:\.\d+)?\s?%"
+    # A rate the question asks to compute: "calculate the new effective
+    # interest rate for subsequent periods" (TDR, 23 Oct 2026).
+    r"|\b(?:effective|implicit|internal|imputed|new)\s+(?:annual\s+)?interest\s+rates?\b", re.I)
+# A scenario with its own figures needs no market data unless it asks for a
+# live price or names a listing: "Sell 20% of NewTech … for $500,000" and a
+# dividend recapitalisation planned market lookups for invented companies.
+_SCENARIO_MONEY = re.compile(r"[£$€₹]\s?\d[\d,]*(?:\.\d+)?")
+_SCENARIO_PERCENT = re.compile(r"\b\d+(?:\.\d+)?\s?%")
+_MARKET_LOOKUP = re.compile(r"\b(share price|stock price|market cap|ticker|nasdaq|nyse|10-k|annual report|listed)\b", re.I)
+_COMPUTE = re.compile(r"\b(calculat\w*|compute|journal\s+entr(?:y|ies)|how much|total|margin|ratio|percentage|growth rate|difference|variance|"
                       r"compare|net|profit|loss|depreciation|interest|tax due|vat due|gst due|"
                       # Projections: "£1,000,000 growing 8% a year … after three
                       # years" was planned as web research, and the calculated
@@ -127,13 +166,30 @@ def plan_request(question: str, *, has_documents: bool = False, history: bool = 
     if _RULE.search(rule_text):
         tools.append("search_knowledge_base")
         reasons.append("professional rule or authority named")
-    if _FX.search(_DECLARED_UNITS.sub(" ", q)):
+    from app.orchestration.calculation_service import NEGATED_LOOKUP
+    from app.orchestration.fx_profit import SUPPLIED_FX_RATE
+    # "Do not retrieve a live rate", "without checking the current repo rate":
+    # instructions about tools, never a request for them (23 Oct 2026).
+    q = NEGATED_LOOKUP.sub(" ", q)
+    supplied_fx = bool(SUPPLIED_FX_RATE.search(q)) and not re.search(r"\b(?:latest|today|live)\b", q, re.I)
+    if _FX.search(_DECLARED_UNITS.sub(" ", q)) and not supplied_fx:
         tools.append("get_exchange_rate")
         reasons.append("currency conversion")
-    if _ECONOMY.search(q):
+    if _ECONOMY.search(_SUPPLIED_INTEREST_RATE.sub(" ", q)):
         tools.append("get_economic_indicator")
         reasons.append("economic indicator")
-    if _MARKET.search(q):
+    # The shared live-data decision (calculation_service.live_data_requested).
+    from app.orchestration.calculation_service import live_data_requested, supplied_fact_kinds
+    live = live_data_requested(q)
+    # "stock price" names a market lookup unless the question gives that price
+    # itself ("the current market price of the stock is $48"); a ticker, a
+    # listing or a market cap still does.
+    market_terms = {term.lower() for term in _MARKET_LOOKUP.findall(q)}
+    if market_terms <= {"share price", "stock price"} and "price" in supplied_fact_kinds(q):
+        market_terms = set()
+    own_scenario = (len(_SCENARIO_MONEY.findall(q)) + len(_SCENARIO_PERCENT.findall(q)) >= 3 and not live
+                    and not market_terms)
+    if _MARKET.search(_SHARE_CAPITAL_TERMS.sub(" ", q)) and not own_scenario:
         tools.append("get_market_data")
         reasons.append("market or company data")
     # Something to compute: figures the question gives, or one figure plus a
@@ -145,6 +201,11 @@ def plan_request(question: str, *, has_documents: bool = False, history: bool = 
     # with "the sources do not establish this".
     if _COMPUTE.search(q) and (numbers >= 2 or (numbers >= 1 and (tools or history))
                                or "get_exchange_rate" in tools or "get_market_data" in tools):
+        tools.append("calculate")
+        reasons.append("figures to compute")
+    if supplied_fx and "calculate" not in tools and re.search(r"\b(?:convert|translate)\w*", q, re.I):
+        # A conversion at the rate the question gives is arithmetic on its own
+        # figures: "convert EUR 50,000 at 1.10 USD per EUR" (23 Oct 2026).
         tools.append("calculate")
         reasons.append("figures to compute")
     if _CHART.search(q):

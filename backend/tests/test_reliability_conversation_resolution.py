@@ -206,3 +206,107 @@ async def test_a_deferred_tax_follow_up_is_not_turned_into_a_depreciation_clarif
     assert response.outcome != "clarification_required"
     assert prompts and "$120,000" in prompts[0] and "21%" in prompts[0]
     assert "Citation rule: every sentence" not in prompts[0]
+
+
+# ── 22 Oct 2026 (second transcript): independent questions in one chat ──────
+# Every question said "Task for the Bot:"; the capitalised "Bot" (and later
+# "Average") was read as a shared company name, so ten unrelated scenarios
+# were chained and sent together — up to 65 figures from other questions,
+# context trimmed, and too little room left for the answer.
+
+INDEPENDENT = [
+    "On January 1, 2026, Nexus Corp enters into a contract with a client to sell a server for $120,000 and "
+    "maintenance for $60,000. Task for the Bot: 1. Calculate the allocated transaction price under ASC 606.",
+    "Matrix Distributing uses FIFO. Category A: 1,200 units at $150, selling price $190, cost to sell $30. "
+    "Task for the Bot: 1. Calculate the Net Realizable Value for each category.",
+    "Capital Structure Metrics of Horizon Energy Inc.: 40,000 bonds at $950; 2,000,000 shares at $45. "
+    "Task for the Bot: 1. Calculate the market-value weights.",
+    "Vertex Global: Sales Revenue $4,000,000 and $5,200,000; Total Assets $2,800,000 and $3,400,000. "
+    "Task for the Bot: 1. Calculate ROE using Average Assets and Average Equity.",
+    "Alpha Omega Inc. reported a Net Income of $1,500,000 with 500,000 shares of common stock. "
+    "Task for the Bot: 1. Calculate the Basic Earnings Per Share.",
+]
+
+
+def test_independent_questions_in_one_chat_are_not_chained_by_shared_capitalised_words():
+    history = []
+    for question in INDEPENDENT:
+        resolution = resolve_conversation(question, history, legacy_follow_up=service._looks_like_contextual_follow_up,
+                                          standalone=service._standalone_with_figures)
+        assert not resolution.follows_up, (question[:40], resolution.reasons)
+        history += [{"role": "user", "content": question}, {"role": "assistant", "content": "Answered."}]
+
+
+def test_a_follow_up_naming_the_same_company_still_links_to_it():
+    history = []
+    for question in INDEPENDENT:
+        history += [{"role": "user", "content": question}, {"role": "assistant", "content": "Answered."}]
+    resolution = resolve_conversation("What would Horizon's WACC be if its shares traded at $50?", history)
+    # Identity is the whole name ("Horizon Energy Inc."); "Horizon" alone refers to it
+    # because no other Horizon entity is in play.
+    assert resolution.follows_up and resolution.reasons == ("named_party:Horizon Energy",)
+    assert INDEPENDENT[2] in resolution.scenario_text() and INDEPENDENT[4] not in resolution.scenario_text()
+
+
+
+# ── 22 Oct 2026 resolver corrections: references, identity, parameters ─────
+
+def _chat(*turns):
+    history = []
+    for text in turns:
+        history += [{"role": "user", "content": text}, {"role": "assistant", "content": "Answered."}]
+    return history
+
+
+def _kind(question, *turns):
+    return resolve_conversation(question, _chat(*turns), legacy_follow_up=service._looks_like_contextual_follow_up,
+                                standalone=service._standalone_with_figures)
+
+
+@pytest.mark.parametrize("question", [
+    "Calculate the tax on that amount at 25%.",
+    "Now calculate the tax on that amount at 25%.",
+    "What is 21% of that figure?",
+    "Apply a 25% rate to that total.",
+])
+def test_that_with_a_quantity_noun_refers_back_and_a_rate_is_a_parameter(question):
+    resolution = _kind(question, "Our company's taxable profit for 2026 is $180,000.")
+    assert resolution.follows_up and "$180,000" in [fact.text for fact in resolution.facts]
+
+
+@pytest.mark.parametrize("question", [
+    "A manufacturer recorded a £75,000 sale on 30 December. Identify the audit risk. Do not conclude that revenue "
+    "is definitely misstated.",
+    "Explain why auditors say that revenue recognition is a presumed fraud risk.",
+])
+def test_that_opening_a_clause_is_not_a_reference(question):
+    assert not _kind(question, "Revenue is £800,000 and cost of goods sold £490,000. Calculate gross profit.").follows_up
+
+
+@pytest.mark.parametrize("scenario, follow_up", [
+    ("On November 1, 2026, US-based EuroTech Inc. sells machinery for €500,000 at $1.08 per €1.",
+     "For EuroTech, what changes if the settlement rate is $1.15 instead?"),
+    ("On January 1, 2026, ParentCorp acquires 100% of SubCorp for $4,200,000; net assets are $3,100,000.",
+     "Show the goodwill for ParentCorp's acquisition."),
+    ("Titan Development corp guarantees a $1,900,000 loan for Silo Holdings, which has $100,000 equity.",
+     "What are Titan Development's reporting consequences?"),
+])
+def test_camel_case_and_lowercase_suffix_names_link_their_follow_ups(scenario, follow_up):
+    resolution = _kind(follow_up, scenario)
+    assert resolution.follows_up and resolution.reasons[0].startswith("named_party:")
+
+
+@pytest.mark.parametrize("first, second", [
+    ("Apex Manufacturing is considering a project costing $800,000 with revenue of $500,000.",
+     "At the start of 2026, Apex BioTech has a $1,000,000 NOL and $1,800,000 of pre-tax income."),
+    ("Vanguard Industrial Corp. has receivables of $400,000 and inventory of $650,000.",
+     "Vanguard Energy tests a plant with book value $5,000,000 and cash flows of $4,600,000."),
+])
+def test_companies_sharing_a_first_name_stay_separate(first, second):
+    assert not _kind(second, first).follows_up
+
+
+def test_a_short_name_still_refers_to_the_only_company_with_it():
+    resolution = _kind("For Vanguard Energy, recompute the loss if fair value were $4,200,000.",
+                       "Vanguard Energy tests a plant with book value $5,000,000 and cash flows of $4,600,000.")
+    assert resolution.follows_up and resolution.reasons == ("named_party:Vanguard",)

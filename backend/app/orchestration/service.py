@@ -32,7 +32,7 @@ from collections.abc import Awaitable, Callable
 from typing import Optional
 
 from fastapi import HTTPException
-from app.domains.model_gateway.errors import ProviderRequestRejected
+from app.domains.model_gateway.errors import ProviderRequestRejected, ProviderResponseIncomplete
 from app.orchestration.fx_profit import latest_fx_requested, fresh_fx_sources, grounded_fx_profit
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
@@ -47,7 +47,7 @@ from app.orchestration import claim_verification
 from app.orchestration.evidence_narrative import ground_causal_claims
 from app.orchestration.figure_reconciliation import unreconciled_figures
 from app.orchestration.agent_plan import WRITE_REQUEST_NOTICE, plan_request
-from app.orchestration.answer_formatting import renumber_ordered_lists
+from app.orchestration.answer_formatting import renumber_ordered_lists, separate_headings
 from app.orchestration.citation_spans import evidence_by_ref, exact_spans
 from app.orchestration import workflow_state
 from app.orchestration.professional_boundary import CERTIFICATION_REFUSAL, requests_tax_certification
@@ -935,6 +935,25 @@ def removal_stage(stage: str, before: str, after: str, removed: list[tuple[str, 
     }
 
 
+# The question supplies its own scenario and names the framework to apply.
+# Told only to cite, the model answered "the sources provided do not state
+# this" for VIE, subsequent-event and internal-control scenarios (22 Oct 2026).
+PROFESSIONAL_APPLICATION_INSTRUCTION = (
+    "\n\nThis question supplies its own facts and names the framework to apply. Answer every part in "
+    "full from professional knowledge of that framework: classifications, the reasoning for each, journal "
+    "entries, calculations, presentation and disclosure. Cite a source where the evidence has one; where "
+    "it has none, still answer the part and do not say the sources do not state it. Use only the figures, "
+    "rates and dates the question gives; do not add a statutory rate, threshold or deadline it does not "
+    "give. State any assumption you make. Search at most once, only for a specific rule you will cite, and "
+    "never repeat a search that found nothing. Make all the calculations you need in as few calculator "
+    "calls as possible."
+)
+# An answer citing some sources and explaining the rest from professional
+# knowledge: the label used to depend on the whole answer citing nothing, so
+# a mixed answer's uncited parts were not marked (review R2, 22 Oct 2026).
+MIXED_SOURCES_NOTE = ("Partly source-verified. Statements with a source reference are supported by that source; "
+                      "statements without one are general explanation from professional knowledge, not "
+                      "source-verified. Calculations on the figures you gave are checked separately.")
 GENERAL_EXPLANATION_NOTE = ("General explanation — not source-verified. This is general practice guidance, not a "
                             "statement of what a rule, standard or tax law requires.")
 
@@ -1007,7 +1026,7 @@ def dangling_reference(query: str) -> bool:
 from app.orchestration.verification_service import (
     _CLAIM_REMOVED_NOTE, _CLAIMS_UNCONFIRMED_NOTE, _verify_answer_claims, verify_for_release, requires_authoritative_evidence,
     normalize_citations, prune_rejected_claims, _UNSUPPORTED_REMOVED_NOTE, unbind_arithmetic_citations, calculated_figures,
-    decide_release_failure, release_claims,
+    decide_release_failure, release_claims, uncited_explanations,
 )
 
 
@@ -1439,6 +1458,21 @@ async def ask_kriton(
                     response.answer = response.answer.model_copy(update={
                         'text': text, 'output_text': text, 'completeness': 'partial',
                         'limitations': [*response.answer.limitations, message]})
+        if (response.outcome == 'answered' and response.answer is not None and response.visualization is None
+                and not response.secondary_visualizations and '```chart' not in (response.answer.text or '')
+                and not detect_explicit_visual_request(request.query)):
+            # The answer's figures would read better as a chart the user did
+            # not ask for: offer it, and draw it only if they say so. A request
+            # for no chart, or for text or a table only, is respected.
+            from app.orchestration.chart_offer import chart_declined, offer_chart, offer_spec_id, offer_visualization
+            from app.orchestration.schemas import ChartOfferPublic
+            offer = None if chart_declined(request.query) else offer_chart(response.answer.text or '')
+            # Offered only with the chart itself, drawn under the answer when
+            # accepted; an offer that would need a second question is not made.
+            chart = offer_visualization(offer, response.answer.text or '', offer_spec_id(offer)) if offer else None
+            if offer is not None and chart is not None:
+                response.chart_offer = ChartOfferPublic(chart_type=offer.chart_type, title=offer.title,
+                                                        question=offer.question, reason=offer.reason, chart=chart)
         if task_snapshot is None and response.visualization is not None:
             task_snapshot = {'version':1, 'task_state':{}}
         if task_snapshot is not None:
@@ -1706,6 +1740,10 @@ async def ask_kriton(
         )
         if gap is not None:
             missing_input_message = gap.message
+    if not missing_input_message and resolution.kind == "ambiguous":
+        # "that amount" with several earlier scenarios: ask which, never guess
+        # (conversation_resolver.py).
+        missing_input_message = resolution.clarification
     if needs_invoice_attachment(request.query):
         attachment_ids = await resolve_conversation_document_ids(
             db, conversation_id=request.conversation_id, requested_ids=request.document_ids,
@@ -2025,6 +2063,16 @@ async def ask_kriton(
         context=f"{resolution.scenario_text()}\n\n{request.query}",
     )
     shadow_facts.update(authority_required=authority_required)
+    # A supplied scenario worked under a named framework (ASC 810, ASC 855,
+    # PCAOB, US GAAP): answered from professional knowledge, labelled so.
+    from app.orchestration.verification_service import names_an_authority, supplies_a_professional_scenario
+    instruction = review_instruction(request.query) or request.query
+    # Also without a named standard, when the question supplies its own facts
+    # and asks for a treatment that needs explaining (not a bare calculation).
+    professional_application = not authority_required and (
+        names_an_authority(instruction)
+        or (supplies_a_professional_scenario(instruction) and not self_contained_calculation
+            and bool(set(execution_plan.tools) & {"search_web", "search_knowledge_base"})))
     # Several separate research questions in one message ("What is VAT? Also
     # what is GST?") go through the standard path, which searches the web for
     # each question on its own (websearch.web_search_each). The agent chose a
@@ -2926,6 +2974,9 @@ async def ask_kriton(
             )
             if is_derived_output_request(request.query):
                 grounded_input += derived_output_instructions()
+        elif professional_application:
+            grounded_input += PROFESSIONAL_APPLICATION_INSTRUCTION
+        if authority_required and not self_contained_calculation:
             from app.orchestration.input_requirements import uk_vat_rules_requested
             if uk_vat_rules_requested(request.query):
                 grounded_input += (
@@ -3017,6 +3068,14 @@ async def ask_kriton(
         db, request.query, resolved_document_ids, document_sources, document_plan, tenant_id, actor_id,
     )
     grounded_input += document_figures_block
+    # The method, not the answer, for calculations whose arithmetic was right
+    # and method wrong in the 23 Oct 2026 review (accounting_methods.py).
+    from app.orchestration.accounting_methods import accounting_method_guidance
+    grounded_input += accounting_method_guidance(request.query)
+    # Diluted EPS on convertibles is computed, not left to the model, which
+    # misapplied the method even with the note (diluted_eps.py).
+    from app.orchestration.diluted_eps import verified_eps_block
+    grounded_input += verified_eps_block(request.query)
 
     if context_sections:
         from app.domains.model_gateway.agent_budget import request_prompt_estimate
@@ -3101,6 +3160,12 @@ async def ask_kriton(
         )
         if calculation_tools_only:
             agent_plan = agent_plan.without("search_knowledge_base").without("search_web")
+        if professional_application and source_bundle is not None and not governed_passages:
+            # The governed library was searched for this question before the
+            # agent ran and holds nothing for it: searching it again only spent
+            # steps (hedge and TDR runs, 23 Oct 2026, ended at the step limit
+            # after empty knowledge-base and web searches).
+            agent_plan = agent_plan.without("search_knowledge_base")
         async def on_tool_start(tool: str) -> None:
             await report("tool_call", _TOOL_PROGRESS.get(tool, "Gathering evidence"))
 
@@ -3172,7 +3237,14 @@ async def ask_kriton(
                     # Not for a calculation on the question's own figures: forced
                     # to search first, the financial performance analysis spent
                     # the steps it needed for its last calculations.
+                    # Nor when the policy lets professional knowledge answer
+                    # (a supplied scenario under a named framework): told to
+                    # "answer only from what they return", VIE, subsequent-event
+                    # and internal-control scenarios came back as "the sources
+                    # do not state this" with the knowledge base and web search
+                    # empty (22 Oct 2026).
                     require_evidence=bool(set(agent_plan.tools) & {"search_web", "search_knowledge_base"})
+                    and not professional_application
                     and not governed_passages and not document_sources and not self_contained_calculation,
                     # Pure calculations cannot need external lookup schemas.
                     # Keep the complete registry and per-call policy enforcement.
@@ -3198,7 +3270,7 @@ async def ask_kriton(
                 tool_call_count=len(agent_outcome.tool_calls), fell_back=False,
                 tokens_used=agent_outcome.tokens_used, cost_usd=agent_outcome.cost_usd,
                 estimated_tokens=agent_outcome.estimated_tokens, model_calls=agent_outcome.model_calls,
-                resumed_calls=agent_outcome.resumed_calls,
+                resumed_calls=agent_outcome.resumed_calls, validation=agent_outcome.validation,
             )
         except Exception as exc:
             if isinstance(exc, ProviderRequestRejected):
@@ -3236,27 +3308,39 @@ async def ask_kriton(
             composed_text = cached_answer
             prompt_name = "Web-grounded Prompt (cached)"
 
+    # The standard path's answer was cut off at the output limit and only its
+    # finished part is shown (partial_output.py). Never cached; marked incomplete.
+    truncated_partial = False
     try:
         if provider_access_error is not None and composed_text is None:
             raise provider_access_error
         if deterministic_chart_text is None and composed_text is None:
-            if prompt:
-                prompt_row, composed_text = await metrics.run(
-                    "composition.model",
-                    model_gateway_service.run_test_prompt(
-                        db, prompt.id, grounded_input, actor_id, tenant_id,
-                        correlation_id=query_id, model=answer_model,
-                    ),
-                )
-                prompt_id = prompt_row.id
-                prompt_name = prompt_row.name
-            else:
-                # No approved prompt template seeded — fall back to a direct
-                # provider completion so web-grounded answering still works.
-                composed_text = await metrics.run(
-                    "composition.model",
-                    model_gateway_service.run_grounded_completion(grounded_input),
-                )
+            try:
+                if prompt:
+                    prompt_row, composed_text = await metrics.run(
+                        "composition.model",
+                        model_gateway_service.run_test_prompt(
+                            db, prompt.id, grounded_input, actor_id, tenant_id,
+                            correlation_id=query_id, model=answer_model,
+                        ),
+                    )
+                    prompt_id = prompt_row.id
+                    prompt_name = prompt_row.name
+                else:
+                    # No approved prompt template seeded — fall back to a direct
+                    # provider completion so web-grounded answering still works.
+                    composed_text = await metrics.run(
+                        "composition.model",
+                        model_gateway_service.run_grounded_completion(grounded_input),
+                    )
+            except ProviderResponseIncomplete as incomplete:
+                # Cut off at the output limit: keep the finished part when it
+                # is worth showing; otherwise fail as before.
+                from app.orchestration.partial_output import usable_partial
+                partial = usable_partial(incomplete.partial_text)
+                if not partial:
+                    raise
+                composed_text, truncated_partial = partial, True
             # The model gateway deliberately sanitizes provider exceptions as
             # user-safe text. At the orchestration boundary that text is still
             # a failed composition, never an "answered — source grounded"
@@ -3275,7 +3359,7 @@ async def ask_kriton(
             # transient outage in place for the whole TTL and serve it as an
             # answer — the same trap websearch.py avoids by never caching an
             # empty result set.
-            if answer_cache_key and composed_text:
+            if answer_cache_key and composed_text and not truncated_partial:
                 await answer_cache.put_answer(answer_cache_key, composed_text)
 
     except Exception as exc:
@@ -3528,7 +3612,7 @@ async def ask_kriton(
         from app.orchestration.answer_formatting import latex_to_plain, normalize_markdown_tables
         # Before validation, so the arithmetic check reads the same working
         # the user sees (the answer view does not render LaTeX).
-        composed_text = normalize_markdown_tables(latex_to_plain(composed_text))
+        composed_text = separate_headings(normalize_markdown_tables(latex_to_plain(composed_text)))
         composed_text = normalize_citations(composed_text, {citation.ref_id for citation in rag_citations})
 
     from app.orchestration.review import external_evidence_snapshot
@@ -4078,6 +4162,15 @@ async def ask_kriton(
             audit_chain_id=audit_chain_id, actor_id=actor_id,
             passed=release_check.passed, requires_authority=requires_authority,
         )
+    # Concept check, separate from arithmetic: a standard cited for the wrong
+    # topic is corrected, a formula from another technique is removed
+    # (accounting_concepts.py). Figures can all verify while the treatment
+    # around them is wrong.
+    from app.orchestration.accounting_concepts import review_concepts
+    concept_review = review_concepts(request.query, composed_text or "")
+    if concept_review.changed and _MODEL_DOMAIN_REFUSAL not in (composed_text or ""):
+        composed_text = concept_review.text
+        shadow_facts.update(concept_corrections=concept_review.corrections, concept_removals=concept_review.removed)
     if (execution_plan.write_request and final_text_needs_notice(composed_text)):
         # §10.5: explain the steps, never act; say so first.
         composed_text = WRITE_REQUEST_NOTICE + "\n\n" + composed_text
@@ -4210,6 +4303,21 @@ async def ask_kriton(
     limitations: list[str] = list(decision.limitations or [])
     if released_with_review_warning:
         limitations.insert(0, released_with_review_warning)
+    if truncated_partial:
+        limitations.append("Incomplete answer: the AI response reached its output limit before it finished. "
+                           "Only its finished part is shown; any unfinished calculation or conclusion was left out.")
+    if concept_review.corrections:
+        # The replacement is the standard for that topic within the framework
+        # the answer used; it is not a ruling on which framework or period
+        # applies to the entity.
+        limitations.append("Corrected: a standard was cited for the wrong topic — "
+                           + "; ".join(concept_review.corrections)
+                           + ". The replacement is the standard for that topic in the same framework; confirm it "
+                             "applies to the entity's reporting framework and period.")
+    for note in concept_review.removed:
+        limitations.append("Incomplete answer: " + note)
+    if agent_outcome is not None and agent_outcome.disproved_notes:
+        disproved_figure_notes = list(dict.fromkeys(agent_outcome.disproved_notes + disproved_figure_notes))
     if disproved_figure_notes:
         limitations.append("Incomplete answer: statements with a figure that did not match its own calculation "
                            "were removed: " + "; ".join(disproved_figure_notes) + ".")
@@ -4372,9 +4480,15 @@ async def ask_kriton(
     if not evidence_gap_only and not is_offdomain_refusal and not uses_user_supplied_structure:
         rag_citations = keep_document_citations(rag_citations, citations_composed_against)
     from app.orchestration.agent_plan import GENERAL_GUIDANCE_REASON
-    if GENERAL_GUIDANCE_REASON in execution_plan.reasons and not rag_citations and not evidence_gap_only:
+    professional_answer = GENERAL_GUIDANCE_REASON in execution_plan.reasons or professional_application
+    if professional_answer and not rag_citations and not evidence_gap_only and GENERAL_EXPLANATION_NOTE not in limitations:
         # Decision C: practical guidance answered without sources says so.
         limitations.append(GENERAL_EXPLANATION_NOTE)
+    elif (professional_answer and rag_citations and not evidence_gap_only and MIXED_SOURCES_NOTE not in limitations
+          and uncited_explanations(final_text)):
+        # Cited and uncited parts together: the uncited ones are marked as
+        # professional knowledge; cited ones are not called unverified.
+        limitations.append(MIXED_SOURCES_NOTE)
 
     # A calculation on the question's own figures, or a chart redrawn from
     # figures already in the conversation, needs no source — calling it

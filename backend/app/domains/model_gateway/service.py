@@ -272,7 +272,8 @@ _default_registry: ToolRegistry | None = None
 def _tool_registry() -> ToolRegistry:
     global _default_registry
     if _default_registry is None:
-        _default_registry = build_default_registry()
+        _default_registry = build_default_registry(
+            batch_calculations=bool(getattr(get_settings(), "AGENT_BATCH_CALCULATIONS", False)))
     return _default_registry
 
 
