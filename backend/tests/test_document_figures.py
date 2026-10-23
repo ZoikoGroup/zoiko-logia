@@ -271,6 +271,16 @@ def test_a_fixed_asset_register_gets_its_straight_line_depreciation():
     assert "Total useful_life_years" not in block and "useful_life_years: average 4" in block
 
 
+def test_a_residual_value_is_not_depreciated():
+    register = "\n".join([
+        "Asset ID\tDescription\tCost (GBP)\tUseful life (years)\tResidual value (GBP)",
+        "FA-002\tForklift truck A\t38000\t8\t4000", "FA-008\tOffice laptops\t18000\t3\t0"])
+    block = verified_document_figures([_src(register, "fa.xlsx — 'Fixed Assets'!1:3")])
+    # (38,000 - 4,000) / 8 = 4,250 and 18,000 / 3 = 6,000
+    assert "(Cost (GBP) − Residual value (GBP)) ÷ Useful life (years)" in block
+    assert "FA-002 = 4,250" in block and "FA-008 = 6,000" in block and "total = 10,250 for 2 assets" in block
+
+
 def test_no_depreciation_line_without_both_cost_and_useful_life():
     block = verified_document_figures([_src("Customer\tRevenue\tCost\nA\t100\t40\nB\t50\t20")])
     assert "straight-line" not in block
@@ -286,6 +296,112 @@ def test_a_dated_ledger_gets_totals_per_month_in_date_order():
     assert "amount by month (from date): Jan 2026 = 200; Feb 2026 = 150.50; Mar 2026 = 25" in figures
     assert "Rows by month (from date): Jan 2026 = 1; Feb 2026 = 2; Mar 2026 = 1" in figures
     assert not unreconciled_figures("February 2026 total: 150.50", figures)
+
+
+_GENERAL_LEDGER = ["Date\tVoucher No\tAccount\tDescription\tDebit\tCredit",
+                   "2025-04-03\tJV-1\tTrade receivables\tSale\t1000\t", "2025-04-03\tJV-1\tRevenue\tSale\t\t1000",
+                   "2025-04-28\tJV-2\tSalaries and wages\tPayroll\t300\t", "2025-04-28\tJV-2\tCash at bank\tPayroll\t\t300",
+                   "2025-05-05\tJV-3\tCost of sales\tStock\t400\t", "2025-05-05\tJV-3\tTrade payables\tStock\t\t400",
+                   "2025-05-10\tJV-4\tTrade receivables\tSale\t2500\t", "2025-05-10\tJV-4\tRevenue\tSale\t\t2500",
+                   "2025-05-20\tJV-5\tCash at bank\tReceipt\t900\t", "2025-05-20\tJV-5\tTrade receivables\tReceipt\t\t900"]
+
+
+def test_a_general_ledger_gets_income_and_expenses_per_month_not_trial_balance_statements():
+    # "Show total revenue and expenses per month ... chart of monthly revenue"
+    # was refused: Credit by month mixed every account, and the ledger's
+    # lines were classified as a trial balance ("Cash at bank" on the credit
+    # side stopped every total).
+    figures = verified_document_figures(
+        [WebSource(title="gl.csv — Sheet1", url="", snippet="\n".join(_GENERAL_LEDGER), source_id="d1")],
+        "Show total revenue and expenses per month and draw a chart of monthly revenue")
+    assert "Accounts not classified" not in figures and "Trial balance" not in figures
+    assert "Revenue by month (Revenue): Apr 2025 = 1,000; May 2025 = 2,500" in figures
+    assert "Total expenses by month: Apr 2025 = 300; May 2025 = 400" in figures
+    assert "Profit (total income minus total expenses) by month: Apr 2025 = 700; May 2025 = 2,100" in figures
+    assert "total income = 3,500; total expenses = 700; profit = 2,800" in figures
+    assert "by month for Account" not in figures          # covered by the ledger lines; kept the request small
+    assert not unreconciled_figures("Revenue was 2,500 in May 2025, against 1,000 in April 2025.", figures)
+
+
+def test_a_dated_table_that_is_not_a_ledger_gets_months_per_customer():
+    rows = ["Date\tCustomer\tAmount", "2026-01-05\tAlder\t100", "2026-01-09\tBirch\t40",
+            "2026-02-03\tAlder\t70", "2026-02-11\tBirch\t10"]
+    figures = verified_document_figures(
+        [WebSource(title="sales.csv — Sheet1", url="", snippet="\n".join(rows), source_id="d1")], "Sales per month by customer")
+    assert "Amount by month for Customer = Alder (from Date): Jan 2026 = 100; Feb 2026 = 70" in figures
+
+
+def test_ledger_per_account_months_are_left_out_of_other_questions():
+    figures = verified_document_figures(
+        [WebSource(title="gl.csv — Sheet1", url="", snippet="\n".join(_GENERAL_LEDGER), source_id="d1")],
+        "Which account has the largest debit total?")
+    assert "by month for Account" not in figures and "Ledger 'gl.csv'" not in figures
+    assert "Accounts not classified" not in figures      # still not read as a trial balance
+    assert "Debit by month (from Date)" in figures        # the existing monthly totals stay
+
+
+def _sheet(name: str, rows: list[str]) -> WebSource:
+    return WebSource(title=f"pack.xlsx — '{name}'!1:{len(rows)}", url="", snippet="\n".join(rows), source_id="d1")
+
+
+# Same column names on both sheets, with opposite meanings: a bank statement's
+# Debit is money out, a cash book's Debit is money in.
+_BANK = ["Date\tDetails\tDebit\tCredit\tBalance", "2026-09-01\tOpening balance\t\t\t1000",
+         "2026-09-03\tReceipt - Alder Retail\t\t500\t1500", "2026-09-05\tCheque 101 - Fenwick\t200\t\t1300",
+         "2026-09-12\tReceipt - Harbour Kitchens\t\t754\t2054", "2026-09-20\tDirect debit - Insurance\t100\t\t1954",
+         "2026-09-30\tBank charges\t8\t\t1946", "2026-09-30\tInterest received\t\t4\t1950"]
+_BOOK = ["Date\tDetails\tDebit\tCredit\tBalance", "2026-09-01\tOpening balance\t\t\t1000",
+         "2026-09-03\tReceipt - Alder Retail\t500\t\t1500", "2026-09-05\tCheque 101 - Fenwick\t\t200\t1300",
+         "2026-09-12\tReceipt - Harbour Kitchens\t745\t\t2045", "2026-09-29\tCheque 102 - Swift\t\t60\t1985",
+         "2026-09-30\tReceipt - Elmfield (deposited)\t300\t\t2285"]
+
+
+def test_a_bank_statement_and_cash_book_get_a_reconciliation():
+    # A model-made reconciliation used the wrong closing balance, missed a
+    # direct debit and called a cash-book error a bank error.
+    figures = verified_document_figures([_sheet("Bank Statement", _BANK), _sheet("Cash Book", _BOOK)],
+                                        "Prepare the bank reconciliation")
+    assert "bank statement closing balance = 1,950; cash book closing balance = 2,285; difference = 335" in figures
+    assert "receipts not yet credited (add to the bank balance): 2026-09-30, Receipt - Elmfield (deposited) 300" in figures
+    assert "payments not yet presented (deduct from the bank balance): 2026-09-29, Cheque 102 - Swift 60" in figures
+    assert "credits (add to the cash book): 2026-09-30, Interest received 4" in figures
+    assert "debits (deduct from the cash book): 2026-09-20, Direct debit - Insurance 100; 2026-09-30, Bank charges 8" in figures
+    assert "Receipt - Harbour Kitchens: cash book 745, bank 754, cash book understated by 9" in figures
+    # 2,285 + 4 - 100 - 8 + 9 = 2,190 and 1,950 + 300 - 60 = 2,190
+    assert "Adjusted cash book balance = 2,190; adjusted bank balance = 2,190; unexplained difference = 0" in figures
+    assert not unreconciled_figures("The adjusted balance is 2,190 on both sides.", figures)
+
+
+def test_a_running_balance_is_never_added_up():
+    figures = verified_document_figures([_sheet("Bank Statement", _BANK)])
+    assert "Total Balance" not in figures
+    assert ("Balance is a running balance (never add it up): opening = 1,000 (2026-09-01, Opening balance); "
+            "closing = 1,950 (2026-09-30, Interest received)") in figures
+    assert "Bank reconciliation" not in figures          # a statement alone has nothing to reconcile
+
+
+def test_an_undated_balance_column_is_still_totalled():
+    figures = verified_document_figures([_src("Account\tBalance\nCash\t100\nBank\t250")])
+    assert "Total Balance = 350" in figures
+
+
+_VAT_ROWS = ["Date\tReference\tType\tCustomer/Supplier\tVAT treatment\tNet amount\tVAT amount",
+             "2026-07-01\tS-1\tSale\tAlder\tStandard 20%\t1000\t200", "2026-07-02\tS-2\tSale\tBirch\tZero-rated\t500\t0",
+             "2026-07-03\tS-3\tSale\tAlder\tStandard 20%\t300\t60", "2026-07-04\tP-1\tPurchase\tFenwick\tStandard 20%\t400\t80",
+             "2026-07-05\tP-2\tPurchase\tOakline\tReduced 5%\t200\t10"]
+
+
+def test_sales_by_vat_treatment_leave_out_the_purchases():
+    # "Summarise sales by VAT treatment": the treatment totals mixed sales
+    # and purchases, so the answer said the sources did not state it.
+    figures = verified_document_figures([_src("\n".join(_VAT_ROWS), "vat.csv — Sheet1")],
+                                        "Summarise sales by VAT treatment.")
+    assert ("Net amount by VAT treatment for Type = Sale (total 1,800): Standard 20% = 1,300 (72.22%); "
+            "Zero-rated = 500 (27.78%)") in figures
+    assert "for Type = Purchase" not in figures          # not asked about
+    assert "by Reference for Type" not in figures        # one row each says nothing
+    assert "for Type = Sale" not in verified_document_figures([_src("\n".join(_VAT_ROWS), "vat.csv — Sheet1")],
+                                                              "Total VAT by customer")
 
 
 def test_a_trial_balance_gets_its_statements_and_the_suspense_account_is_flagged():
@@ -305,6 +421,24 @@ def test_a_trial_balance_gets_its_statements_and_the_suspense_account_is_flagged
     assert "Total assets = 2,898,000" in figures and "Total liabilities = 476,000" in figures
     assert "Suspense account balance = 67,000" in figures
     assert "Total account_code" not in figures   # a code is not an amount
+
+
+def test_contra_balances_and_common_accounts_still_give_the_statements():
+    # Six ordinary accounts were "not classified", so no statement totals were
+    # given and the income statement stopped after Revenue.
+    rows = ["Account code\tAccount name\tDebit\tCredit",
+            "1000\tLand and buildings\t400\t", "1090\tAccumulated depreciation\t\t100", "1200\tTrade receivables\t200\t",
+            "1210\tAllowance for doubtful debts\t\t20", "3000\tShare capital\t\t300", "3200\tDividends paid\t50\t",
+            "4000\tRevenue\t\t1000", "5000\tCost of sales\t600\t", "6010\tEmployer NI and pension\t40\t",
+            "6600\tProfessional fees\t30\t", "2500\tBank loan (repayable 2030)\t\t100", "\tTotal\t1320\t1520"]
+    figures = verified_document_figures([WebSource(title="tb.csv — Sheet1", url="", snippet="\n".join(rows), source_id="d1")])
+    assert "Accounts not classified" not in figures
+    assert "Operating expenses = 70 (Employer NI and pension 40, Professional fees 30)" in figures
+    assert "Profit for the year = 330" in figures
+    assert "Non-current assets = 300 (Land and buildings 400, Accumulated depreciation -100)" in figures
+    assert "Current assets = 180" in figures and "Non-current liabilities = 100" in figures
+    assert "Dividends paid -50" in figures
+    assert "Total = " not in figures                   # the sheet's own Total row is not an account
 
 
 def test_an_account_the_rules_cannot_place_stops_the_statement_totals():

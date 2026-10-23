@@ -69,6 +69,7 @@ _RATE_HEADER = re.compile(r"%|percent|\brate\b|ratio", re.IGNORECASE)
 _LIFE_HEADER = re.compile(r"useful[\s_-]*life|\blife[\s_-]*(?:in[\s_-]*)?(?:years?|yrs)\b|^life$", re.IGNORECASE)
 _COST_HEADER = re.compile(r"(?:^|[\s_])(?:gross[\s_]*|original[\s_]*|acquisition[\s_]*|historical[\s_]*)?cost(?:[\s_]|$)", re.IGNORECASE)
 _NOT_COST = re.compile(r"accumulated|depreciat|net|total|book", re.IGNORECASE)
+_RESIDUAL_HEADER = re.compile(r"residual|salvage|scrap", re.IGNORECASE)
 MAX_ASSETS_LISTED = 40
 _YEAR = re.compile(r"^(19|20)\d{2}$")
 # A ledger's dated rows give totals per month, which the file never states:
@@ -115,11 +116,21 @@ class Table:
     headers: list[str]
     rows: list[list[str]] = field(default_factory=list)
     key: str = ""               # the document a table belongs to
+    sheet: str = ""             # the workbook sheet it came from, when known
 
 
 def _file_of(source: WebSource) -> str:
     match = _DOC_TITLE.match(source.title or "")
     return match.group("file") if match else (source.title or "document")
+
+
+# "book.xlsx — 'Bank Statement'!1:16" → "Bank Statement"
+_SHEET = re.compile(r"\s+—\s+'?(?P<sheet>[^'!]+?)'?!\S*$")
+
+
+def _sheet_of(title: str) -> str:
+    match = _SHEET.search(title or "")
+    return match.group("sheet") if match else ""
 
 
 def _is_header(cells: list[str], width: int) -> bool:
@@ -206,8 +217,8 @@ def _pdf_table(title: str, key: str, header_line: str, run: list[list[str]], wid
     return Table(title, headers, run, key)
 
 
-def _join_split_chunks(sources: list[WebSource]) -> list[tuple[str, str, str]]:
-    """(file, document key, text) per extracted block. A long block is stored
+def _join_split_chunks(sources: list[WebSource]) -> list[tuple[str, str, str, str]]:
+    """(file, document key, text, block title) per extracted block. A long block is stored
     as several chunks with the same location that overlap by a few hundred
     characters; they are joined back without the overlap, so no row is
     counted twice."""
@@ -221,7 +232,7 @@ def _join_split_chunks(sources: list[WebSource]) -> list[tuple[str, str, str]]:
             joined[-1][2] = previous + ("" if overlap else "\n") + text[overlap:]
         else:
             joined.append([title, _file_of(source), text, source.source_id or ""])
-    return [(file, f"{sid}:{file}", text) for _, file, text, sid in joined]
+    return [(file, f"{sid}:{file}", text, title) for title, file, text, sid in joined]
 
 
 def tables_from_sources(sources: list[WebSource]) -> list[Table]:
@@ -234,7 +245,8 @@ def tables_from_sources(sources: list[WebSource]) -> list[Table]:
     # Keep each document's chunks together, in their original order.
     order = {key: n for n, key in enumerate(dict.fromkeys(f"{s.source_id or ''}:{_file_of(s)}" for s in sources))}
     ordered = sorted(sources, key=lambda s: order[f"{s.source_id or ''}:{_file_of(s)}"])
-    for file, key, text in _join_split_chunks(ordered):
+    for file, key, text, block_title in _join_split_chunks(ordered):
+        sheet = _sheet_of(block_title)
         found = _tab_tables(file, key, text) or _pdf_tables(file, key, text)
         for table in found:
             if not table.headers:
@@ -242,9 +254,11 @@ def tables_from_sources(sources: list[WebSource]) -> list[Table]:
                 if previous is not None:
                     previous.rows.extend(table.rows)
                 continue
-            merge_key = (key, tuple(h.lower() for h in table.headers))
-            target = merged.setdefault(merge_key, Table(table.title, table.headers, key=key))
-            target.rows.extend(r for r in table.rows if [c.lower() for c in r] != list(merge_key[1]))
+            # Two sheets with the same columns (a bank statement and a cash
+            # book) are different tables; ranges of one sheet still merge.
+            merge_key = (key, sheet, tuple(h.lower() for h in table.headers))
+            target = merged.setdefault(merge_key, Table(table.title, table.headers, key=key, sheet=sheet))
+            target.rows.extend(r for r in table.rows if [c.lower() for c in r] != list(merge_key[2]))
             last[key] = target
     return list(merged.values())
 
@@ -287,18 +301,24 @@ def _straight_line_depreciation(table: Table, numeric: list[int], category: list
     life = next((i for i in numeric if _LIFE_HEADER.search(table.headers[i] or "")), None)
     if cost is None or life is None:
         return []
+    # A residual value is not depreciated: Forklift 38,000, residual 4,000,
+    # 8 years was charged 4,750 instead of 4,250.
+    residual = next((i for i in numeric if _RESIDUAL_HEADER.search(table.headers[i] or "")), None)
     charges: list[tuple[str, str, float]] = []
     for row in table.rows:
         amount = _to_number(row[cost]) if cost < len(row) else None
         years = _to_number(row[life]) if life < len(row) else None
         if amount is None or not years or years <= 0:
             continue
+        kept = (_to_number(row[residual]) if residual is not None and residual < len(row) else None) or 0.0
         group = row[category[0]].strip() if category and category[0] < len(row) else ""
-        charges.append(((row[0] or "").strip(), group, round(amount / years, 2)))
+        charges.append(((row[0] or "").strip(), group, round((amount - kept) / years, 2)))
     if not charges:
         return []
     total = round(sum(c for _, _, c in charges), 2)
-    lines = [f"- Annual straight-line depreciation ({table.headers[cost]} ÷ {table.headers[life]}; no residual value; "
+    basis = (f"({table.headers[cost]} − {table.headers[residual]}) ÷ {table.headers[life]}" if residual is not None
+             else f"{table.headers[cost]} ÷ {table.headers[life]}; no residual value")
+    lines = [f"- Annual straight-line depreciation ({basis}; "
              f"a full year's charge): total = {_fmt(total)} for {len(charges)} assets"]
     if category:
         groups: dict[str, float] = defaultdict(float)
@@ -327,21 +347,38 @@ def _month_of(cell: str) -> tuple[int, int] | None:
     return (year, month) if 1 <= month <= 12 else None
 
 
-def _monthly_lines(table: Table, totals: dict[int, float]) -> list[str]:
-    """Totals per calendar month, in date order, from the table's date column."""
-    name = lambda i: table.headers[i] or f"Column {i + 1}"  # noqa: E731
-    date_col = None
+def _date_column(table: Table) -> int | None:
     for i, header in enumerate(table.headers):
         cells = [row[i] for row in table.rows if i < len(row) and row[i].strip()]
         if cells and sum(_month_of(c) is not None for c in cells) / len(cells) >= 0.8:
-            date_col = i
-            break
+            return i
+    return None
+
+
+def _months(table: Table, date_col: int) -> list[tuple[int, int]]:
+    """The table's calendar months in date order, or [] when too few or too many."""
+    months = sorted({m for m in (_month_of(r[date_col]) for r in table.rows if date_col < len(r)) if m})
+    return months if 2 <= len(months) <= MAX_MONTHS_LISTED else []
+
+
+def _month_label(month: tuple[int, int]) -> str:
+    return f"{_MONTH_NAMES[month[1] - 1]} {month[0]}"
+
+
+def _monthly_lines(table: Table, totals: dict[int, float], category: list[int] | None = None,
+                   by_group: bool = False) -> list[str]:
+    """Totals per calendar month, in date order, from the table's date column.
+    With by_group, also per value of the leading category column: a ledger's
+    Credit by month mixes every account, so "monthly revenue" needs the
+    Revenue account's own months."""
+    name = lambda i: table.headers[i] or f"Column {i + 1}"  # noqa: E731
+    date_col = _date_column(table)
     if date_col is None:
         return []
-    months = sorted({m for m in (_month_of(r[date_col]) for r in table.rows if date_col < len(r)) if m})
-    if len(months) < 2 or len(months) > MAX_MONTHS_LISTED:
+    months = _months(table, date_col)
+    if not months:
         return []
-    label = lambda m: f"{_MONTH_NAMES[m[1] - 1]} {m[0]}"  # noqa: E731
+    label = _month_label
     counts: dict[tuple[int, int], int] = defaultdict(int)
     for r in table.rows:
         month = _month_of(r[date_col]) if date_col < len(r) else None
@@ -357,7 +394,29 @@ def _monthly_lines(table: Table, totals: dict[int, float]) -> list[str]:
                 groups[month] += value
         lines.append(f"- {name(i)} by month (from {name(date_col)}): " + "; ".join(
             f"{label(m)} = {_fmt(round(groups[m], 2))}" for m in months))
+    if not (by_group and category):
+        return lines
+    c = category[0]
+    values = list(dict.fromkeys(r[c].strip() for r in table.rows if c < len(r) and r[c].strip()))
+    if not 2 <= len(values) <= MAX_GROUPS_LISTED:
+        return lines
+    for value in values:
+        for i in list(totals)[:3]:
+            per_month: dict[tuple[int, int], float] = defaultdict(float)
+            for r in table.rows:
+                month = _month_of(r[date_col]) if date_col < len(r) else None
+                amount = _to_number(r[i]) if i < len(r) else None
+                if month and amount is not None and c < len(r) and r[c].strip() == value:
+                    per_month[month] += amount
+            if any(per_month.values()):
+                lines.append(f"- {name(i)} by month for {name(c)} = {value} (from {name(date_col)}): " + "; ".join(
+                    f"{label(m)} = {_fmt(round(per_month[m], 2))}" for m in months))
     return lines
+
+
+# A question about months or trends gets the per-group monthly lines; others
+# do not, to keep the block within the model's request size.
+_MONTHLY_QUESTION = re.compile(r"month|trend|over\s+time|season|period|quarter", re.IGNORECASE)
 
 
 # "Top N together" lines are about 40% of the block and answer only ranking
@@ -367,20 +426,96 @@ _RANKING_QUESTION = re.compile(r"\btop\b|largest|biggest|highest|lowest|smallest
                                r"major|main|key\s+customers?|pareto|80\s*/\s*20", re.IGNORECASE)
 
 
-def _table_lines(table: Table, include_top_n: bool = True) -> list[str]:
-    rows = [r for r in table.rows if not (r and _TOTAL_ROW.match(r[0] or ""))]
+# A dated statement's running balance: "Total Balance = 884,975" was given
+# for a bank statement, and its closing balance was never stated, so a bank
+# reconciliation started from the wrong row.
+_BALANCE_HEADER = re.compile(r"\bbalance\b", re.IGNORECASE)
+
+
+def _running_balance_column(table: Table) -> int | None:
+    if _date_column(table) is None:
+        return None
+    return next((i for i, h in enumerate(table.headers) if _BALANCE_HEADER.search(h or "")), None)
+
+
+def _balances(table: Table, column: int) -> list[tuple[list[str], float]]:
+    return [(r, v) for r in table.rows if column < len(r) and (v := _to_number(r[column])) is not None]
+
+
+def _row_label(table: Table, row: list[str]) -> str:
+    date_col = _date_column(table)
+    text = [c for i, c in enumerate(row) if c.strip() and i != date_col and _to_number(c) is None]
+    date = row[date_col] if date_col is not None and date_col < len(row) else ""
+    return ", ".join(part for part in (date, text[0] if text else "") if part)
+
+
+def _running_balance_line(table: Table, column: int) -> str:
+    values = _balances(table, column)
+    (first, opening), (last, closing) = values[0], values[-1]
+    return (f"- {table.headers[column]} is a running balance (never add it up): opening = {_fmt(opening)} "
+            f"({_row_label(table, first)}); closing = {_fmt(closing)} ({_row_label(table, last)})")
+
+
+# "Summarise sales by VAT treatment" of a file of sales and purchases was not
+# answered: VAT treatment totals mixed both, and Type totals mixed every
+# treatment. A column of 2-4 kinds (Sale / Purchase) gives each kind's own
+# breakdown, for the kinds the question names.
+MAX_KINDS = 4
+
+
+def _names_kind(query: str | None, value: str) -> bool:
+    if query is None:
+        return False     # only for a question that names the kind
+    asked = re.findall(r"[a-z]{3,}", query.lower())
+    words = re.findall(r"[a-z]{3,}", value.lower())
+    return bool(words) and all(any(a == w or a.rstrip("s") == w.rstrip("s") for a in asked) for w in words)
+
+
+def _kind_lines(rows: list[list[str]], name, category: list[int], keys: list[int], query: str | None) -> list[str]:
+    lines = []
+    for split in category:
+        kinds = list(dict.fromkeys(r[split].strip() for r in rows if split < len(r) and r[split].strip()))
+        if not 2 <= len(kinds) <= MAX_KINDS:
+            continue
+        for kind in (k for k in kinds if _names_kind(query, k)):
+            subset = [r for r in rows if split < len(r) and r[split].strip() == kind]
+            for c in (c for c in category if c != split):
+                for i in keys[:2]:
+                    groups: dict[str, float] = defaultdict(float)
+                    for r in subset:
+                        value = _to_number(r[i]) if i < len(r) else None
+                        if value is not None and c < len(r) and r[c].strip():
+                            groups[r[c].strip()] += value
+                    if len(groups) < 2 or len(groups) == len(subset):   # one row each: an invoice number
+                        continue
+                    total = sum(groups.values())
+                    lines.append(f"- {name(i)} by {name(c)} for {name(split)} = {kind} (total {_fmt(round(total, 2))}): "
+                                 + "; ".join(f"{k} = {_fmt(round(v, 2))} ({_pct(v, total)})" for k, v in
+                                             sorted(groups.items(), key=lambda x: -x[1])[:MAX_GROUPS_LISTED]))
+    return lines
+
+
+def _table_lines(table: Table, include_top_n: bool = True, by_month_group: bool = True,
+                 query: str | None = None) -> list[str]:
+    # The label is the first filled cell: a trial balance's Total row has an
+    # empty account code before it, and was counted as an account (50%).
+    rows = [r for r in table.rows if not _TOTAL_ROW.match(next((c for c in r if c.strip()), ""))]
     if not rows:
         return []
-    table = Table(table.title, table.headers, rows)
+    table = Table(table.title, table.headers, rows, table.key, table.sheet)
     numeric, category, rates = _columns(table)
     if not numeric:
         return []
     name = lambda i: table.headers[i] or f"Column {i + 1}"  # noqa: E731
     lines = [f"Table '{table.title}' ({', '.join(h for h in table.headers if h)}): {len(rows)} data rows"]
+    running = _running_balance_column(table)
     totals: dict[int, float] = {}
     for i in numeric:
         values = [v for v in (_to_number(r[i]) for r in rows if i < len(r)) if v is not None]
         if not values:
+            continue
+        if i == running:
+            lines.append(_running_balance_line(table, i))
             continue
         if i in rates:
             lines.append(f"- {name(i)}: average {_fmt(sum(values) / len(values))}; "
@@ -390,7 +525,7 @@ def _table_lines(table: Table, include_top_n: bool = True) -> list[str]:
         lines.append(f"- Total {name(i)} = {_fmt(totals[i])}; average {_fmt(totals[i] / len(values))}; "
                      f"highest {_fmt(max(values))}; lowest {_fmt(min(values))}")
     lines.extend(_straight_line_depreciation(table, numeric, category))
-    lines.extend(_monthly_lines(table, totals))
+    lines.extend(_monthly_lines(table, totals, category, by_month_group))
     keys = list(totals)
     for a in keys:
         for b in keys:
@@ -424,6 +559,7 @@ def _table_lines(table: Table, include_top_n: bool = True) -> list[str]:
                     rest = total - running
                     lines.append(f"- Top {n} {name(c)} by {name(i)} together = {_fmt(running)} ({_pct(running, total)}); "
                                  f"the other {len(ranked) - n} together = {_fmt(rest)} ({_pct(rest, total)})")
+    lines.extend(_kind_lines(rows, name, category, keys, query))
     return lines
 
 
@@ -444,11 +580,24 @@ _TB_RULES: tuple[tuple[str, str, re.Pattern], ...] = (
     ("revenue", "credit", re.compile(r"revenue|sales|turnover|fee\s+income", re.I)),
     ("other_income", "credit", re.compile(r"income|gain", re.I)),
     ("equity", "credit", re.compile(r"share\s+capital|share\s+premium|retained\s+earnings|reserves?|capital\s+account", re.I)),
-    ("non_current_liability", "credit", re.compile(r"deferred\s+tax|long[\s-]term|non[\s-]current|mortgage|debenture|bond", re.I)),
+    ("non_current_liability", "credit", re.compile(r"deferred\s+tax|long[\s-]term|non[\s-]current|mortgage|debenture|bond|"
+                                                   r"repayable\s+(?:in\s+)?20\d\d|after\s+(?:more\s+than\s+)?one\s+year", re.I)),
     ("current_liability", "credit", re.compile(r"payable|accrual|overdraft|vat|paye|provision|deferred\s+income|loan|tax", re.I)),
-    ("non_current_asset", "debit", re.compile(r"property|plant|equipment|intangible|goodwill|investment|right[\s-]of[\s-]use|vehicles?|fixtures|machinery", re.I)),
+    ("non_current_asset", "debit", re.compile(r"property|plant|equipment|intangible|goodwill|investment|right[\s-]of[\s-]use|vehicles?|fixtures|machinery|"
+                                              r"\bland\b|buildings?|computer|furniture|software\s+licen", re.I)),
     ("current_asset", "debit", re.compile(r"inventor|stock|receivable|debtors|cash|bank|prepayment", re.I)),
-    ("operating_expense", "debit", re.compile(r"expense|administrat|distribution|selling|wages|salar|rent|depreciation|amortisation|utilities|marketing|insurance", re.I)),
+    ("operating_expense", "debit", re.compile(r"expense|administrat|distribution|selling|wages|salar|rent|depreciation|amortisation|utilities|marketing|insurance|"
+                                              r"pension|national\s+insurance|employer|payroll|staff|fees|professional|legal|audit|accountancy|"
+                                              r"consult|office|repairs|maintenance|travel|telephone|postage|subscription|training|cleaning|"
+                                              r"advertis|printing|stationery|motor\s+costs|bad\s+debt", re.I)),
+)
+# Balances on the "wrong" side that reduce their group: accumulated
+# depreciation and a doubtful-debt allowance reduce assets, dividends reduce
+# equity. A trial balance with them gave no statements at all (unclassified).
+_TB_CONTRA: tuple[tuple[str, str, re.Pattern], ...] = (
+    ("non_current_asset", "credit", re.compile(r"accumulated\s+(?:depreciation|amortisation)|depreciation\s+provision", re.I)),
+    ("current_asset", "credit", re.compile(r"allowance\s+for|doubtful\s+debt|bad\s+debt\s+provision|impairment\s+of\s+receivables", re.I)),
+    ("equity", "debit", re.compile(r"dividends?\b|drawings", re.I)),
 )
 _TB_LABEL = {
     "revenue": "Revenue", "other_income": "Other income", "cost_of_sales": "Cost of sales",
@@ -458,7 +607,59 @@ _TB_LABEL = {
 }
 
 
-def _trial_balance_lines(table: Table) -> list[str]:
+# Income and expense groups of a ledger's monthly statement, with the side
+# that increases them.
+_PL_GROUPS = (("revenue", "credit"), ("other_income", "credit"), ("cost_of_sales", "debit"),
+              ("operating_expense", "debit"), ("finance_cost", "debit"), ("tax_charge", "debit"))
+
+
+def _ledger_monthly_lines(table: Table, debit: int, credit: int, name: int) -> list[str]:
+    """A general ledger (dated debit / credit lines, many per account) gives
+    income and expenses per month. Each account is classified by name, on
+    either side: a ledger posts both sides of an account."""
+    date_col = _date_column(table)
+    if date_col is None:
+        return []
+    months = _months(table, date_col)
+    if not months:
+        return []
+    side = dict(_PL_GROUPS)
+    per_group: dict[str, dict[tuple[int, int], float]] = defaultdict(lambda: defaultdict(float))
+    members: dict[str, list[str]] = defaultdict(list)
+    for row in table.rows:
+        label = row[name].strip() if name < len(row) else ""
+        month = _month_of(row[date_col]) if date_col < len(row) else None
+        if not label or not month or _TOTAL_ROW.match(label):
+            continue
+        group = next((g for g, _, pattern in _TB_RULES if pattern.search(label)), None)
+        if group not in side:
+            continue
+        dr = (_to_number(row[debit]) if debit < len(row) else None) or 0.0
+        cr = (_to_number(row[credit]) if credit < len(row) else None) or 0.0
+        per_group[group][month] += (cr - dr) if side[group] == "credit" else (dr - cr)
+        if label not in members[group]:
+            members[group].append(label)
+    if not per_group:
+        return []
+    by_month = lambda values: "; ".join(f"{_month_label(m)} = {_fmt(round(values[m], 2))}" for m in months)  # noqa: E731
+    lines = [f"Ledger '{table.title}': income and expenses by month (from {table.headers[date_col]}; "
+             f"accounts classified by name; check against the chart of accounts)"]
+    for group, _ in _PL_GROUPS:
+        if group in per_group:
+            lines.append(f"- {_TB_LABEL[group]} by month ({', '.join(members[group])}): {by_month(per_group[group])}")
+    income = {m: per_group["revenue"][m] + per_group["other_income"][m] for m in months}
+    expenses = {m: sum(per_group[g][m] for g, s in _PL_GROUPS if s == "debit") for m in months}
+    if "other_income" in per_group:   # otherwise it repeats Revenue by month
+        lines.append(f"- Total income by month: {by_month(income)}")
+    lines.append(f"- Total expenses by month: {by_month(expenses)}")
+    lines.append(f"- Profit (total income minus total expenses) by month: "
+                 f"{by_month({m: income[m] - expenses[m] for m in months})}")
+    lines.append(f"- For the whole period: total income = {_fmt(round(sum(income.values()), 2))}; total expenses = "
+                 f"{_fmt(round(sum(expenses.values()), 2))}; profit = {_fmt(round(sum(income.values()) - sum(expenses.values()), 2))}")
+    return lines
+
+
+def _trial_balance_lines(table: Table, by_month: bool = True) -> list[str]:
     headers = table.headers
     debit = next((i for i, h in enumerate(headers) if _DEBIT_HEADER.search(h or "")), None)
     credit = next((i for i, h in enumerate(headers) if _CREDIT_HEADER.search(h or "")), None)
@@ -468,6 +669,13 @@ def _trial_balance_lines(table: Table) -> list[str]:
                  and not re.search(r"code|number|no\b", h or "", re.I)), None)
     if name is None:
         return []
+    # A trial balance lists each account once. Repeated accounts make it a
+    # ledger: its 252 lines were classified one by one, and "Cash at bank" on
+    # the credit side stopped every statement total.
+    labels = [row[name].strip() for row in table.rows
+              if name < len(row) and row[name].strip() and not _TOTAL_ROW.match(row[name])]
+    if labels and len(set(labels)) < len(labels) * 0.8:
+        return _ledger_monthly_lines(table, debit, credit, name) if by_month else []
     groups: dict[str, list[tuple[str, float]]] = defaultdict(list)
     unplaced, total_dr, total_cr = [], 0.0, 0.0
     for row in table.rows:
@@ -478,6 +686,10 @@ def _trial_balance_lines(table: Table) -> list[str]:
         cr = (_to_number(row[credit]) if credit < len(row) else None) or 0.0
         total_dr, total_cr = total_dr + dr, total_cr + cr
         side, amount = ("debit", dr - cr) if dr >= cr else ("credit", cr - dr)
+        contra = next((g for g, s, pattern in _TB_CONTRA if s == side and pattern.search(label)), None)
+        if contra is not None:
+            groups[contra].append((label, -amount))
+            continue
         group = next((g for g, s, pattern in _TB_RULES if (s in (side, "any")) and pattern.search(label)), None)
         if group is None:
             unplaced.append(label)
@@ -527,15 +739,166 @@ def _trial_balance_lines(table: Table) -> list[str]:
     return lines
 
 
+# A bank statement and a cash book give a bank reconciliation. Left to the
+# model, one was prepared from the wrong closing balance, missed a £1,025
+# direct debit, called a cash-book error a bank error, and its steps were
+# removed as unverifiable. Lines are matched here by amount and direction.
+_BANK_SIDE = re.compile(r"bank\s*statement|statement", re.IGNORECASE)
+_BOOK_SIDE = re.compile(r"cash\s*book|cashbook|bank\s*(?:ledger|account)|\bledger\b", re.IGNORECASE)
+_PAIR_DAYS = 7
+# Words that say what kind of line it is, not whose it is.
+_GENERIC_WORDS = {"receipt", "receipts", "payment", "payments", "cheque", "check", "direct", "debit", "credit",
+                  "transfer", "bank", "from", "with", "recorded", "shows", "deposit", "deposited", "charges",
+                  "interest", "received", "presented", "credited", "standing", "order", "invoice"}
+
+
+@dataclass
+class _Entry:
+    when: tuple[int, int, int] | None
+    label: str
+    amount: float
+    inflow: bool
+
+
+def _day_of(cell: str) -> tuple[int, int, int] | None:
+    match = _DATE_PARTS.match((cell or "").strip())
+    month = _month_of(cell)
+    if not match or not month:
+        return None
+    a, _, c = (int(part) for part in match.groups())
+    day = c if len(match.group(1)) == 4 else (a if int(match.group(2)) <= 12 else int(match.group(2)))
+    return (month[0], month[1], day)
+
+
+def _days_apart(a: tuple[int, int, int] | None, b: tuple[int, int, int] | None) -> int:
+    if not a or not b:
+        return 0
+    from datetime import date
+    try:
+        return abs((date(*a) - date(*b)).days)
+    except ValueError:
+        return 0
+
+
+def _statement(table: Table) -> tuple[list[_Entry], float] | None:
+    """A dated table with a running balance: its in / out lines and closing
+    balance. Whether a column is money in or out is read from how the
+    balance moves, not from its name: a cash book's Debit is money in, a bank
+    statement's Debit is money out."""
+    balance = _running_balance_column(table)
+    date_col = _date_column(table)
+    if balance is None or date_col is None:
+        return None
+    numeric, _, _ = _columns(table)
+    amounts = [i for i in numeric if i != balance]
+    if len(amounts) != 2:
+        return None
+    direction: dict[int, int] = defaultdict(int)       # +1 per row the column raised the balance
+    previous = None
+    for row in table.rows:
+        current = _to_number(row[balance]) if balance < len(row) else None
+        if current is None:
+            continue
+        if previous is not None:
+            for i in amounts:
+                value = _to_number(row[i]) if i < len(row) else None
+                if value and abs(abs(current - previous) - value) < 0.005:
+                    direction[i] += 1 if current > previous else -1
+        previous = current
+    inflow = [i for i in amounts if direction[i] > 0]
+    outflow = [i for i in amounts if direction[i] < 0]
+    if len(inflow) != 1 or len(outflow) != 1:
+        return None
+    entries = []
+    for row in table.rows:
+        for i, is_in in ((inflow[0], True), (outflow[0], False)):
+            value = _to_number(row[i]) if i < len(row) else None
+            if value:
+                entries.append(_Entry(_day_of(row[date_col]) if date_col < len(row) else None,
+                                      _row_label(table, row), abs(value), is_in))
+    return entries, _balances(table, balance)[-1][1]
+
+
+def _words(label: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z]{4,}", label.lower()) if w not in _GENERIC_WORDS}
+
+
+def _bank_reconciliation_lines(tables: list[Table]) -> list[str]:
+    def side(table: Table, pattern: re.Pattern) -> bool:
+        return bool(pattern.search(table.sheet or table.title or ""))
+    banks = [t for t in tables if side(t, _BANK_SIDE) and not side(t, _BOOK_SIDE)]
+    books = [t for t in tables if side(t, _BOOK_SIDE) and not side(t, _BANK_SIDE)]
+    if len(banks) != 1 or len(books) != 1:
+        return []
+    bank, book = _statement(banks[0]), _statement(books[0])
+    if bank is None or book is None:
+        return []
+    (bank_lines, bank_close), (book_lines, book_close) = bank, book
+    # Same amount and direction is the same item; the nearest date wins.
+    unmatched_bank = list(bank_lines)
+    unmatched_book: list[_Entry] = []
+    for entry in book_lines:
+        candidates = [b for b in unmatched_bank if b.inflow == entry.inflow and abs(b.amount - entry.amount) < 0.005]
+        if candidates:
+            unmatched_bank.remove(min(candidates, key=lambda b: _days_apart(b.when, entry.when)))
+        else:
+            unmatched_book.append(entry)
+    # One item at two amounts: same direction, a shared name, close dates.
+    errors: list[tuple[_Entry, _Entry]] = []
+    for entry in list(unmatched_book):
+        pair = next((b for b in unmatched_bank if b.inflow == entry.inflow and _words(b.label) & _words(entry.label)
+                     and _days_apart(b.when, entry.when) <= _PAIR_DAYS), None)
+        if pair is not None:
+            errors.append((entry, pair))
+            unmatched_book.remove(entry)
+            unmatched_bank.remove(pair)
+    item = lambda e: f"{e.label} {_fmt(e.amount)}"  # noqa: E731
+    group = lambda entries: "; ".join(item(e) for e in entries) or "none"  # noqa: E731
+    book_in = [e for e in unmatched_book if e.inflow]
+    book_out = [e for e in unmatched_book if not e.inflow]
+    bank_in = [e for e in unmatched_bank if e.inflow]
+    bank_out = [e for e in unmatched_bank if not e.inflow]
+    # The bank's figure is taken as right; the cash book is corrected.
+    correction = round(sum((b.amount - e.amount) * (1 if e.inflow else -1) for e, b in errors), 2)
+    adjusted_bank = round(bank_close + sum(e.amount for e in book_in) - sum(e.amount for e in book_out), 2)
+    adjusted_book = round(book_close + sum(e.amount for e in bank_in) - sum(e.amount for e in bank_out) + correction, 2)
+    name = lambda t: f"'{t.sheet or t.title}'"  # noqa: E731
+    lines = [
+        f"Bank reconciliation (bank statement {name(banks[0])}, cash book {name(books[0])}; lines matched by amount "
+        f"and direction): bank statement closing balance = {_fmt(bank_close)}; cash book closing balance = "
+        f"{_fmt(book_close)}; difference = {_fmt(round(book_close - bank_close, 2))}",
+        f"- In the cash book, not yet on the bank statement: receipts not yet credited (add to the bank balance): "
+        f"{group(book_in)}; payments not yet presented (deduct from the bank balance): {group(book_out)}",
+        f"- On the bank statement, not in the cash book: credits (add to the cash book): {group(bank_in)}; "
+        f"debits (deduct from the cash book): {group(bank_out)}",
+    ]
+    if errors:
+        lines.append("- Same item at a different amount (the bank figure is taken as correct, so the cash book is "
+                     "corrected; check the source document): " + "; ".join(
+                         f"{b.label}: cash book {_fmt(e.amount)}, bank {_fmt(b.amount)}, cash book "
+                         f"{'understated' if (b.amount - e.amount) * (1 if e.inflow else -1) > 0 else 'overstated'} by "
+                         f"{_fmt(abs(round(b.amount - e.amount, 2)))}" for e, b in errors))
+    lines.append(f"- Adjusted cash book balance = {_fmt(adjusted_book)}; adjusted bank balance = {_fmt(adjusted_bank)}; "
+                 f"unexplained difference = {_fmt(round(adjusted_book - adjusted_bank, 2))}")
+    return lines
+
+
 def verified_document_figures(sources: list[WebSource], query: str | None = None) -> str:
     """A bounded prompt block of figures computed from the documents' tables,
     or "" when the documents hold no numeric table. With a question, the
     "top N together" lines are kept only for a ranking question."""
     include_top_n = query is None or bool(_RANKING_QUESTION.search(query))
-    lines: list[str] = []
-    for table in tables_from_sources(sources):
-        lines.extend(_trial_balance_lines(table))
-        lines.extend(_table_lines(table, include_top_n))
+    by_month = query is None or bool(_MONTHLY_QUESTION.search(query))
+    tables = tables_from_sources(sources)
+    lines: list[str] = _bank_reconciliation_lines(tables)
+    for table in tables:
+        statement = _trial_balance_lines(table, by_month)
+        lines.extend(statement)
+        # A ledger's monthly income and expenses already cover its accounts'
+        # months; repeating them per account pushed a 252-line ledger over
+        # the provider's request-size limit.
+        ledger = bool(statement) and statement[0].startswith("Ledger ")
+        lines.extend(_table_lines(table, include_top_n, by_month and not ledger, query))
         if len(lines) >= MAX_LINES:
             break
     if not lines:
