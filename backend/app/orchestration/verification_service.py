@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from app.orchestration import claim_verification
 from app.orchestration.telemetry import StageMetrics
 from app.domains.model_gateway import service as model_gateway_service
-from app.domains.model_gateway.errors import ProviderResponseIncomplete
+from app.domains.model_gateway.errors import ProviderRequestTooLarge, ProviderResponseIncomplete, RequestBudgetExhausted
 from app.orchestration.calculation_service import needs_lookup
 from app.orchestration.derived_output import is_illustration_heading, is_scenario_sentence
 
@@ -80,10 +80,12 @@ async def _verify_answer_claims(
                     grounded_input + claim_verification.correction_request(answer, verdict.contradicted),
                 ),
             )
-        except ProviderResponseIncomplete:
+        except (ProviderResponseIncomplete, RequestBudgetExhausted, ProviderRequestTooLarge):
             # The rewrite of a long, three-question answer was cut off at the
-            # output limit, and the whole answer was lost as an internal error.
-            # The rewrite is optional: keep the answer and say it is unchecked.
+            # output limit, and the whole answer was lost as an internal error;
+            # so was a ledger statement whose request had used its processing
+            # budget by then. The rewrite is optional: keep the answer and say
+            # it is unchecked.
             return answer, _CLAIM_UNCORRECTED_NOTE
         if not corrected or not corrected.strip() or _MODEL_PROVIDER_FAILURE in corrected:
             return answer, None
