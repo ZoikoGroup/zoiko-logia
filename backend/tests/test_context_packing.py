@@ -68,7 +68,10 @@ def test_packing_leaves_small_prompt_unchanged_and_rejects_overlapping_sections(
 
 
 async def test_production_standard_path_fits_complete_assembled_context(pipeline, monkeypatch):
+    from app.core.config import get_settings
     from app.orchestration import service
+    # Exercise the small provider tier independently of a developer's .env.
+    monkeypatch.setattr(get_settings(), 'AGENT_MAX_REQUEST_TOKENS', 8000)
     gateway = service.model_gateway_service
     monkeypatch.setattr(gateway, 'agent_mode_active', lambda: False)
     sources = [WebSource(title=f'Official {i}', url=f'https://www.gov.uk/example-{i}',

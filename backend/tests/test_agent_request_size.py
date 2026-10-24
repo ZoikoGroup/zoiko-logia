@@ -117,7 +117,10 @@ async def test_pipeline_explains_request_size_failure_without_a_standard_fallbac
     pipeline.rewrite.assert_not_awaited()
 
 
-async def test_standard_vat_answer_with_three_sources_and_history_fits_without_live_calls():
+async def test_standard_vat_answer_with_three_sources_and_history_fits_without_live_calls(monkeypatch):
+    from app.core.config import get_settings
+    # Exercise the small provider tier independently of a developer's .env.
+    monkeypatch.setattr(get_settings(), 'AGENT_MAX_REQUEST_TOKENS', 8000)
     from app.orchestration.conversation import conversation_prompt
     from app.orchestration.schemas import ConversationMessage
     question = ('What is the current UK VAT registration threshold? Give the effective date and an official source. '
