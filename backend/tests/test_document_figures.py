@@ -446,3 +446,17 @@ def test_an_account_the_rules_cannot_place_stops_the_statement_totals():
     figures = verified_document_figures([WebSource(title="tb.csv — Sheet1", url="", snippet="\n".join(rows), source_id="d1")])
     assert "Accounts not classified" in figures and "Mystery account" in figures
     assert "Profit for the year" not in figures
+
+
+def test_a_general_ledger_gets_each_account_balance_and_its_trial_balance():
+    # "Generate ledger account statements": the model subtracted the wrong
+    # debit and credit totals itself and the explanation was withheld.
+    rows = ["Date\tVoucher No\tAccount\tDescription\tDebit\tCredit",
+            "2025-04-03\tJV-1\tTrade receivables\tSale\t1000\t", "2025-04-03\tJV-1\tRevenue\tSale\t\t1000",
+            "2025-04-20\tJV-2\tCash at bank\tReceipt\t600\t", "2025-04-20\tJV-2\tTrade receivables\tReceipt\t\t600",
+            "2025-04-25\tJV-3\tRent\tRent\t250\t", "2025-04-25\tJV-3\tCash at bank\tRent\t\t250"]
+    figures = verified_document_figures([WebSource(title="gl.csv — Sheet1", url="", snippet="\n".join(rows), source_id="d1")])
+    assert "- Trade receivables: 2 entries; total debits = 1,000; total credits = 600; closing balance = 400 Dr" in figures
+    assert "- Cash at bank: 2 entries; total debits = 600; total credits = 250; closing balance = 350 Dr" in figures
+    assert "- Revenue: 1 entries; total debits = 0; total credits = 1,000; closing balance = 1,000 Cr" in figures
+    assert "total debit balances = 1,000; total credit balances = 1,000; difference = 0" in figures

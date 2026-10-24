@@ -659,6 +659,44 @@ def _ledger_monthly_lines(table: Table, debit: int, credit: int, name: int) -> l
     return lines
 
 
+def _ledger_balance_lines(table: Table, debit: int, credit: int, name: int) -> list[str]:
+    """Each account's debits, credits and closing balance, and the trial
+    balance they make. "Generate ledger account statements" of a 252-line
+    ledger had each account's debit and credit totals but not its balance;
+    the model subtracted them itself, paired the wrong figures ("Cash at bank:
+    1,715,058.50 - 1,421,652.66"), and the explanation was withheld."""
+    totals: dict[str, list[float]] = {}
+    counts: dict[str, int] = defaultdict(int)
+    for row in table.rows:
+        label = row[name].strip() if name < len(row) else ""
+        if not label or _TOTAL_ROW.match(label):
+            continue
+        dr = (_to_number(row[debit]) if debit < len(row) else None) or 0.0
+        cr = (_to_number(row[credit]) if credit < len(row) else None) or 0.0
+        entry = totals.setdefault(label, [0.0, 0.0])
+        entry[0] += dr
+        entry[1] += cr
+        counts[label] += 1
+    if not totals:
+        return []
+    lines = [f"Account balances in '{table.title}' (debits minus credits; Dr = debit balance, "
+             f"Cr = credit balance; no opening balances are in the file)"]
+    debit_balances = credit_balances = 0.0
+    for label, (dr, cr) in totals.items():
+        balance = round(dr - cr, 2)
+        side = "Dr" if balance > 0 else "Cr" if balance < 0 else ""
+        if balance > 0:
+            debit_balances += balance
+        else:
+            credit_balances -= balance
+        lines.append(f"- {label}: {counts[label]} entries; total debits = {_fmt(round(dr, 2))}; total credits = "
+                     f"{_fmt(round(cr, 2))}; closing balance = {_fmt(abs(balance))} {side}".rstrip())
+    debit_balances, credit_balances = round(debit_balances, 2), round(credit_balances, 2)
+    lines.append(f"- The account balances agree: total debit balances = {_fmt(debit_balances)}; total credit "
+                 f"balances = {_fmt(credit_balances)}; difference = {_fmt(round(debit_balances - credit_balances, 2))}")
+    return lines
+
+
 def _trial_balance_lines(table: Table, by_month: bool = True) -> list[str]:
     headers = table.headers
     debit = next((i for i, h in enumerate(headers) if _DEBIT_HEADER.search(h or "")), None)
@@ -675,7 +713,8 @@ def _trial_balance_lines(table: Table, by_month: bool = True) -> list[str]:
     labels = [row[name].strip() for row in table.rows
               if name < len(row) and row[name].strip() and not _TOTAL_ROW.match(row[name])]
     if labels and len(set(labels)) < len(labels) * 0.8:
-        return _ledger_monthly_lines(table, debit, credit, name) if by_month else []
+        monthly = _ledger_monthly_lines(table, debit, credit, name) if by_month else []
+        return _ledger_balance_lines(table, debit, credit, name) + monthly
     groups: dict[str, list[tuple[str, float]]] = defaultdict(list)
     unplaced, total_dr, total_cr = [], 0.0, 0.0
     for row in table.rows:
@@ -897,7 +936,7 @@ def verified_document_figures(sources: list[WebSource], query: str | None = None
         # A ledger's monthly income and expenses already cover its accounts'
         # months; repeating them per account pushed a 252-line ledger over
         # the provider's request-size limit.
-        ledger = bool(statement) and statement[0].startswith("Ledger ")
+        ledger = any(line.startswith("Ledger ") for line in statement)
         lines.extend(_table_lines(table, include_top_n, by_month and not ledger, query))
         if len(lines) >= MAX_LINES:
             break
