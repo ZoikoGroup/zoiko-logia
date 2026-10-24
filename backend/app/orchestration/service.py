@@ -4473,6 +4473,24 @@ async def ask_kriton(
     jurisdiction_note = jurisdiction_limitation(request.query, removed_statements)
     if jurisdiction_note:
         limitations.append(jurisdiction_note)
+    if (not evidence_gap_only and not is_offdomain_refusal and not uses_user_supplied_structure
+            and rag_citations and not re.search(r"\[REF-\d+\]", final_text or "")):
+        # Sources found but none cited: their markers are added where a source
+        # supports the text, so the reader sees them (citation_pass.py).
+        from app.orchestration.citation_pass import cite_sources
+        # Each REF's own text: retrieved sources, governed passages, then the
+        # agent's tool sources, numbered as rag_citations was built.
+        passage_text = {passage_id: content for passage_id, _, content in governed_passages}
+        agent_sources = agent_outcome.sources if agent_outcome else []
+        agent_start = len(rag_citations) - len(agent_sources)
+        text_by_ref = {f"REF-{i + 1}": s.snippet or "" for i, s in enumerate(evidence_sources)}
+        text_by_ref.update({f"REF-{agent_start + i + 1}": s.snippet or "" for i, s in enumerate(agent_sources)})
+        snippets = {citation.ref_id: text_by_ref.get(citation.ref_id) or passage_text.get(citation.source_id, "")
+                    for citation in rag_citations
+                    if citation.freshness not in _LIVE_DATA_FRESHNESS and citation.provider != "uploaded_document"}
+        snippets = {ref: text for ref, text in snippets.items() if text}
+        final_text = await cite_sources(final_text, snippets, model_gateway_service.run_grounded_completion,
+                                        _MODEL_PROVIDER_FAILURE)
     citations_composed_against = rag_citations
     rag_citations = cited_only(final_text, rag_citations)
     # An answer from an attached file always lists the file (source_guarantee.py).
