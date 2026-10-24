@@ -1,5 +1,6 @@
 # Dependencies (root convenience tooling only; app folders have their own rules)
 /node_modules/
+/backend/node_modules/
 
 # Local secrets and virtual environments
 .env
