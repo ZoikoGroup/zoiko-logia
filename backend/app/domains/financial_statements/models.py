@@ -125,6 +125,27 @@ class FsSnapshot(Base):
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class FsResolution(Base):
+    """A Reporting Rules Resolution revision (Document 03): the facts, their
+    hash, the rule-pack digest and the result; a fact change is a new revision."""
+    __tablename__ = "fs_resolutions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    entity_key: Mapped[str] = mapped_column(String, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    facts: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    facts_hash: Mapped[str] = mapped_column(String, nullable=False)
+    rule_pack_digest: Mapped[str] = mapped_column(String, nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    state: Mapped[str] = mapped_column(String, nullable=False)
+    trial_balance_id: Mapped[str | None] = mapped_column(ForeignKey("fs_trial_balances.id"), nullable=True)
+    prepared_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    approved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class FsEvent(Base):
     __tablename__ = "fs_events"
 

@@ -107,6 +107,37 @@ export const reviewJournal = (id: string, journalId: string, approve: boolean) =
 export const approveSnapshot = (id: string) =>
   request<TrialBalance>(`/trial-balances/${encodeURIComponent(id)}/approve`, { method: "POST" });
 
+// Reporting Rules Resolution (Document 03).
+export type YearFiguresIn = { turnover?: string; balance_sheet_total?: string; employees?: number | "" };
+export type EntityFactsIn = {
+  entity_name: string; incorporation_jurisdiction: string; legal_form: string; scope: "individual" | "group";
+  report_type: "annual" | "interim" | "management" | "educational"; period_start: string; period_end: string;
+  flags: string[]; current_year: YearFiguresIn; prior_year: YearFiguresIn; prior_year_size?: string;
+  framework_election: string; early_adoption: string[]; requested_claim: "illustrative" | "statutory_ready";
+};
+export type ResolutionResult = {
+  state: string; selected_framework: string | null; size_class: string;
+  candidates: { framework: string; status: string; reason: string; sources: string[] }[];
+  rules: { rule_id: string; outcome: string; effective: string; source: string }[];
+  statements: { statement: string; requirement: string; note: string }[];
+  blockers: string[]; reasons: Record<string, string>; permit_illustrative_draft: boolean;
+  permit_statutory_claim: boolean; permitted_exports: string[];
+  rule_pack: { id: string; status: string; checked: string; digest: string; capabilities: Record<string, string> };
+};
+export type StoredResolution = {
+  id: string; revision: number; state: string; entity_key: string; facts: EntityFactsIn; facts_hash: string;
+  rule_pack_digest: string; result: ResolutionResult; trial_balance_id: string | null; prepared_by: string;
+  approved_by: string | null; approved_at: string | null; created_at: string | null;
+};
+
+export const previewResolution = (facts: EntityFactsIn) =>
+  request<ResolutionResult>("/resolve", { method: "POST", body: JSON.stringify({ facts }) });
+export const saveResolution = (facts: EntityFactsIn, trialBalanceId?: string) =>
+  request<StoredResolution>("/resolutions", { method: "POST", body: JSON.stringify({ facts, trial_balance_id: trialBalanceId ?? null }) });
+export const listResolutions = () => request<StoredResolution[]>("/resolutions");
+export const approveResolution = (id: string) =>
+  request<StoredResolution>(`/resolutions/${encodeURIComponent(id)}/approve`, { method: "POST" });
+
 export async function downloadOriginal(id: string, filename: string) {
   const res = await fetch(`${BASE}/trial-balances/${encodeURIComponent(id)}/original`, {
     headers: { Authorization: `Bearer ${getAuthToken()}`, ...impersonationHeaders() },

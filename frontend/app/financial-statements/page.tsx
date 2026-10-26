@@ -4,8 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Download, FileSpreadsheet, GitBranch, Upload } from "lucide-react";
 import {
   Badge, Btn, Callout, CheckRow, Checklist, ControlNote, DateCell, Empty, ErrorNote, KeyGrid, Loading, Panel,
-  RegisterHead, RegisterRow, Stack, WorkflowPage, inputClass, shortId, type CheckState, type Tone,
+  RegisterHead, RegisterRow, Stack, SubTabs, WorkflowPage, inputClass, shortId, type CheckState, type Tone,
 } from "@/components/workflow-ui/kit";
+import { StandardsPanel } from "@/components/financial-statements/StandardsPanel";
 import {
   addSupporting, approveSnapshot, decideMapping, downloadOriginal, getCatalogue, getLineage, getTrialBalance,
   listTrialBalances, proposeJournal, reviewJournal, uploadTrialBalance,
@@ -154,6 +155,7 @@ export default function FinancialStatementsPage() {
   const [supportFile, setSupportFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [tab, setTab] = useState<"intake" | "standards">("intake");
 
   const refreshList = useCallback(() => listTrialBalances().then(setList).catch((e: Error) => setError(e.message)), []);
   useEffect(() => { void refreshList(); getCatalogue().then(setCatalogue).catch(() => setCatalogue(null)); }, [refreshList]);
@@ -186,6 +188,9 @@ export default function FinancialStatementsPage() {
     <WorkflowPage section="Accounting Workflows" title="Financial Statements"
       subtitle="Trial balance intake · source integrity, reconciliation and evidence-based classification (Document 04)."
       note="Kriton proposes; the deterministic engine checks; an independent reviewer approves. Nothing is posted to any ledger.">
+      <SubTabs label="Financial statements step" active={tab} onChange={setTab}
+        tabs={[{ key: "intake", label: "Trial balance intake" }, { key: "standards", label: "Framework & rules" }]} />
+      {tab === "standards" ? <StandardsPanel trialBalanceId={selected ?? undefined} /> : <>
       {error && <ErrorNote message={error} />}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
         <div className="space-y-4">
@@ -361,6 +366,7 @@ export default function FinancialStatementsPage() {
           )}
         </div>
       </div>
+      </>}
     </WorkflowPage>
   );
 }

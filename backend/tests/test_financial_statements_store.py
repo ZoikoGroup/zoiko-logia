@@ -230,20 +230,25 @@ def test_the_migration_creates_exactly_the_model_tables_and_columns():
 
     from app.db.base import Base
 
-    path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "b7u8v9w0x1y2_financial_statements_intake.py"
-    spec = importlib.util.spec_from_file_location("fs_migration", path)
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
+    versions = Path(__file__).resolve().parents[1] / "alembic" / "versions"
+    migrations = []
+    for name in ("b7u8v9w0x1y2_financial_statements_intake.py", "c8v9w0x1y2z3_financial_statements_resolutions.py"):
+        spec = importlib.util.spec_from_file_location(name[:-3], versions / name)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        migrations.append(module)
     ours = [t for t in Base.metadata.sorted_tables if t.name.startswith("fs_")]
     engine = sa.create_engine("sqlite://")
     with engine.begin() as connection:
         Base.metadata.create_all(connection, tables=[t for t in Base.metadata.sorted_tables if t not in ours])
         context = MigrationContext.configure(connection)
         with Operations.context(context):
-            migration.upgrade()
+            for migration in migrations:
+                migration.upgrade()
             inspector = sa.inspect(connection)
             for table in ours:
                 assert {c["name"] for c in inspector.get_columns(table.name)} == {c.name for c in table.columns}, table.name
-            migration.downgrade()
+            for migration in reversed(migrations):
+                migration.downgrade()
         assert not [t for t in sa.inspect(connection).get_table_names() if t.startswith("fs_")]
-    assert migration.down_revision == "a6t7u8v9w0x1"
+    assert migrations[0].down_revision == "a6t7u8v9w0x1" and migrations[1].down_revision == migrations[0].revision

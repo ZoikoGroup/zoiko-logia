@@ -68,6 +68,50 @@ class JournalReview(BaseModel):
     approve: bool
 
 
+class ResolutionIn(BaseModel):
+    """Entity facts for a Reporting Rules Resolution (Document 03)."""
+    facts: dict
+    trial_balance_id: str | None = None
+
+
+@router.post("/resolve")
+async def resolve_framework(body: ResolutionIn, user: User = Depends(get_current_user)) -> dict:
+    """Stateless: which frameworks are permitted and which rules apply, nothing stored."""
+    from .resolutions import facts_from
+    from .standards import resolve
+    try:
+        return resolve(facts_from(body.facts)).to_dict()
+    except store.Refused as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
+
+
+@router.post("/resolutions")
+async def create_resolution(body: ResolutionIn, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_user)) -> dict:
+    from . import resolutions
+    return await _run(resolutions.create(db, user, body.facts, body.trial_balance_id))
+
+
+@router.get("/resolutions")
+async def list_resolutions(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict]:
+    from . import resolutions
+    return await resolutions.list_for(db, user)
+
+
+@router.get("/resolutions/{resolution_id}")
+async def get_resolution(resolution_id: str, db: AsyncSession = Depends(get_db),
+                         user: User = Depends(get_current_user)) -> dict:
+    from . import resolutions
+    return await _run(resolutions.get(db, user, resolution_id))
+
+
+@router.post("/resolutions/{resolution_id}/approve")
+async def approve_resolution(resolution_id: str, db: AsyncSession = Depends(get_db),
+                             user: User = Depends(get_current_user)) -> dict:
+    from . import resolutions
+    return await _run(resolutions.approve(db, user, resolution_id))
+
+
 @router.get("/catalogue")
 async def catalogue(user: User = Depends(get_current_user)) -> dict:
     """Statement lines, correction types and supporting-record kinds for the screen's choices."""
