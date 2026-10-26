@@ -45,3 +45,7 @@ api_v1_router.include_router(review_console_router)
 api_v1_router.include_router(password_reset_router)
 api_v1_router.include_router(billing_router)
 api_v1_router.include_router(platform_router)
+
+from app.domains.financial_statements.router import router as financial_statements_router  # noqa: E402
+
+api_v1_router.include_router(financial_statements_router)
