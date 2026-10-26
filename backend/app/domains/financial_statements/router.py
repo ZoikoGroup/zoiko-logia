@@ -68,6 +68,17 @@ class JournalReview(BaseModel):
     approve: bool
 
 
+@router.get("/catalogue")
+async def catalogue(user: User = Depends(get_current_user)) -> dict:
+    """Statement lines, correction types and supporting-record kinds for the screen's choices."""
+    from .journals import CORRECTION_TYPES
+    from .mapping import LINES
+    from .supporting import KINDS
+    return {"lines": [{"line_id": k, "label": label, "section": section} for k, (label, section) in LINES.items()],
+            "correction_types": [{"code": k, "treatment": v} for k, v in CORRECTION_TYPES.items()],
+            "supporting_kinds": [{"code": k, "line_id": line, "label": label} for k, (line, label) in KINDS.items()]}
+
+
 @router.post("/intake")
 async def intake_trial_balance(file: UploadFile = File(...), user: User = Depends(get_current_user)) -> dict:
     return run_intake(file.filename or "upload", await _read(file), uploaded_by=str(user.id)).to_dict()
