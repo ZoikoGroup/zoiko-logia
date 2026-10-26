@@ -105,11 +105,60 @@ async def get_resolution(resolution_id: str, db: AsyncSession = Depends(get_db),
     return await _run(resolutions.get(db, user, resolution_id))
 
 
+class ReviewNote(BaseModel):
+    note: str = ""
+
+
+class JudgmentIn(BaseModel):
+    key: str
+    choice: str
+    reason: str
+
+
+class ReasonIn(BaseModel):
+    reason: str
+
+
 @router.post("/resolutions/{resolution_id}/approve")
 async def approve_resolution(resolution_id: str, db: AsyncSession = Depends(get_db),
                              user: User = Depends(get_current_user)) -> dict:
     from . import resolutions
     return await _run(resolutions.approve(db, user, resolution_id))
+
+
+@router.post("/resolutions/{resolution_id}/request-review")
+async def request_resolution_review(resolution_id: str, body: ReviewNote, db: AsyncSession = Depends(get_db),
+                                    user: User = Depends(get_current_user)) -> dict:
+    from . import resolutions
+    return await _run(resolutions.request_review(db, user, resolution_id, body.note))
+
+
+@router.post("/resolutions/{resolution_id}/judgments")
+async def record_resolution_judgment(resolution_id: str, body: JudgmentIn, db: AsyncSession = Depends(get_db),
+                                     user: User = Depends(get_current_user)) -> dict:
+    from . import resolutions
+    return await _run(resolutions.record_judgment(db, user, resolution_id, body.key, body.choice, body.reason))
+
+
+@router.post("/resolutions/{resolution_id}/reject")
+async def reject_resolution(resolution_id: str, body: ReasonIn, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_user)) -> dict:
+    from . import resolutions
+    return await _run(resolutions.reject(db, user, resolution_id, body.reason))
+
+
+@router.post("/resolutions/{resolution_id}/revoke")
+async def revoke_resolution(resolution_id: str, body: ReasonIn, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_user)) -> dict:
+    from . import resolutions
+    return await _run(resolutions.revoke(db, user, resolution_id, body.reason))
+
+
+@router.get("/resolutions/{resolution_id}/release-check")
+async def resolution_release_check(resolution_id: str, db: AsyncSession = Depends(get_db),
+                                   user: User = Depends(get_current_user)) -> dict:
+    from . import resolutions
+    return await _run(resolutions.release_check(db, user, resolution_id))
 
 
 @router.get("/catalogue")

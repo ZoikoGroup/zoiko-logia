@@ -1,7 +1,8 @@
 """Financial statements: Reporting Rules Resolutions (Document 03, ZL-FSR-ENG-003).
 
 One row per resolution revision: the entity facts, their hash, the rule-pack
-digest, the result and its approval. Tenant isolated by RLS. Additive only.
+digest, the result, reviewer judgments, the append-only history and its
+approval. Tenant isolated by RLS. Additive only.
 
 Revision ID: c8v9w0x1y2z3
 Revises: b7u8v9w0x1y2
@@ -28,6 +29,8 @@ def upgrade():
             sa.Column("facts_hash", sa.String(), nullable=False),
             sa.Column("rule_pack_digest", sa.String(), nullable=False),
             sa.Column("result", sa.JSON(), nullable=False),
+            sa.Column("judgments", sa.JSON(), nullable=False),
+            sa.Column("history", sa.JSON(), nullable=False),
             sa.Column("state", sa.String(), nullable=False),
             sa.Column("trial_balance_id", sa.String(), sa.ForeignKey("fs_trial_balances.id"), nullable=True),
             sa.Column("prepared_by", sa.String(), sa.ForeignKey("users.id"), nullable=False),

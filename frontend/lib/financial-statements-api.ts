@@ -113,21 +113,40 @@ export type EntityFactsIn = {
   entity_name: string; incorporation_jurisdiction: string; legal_form: string; scope: "individual" | "group";
   report_type: "annual" | "interim" | "management" | "educational"; period_start: string; period_end: string;
   flags: string[]; current_year: YearFiguresIn; prior_year: YearFiguresIn; prior_year_size?: string;
-  framework_election: string; early_adoption: string[]; requested_claim: "illustrative" | "statutory_ready";
+  framework_election: string; election_signed_by?: string; early_adoption: string[];
+  requested_claim: "illustrative" | "statutory_ready"; group_perimeter?: string[]; parent_framework?: string;
+  prior_framework?: string; first_time_adoption?: boolean; policy_questions?: string[];
+  requested_statements?: string[]; evidence?: Record<string, string>;
 };
+export type Criterion = { criterion: string; value: string | null; limit: string; within: boolean | null };
 export type ResolutionResult = {
-  state: string; selected_framework: string | null; size_class: string;
+  state: string; selected_framework: string | null; framework_edition: string | null; size_class: string;
+  eligibility: { result?: string; reason?: string; band?: string; exclusions?: string[]; rule?: string;
+    tests?: { size: string; current: boolean | null; prior: boolean | null; current_criteria: Criterion[]; prior_criteria: Criterion[] }[] };
   candidates: { framework: string; status: string; reason: string; sources: string[] }[];
-  rules: { rule_id: string; outcome: string; effective: string; source: string }[];
+  rules: { rule_id: string; outcome: string; effective: string; source: string; adoption: string; endorsement: string }[];
   statements: { statement: string; requirement: string; note: string }[];
-  blockers: string[]; reasons: Record<string, string>; permit_illustrative_draft: boolean;
-  permit_statutory_claim: boolean; permitted_exports: string[];
-  rule_pack: { id: string; status: string; checked: string; digest: string; capabilities: Record<string, string> };
+  blockers: string[]; reasons: Record<string, string>;
+  findings: { code: string; severity: string; owner: string; reason: string; action: string }[];
+  pending_judgments: { key: string; question: string; sources: string[]; decided: boolean }[];
+  judgments: Record<string, { choice: string; reason: string; by: string; at: string }>;
+  gates: { gate: string; title: string; passed: boolean; detail: string }[];
+  outputs: { type: string; allowed: boolean; gate: string }[]; explanation: string[];
+  citations: Record<string, { publisher: string; title: string; url: string; checked: string; snapshot: string | null }>;
+  permit_illustrative_draft: boolean; permit_statutory_claim: boolean; permitted_exports: string[]; as_of: string;
+  rule_pack: { id: string; version: string; status: string; checked: string; valid_until: string; owner: string;
+    digest: string; capabilities: Record<string, string> };
 };
 export type StoredResolution = {
   id: string; revision: number; state: string; entity_key: string; facts: EntityFactsIn; facts_hash: string;
-  rule_pack_digest: string; result: ResolutionResult; trial_balance_id: string | null; prepared_by: string;
+  rule_pack_digest: string; result: ResolutionResult; judgments: ResolutionResult["judgments"];
+  history: { action: string; actor_id: string; at: string; state: string; detail: Record<string, unknown> }[];
+  pack_is_current: boolean; approval_valid: boolean; trial_balance_id: string | null; prepared_by: string;
   approved_by: string | null; approved_at: string | null; created_at: string | null;
+};
+export type ReleaseCheck = {
+  resolution_id: string; revision: number; statutory_release_allowed: boolean; illustrative_allowed: boolean;
+  reasons: string[]; rule_pack_digest: string; framework_edition: string | null;
 };
 
 export const previewResolution = (facts: EntityFactsIn) =>
@@ -137,6 +156,15 @@ export const saveResolution = (facts: EntityFactsIn, trialBalanceId?: string) =>
 export const listResolutions = () => request<StoredResolution[]>("/resolutions");
 export const approveResolution = (id: string) =>
   request<StoredResolution>(`/resolutions/${encodeURIComponent(id)}/approve`, { method: "POST" });
+export const requestReview = (id: string, note = "") =>
+  request<StoredResolution>(`/resolutions/${encodeURIComponent(id)}/request-review`, { method: "POST", body: JSON.stringify({ note }) });
+export const recordJudgment = (id: string, body: { key: string; choice: string; reason: string }) =>
+  request<StoredResolution>(`/resolutions/${encodeURIComponent(id)}/judgments`, { method: "POST", body: JSON.stringify(body) });
+export const rejectResolution = (id: string, reason: string) =>
+  request<StoredResolution>(`/resolutions/${encodeURIComponent(id)}/reject`, { method: "POST", body: JSON.stringify({ reason }) });
+export const revokeResolution = (id: string, reason: string) =>
+  request<StoredResolution>(`/resolutions/${encodeURIComponent(id)}/revoke`, { method: "POST", body: JSON.stringify({ reason }) });
+export const releaseCheck = (id: string) => request<ReleaseCheck>(`/resolutions/${encodeURIComponent(id)}/release-check`);
 
 export async function downloadOriginal(id: string, filename: string) {
   const res = await fetch(`${BASE}/trial-balances/${encodeURIComponent(id)}/original`, {

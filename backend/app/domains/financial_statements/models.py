@@ -138,6 +138,8 @@ class FsResolution(Base):
     facts_hash: Mapped[str] = mapped_column(String, nullable=False)
     rule_pack_digest: Mapped[str] = mapped_column(String, nullable=False)
     result: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    judgments: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    history: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     state: Mapped[str] = mapped_column(String, nullable=False)
     trial_balance_id: Mapped[str | None] = mapped_column(ForeignKey("fs_trial_balances.id"), nullable=True)
     prepared_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
