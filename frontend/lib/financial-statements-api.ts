@@ -322,6 +322,66 @@ export async function downloadAssuranceSummary(runId: string) {
   URL.revokeObjectURL(url);
 }
 
+// Presentation, publication and filing (Document 06).
+export type PublicationModel = {
+  audience: string; audience_title: string; scale: string; unit_label: string; state: string; status_label: string; draft: boolean;
+  masthead: { entity: string; period_start: string; period_end: string; framework: string | null; edition: string | null };
+  statements: { statement_id: string; title: string; status: string; note: string;
+    lines: { concept_id: string; label: string; kind: string; amount: string | null; display: string; prior_display: string }[] }[];
+  omitted: { statement_id: string; basis: string }[]; notes: { number: number | null; requirement_id: string; title: string; text: string }[];
+  analysis: { label: string; measures: { name: string; value: string | null; definition: string }[] } | null;
+  rounding: string[]; blockers: string[]; model_hash: string;
+};
+export type PublicationArtifact = {
+  id: string; kind: string; audience: string; channel: string; scale: string; state: string; filename: string; sha256: string;
+  size_bytes: number; created_at: string | null; source_artifact_id: string | null;
+  validation: { parity?: { ok: boolean; issues: string[] }; sensitive?: { ok: boolean; hits: string[]; blocking: boolean };
+    accessibility?: { ok: boolean; failed: string[]; limitation: string }; diff?: string[]; note?: string };
+};
+export type PublicationIssue = {
+  id: string; audience: string; state: string; release_id: string; issued_by: string; issued_at: string | null;
+  artifacts: { id: string; channel: string; sha256: string }[];
+  filing: { destination: string; live: boolean; status: string; reasons: string[]; at: string }[];
+};
+export type PublicationOverview = {
+  package_id: string; package_version: number; state: string; entity: string; framework: string | null;
+  assurance_status: string | null; release_id: string | null; misleading: string[];
+  audiences: { key: string; title: string; statutory: boolean; public: boolean; issue_blockers: string[] }[];
+  audience_matrix: { id: string; status: string; notes: string[] };
+  adapters: Record<string, { title: string; status: string }>;
+  taxonomies: Record<string, { title: string; installed: boolean; licence: string }>;
+  artifacts: PublicationArtifact[]; issues: PublicationIssue[];
+};
+
+const pubPath = (path: string) => `/publication${path}`;
+export const getPublication = (packageId: string) => request<PublicationOverview>(pubPath(`/packages/${encodeURIComponent(packageId)}`));
+export const previewPublication = (packageId: string, audience: string, scale: string) =>
+  request<{ model: PublicationModel; state: string; issue_blockers: string[] }>(
+    pubPath(`/packages/${encodeURIComponent(packageId)}/preview?audience=${encodeURIComponent(audience)}&scale=${encodeURIComponent(scale)}`));
+export const renderPublication = (packageId: string, body: { audience: string; channel: string; scale: string }) =>
+  request<PublicationArtifact>(pubPath(`/packages/${encodeURIComponent(packageId)}/renders`), { method: "POST", body: JSON.stringify(body) });
+export const issuePublication = (packageId: string, audience: string, scale: string) =>
+  request<PublicationIssue>(pubPath(`/packages/${encodeURIComponent(packageId)}/issue`), { method: "POST", body: JSON.stringify({ audience, scale }) });
+export const submitFiling = (issueId: string, body: { destination: string; live: boolean; confirmed: boolean }) =>
+  request<unknown>(pubPath(`/issues/${encodeURIComponent(issueId)}/filings`), { method: "POST", body: JSON.stringify(body) });
+export function reimportWord(artifactId: string, file: File) {
+  const form = new FormData();
+  form.append("file", file);
+  return request<PublicationArtifact>(pubPath(`/artifacts/${encodeURIComponent(artifactId)}/reimport`), { method: "POST", body: form });
+}
+export async function downloadArtifact(artifactId: string, filename: string) {
+  const res = await fetch(`${BASE}/publication/artifacts/${encodeURIComponent(artifactId)}/download`, {
+    headers: { Authorization: `Bearer ${getAuthToken()}`, ...impersonationHeaders() },
+  });
+  if (!res.ok) throw new Error(`Download failed (${res.status})`);
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 export async function downloadPackage(id: string, format: "json" | "csv") {
   const res = await fetch(`${BASE}/packages/${encodeURIComponent(id)}/export?format=${format}`, {
     headers: { Authorization: `Bearer ${getAuthToken()}`, ...impersonationHeaders() },

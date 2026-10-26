@@ -416,6 +416,76 @@ async def assurance_summary(run_id: str, db: AsyncSession = Depends(get_db), use
                     headers={"Content-Disposition": 'attachment; filename="assurance-summary.txt"'})
 
 
+class RenderIn(BaseModel):
+    audience: str
+    channel: str
+    scale: str = "units"
+
+
+class IssueIn(BaseModel):
+    audience: str
+    scale: str = "units"
+
+
+class FilingIn(BaseModel):
+    destination: str
+    live: bool = False
+    confirmed: bool = False
+
+
+@router.get("/publication/packages/{package_id}")
+async def publication_overview(package_id: str, db: AsyncSession = Depends(get_db),
+                               user: User = Depends(get_current_user)) -> dict:
+    """Document 06 FP-001: audiences, artifacts, issues, adapters and taxonomies for a package."""
+    from . import publication_store
+    return await _run(publication_store.overview(db, user, package_id))
+
+
+@router.get("/publication/packages/{package_id}/preview")
+async def publication_preview(package_id: str, audience: str = "member_accounts", scale: str = "units",
+                              db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    from . import publication_store
+    return await _run(publication_store.preview(db, user, package_id, audience, scale))
+
+
+@router.post("/publication/packages/{package_id}/renders")
+async def publication_render(package_id: str, body: RenderIn, db: AsyncSession = Depends(get_db),
+                             user: User = Depends(get_current_user)) -> dict:
+    from . import publication_store
+    return await _run(publication_store.render(db, user, package_id, audience=body.audience, channel=body.channel,
+                                               scale=body.scale))
+
+
+@router.post("/publication/packages/{package_id}/issue")
+async def publication_issue(package_id: str, body: IssueIn, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_user)) -> dict:
+    from . import publication_store
+    return await _run(publication_store.issue(db, user, package_id, body.audience, body.scale))
+
+
+@router.post("/publication/issues/{issue_id}/filings")
+async def publication_filing(issue_id: str, body: FilingIn, db: AsyncSession = Depends(get_db),
+                             user: User = Depends(get_current_user)) -> dict:
+    from . import publication_store
+    return await _run(publication_store.submit_filing(db, user, issue_id, destination=body.destination, live=body.live,
+                                                      confirmed=body.confirmed))
+
+
+@router.post("/publication/artifacts/{artifact_id}/reimport")
+async def publication_reimport(artifact_id: str, file: UploadFile = File(...), db: AsyncSession = Depends(get_db),
+                               user: User = Depends(get_current_user)) -> dict:
+    from . import publication_store
+    return await _run(publication_store.reimport_docx(db, user, artifact_id, await _read(file)))
+
+
+@router.get("/publication/artifacts/{artifact_id}/download")
+async def publication_download(artifact_id: str, db: AsyncSession = Depends(get_db),
+                               user: User = Depends(get_current_user)) -> Response:
+    from . import publication_store
+    filename, media_type, content = await _run(publication_store.download(db, user, artifact_id))
+    return Response(content=content, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
 @router.get("/catalogue")
 async def catalogue(user: User = Depends(get_current_user)) -> dict:
     """Statement lines, correction types and supporting-record kinds for the screen's choices."""

@@ -233,7 +233,8 @@ def test_the_migration_creates_exactly_the_model_tables_and_columns():
     versions = Path(__file__).resolve().parents[1] / "alembic" / "versions"
     migrations = []
     for name in ("b7u8v9w0x1y2_financial_statements_intake.py", "c8v9w0x1y2z3_financial_statements_resolutions.py",
-                 "d9w0x1y2z3a4_financial_statements_packages.py", "e0x1y2z3a4b5_financial_statements_assurance.py"):
+                 "d9w0x1y2z3a4_financial_statements_packages.py", "e0x1y2z3a4b5_financial_statements_assurance.py",
+                 "f1y2z3a4b5c6_financial_statements_publication.py"):
         spec = importlib.util.spec_from_file_location(name[:-3], versions / name)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -255,3 +256,4 @@ def test_the_migration_creates_exactly_the_model_tables_and_columns():
     assert migrations[0].down_revision == "a6t7u8v9w0x1" and migrations[1].down_revision == migrations[0].revision
     assert migrations[2].down_revision == migrations[1].revision
     assert migrations[3].down_revision == migrations[2].revision
+    assert migrations[4].down_revision == migrations[3].revision

@@ -227,6 +227,52 @@ class FsEvidenceItem(Base):
     withdrawn_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
 
+class FsPublicationArtifact(Base):
+    """A rendered (or externally edited, quarantined) publication file with
+    its model hash, byte hash and validation report (Document 06)."""
+    __tablename__ = "fs_publication_artifacts"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    package_id: Mapped[str] = mapped_column(ForeignKey("fs_report_packages.id"), nullable=False, index=True)
+    package_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="RENDER")
+    audience: Mapped[str] = mapped_column(String, nullable=False)
+    channel: Mapped[str] = mapped_column(String, nullable=False)
+    scale: Mapped[str] = mapped_column(String, nullable=False, default="units")
+    state: Mapped[str] = mapped_column(String, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    model: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    model_hash: Mapped[str] = mapped_column(String, nullable=False)
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    media_type: Mapped[str] = mapped_column(String, nullable=False)
+    sha256: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    validation: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    source_artifact_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class FsPublicationIssue(Base):
+    """An issued publication: the artifacts, release id and filing attempts (never a receipt we did not get)."""
+    __tablename__ = "fs_publication_issues"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    package_id: Mapped[str] = mapped_column(ForeignKey("fs_report_packages.id"), nullable=False, index=True)
+    package_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    audience: Mapped[str] = mapped_column(String, nullable=False)
+    state: Mapped[str] = mapped_column(String, nullable=False)
+    release_id: Mapped[str] = mapped_column(String, nullable=False)
+    artifacts: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    filing: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    issued_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    auth_aal: Mapped[str] = mapped_column(String, nullable=False, default="aal1")
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    superseded_by: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
 class FsEvent(Base):
     __tablename__ = "fs_events"
 
