@@ -250,6 +250,32 @@ async def export_package(package_id: str, format: str = "json", db: AsyncSession
     return Response(content=body, media_type=media, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
+class PublishIn(BaseModel):
+    note: str = ""
+
+
+@router.get("/workspace/{package_id}")
+async def workspace_overview(package_id: str, db: AsyncSession = Depends(get_db),
+                             user: User = Depends(get_current_user)) -> dict:
+    """Document 02 FR-WF-001: the one workspace view over Documents 03, 04 and 05."""
+    from . import workspace
+    return await _run(workspace.overview(db, user, package_id))
+
+
+@router.get("/workspace/{package_id}/provenance/{statement_id}/{line_id}")
+async def workspace_provenance(package_id: str, statement_id: str, line_id: str, db: AsyncSession = Depends(get_db),
+                               user: User = Depends(get_current_user)) -> dict:
+    from . import workspace
+    return await _run(workspace.provenance(db, user, package_id, statement_id, line_id))
+
+
+@router.post("/workspace/{package_id}/publish")
+async def workspace_publish(package_id: str, body: PublishIn, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_user)) -> dict:
+    from . import workspace
+    return await _run(workspace.publish(db, user, package_id, body.note))
+
+
 @router.get("/catalogue")
 async def catalogue(user: User = Depends(get_current_user)) -> dict:
     """Statement lines, correction types and supporting-record kinds for the screen's choices."""

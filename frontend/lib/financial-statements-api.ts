@@ -224,6 +224,37 @@ export const signPackage = (id: string, role: string) =>
   request<ReportPackage>(`/packages/${encodeURIComponent(id)}/sign`, { method: "POST", body: JSON.stringify({ role }) });
 export const packageReleaseCheck = (id: string) => request<PackageReleaseCheck>(`/packages/${encodeURIComponent(id)}/release-check`);
 
+// Financial Statements Workspace (Document 02, FR-WF-001).
+export type RailItem = { source: string; severity: "HARD_STOP" | "MATERIAL_REVIEW" | "INFORMATION"; code: string; message: string; rule: string; action: string; refs: string[] };
+export type WorkspaceView = {
+  package_id: string; version: number; state: string; release_status: string; banner: string;
+  counts: Record<"HARD_STOP" | "MATERIAL_REVIEW" | "INFORMATION", number>; rail: RailItem[];
+  scope: { entity: string; scope: string; report_type: string; period_start: string; period_end: string; jurisdiction: string | null;
+    resolution_id: string | null; resolution_state: string | null };
+  framework: { framework: string | null; edition: string | null; layout: string; rules: ResolutionResult["rules"];
+    citations: ResolutionResult["citations"]; rule_pack: ResolutionResult["rule_pack"] | null; assembly_ruleset: { id: string; version: string; status: string } };
+  source: { trial_balance_id: string; filename: string; version: number; sha256: string; imported_at: string | null; state: string;
+    snapshot_hash: string | null; prior_trial_balance_id: string | null };
+  tabs: { statement_id: string; title: string; status: string; requiredness: string;
+    omission: { basis: string; approved_by: string | null; resolution_revision: number | null } | null }[];
+  statements: AssembledStatement[]; notes: PackageNote[]; assertions: Assertion[];
+  review_sequence: { role: string; label: string; signed: { by: string; at: string } | null; available: boolean }[];
+  export: { draft_allowed: boolean; draft_refusal: string[]; final_allowed: boolean; final_reasons: string[]; publish_allowed: boolean; publish_reason: string };
+  answers: { question: string; answer: string }[];
+};
+export type Provenance = {
+  statement_id: string; statement_title: string; line: StatementLine; concepts: { line_id: string; label: string }[]; computation: string;
+  accounts: { account_key: string; account_name: string; balance: string; line_id: string | null; allocations: { line_id: string; amount: string }[];
+    status: string; reviewer: string | null; evidence_ref: string; basis: string; source_row: string }[];
+  journals: Journal[]; supporting: { kind: string; filename: string; total: string | null }[];
+  rule: { layout: string; edition: string | null; ruleset: string }; source_file: { filename: string; version: number; sha256: string };
+  snapshot_hash: string | null; line_checksum: string;
+};
+
+export const getWorkspace = (packageId: string) => request<WorkspaceView>(`/workspace/${encodeURIComponent(packageId)}`);
+export const getProvenance = (packageId: string, statementId: string, lineId: string) =>
+  request<Provenance>(`/workspace/${encodeURIComponent(packageId)}/provenance/${encodeURIComponent(statementId)}/${encodeURIComponent(lineId)}`);
+
 export async function downloadPackage(id: string, format: "json" | "csv") {
   const res = await fetch(`${BASE}/packages/${encodeURIComponent(id)}/export?format=${format}`, {
     headers: { Authorization: `Bearer ${getAuthToken()}`, ...impersonationHeaders() },

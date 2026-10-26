@@ -8,6 +8,7 @@ import {
 } from "@/components/workflow-ui/kit";
 import { StandardsPanel } from "@/components/financial-statements/StandardsPanel";
 import { StatementsPanel } from "@/components/financial-statements/StatementsPanel";
+import { WorkspacePanel } from "@/components/financial-statements/WorkspacePanel";
 import {
   addSupporting, approveSnapshot, decideMapping, downloadOriginal, getCatalogue, getLineage, getTrialBalance,
   listTrialBalances, proposeJournal, reviewJournal, uploadTrialBalance,
@@ -156,7 +157,7 @@ export default function FinancialStatementsPage() {
   const [supportFile, setSupportFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState<"intake" | "standards" | "statements">("intake");
+  const [tab, setTab] = useState<"intake" | "standards" | "statements" | "workspace">("intake");
 
   const refreshList = useCallback(() => listTrialBalances().then(setList).catch((e: Error) => setError(e.message)), []);
   useEffect(() => { void refreshList(); getCatalogue().then(setCatalogue).catch(() => setCatalogue(null)); }, [refreshList]);
@@ -191,8 +192,8 @@ export default function FinancialStatementsPage() {
       note="Kriton proposes; the deterministic engine checks; an independent reviewer approves. Nothing is posted to any ledger.">
       <SubTabs label="Financial statements step" active={tab} onChange={setTab}
         tabs={[{ key: "intake", label: "Trial balance intake" }, { key: "standards", label: "Framework & rules" },
-          { key: "statements", label: "Statements" }]} />
-      {tab === "statements" ? <StatementsPanel /> : tab === "standards" ? <StandardsPanel trialBalanceId={selected ?? undefined} /> : <>
+          { key: "statements", label: "Statements" }, { key: "workspace", label: "Workspace" }]} />
+      {tab === "workspace" ? <WorkspacePanel onOpen={setTab} /> : tab === "statements" ? <StatementsPanel /> : tab === "standards" ? <StandardsPanel trialBalanceId={selected ?? undefined} /> : <>
       {error && <ErrorNote message={error} />}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
         <div className="space-y-4">

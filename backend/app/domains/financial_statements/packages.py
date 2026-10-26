@@ -319,6 +319,10 @@ async def export(db: AsyncSession, user, package_id: str, fmt: str) -> tuple[str
     row = await _get(db, user, package_id)
     if await _stale(db, user, row):
         raise Refused("The package is out of date; rebuild it before exporting.")
+    from .workspace import misleading_reasons
+    misleading = misleading_reasons(row.result or {})
+    if misleading:
+        raise Refused("Even a watermarked draft would be materially misleading: " + " ".join(misleading))
     check = await release_check(db, user, package_id)
     try:
         media, body = assembly.export(row.result, fmt, package_id=row.id, version=row.version,
