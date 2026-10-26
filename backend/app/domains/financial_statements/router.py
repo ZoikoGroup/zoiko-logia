@@ -276,6 +276,146 @@ async def workspace_publish(package_id: str, body: PublishIn, db: AsyncSession =
     return await _run(workspace.publish(db, user, package_id, body.note))
 
 
+class DecisionIn(BaseModel):
+    finding_key: str
+    decision: str
+    rationale: str = ""
+    citation: str = ""
+    alternatives: list[str] = []
+    evidence_id: str | None = None
+    expires: str = ""
+    owner: str = ""
+    due: str = ""
+
+
+class MaterialityIn(BaseModel):
+    overall: str
+    performance: str
+    trivial: str
+    basis: str
+    qualitative: str = ""
+
+
+class MisstatementIn(BaseModel):
+    amount: str
+    statement: str = ""
+    description: str
+
+
+class AttestIn(BaseModel):
+    role: str
+    scope: str
+    approval_evidence_id: str | None = None
+
+
+class ClaimIn(BaseModel):
+    claim: str
+
+
+class OverrideIn(BaseModel):
+    gate_id: str
+    reason: str = ""
+
+
+@router.post("/assurance/packages/{package_id}/run")
+async def assurance_run(package_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    """Document 07: run the quality gates over the current package version."""
+    from . import assurance_store
+    return await _run(assurance_store.run(db, user, package_id))
+
+
+@router.get("/assurance/packages/{package_id}")
+async def assurance_latest(package_id: str, db: AsyncSession = Depends(get_db),
+                           user: User = Depends(get_current_user)) -> dict | None:
+    from . import assurance_store
+    return await _run(assurance_store.latest_for(db, user, package_id))
+
+
+@router.post("/assurance/packages/{package_id}/materiality")
+async def assurance_materiality(package_id: str, body: MaterialityIn, db: AsyncSession = Depends(get_db),
+                                user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.set_materiality(db, user, package_id, overall=body.overall, performance=body.performance,
+                                                      trivial=body.trivial, basis=body.basis, qualitative=body.qualitative))
+
+
+@router.post("/assurance/packages/{package_id}/misstatements")
+async def assurance_misstatement(package_id: str, body: MisstatementIn, db: AsyncSession = Depends(get_db),
+                                 user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.record_misstatement(db, user, package_id, amount=body.amount, statement=body.statement,
+                                                          description=body.description))
+
+
+@router.post("/assurance/packages/{package_id}/evidence")
+async def assurance_evidence(package_id: str, file: UploadFile = File(...), domains: str = Form(...),
+                             description: str = Form(""), db: AsyncSession = Depends(get_db),
+                             user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    content = await _read(file)
+    return await _run(assurance_store.add_evidence(db, user, package_id, filename=file.filename or "evidence", content=content,
+                                                   description=description,
+                                                   domains=[d.strip() for d in domains.split(",") if d.strip()]))
+
+
+@router.post("/assurance/evidence/{evidence_id}/withdraw")
+async def assurance_withdraw_evidence(evidence_id: str, body: ReasonIn, db: AsyncSession = Depends(get_db),
+                                      user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.withdraw_evidence(db, user, evidence_id, body.reason))
+
+
+@router.get("/assurance/runs/{run_id}")
+async def assurance_get(run_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.get(db, user, run_id))
+
+
+@router.post("/assurance/runs/{run_id}/decisions")
+async def assurance_decide(run_id: str, body: DecisionIn, db: AsyncSession = Depends(get_db),
+                           user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.decide(db, user, run_id, finding_key=body.finding_key, decision=body.decision,
+                                             rationale=body.rationale, citation=body.citation, alternatives=body.alternatives,
+                                             evidence_id=body.evidence_id, expires=body.expires, owner=body.owner, due=body.due))
+
+
+@router.post("/assurance/runs/{run_id}/attest")
+async def assurance_attest(run_id: str, body: AttestIn, db: AsyncSession = Depends(get_db),
+                           user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.attest(db, user, run_id, role=body.role, scope=body.scope,
+                                             approval_evidence_id=body.approval_evidence_id))
+
+
+@router.post("/assurance/runs/{run_id}/release")
+async def assurance_release(run_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.release(db, user, run_id))
+
+
+@router.post("/assurance/runs/{run_id}/claims")
+async def assurance_claim(run_id: str, body: ClaimIn, db: AsyncSession = Depends(get_db),
+                          user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.request_claim(db, user, run_id, body.claim))
+
+
+@router.post("/assurance/runs/{run_id}/override")
+async def assurance_override(run_id: str, body: OverrideIn, db: AsyncSession = Depends(get_db),
+                             user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.override(db, user, run_id, body.gate_id, body.reason))
+
+
+@router.get("/assurance/runs/{run_id}/summary")
+async def assurance_summary(run_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> Response:
+    from . import assurance_store
+    text = await _run(assurance_store.summary(db, user, run_id))
+    return Response(content=text, media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="assurance-summary.txt"'})
+
+
 @router.get("/catalogue")
 async def catalogue(user: User = Depends(get_current_user)) -> dict:
     """Statement lines, correction types and supporting-record kinds for the screen's choices."""

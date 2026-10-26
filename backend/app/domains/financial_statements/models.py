@@ -171,6 +171,62 @@ class FsReportPackage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class FsAssuranceCase(Base):
+    """Document 07: per trial balance, the approved materiality, the finding
+    register, the hash-chained decision ledger and recorded misstatements."""
+    __tablename__ = "fs_assurance_cases"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    trial_balance_id: Mapped[str] = mapped_column(ForeignKey("fs_trial_balances.id"), nullable=False, index=True)
+    materiality: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    register: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    ledger: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    misstatements: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class FsAssuranceRun(Base):
+    """One assurance run over an exact package version and input hash;
+    attestations and the release certificate bind to it."""
+    __tablename__ = "fs_assurance_runs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("fs_assurance_cases.id"), nullable=False, index=True)
+    package_id: Mapped[str] = mapped_column(ForeignKey("fs_report_packages.id"), nullable=False)
+    package_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_hash: Mapped[str] = mapped_column(String, nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    attestations: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    certificate: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    superseded_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class FsEvidenceItem(Base):
+    """An evidence document linked to risk domains; withdrawn, never deleted."""
+    __tablename__ = "fs_evidence_items"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("fs_assurance_cases.id"), nullable=False, index=True)
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    sha256: Mapped[str] = mapped_column(String, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    media_type: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    domains: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    instruction_flag: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    uploaded_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    withdrawn_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    withdrawn_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+
 class FsEvent(Base):
     __tablename__ = "fs_events"
 

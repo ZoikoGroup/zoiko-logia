@@ -255,6 +255,73 @@ export const getWorkspace = (packageId: string) => request<WorkspaceView>(`/work
 export const getProvenance = (packageId: string, statementId: string, lineId: string) =>
   request<Provenance>(`/workspace/${encodeURIComponent(packageId)}/provenance/${encodeURIComponent(statementId)}/${encodeURIComponent(lineId)}`);
 
+// Assurance, professional review and release certification (Document 07).
+export type AssuranceFinding = {
+  key: string; source: string; code: string; severity: "BLOCKER" | "CRITICAL" | "MATERIAL" | "REVIEW" | "ADVISORY";
+  message: string; rule: string; assertion: string; risk_domain: string | null; amount: string | null; action: string;
+  state: string; decisions: string[]; waiver: { by: string; justification: string; expires: string } | null;
+};
+export type QualityGate = { gate_id: string; title: string; scope: string; status: string; method: string; source: string };
+export type EvidenceItem = {
+  id: string; filename: string; sha256: string; size_bytes: number; description: string; domains: string[];
+  instruction_flag: boolean; uploaded_by: string; created_at: string | null; withdrawn_at: string | null; withdrawn_reason: string;
+};
+export type Attestation = { by: string; role_code: string; scope: string; at: string; auth_aal: string; approval_evidence_id: string | null };
+export type AssuranceView = {
+  id: string; package_id: string; package_version: number; status: string; input_hash: string; snapshot_hash: string | null;
+  standards_profile_hash: string | null; ruleset: { id: string; version: string; status: string };
+  header: { tenant_id: string; entity: string; period_start: string; period_end: string; framework: string | null; edition: string | null;
+    scope: string; statements: string[] };
+  result: { gates: QualityGate[]; evidence_scope: string;
+    risk_domains: { domain: string; title: string; applies: boolean; covered: boolean; evidence_needed: string; evidence_ids: string[] }[];
+    misstatements: { gross: string; net: string; overall_materiality: string | null; items: { amount: string; statement: string; description: string }[] };
+    negative: Record<string, string[]> };
+  findings: AssuranceFinding[]; open: AssuranceFinding[]; closed_findings: { key: string; state: string }[];
+  attestations: Record<string, Attestation>;
+  certificate: { release_id: string; kind: string; wording: string; permitted_claims: string[]; prohibited_claims: string[];
+    issued_at: string; expires_at: string | null; publication_route: string } | null;
+  claims: { claim: string; allowed: boolean; text: string | null; missing: string[] }[];
+  control_statement: Record<string, unknown>; materiality: Record<string, string>; evidence: EvidenceItem[];
+  ledger: { type: string; actor_id: string; at: string; hash: string; decision?: string; finding_key?: string }[];
+  preparer: string; superseded_by: string | null;
+};
+
+const qa = (path: string) => `/assurance${path}`;
+export const runAssurance = (packageId: string) => request<AssuranceView>(qa(`/packages/${encodeURIComponent(packageId)}/run`), { method: "POST" });
+export const getLatestAssurance = (packageId: string) => request<AssuranceView | null>(qa(`/packages/${encodeURIComponent(packageId)}`));
+export const decideFinding = (runId: string, body: { finding_key: string; decision: string; rationale?: string; citation?: string;
+  alternatives?: string[]; evidence_id?: string | null; expires?: string; owner?: string; due?: string }) =>
+  request<AssuranceView>(qa(`/runs/${encodeURIComponent(runId)}/decisions`), { method: "POST", body: JSON.stringify(body) });
+export const setMateriality = (packageId: string, body: { overall: string; performance: string; trivial: string; basis: string; qualitative: string }) =>
+  request<AssuranceView>(qa(`/packages/${encodeURIComponent(packageId)}/materiality`), { method: "POST", body: JSON.stringify(body) });
+export const recordMisstatement = (packageId: string, body: { amount: string; statement: string; description: string }) =>
+  request<AssuranceView>(qa(`/packages/${encodeURIComponent(packageId)}/misstatements`), { method: "POST", body: JSON.stringify(body) });
+export function uploadEvidence(packageId: string, file: File, domains: string[], description: string) {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("domains", domains.join(","));
+  form.append("description", description);
+  return request<AssuranceView>(qa(`/packages/${encodeURIComponent(packageId)}/evidence`), { method: "POST", body: form });
+}
+export const withdrawEvidence = (evidenceId: string, reason: string) =>
+  request<AssuranceView>(qa(`/evidence/${encodeURIComponent(evidenceId)}/withdraw`), { method: "POST", body: JSON.stringify({ reason }) });
+export const attestRun = (runId: string, body: { role: string; scope: string; approval_evidence_id?: string | null }) =>
+  request<AssuranceView>(qa(`/runs/${encodeURIComponent(runId)}/attest`), { method: "POST", body: JSON.stringify(body) });
+export const releaseRun = (runId: string) => request<AssuranceView>(qa(`/runs/${encodeURIComponent(runId)}/release`), { method: "POST" });
+
+export async function downloadAssuranceSummary(runId: string) {
+  const res = await fetch(`${BASE}/assurance/runs/${encodeURIComponent(runId)}/summary`, {
+    headers: { Authorization: `Bearer ${getAuthToken()}`, ...impersonationHeaders() },
+  });
+  if (!res.ok) throw new Error(`Download failed (${res.status})`);
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "assurance-summary.txt";
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 export async function downloadPackage(id: string, format: "json" | "csv") {
   const res = await fetch(`${BASE}/packages/${encodeURIComponent(id)}/export?format=${format}`, {
     headers: { Authorization: `Bearer ${getAuthToken()}`, ...impersonationHeaders() },
