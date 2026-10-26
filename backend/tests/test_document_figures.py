@@ -430,7 +430,10 @@ def test_contra_balances_and_common_accounts_still_give_the_statements():
             "1000\tLand and buildings\t400\t", "1090\tAccumulated depreciation\t\t100", "1200\tTrade receivables\t200\t",
             "1210\tAllowance for doubtful debts\t\t20", "3000\tShare capital\t\t300", "3200\tDividends paid\t50\t",
             "4000\tRevenue\t\t1000", "5000\tCost of sales\t600\t", "6010\tEmployer NI and pension\t40\t",
-            "6600\tProfessional fees\t30\t", "2500\tBank loan (repayable 2030)\t\t100", "\tTotal\t1320\t1520"]
+            "6600\tProfessional fees\t30\t", "2500\tBank loan (repayable 2030)\t\t100",
+            # Balances the sheet (1,320 + 200 = 1,520): an unbalanced trial
+            # balance gives no statements (Document 01 FS-009).
+            "9999\tSuspense\t200\t", "\tTotal\t1520\t1520"]
     figures = verified_document_figures([WebSource(title="tb.csv — Sheet1", url="", snippet="\n".join(rows), source_id="d1")])
     assert "Accounts not classified" not in figures
     assert "Operating expenses = 70 (Employer NI and pension 40, Professional fees 30)" in figures
