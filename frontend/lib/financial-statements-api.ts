@@ -166,6 +166,80 @@ export const revokeResolution = (id: string, reason: string) =>
   request<StoredResolution>(`/resolutions/${encodeURIComponent(id)}/revoke`, { method: "POST", body: JSON.stringify({ reason }) });
 export const releaseCheck = (id: string) => request<ReleaseCheck>(`/resolutions/${encodeURIComponent(id)}/release-check`);
 
+// Statement assembly, reconciliation and disclosures (Document 05).
+export type PackageFinding = {
+  code: string; severity: "P0" | "P1" | "P2" | "P3"; message: string; rule: string; owner: string; action: string;
+  refs: string[]; release_only: boolean; disposition: { by: string; reason: string; at: string } | null;
+};
+export type StatementLine = {
+  line_id: string; label: string; kind: string; amount: string | null; prior: string | null; concepts: string[];
+  share_capital?: string | null; retained_earnings?: string | null;
+};
+export type AssembledStatement = {
+  statement_id: string; title: string; requiredness: string; status: string; layout?: string; condensed?: boolean;
+  note?: string; lines: StatementLine[]; data_required?: string[]; starting_point?: string; policy?: string; components?: string[];
+};
+export type Assertion = {
+  assertion_id: string; title: string; formula: string; operands: Record<string, string | null>; residual: string | null;
+  status: string; severity: string; detail: string; candidates: string[];
+};
+export type PackageNote = {
+  requirement_id: string; title: string; rule: string; applicability: string; evidence_needed: string; severity: string;
+  state: string; text: string; amount: string | null; evidence_ref: string; submitted_by: string | null;
+  approved_by: string | null; issues: string[];
+};
+export type PackageResult = {
+  state: string; halted: string | null;
+  profile: { family: string; framework: string | null; edition: string | null; resolution_id: string | null;
+    resolution_revision: number | null; resolution_state: string | null; entity: string; period_start: string;
+    period_end: string; scope: string; report_type: string; units: string; ruleset: { id: string; version: string; status: string } };
+  manifest: { statement: string; requirement: string; note: string }[]; statements: AssembledStatement[];
+  assertions: Assertion[]; notes: PackageNote[]; findings: PackageFinding[]; counts: Record<string, number>;
+  headline: Record<string, string | null>; ready_for_signoff: boolean; release_reasons: string[]; watermark: string;
+  cash_flow_data_fields: Record<string, string>; fingerprint: string; schedules: Record<string, string>;
+};
+export type ReportPackage = {
+  id: string; version: number; state: string; stored_state: string; stale_reasons: string[]; trial_balance_id: string;
+  prior_trial_balance_id: string | null; resolution_id: string | null; fingerprint: string; result: PackageResult;
+  signoffs: Record<string, { by: string; at: string }>; history: { action: string; actor_id: string; at: string; version: number }[];
+  created_by: string; superseded_by: string | null; created_at: string | null;
+};
+export type PackageSummary = {
+  id: string; version: number; state: string; trial_balance_id: string; resolution_id: string | null; entity: string;
+  counts: Record<string, number>; created_at: string | null;
+};
+export type PackageReleaseCheck = { package_id: string; version: number; statutory_release_allowed: boolean; draft_allowed: boolean; reasons: string[] };
+
+export const buildPackage = (body: { trial_balance_id: string; resolution_id?: string | null; prior_trial_balance_id?: string | null; schedules: Record<string, string> }) =>
+  request<ReportPackage>("/packages", { method: "POST", body: JSON.stringify(body) });
+export const listPackages = () => request<PackageSummary[]>("/packages");
+export const getPackage = (id: string) => request<ReportPackage>(`/packages/${encodeURIComponent(id)}`);
+export const submitDisclosure = (id: string, body: { requirement_id: string; decision: string; text: string; evidence_ref: string; rationale: string }) =>
+  request<ReportPackage>(`/packages/${encodeURIComponent(id)}/disclosures`, { method: "POST", body: JSON.stringify(body) });
+export const approveDisclosure = (id: string, requirementId: string) =>
+  request<ReportPackage>(`/packages/${encodeURIComponent(id)}/disclosures/${encodeURIComponent(requirementId)}/approve`, { method: "POST" });
+export const disposeFinding = (id: string, code: string, reason: string) =>
+  request<ReportPackage>(`/packages/${encodeURIComponent(id)}/dispositions`, { method: "POST", body: JSON.stringify({ code, reason }) });
+export const signPackage = (id: string, role: string) =>
+  request<ReportPackage>(`/packages/${encodeURIComponent(id)}/sign`, { method: "POST", body: JSON.stringify({ role }) });
+export const packageReleaseCheck = (id: string) => request<PackageReleaseCheck>(`/packages/${encodeURIComponent(id)}/release-check`);
+
+export async function downloadPackage(id: string, format: "json" | "csv") {
+  const res = await fetch(`${BASE}/packages/${encodeURIComponent(id)}/export?format=${format}`, {
+    headers: { Authorization: `Bearer ${getAuthToken()}`, ...impersonationHeaders() },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(typeof body?.detail === "string" ? body.detail : `Export failed (${res.status})`);
+  }
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `report-package.${format}`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 export async function downloadOriginal(id: string, filename: string) {
   const res = await fetch(`${BASE}/trial-balances/${encodeURIComponent(id)}/original`, {
     headers: { Authorization: `Bearer ${getAuthToken()}`, ...impersonationHeaders() },

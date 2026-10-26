@@ -148,6 +148,29 @@ class FsResolution(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class FsReportPackage(Base):
+    """An assembled report package version (Document 05): its inputs, their
+    fingerprint, the result, sign-offs and history. An input change after a
+    sign-off makes a new version; earlier versions are kept."""
+    __tablename__ = "fs_report_packages"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    trial_balance_id: Mapped[str] = mapped_column(ForeignKey("fs_trial_balances.id"), nullable=False, index=True)
+    prior_trial_balance_id: Mapped[str | None] = mapped_column(ForeignKey("fs_trial_balances.id"), nullable=True)
+    resolution_id: Mapped[str | None] = mapped_column(ForeignKey("fs_resolutions.id"), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    inputs: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    state: Mapped[str] = mapped_column(String, nullable=False)
+    signoffs: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    history: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    superseded_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class FsEvent(Base):
     __tablename__ = "fs_events"
 

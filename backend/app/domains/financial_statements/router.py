@@ -161,6 +161,95 @@ async def resolution_release_check(resolution_id: str, db: AsyncSession = Depend
     return await _run(resolutions.release_check(db, user, resolution_id))
 
 
+class PackageIn(BaseModel):
+    """Statement assembly inputs (Document 05)."""
+    trial_balance_id: str
+    resolution_id: str | None = None
+    prior_trial_balance_id: str | None = None
+    schedules: dict = {}
+
+
+class DisclosureIn(BaseModel):
+    requirement_id: str
+    decision: str = Field(pattern="^(include|not_applicable|exempt)$")
+    text: str = ""
+    evidence_ref: str = ""
+    rationale: str = ""
+
+
+class DispositionIn(BaseModel):
+    code: str
+    reason: str
+
+
+class SignIn(BaseModel):
+    role: str
+
+
+@router.post("/packages")
+async def build_package(body: PackageIn, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    from . import packages
+    return await _run(packages.build(db, user, trial_balance_id=body.trial_balance_id, resolution_id=body.resolution_id,
+                                     prior_trial_balance_id=body.prior_trial_balance_id, schedules=body.schedules))
+
+
+@router.get("/packages")
+async def list_packages(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict]:
+    from . import packages
+    return await packages.list_for(db, user)
+
+
+@router.get("/packages/{package_id}")
+async def get_package(package_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    from . import packages
+    return await _run(packages.get(db, user, package_id))
+
+
+@router.post("/packages/{package_id}/disclosures")
+async def submit_package_disclosure(package_id: str, body: DisclosureIn, db: AsyncSession = Depends(get_db),
+                                    user: User = Depends(get_current_user)) -> dict:
+    from . import packages
+    return await _run(packages.submit_disclosure(db, user, package_id, requirement_id=body.requirement_id,
+                                                 decision=body.decision, text=body.text, evidence_ref=body.evidence_ref,
+                                                 rationale=body.rationale))
+
+
+@router.post("/packages/{package_id}/disclosures/{requirement_id}/approve")
+async def approve_package_disclosure(package_id: str, requirement_id: str, db: AsyncSession = Depends(get_db),
+                                     user: User = Depends(get_current_user)) -> dict:
+    from . import packages
+    return await _run(packages.approve_disclosure(db, user, package_id, requirement_id))
+
+
+@router.post("/packages/{package_id}/dispositions")
+async def dispose_package_finding(package_id: str, body: DispositionIn, db: AsyncSession = Depends(get_db),
+                                  user: User = Depends(get_current_user)) -> dict:
+    from . import packages
+    return await _run(packages.dispose(db, user, package_id, code=body.code, reason=body.reason))
+
+
+@router.post("/packages/{package_id}/sign")
+async def sign_package(package_id: str, body: SignIn, db: AsyncSession = Depends(get_db),
+                       user: User = Depends(get_current_user)) -> dict:
+    from . import packages
+    return await _run(packages.sign(db, user, package_id, body.role))
+
+
+@router.get("/packages/{package_id}/release-check")
+async def package_release_check(package_id: str, db: AsyncSession = Depends(get_db),
+                                user: User = Depends(get_current_user)) -> dict:
+    from . import packages
+    return await _run(packages.release_check(db, user, package_id))
+
+
+@router.get("/packages/{package_id}/export")
+async def export_package(package_id: str, format: str = "json", db: AsyncSession = Depends(get_db),
+                         user: User = Depends(get_current_user)) -> Response:
+    from . import packages
+    media, body, filename = await _run(packages.export(db, user, package_id, format))
+    return Response(content=body, media_type=media, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
 @router.get("/catalogue")
 async def catalogue(user: User = Depends(get_current_user)) -> dict:
     """Statement lines, correction types and supporting-record kinds for the screen's choices."""
