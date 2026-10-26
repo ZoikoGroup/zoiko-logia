@@ -133,7 +133,8 @@ def propose(line: TBLine) -> MappingProposal:
 
 
 def propose_all(tb: NormalizedTB) -> list[MappingProposal]:
-    return [propose(line) for line in tb.lines]
+    """One proposal per account (a ledger's entries are summed per account)."""
+    return [propose(line) for line in tb.account_lines()]
 
 
 class MappingError(ValueError):

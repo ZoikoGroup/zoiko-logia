@@ -19,6 +19,20 @@ from .normalize import ZERO
 
 RECLASSIFICATION, ADJUSTMENT = "RECLASSIFICATION", "ADJUSTMENT"
 
+# SD-035 / SD-041: what a correction is decides how it is accounted for
+# (FRS 102 Section 10 / IAS 8). An estimate change is never a restatement by
+# default; a prior-period error or policy change needs restated comparatives.
+CORRECTION_TYPES: dict[str, str] = {
+    "PRESENTATION": "Reclassification between lines only; no change to profit or net assets.",
+    "CURRENT_PERIOD": "Correction of the current period; recognised in this period.",
+    "ESTIMATE_CHANGE": "Change in an accounting estimate; applied prospectively, no restatement.",
+    "PRIOR_PERIOD_ERROR": "Material prior-period error; corrected retrospectively with restated comparatives and "
+                          "disclosure (FRS 102 Section 10 / IAS 8).",
+    "POLICY_CHANGE": "Change in accounting policy; applied retrospectively unless a transition rule says otherwise, "
+                     "with disclosure.",
+}
+RESTATING = frozenset({"PRIOR_PERIOD_ERROR", "POLICY_CHANGE"})
+
 
 class JournalError(ValueError):
     pass
@@ -42,18 +56,30 @@ class JournalProposal:
     review_status: str = "PENDING_REVIEW"
     posting_status: str = "NOT_POSTED"          # never changed here (SD-043, SD-044)
     reviewer: str | None = None
+    correction_type: str = "CURRENT_PERIOD"
+
+    @property
+    def requires_restatement(self) -> bool:
+        return self.correction_type in RESTATING
 
     def to_dict(self) -> dict:
         return {"journal_id": self.journal_id, "kind": self.kind, "reason": self.reason,
+                "correction_type": self.correction_type, "treatment": CORRECTION_TYPES[self.correction_type],
+                "requires_restatement": self.requires_restatement,
                 "lines": [{"line_id": l.line_id, "debit": str(l.debit), "credit": str(l.credit)} for l in self.lines],
                 "evidence_refs": list(self.evidence_refs), "created_by": self.created_by,
                 "review_status": self.review_status, "posting_status": self.posting_status, "reviewer": self.reviewer}
 
 
 def propose_journal(*, kind: str, reason: str, lines: list[tuple[str, Decimal, Decimal]], created_by: str,
-                    evidence_refs: list[str] | None = None) -> JournalProposal:
+                    evidence_refs: list[str] | None = None, correction_type: str | None = None) -> JournalProposal:
     if kind not in (RECLASSIFICATION, ADJUSTMENT):
         raise JournalError("A journal is a reclassification or an adjustment.")
+    correction_type = correction_type or ("PRESENTATION" if kind == RECLASSIFICATION else "CURRENT_PERIOD")
+    if correction_type not in CORRECTION_TYPES:
+        raise JournalError(f"Unknown correction type; use one of {', '.join(CORRECTION_TYPES)}.")
+    if kind == RECLASSIFICATION and correction_type != "PRESENTATION":
+        raise JournalError("A reclassification is a presentation change only.")
     if not reason.strip():
         raise JournalError("A journal needs a reason.")
     parsed = tuple(JournalLine(line_id, Decimal(dr), Decimal(cr)) for line_id, dr, cr in lines)
@@ -64,9 +90,17 @@ def propose_journal(*, kind: str, reason: str, lines: list[tuple[str, Decimal, D
     debits, credits = sum((l.debit for l in parsed), ZERO), sum((l.credit for l in parsed), ZERO)
     if debits != credits:
         raise JournalError(f"The journal does not balance: debits {debits}, credits {credits}.")
-    identity = "|".join([kind, reason, created_by, *(f"{l.line_id}:{l.debit}:{l.credit}" for l in parsed)])
+    if kind == RECLASSIFICATION:
+        delta: dict[str, Decimal] = defaultdict(lambda: ZERO)
+        for l in parsed:
+            delta[l.line_id] += l.debit - l.credit
+        if profit_before_tax(delta) != 0:
+            raise JournalError("A reclassification cannot change profit before tax; this is an adjustment.")
+    identity = "|".join([kind, correction_type, reason, created_by,
+                         *(f"{l.line_id}:{l.debit}:{l.credit}" for l in parsed)])
     return JournalProposal(journal_id="jnl-" + hashlib.sha256(identity.encode()).hexdigest()[:16], kind=kind,
-                           reason=reason, lines=parsed, evidence_refs=tuple(evidence_refs or ()), created_by=created_by)
+                           reason=reason, lines=parsed, evidence_refs=tuple(evidence_refs or ()), created_by=created_by,
+                           correction_type=correction_type)
 
 
 def review_journal(journal: JournalProposal, *, reviewer: str, approve: bool) -> JournalProposal:

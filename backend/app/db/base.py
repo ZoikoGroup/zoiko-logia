@@ -21,3 +21,4 @@ from app.domains.operations import models as operations_models  # noqa: E402,F40
 from app.domains.admin_governance import models as admin_governance_models  # noqa: E402,F401
 from app.domains.review_console import models as review_console_models  # noqa: E402,F401
 from app.domains.billing import models as billing_models  # noqa: E402,F401
+from app.domains.financial_statements import models as financial_statements_models  # noqa: E402,F401

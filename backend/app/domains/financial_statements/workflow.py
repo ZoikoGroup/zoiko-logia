@@ -45,11 +45,12 @@ def state_of(findings: list[Finding], mappings: list[MappingProposal], journals:
     return VALIDATED_DRAFT
 
 
-def content_hash(source_sha256: str, tb: NormalizedTB, mappings: list[MappingProposal],
+def content_hash(source_sha256: str, tb: NormalizedTB | list[dict], mappings: list[MappingProposal],
                  journals: list[JournalProposal]) -> str:
+    """tb is the normalised trial balance, or its stored line dicts."""
     payload = {
         "source": source_sha256,
-        "lines": [l.to_dict() for l in tb.lines],
+        "lines": tb if isinstance(tb, list) else [l.to_dict() for l in tb.lines],
         "mappings": [m.to_dict() for m in mappings],
         "journals": [j.to_dict() for j in journals if j.review_status == "APPROVED"],
     }
@@ -70,7 +71,7 @@ class ApprovedLedgerSnapshot:
         return dict(self.__dict__)
 
 
-def approve_snapshot(*, source_sha256: str, tb: NormalizedTB, findings: list[Finding],
+def approve_snapshot(*, source_sha256: str, tb: NormalizedTB | list[dict], findings: list[Finding],
                      mappings: list[MappingProposal], journals: list[JournalProposal],
                      preparer: str, approver: str) -> ApprovedLedgerSnapshot:
     if approver == preparer:
@@ -88,7 +89,7 @@ def approve_snapshot(*, source_sha256: str, tb: NormalizedTB, findings: list[Fin
                                   approved_at=datetime.now(timezone.utc).isoformat(), line_totals=totals)
 
 
-def still_valid(snapshot: ApprovedLedgerSnapshot, *, source_sha256: str, tb: NormalizedTB,
+def still_valid(snapshot: ApprovedLedgerSnapshot, *, source_sha256: str, tb: NormalizedTB | list[dict],
                 mappings: list[MappingProposal], journals: list[JournalProposal]) -> bool:
     """False once the source, a line, a mapping or a journal changes (SD-010)."""
     return snapshot.content_hash == content_hash(source_sha256, tb, mappings, journals)

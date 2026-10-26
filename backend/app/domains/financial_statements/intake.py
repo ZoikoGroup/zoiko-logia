@@ -153,9 +153,18 @@ def _parse_xlsx(filename: str, content: bytes, uploaded_by: str) -> ParsedSource
     return parsed
 
 
+# Malware screening hook (Document 04 §15): a callable returning a reason to
+# reject, or None. Unset, the macro, external-link and format controls above
+# still apply; a deployment wires its scanning service here.
+scan_upload = None
+
+
 def receive(filename: str, content: bytes, uploaded_by: str) -> ParsedSource:
     """P0–P1: fingerprint, reject unsafe or unsupported files, read every cell."""
     name = (filename or "").lower()
+    if scan_upload is not None and (reason := scan_upload(content)):
+        return _rejected(filename, content, uploaded_by, "MALWARE_SUSPECTED", f"The file was rejected: {reason}.",
+                         "SD-011")
     if len(content) > MAX_BYTES:
         return _rejected(filename, content, uploaded_by, "FILE_TOO_LARGE", "The file is larger than 20 MB.", "SD-012")
     if not content:
