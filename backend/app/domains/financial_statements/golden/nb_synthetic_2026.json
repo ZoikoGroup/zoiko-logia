@@ -1,0 +1,60 @@
+{
+  "id": "NB-SYNTH-2026",
+  "label": "SYNTHETIC SEED — reconstructed from the six Northbridge benchmark screenshots; not a source workbook and not approved accounts",
+  "oracle_status": "UNREVIEWED — expected values are arithmetic reconstructions awaiting the accounting lead's two-person signature",
+  "tb_csv": "account_code,account_name,debit,credit\n4000,Revenue,,1850000.00\n5000,Cost of sales,1054500.00,\n6000,Salaries and wages,284000.00,\n6010,Employer NI and pensions,38600.00,\n6100,Rent,96000.00,\n6110,Utilities,18400.00,\n6200,Marketing,42600.00,\n6300,Depreciation,52500.00,\n6400,Insurance,12300.00,\n6410,Professional fees,15800.00,\n6420,Office expenses,9700.00,\n6430,Bad debt expense,4100.00,\n6440,Bank charges,2900.00,\n7000,Interest received,,12000.00\n7100,Interest payable,14200.00,\n8000,Corporation tax expense,62000.00,\n3200,Dividends paid,40000.00,\n1000,Property plant and equipment,640000.00,\n1200,Inventory,185000.00,\n1300,Trade receivables,296500.00,\n1400,Cash at bank,187200.00,\n2000,Trade payables,,214300.00\n2100,Corporation tax payable,,62000.00\n2200,Bank loan,,180000.00\n3000,Share capital,,100000.00\n3100,Retained earnings,,638000.00\n",
+  "facts": {
+    "entity_name": "Northbridge Trading Ltd (synthetic)",
+    "incorporation_jurisdiction": "GB-ENG",
+    "legal_form": "private_limited",
+    "period_start": "2025-04-01",
+    "period_end": "2026-03-31",
+    "framework_election": "FRS102_1A",
+    "election_signed_by": "Synthetic fixture",
+    "evidence": {"framework_election": "fixture-election"},
+    "current_year": {"turnover": "1850000", "balance_sheet_total": "1308700", "employees": 30},
+    "prior_year": {"turnover": "1700000", "balance_sheet_total": "1200000", "employees": 28}
+  },
+  "variants": {
+    "five_platform": {
+      "description": "ChatGPT / Gemini / Perplexity / Grok / DeepSeek: £12,000 below operating profit as interest; £2,900 bank charges in operating costs",
+      "mappings": {
+        "Salaries and wages": "pl.administrative_expenses",
+        "Rent": "pl.administrative_expenses",
+        "Utilities": "pl.administrative_expenses",
+        "Marketing": "pl.distribution_costs",
+        "Depreciation": "pl.administrative_expenses",
+        "Bank charges": "pl.administrative_expenses",
+        "Interest received": "pl.finance_income"
+      }
+    },
+    "kriton_001": {
+      "description": "Kriton ASIS-001: £12,000 as other operating income; £2,900 bank charges with finance costs",
+      "mappings": {
+        "Salaries and wages": "pl.administrative_expenses",
+        "Rent": "pl.administrative_expenses",
+        "Utilities": "pl.administrative_expenses",
+        "Marketing": "pl.distribution_costs",
+        "Depreciation": "pl.administrative_expenses",
+        "Bank charges": "pl.finance_costs",
+        "Interest received": "pl.other_income"
+      }
+    }
+  },
+  "expected": {
+    "tb_total": "3056300.00",
+    "five_platform": {
+      "revenue": "1850000", "cost_of_sales": "1054500", "gross_profit": "795500", "distribution_costs": "42600",
+      "administrative_expenses": "534300", "operating_profit": "218600", "finance_income": "12000",
+      "finance_costs": "14200", "profit_before_tax": "216400", "tax": "62000", "profit": "154400"
+    },
+    "kriton_001": {
+      "revenue": "1850000", "gross_profit": "795500", "operating_profit": "233500", "profit_before_tax": "216400", "profit": "154400"
+    },
+    "balance_sheet": {"current_assets": "668700", "fixed_assets": "640000", "net_assets": "852400", "total_equity": "852400"},
+    "assertions": {"X-01": "PASS", "X-02": "PASS", "X-04": "PASS", "X-05": "EXEMPT", "X-08": "FAIL"},
+    "findings_include": ["COMPARATIVES_MISSING", "DIVIDEND_UNSUBSTANTIATED", "X-08_FAILED", "BORROWINGS_MATURITY_MISSING",
+                         "STATUTORY_NOT_PERMITTED", "NOTE_MISSING_N02"],
+    "needs_evidence": ["Salaries and wages", "Rent", "Utilities", "Marketing", "Depreciation", "Bank charges", "Interest received"]
+  }
+}

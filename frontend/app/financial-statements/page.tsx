@@ -11,6 +11,7 @@ import { StatementsPanel } from "@/components/financial-statements/StatementsPan
 import { WorkspacePanel } from "@/components/financial-statements/WorkspacePanel";
 import { AssurancePanel } from "@/components/financial-statements/AssurancePanel";
 import { PublicationPanel } from "@/components/financial-statements/PublicationPanel";
+import { CommandCentrePanel } from "@/components/financial-statements/CommandCentrePanel";
 import {
   addSupporting, approveSnapshot, decideMapping, downloadOriginal, getCatalogue, getLineage, getTrialBalance,
   listTrialBalances, proposeJournal, reviewJournal, uploadTrialBalance,
@@ -159,7 +160,7 @@ export default function FinancialStatementsPage() {
   const [supportFile, setSupportFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState<"intake" | "standards" | "statements" | "workspace" | "assurance" | "publish">("intake");
+  const [tab, setTab] = useState<"intake" | "standards" | "statements" | "workspace" | "assurance" | "publish" | "command">("intake");
 
   const refreshList = useCallback(() => listTrialBalances().then(setList).catch((e: Error) => setError(e.message)), []);
   useEffect(() => { void refreshList(); getCatalogue().then(setCatalogue).catch(() => setCatalogue(null)); }, [refreshList]);
@@ -195,8 +196,8 @@ export default function FinancialStatementsPage() {
       <SubTabs label="Financial statements step" active={tab} onChange={setTab}
         tabs={[{ key: "intake", label: "Trial balance intake" }, { key: "standards", label: "Framework & rules" },
           { key: "statements", label: "Statements" }, { key: "workspace", label: "Workspace" }, { key: "assurance", label: "Assurance" },
-          { key: "publish", label: "Publish" }]} />
-      {tab === "publish" ? <PublicationPanel /> : tab === "assurance" ? <AssurancePanel /> :tab === "workspace" ? <WorkspacePanel onOpen={setTab} /> :tab === "statements" ? <StatementsPanel /> : tab === "standards" ? <StandardsPanel trialBalanceId={selected ?? undefined} /> : <>
+          { key: "publish", label: "Publish" }, { key: "command", label: "Command centre" }]} />
+      {tab === "command" ? <CommandCentrePanel /> : tab === "publish" ? <PublicationPanel /> :tab === "assurance" ? <AssurancePanel /> :tab === "workspace" ? <WorkspacePanel onOpen={setTab} /> :tab === "statements" ? <StatementsPanel /> : tab === "standards" ? <StandardsPanel trialBalanceId={selected ?? undefined} /> : <>
       {error && <ErrorNote message={error} />}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
         <div className="space-y-4">

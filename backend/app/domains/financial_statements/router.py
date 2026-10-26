@@ -486,6 +486,35 @@ async def publication_download(artifact_id: str, db: AsyncSession = Depends(get_
     return Response(content=content, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
+@router.get("/integration/packages/{package_id}")
+async def integration_command_centre(package_id: str, db: AsyncSession = Depends(get_db),
+                                     user: User = Depends(get_current_user)) -> dict:
+    """Document 08 §10: the G0–G7 chain, invariants, release-gate rail and FRP manifest (read-only)."""
+    from . import integration_store
+    return await _run(integration_store.command_centre(db, user, package_id))
+
+
+@router.get("/integration/packages/{package_id}/frp")
+async def integration_frp(package_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    from . import integration_store
+    return await _run(integration_store.frp(db, user, package_id))
+
+
+@router.get("/integration/register")
+async def integration_register(user: User = Depends(get_current_user)) -> dict:
+    """The 60 Document 08 acceptance cases and the tests that execute them; CI, not this list, reports passes."""
+    from . import integration
+    return {"cases": integration.register(), "support": integration.SUPPORT, "errors": integration.ERRORS}
+
+
+@router.post("/integration/golden/{name}")
+async def integration_golden(name: str, user: User = Depends(get_current_user)) -> dict:
+    from . import integration_store
+    if name not in ("nb_synthetic_2026.json",):
+        raise HTTPException(status_code=404, detail="Unknown golden fixture.")
+    return integration_store.golden_run(name)
+
+
 @router.get("/catalogue")
 async def catalogue(user: User = Depends(get_current_user)) -> dict:
     """Statement lines, correction types and supporting-record kinds for the screen's choices."""

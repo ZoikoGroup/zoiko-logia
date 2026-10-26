@@ -382,6 +382,34 @@ export async function downloadArtifact(artifactId: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+// Integration, golden datasets and acceptance (Document 08).
+export type ChainGate = { gate: string; title: string; status: string; owner: string; detail: string; error_code: string | null;
+  retriable: boolean; correlation_id: string };
+export type Invariant = { id: string; title: string; status: string; detail: string; residual?: string | null };
+export type CommandCentre = {
+  context: { entity: string; period_start: string; period_end: string; currency: string; framework_edition: string | null;
+    package_hash: string; variant: string[]; release_state: string; applicability_decision_id: string | null };
+  chain: ChainGate[]; invariants: Invariant[];
+  rail: { hard: { source: string; code: string; message: string }[]; soft: { source: string; code: string; message: string }[] };
+  manifest: Record<string, unknown> & { idempotency_key: string; status: string; audit_event_root: string;
+    sources: { source_id: string; sha256: string; provenance: string; ingestion_version: number }[] };
+  support: { scope: string; level: string; why: string }[]; errors: Record<string, string>;
+  export_simulation: { id: string; channel: string; audience: string; parity: boolean | null; issues: string[] }[];
+  publication_disabled_reason: string | null;
+};
+export type AcceptanceCase = { id: string; feature: string; stimulus: string; coverage: string; tests: string[]; note: string; status: string };
+export type GoldenRun = {
+  fixture: string; label?: string; oracle_status?: string; aborted: boolean; reason?: string;
+  runs?: Record<string, { figures: Record<string, string>; findings: string[]; needs_evidence: string[]; balanced: boolean }>;
+  mismatches?: Record<string, string[]>;
+  dispute?: { code: string; difference: string; operating_profit: Record<string, string>; accounts: string[]; disposition: string } | null;
+};
+
+export const getCommandCentre = (packageId: string) => request<CommandCentre>(`/integration/packages/${encodeURIComponent(packageId)}`);
+export const getAcceptanceRegister = () =>
+  request<{ cases: AcceptanceCase[]; support: CommandCentre["support"]; errors: Record<string, string> }>("/integration/register");
+export const runGolden = (name = "nb_synthetic_2026.json") => request<GoldenRun>(`/integration/golden/${encodeURIComponent(name)}`, { method: "POST" });
+
 export async function downloadPackage(id: string, format: "json" | "csv") {
   const res = await fetch(`${BASE}/packages/${encodeURIComponent(id)}/export?format=${format}`, {
     headers: { Authorization: `Bearer ${getAuthToken()}`, ...impersonationHeaders() },
