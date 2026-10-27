@@ -30,6 +30,7 @@ import math
 import re
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 
 from app.orchestration.websearch import WebSource
 
@@ -80,13 +81,15 @@ _DATE_PARTS = re.compile(r"^(\d{1,4})[-/.](\d{1,2})[-/.](\d{1,4})")
 _MONTH_NAMES = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
-def _to_number(cell: str) -> float | None:
+def _to_decimal(cell: str) -> Decimal | None:
+    """The cell's exact value. Statement amounts are summed in Decimal
+    (Document 01 FS-013): binary floats drift on long ledgers."""
     text = (cell or "").strip()
     formula = _FORMULA.match(text)
     if formula:
         text = formula.group("value").strip()
     if text.lower() in _ZERO:
-        return 0.0
+        return Decimal("0")
     text = re.sub(r"\s", "", _CURRENCY_CODE.sub("", text))
     if not text or not _NUM.match(text):
         return None
@@ -95,10 +98,15 @@ def _to_number(cell: str) -> float | None:
     if not digits or digits == ".":
         return None
     try:
-        value = float(digits)
-    except ValueError:
+        value = Decimal(digits)
+    except InvalidOperation:
         return None
     return -value if negative else value
+
+
+def _to_number(cell: str) -> float | None:
+    value = _to_decimal(cell)
+    return None if value is None else float(value)
 
 
 def _fmt(value: float) -> str:
@@ -665,15 +673,15 @@ def _ledger_balance_lines(table: Table, debit: int, credit: int, name: int) -> l
     ledger had each account's debit and credit totals but not its balance;
     the model subtracted them itself, paired the wrong figures ("Cash at bank:
     1,715,058.50 - 1,421,652.66"), and the explanation was withheld."""
-    totals: dict[str, list[float]] = {}
+    totals: dict[str, list[Decimal]] = {}
     counts: dict[str, int] = defaultdict(int)
     for row in table.rows:
         label = row[name].strip() if name < len(row) else ""
         if not label or _TOTAL_ROW.match(label):
             continue
-        dr = (_to_number(row[debit]) if debit < len(row) else None) or 0.0
-        cr = (_to_number(row[credit]) if credit < len(row) else None) or 0.0
-        entry = totals.setdefault(label, [0.0, 0.0])
+        dr = (_to_decimal(row[debit]) if debit < len(row) else None) or Decimal("0")
+        cr = (_to_decimal(row[credit]) if credit < len(row) else None) or Decimal("0")
+        entry = totals.setdefault(label, [Decimal("0"), Decimal("0")])
         entry[0] += dr
         entry[1] += cr
         counts[label] += 1
@@ -681,7 +689,7 @@ def _ledger_balance_lines(table: Table, debit: int, credit: int, name: int) -> l
         return []
     lines = [f"Account balances in '{table.title}' (debits minus credits; Dr = debit balance, "
              f"Cr = credit balance; no opening balances are in the file)"]
-    debit_balances = credit_balances = 0.0
+    debit_balances = credit_balances = Decimal("0")
     for label, (dr, cr) in totals.items():
         balance = round(dr - cr, 2)
         side = "Dr" if balance > 0 else "Cr" if balance < 0 else ""
@@ -715,14 +723,14 @@ def _trial_balance_lines(table: Table, by_month: bool = True) -> list[str]:
     if labels and len(set(labels)) < len(labels) * 0.8:
         monthly = _ledger_monthly_lines(table, debit, credit, name) if by_month else []
         return _ledger_balance_lines(table, debit, credit, name) + monthly
-    groups: dict[str, list[tuple[str, float]]] = defaultdict(list)
-    unplaced, total_dr, total_cr = [], 0.0, 0.0
+    groups: dict[str, list[tuple[str, Decimal]]] = defaultdict(list)
+    unplaced, total_dr, total_cr = [], Decimal("0"), Decimal("0")
     for row in table.rows:
         label = row[name].strip() if name < len(row) else ""
         if not label or _TOTAL_ROW.match(label):
             continue
-        dr = (_to_number(row[debit]) if debit < len(row) else None) or 0.0
-        cr = (_to_number(row[credit]) if credit < len(row) else None) or 0.0
+        dr = (_to_decimal(row[debit]) if debit < len(row) else None) or Decimal("0")
+        cr = (_to_decimal(row[credit]) if credit < len(row) else None) or Decimal("0")
         total_dr, total_cr = total_dr + dr, total_cr + cr
         side, amount = ("debit", dr - cr) if dr >= cr else ("credit", cr - dr)
         contra = next((g for g, s, pattern in _TB_CONTRA if s == side and pattern.search(label)), None)
@@ -738,6 +746,11 @@ def _trial_balance_lines(table: Table, by_month: bool = True) -> list[str]:
              f"{_fmt(round(total_cr, 2))}; difference = {_fmt(round(total_dr - total_cr, 2))}"]
     if unplaced:
         lines.append("- Accounts not classified (state them, and give no statement totals): " + "; ".join(unplaced))
+        return lines
+    if total_dr != total_cr:
+        # Document 01 FS-009: an unbalanced trial balance stops the statements.
+        lines.append(f"- Debits and credits differ by {_fmt(abs(round(total_dr - total_cr, 2)))}: the trial balance "
+                     f"does not balance, so no statement totals are given until the difference is found.")
         return lines
     total = lambda g: round(sum(v for _, v in groups.get(g, [])), 2)  # noqa: E731
     def line(g: str) -> str:

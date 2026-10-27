@@ -3068,6 +3068,11 @@ async def ask_kriton(
         db, request.query, resolved_document_ids, document_sources, document_plan, tenant_id, actor_id,
     )
     grounded_input += document_figures_block
+    # Financial statements are drafts until reviewed (statement_rules.py).
+    from app.orchestration.statement_rules import INSTRUCTIONS as STATEMENT_RULES, is_statement_request
+    statement_request = is_statement_request(request.query)
+    if statement_request:
+        grounded_input += STATEMENT_RULES
     # The method, not the answer, for calculations whose arithmetic was right
     # and method wrong in the 23 Oct 2026 review (accounting_methods.py).
     from app.orchestration.accounting_methods import accounting_method_guidance
@@ -4473,6 +4478,16 @@ async def ask_kriton(
     jurisdiction_note = jurisdiction_limitation(request.query, removed_statements)
     if jurisdiction_note:
         limitations.append(jurisdiction_note)
+    if statement_request and not evidence_gap_only and not is_offdomain_refusal and (final_text or "").strip():
+        # A statement answer is an unreviewed draft: no compliance, audit,
+        # approval or filing claim, and its open items are named.
+        from app.orchestration.statement_rules import open_items, remove_unsupported_claims, removed_claims_note
+        final_text, removed_claims = remove_unsupported_claims(final_text)
+        statement_notes = open_items(request.query, final_text, "\n".join(
+            [document_figures_block, *(getattr(s, "snippet", "") or "" for s in document_sources)]))
+        if removed_claims:
+            statement_notes.append(removed_claims_note(removed_claims))
+        limitations[:0] = [note for note in statement_notes if note not in limitations]
     if (not evidence_gap_only and not is_offdomain_refusal and not uses_user_supplied_structure
             and rag_citations and not re.search(r"\[REF-\d+\]", final_text or "")):
         # Sources found but none cited: their markers are added where a source

@@ -1,0 +1,286 @@
+"""Stored trial-balance intake (Document 04 §11 data contracts).
+
+fs_trial_balances keeps the original bytes and their SHA-256 (never
+modified), the parsed lines and findings; a corrected upload is a new row
+that supersedes the old one (SD-010, SD-042). Mapping decisions, journal
+proposals, supporting records, approved snapshots and the event history are
+separate rows, so every decision is kept with who made it and when.
+Amounts are stored as exact decimal strings.
+"""
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.db.base import Base
+
+
+def _uuid() -> str:
+    return str(uuid.uuid4())
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class FsTrialBalance(Base):
+    __tablename__ = "fs_trial_balances"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    uploaded_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    sha256: Mapped[str] = mapped_column(String, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    media_type: Mapped[str] = mapped_column(String, nullable=False)
+    original: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="TRIAL_BALANCE")
+    units: Mapped[str] = mapped_column(String, nullable=False, default="units")
+    sign_convention: Mapped[str] = mapped_column(String, nullable=False, default="DEBIT_CREDIT_COLUMNS")
+    period_end: Mapped[str] = mapped_column(String, nullable=False, default="")
+    sheets: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    integrity: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    findings: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    lines: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    supersedes_id: Mapped[str | None] = mapped_column(ForeignKey("fs_trial_balances.id"), nullable=True)
+    superseded_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class FsMappingDecision(Base):
+    __tablename__ = "fs_mapping_decisions"
+    __table_args__ = (UniqueConstraint("trial_balance_id", "account_key", name="uq_fs_mapping_account"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    trial_balance_id: Mapped[str] = mapped_column(ForeignKey("fs_trial_balances.id", ondelete="CASCADE"),
+                                                  nullable=False, index=True)
+    account_key: Mapped[str] = mapped_column(String, nullable=False)
+    account_name: Mapped[str] = mapped_column(String, nullable=False)
+    balance: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    line_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    candidates: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    evidence_required: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    basis: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    allocations: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    evidence_ref: Mapped[str] = mapped_column(String, nullable=False, default="")
+    source: Mapped[str] = mapped_column(String, nullable=False, default="")
+    reviewer_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FsJournal(Base):
+    __tablename__ = "fs_journals"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    trial_balance_id: Mapped[str] = mapped_column(ForeignKey("fs_trial_balances.id", ondelete="CASCADE"),
+                                                  nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    correction_type: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    lines: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    evidence_refs: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    review_status: Mapped[str] = mapped_column(String, nullable=False, default="PENDING_REVIEW")
+    reviewer_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    posting_status: Mapped[str] = mapped_column(String, nullable=False, default="NOT_POSTED")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class FsSupportingRecord(Base):
+    __tablename__ = "fs_supporting_records"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    trial_balance_id: Mapped[str] = mapped_column(ForeignKey("fs_trial_balances.id", ondelete="CASCADE"),
+                                                  nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    sha256: Mapped[str] = mapped_column(String, nullable=False)
+    total: Mapped[str | None] = mapped_column(String, nullable=True)
+    basis: Mapped[str] = mapped_column(String, nullable=False, default="")
+    finding: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    uploaded_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class FsSnapshot(Base):
+    __tablename__ = "fs_snapshots"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    trial_balance_id: Mapped[str] = mapped_column(ForeignKey("fs_trial_balances.id", ondelete="CASCADE"),
+                                                  nullable=False, index=True)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False)
+    line_totals: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    preparer_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    approver_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="APPROVED")
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FsResolution(Base):
+    """A Reporting Rules Resolution revision (Document 03): the facts, their
+    hash, the rule-pack digest and the result; a fact change is a new revision."""
+    __tablename__ = "fs_resolutions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    entity_key: Mapped[str] = mapped_column(String, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    facts: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    facts_hash: Mapped[str] = mapped_column(String, nullable=False)
+    rule_pack_digest: Mapped[str] = mapped_column(String, nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    judgments: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    history: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    state: Mapped[str] = mapped_column(String, nullable=False)
+    trial_balance_id: Mapped[str | None] = mapped_column(ForeignKey("fs_trial_balances.id"), nullable=True)
+    prepared_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    approved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class FsReportPackage(Base):
+    """An assembled report package version (Document 05): its inputs, their
+    fingerprint, the result, sign-offs and history. An input change after a
+    sign-off makes a new version; earlier versions are kept."""
+    __tablename__ = "fs_report_packages"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    trial_balance_id: Mapped[str] = mapped_column(ForeignKey("fs_trial_balances.id"), nullable=False, index=True)
+    prior_trial_balance_id: Mapped[str | None] = mapped_column(ForeignKey("fs_trial_balances.id"), nullable=True)
+    resolution_id: Mapped[str | None] = mapped_column(ForeignKey("fs_resolutions.id"), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    inputs: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    state: Mapped[str] = mapped_column(String, nullable=False)
+    signoffs: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    history: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    superseded_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class FsAssuranceCase(Base):
+    """Document 07: per trial balance, the approved materiality, the finding
+    register, the hash-chained decision ledger and recorded misstatements."""
+    __tablename__ = "fs_assurance_cases"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    trial_balance_id: Mapped[str] = mapped_column(ForeignKey("fs_trial_balances.id"), nullable=False, index=True)
+    materiality: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    register: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    ledger: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    misstatements: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class FsAssuranceRun(Base):
+    """One assurance run over an exact package version and input hash;
+    attestations and the release certificate bind to it."""
+    __tablename__ = "fs_assurance_runs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("fs_assurance_cases.id"), nullable=False, index=True)
+    package_id: Mapped[str] = mapped_column(ForeignKey("fs_report_packages.id"), nullable=False)
+    package_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_hash: Mapped[str] = mapped_column(String, nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    attestations: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    certificate: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    superseded_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class FsEvidenceItem(Base):
+    """An evidence document linked to risk domains; withdrawn, never deleted."""
+    __tablename__ = "fs_evidence_items"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("fs_assurance_cases.id"), nullable=False, index=True)
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    sha256: Mapped[str] = mapped_column(String, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    media_type: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    domains: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    instruction_flag: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    uploaded_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    withdrawn_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    withdrawn_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+
+class FsPublicationArtifact(Base):
+    """A rendered (or externally edited, quarantined) publication file with
+    its model hash, byte hash and validation report (Document 06)."""
+    __tablename__ = "fs_publication_artifacts"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    package_id: Mapped[str] = mapped_column(ForeignKey("fs_report_packages.id"), nullable=False, index=True)
+    package_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="RENDER")
+    audience: Mapped[str] = mapped_column(String, nullable=False)
+    channel: Mapped[str] = mapped_column(String, nullable=False)
+    scale: Mapped[str] = mapped_column(String, nullable=False, default="units")
+    state: Mapped[str] = mapped_column(String, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    model: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    model_hash: Mapped[str] = mapped_column(String, nullable=False)
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    media_type: Mapped[str] = mapped_column(String, nullable=False)
+    sha256: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    validation: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    source_artifact_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class FsPublicationIssue(Base):
+    """An issued publication: the artifacts, release id and filing attempts (never a receipt we did not get)."""
+    __tablename__ = "fs_publication_issues"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    package_id: Mapped[str] = mapped_column(ForeignKey("fs_report_packages.id"), nullable=False, index=True)
+    package_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    audience: Mapped[str] = mapped_column(String, nullable=False)
+    state: Mapped[str] = mapped_column(String, nullable=False)
+    release_id: Mapped[str] = mapped_column(String, nullable=False)
+    artifacts: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    filing: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    issued_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    auth_aal: Mapped[str] = mapped_column(String, nullable=False, default="aal1")
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    superseded_by: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class FsEvent(Base):
+    __tablename__ = "fs_events"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    trial_balance_id: Mapped[str] = mapped_column(ForeignKey("fs_trial_balances.id", ondelete="CASCADE"),
+                                                  nullable=False, index=True)
+    actor_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    detail: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

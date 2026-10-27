@@ -8,6 +8,7 @@ import {
   Bell, Building2, Plug, Activity,
   Lock, Users, Building, GitBranch, Settings, CreditCard, Bot,
 } from "lucide-react";
+import { FileSpreadsheet } from "lucide-react";
 import { RoleCode } from "./roles";
 import { ADVISOR } from "./advisor";
 
@@ -112,6 +113,7 @@ export const NAV_SECTIONS: NavL1Section[] = [
       { label: "Evidence Packs", slug: "evidence-packs", allowedRoles: ACCOUNTING_WORKFLOWS, icon: Paperclip },
       { label: "Reports & Insights", slug: "reports-insights", allowedRoles: ACCOUNTING_WORKFLOWS, icon: BarChart3 },
       { label: "Compliance Calendar", slug: "compliance-calendar", allowedRoles: ACCOUNTING_WORKFLOWS, icon: CalendarClock },
+      { label: "Financial Statements", slug: "financial-statements", allowedRoles: ACCOUNTING_WORKFLOWS, icon: FileSpreadsheet },
     ],
   },
   {

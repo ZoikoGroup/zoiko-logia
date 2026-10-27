@@ -1,0 +1,600 @@
+"""Trial-balance intake API (Document 04 §11.1 operations).
+
+POST /intake checks a file without storing it. The /trial-balances routes
+store the upload and record every decision; all are tenant scoped, and
+approving a mapping, reviewing a journal and approving the snapshot are each
+refused to the person who prepared the work. Nothing is ever posted.
+"""
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.domains.identity.models import User
+from app.domains.identity.rbac import get_current_user
+
+from . import store
+from .intake import MAX_BYTES
+from .service import run_intake
+
+router = APIRouter(prefix="/financial-statements", tags=["Financial Statements"])
+
+
+async def _read(file: UploadFile) -> bytes:
+    content = await file.read(MAX_BYTES + 1)
+    if len(content) > MAX_BYTES:
+        raise HTTPException(status_code=413, detail="The file is larger than 20 MB.")
+    return content
+
+
+async def _run(call):
+    try:
+        return await call
+    except store.NotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from None
+    except store.Refused as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
+
+
+class Allocation(BaseModel):
+    line_id: str
+    amount: str
+
+
+class MappingDecision(BaseModel):
+    action: str = Field(pattern="^(approve|reject)$")
+    line_id: str | None = None
+    allocations: list[Allocation] = []
+    evidence_ref: str = ""
+    reason: str = ""
+
+
+class JournalLineIn(BaseModel):
+    line_id: str
+    debit: str = "0"
+    credit: str = "0"
+
+
+class JournalIn(BaseModel):
+    kind: str
+    reason: str
+    lines: list[JournalLineIn]
+    evidence_refs: list[str] = []
+    correction_type: str | None = None
+
+
+class JournalReview(BaseModel):
+    approve: bool
+
+
+class ResolutionIn(BaseModel):
+    """Entity facts for a Reporting Rules Resolution (Document 03)."""
+    facts: dict
+    trial_balance_id: str | None = None
+
+
+@router.post("/resolve")
+async def resolve_framework(body: ResolutionIn, user: User = Depends(get_current_user)) -> dict:
+    """Stateless: which frameworks are permitted and which rules apply, nothing stored."""
+    from .resolutions import facts_from
+    from .standards import resolve
+    try:
+        return resolve(facts_from(body.facts)).to_dict()
+    except store.Refused as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
+
+
+@router.post("/resolutions")
+async def create_resolution(body: ResolutionIn, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_user)) -> dict:
+    from . import resolutions
+    return await _run(resolutions.create(db, user, body.facts, body.trial_balance_id))
+
+
+@router.get("/resolutions")
+async def list_resolutions(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict]:
+    from . import resolutions
+    return await resolutions.list_for(db, user)
+
+
+@router.get("/resolutions/{resolution_id}")
+async def get_resolution(resolution_id: str, db: AsyncSession = Depends(get_db),
+                         user: User = Depends(get_current_user)) -> dict:
+    from . import resolutions
+    return await _run(resolutions.get(db, user, resolution_id))
+
+
+class ReviewNote(BaseModel):
+    note: str = ""
+
+
+class JudgmentIn(BaseModel):
+    key: str
+    choice: str
+    reason: str
+
+
+class ReasonIn(BaseModel):
+    reason: str
+
+
+@router.post("/resolutions/{resolution_id}/approve")
+async def approve_resolution(resolution_id: str, db: AsyncSession = Depends(get_db),
+                             user: User = Depends(get_current_user)) -> dict:
+    from . import resolutions
+    return await _run(resolutions.approve(db, user, resolution_id))
+
+
+@router.post("/resolutions/{resolution_id}/request-review")
+async def request_resolution_review(resolution_id: str, body: ReviewNote, db: AsyncSession = Depends(get_db),
+                                    user: User = Depends(get_current_user)) -> dict:
+    from . import resolutions
+    return await _run(resolutions.request_review(db, user, resolution_id, body.note))
+
+
+@router.post("/resolutions/{resolution_id}/judgments")
+async def record_resolution_judgment(resolution_id: str, body: JudgmentIn, db: AsyncSession = Depends(get_db),
+                                     user: User = Depends(get_current_user)) -> dict:
+    from . import resolutions
+    return await _run(resolutions.record_judgment(db, user, resolution_id, body.key, body.choice, body.reason))
+
+
+@router.post("/resolutions/{resolution_id}/reject")
+async def reject_resolution(resolution_id: str, body: ReasonIn, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_user)) -> dict:
+    from . import resolutions
+    return await _run(resolutions.reject(db, user, resolution_id, body.reason))
+
+
+@router.post("/resolutions/{resolution_id}/revoke")
+async def revoke_resolution(resolution_id: str, body: ReasonIn, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_user)) -> dict:
+    from . import resolutions
+    return await _run(resolutions.revoke(db, user, resolution_id, body.reason))
+
+
+@router.get("/resolutions/{resolution_id}/release-check")
+async def resolution_release_check(resolution_id: str, db: AsyncSession = Depends(get_db),
+                                   user: User = Depends(get_current_user)) -> dict:
+    from . import resolutions
+    return await _run(resolutions.release_check(db, user, resolution_id))
+
+
+class PackageIn(BaseModel):
+    """Statement assembly inputs (Document 05)."""
+    trial_balance_id: str
+    resolution_id: str | None = None
+    prior_trial_balance_id: str | None = None
+    schedules: dict = {}
+
+
+class DisclosureIn(BaseModel):
+    requirement_id: str
+    decision: str = Field(pattern="^(include|not_applicable|exempt)$")
+    text: str = ""
+    evidence_ref: str = ""
+    rationale: str = ""
+
+
+class DispositionIn(BaseModel):
+    code: str
+    reason: str
+
+
+class SignIn(BaseModel):
+    role: str
+
+
+@router.post("/packages")
+async def build_package(body: PackageIn, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    from . import packages
+    return await _run(packages.build(db, user, trial_balance_id=body.trial_balance_id, resolution_id=body.resolution_id,
+                                     prior_trial_balance_id=body.prior_trial_balance_id, schedules=body.schedules))
+
+
+@router.get("/packages")
+async def list_packages(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict]:
+    from . import packages
+    return await packages.list_for(db, user)
+
+
+@router.get("/packages/{package_id}")
+async def get_package(package_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    from . import packages
+    return await _run(packages.get(db, user, package_id))
+
+
+@router.post("/packages/{package_id}/disclosures")
+async def submit_package_disclosure(package_id: str, body: DisclosureIn, db: AsyncSession = Depends(get_db),
+                                    user: User = Depends(get_current_user)) -> dict:
+    from . import packages
+    return await _run(packages.submit_disclosure(db, user, package_id, requirement_id=body.requirement_id,
+                                                 decision=body.decision, text=body.text, evidence_ref=body.evidence_ref,
+                                                 rationale=body.rationale))
+
+
+@router.post("/packages/{package_id}/disclosures/{requirement_id}/approve")
+async def approve_package_disclosure(package_id: str, requirement_id: str, db: AsyncSession = Depends(get_db),
+                                     user: User = Depends(get_current_user)) -> dict:
+    from . import packages
+    return await _run(packages.approve_disclosure(db, user, package_id, requirement_id))
+
+
+@router.post("/packages/{package_id}/dispositions")
+async def dispose_package_finding(package_id: str, body: DispositionIn, db: AsyncSession = Depends(get_db),
+                                  user: User = Depends(get_current_user)) -> dict:
+    from . import packages
+    return await _run(packages.dispose(db, user, package_id, code=body.code, reason=body.reason))
+
+
+@router.post("/packages/{package_id}/sign")
+async def sign_package(package_id: str, body: SignIn, db: AsyncSession = Depends(get_db),
+                       user: User = Depends(get_current_user)) -> dict:
+    from . import packages
+    return await _run(packages.sign(db, user, package_id, body.role))
+
+
+@router.get("/packages/{package_id}/release-check")
+async def package_release_check(package_id: str, db: AsyncSession = Depends(get_db),
+                                user: User = Depends(get_current_user)) -> dict:
+    from . import packages
+    return await _run(packages.release_check(db, user, package_id))
+
+
+@router.get("/packages/{package_id}/export")
+async def export_package(package_id: str, format: str = "json", db: AsyncSession = Depends(get_db),
+                         user: User = Depends(get_current_user)) -> Response:
+    from . import packages
+    media, body, filename = await _run(packages.export(db, user, package_id, format))
+    return Response(content=body, media_type=media, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+class PublishIn(BaseModel):
+    note: str = ""
+
+
+@router.get("/workspace/{package_id}")
+async def workspace_overview(package_id: str, db: AsyncSession = Depends(get_db),
+                             user: User = Depends(get_current_user)) -> dict:
+    """Document 02 FR-WF-001: the one workspace view over Documents 03, 04 and 05."""
+    from . import workspace
+    return await _run(workspace.overview(db, user, package_id))
+
+
+@router.get("/workspace/{package_id}/provenance/{statement_id}/{line_id}")
+async def workspace_provenance(package_id: str, statement_id: str, line_id: str, db: AsyncSession = Depends(get_db),
+                               user: User = Depends(get_current_user)) -> dict:
+    from . import workspace
+    return await _run(workspace.provenance(db, user, package_id, statement_id, line_id))
+
+
+@router.post("/workspace/{package_id}/publish")
+async def workspace_publish(package_id: str, body: PublishIn, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_user)) -> dict:
+    from . import workspace
+    return await _run(workspace.publish(db, user, package_id, body.note))
+
+
+class DecisionIn(BaseModel):
+    finding_key: str
+    decision: str
+    rationale: str = ""
+    citation: str = ""
+    alternatives: list[str] = []
+    evidence_id: str | None = None
+    expires: str = ""
+    owner: str = ""
+    due: str = ""
+
+
+class MaterialityIn(BaseModel):
+    overall: str
+    performance: str
+    trivial: str
+    basis: str
+    qualitative: str = ""
+
+
+class MisstatementIn(BaseModel):
+    amount: str
+    statement: str = ""
+    description: str
+
+
+class AttestIn(BaseModel):
+    role: str
+    scope: str
+    approval_evidence_id: str | None = None
+
+
+class ClaimIn(BaseModel):
+    claim: str
+
+
+class OverrideIn(BaseModel):
+    gate_id: str
+    reason: str = ""
+
+
+@router.post("/assurance/packages/{package_id}/run")
+async def assurance_run(package_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    """Document 07: run the quality gates over the current package version."""
+    from . import assurance_store
+    return await _run(assurance_store.run(db, user, package_id))
+
+
+@router.get("/assurance/packages/{package_id}")
+async def assurance_latest(package_id: str, db: AsyncSession = Depends(get_db),
+                           user: User = Depends(get_current_user)) -> dict | None:
+    from . import assurance_store
+    return await _run(assurance_store.latest_for(db, user, package_id))
+
+
+@router.post("/assurance/packages/{package_id}/materiality")
+async def assurance_materiality(package_id: str, body: MaterialityIn, db: AsyncSession = Depends(get_db),
+                                user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.set_materiality(db, user, package_id, overall=body.overall, performance=body.performance,
+                                                      trivial=body.trivial, basis=body.basis, qualitative=body.qualitative))
+
+
+@router.post("/assurance/packages/{package_id}/misstatements")
+async def assurance_misstatement(package_id: str, body: MisstatementIn, db: AsyncSession = Depends(get_db),
+                                 user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.record_misstatement(db, user, package_id, amount=body.amount, statement=body.statement,
+                                                          description=body.description))
+
+
+@router.post("/assurance/packages/{package_id}/evidence")
+async def assurance_evidence(package_id: str, file: UploadFile = File(...), domains: str = Form(...),
+                             description: str = Form(""), db: AsyncSession = Depends(get_db),
+                             user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    content = await _read(file)
+    return await _run(assurance_store.add_evidence(db, user, package_id, filename=file.filename or "evidence", content=content,
+                                                   description=description,
+                                                   domains=[d.strip() for d in domains.split(",") if d.strip()]))
+
+
+@router.post("/assurance/evidence/{evidence_id}/withdraw")
+async def assurance_withdraw_evidence(evidence_id: str, body: ReasonIn, db: AsyncSession = Depends(get_db),
+                                      user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.withdraw_evidence(db, user, evidence_id, body.reason))
+
+
+@router.get("/assurance/runs/{run_id}")
+async def assurance_get(run_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.get(db, user, run_id))
+
+
+@router.post("/assurance/runs/{run_id}/decisions")
+async def assurance_decide(run_id: str, body: DecisionIn, db: AsyncSession = Depends(get_db),
+                           user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.decide(db, user, run_id, finding_key=body.finding_key, decision=body.decision,
+                                             rationale=body.rationale, citation=body.citation, alternatives=body.alternatives,
+                                             evidence_id=body.evidence_id, expires=body.expires, owner=body.owner, due=body.due))
+
+
+@router.post("/assurance/runs/{run_id}/attest")
+async def assurance_attest(run_id: str, body: AttestIn, db: AsyncSession = Depends(get_db),
+                           user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.attest(db, user, run_id, role=body.role, scope=body.scope,
+                                             approval_evidence_id=body.approval_evidence_id))
+
+
+@router.post("/assurance/runs/{run_id}/release")
+async def assurance_release(run_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.release(db, user, run_id))
+
+
+@router.post("/assurance/runs/{run_id}/claims")
+async def assurance_claim(run_id: str, body: ClaimIn, db: AsyncSession = Depends(get_db),
+                          user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.request_claim(db, user, run_id, body.claim))
+
+
+@router.post("/assurance/runs/{run_id}/override")
+async def assurance_override(run_id: str, body: OverrideIn, db: AsyncSession = Depends(get_db),
+                             user: User = Depends(get_current_user)) -> dict:
+    from . import assurance_store
+    return await _run(assurance_store.override(db, user, run_id, body.gate_id, body.reason))
+
+
+@router.get("/assurance/runs/{run_id}/summary")
+async def assurance_summary(run_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> Response:
+    from . import assurance_store
+    text = await _run(assurance_store.summary(db, user, run_id))
+    return Response(content=text, media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="assurance-summary.txt"'})
+
+
+class RenderIn(BaseModel):
+    audience: str
+    channel: str
+    scale: str = "units"
+
+
+class IssueIn(BaseModel):
+    audience: str
+    scale: str = "units"
+
+
+class FilingIn(BaseModel):
+    destination: str
+    live: bool = False
+    confirmed: bool = False
+
+
+@router.get("/publication/packages/{package_id}")
+async def publication_overview(package_id: str, db: AsyncSession = Depends(get_db),
+                               user: User = Depends(get_current_user)) -> dict:
+    """Document 06 FP-001: audiences, artifacts, issues, adapters and taxonomies for a package."""
+    from . import publication_store
+    return await _run(publication_store.overview(db, user, package_id))
+
+
+@router.get("/publication/packages/{package_id}/preview")
+async def publication_preview(package_id: str, audience: str = "member_accounts", scale: str = "units",
+                              db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    from . import publication_store
+    return await _run(publication_store.preview(db, user, package_id, audience, scale))
+
+
+@router.post("/publication/packages/{package_id}/renders")
+async def publication_render(package_id: str, body: RenderIn, db: AsyncSession = Depends(get_db),
+                             user: User = Depends(get_current_user)) -> dict:
+    from . import publication_store
+    return await _run(publication_store.render(db, user, package_id, audience=body.audience, channel=body.channel,
+                                               scale=body.scale))
+
+
+@router.post("/publication/packages/{package_id}/issue")
+async def publication_issue(package_id: str, body: IssueIn, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_user)) -> dict:
+    from . import publication_store
+    return await _run(publication_store.issue(db, user, package_id, body.audience, body.scale))
+
+
+@router.post("/publication/issues/{issue_id}/filings")
+async def publication_filing(issue_id: str, body: FilingIn, db: AsyncSession = Depends(get_db),
+                             user: User = Depends(get_current_user)) -> dict:
+    from . import publication_store
+    return await _run(publication_store.submit_filing(db, user, issue_id, destination=body.destination, live=body.live,
+                                                      confirmed=body.confirmed))
+
+
+@router.post("/publication/artifacts/{artifact_id}/reimport")
+async def publication_reimport(artifact_id: str, file: UploadFile = File(...), db: AsyncSession = Depends(get_db),
+                               user: User = Depends(get_current_user)) -> dict:
+    from . import publication_store
+    return await _run(publication_store.reimport_docx(db, user, artifact_id, await _read(file)))
+
+
+@router.get("/publication/artifacts/{artifact_id}/download")
+async def publication_download(artifact_id: str, db: AsyncSession = Depends(get_db),
+                               user: User = Depends(get_current_user)) -> Response:
+    from . import publication_store
+    filename, media_type, content = await _run(publication_store.download(db, user, artifact_id))
+    return Response(content=content, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@router.get("/integration/packages/{package_id}")
+async def integration_command_centre(package_id: str, db: AsyncSession = Depends(get_db),
+                                     user: User = Depends(get_current_user)) -> dict:
+    """Document 08 §10: the G0–G7 chain, invariants, release-gate rail and FRP manifest (read-only)."""
+    from . import integration_store
+    return await _run(integration_store.command_centre(db, user, package_id))
+
+
+@router.get("/integration/packages/{package_id}/frp")
+async def integration_frp(package_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    from . import integration_store
+    return await _run(integration_store.frp(db, user, package_id))
+
+
+@router.get("/integration/register")
+async def integration_register(user: User = Depends(get_current_user)) -> dict:
+    """The 60 Document 08 acceptance cases and the tests that execute them; CI, not this list, reports passes."""
+    from . import integration
+    return {"cases": integration.register(), "support": integration.SUPPORT, "errors": integration.ERRORS}
+
+
+@router.post("/integration/golden/{name}")
+async def integration_golden(name: str, user: User = Depends(get_current_user)) -> dict:
+    from . import integration_store
+    if name not in ("nb_synthetic_2026.json",):
+        raise HTTPException(status_code=404, detail="Unknown golden fixture.")
+    return integration_store.golden_run(name)
+
+
+@router.get("/catalogue")
+async def catalogue(user: User = Depends(get_current_user)) -> dict:
+    """Statement lines, correction types and supporting-record kinds for the screen's choices."""
+    from .journals import CORRECTION_TYPES
+    from .mapping import LINES
+    from .supporting import KINDS
+    return {"lines": [{"line_id": k, "label": label, "section": section} for k, (label, section) in LINES.items()],
+            "correction_types": [{"code": k, "treatment": v} for k, v in CORRECTION_TYPES.items()],
+            "supporting_kinds": [{"code": k, "line_id": line, "label": label} for k, (line, label) in KINDS.items()]}
+
+
+@router.post("/intake")
+async def intake_trial_balance(file: UploadFile = File(...), user: User = Depends(get_current_user)) -> dict:
+    return run_intake(file.filename or "upload", await _read(file), uploaded_by=str(user.id)).to_dict()
+
+
+@router.post("/trial-balances")
+async def upload_trial_balance(file: UploadFile = File(...), supersedes_id: str | None = Form(None),
+                               db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    content = await _read(file)
+    return await _run(store.create(db, user, file.filename or "upload", content, supersedes_id or None))
+
+
+@router.get("/trial-balances")
+async def list_trial_balances(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> list[dict]:
+    return await store.list_trial_balances(db, user)
+
+
+@router.get("/trial-balances/{tb_id}")
+async def get_trial_balance(tb_id: str, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_user)) -> dict:
+    return await _run(store.detail(db, user, tb_id))
+
+
+@router.get("/trial-balances/{tb_id}/original")
+async def download_original(tb_id: str, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_user)) -> Response:
+    filename, media_type, content = await _run(store.original(db, user, tb_id))
+    return Response(content=content, media_type="application/octet-stream" if media_type == "rejected" else media_type,
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@router.post("/trial-balances/{tb_id}/mappings/{mapping_id}/decision")
+async def decide_mapping(tb_id: str, mapping_id: str, body: MappingDecision, db: AsyncSession = Depends(get_db),
+                         user: User = Depends(get_current_user)) -> dict:
+    return await _run(store.decide_mapping(
+        db, user, tb_id, mapping_id, action=body.action, line_id=body.line_id,
+        allocations=[(a.line_id, a.amount) for a in body.allocations] or None,
+        evidence_ref=body.evidence_ref, reason=body.reason))
+
+
+@router.post("/trial-balances/{tb_id}/journals")
+async def propose_journal(tb_id: str, body: JournalIn, db: AsyncSession = Depends(get_db),
+                          user: User = Depends(get_current_user)) -> dict:
+    return await _run(store.add_journal(
+        db, user, tb_id, kind=body.kind, reason=body.reason, evidence_refs=body.evidence_refs,
+        correction_type=body.correction_type, lines=[(l.line_id, l.debit, l.credit) for l in body.lines]))
+
+
+@router.post("/trial-balances/{tb_id}/journals/{journal_id}/review")
+async def review_journal(tb_id: str, journal_id: str, body: JournalReview, db: AsyncSession = Depends(get_db),
+                         user: User = Depends(get_current_user)) -> dict:
+    return await _run(store.review_journal(db, user, tb_id, journal_id, approve=body.approve))
+
+
+@router.post("/trial-balances/{tb_id}/supporting")
+async def add_supporting(tb_id: str, kind: str = Form(...), file: UploadFile = File(...),
+                         db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    content = await _read(file)
+    return await _run(store.add_supporting(db, user, tb_id, kind=kind, filename=file.filename or "upload",
+                                           content=content))
+
+
+@router.post("/trial-balances/{tb_id}/approve")
+async def approve_snapshot(tb_id: str, db: AsyncSession = Depends(get_db),
+                           user: User = Depends(get_current_user)) -> dict:
+    return await _run(store.approve(db, user, tb_id))
+
+
+@router.get("/trial-balances/{tb_id}/lineage/{account_key}")
+async def account_lineage(tb_id: str, account_key: str, db: AsyncSession = Depends(get_db),
+                          user: User = Depends(get_current_user)) -> dict:
+    return await _run(store.lineage(db, user, tb_id, account_key))

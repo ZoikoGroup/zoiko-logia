@@ -1,0 +1,440 @@
+import { getAuthToken } from "@/lib/api";
+import { impersonationHeaders } from "@/lib/impersonation";
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8010/api/v1";
+const BASE = `${API_URL}/financial-statements`;
+
+// Trial-balance intake (backend/app/domains/financial_statements, Document 04).
+export type Severity = "HARD_STOP" | "REVIEW" | "INFO";
+export type Finding = { code: string; severity: Severity; message: string; rule: string; refs: string[] };
+export type MappingStatus = "SUGGESTED" | "NEEDS_EVIDENCE" | "UNMAPPED" | "APPROVED" | "REJECTED";
+export type Mapping = {
+  id: string; account_key: string; account_name: string; balance: string; status: MappingStatus;
+  line_id: string | null; line_label: string | null; candidates: { line_id: string; label: string }[];
+  evidence_required: string; basis: string; allocations: { line_id: string; amount: string }[];
+  reviewer: string | null; evidence_ref: string; source: string; decided_at: string | null;
+};
+export type Journal = {
+  journal_id: string; kind: string; reason: string; correction_type: string; treatment: string;
+  requires_restatement: boolean; lines: { line_id: string; debit: string; credit: string }[];
+  evidence_refs: string[]; created_by: string; review_status: string; posting_status: string; reviewer: string | null;
+};
+export type TrialBalanceSummary = {
+  id: string; filename: string; sha256: string; version: number; kind: string; state: string;
+  uploaded_by: string; created_at: string | null; supersedes_id: string | null; superseded_by: string | null;
+  balanced: boolean | null; hard_stops: number;
+};
+export type TrialBalance = TrialBalanceSummary & {
+  units: string; sign_convention: string; period_end: string | null;
+  sheets: { sheets?: string[]; hidden_sheets?: string[] };
+  integrity: { total_debits?: string; total_credits?: string; difference?: string; balanced?: boolean; basis?: string; note?: string };
+  findings: Finding[]; lines: Record<string, unknown>[]; mappings: Mapping[];
+  mapping_counts: Record<string, number>; journals: Journal[];
+  supporting: { id: string; kind: string; filename: string; sha256: string; total: string | null; basis: string; finding: Finding }[];
+  snapshots: { id: string; content_hash: string; status: string; preparer_id: string; approver_id: string; approved_at: string | null }[];
+  history: { action: string; actor_id: string; at: string | null; detail: Record<string, unknown> }[];
+  status_note: string; effect?: JournalEffect;
+};
+export type JournalEffect = {
+  journal_id: string; lines: { line_id: string; label: string; before: string; after: string }[];
+  profit_before_tax_before: string; profit_before_tax_after: string; posting_status: string;
+};
+export type Catalogue = {
+  lines: { line_id: string; label: string; section: string }[];
+  correction_types: { code: string; treatment: string }[];
+  supporting_kinds: { code: string; line_id: string; label: string }[];
+};
+export type Lineage = {
+  account_key: string; account_name: string; balance: string; source_rows: Record<string, unknown>[];
+  source_file: { filename: string; sha256: string; version: number };
+  mapping: { status: string; line_id: string | null; basis: string; reviewer_id: string | null; evidence_ref: string };
+  journals: Journal[]; snapshot: { id: string; status: string; content_hash: string } | null;
+};
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const isForm = init?.body instanceof FormData;
+  const res = await fetch(`${BASE}${path}`, {
+    ...init,
+    headers: {
+      ...(isForm ? {} : { "Content-Type": "application/json" }),
+      Authorization: `Bearer ${getAuthToken()}`,
+      ...init?.headers,
+      ...impersonationHeaders(),
+    },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(typeof body?.detail === "string" ? body.detail : `Request failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export const getCatalogue = () => request<Catalogue>("/catalogue");
+export const listTrialBalances = () => request<TrialBalanceSummary[]>("/trial-balances");
+export const getTrialBalance = (id: string) => request<TrialBalance>(`/trial-balances/${encodeURIComponent(id)}`);
+export const getLineage = (id: string, accountKey: string) =>
+  request<Lineage>(`/trial-balances/${encodeURIComponent(id)}/lineage/${encodeURIComponent(accountKey)}`);
+
+export function uploadTrialBalance(file: File, supersedesId?: string) {
+  const form = new FormData();
+  form.append("file", file);
+  if (supersedesId) form.append("supersedes_id", supersedesId);
+  return request<TrialBalance>("/trial-balances", { method: "POST", body: form });
+}
+
+export function addSupporting(id: string, kind: string, file: File) {
+  const form = new FormData();
+  form.append("kind", kind);
+  form.append("file", file);
+  return request<TrialBalance>(`/trial-balances/${encodeURIComponent(id)}/supporting`, { method: "POST", body: form });
+}
+
+export const decideMapping = (id: string, mappingId: string, body: {
+  action: "approve" | "reject"; line_id?: string; evidence_ref?: string; reason?: string;
+  allocations?: { line_id: string; amount: string }[];
+}) => request<TrialBalance>(`/trial-balances/${encodeURIComponent(id)}/mappings/${encodeURIComponent(mappingId)}/decision`,
+  { method: "POST", body: JSON.stringify(body) });
+
+export const proposeJournal = (id: string, body: {
+  kind: string; reason: string; correction_type?: string; evidence_refs?: string[];
+  lines: { line_id: string; debit: string; credit: string }[];
+}) => request<TrialBalance>(`/trial-balances/${encodeURIComponent(id)}/journals`, { method: "POST", body: JSON.stringify(body) });
+
+export const reviewJournal = (id: string, journalId: string, approve: boolean) =>
+  request<TrialBalance>(`/trial-balances/${encodeURIComponent(id)}/journals/${encodeURIComponent(journalId)}/review`,
+    { method: "POST", body: JSON.stringify({ approve }) });
+
+export const approveSnapshot = (id: string) =>
+  request<TrialBalance>(`/trial-balances/${encodeURIComponent(id)}/approve`, { method: "POST" });
+
+// Reporting Rules Resolution (Document 03).
+export type YearFiguresIn = { turnover?: string; balance_sheet_total?: string; employees?: number | "" };
+export type EntityFactsIn = {
+  entity_name: string; incorporation_jurisdiction: string; legal_form: string; scope: "individual" | "group";
+  report_type: "annual" | "interim" | "management" | "educational"; period_start: string; period_end: string;
+  flags: string[]; current_year: YearFiguresIn; prior_year: YearFiguresIn; prior_year_size?: string;
+  framework_election: string; election_signed_by?: string; early_adoption: string[];
+  requested_claim: "illustrative" | "statutory_ready"; group_perimeter?: string[]; parent_framework?: string;
+  prior_framework?: string; first_time_adoption?: boolean; policy_questions?: string[];
+  requested_statements?: string[]; evidence?: Record<string, string>;
+};
+export type Criterion = { criterion: string; value: string | null; limit: string; within: boolean | null };
+export type ResolutionResult = {
+  state: string; selected_framework: string | null; framework_edition: string | null; size_class: string;
+  eligibility: { result?: string; reason?: string; band?: string; exclusions?: string[]; rule?: string;
+    tests?: { size: string; current: boolean | null; prior: boolean | null; current_criteria: Criterion[]; prior_criteria: Criterion[] }[] };
+  candidates: { framework: string; status: string; reason: string; sources: string[] }[];
+  rules: { rule_id: string; outcome: string; effective: string; source: string; adoption: string; endorsement: string }[];
+  statements: { statement: string; requirement: string; note: string }[];
+  blockers: string[]; reasons: Record<string, string>;
+  findings: { code: string; severity: string; owner: string; reason: string; action: string }[];
+  pending_judgments: { key: string; question: string; sources: string[]; decided: boolean }[];
+  judgments: Record<string, { choice: string; reason: string; by: string; at: string }>;
+  gates: { gate: string; title: string; passed: boolean; detail: string }[];
+  outputs: { type: string; allowed: boolean; gate: string }[]; explanation: string[];
+  citations: Record<string, { publisher: string; title: string; url: string; checked: string; snapshot: string | null }>;
+  permit_illustrative_draft: boolean; permit_statutory_claim: boolean; permitted_exports: string[]; as_of: string;
+  rule_pack: { id: string; version: string; status: string; checked: string; valid_until: string; owner: string;
+    digest: string; capabilities: Record<string, string> };
+};
+export type StoredResolution = {
+  id: string; revision: number; state: string; entity_key: string; facts: EntityFactsIn; facts_hash: string;
+  rule_pack_digest: string; result: ResolutionResult; judgments: ResolutionResult["judgments"];
+  history: { action: string; actor_id: string; at: string; state: string; detail: Record<string, unknown> }[];
+  pack_is_current: boolean; approval_valid: boolean; trial_balance_id: string | null; prepared_by: string;
+  approved_by: string | null; approved_at: string | null; created_at: string | null;
+};
+export type ReleaseCheck = {
+  resolution_id: string; revision: number; statutory_release_allowed: boolean; illustrative_allowed: boolean;
+  reasons: string[]; rule_pack_digest: string; framework_edition: string | null;
+};
+
+export const previewResolution = (facts: EntityFactsIn) =>
+  request<ResolutionResult>("/resolve", { method: "POST", body: JSON.stringify({ facts }) });
+export const saveResolution = (facts: EntityFactsIn, trialBalanceId?: string) =>
+  request<StoredResolution>("/resolutions", { method: "POST", body: JSON.stringify({ facts, trial_balance_id: trialBalanceId ?? null }) });
+export const listResolutions = () => request<StoredResolution[]>("/resolutions");
+export const approveResolution = (id: string) =>
+  request<StoredResolution>(`/resolutions/${encodeURIComponent(id)}/approve`, { method: "POST" });
+export const requestReview = (id: string, note = "") =>
+  request<StoredResolution>(`/resolutions/${encodeURIComponent(id)}/request-review`, { method: "POST", body: JSON.stringify({ note }) });
+export const recordJudgment = (id: string, body: { key: string; choice: string; reason: string }) =>
+  request<StoredResolution>(`/resolutions/${encodeURIComponent(id)}/judgments`, { method: "POST", body: JSON.stringify(body) });
+export const rejectResolution = (id: string, reason: string) =>
+  request<StoredResolution>(`/resolutions/${encodeURIComponent(id)}/reject`, { method: "POST", body: JSON.stringify({ reason }) });
+export const revokeResolution = (id: string, reason: string) =>
+  request<StoredResolution>(`/resolutions/${encodeURIComponent(id)}/revoke`, { method: "POST", body: JSON.stringify({ reason }) });
+export const releaseCheck = (id: string) => request<ReleaseCheck>(`/resolutions/${encodeURIComponent(id)}/release-check`);
+
+// Statement assembly, reconciliation and disclosures (Document 05).
+export type PackageFinding = {
+  code: string; severity: "P0" | "P1" | "P2" | "P3"; message: string; rule: string; owner: string; action: string;
+  refs: string[]; release_only: boolean; disposition: { by: string; reason: string; at: string } | null;
+};
+export type StatementLine = {
+  line_id: string; label: string; kind: string; amount: string | null; prior: string | null; concepts: string[];
+  share_capital?: string | null; retained_earnings?: string | null;
+};
+export type AssembledStatement = {
+  statement_id: string; title: string; requiredness: string; status: string; layout?: string; condensed?: boolean;
+  note?: string; lines: StatementLine[]; data_required?: string[]; starting_point?: string; policy?: string; components?: string[];
+};
+export type Assertion = {
+  assertion_id: string; title: string; formula: string; operands: Record<string, string | null>; residual: string | null;
+  status: string; severity: string; detail: string; candidates: string[];
+};
+export type PackageNote = {
+  requirement_id: string; title: string; rule: string; applicability: string; evidence_needed: string; severity: string;
+  state: string; text: string; amount: string | null; evidence_ref: string; submitted_by: string | null;
+  approved_by: string | null; issues: string[];
+};
+export type PackageResult = {
+  state: string; halted: string | null;
+  profile: { family: string; framework: string | null; edition: string | null; resolution_id: string | null;
+    resolution_revision: number | null; resolution_state: string | null; entity: string; period_start: string;
+    period_end: string; scope: string; report_type: string; units: string; ruleset: { id: string; version: string; status: string } };
+  manifest: { statement: string; requirement: string; note: string }[]; statements: AssembledStatement[];
+  assertions: Assertion[]; notes: PackageNote[]; findings: PackageFinding[]; counts: Record<string, number>;
+  headline: Record<string, string | null>; ready_for_signoff: boolean; release_reasons: string[]; watermark: string;
+  cash_flow_data_fields: Record<string, string>; fingerprint: string; schedules: Record<string, string>;
+};
+export type ReportPackage = {
+  id: string; version: number; state: string; stored_state: string; stale_reasons: string[]; trial_balance_id: string;
+  prior_trial_balance_id: string | null; resolution_id: string | null; fingerprint: string; result: PackageResult;
+  signoffs: Record<string, { by: string; at: string }>; history: { action: string; actor_id: string; at: string; version: number }[];
+  created_by: string; superseded_by: string | null; created_at: string | null;
+};
+export type PackageSummary = {
+  id: string; version: number; state: string; trial_balance_id: string; resolution_id: string | null; entity: string;
+  counts: Record<string, number>; created_at: string | null;
+};
+export type PackageReleaseCheck = { package_id: string; version: number; statutory_release_allowed: boolean; draft_allowed: boolean; reasons: string[] };
+
+export const buildPackage = (body: { trial_balance_id: string; resolution_id?: string | null; prior_trial_balance_id?: string | null; schedules: Record<string, string> }) =>
+  request<ReportPackage>("/packages", { method: "POST", body: JSON.stringify(body) });
+export const listPackages = () => request<PackageSummary[]>("/packages");
+export const getPackage = (id: string) => request<ReportPackage>(`/packages/${encodeURIComponent(id)}`);
+export const submitDisclosure = (id: string, body: { requirement_id: string; decision: string; text: string; evidence_ref: string; rationale: string }) =>
+  request<ReportPackage>(`/packages/${encodeURIComponent(id)}/disclosures`, { method: "POST", body: JSON.stringify(body) });
+export const approveDisclosure = (id: string, requirementId: string) =>
+  request<ReportPackage>(`/packages/${encodeURIComponent(id)}/disclosures/${encodeURIComponent(requirementId)}/approve`, { method: "POST" });
+export const disposeFinding = (id: string, code: string, reason: string) =>
+  request<ReportPackage>(`/packages/${encodeURIComponent(id)}/dispositions`, { method: "POST", body: JSON.stringify({ code, reason }) });
+export const signPackage = (id: string, role: string) =>
+  request<ReportPackage>(`/packages/${encodeURIComponent(id)}/sign`, { method: "POST", body: JSON.stringify({ role }) });
+export const packageReleaseCheck = (id: string) => request<PackageReleaseCheck>(`/packages/${encodeURIComponent(id)}/release-check`);
+
+// Financial Statements Workspace (Document 02, FR-WF-001).
+export type RailItem = { source: string; severity: "HARD_STOP" | "MATERIAL_REVIEW" | "INFORMATION"; code: string; message: string; rule: string; action: string; refs: string[] };
+export type WorkspaceView = {
+  package_id: string; version: number; state: string; release_status: string; banner: string;
+  counts: Record<"HARD_STOP" | "MATERIAL_REVIEW" | "INFORMATION", number>; rail: RailItem[];
+  scope: { entity: string; scope: string; report_type: string; period_start: string; period_end: string; jurisdiction: string | null;
+    resolution_id: string | null; resolution_state: string | null };
+  framework: { framework: string | null; edition: string | null; layout: string; rules: ResolutionResult["rules"];
+    citations: ResolutionResult["citations"]; rule_pack: ResolutionResult["rule_pack"] | null; assembly_ruleset: { id: string; version: string; status: string } };
+  source: { trial_balance_id: string; filename: string; version: number; sha256: string; imported_at: string | null; state: string;
+    snapshot_hash: string | null; prior_trial_balance_id: string | null };
+  tabs: { statement_id: string; title: string; status: string; requiredness: string;
+    omission: { basis: string; approved_by: string | null; resolution_revision: number | null } | null }[];
+  statements: AssembledStatement[]; notes: PackageNote[]; assertions: Assertion[];
+  review_sequence: { role: string; label: string; signed: { by: string; at: string } | null; available: boolean }[];
+  export: { draft_allowed: boolean; draft_refusal: string[]; final_allowed: boolean; final_reasons: string[]; publish_allowed: boolean; publish_reason: string };
+  answers: { question: string; answer: string }[];
+};
+export type Provenance = {
+  statement_id: string; statement_title: string; line: StatementLine; concepts: { line_id: string; label: string }[]; computation: string;
+  accounts: { account_key: string; account_name: string; balance: string; line_id: string | null; allocations: { line_id: string; amount: string }[];
+    status: string; reviewer: string | null; evidence_ref: string; basis: string; source_row: string }[];
+  journals: Journal[]; supporting: { kind: string; filename: string; total: string | null }[];
+  rule: { layout: string; edition: string | null; ruleset: string }; source_file: { filename: string; version: number; sha256: string };
+  snapshot_hash: string | null; line_checksum: string;
+};
+
+export const getWorkspace = (packageId: string) => request<WorkspaceView>(`/workspace/${encodeURIComponent(packageId)}`);
+export const getProvenance = (packageId: string, statementId: string, lineId: string) =>
+  request<Provenance>(`/workspace/${encodeURIComponent(packageId)}/provenance/${encodeURIComponent(statementId)}/${encodeURIComponent(lineId)}`);
+
+// Assurance, professional review and release certification (Document 07).
+export type AssuranceFinding = {
+  key: string; source: string; code: string; severity: "BLOCKER" | "CRITICAL" | "MATERIAL" | "REVIEW" | "ADVISORY";
+  message: string; rule: string; assertion: string; risk_domain: string | null; amount: string | null; action: string;
+  state: string; decisions: string[]; waiver: { by: string; justification: string; expires: string } | null;
+};
+export type QualityGate = { gate_id: string; title: string; scope: string; status: string; method: string; source: string };
+export type EvidenceItem = {
+  id: string; filename: string; sha256: string; size_bytes: number; description: string; domains: string[];
+  instruction_flag: boolean; uploaded_by: string; created_at: string | null; withdrawn_at: string | null; withdrawn_reason: string;
+};
+export type Attestation = { by: string; role_code: string; scope: string; at: string; auth_aal: string; approval_evidence_id: string | null };
+export type AssuranceView = {
+  id: string; package_id: string; package_version: number; status: string; input_hash: string; snapshot_hash: string | null;
+  standards_profile_hash: string | null; ruleset: { id: string; version: string; status: string };
+  header: { tenant_id: string; entity: string; period_start: string; period_end: string; framework: string | null; edition: string | null;
+    scope: string; statements: string[] };
+  result: { gates: QualityGate[]; evidence_scope: string;
+    risk_domains: { domain: string; title: string; applies: boolean; covered: boolean; evidence_needed: string; evidence_ids: string[] }[];
+    misstatements: { gross: string; net: string; overall_materiality: string | null; items: { amount: string; statement: string; description: string }[] };
+    negative: Record<string, string[]> };
+  findings: AssuranceFinding[]; open: AssuranceFinding[]; closed_findings: { key: string; state: string }[];
+  attestations: Record<string, Attestation>;
+  certificate: { release_id: string; kind: string; wording: string; permitted_claims: string[]; prohibited_claims: string[];
+    issued_at: string; expires_at: string | null; publication_route: string } | null;
+  claims: { claim: string; allowed: boolean; text: string | null; missing: string[] }[];
+  control_statement: Record<string, unknown>; materiality: Record<string, string>; evidence: EvidenceItem[];
+  ledger: { type: string; actor_id: string; at: string; hash: string; decision?: string; finding_key?: string }[];
+  preparer: string; superseded_by: string | null;
+};
+
+const qa = (path: string) => `/assurance${path}`;
+export const runAssurance = (packageId: string) => request<AssuranceView>(qa(`/packages/${encodeURIComponent(packageId)}/run`), { method: "POST" });
+export const getLatestAssurance = (packageId: string) => request<AssuranceView | null>(qa(`/packages/${encodeURIComponent(packageId)}`));
+export const decideFinding = (runId: string, body: { finding_key: string; decision: string; rationale?: string; citation?: string;
+  alternatives?: string[]; evidence_id?: string | null; expires?: string; owner?: string; due?: string }) =>
+  request<AssuranceView>(qa(`/runs/${encodeURIComponent(runId)}/decisions`), { method: "POST", body: JSON.stringify(body) });
+export const setMateriality = (packageId: string, body: { overall: string; performance: string; trivial: string; basis: string; qualitative: string }) =>
+  request<AssuranceView>(qa(`/packages/${encodeURIComponent(packageId)}/materiality`), { method: "POST", body: JSON.stringify(body) });
+export const recordMisstatement = (packageId: string, body: { amount: string; statement: string; description: string }) =>
+  request<AssuranceView>(qa(`/packages/${encodeURIComponent(packageId)}/misstatements`), { method: "POST", body: JSON.stringify(body) });
+export function uploadEvidence(packageId: string, file: File, domains: string[], description: string) {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("domains", domains.join(","));
+  form.append("description", description);
+  return request<AssuranceView>(qa(`/packages/${encodeURIComponent(packageId)}/evidence`), { method: "POST", body: form });
+}
+export const withdrawEvidence = (evidenceId: string, reason: string) =>
+  request<AssuranceView>(qa(`/evidence/${encodeURIComponent(evidenceId)}/withdraw`), { method: "POST", body: JSON.stringify({ reason }) });
+export const attestRun = (runId: string, body: { role: string; scope: string; approval_evidence_id?: string | null }) =>
+  request<AssuranceView>(qa(`/runs/${encodeURIComponent(runId)}/attest`), { method: "POST", body: JSON.stringify(body) });
+export const releaseRun = (runId: string) => request<AssuranceView>(qa(`/runs/${encodeURIComponent(runId)}/release`), { method: "POST" });
+
+export async function downloadAssuranceSummary(runId: string) {
+  const res = await fetch(`${BASE}/assurance/runs/${encodeURIComponent(runId)}/summary`, {
+    headers: { Authorization: `Bearer ${getAuthToken()}`, ...impersonationHeaders() },
+  });
+  if (!res.ok) throw new Error(`Download failed (${res.status})`);
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "assurance-summary.txt";
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+// Presentation, publication and filing (Document 06).
+export type PublicationModel = {
+  audience: string; audience_title: string; scale: string; unit_label: string; state: string; status_label: string; draft: boolean;
+  masthead: { entity: string; period_start: string; period_end: string; framework: string | null; edition: string | null };
+  statements: { statement_id: string; title: string; status: string; note: string;
+    lines: { concept_id: string; label: string; kind: string; amount: string | null; display: string; prior_display: string }[] }[];
+  omitted: { statement_id: string; basis: string }[]; notes: { number: number | null; requirement_id: string; title: string; text: string }[];
+  analysis: { label: string; measures: { name: string; value: string | null; definition: string }[] } | null;
+  rounding: string[]; blockers: string[]; model_hash: string;
+};
+export type PublicationArtifact = {
+  id: string; kind: string; audience: string; channel: string; scale: string; state: string; filename: string; sha256: string;
+  size_bytes: number; created_at: string | null; source_artifact_id: string | null;
+  validation: { parity?: { ok: boolean; issues: string[] }; sensitive?: { ok: boolean; hits: string[]; blocking: boolean };
+    accessibility?: { ok: boolean; failed: string[]; limitation: string }; diff?: string[]; note?: string };
+};
+export type PublicationIssue = {
+  id: string; audience: string; state: string; release_id: string; issued_by: string; issued_at: string | null;
+  artifacts: { id: string; channel: string; sha256: string }[];
+  filing: { destination: string; live: boolean; status: string; reasons: string[]; at: string }[];
+};
+export type PublicationOverview = {
+  package_id: string; package_version: number; state: string; entity: string; framework: string | null;
+  assurance_status: string | null; release_id: string | null; misleading: string[];
+  audiences: { key: string; title: string; statutory: boolean; public: boolean; issue_blockers: string[] }[];
+  audience_matrix: { id: string; status: string; notes: string[] };
+  adapters: Record<string, { title: string; status: string }>;
+  taxonomies: Record<string, { title: string; installed: boolean; licence: string }>;
+  artifacts: PublicationArtifact[]; issues: PublicationIssue[];
+};
+
+const pubPath = (path: string) => `/publication${path}`;
+export const getPublication = (packageId: string) => request<PublicationOverview>(pubPath(`/packages/${encodeURIComponent(packageId)}`));
+export const previewPublication = (packageId: string, audience: string, scale: string) =>
+  request<{ model: PublicationModel; state: string; issue_blockers: string[] }>(
+    pubPath(`/packages/${encodeURIComponent(packageId)}/preview?audience=${encodeURIComponent(audience)}&scale=${encodeURIComponent(scale)}`));
+export const renderPublication = (packageId: string, body: { audience: string; channel: string; scale: string }) =>
+  request<PublicationArtifact>(pubPath(`/packages/${encodeURIComponent(packageId)}/renders`), { method: "POST", body: JSON.stringify(body) });
+export const issuePublication = (packageId: string, audience: string, scale: string) =>
+  request<PublicationIssue>(pubPath(`/packages/${encodeURIComponent(packageId)}/issue`), { method: "POST", body: JSON.stringify({ audience, scale }) });
+export const submitFiling = (issueId: string, body: { destination: string; live: boolean; confirmed: boolean }) =>
+  request<unknown>(pubPath(`/issues/${encodeURIComponent(issueId)}/filings`), { method: "POST", body: JSON.stringify(body) });
+export function reimportWord(artifactId: string, file: File) {
+  const form = new FormData();
+  form.append("file", file);
+  return request<PublicationArtifact>(pubPath(`/artifacts/${encodeURIComponent(artifactId)}/reimport`), { method: "POST", body: form });
+}
+export async function downloadArtifact(artifactId: string, filename: string) {
+  const res = await fetch(`${BASE}/publication/artifacts/${encodeURIComponent(artifactId)}/download`, {
+    headers: { Authorization: `Bearer ${getAuthToken()}`, ...impersonationHeaders() },
+  });
+  if (!res.ok) throw new Error(`Download failed (${res.status})`);
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+// Integration, golden datasets and acceptance (Document 08).
+export type ChainGate = { gate: string; title: string; status: string; owner: string; detail: string; error_code: string | null;
+  retriable: boolean; correlation_id: string };
+export type Invariant = { id: string; title: string; status: string; detail: string; residual?: string | null };
+export type CommandCentre = {
+  context: { entity: string; period_start: string; period_end: string; currency: string; framework_edition: string | null;
+    package_hash: string; variant: string[]; release_state: string; applicability_decision_id: string | null };
+  chain: ChainGate[]; invariants: Invariant[];
+  rail: { hard: { source: string; code: string; message: string }[]; soft: { source: string; code: string; message: string }[] };
+  manifest: Record<string, unknown> & { idempotency_key: string; status: string; audit_event_root: string;
+    sources: { source_id: string; sha256: string; provenance: string; ingestion_version: number }[] };
+  support: { scope: string; level: string; why: string }[]; errors: Record<string, string>;
+  export_simulation: { id: string; channel: string; audience: string; parity: boolean | null; issues: string[] }[];
+  publication_disabled_reason: string | null;
+};
+export type AcceptanceCase = { id: string; feature: string; stimulus: string; coverage: string; tests: string[]; note: string; status: string };
+export type GoldenRun = {
+  fixture: string; label?: string; oracle_status?: string; aborted: boolean; reason?: string;
+  runs?: Record<string, { figures: Record<string, string>; findings: string[]; needs_evidence: string[]; balanced: boolean }>;
+  mismatches?: Record<string, string[]>;
+  dispute?: { code: string; difference: string; operating_profit: Record<string, string>; accounts: string[]; disposition: string } | null;
+};
+
+export const getCommandCentre = (packageId: string) => request<CommandCentre>(`/integration/packages/${encodeURIComponent(packageId)}`);
+export const getAcceptanceRegister = () =>
+  request<{ cases: AcceptanceCase[]; support: CommandCentre["support"]; errors: Record<string, string> }>("/integration/register");
+export const runGolden = (name = "nb_synthetic_2026.json") => request<GoldenRun>(`/integration/golden/${encodeURIComponent(name)}`, { method: "POST" });
+
+export async function downloadPackage(id: string, format: "json" | "csv") {
+  const res = await fetch(`${BASE}/packages/${encodeURIComponent(id)}/export?format=${format}`, {
+    headers: { Authorization: `Bearer ${getAuthToken()}`, ...impersonationHeaders() },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(typeof body?.detail === "string" ? body.detail : `Export failed (${res.status})`);
+  }
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `report-package.${format}`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function downloadOriginal(id: string, filename: string) {
+  const res = await fetch(`${BASE}/trial-balances/${encodeURIComponent(id)}/original`, {
+    headers: { Authorization: `Bearer ${getAuthToken()}`, ...impersonationHeaders() },
+  });
+  if (!res.ok) throw new Error(`Download failed (${res.status})`);
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
