@@ -271,6 +271,44 @@ def test_a_fixed_asset_register_gets_its_straight_line_depreciation():
     assert "Total useful_life_years" not in block and "useful_life_years: average 4" in block
 
 
+def test_depreciation_that_does_not_fit_the_register_date_is_flagged():
+    register = "\n".join([
+        "asset_id\tdescription\tcategory\tcost\tacquired\tuseful_life_years\taccumulated_depreciation\tnet_book_value",
+        "FA201\tAsset 01\tPlant and machinery\t9450\t2023-02-15\t4\t4725\t4725",
+        "FA203\tAsset 03\tIT equipment\t12350\t2023-04-15\t3\t4116.67\t8233.33",
+        "FA205\tAsset 05\tPlant and machinery\t15250\t2023-06-15\t4\t7625\t7625",
+        "FA208\tAsset 08\tFixtures\t19600\t2023-09-15\t10\t17640\t1960",
+        "FA209\tAsset 09\tPlant and machinery\t21050\t2023-01-15\t4\t10525\t10525",
+        "FA214\tAsset 14\tMotor vehicles\t28300\t2023-06-15\t5\t28300\t0",
+    ])
+    block = verified_document_figures([_src(register, "kriton-test-fixed-assets.xlsx — 'Register'!1:7")])
+    # Two years of a four-year life from Jan/Feb/Jun 2023 put the register at about 2025.
+    assert "the assets put it at about Feb 2025 (middle value), ranging from Apr 2024 to Sep 2032" in block
+    assert ("FA208 (Fixtures, 10-year life, acquired Sep 2023) is 90% depreciated = 9 years of charge, "
+            "depreciated to about Sep 2032") in block
+    assert "FA214 (Motor vehicles, 5-year life, acquired Jun 2023) is fully depreciated, which takes until Jun 2028" in block
+    assert "FA201 (" not in block and "FA203 (" not in block
+    assert "the register is not ready for reporting until they are explained" in block
+
+
+def test_the_internal_block_name_never_reaches_the_answer():
+    from app.orchestration.document_figures import strip_internal_labels
+    assert strip_internal_labels("Source: asset-level figures summed – see “Verified figures”") == \
+        "Source: asset-level figures summed"
+    assert strip_internal_labels("Jan 2023 = 2 assets [verified figures].") == "Jan 2023 = 2 assets."
+    assert strip_internal_labels("They match the totals (see verified totals).") == "They match the totals."
+    assert strip_internal_labels("Source: “Verified figures” list of per-asset depreciation") == \
+        "Source: the document's figures of per-asset depreciation"
+    assert strip_internal_labels("Plain 627,000 stays.") == "Plain 627,000 stays."
+
+
+def test_a_register_without_accumulated_depreciation_gets_no_fit_check():
+    register = "\n".join([
+        "Asset ID\tCost\tAcquired\tUseful life (years)",
+        "A1\t1000\t2023-01-01\t5", "A2\t2000\t2023-02-01\t5", "A3\t3000\t2023-03-01\t5"])
+    assert "Depreciation fit" not in verified_document_figures([_src(register, "fa.xlsx — 'FA'!1:4")])
+
+
 def test_a_residual_value_is_not_depreciated():
     register = "\n".join([
         "Asset ID\tDescription\tCost (GBP)\tUseful life (years)\tResidual value (GBP)",

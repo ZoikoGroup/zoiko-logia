@@ -1683,9 +1683,23 @@ async def ask_kriton(
     planner_handle = planner_shadow.start(request.query, request.conversation_history,
                                           query_id=query_id, role=role, has_documents=bool(request.document_ids))
 
+    # A follow-up does not re-send the chat's attached file; it is restored
+    # from the conversation. Without this, "journal entry for this year's
+    # depreciation" after uploading a fixed-asset register was checked against
+    # the previous message, not the file, and asked the user to paste entries.
+    has_chat_documents = bool(request.document_ids) or bool(
+        request.conversation_id and await resolve_conversation_document_ids(
+            db, conversation_id=request.conversation_id, requested_ids=[],
+            tenant_id=tenant_id, user_id=actor_id,
+        )
+    )
+
     # Pasted text with "check if it is correct": checked claim by claim
-    # (review_mode.py). Text with no checkable claim falls through.
-    if not request.document_ids and is_review_request(request.query):
+    # (review_mode.py). Text with no checkable claim falls through. With a
+    # file in the chat the text is checked against the file instead: a pasted
+    # summary of the uploaded register, "comment on the above", was fact-checked
+    # on the web and its file figures came back "could not verify".
+    if not has_chat_documents and is_review_request(request.query):
         await report("reviewing", "Finding the factual claims in the text")
         review = await metrics.run("review.claims", review_pasted_text(
             request.query, jurisdiction=request.jurisdiction or ""))
@@ -1722,16 +1736,6 @@ async def ask_kriton(
             "Happy to help. Which tax is it (for example income tax, VAT/GST, corporation tax), "
             "which country, and what are the figures (income or turnover, and the period)?"
         )
-    # A follow-up does not re-send the chat's attached file; it is restored
-    # from the conversation. Without this, "journal entry for this year's
-    # depreciation" after uploading a fixed-asset register was checked against
-    # the previous message, not the file, and asked the user to paste entries.
-    has_chat_documents = bool(request.document_ids) or bool(
-        request.conversation_id and await resolve_conversation_document_ids(
-            db, conversation_id=request.conversation_id, requested_ids=[],
-            tenant_id=tenant_id, user_id=actor_id,
-        )
-    )
     if not missing_input_message and not has_chat_documents:
         # "Show the correcting entries. Context: <a review with no entries>"
         # got an invented "Debit Expense … Credit Cash" example (supplied_context.py).
@@ -3009,7 +3013,35 @@ async def ask_kriton(
                 "\n\nThe attached document's own text states its title, date line (for example \"As of …\") "
                 "and currency (symbols or a column heading such as \"AMOUNT ($)\"); read them before saying the "
                 "document does not state them. Cite each extracted figure with its page's [REF-N]."
+                # A fixed-asset register summary wrote "$627 000" after saying the
+                # sheet shows no currency, stated "straight-line, no residual value"
+                # as the register's method, cited "see 'Verified figures'" and
+                # ended "suitable for ongoing financial reporting".
+                " When the document shows no currency, write amounts without a currency symbol. A method or basis "
+                "the document does not state (for example straight-line depreciation) is your assumption: say so "
+                "the first time it is used. Do not call the document ready or suitable for reporting, filing or "
+                "audit while it states no reporting date or the verified figures list items to check; list those "
+                "items instead. Never mention \"verified figures\" or other internal labels; cite the document."
             )
+            if is_review_request(request.query):
+                # "All quantitative totals … are accurate" was the verdict on a
+                # summary that called a register with misfitting depreciation
+                # "suitable for ongoing financial reporting", and explained June's
+                # spike by "older assets" bought in June: figures were checked,
+                # the explanations and the conclusion were waved through.
+                grounded_input += (
+                    "\n\nThe message pastes a text and asks you to check it. Check it against the attached document, "
+                    "not general knowledge: confirm each figure that matches the document, and list each statement "
+                    "that is wrong, unsupported by the document or an unstated assumption, with the correct figure "
+                    "or wording. Check the explanations and the conclusion too, not only the numbers: an explanation "
+                    "the document's rows contradict is wrong, not \"an interpretation\" (for example a month's assets "
+                    "called older when the document dates them in that month), and a statement that the document is "
+                    "ready or suitable for reporting is wrong while it states no reporting date or items to check "
+                    "are listed below. Report every asset or row listed below as not fitting or to be checked, by "
+                    "its ID, even when the text does not mention it — that the text missed them is itself a finding. "
+                    "End with a one-line verdict that names the most serious problem; do not call the text accurate "
+                    "or correct overall while any of these problems remains."
+                )
         # Earlier turns supply figures a follow-up refers to ("cost of sales
         # increased by 10%, revenue unchanged"), screened like the live query.
         deterministic_calculation = metrics.run_sync(
@@ -4572,6 +4604,9 @@ async def ask_kriton(
     if document_diagram is not None:
         from app.orchestration.illustrative_diagram import DOCUMENT_NOTE, NOT_IN_DOCUMENT_NOTE
         limitations.insert(0, DOCUMENT_NOTE if document_diagram else NOT_IN_DOCUMENT_NOTE)
+    if document_sources:
+        from app.orchestration.document_figures import strip_internal_labels
+        final_text = strip_internal_labels(final_text)
     answer = ComposedAnswer(
         text=final_text,
         citations=rag_citations,
@@ -4592,7 +4627,9 @@ async def ask_kriton(
     # DoD #15-16), so the whole block is wrapped and defaults to None.
     visualization = None
     secondary_visualizations: list = []
-    if not is_offdomain_refusal:
+    # A check of a pasted text is not a request for a chart: "comment on the
+    # above" got a "Distribution of 28 values" histogram of the register's costs.
+    if not is_offdomain_refusal and not is_review_request(request.query):
         try:
             # request.query, NOT effective_query, throughout this block:
             # extract_graph() only promises to draw entities/relationships the

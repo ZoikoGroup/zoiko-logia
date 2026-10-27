@@ -71,7 +71,11 @@ _LIFE_HEADER = re.compile(r"useful[\s_-]*life|\blife[\s_-]*(?:in[\s_-]*)?(?:year
 _COST_HEADER = re.compile(r"(?:^|[\s_])(?:gross[\s_]*|original[\s_]*|acquisition[\s_]*|historical[\s_]*)?cost(?:[\s_]|$)", re.IGNORECASE)
 _NOT_COST = re.compile(r"accumulated|depreciat|net|total|book", re.IGNORECASE)
 _RESIDUAL_HEADER = re.compile(r"residual|salvage|scrap", re.IGNORECASE)
+_ACCUMULATED_HEADER = re.compile(r"accumulated|\bacc(?:um)?[\s_.-]*dep", re.IGNORECASE)
 MAX_ASSETS_LISTED = 40
+# An asset depreciated to a date more than this far from the register's
+# middle date does not fit it.
+DEPRECIATION_FIT_YEARS = 1.0
 _YEAR = re.compile(r"^(19|20)\d{2}$")
 # A ledger's dated rows give totals per month, which the file never states:
 # "Show monthly totals as a bar chart" of a 600-row ledger was refused for
@@ -339,6 +343,70 @@ def _straight_line_depreciation(table: Table, numeric: list[int], category: list
     return lines
 
 
+def _when_label(when: float) -> str:
+    year, month = divmod(round(when * 12), 12)
+    return f"{_MONTH_NAMES[month]} {year}"
+
+
+def _depreciation_fit(table: Table, numeric: list[int], category: list[int]) -> list[str]:
+    """Whether each asset's accumulated depreciation fits one common date.
+
+    Straight-line, accumulated depreciation ÷ the annual charge is the years
+    charged; from the acquisition date that is the date the asset is
+    depreciated to, and a register is depreciated to one date. A 10-year
+    fixture bought in September 2023 and 90% depreciated was summarised as
+    "suitable for financial reporting": nine years of charge put it at 2032,
+    while the other assets sit around 2025."""
+    cost = next((i for i in numeric if _COST_HEADER.search(table.headers[i] or "")
+                 and not _NOT_COST.search(table.headers[i] or "")), None)
+    life = next((i for i in numeric if _LIFE_HEADER.search(table.headers[i] or "")), None)
+    accumulated = next((i for i, h in enumerate(table.headers) if _ACCUMULATED_HEADER.search(h or "")), None)
+    acquired = _date_column(table)
+    if None in (cost, life, accumulated, acquired):
+        return []
+    residual = next((i for i in numeric if _RESIDUAL_HEADER.search(table.headers[i] or "")), None)
+    cell = lambda row, i: _to_number(row[i]) if i is not None and i < len(row) else None  # noqa: E731
+    partial: list[tuple[str, str, float, float, float, float]] = []
+    full: list[tuple[str, str, float, float, float]] = []
+    for row in table.rows:
+        amount, years, charged = cell(row, cost), cell(row, life), cell(row, accumulated)
+        when = _month_of(row[acquired]) if acquired < len(row) else None
+        if amount is None or not years or years <= 0 or charged is None or when is None:
+            continue
+        depreciable = amount - (cell(row, residual) or 0.0)
+        if depreciable <= 0:
+            continue
+        start = when[0] + (when[1] - 1) / 12
+        label = (row[0] or "").strip()
+        group = row[category[0]].strip() if category and category[0] < len(row) else ""
+        if charged >= depreciable - 0.01:
+            full.append((label, group, years, start, start + years))
+        else:
+            partial.append((label, group, years, start, charged / depreciable, start + charged / depreciable * years))
+    if len(partial) < 3:
+        return []
+    ends = sorted(p[5] for p in partial)
+    middle = ends[len(ends) // 2] if len(ends) % 2 else (ends[len(ends) // 2 - 1] + ends[len(ends) // 2]) / 2
+    describe = lambda label, group, years, start: (  # noqa: E731
+        f"{label} ({group + ', ' if group else ''}{_fmt(years)}-year life, acquired {_when_label(start)})")
+    flags = [f"{describe(label, group, years, start)} is {share * 100:.0f}% depreciated = "
+             f"{_fmt(round(share * years, 2))} years of charge, depreciated to about {_when_label(end)}"
+             for label, group, years, start, share, end in partial if abs(end - middle) > DEPRECIATION_FIT_YEARS]
+    flags += [f"{describe(label, group, years, start)} is fully depreciated, which takes until {_when_label(end)}"
+              for label, group, years, start, end in full if end > middle + DEPRECIATION_FIT_YEARS]
+    lines = [f"- Depreciation fit (straight-line; accumulated depreciation ÷ annual charge = years charged, counted "
+             f"from the acquisition date): a register is depreciated to one date; the assets put it at about "
+             f"{_when_label(middle)} (middle value), ranging from {_when_label(ends[0])} to {_when_label(ends[-1])}"]
+    if flags:
+        lines.append(f"- Assets whose depreciation does not fit that date by more than {_fmt(DEPRECIATION_FIT_YEARS)} "
+                     "year (state these as items to check — the method, useful life, an impairment or the figure "
+                     "itself; the register is not ready for reporting until they are explained): "
+                     + "; ".join(flags[:MAX_ASSETS_LISTED]))
+    else:
+        lines.append(f"- Every asset's depreciation fits that date within {_fmt(DEPRECIATION_FIT_YEARS)} year")
+    return lines
+
+
 def _month_of(cell: str) -> tuple[int, int] | None:
     """(year, month) of a date cell: 2026-01-31, 31/01/2026 (day first, as in
     UK ledgers) or 01/31/2026 (when the second part cannot be a month)."""
@@ -533,6 +601,7 @@ def _table_lines(table: Table, include_top_n: bool = True, by_month_group: bool 
         lines.append(f"- Total {name(i)} = {_fmt(totals[i])}; average {_fmt(totals[i] / len(values))}; "
                      f"highest {_fmt(max(values))}; lowest {_fmt(min(values))}")
     lines.extend(_straight_line_depreciation(table, numeric, category))
+    lines.extend(_depreciation_fit(table, numeric, category))
     lines.extend(_monthly_lines(table, totals, category, by_month_group))
     keys = list(totals)
     for a in keys:
@@ -933,6 +1002,24 @@ def _bank_reconciliation_lines(tables: list[Table]) -> list[str]:
     lines.append(f"- Adjusted cash book balance = {_fmt(adjusted_book)}; adjusted bank balance = {_fmt(adjusted_bank)}; "
                  f"unexplained difference = {_fmt(round(adjusted_book - adjusted_bank, 2))}")
     return lines
+
+
+# The prompt block's name, which the user never sees: "Source: asset-level
+# figures summed – see “Verified figures”" and "[verified figures]" pointed
+# the reader at a list that is not in the answer.
+_LABEL = r"[\"“”'‘’]?verified\s+(?:figures|totals)[\"“”'‘’]?"
+_INTERNAL_LABELS = (
+    (re.compile(rf"\s*\[{_LABEL}\]", re.I), ""),
+    (re.compile(rf"\s*\((?:see\s+)?(?:the\s+)?{_LABEL}[^()]*\)", re.I), ""),
+    (re.compile(rf"\s*[–—-]\s*see\s+(?:the\s+)?{_LABEL}", re.I), ""),
+    (re.compile(rf"(?<!\w)(?:the\s+)?{_LABEL}(?:\s+(?:list|block|section))?", re.I), "the document's figures"),
+)
+
+
+def strip_internal_labels(text: str) -> str:
+    for pattern, replacement in _INTERNAL_LABELS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 def verified_document_figures(sources: list[WebSource], query: str | None = None) -> str:
