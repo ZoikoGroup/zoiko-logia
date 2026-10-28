@@ -160,6 +160,16 @@ async def test_a_text_with_no_rule_claims_still_gets_its_totals_checked(monkeypa
     assert "I checked 0 factual claims" not in review.text
 
 
+def test_comment_on_the_above_is_a_request_not_a_statement():
+    from app.orchestration.input_requirements import statement_not_question
+    pasted = ("Assumption – The source file does not specify a reporting date or a currency; amounts are therefore "
+              "shown without a currency symbol.\n\nPayroll journal entry (single period)\n\n"
+              "Account\tDebit\tCredit\nGross wages and salaries expense\t86,850.00\t\n"
+              "Net wages payable to employees\t\t58,189.50\nTotal\t98,835.30\t98,835.30\n\n"
+              "All figures are taken directly from the payroll register file.\ncomment on the above")
+    assert statement_not_question(pasted) is None
+
+
 def test_a_request_to_produce_an_analysis_is_not_a_claim_check():
     brief = ("Act as a senior management accountant analysing the following fictional company. Prepare a "
              "decision-ready financial performance review for the board.\n\n" + "Revenue rose. " * 200

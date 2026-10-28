@@ -1719,7 +1719,9 @@ async def ask_kriton(
     missing_input_message = (missing_tax_inputs(request.query)
                              or (None if request.document_ids
                                  else missing_vat_inputs(request.query, request.conversation_history))
-                             or statement_not_question(request.query))
+                             # A pasted text with "comment on the above" is a request, checked
+                             # against the chat's file when the claim check above is skipped.
+                             or (None if is_review_request(request.query) else statement_not_question(request.query)))
     if (not missing_input_message and not request.conversation_history and not request.document_ids
             and dangling_reference(request.query)):
         # "Increase those expenses by 10% and recalculate" opening a new chat
