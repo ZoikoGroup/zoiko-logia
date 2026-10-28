@@ -108,8 +108,20 @@ _STATUTORY = re.compile(r"\b(?:statutory|annual\s+accounts|companies\s+house|for
 _RATIO = re.compile(r"\b(?:margin|ratio|return\s+on|ebitda|kpi)\b", re.I)
 
 
+# A question that checks, compares or explains statements is not a request to
+# prepare them: "Confirm that the balance sheet, cash-flow ending cash and
+# equity roll-forward reconcile" and "Sum quarterly revenue and compare with
+# the financial statement" were given the draft-statement notes, one of them
+# wrongly saying the prior year was not provided.
+_NOT_PREPARING = re.compile(
+    r"^\s*(?:please\s+)?(?:confirm|check|verify|reconcile|compare|explain|define|describe|sum|summari[sz]e|cite|"
+    r"identify|which|what\s+(?:is|are|does|do)|why|how\s+(?:does|do|is|are)|is\s+|are\s+|does\s+)\b",
+    re.I,
+)
+
+
 def is_statement_request(query: str) -> bool:
-    return bool(_STATEMENT_REQUEST.search(query or ""))
+    return bool(_STATEMENT_REQUEST.search(query or "")) and not _NOT_PREPARING.search(query or "")
 
 
 def remove_unsupported_claims(text: str) -> tuple[str, list[str]]:
@@ -139,7 +151,11 @@ def _has_comparatives(query: str, source_text: str) -> bool:
     the source's header rows."""
     headers = "\n".join(line for line in (source_text or "").splitlines() if "\t" in line or "|" in line)[:20000]
     text = f"{query or ''}\n{headers}"
-    return bool(_COMPARATIVE_WORD.search(text)) or len(set(_YEAR.findall(headers))) >= 2
+    # A statement PDF labels each line with its year ("FY2024 Revenue 8,000"),
+    # with no table header for the year columns.
+    fiscal_years = set(re.findall(r"\bFY\s?((?:19|20)\d{2})\b", (source_text or "")[:200000], re.I))
+    return (bool(_COMPARATIVE_WORD.search(text)) or len(set(_YEAR.findall(headers))) >= 2
+            or len(fiscal_years) >= 2)
 
 
 def output_class(query: str) -> str:
