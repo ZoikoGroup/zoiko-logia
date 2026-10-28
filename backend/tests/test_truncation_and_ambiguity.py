@@ -45,6 +45,15 @@ def test_only_finished_statements_of_a_cut_off_answer_are_shown(cut, must_not_sh
     assert must_not_show not in shown.replace(STOPPED_NOTE, "")
 
 
+def test_a_row_of_runaway_empty_cells_is_cut_back_to_the_table():
+    journal = ("Payroll journal entry for the period covered by the payroll register, from the uploaded file.\n\n"
+               "| Account | Debit | Credit |\n|---|---|---|\n| Wage (gross) expense | 86,850.00 | |\n"
+               "| Employer National Insurance expense | 11,985.30 |" + " |" * 400 + "\n" + "| " * 50 + "|")
+    shown = usable_partial(journal)
+    assert "| Employer National Insurance expense | 11,985.30 |  |\n" in shown + "\n"
+    assert "| | |" not in shown and shown.endswith(STOPPED_NOTE)
+
+
 @pytest.mark.parametrize("cut", ["", "The allocated price for the server is", "## Results\nThe WACC is"])
 def test_too_little_finished_text_is_not_shown(cut):
     assert usable_partial(cut) == ""
