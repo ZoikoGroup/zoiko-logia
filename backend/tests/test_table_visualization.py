@@ -98,3 +98,13 @@ def test_validator_rejects_table_row_missing_a_column():
     result = VisualizationValidator().validate(spec)
     assert not result.passed
     assert any("missing column" in f for f in result.failures)
+
+
+def test_table_values_are_plain_digits_never_scientific_or_rounded():
+    # An uploaded file's 1,150,000 showed as "1.15e+06" and 1,000,000 as "1e+06".
+    from app.orchestration.visualization.orchestrator import _table_value
+    assert _table_value(1150000.0) == "1,150,000"
+    assert _table_value(1000000) == "1,000,000"
+    assert _table_value(1234567.89) == "1,234,567.89"        # ":g" kept six digits: 1.23457e+06
+    assert _table_value(101.5) == "101.5" and _table_value(0.00001) == "0.00001"
+    assert _table_value(-2500.0) == "-2,500"
