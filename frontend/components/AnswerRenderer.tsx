@@ -559,7 +559,7 @@ function MermaidDiagram({ code }: { code: string }) {
 // not raw ECharts options — that keeps the model's job easy and reliable. This
 // component maps the spec deterministically onto an ECharts option, so the
 // chart always renders correctly from whatever data was provided.
-type ChartSpec = {
+export type ChartSpec = {
   type?: "bar" | "line" | "area" | "waterfall" | "pie" | "sankey" | "scatter" | "radar" | "heatmap" | "candlestick";
   title?: string;
   categories?: string[];
@@ -610,7 +610,7 @@ function niceRadarMax(value: number): number {
   return Number((step * 5).toPrecision(12));
 }
 
-function buildChartOption(spec: ChartSpec): Record<string, unknown> {
+export function buildChartOption(spec: ChartSpec): Record<string, unknown> {
   const ink = cssVar("--ink", "#17211f");
   const muted = cssVar("--muted", "#667673");
   const line = cssVar("--line", "#eef3f2");
@@ -631,7 +631,9 @@ function buildChartOption(spec: ChartSpec): Record<string, unknown> {
           radius: ["35%", "62%"],
           center: ["50%", "46%"],
           data: spec.data ?? [],
-          label: { color: ink },
+          // Each slice states its share: a revenue-share chart showed only
+          // "Q1".."Q4", so the 21% / 23% / 25% / 31% could not be read off it.
+          label: { color: ink, formatter: (p: { name: string; percent: number }) => `${p.name}: ${p.percent.toFixed(2)}%` },
         },
       ],
     };
@@ -844,7 +846,13 @@ function buildChartOption(spec: ChartSpec): Record<string, unknown> {
       label:
         isLine || isStacked
           ? undefined
-          : { show: true, position: "top", color: ink, fontSize: 11 },
+          : {
+              show: true, position: "top", color: ink, fontSize: 11,
+              // 3,100, not 3100: the axis already uses thousands separators.
+              formatter: (p: { value: unknown }) =>
+                Number.isFinite(Number(p.value))
+                  ? Number(p.value).toLocaleString("en-US", { maximumFractionDigits: 2 }) : String(p.value ?? ""),
+            },
       ...(isLine ? { symbolSize: 7, lineStyle: { width: 3 } } : {}),
       ...(isArea ? { areaStyle: { opacity: 0.25 } } : {}),
     })),

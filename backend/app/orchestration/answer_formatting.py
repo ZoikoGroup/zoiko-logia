@@ -234,6 +234,64 @@ def remove_visual_placeholders(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", _PLACEHOLDER.sub("", text or ""))
 
 
+# Calculated percentages are shown to two decimals (QA bank: 38.00%, 25.00%).
+# The prompt asks for it, yet a pie-chart answer still gave "2100 / 10000 *
+# 100 = 21 %" and a Share column of "21 %". Only a calculated result is
+# changed: a value after "x 100 =", or a table cell under / beside a share,
+# margin, growth or percentage heading. A stated rate ("VAT at 20%") is not.
+_TIMES_100 = re.compile(r"((?:[×*]|\bx)\s*100\s*=\s*)(-?\d[\d,]*(?:\.\d)?)\s*%", re.I)
+_PERCENT_CELL = re.compile(r"^(-?\d[\d,]*(?:\.\d)?)\s*%$")
+_PERCENT_HEADING = re.compile(r"\bshare\b|\bmargin\b|\bgrowth\b|percent|\bmix\b|%", re.I)
+
+
+def _two_decimals(number: str) -> str:
+    return f"{float(number.replace(',', '')):,.2f}%"
+
+
+def _table_cells(line: str) -> list[str]:
+    return line.strip().strip("|").split("|")
+
+
+# A sentence that reports Kriton's own formatting instructions back to the
+# user: "All percentages are shown to two decimal places as required."
+_INSTRUCTION_ECHO = re.compile(
+    r"[^.\n]*\b(?:shown|presented|rounded|stated|given|formatted)\b[^.\n]{0,60}"
+    r"\bas\s+(?:required|instructed|per\s+(?:the\s+)?(?:instructions?|rules?|guidelines?))\b[^.\n]*\.?[ \t]*",
+    re.I,
+)
+
+
+def remove_instruction_echoes(text: str) -> str:
+    cleaned = _INSTRUCTION_ECHO.sub("", text or "")
+    return re.sub(r"\n{3,}", "\n\n", cleaned)
+
+
+def calculated_percentages(text: str) -> str:
+    lines = (text or "").split("\n")
+    out: list[str] = []
+    header: list[str] | None = None
+    for line in lines:
+        line = _TIMES_100.sub(lambda m: m.group(1) + _two_decimals(m.group(2)), line)
+        if line.lstrip().startswith("|"):
+            cells = _table_cells(line)
+            if header is None:
+                header = cells
+            elif not all(re.fullmatch(r"\s*:?-{2,}:?\s*", c) for c in cells):
+                row_label = cells[0] if cells else ""
+                fixed = []
+                for i, cell in enumerate(cells):
+                    match = _PERCENT_CELL.match(cell.strip())
+                    heading = header[i] if i < len(header) else ""
+                    if match and i and (_PERCENT_HEADING.search(heading) or _PERCENT_HEADING.search(row_label)):
+                        cell = f" {_two_decimals(match.group(1))} "
+                    fixed.append(cell)
+                line = "|" + "|".join(fixed) + "|"
+        else:
+            header = None
+        out.append(line)
+    return "\n".join(out)
+
+
 _NUMBERED_ITEM = re.compile(r"^(\s*)(\d+)([.)])(\s+)")
 
 

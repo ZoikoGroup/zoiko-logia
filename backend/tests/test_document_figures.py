@@ -2,6 +2,7 @@
 every file type, the real rejected financial-statements case, and the
 service hook that always uses the complete documents."""
 import io
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -199,6 +200,25 @@ def test_a_scanned_pdf_is_read_with_ocr():
     assert "Total Revenue = 2,264,000" in block and "Revenue by Product: Software = 1,199,000 (52.96%)" in block
 
 
+def test_h03_a_low_resolution_scan_is_marked_unreliable():
+    # A 180 x 104 pixel invoice ("$1,7??.??") was read as "83,777.77" with 0.9
+    # OCR confidence and stated as the exact amount owed.
+    pytest.importorskip("rapidocr_onnxruntime")
+    pytest.importorskip("pypdfium2")
+    from PIL import Image, ImageDraw
+
+    small = Image.new("RGB", (180, 104), "white")
+    ImageDraw.Draw(small).text((8, 40), "Amount due: $1,777.77", fill="black")
+    scan = io.BytesIO()
+    small.save(scan, "PDF", resolution=21)
+    [page] = extract_document("scan.pdf", scan.getvalue())
+    assert page.text.startswith("[Low-resolution scan: the page image is only 180 x 104 pixels")
+    assert "Do not state or guess any amount, date or reference from this page" in page.text
+    # Not one digit of the unreliable reading reaches the answer: the 180 and
+    # 104 are only in the note.
+    assert not re.search(r"\d", page.text.split("]", 1)[1])
+
+
 def test_ocr_unavailable_leaves_scanned_pages_empty_without_failing(monkeypatch):
     from PIL import Image
 
@@ -269,6 +289,78 @@ def test_a_fixed_asset_register_gets_its_straight_line_depreciation():
     assert "Plant and machinery = 3,742.50" in block and "IT equipment = 4,116.67" in block
     assert "FA201 = 2,362.50" in block
     assert "Total useful_life_years" not in block and "useful_life_years: average 4" in block
+
+
+def test_depreciation_that_does_not_fit_the_register_date_is_flagged():
+    register = "\n".join([
+        "asset_id\tdescription\tcategory\tcost\tacquired\tuseful_life_years\taccumulated_depreciation\tnet_book_value",
+        "FA201\tAsset 01\tPlant and machinery\t9450\t2023-02-15\t4\t4725\t4725",
+        "FA203\tAsset 03\tIT equipment\t12350\t2023-04-15\t3\t4116.67\t8233.33",
+        "FA205\tAsset 05\tPlant and machinery\t15250\t2023-06-15\t4\t7625\t7625",
+        "FA208\tAsset 08\tFixtures\t19600\t2023-09-15\t10\t17640\t1960",
+        "FA209\tAsset 09\tPlant and machinery\t21050\t2023-01-15\t4\t10525\t10525",
+        "FA214\tAsset 14\tMotor vehicles\t28300\t2023-06-15\t5\t28300\t0",
+    ])
+    block = verified_document_figures([_src(register, "kriton-test-fixed-assets.xlsx — 'Register'!1:7")])
+    # Two years of a four-year life from Jan/Feb/Jun 2023 put the register at about 2025.
+    assert "the assets put it at about Feb 2025 (middle value), ranging from Apr 2024 to Sep 2032" in block
+    assert ("FA208 (Fixtures, 10-year life, acquired Sep 2023) is 90% depreciated = 9 years of charge, "
+            "depreciated to about Sep 2032") in block
+    assert "FA214 (Motor vehicles, 5-year life, acquired Jun 2023) is fully depreciated, which takes until Jun 2028" in block
+    assert "FA201 (" not in block and "FA203 (" not in block
+    assert "the register is not ready for reporting until they are explained" in block
+
+
+PAYROLL = "\n".join([
+    "employee_id,employee_name,department,gross_pay,paye,employee_ni,employer_ni,pension,net_pay".replace(",", "\t"),
+    "EMP101\tEmployee 01\tFinance\t2585.00\t517.00\t206.80\t356.73\t129.25\t1731.95",
+    "EMP102\tEmployee 02\tOperations\t2770.00\t554.00\t221.60\t382.26\t138.50\t1855.90",
+    "EMP103\tEmployee 03\tSales\t2955.00\t591.00\t236.40\t407.79\t147.75\t1979.85",
+])
+
+
+def test_a_payroll_register_gets_a_balanced_payroll_journal():
+    block = verified_document_figures([_src(PAYROLL, "kriton-test-payroll-register.csv — rows 1:4")])
+    # Gross 8,310 + employer NI 1,146.78 = 9,456.78; HMRC 1,662 + 664.80 + 1,146.78 = 3,473.58,
+    # pension 415.50, net 5,567.70: 3,473.58 + 415.50 + 5,567.70 = 9,456.78.
+    assert ("Dr Gross wages and salaries expense 8,310 (gross_pay); "
+            "Dr Employer's National Insurance expense 1,146.78 (employer_ni); "
+            "Cr PAYE and National Insurance payable to the tax authority 3,473.58 (paye + employee_ni + employer_ni); "
+            "Cr Pension contributions payable 415.50 (pension); "
+            "Cr Net wages payable to employees 5,567.70 (net_pay); "
+            "total debits = 9,456.78; total credits = 9,456.78") in block
+    assert "does not balance" not in block
+    assert "Net pay check (gross_pay − paye − employee_ni − pension = net_pay): every row agrees" in block
+
+
+def test_a_payroll_row_whose_net_pay_does_not_agree_is_named():
+    wrong = PAYROLL.replace("1979.85", "1999.85")
+    block = verified_document_figures([_src(wrong, "payroll.csv — rows 1:4")])
+    assert "rows that do not agree: EMP103" in block
+    assert "The payroll journal does not balance: credits exceed debits by 20" in block
+
+
+def test_an_invoice_list_with_gross_and_net_is_not_a_payroll():
+    invoices = "\n".join(["invoice\tnet\tvat\tgross", "INV1\t100\t20\t120", "INV2\t200\t40\t240"])
+    assert "Payroll journal" not in verified_document_figures([_src(invoices, "inv.csv — rows 1:3")])
+
+
+def test_the_internal_block_name_never_reaches_the_answer():
+    from app.orchestration.document_figures import strip_internal_labels
+    assert strip_internal_labels("Source: asset-level figures summed – see “Verified figures”") == \
+        "Source: asset-level figures summed"
+    assert strip_internal_labels("Jan 2023 = 2 assets [verified figures].") == "Jan 2023 = 2 assets."
+    assert strip_internal_labels("They match the totals (see verified totals).") == "They match the totals."
+    assert strip_internal_labels("Source: “Verified figures” list of per-asset depreciation") == \
+        "Source: the document's figures of per-asset depreciation"
+    assert strip_internal_labels("Plain 627,000 stays.") == "Plain 627,000 stays."
+
+
+def test_a_register_without_accumulated_depreciation_gets_no_fit_check():
+    register = "\n".join([
+        "Asset ID\tCost\tAcquired\tUseful life (years)",
+        "A1\t1000\t2023-01-01\t5", "A2\t2000\t2023-02-01\t5", "A3\t3000\t2023-03-01\t5"])
+    assert "Depreciation fit" not in verified_document_figures([_src(register, "fa.xlsx — 'FA'!1:4")])
 
 
 def test_a_residual_value_is_not_depreciated():
@@ -463,3 +555,84 @@ def test_a_general_ledger_gets_each_account_balance_and_its_trial_balance():
     assert "- Cash at bank: 2 entries; total debits = 600; total credits = 250; closing balance = 350 Dr" in figures
     assert "- Revenue: 1 entries; total debits = 0; total credits = 1,000; closing balance = 1,000 Cr" in figures
     assert "total debit balances = 1,000; total credit balances = 1,000; difference = 0" in figures
+
+
+# Document 01 (QA question bank) cases G02, G03, G04, G06 and J04, on small
+# copies of the Northbridge fixtures.
+_SALES = ["transaction_id\tposted_date\tquarter\trow_type\tamount_usd",
+          "NB-1\t2025-01-31\tQ1\tTRANSACTION\t650000", "NB-2\t2025-04-30\tQ2\tTRANSACTION\t720000",
+          "NB-3\t2025-07-31\tQ3\tTRANSACTION\t800000", "NB-4\t2025-10-31\tQ4\tTRANSACTION\t950000"]
+
+
+def test_g04_an_exact_duplicate_transaction_is_named_and_left_out_of_the_totals():
+    rows = _SALES + ["NB-4\t2025-10-31\tQ4\tTRANSACTION\t950000"]
+    figures = verified_document_figures([_src("\n".join(rows), "dup.csv — Sheet1")])
+    assert "NB-4 appears 2 times with identical values" in figures
+    assert "the total including the repeats would be 4,070,000" in figures
+    assert "Total amount_usd = 3,120,000" in figures
+
+
+def test_an_id_repeated_with_different_values_is_named_not_removed():
+    rows = _SALES + ["NB-4\t2025-11-30\tQ4\tTRANSACTION\t10"]
+    figures = verified_document_figures([_src("\n".join(rows), "dup.csv — Sheet1")])
+    assert "repeated with different values (not excluded; check them): NB-4" in figures
+    assert "Total amount_usd = 3,120,010" in figures
+
+
+def test_g06_a_row_with_no_quarter_is_named_not_assigned():
+    rows = [r.replace("\tQ3\t", "\t\t") for r in _SALES]
+    figures = verified_document_figures([_src("\n".join(rows), "blank.csv — Sheet1")])
+    assert "1 row(s) have no quarter (NB-3 800,000)" in figures and "Do not assign them to a quarter" in figures
+    assert "Total amount_usd = 3,120,000" in figures and "Q3 =" not in figures
+
+
+def test_g02_a_summary_row_that_sums_the_rows_above_is_not_added_again():
+    summary = ["Quarter\tCalculated (USD 000s)", "Q1\t=SUM(Transactions!E2:E4) => 2100", "Q2\t2300",
+               "FY2025\t=SUM(B2:B3) => 4400"]
+    figures = verified_document_figures([_src("\n".join(summary), "book.xlsx — 'Summary'!1:4")])
+    assert "Total Calculated (USD 000s) = 4,400" in figures and "8,800" not in figures
+
+
+def test_g03_a_stale_displayed_value_is_flagged_against_the_recalculation():
+    sheet = ["Metric\tLegacy displayed\tRecalculated\tDifference",
+             "Q4 FY2025 (USD 000s)\t3200\t3100\t=B2-C2 => 100", "Release state\tINTENTIONALLY STALE\tDO NOT USE\tFAIL"]
+    figures = verified_document_figures([_src("\n".join(sheet), "stale.xlsx — 'Stale'!1:3")])
+    assert ("Q4 FY2025 (USD 000s): Legacy displayed 3,200, Recalculated 3,100, difference 100. "
+            "The Legacy displayed value is stale or wrong") in figures
+
+
+def test_j04_a_three_way_mismatch_is_held_not_paid():
+    match = ["record_type\treference\titem\tquantity\tunit_price_usd\ttotal_usd",
+             "PURCHASE_ORDER\tPO-1\tDock\t10\t100\t1000", "GOODS_RECEIPT\tGR-1\tDock\t9\t100\t900",
+             "SUPPLIER_INVOICE\tINV-1\tDock\t10\t100\t1000"]
+    figures = verified_document_figures([_src("\n".join(match), "3way.csv — Sheet1")])
+    assert "ordered 10, received 9, invoiced 10" in figures and "invoiced but not received = 1 (100 unmatched)" in figures
+    assert "Do not approve or pay it" in figures
+    assert "Total quantity" not in figures              # totals across order, receipt and invoice mean nothing
+
+
+_RELEASED_PDF = ("NORTHBRIDGE / INCOME STATEMENT\nNB-STMT-RELEASE-v1 | §1 Income Statement / p.1\nFY2025 Revenue\n10,000\n"
+                 "FY2025 Cost of goods sold\n(6,200)\nFY2025 NET INCOME\n900\nSTATUS: RELEASED FOR SYNTHETIC TESTING")
+_DRAFT_PDF = ("NORTHBRIDGE / UNRELEASED DRAFT\nDraft FY2025 Revenue\n10,500\nReleased FY2025 Revenue (F2)\n10,000\n"
+              "Difference\n500\nDraft authorization state\nUNRELEASED / REVIEW_REQUIRED")
+
+
+def test_f03_each_stated_figure_keeps_its_own_document_page_and_status():
+    # A draft's own line "Released FY2025 Revenue (F2) 10,000" was quoted as
+    # the released statement's notes.
+    figures = verified_document_figures(
+        [WebSource(title="released.pdf — Page 1", url="", snippet=_RELEASED_PDF, source_id="d1"),
+         WebSource(title="draft.pdf — Page 1", url="", snippet=_DRAFT_PDF, source_id="d2")],
+        "Which document is the released FY2025 revenue? Explain conflict.")
+    assert "Figures stated in 'released.pdf' (released), Page 1: FY2025 Revenue 10,000; " in figures
+    assert "FY2025 NET INCOME 900" in figures
+    assert "Figures stated in 'draft.pdf' (unreleased draft), Page 1: Draft FY2025 Revenue 10,500; " in figures
+    assert "'released.pdf' (released), Page 1 says FY2025 Revenue = 10,000; 'draft.pdf' (unreleased draft)" in figures
+    assert "a draft that repeats a released figure is still the draft speaking" in figures
+    assert not unreconciled_figures("Net income was 900 (released.pdf, page 1).", figures)
+
+
+def test_prose_with_a_few_numbers_is_not_read_as_stated_figures():
+    memo = "Internal audit memo\nWe tested 40 purchase orders.\nFindings\n5\nManagement responses are due."
+    assert "Figures stated in" not in verified_document_figures([WebSource(title="memo.docx — Section 1", url="",
+                                                                           snippet=memo, source_id="d1")])

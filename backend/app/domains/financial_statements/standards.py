@@ -137,8 +137,11 @@ BLOCKERS = {
 
 
 def rule_pack_digest(pack: dict | None = None) -> str:
+    """The pack's CONTENT fingerprint. Its review status is not part of it: a sign-off binds to
+    this digest, and any change to the rules makes a new digest that the sign-off does not cover."""
     pack = RULE_PACK if pack is None else pack
-    payload = {"pack": pack, "sources": SOURCES, "jurisdictions": JURISDICTION_PACKS,
+    payload = {"pack": {k: v for k, v in pack.items() if k not in ("status", "reviewed_by")}, "sources": SOURCES,
+               "jurisdictions": JURISDICTION_PACKS,
                "thresholds": {k: {s: [str(x) for x in v] for s, v in t.items()} for k, t in _UK_THRESHOLDS.items()},
                "dates": [str(d) for d in (_UK_THRESHOLD_CHANGE, FRS102_PERIODIC_REVIEW, FRS102_SUPPLIER_FINANCE,
                                           UK_ADAPTED_FORMATS_2027, IFRS18_EFFECTIVE, IFRS19_EFFECTIVE,

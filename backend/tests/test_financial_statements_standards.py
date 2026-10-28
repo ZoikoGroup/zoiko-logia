@@ -336,3 +336,12 @@ async def test_at19_a_replaced_approval_needs_revalidation_and_keeps_its_pinned_
     assert second["state"] == "REVALIDATION_REQUIRED"
     approved = await resolutions.approve(db, REVIEWER, second["id"])
     assert approved["state"] == "FROZEN"
+
+
+def test_a_sign_off_binds_to_the_rules_not_to_their_review_status():
+    from app.domains.financial_statements.standards import rule_pack_digest
+    base = rule_pack_digest()
+    # Recording the review does not change what was reviewed...
+    assert rule_pack_digest({**RULE_PACK, "status": "APPROVED", "reviewed_by": "Technical accountant"}) == base
+    # ...but any change to the rules makes a digest the sign-off does not cover.
+    assert rule_pack_digest({**RULE_PACK, "version": "changed"}) != base

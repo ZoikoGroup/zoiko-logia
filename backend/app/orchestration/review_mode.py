@@ -23,6 +23,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 from app.orchestration import claim_verification
 from app.orchestration.websearch import WebSource, is_pasted_material, web_search
@@ -215,7 +216,72 @@ def _cell(text: str) -> str:
     return " ".join((text or "").split()).replace("|", "\\|")
 
 
-def _render(verdicts: list[ClaimVerdict], used: dict[str, int], cited: list[WebSource]) -> str:
+_TOTAL_LABEL = re.compile(r"^\W*(?:grand\s+)?total\b", re.I)
+_SEPARATOR = re.compile(r"^:?-{2,}:?$")
+
+
+def _row_cells(line: str) -> list[str] | None:
+    """A table row's cells (markdown "| a | b |" or copied tab-separated),
+    [] for a markdown separator row, None for a line outside a table."""
+    text = line.strip()
+    if text.startswith("|"):
+        cells = [c.strip() for c in text.strip("|").split("|")]
+    elif "\t" in text:
+        cells = [c.strip() for c in text.split("\t")]
+    else:
+        return None
+    if all(_SEPARATOR.match(c) for c in cells if c):
+        return []
+    return cells if len(cells) >= 2 else None
+
+
+def _amount(cell: str) -> Decimal | None:
+    from app.orchestration.document_figures import _to_decimal
+    return _to_decimal(re.sub(r"[*\s %]", "", cell or ""))
+
+
+def figure_checks(material: str) -> list[str]:
+    """Each table in the text with a Total row: do its rows add up to it? The
+    claim check skips the text's own arithmetic, so a pasted table whose
+    total is wrong was never caught."""
+    tables: list[list[list[str]]] = [[]]
+    for line in material.splitlines():
+        cells = _row_cells(line)
+        if cells is None:
+            if tables[-1]:
+                tables.append([])
+        elif cells:
+            tables[-1].append(cells)
+    checks = []
+    for rows in tables:
+        if len(rows) < 3:
+            continue
+        header, body = rows[0], rows[1:]
+        for at, total in enumerate(body):
+            if not _TOTAL_LABEL.match(total[0]):
+                continue
+            items = [r for r in body[:at] if len(r) == len(total) and not _TOTAL_LABEL.match(r[0])]
+            for col in range(1, len(total)):
+                stated = _amount(total[col])
+                values = [_amount(r[col]) for r in items]
+                if stated is None or len(values) < 2 or None in values:
+                    continue
+                added = sum(values)
+                name = header[col] if col < len(header) and header[col] else f"column {col + 1}"
+                # Each row rounded to cents (or 0.01%) may leave a cent per row.
+                if abs(added - stated) <= Decimal("0.01") * len(values):
+                    checks.append(f"✅ **{_cell(name)}**: the {len(values)} rows add up to {added:,f}, "
+                                  f"matching the stated total {total[col].strip('* ')}.")
+                else:
+                    checks.append(f"❌ **{_cell(name)}**: the {len(values)} rows add up to {added:,f}, "
+                                  f"but the stated total is {total[col].strip('* ')} "
+                                  f"(difference {abs(added - stated):,f}).")
+            break
+    return checks
+
+
+def _render(verdicts: list[ClaimVerdict], used: dict[str, int], cited: list[WebSource],
+            figures: list[str] | None = None) -> str:
     # Named links, not [REF-n]: the answer view removes REF markers from the
     # text (the Sources panel lists them), which left the column blank.
     def sources(v: ClaimVerdict) -> str:
@@ -233,14 +299,21 @@ def _render(verdicts: list[ClaimVerdict], used: dict[str, int], cited: list[WebS
     if counts[PARTLY]:
         summary += f", {counts[PARTLY]} partly confirmed"
     summary += f", {counts[INCORRECT]} incorrect, {counts[UNVERIFIED]} could not be verified"
-    lines = [
-        f"I checked {len(verdicts)} factual claims in the text, each against sources searched for it: {summary}.",
-        "",
-        "| # | Claim in the text | Verdict | Source |",
-        "|---|---|---|---|",
-    ]
+    lines = []
+    if verdicts:
+        lines += [
+            f"I checked {len(verdicts)} factual claims in the text, each against sources searched for it: {summary}.",
+            "",
+            "| # | Claim in the text | Verdict | Source |",
+            "|---|---|---|---|",
+        ]
     for index, v in enumerate(verdicts, start=1):
         lines.append(f"| {index} | {_cell(v.claim)} | **{v.verdict}** | {sources(v)} |")
+    if figures:
+        wrong_totals = sum(check.startswith("❌") for check in figures)
+        lines += (["", "### Figures in the text"] if verdicts else []) + [
+            f"I added up the rows of each table with a total: {len(figures) - wrong_totals} total(s) match, "
+            f"{wrong_totals} do not.", ""] + [f"- {check}" for check in figures]
     wrong = [v for v in verdicts if v.verdict == INCORRECT]
     if wrong:
         lines += ["", "### Corrections"]
@@ -256,15 +329,19 @@ def _render(verdicts: list[ClaimVerdict], used: dict[str, int], cited: list[WebS
         lines += ["", "Claims marked \"Could not verify\" were not stated in the sources found for them. "
                       "They may still be correct; check them against the official standard."]
     lines += ["", "Opinions and recommendations in the text (for example about how a system should "
-                  "work) were not assessed — only factual claims about the rules."]
+                  "work) were not assessed — only factual claims about the rules"
+                  + (" and the totals of its tables." if figures else ".")]
     return "\n".join(lines)
 
 
 async def review_pasted_text(material: str, *, jurisdiction: str = "") -> ReviewResult | None:
-    """None when the text holds no checkable claim (the normal pipeline then answers)."""
+    """None when the text holds no checkable claim or total (the normal pipeline then answers)."""
+    figures = figure_checks(material)
     claims = await extract_review_claims(material)
     if not claims:
-        return None
+        if not figures:
+            return None
+        return ReviewResult(verdicts=[], sources=[], text=_render([], {}, [], figures))
     found = await _search_each(claims, jurisdiction)
     # One REF number per distinct source across all claims.
     sources: list[WebSource] = []
@@ -286,4 +363,4 @@ async def review_pasted_text(material: str, *, jurisdiction: str = "") -> Review
         for ref in v.refs:
             used.setdefault(ref, len(used) + 1)
     cited = [sources[int(ref.split("-")[1]) - 1] for ref in used]
-    return ReviewResult(verdicts=verdicts, sources=cited, text=_render(verdicts, used, cited))
+    return ReviewResult(verdicts=verdicts, sources=cited, text=_render(verdicts, used, cited, figures))

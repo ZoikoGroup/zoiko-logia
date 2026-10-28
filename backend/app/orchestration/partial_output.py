@@ -49,10 +49,35 @@ def _finished(line: str, lines_before: list[str]) -> bool:
     return bool(_SENTENCE_END.search(stripped))
 
 
+def _trim_runaway_cells(lines: list[str]) -> list[str]:
+    """A table row with more cells than its header, the extra ones empty, is
+    cut back to the header's width: a payroll journal stopped at the output
+    limit on "| Employer National Insurance expense | 11 985.30 | | | | | …",
+    which no longer rendered as a row of the table. A row of only empty cells
+    is dropped."""
+    kept: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        header = None
+        for earlier in reversed(kept):
+            if not earlier.lstrip().startswith("|"):
+                break
+            header = earlier
+        if stripped.startswith("|") and header is not None and not _TABLE_SEPARATOR.match(stripped):
+            cells = stripped.strip("|").split("|")
+            width = _cells(header)
+            if not any(c.strip() for c in cells):
+                continue
+            if len(cells) > width and not any(c.strip() for c in cells[width:]):
+                line = "| " + " | ".join(c.strip() for c in cells[:width]) + " |"
+        kept.append(line)
+    return kept
+
+
 def usable_partial(text: str) -> str:
     """The finished part of a cut-off answer, marked as stopped, or "" when too
     little of it is finished to be worth showing."""
-    lines = (text or "").rstrip().splitlines()
+    lines = _trim_runaway_cells((text or "").rstrip().splitlines())
     # An unclosed code block (a chart, a formula) is dropped from its opening.
     fences = [i for i, line in enumerate(lines) if line.strip().startswith("```")]
     if len(fences) % 2:
