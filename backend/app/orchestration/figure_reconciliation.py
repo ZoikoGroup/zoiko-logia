@@ -166,6 +166,9 @@ def material_figures(text: str) -> list[tuple[str, float]]:
 
 
 _YEAR = re.compile(r"(?:19|20)\d{2}")
+_THOUSANDS_UNIT = re.compile(r"\d\s?k$", re.I)
+_THOUSANDS_CONTEXT = re.compile(r"\bthousands\b|\b000s\b|\b(?:USD|GBP|EUR|INR|AUD|CAD)\s?k\b|[£$€]\s?k\b|\(k\)|\bin\s+'?000",
+                                re.I)
 _LIST_ITEM = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
 _BASE_MAX = 60
 
@@ -583,6 +586,9 @@ def unreconciled_figures(text: str, evidence: str, calculations: str = "", state
     facts = stated if stated is not None else evidence
     direct = _direct_values(evidence, calculations) + _line_totals(facts)
     direct_percent = _percent_values(evidence, calculations)
+    # Amounts the source or the answer says are in thousands ("values USD
+    # thousands", "Amount (USD k)").
+    thousands_context = bool(_THOUSANDS_CONTEXT.search(f"{evidence}\n{body}"))
     base = _derivation_base(facts, calculations)
     pending: list[tuple[str, float, list[float], float]] = []
     coarse: list[tuple[str, float]] = []
@@ -621,6 +627,18 @@ def unreconciled_figures(text: str, evidence: str, calculations: str = "", state
             if (is_known(amount, direct_percent if _is_percentage(shown) else direct, tolerance)
                     or (_is_percentage(shown) and is_known(amount, reference_percentages(piece), tolerance))):
                 accepted.append(amount)
+            elif (_is_percentage(shown) and abs(amount - 100) <= tolerance
+                  and any(is_known(other, direct, _scaled_tolerance(s, v))
+                          for other, (s, v) in zip(amounts, figures) if other is not amount and not _is_percentage(s))):
+                # A row's whole as 100% of itself: "| Revenue | 10,000 | 100.00% |"
+                # in a waterfall's share column removed its starting row.
+                accepted.append(amount)
+            elif (_THOUSANDS_UNIT.search(shown) and thousands_context
+                  and is_known(value, direct, tolerance_for(shown, value))):
+                # "10,000 k" in an answer whose source states amounts in USD
+                # thousands is the stated 10,000, not 10,000,000: read as the
+                # latter, a waterfall lost its revenue row and its chart.
+                accepted.append(value)
             elif _absolute(shown, value) is not None:
                 # "£4.8m" is a rounded display: accepted as a rounding of a
                 # stated or calculated amount, never derived — at that

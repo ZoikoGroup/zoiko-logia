@@ -170,7 +170,9 @@ def clean_agent_text(text: str, *, chart_attached: bool) -> str:
 
 # An explicit chart request in the user's own question (not the broader
 # wants_visual(), which also fires on "compare" or "trend").
-_CHART_REQUEST = re.compile(r"\b(chart|charts|graph|graphs|plot|candlestick|visuali[sz]e)\b", re.I)
+# "Build a waterfall from revenue to net income" names a chart without the
+# word: no render_chart call was made and no reminder was sent (QA case D03).
+_CHART_REQUEST = re.compile(r"\b(chart|charts|graph|graphs|plot|candlestick|visuali[sz]e|waterfall)\b", re.I)
 
 
 def chart_requested(question: str) -> bool:
