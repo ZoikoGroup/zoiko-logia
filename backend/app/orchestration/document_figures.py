@@ -1084,7 +1084,11 @@ def _trial_balance_lines(table: Table, by_month: bool = True) -> list[str]:
                      f"net margin = {_pct(after_tax, revenue)}")
     if total("current_liability"):
         inventory = sum(v for k, v in groups.get("current_asset", []) if re.search(r"inventor|stock", k, re.I))
-        lines.append(f"- Current ratio = {total('current_asset') / total('current_liability'):.2f}; quick ratio = "
+        # Each ratio states its formula: the quick ratio was described as
+        # "(Cash + Petty cash ÷ Current liabilities)" beside this value.
+        lines.append(f"- Current ratio (current assets ÷ current liabilities) = "
+                     f"{total('current_asset') / total('current_liability'):.2f}; quick ratio ((current assets − "
+                     f"inventory) ÷ current liabilities) = "
                      f"{(total('current_asset') - inventory) / total('current_liability'):.2f}")
     if groups.get("suspense"):
         suspense = total("suspense")

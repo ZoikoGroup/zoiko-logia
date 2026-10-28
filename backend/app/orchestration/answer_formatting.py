@@ -252,6 +252,20 @@ def _table_cells(line: str) -> list[str]:
     return line.strip().strip("|").split("|")
 
 
+# A sentence that reports Kriton's own formatting instructions back to the
+# user: "All percentages are shown to two decimal places as required."
+_INSTRUCTION_ECHO = re.compile(
+    r"[^.\n]*\b(?:shown|presented|rounded|stated|given|formatted)\b[^.\n]{0,60}"
+    r"\bas\s+(?:required|instructed|per\s+(?:the\s+)?(?:instructions?|rules?|guidelines?))\b[^.\n]*\.?[ \t]*",
+    re.I,
+)
+
+
+def remove_instruction_echoes(text: str) -> str:
+    cleaned = _INSTRUCTION_ECHO.sub("", text or "")
+    return re.sub(r"\n{3,}", "\n\n", cleaned)
+
+
 def calculated_percentages(text: str) -> str:
     lines = (text or "").split("\n")
     out: list[str] = []

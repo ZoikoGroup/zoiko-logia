@@ -4591,8 +4591,10 @@ async def ask_kriton(
     # Rewrites after the first normalisation can reintroduce LaTeX, which the
     # answer view shows raw ("\\(40{,}000 \\times 0.06 = 2{,}400\\)").
     from app.orchestration.answer_formatting import latex_to_plain
-    from app.orchestration.answer_formatting import calculated_percentages, remove_visual_placeholders
-    final_text = calculated_percentages(remove_visual_placeholders(latex_to_plain(final_text)))
+    from app.orchestration.answer_formatting import (
+        calculated_percentages, remove_instruction_echoes, remove_visual_placeholders,
+    )
+    final_text = remove_instruction_echoes(calculated_percentages(remove_visual_placeholders(latex_to_plain(final_text))))
     # A requested chart type that was not drawn is named, with the reason
     # (chart_substitution.py).
     from app.orchestration.chart_substitution import substitution_note

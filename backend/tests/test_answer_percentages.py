@@ -25,3 +25,24 @@ def test_stated_rates_and_other_text_are_unchanged():
             "| Item | Rate |\n|---|---|\n| Standard VAT | 20 % |\n"
             "Box 100 = 5 is a label, and 38.25% stays as it is.")
     assert calculated_percentages(text) == text
+
+
+def test_an_echo_of_kriton_s_own_instructions_is_removed():
+    from app.orchestration.answer_formatting import remove_instruction_echoes
+    text = ("| Gross margin | 43.00% |\n\nAll percentages are shown to two decimal places as required.\n\n"
+            "Prepared by: Kriton – illustrative worksheet.")
+    out = remove_instruction_echoes(text)
+    assert "as required" not in out and "| Gross margin | 43.00% |" in out and "Prepared by" in out
+    # An ordinary "as required" about the user's own obligations stays.
+    kept = "The company must file its VAT return as required by HMRC."
+    assert remove_instruction_echoes(kept) == kept
+
+
+def test_trial_balance_ratios_state_their_formulas():
+    from app.orchestration.document_figures import verified_document_figures
+    from app.orchestration.websearch import WebSource
+    tb = "\n".join(["account_name\tdebit\tcredit", "Revenue\t\t1000", "Cost of sales\t600\t", "Inventory\t300\t",
+                    "Cash at bank\t400\t", "Trade payables\t\t200", "Share capital\t\t200", "Rent\t100\t"])
+    figures = verified_document_figures([WebSource(title="tb.csv — Sheet1", url="", snippet=tb, source_id="d1")])
+    assert "quick ratio ((current assets − inventory) ÷ current liabilities) = 2.00" in figures
+    assert "Current ratio (current assets ÷ current liabilities) = 3.50" in figures
