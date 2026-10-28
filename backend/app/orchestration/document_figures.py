@@ -645,19 +645,179 @@ def _kind_lines(rows: list[list[str]], name, category: list[int], keys: list[int
     return lines
 
 
+# Data checks the QA bank (Document 01, G02-G06 and J04) requires before any
+# total: a Summary tab's =SUM row was added again (20,000 for 10,000), an
+# exact duplicate transaction was counted (11,150,000), a row with a blank
+# quarter vanished from the quarters, a stale displayed value was not
+# flagged, and a purchase order / receipt / invoice gave "Total quantity =
+# 29" instead of the unmatched unit.
+# "=SUM(B2:B5) => 10000": a total of rows above it in the same column.
+_SAME_COLUMN_SUM = re.compile(r"^=\s*SUM\(\s*\$?([A-Z]{1,3})\$?\d+\s*:\s*\$?\1\$?\d+\s*\)\s*=>", re.IGNORECASE)
+_ID_HEADER = re.compile(r"(?:^|[\s_])(?:id|ref|reference|no|number|code)$|^(?:id|ref)[\s_]|_id\b|transaction[\s_]*id",
+                        re.IGNORECASE)
+_DISPLAYED_HEADER = re.compile(r"displayed|cached|reported|stated|legacy|shown", re.IGNORECASE)
+_RECOMPUTED_HEADER = re.compile(r"recalculated|recomputed|calculated|expected|computed", re.IGNORECASE)
+_KIND_HEADER = re.compile(r"record[\s_]*type|document[\s_]*type|^type$|doc[\s_]*type", re.IGNORECASE)
+_QUANTITY_HEADER = re.compile(r"quantity|qty|units", re.IGNORECASE)
+_AMOUNT_HEADER = re.compile(r"total|amount|value", re.IGNORECASE)
+_PO = re.compile(r"purchase[\s_]*order|^po\b", re.IGNORECASE)
+_RECEIPT = re.compile(r"goods[\s_]*receipt|received|receiving|^grn?\b", re.IGNORECASE)
+_INVOICE = re.compile(r"invoice|bill", re.IGNORECASE)
+MAX_FINDINGS_LISTED = 12
+
+
+def _is_total(row: list[str]) -> bool:
+    """A row labelled Total (its first filled cell: a trial balance's Total
+    row has an empty account code before it), or one whose formula sums the
+    rows above it in the same column."""
+    label = next((c for c in row if c.strip()), "")
+    return bool(_TOTAL_ROW.match(label)) or any(_SAME_COLUMN_SUM.match((c or "").strip()) for c in row)
+
+
+def _row_name(row: list[str], id_col: int | None) -> str:
+    if id_col is not None and id_col < len(row) and row[id_col].strip():
+        return row[id_col].strip()
+    return next((c.strip() for c in row if c.strip()), "row")
+
+
+def _id_column(table: Table) -> int | None:
+    for i, header in enumerate(table.headers):
+        cells = [row[i].strip() for row in table.rows if i < len(row) and row[i].strip()]
+        if cells and _ID_HEADER.search(header or "") and len(set(cells)) >= 0.8 * len(cells):
+            return i
+    return None
+
+
+def _duplicate_lines(table: Table, rows: list[list[str]], amount: int | None) -> tuple[list[list[str]], list[str]]:
+    """Exact repeats of a row with the same ID are excluded from the totals
+    and named; the same ID with different values is named, not excluded."""
+    id_col = _id_column(table)
+    if id_col is None:
+        return rows, []
+    seen: dict[str, list[str]] = {}
+    kept, exact, differing = [], defaultdict(int), []
+    for row in rows:
+        key = row[id_col].strip() if id_col < len(row) else ""
+        if key and key in seen:
+            if [c.strip() for c in seen[key]] == [c.strip() for c in row]:
+                exact[key] += 1
+                continue
+            differing.append(key)
+        elif key:
+            seen[key] = row
+        kept.append(row)
+    lines = []
+    if exact:
+        dropped = sum(exact.values())
+        removed = sum((_to_decimal(seen[k][amount]) or Decimal("0")) * n for k, n in exact.items()) \
+            if amount is not None and all(amount < len(seen[k]) for k in exact) else None
+        lines.append(f"- Duplicate rows: {', '.join(f'{k} appears {n + 1} times' for k, n in list(exact.items())[:MAX_FINDINGS_LISTED])} "
+                     f"with identical values; {dropped} repeated row(s) are excluded from every total below"
+                     + (f" ({table.headers[amount]} {_fmt(float(removed))} excluded; the total including the "
+                        f"repeats would be {_fmt(float(sum((_to_decimal(r[amount]) or Decimal('0')) for r in rows if amount < len(r))))})"
+                        if removed is not None else "")
+                     + ". Keep the original rows for the audit trail; confirm the duplicate with the source system.")
+    if differing:
+        lines.append(f"- {table.headers[id_col]} repeated with different values (not excluded; check them): "
+                     + ", ".join(dict.fromkeys(differing[:MAX_FINDINGS_LISTED])))
+    return kept, lines
+
+
+def _blank_category_lines(table: Table, rows: list[list[str]], category: list[int], amount: int | None) -> list[str]:
+    """A row with an amount but no quarter / category is in the totals but in
+    no group, and its group must not be guessed."""
+    id_col = _id_column(table)
+    lines = []
+    for c in category:
+        blank = [r for r in rows if not (c < len(r) and r[c].strip())
+                 and amount is not None and amount < len(r) and _to_decimal(r[amount]) is not None]
+        if blank and len(blank) <= len(rows) / 2:
+            listed = "; ".join(f"{_row_name(r, id_col)} {_fmt(float(_to_decimal(r[amount])))}" for r in blank[:MAX_FINDINGS_LISTED])
+            lines.append(f"- {len(blank)} row(s) have no {table.headers[c]} ({listed}): they are in the totals but in no "
+                         f"{table.headers[c]} below. Do not assign them to a {table.headers[c]}; report the known "
+                         f"{table.headers[c]} figures and the unassigned amount separately.")
+    return lines
+
+
+def _value_check_lines(table: Table, rows: list[list[str]]) -> list[str]:
+    """A displayed / reported value against its recalculated one, row by row."""
+    shown = next((i for i, h in enumerate(table.headers) if _DISPLAYED_HEADER.search(h or "")), None)
+    redone = next((i for i, h in enumerate(table.headers)
+                   if i != shown and _RECOMPUTED_HEADER.search(h or "") and not _DISPLAYED_HEADER.search(h or "")), None)
+    if shown is None or redone is None:
+        return []
+    pairs = [(r, _to_decimal(r[shown]), _to_decimal(r[redone])) for r in rows if max(shown, redone) < len(r)]
+    pairs = [(r, a, b) for r, a, b in pairs if a is not None and b is not None]
+    if not pairs:
+        return []
+    differ = [(r, a, b) for r, a, b in pairs if a != b]
+    head = f"- {table.headers[shown]} against {table.headers[redone]}"
+    if not differ:
+        return [f"{head}: every row agrees ({len(pairs)} rows)"]
+    return [f"{head}: {len(differ)} of {len(pairs)} rows do not agree — "
+            + "; ".join(f"{_row_name(r, None)}: {table.headers[shown]} {_fmt(float(a))}, {table.headers[redone]} "
+                        f"{_fmt(float(b))}, difference {_fmt(float(a - b))}" for r, a, b in differ[:MAX_FINDINGS_LISTED])
+            + f". The {table.headers[shown]} value is stale or wrong: do not use it as the result; use the "
+              f"recalculated figure and flag the difference for review."]
+
+
+def _three_way_lines(table: Table) -> list[str]:
+    """A purchase order, goods receipt and supplier invoice: the unmatched
+    quantity and amount, and a hold instead of a payment."""
+    kind = next((i for i, h in enumerate(table.headers) if _KIND_HEADER.search(h or "")), None)
+    qty = next((i for i, h in enumerate(table.headers) if _QUANTITY_HEADER.search(h or "")), None)
+    if kind is None or qty is None:
+        return []
+    amount = next((i for i, h in enumerate(table.headers) if i not in (kind, qty) and _AMOUNT_HEADER.search(h or "")
+                   and not re.search(r"unit|price", h or "", re.I)), None)
+    found: dict[str, list[list[str]]] = {"po": [], "receipt": [], "invoice": []}
+    for row in table.rows:
+        label = row[kind] if kind < len(row) else ""
+        for key, pattern in (("po", _PO), ("receipt", _RECEIPT), ("invoice", _INVOICE)):
+            if pattern.search(label):
+                found[key].append(row)
+                break
+    if not all(found.values()):
+        return []
+    total = lambda rows, i: sum((_to_decimal(r[i]) or Decimal("0")) for r in rows if i < len(r))  # noqa: E731
+    ordered, received, invoiced = (total(found[k], qty) for k in ("po", "receipt", "invoice"))
+    refs = ", ".join(_row_name(r, _id_column(table)) for k in ("po", "receipt", "invoice") for r in found[k])
+    line = (f"- Three-way match ({refs}): ordered {_fmt(float(ordered))}, received {_fmt(float(received))}, "
+            f"invoiced {_fmt(float(invoiced))}")
+    if amount is not None:
+        billed, got = total(found["invoice"], amount), total(found["receipt"], amount)
+        line += f"; invoice {table.headers[amount]} {_fmt(float(billed))} against receipt {_fmt(float(got))}"
+    if invoiced == received == ordered:
+        return [line + "; quantities match. Payment still needs the authorized approval; do not record it as paid."]
+    unmatched = invoiced - received
+    line += f"; invoiced but not received = {_fmt(float(unmatched))}"
+    if amount is not None:
+        line += f" ({_fmt(float(total(found['invoice'], amount) - total(found['receipt'], amount)))} unmatched)"
+    return [line + ". The invoice does not match: place it on hold / exception for authorized review. Do not approve "
+                   "or pay it, and do not say a payment was made."]
+
+
 def _table_lines(table: Table, include_top_n: bool = True, by_month_group: bool = True,
                  query: str | None = None) -> list[str]:
-    # The label is the first filled cell: a trial balance's Total row has an
-    # empty account code before it, and was counted as an account (50%).
-    rows = [r for r in table.rows if not _TOTAL_ROW.match(next((c for c in r if c.strip()), ""))]
+    heading = f"Table '{table.title}' ({', '.join(h for h in table.headers if h)})"
+    three_way = _three_way_lines(table)
+    if three_way:
+        # Totals across an order, a receipt and an invoice mean nothing.
+        return [f"{heading}: {len(table.rows)} records", *three_way]
+    rows = [r for r in table.rows if not _is_total(r)]
     if not rows:
         return []
+    checks = _value_check_lines(table, rows)
     table = Table(table.title, table.headers, rows, table.key, table.sheet)
     numeric, category, rates = _columns(table)
     if not numeric:
-        return []
+        return [f"{heading}: {len(rows)} data rows", *checks] if checks else []
+    amount = next((i for i in numeric if i not in rates), None)
+    rows, duplicates = _duplicate_lines(table, rows, amount)
+    checks += duplicates + _blank_category_lines(table, rows, category, amount)
+    table = Table(table.title, table.headers, rows, table.key, table.sheet)
     name = lambda i: table.headers[i] or f"Column {i + 1}"  # noqa: E731
-    lines = [f"Table '{table.title}' ({', '.join(h for h in table.headers if h)}): {len(rows)} data rows"]
+    lines = [f"{heading}: {len(rows)} data rows", *checks]
     running = _running_balance_column(table)
     totals: dict[int, float] = {}
     for i in numeric:

@@ -535,3 +535,57 @@ def test_a_general_ledger_gets_each_account_balance_and_its_trial_balance():
     assert "- Cash at bank: 2 entries; total debits = 600; total credits = 250; closing balance = 350 Dr" in figures
     assert "- Revenue: 1 entries; total debits = 0; total credits = 1,000; closing balance = 1,000 Cr" in figures
     assert "total debit balances = 1,000; total credit balances = 1,000; difference = 0" in figures
+
+
+# Document 01 (QA question bank) cases G02, G03, G04, G06 and J04, on small
+# copies of the Northbridge fixtures.
+_SALES = ["transaction_id\tposted_date\tquarter\trow_type\tamount_usd",
+          "NB-1\t2025-01-31\tQ1\tTRANSACTION\t650000", "NB-2\t2025-04-30\tQ2\tTRANSACTION\t720000",
+          "NB-3\t2025-07-31\tQ3\tTRANSACTION\t800000", "NB-4\t2025-10-31\tQ4\tTRANSACTION\t950000"]
+
+
+def test_g04_an_exact_duplicate_transaction_is_named_and_left_out_of_the_totals():
+    rows = _SALES + ["NB-4\t2025-10-31\tQ4\tTRANSACTION\t950000"]
+    figures = verified_document_figures([_src("\n".join(rows), "dup.csv — Sheet1")])
+    assert "NB-4 appears 2 times with identical values" in figures
+    assert "the total including the repeats would be 4,070,000" in figures
+    assert "Total amount_usd = 3,120,000" in figures
+
+
+def test_an_id_repeated_with_different_values_is_named_not_removed():
+    rows = _SALES + ["NB-4\t2025-11-30\tQ4\tTRANSACTION\t10"]
+    figures = verified_document_figures([_src("\n".join(rows), "dup.csv — Sheet1")])
+    assert "repeated with different values (not excluded; check them): NB-4" in figures
+    assert "Total amount_usd = 3,120,010" in figures
+
+
+def test_g06_a_row_with_no_quarter_is_named_not_assigned():
+    rows = [r.replace("\tQ3\t", "\t\t") for r in _SALES]
+    figures = verified_document_figures([_src("\n".join(rows), "blank.csv — Sheet1")])
+    assert "1 row(s) have no quarter (NB-3 800,000)" in figures and "Do not assign them to a quarter" in figures
+    assert "Total amount_usd = 3,120,000" in figures and "Q3 =" not in figures
+
+
+def test_g02_a_summary_row_that_sums_the_rows_above_is_not_added_again():
+    summary = ["Quarter\tCalculated (USD 000s)", "Q1\t=SUM(Transactions!E2:E4) => 2100", "Q2\t2300",
+               "FY2025\t=SUM(B2:B3) => 4400"]
+    figures = verified_document_figures([_src("\n".join(summary), "book.xlsx — 'Summary'!1:4")])
+    assert "Total Calculated (USD 000s) = 4,400" in figures and "8,800" not in figures
+
+
+def test_g03_a_stale_displayed_value_is_flagged_against_the_recalculation():
+    sheet = ["Metric\tLegacy displayed\tRecalculated\tDifference",
+             "Q4 FY2025 (USD 000s)\t3200\t3100\t=B2-C2 => 100", "Release state\tINTENTIONALLY STALE\tDO NOT USE\tFAIL"]
+    figures = verified_document_figures([_src("\n".join(sheet), "stale.xlsx — 'Stale'!1:3")])
+    assert ("Q4 FY2025 (USD 000s): Legacy displayed 3,200, Recalculated 3,100, difference 100. "
+            "The Legacy displayed value is stale or wrong") in figures
+
+
+def test_j04_a_three_way_mismatch_is_held_not_paid():
+    match = ["record_type\treference\titem\tquantity\tunit_price_usd\ttotal_usd",
+             "PURCHASE_ORDER\tPO-1\tDock\t10\t100\t1000", "GOODS_RECEIPT\tGR-1\tDock\t9\t100\t900",
+             "SUPPLIER_INVOICE\tINV-1\tDock\t10\t100\t1000"]
+    figures = verified_document_figures([_src("\n".join(match), "3way.csv — Sheet1")])
+    assert "ordered 10, received 9, invoiced 10" in figures and "invoiced but not received = 1 (100 unmatched)" in figures
+    assert "Do not approve or pay it" in figures
+    assert "Total quantity" not in figures              # totals across order, receipt and invoice mean nothing
