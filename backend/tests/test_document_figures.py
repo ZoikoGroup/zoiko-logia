@@ -589,3 +589,30 @@ def test_j04_a_three_way_mismatch_is_held_not_paid():
     assert "ordered 10, received 9, invoiced 10" in figures and "invoiced but not received = 1 (100 unmatched)" in figures
     assert "Do not approve or pay it" in figures
     assert "Total quantity" not in figures              # totals across order, receipt and invoice mean nothing
+
+
+_RELEASED_PDF = ("NORTHBRIDGE / INCOME STATEMENT\nNB-STMT-RELEASE-v1 | §1 Income Statement / p.1\nFY2025 Revenue\n10,000\n"
+                 "FY2025 Cost of goods sold\n(6,200)\nFY2025 NET INCOME\n900\nSTATUS: RELEASED FOR SYNTHETIC TESTING")
+_DRAFT_PDF = ("NORTHBRIDGE / UNRELEASED DRAFT\nDraft FY2025 Revenue\n10,500\nReleased FY2025 Revenue (F2)\n10,000\n"
+              "Difference\n500\nDraft authorization state\nUNRELEASED / REVIEW_REQUIRED")
+
+
+def test_f03_each_stated_figure_keeps_its_own_document_page_and_status():
+    # A draft's own line "Released FY2025 Revenue (F2) 10,000" was quoted as
+    # the released statement's notes.
+    figures = verified_document_figures(
+        [WebSource(title="released.pdf — Page 1", url="", snippet=_RELEASED_PDF, source_id="d1"),
+         WebSource(title="draft.pdf — Page 1", url="", snippet=_DRAFT_PDF, source_id="d2")],
+        "Which document is the released FY2025 revenue? Explain conflict.")
+    assert "Figures stated in 'released.pdf' (released), Page 1: FY2025 Revenue 10,000; " in figures
+    assert "FY2025 NET INCOME 900" in figures
+    assert "Figures stated in 'draft.pdf' (unreleased draft), Page 1: Draft FY2025 Revenue 10,500; " in figures
+    assert "'released.pdf' (released), Page 1 says FY2025 Revenue = 10,000; 'draft.pdf' (unreleased draft)" in figures
+    assert "a draft that repeats a released figure is still the draft speaking" in figures
+    assert not unreconciled_figures("Net income was 900 (released.pdf, page 1).", figures)
+
+
+def test_prose_with_a_few_numbers_is_not_read_as_stated_figures():
+    memo = "Internal audit memo\nWe tested 40 purchase orders.\nFindings\n5\nManagement responses are due."
+    assert "Figures stated in" not in verified_document_figures([WebSource(title="memo.docx — Section 1", url="",
+                                                                           snippet=memo, source_id="d1")])

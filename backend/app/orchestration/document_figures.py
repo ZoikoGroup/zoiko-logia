@@ -1257,6 +1257,91 @@ def strip_internal_labels(text: str) -> str:
     return text
 
 
+# Statement PDFs often put each label and its amount on separate lines
+# ("FY2025 Revenue" / "10,000"), which no table reader saw, so the model read
+# raw text. With a released statement and an unreleased draft attached, it
+# credited the draft's own line "Released FY2025 Revenue (F2) 10,000" to the
+# released statement's notes (Document 01 F03). Each stated figure is listed
+# with its file, page and the document's release status, and a figure the
+# documents state differently is set out side by side.
+_UNRELEASED = re.compile(r"\bunreleased\b|\bnever\s+released\b|\bnot\s+(?:yet\s+)?released\b|\bdraft\b|"
+                         r"\breview[\s_]+required\b", re.IGNORECASE)
+_RELEASED = re.compile(r"\breleased\b|\bfinal\b|\bapproved\b|\bpublished\b", re.IGNORECASE)
+_LABEL_LINE = re.compile(r"^(?=.*[A-Za-z]{3})[^|]{3,80}$")
+_STATUS_WORDS = re.compile(r"\b(?:draft|released|unreleased|approved|final|provisional)\b|\(F\d\)|\bv\d+\b", re.IGNORECASE)
+MIN_STATED_FIGURES = 3
+MAX_STATED_PER_PAGE = 30
+
+
+def _single_amount(line: str) -> Decimal | None:
+    text = line.strip()
+    return _to_decimal(text) if text and len(text) <= 24 else None
+
+
+def _stated_figures(text: str) -> list[tuple[str, Decimal]]:
+    """(label, amount) for each label line directly followed by a line that
+    is one amount and nothing else."""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    pairs = []
+    for label, value_line in zip(lines, lines[1:]):
+        amount = _single_amount(value_line)
+        if amount is not None and _single_amount(label) is None and _LABEL_LINE.match(label):
+            pairs.append((label, amount))
+    return pairs
+
+
+def _document_status(text: str, file: str) -> str:
+    if _UNRELEASED.search(text) or _UNRELEASED.search(file):
+        return "unreleased draft"
+    if _RELEASED.search(text) or _RELEASED.search(file):
+        return "released"
+    return "release status not stated"
+
+
+def _stated_figure_lines(sources: list[WebSource]) -> list[str]:
+    pages: "OrderedDict[str, list[tuple[str, str]]]" = OrderedDict()   # file -> [(location, text)]
+    for source in sources:
+        title = source.title or ""
+        location = title.split(" — ", 1)[1] if " — " in title else ""
+        pages.setdefault(_file_of(source), []).append((location, source.snippet or ""))
+    found: dict[str, list[tuple[str, str, Decimal]]] = {}
+    status: dict[str, str] = {}
+    for file, chunks in pages.items():
+        figures = [(location, label, amount) for location, text in chunks for label, amount in _stated_figures(text)]
+        if len(figures) >= MIN_STATED_FIGURES:
+            found[file] = figures
+            status[file] = _document_status(" ".join(text for _, text in chunks), file)
+    if not found:
+        return []
+    lines = []
+    for file, figures in found.items():
+        by_page: "OrderedDict[str, list[str]]" = OrderedDict()
+        for location, label, amount in figures:
+            by_page.setdefault(location, []).append(f"{label} {_fmt(float(amount))}")
+        for location, items in by_page.items():
+            lines.append(f"Figures stated in '{file}' ({status[file]}){', ' + location if location else ''}: "
+                         + "; ".join(items[:MAX_STATED_PER_PAGE]))
+    if len(found) > 1:
+        same: dict[str, list[tuple[str, str, str, Decimal]]] = defaultdict(list)
+        for file, figures in found.items():
+            for location, label, amount in figures:
+                key = " ".join(_STATUS_WORDS.sub(" ", label).lower().split())
+                if key:
+                    same[key].append((file, location, label, amount))
+        conflicts = [entries for entries in same.values()
+                     if len({e[3] for e in entries}) > 1 and len({e[0] for e in entries}) > 1]
+        for entries in conflicts[:MAX_FINDINGS_LISTED]:
+            lines.append("- Stated differently: " + "; ".join(
+                f"'{file}' ({status[file]}){', ' + location if location else ''} says {label} = {_fmt(float(amount))}"
+                for file, location, label, amount in entries))
+        if any(status[e[0]] == "released" for entries in conflicts for e in entries) and \
+                any(status[e[0]] == "unreleased draft" for entries in conflicts for e in entries):
+            lines.append("- The released document controls the reported figure; an unreleased draft does not, even if "
+                         "it is newer. Quote each figure only from the document and page it is listed under above: a "
+                         "draft that repeats a released figure is still the draft speaking.")
+    return lines
+
+
 def verified_document_figures(sources: list[WebSource], query: str | None = None) -> str:
     """A bounded prompt block of figures computed from the documents' tables,
     or "" when the documents hold no numeric table. With a question, the
@@ -1264,7 +1349,7 @@ def verified_document_figures(sources: list[WebSource], query: str | None = None
     include_top_n = query is None or bool(_RANKING_QUESTION.search(query))
     by_month = query is None or bool(_MONTHLY_QUESTION.search(query))
     tables = tables_from_sources(sources)
-    lines: list[str] = _bank_reconciliation_lines(tables)
+    lines: list[str] = _stated_figure_lines(sources) + _bank_reconciliation_lines(tables)
     for table in tables:
         statement = _trial_balance_lines(table, by_month)
         lines.extend(statement)
