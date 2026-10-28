@@ -199,6 +199,22 @@ def test_a_scanned_pdf_is_read_with_ocr():
     assert "Total Revenue = 2,264,000" in block and "Revenue by Product: Software = 1,199,000 (52.96%)" in block
 
 
+def test_h03_a_low_resolution_scan_is_marked_unreliable():
+    # A 180 x 104 pixel invoice ("$1,7??.??") was read as "83,777.77" with 0.9
+    # OCR confidence and stated as the exact amount owed.
+    pytest.importorskip("rapidocr_onnxruntime")
+    pytest.importorskip("pypdfium2")
+    from PIL import Image, ImageDraw
+
+    small = Image.new("RGB", (180, 104), "white")
+    ImageDraw.Draw(small).text((8, 40), "Amount due: $1,777.77", fill="black")
+    scan = io.BytesIO()
+    small.save(scan, "PDF", resolution=21)
+    [page] = extract_document("scan.pdf", scan.getvalue())
+    assert page.text.startswith("[Low-resolution scan: the page image is only 180 x 104 pixels")
+    assert "Do not state any amount, date or reference from this page as exact" in page.text
+
+
 def test_ocr_unavailable_leaves_scanned_pages_empty_without_failing(monkeypatch):
     from PIL import Image
 
