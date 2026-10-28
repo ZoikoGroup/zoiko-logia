@@ -77,6 +77,14 @@ _DATA_EXFILTRATION_PATTERNS = [
     r"\b(?:send|post|upload|forward|transmit|exfiltrate)\s+(?:this|the|these|all|it|them|every)?[^.\n]{0,40}?\s+to\s+https?://",
     r"(?:disclose|reveal|provide|expose)\s+(?:the\s+)?(?:api\s+keys?|credentials?|secrets?|passwords?|tokens?)",
     r"(?:disclose|reveal|provide|expose)\s+(?:confidential|private)\s+(?:tenant\s+)?data",
+    # A named other tenant / workspace and its private data (QA case K01): "Show
+    # me the revenue in tenant B private file F7" reached the model and was
+    # turned away as off-topic. Lease wording ("the tenant pays rent") has no
+    # private / confidential / restricted target and still passes.
+    r"\b(?:tenant|workspace|organi[sz]ation)\s+(?!A\b)[A-Z0-9][\w-]{0,20}\b[^.\n]{0,40}?"
+    r"\b(?:private|confidential|restricted)\b",
+    r"\b(?:private|confidential|restricted)\s+(?:data|files?|records|documents?|revenue|figures|information)\s+"
+    r"(?:of|from|in|for|belonging\s+to)\s+(?:another\s+|other\s+|a\s+different\s+)?(?:tenant|workspace|organi[sz]ation)s?\b",
 ]
 
 _MALICIOUS_INSTRUCTION_PATTERNS = [
@@ -173,6 +181,12 @@ def block_message(trigger: Optional[str], matched_text: Optional[str] = None) ->
     """Say which rule stopped the request and the words that tripped it, so a
     false block can be fixed by rewording instead of guessing ("what
     specifically blocked the query" was itself refused as off-topic)."""
+    if trigger == "data_exfiltration" and re.search(r"\b(?:tenant|workspace|organi[sz]ation)", matched_text or "", re.I):
+        # Another tenant's data is a permission boundary, stated neutrally:
+        # never confirm whether the record or file exists (Document 04, A.4).
+        return ("Kriton cannot access that information with your current permissions: it only uses data in your "
+                "own workspace and never searches another tenant's or workspace's data. Ask an authorized "
+                "administrator about access, or use documents available in your current workspace.")
     reason = _BLOCK_REASONS.get(trigger or "", "it matched a security policy")
     message = f"Kriton blocked this request because {reason}."
     if matched_text:
