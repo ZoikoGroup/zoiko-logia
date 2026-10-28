@@ -16,6 +16,7 @@ be read, the page keeps the (empty) text it had before.
 from __future__ import annotations
 
 import logging
+import re
 import statistics
 import threading
 
@@ -140,8 +141,9 @@ def ocr_image(image) -> str:
 # stated it as the exact amount owed (QA case H03).
 MIN_SCAN_PIXELS = 600
 LOW_RESOLUTION_NOTE = ("[Low-resolution scan: the page image is only {width} x {height} pixels, so the text below "
-                       "was read unreliably. Do not state any amount, date or reference from this page as exact; "
-                       "say it cannot be read reliably and ask for a clearer copy or the original file.]")
+                       "was read unreliably and its digits are shown as ?. Do not state or guess any amount, date or "
+                       "reference from this page; say it cannot be read reliably and ask for a clearer copy or the "
+                       "original file.]")
 
 
 def _page_image_size(content: bytes, page_index: int) -> tuple[int, int] | None:
@@ -176,6 +178,9 @@ def ocr_pdf_pages(content: bytes, page_indexes: list[int]) -> dict[int, str]:
         if text:
             size = _page_image_size(content, index)
             if size and max(size) < MIN_SCAN_PIXELS:
-                text = LOW_RESOLUTION_NOTE.format(width=size[0], height=size[1]) + "\n" + text
+                # The digits are hidden, not only qualified: "cannot be confirmed:
+                # 83,777.77" still put a wrong figure in front of the user.
+                text = (LOW_RESOLUTION_NOTE.format(width=size[0], height=size[1]) + "\n"
+                        + re.sub(r"\d", "?", text))
             texts[index] = text
     return texts

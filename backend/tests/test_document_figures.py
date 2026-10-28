@@ -2,6 +2,7 @@
 every file type, the real rejected financial-statements case, and the
 service hook that always uses the complete documents."""
 import io
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -212,7 +213,10 @@ def test_h03_a_low_resolution_scan_is_marked_unreliable():
     small.save(scan, "PDF", resolution=21)
     [page] = extract_document("scan.pdf", scan.getvalue())
     assert page.text.startswith("[Low-resolution scan: the page image is only 180 x 104 pixels")
-    assert "Do not state any amount, date or reference from this page as exact" in page.text
+    assert "Do not state or guess any amount, date or reference from this page" in page.text
+    # Not one digit of the unreliable reading reaches the answer: the 180 and
+    # 104 are only in the note.
+    assert not re.search(r"\d", page.text.split("]", 1)[1])
 
 
 def test_ocr_unavailable_leaves_scanned_pages_empty_without_failing(monkeypatch):
