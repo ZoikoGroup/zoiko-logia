@@ -343,6 +343,80 @@ def _straight_line_depreciation(table: Table, numeric: list[int], category: list
     return lines
 
 
+_GROSS_PAY = re.compile(r"gross", re.I)
+_NET_PAY = re.compile(r"\bnet\b|^net[\s_]", re.I)
+_EMPLOYER = re.compile(r"employer|\ber[\s_]", re.I)
+_TO_TAX_AUTHORITY = re.compile(r"paye|income[\s_]*tax|\btax\b|\bni\b|national[\s_]*insurance|_ni$|student[\s_]*loan", re.I)
+_PENSION = re.compile(r"pension", re.I)
+_PAYROLL_HEADER = re.compile(r"paye|national[\s_]*insurance|(?:^|_)ni$|\bni\b|pension|student[\s_]*loan", re.I)
+
+
+def _payroll_journal(table: Table) -> list[str]:
+    """The payroll journal of a payroll register (gross and net pay columns):
+    gross pay and the employer's costs are expenses; deductions and the
+    employer's costs are owed to the tax authority or the pension scheme; net
+    pay is owed to the employees. "Prepare the payroll journal entry" was cut
+    off at the output limit after two rows, the model repeating empty cells."""
+    headers = [h or "" for h in table.headers]
+    # An invoice list also has gross and net columns; only a register with a
+    # payroll deduction is a payroll.
+    if not any(_PAYROLL_HEADER.search(h) for h in headers):
+        return []
+    gross = next((i for i, h in enumerate(headers) if _GROSS_PAY.search(h)), None)
+    net = next((i for i, h in enumerate(headers) if _NET_PAY.search(h) and i != gross), None)
+    if gross is None or net is None:
+        return []
+    totals: dict[int, Decimal] = {}
+    for i, header in enumerate(headers):
+        values = [_to_decimal(row[i]) for row in table.rows if i < len(row) and row[i].strip()]
+        if values and all(v is not None for v in values) and not _LIFE_HEADER.search(header):
+            totals[i] = sum(values, Decimal("0"))
+    if gross not in totals or net not in totals:
+        return []
+    others = [i for i in totals if i not in (gross, net)]
+    employer = [i for i in others if _EMPLOYER.search(headers[i])]
+    deductions = [i for i in others if i not in employer]
+    if not deductions:
+        return []
+    money = lambda v: _fmt(float(v))  # noqa: E731
+    tax_cols = [i for i in deductions + employer if _TO_TAX_AUTHORITY.search(headers[i])]
+    pension_cols = [i for i in deductions + employer if i not in tax_cols and _PENSION.search(headers[i])]
+    other_cols = [i for i in deductions + employer if i not in tax_cols and i not in pension_cols]
+    debits = [("Gross wages and salaries expense", totals[gross], headers[gross])]
+    readable = lambda h: re.sub(r"\bni\b", "National Insurance",  # noqa: E731
+                                re.sub(r"employer'?s?|\ber\b", "", h.replace("_", " "), flags=re.I),
+                                flags=re.I).strip() or h
+    debits += [(f"Employer's {readable(headers[i])} expense", totals[i], headers[i]) for i in employer]
+    credits = []
+    if tax_cols:
+        credits.append(("PAYE and National Insurance payable to the tax authority",
+                        sum((totals[i] for i in tax_cols), Decimal("0")), " + ".join(headers[i] for i in tax_cols)))
+    if pension_cols:
+        credits.append(("Pension contributions payable", sum((totals[i] for i in pension_cols), Decimal("0")),
+                        " + ".join(headers[i] for i in pension_cols)))
+    credits += [(f"{headers[i]} payable", totals[i], headers[i]) for i in other_cols]
+    credits.append(("Net wages payable to employees", totals[net], headers[net]))
+    debit_total = sum((v for _, v, _ in debits), Decimal("0"))
+    credit_total = sum((v for _, v, _ in credits), Decimal("0"))
+    mismatched = [(row[0] or "").strip() for row in table.rows
+                  if all(i < len(row) and _to_decimal(row[i]) is not None for i in [gross, net, *deductions])
+                  and abs(_to_decimal(row[gross]) - sum((_to_decimal(row[i]) for i in deductions), Decimal("0"))
+                          - _to_decimal(row[net])) > Decimal("0.01")]
+    entry = "; ".join([f"Dr {name} {money(v)} ({basis})" for name, v, basis in debits]
+                      + [f"Cr {name} {money(v)} ({basis})" for name, v, basis in credits])
+    lines = [f"- Payroll journal ({len(table.rows)} employees; present it as one table with Account, Debit and "
+             f"Credit columns, one account per row, then a Total row): {entry}; total debits = {money(debit_total)}; "
+             f"total credits = {money(credit_total)}"]
+    if debit_total != credit_total:
+        larger, smaller = ("debits", "credits") if debit_total > credit_total else ("credits", "debits")
+        lines.append(f"- The payroll journal does not balance: {larger} exceed {smaller} by "
+                     f"{money(abs(debit_total - credit_total))} — gross pay is not equal to the deductions plus net pay")
+    lines.append(f"- Net pay check ({headers[gross]} − " + " − ".join(headers[i] for i in deductions)
+                 + f" = {headers[net]}): " + ("every row agrees" if not mismatched else
+                                              "rows that do not agree: " + ", ".join(mismatched[:MAX_ASSETS_LISTED])))
+    return lines
+
+
 def _when_label(when: float) -> str:
     year, month = divmod(round(when * 12), 12)
     return f"{_MONTH_NAMES[month]} {year}"
@@ -602,6 +676,7 @@ def _table_lines(table: Table, include_top_n: bool = True, by_month_group: bool 
                      f"highest {_fmt(max(values))}; lowest {_fmt(min(values))}")
     lines.extend(_straight_line_depreciation(table, numeric, category))
     lines.extend(_depreciation_fit(table, numeric, category))
+    lines.extend(_payroll_journal(table))
     lines.extend(_monthly_lines(table, totals, category, by_month_group))
     keys = list(totals)
     for a in keys:

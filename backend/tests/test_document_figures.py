@@ -291,6 +291,40 @@ def test_depreciation_that_does_not_fit_the_register_date_is_flagged():
     assert "the register is not ready for reporting until they are explained" in block
 
 
+PAYROLL = "\n".join([
+    "employee_id,employee_name,department,gross_pay,paye,employee_ni,employer_ni,pension,net_pay".replace(",", "\t"),
+    "EMP101\tEmployee 01\tFinance\t2585.00\t517.00\t206.80\t356.73\t129.25\t1731.95",
+    "EMP102\tEmployee 02\tOperations\t2770.00\t554.00\t221.60\t382.26\t138.50\t1855.90",
+    "EMP103\tEmployee 03\tSales\t2955.00\t591.00\t236.40\t407.79\t147.75\t1979.85",
+])
+
+
+def test_a_payroll_register_gets_a_balanced_payroll_journal():
+    block = verified_document_figures([_src(PAYROLL, "kriton-test-payroll-register.csv — rows 1:4")])
+    # Gross 8,310 + employer NI 1,146.78 = 9,456.78; HMRC 1,662 + 664.80 + 1,146.78 = 3,473.58,
+    # pension 415.50, net 5,567.70: 3,473.58 + 415.50 + 5,567.70 = 9,456.78.
+    assert ("Dr Gross wages and salaries expense 8,310 (gross_pay); "
+            "Dr Employer's National Insurance expense 1,146.78 (employer_ni); "
+            "Cr PAYE and National Insurance payable to the tax authority 3,473.58 (paye + employee_ni + employer_ni); "
+            "Cr Pension contributions payable 415.50 (pension); "
+            "Cr Net wages payable to employees 5,567.70 (net_pay); "
+            "total debits = 9,456.78; total credits = 9,456.78") in block
+    assert "does not balance" not in block
+    assert "Net pay check (gross_pay − paye − employee_ni − pension = net_pay): every row agrees" in block
+
+
+def test_a_payroll_row_whose_net_pay_does_not_agree_is_named():
+    wrong = PAYROLL.replace("1979.85", "1999.85")
+    block = verified_document_figures([_src(wrong, "payroll.csv — rows 1:4")])
+    assert "rows that do not agree: EMP103" in block
+    assert "The payroll journal does not balance: credits exceed debits by 20" in block
+
+
+def test_an_invoice_list_with_gross_and_net_is_not_a_payroll():
+    invoices = "\n".join(["invoice\tnet\tvat\tgross", "INV1\t100\t20\t120", "INV2\t200\t40\t240"])
+    assert "Payroll journal" not in verified_document_figures([_src(invoices, "inv.csv — rows 1:3")])
+
+
 def test_the_internal_block_name_never_reaches_the_answer():
     from app.orchestration.document_figures import strip_internal_labels
     assert strip_internal_labels("Source: asset-level figures summed – see “Verified figures”") == \
