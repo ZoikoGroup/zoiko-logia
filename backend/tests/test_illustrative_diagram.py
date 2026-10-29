@@ -57,6 +57,29 @@ async def test_a_swimlane_without_steps_is_drawn_and_labelled(pipeline):
     assert response.answer.limitations[0] == NOTE
 
 
+E01 = "Draw an accounts-payable three-way match flow from PO to payment."
+FLOW_STEPS = "Raise PO -> Receive goods -> Match invoice to PO and receipt -> Approve invoice -> Pay supplier"
+
+
+def test_a_flow_from_one_step_to_another_is_a_flowchart_request():
+    # QA case E01 named no diagram type: nothing was drawn and the model
+    # typed the flow as text art.
+    assert needs_illustration(E01)
+    assert needs_illustration("Draw the data flow from source trial balance to published financial statements.")
+    assert not needs_illustration("Show the cash flow from operations to free cash flow.")
+    assert not needs_illustration("Explain the flow from PO to payment.")   # nothing asked to be drawn
+
+
+async def test_a_flow_from_po_to_payment_is_drawn_and_labelled(pipeline, monkeypatch):
+    monkeypatch.setattr(service.model_gateway_service, "run_grounded_completion", AsyncMock(return_value=FLOW_STEPS))
+    out = await illustrated_query(E01, AsyncMock(return_value=FLOW_STEPS), FAILURE)
+    assert extract_graph(out).nodes[0] == "Raise PO" and extract_graph(out).nodes[-1] == "Pay supplier"
+    response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                                        request=AskKritonRequest(query=E01))
+    assert response.visualization is not None
+    assert response.answer.limitations[0] == NOTE
+
+
 async def test_extra_text_after_the_diagram_name_does_not_break_the_lanes():
     from app.orchestration.kroki_diagrams import extract_kroki_graph
 
