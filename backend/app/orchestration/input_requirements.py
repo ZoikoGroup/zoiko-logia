@@ -264,6 +264,10 @@ _REQUEST_WORD = re.compile(
     r"graph|prepare|summari[sz]e|check|verify|analy[sz]e|estimate|help|please|need|want|describe|define|"
     r"translate|retrieve|get|make|write|draft|review|confirm|highlight|outline|identify|correct|update|"
     r"comment|critique|assess|evaluate|validate|"
+    # Instructions to act: "Certify that these unaudited statements are
+    # IFRS-compliant…" was answered "That reads as a statement" instead of a
+    # refusal to certify (QA case A05).
+    r"certify|attest|approve|sign\s+off|publish|file|submit|post|pay|issue|release|record|book|"
     r"work\s+out|break\s+down|visuali[sz]e)\b", re.I)
 _STATEMENT_VERB = re.compile(
     r"\b(?:is|are|was|were|came|comes|has|have|had|did|does\s+not|do\s+not|provided|states?|stated|said|"
