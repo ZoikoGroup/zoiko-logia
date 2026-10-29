@@ -1213,10 +1213,20 @@ def requires_authoritative_evidence(question: str, context: str = "") -> bool:
     return not (context and applies_to_supplied_facts(question, context))
 
 
+_TAX_EXCLUDED = re.compile(
+    r"\b(?:assum\w*\s+|with\s+)?(?:no|without|ignor\w*|exclud\w*|ex\.?|net\s+of|before)\s+(?:any\s+)?"
+    r"(?:vat|gst|sales\s+tax|tax(?:es)?)\b",
+    re.I,
+)
+
+
 def _authority_terms(question: str) -> bool:
     """Whether the wording calls for an authority (GitHub main's definition
     leniency, verbatim); the context exemption is applied by the caller."""
-    text = question or ""
+    # Tax ruled out is not a tax question: "the journal entry for a $12,000
+    # invoice …, assuming no tax" was held to official tax sources and a
+    # correct Dr Receivable / Cr Revenue was withheld (QA case A03).
+    text = _TAX_EXCLUDED.sub(" ", question or "")
     lowered = text.lower()
     # Pure definitions of terms ("what is X", "define X") need not be forced
     # into the strict citation regime that can trigger an evidence-gap answer.
