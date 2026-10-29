@@ -78,6 +78,20 @@ async def test_a_flow_from_po_to_payment_is_drawn_and_labelled(pipeline, monkeyp
                                         request=AskKritonRequest(query=E01))
     assert response.visualization is not None
     assert response.answer.limitations[0] == NOTE
+    assert not response.answer.computed_from_question   # a standard process, not the question's figures
+    # QA case E04: the same steps as an ordered list, in the drawing's order.
+    assert "1. Raise PO\n2. Receive goods\n3. Match invoice to PO and receipt\n4. Approve invoice\n5. Pay supplier" \
+        in response.answer.text
+
+
+async def test_a_list_after_the_step_line_does_not_discard_the_steps():
+    # QA case E04 asked for a flowchart and an ordered list; the reply had both.
+    reply = ("Raise requisition -> Approve requisition -> Issue purchase order -> Receive goods -> Pay supplier"
+             "\n\n1. Raise requisition\n2. Approve requisition\n3. Issue purchase order")
+    out = await illustrated_query("Give the same purchase-to-pay flow as a flowchart and an ordered text list.",
+                                  AsyncMock(return_value=reply), FAILURE)
+    assert extract_graph(out).nodes == ["Raise requisition", "Approve requisition", "Issue purchase order",
+                                        "Receive goods", "Pay supplier"]
 
 
 async def test_extra_text_after_the_diagram_name_does_not_break_the_lanes():

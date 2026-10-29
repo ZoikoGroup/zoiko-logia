@@ -155,7 +155,11 @@ async def document_query(query: str, document: str, complete: Callable[[str], Aw
 
 def _with_structure(query: str, kind: str, reply: str, provider_failure: str) -> str:
     label, _ = _FORMATS[kind]
-    payload = " ".join(reply.strip().strip("`").split())
+    # Only the first paragraph: "Give the same purchase-to-pay flow as a
+    # flowchart and an ordered text list" (QA case E04) got the step line and
+    # then the list the question asked for, and the whole reply was rejected.
+    first_paragraph = re.split(r"\n\s*\n", reply.strip().strip("`"), maxsplit=1)[0]
+    payload = " ".join(first_paragraph.split())
     if not payload or provider_failure in payload or len(payload) > MAX_PAYLOAD_CHARS or re.search(r"\d", payload):
         return ""
     # The parsers read the text after the first colon that follows the

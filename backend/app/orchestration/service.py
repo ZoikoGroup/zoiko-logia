@@ -594,9 +594,13 @@ def _grounded_domain_fallback(query: str, evidence: EvidenceModel) -> str | None
         if any(edge.type == "exception" for edge in graph.edges):
             return ("Kriton mapped the invoice workflow and the requested exception branches. "
                     "The resolve-and-retry loops are illustrative; check them against your actual dispute and approval procedures.")
+        # The stages as an ordered list too, taken from the same graph so the
+        # list and the drawing cannot disagree (QA case E04 asked for both
+        # and got one sentence above the drawing).
+        stages = "\n".join(f"{number}. {node}" for number, node in enumerate(graph.nodes, 1))
         return (
             f"Kriton mapped the {len(graph.nodes)} supplied accounting-workflow stages in order. "
-            "The validated process visualization below does not add or remove stages."
+            "The validated process visualization below does not add or remove stages.\n\n" + stages
         )
     return None
 
@@ -4586,7 +4590,10 @@ async def ask_kriton(
     # A calculation on the question's own figures, or a chart redrawn from
     # figures already in the conversation, needs no source — calling it
     # "model knowledge" misdescribes it.
-    computed_from_question = not evidence_gap_only and not rag_citations and not is_offdomain_refusal and (
+    # An illustrated diagram's stages are a standard process, not the
+    # question's figures (QA cases E01, E03, E04 were labelled "from figures
+    # in this conversation").
+    computed_from_question = not evidence_gap_only and not rag_citations and not is_offdomain_refusal and not illustrative_diagram and (
         deterministic_calculation is not None
         or self_contained_calculation
         or (agent_outcome is not None and any(
