@@ -38,6 +38,15 @@ def test_formatting_rules_answer_every_question_and_show_working():
     assert "Indian" in rules and "grouping" in rules
 
 
+def test_drawn_flow_is_mermaid_with_its_failure_branch_not_text_art():
+    # QA case E01 came back as │ ▼ ──► text art with no mismatch branch.
+    rules = formatting_instructions("Draw an accounts-payable three-way match flow from PO to payment.")
+    assert "```mermaid" in rules
+    assert "Never draw a diagram as text art" in rules
+    assert "failure path" in rules
+    assert "text art" not in formatting_instructions("What is accrual accounting?")
+
+
 def test_pipeline_keeps_the_restored_steps_wired():
     source = inspect.getsource(service.ask_kriton)
     # 559f16b / d8119d5: wrong arithmetic is corrected once before validation.
