@@ -17,8 +17,19 @@ def test_statement_requests_are_recognised():
                      "Show the balance sheet", "Prepare a cash flow statement", "P&L for the year",
                      "Statement of changes in equity"):
         assert is_statement_request(question), question
-    for question in ("What is income tax?", "Prepare the VAT summary", "Show total sales by month"):
+    for question in ("What is income tax?", "Prepare the VAT summary", "Show total sales by month",
+                     # Checking or comparing statements is not preparing them (QA B03, G01).
+                     "Confirm that the balance sheet, cash-flow ending cash, and equity roll-forward all reconcile.",
+                     "Sum quarterly revenue and compare with the financial statement.",
+                     "What is a balance sheet?", "Explain the cash flow statement"):
         assert not is_statement_request(question), question
+
+
+def test_fiscal_year_labels_in_a_statement_pdf_count_as_comparatives():
+    # "Prior-year figures: not provided" was said of a PDF stating FY2024 revenue.
+    pdf = "Figures stated in 'NB.pdf' (released), Page 1: FY2025 Revenue 10,000; FY2024 Revenue 8,000"
+    assert COMPARATIVES_NOTE not in open_items("Generate income statement", "", pdf)
+    assert COMPARATIVES_NOTE in open_items("Generate income statement", "", "FY2025 Revenue 10,000")
 
 
 def test_unsupported_claims_are_removed_and_honest_ones_kept():

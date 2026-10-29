@@ -299,6 +299,7 @@ _REQUEST_WORD = re.compile(
     r"\b(?:calculate|compute|convert|show|explain|list|compare|find|give|tell|draw|create|plot|chart|"
     r"graph|prepare|summari[sz]e|check|verify|analy[sz]e|estimate|help|please|need|want|describe|define|"
     r"translate|retrieve|get|make|write|rewrite|rephrase|proofread|draft|review|confirm|highlight|outline|identify|correct|update|"
+    r"comment|critique|assess|evaluate|validate|"
     r"work\s+out|break\s+down|visuali[sz]e)\b", re.I)
 _STATEMENT_VERB = re.compile(
     r"\b(?:is|are|was|were|came|comes|has|have|had|did|does\s+not|do\s+not|provided|states?|stated|said|"

@@ -16,6 +16,7 @@ be read, the page keeps the (empty) text it had before.
 from __future__ import annotations
 
 import logging
+import re
 import statistics
 import threading
 
@@ -134,9 +135,34 @@ def ocr_image(image) -> str:
     return lines_from_boxes(result or [])
 
 
+# A scan whose image is this small cannot be read reliably, however sure the
+# OCR is: a 180 x 104 pixel invoice stretched over a page ("Amount due:
+# $1,7??.??") was read as "83,777.77" with 0.9 confidence, and the answer
+# stated it as the exact amount owed (QA case H03).
+MIN_SCAN_PIXELS = 600
+LOW_RESOLUTION_NOTE = ("[Low-resolution scan: the page image is only {width} x {height} pixels, so the text below "
+                       "was read unreliably and its digits are shown as ?. Do not state or guess any amount, date or "
+                       "reference from this page; say it cannot be read reliably and ask for a clearer copy or the "
+                       "original file.]")
+
+
+def _page_image_size(content: bytes, page_index: int) -> tuple[int, int] | None:
+    """The pixel size of the largest image on the page, or None if unknown."""
+    try:
+        import io
+
+        from pypdf import PdfReader
+
+        sizes = [image.image.size for image in PdfReader(io.BytesIO(content)).pages[page_index].images]
+    except Exception:
+        return None
+    return max(sizes, key=lambda size: size[0] * size[1]) if sizes else None
+
+
 def ocr_pdf_pages(content: bytes, page_indexes: list[int]) -> dict[int, str]:
     """{page index: OCR text} for the given (0-based) pages; pages that
-    cannot be read are left out."""
+    cannot be read are left out. A page whose scan is too small to read
+    reliably starts with a note saying so."""
     texts: dict[int, str] = {}
     try:
         _get_engine()
@@ -150,5 +176,11 @@ def ocr_pdf_pages(content: bytes, page_indexes: list[int]) -> dict[int, str]:
             logger.warning("OCR failed on PDF page %s", index + 1, exc_info=True)
             continue
         if text:
+            size = _page_image_size(content, index)
+            if size and max(size) < MIN_SCAN_PIXELS:
+                # The digits are hidden, not only qualified: "cannot be confirmed:
+                # 83,777.77" still put a wrong figure in front of the user.
+                text = (LOW_RESOLUTION_NOTE.format(width=size[0], height=size[1]) + "\n"
+                        + re.sub(r"\d", "?", text))
             texts[index] = text
     return texts

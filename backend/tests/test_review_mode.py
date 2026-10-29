@@ -126,6 +126,52 @@ async def test_a_source_stating_a_shorter_form_of_the_rule_is_partly_confirmed(m
     assert "### Partly confirmed" in review.text and "### Corrections" in review.text
 
 
+PASTED_TABLES = "\n".join([
+    "2. Cost-side totals",
+    "| Category | Total cost | % of total cost |",
+    "| --- | --- | --- |",
+    "| Plant and machinery | 143,700 | 22.92 % |",
+    "| Motor vehicles | 152,400 | 24.31 % |",
+    "| **TOTAL** | **300,000** | **47.23 %** |",
+    "Copy table",
+    "Category\tNet book value",
+    "Fixtures\t90,700",
+    "IT equipment\t45,966.66",
+    "TOTAL\t136,666.66",
+    "",
+    "comment on the above",
+])
+
+
+def test_the_totals_of_pasted_tables_are_added_up():
+    checks = review_mode.figure_checks(PASTED_TABLES)
+    assert checks == [
+        "❌ **Total cost**: the 2 rows add up to 296,100, but the stated total is 300,000 (difference 3,900).",
+        "✅ **% of total cost**: the 2 rows add up to 47.23, matching the stated total 47.23 %.",
+        "✅ **Net book value**: the 2 rows add up to 136,666.66, matching the stated total 136,666.66.",
+    ]
+
+
+async def test_a_text_with_no_rule_claims_still_gets_its_totals_checked(monkeypatch):
+    async def none(material):
+        return []
+    monkeypatch.setattr(review_mode, "extract_review_claims", none)
+    review = await review_pasted_text(PASTED_TABLES)
+    assert review.verdicts == [] and review.sources == []
+    assert review.text.startswith("I added up the rows of each table with a total: 2 total(s) match, 1 do not.")
+    assert "I checked 0 factual claims" not in review.text
+
+
+def test_comment_on_the_above_is_a_request_not_a_statement():
+    from app.orchestration.input_requirements import statement_not_question
+    pasted = ("Assumption – The source file does not specify a reporting date or a currency; amounts are therefore "
+              "shown without a currency symbol.\n\nPayroll journal entry (single period)\n\n"
+              "Account\tDebit\tCredit\nGross wages and salaries expense\t86,850.00\t\n"
+              "Net wages payable to employees\t\t58,189.50\nTotal\t98,835.30\t98,835.30\n\n"
+              "All figures are taken directly from the payroll register file.\ncomment on the above")
+    assert statement_not_question(pasted) is None
+
+
 def test_a_request_to_produce_an_analysis_is_not_a_claim_check():
     brief = ("Act as a senior management accountant analysing the following fictional company. Prepare a "
              "decision-ready financial performance review for the board.\n\n" + "Revenue rose. " * 200

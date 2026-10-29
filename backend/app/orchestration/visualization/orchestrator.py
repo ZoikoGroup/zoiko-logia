@@ -276,6 +276,16 @@ def _build_scatter_spec(evidence: EvidenceModel, spec_id: str) -> VisualizationS
     )
 
 
+def _table_value(value: float) -> str:
+    """A value in plain digits with thousands separators. ":g" showed an
+    uploaded file's 1,150,000 as "1.15e+06" and kept only six significant
+    digits, although the table promises nothing rounded beyond the source."""
+    from decimal import Decimal
+
+    text = f"{Decimal(repr(float(value))):,f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
 def _build_table_spec(evidence: EvidenceModel, spec_id: str) -> VisualizationSpec:
     """Every real observation as a row — for PRECISE_DATA intent, where a
     single KPI or a summarizing trend line would drop values the user
@@ -284,14 +294,14 @@ def _build_table_spec(evidence: EvidenceModel, spec_id: str) -> VisualizationSpe
     unit = evidence.units[0] if evidence.units else None
     value_col = f"{measure_name}{f' ({unit})' if unit else ''}"
     columns = ["Period", value_col]
-    rows = [{"Period": o.dimension, value_col: f"{o.value:g}"} for o in evidence.observations]
+    rows = [{"Period": o.dimension, value_col: _table_value(o.value)} for o in evidence.observations]
     if evidence.secondary_observations:
         secondary_name = evidence.secondary_subject or "Series B"
         secondary_unit = evidence.secondary_units[0] if evidence.secondary_units else unit
         secondary_col = f"{secondary_name}{f' ({secondary_unit})' if secondary_unit else ''}"
         columns.append(secondary_col)
         for row, observation in zip(rows, evidence.secondary_observations):
-            row[secondary_col] = f"{observation.value:g}"
+            row[secondary_col] = _table_value(observation.value)
     return VisualizationSpec(
         id=spec_id,
         type="TABLE",

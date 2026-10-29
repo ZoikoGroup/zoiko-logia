@@ -71,7 +71,11 @@ _LIFE_HEADER = re.compile(r"useful[\s_-]*life|\blife[\s_-]*(?:in[\s_-]*)?(?:year
 _COST_HEADER = re.compile(r"(?:^|[\s_])(?:gross[\s_]*|original[\s_]*|acquisition[\s_]*|historical[\s_]*)?cost(?:[\s_]|$)", re.IGNORECASE)
 _NOT_COST = re.compile(r"accumulated|depreciat|net|total|book", re.IGNORECASE)
 _RESIDUAL_HEADER = re.compile(r"residual|salvage|scrap", re.IGNORECASE)
+_ACCUMULATED_HEADER = re.compile(r"accumulated|\bacc(?:um)?[\s_.-]*dep", re.IGNORECASE)
 MAX_ASSETS_LISTED = 40
+# An asset depreciated to a date more than this far from the register's
+# middle date does not fit it.
+DEPRECIATION_FIT_YEARS = 1.0
 _YEAR = re.compile(r"^(19|20)\d{2}$")
 # A ledger's dated rows give totals per month, which the file never states:
 # "Show monthly totals as a bar chart" of a 600-row ledger was refused for
@@ -339,6 +343,144 @@ def _straight_line_depreciation(table: Table, numeric: list[int], category: list
     return lines
 
 
+_GROSS_PAY = re.compile(r"gross", re.I)
+_NET_PAY = re.compile(r"\bnet\b|^net[\s_]", re.I)
+_EMPLOYER = re.compile(r"employer|\ber[\s_]", re.I)
+_TO_TAX_AUTHORITY = re.compile(r"paye|income[\s_]*tax|\btax\b|\bni\b|national[\s_]*insurance|_ni$|student[\s_]*loan", re.I)
+_PENSION = re.compile(r"pension", re.I)
+_PAYROLL_HEADER = re.compile(r"paye|national[\s_]*insurance|(?:^|_)ni$|\bni\b|pension|student[\s_]*loan", re.I)
+
+
+def _payroll_journal(table: Table) -> list[str]:
+    """The payroll journal of a payroll register (gross and net pay columns):
+    gross pay and the employer's costs are expenses; deductions and the
+    employer's costs are owed to the tax authority or the pension scheme; net
+    pay is owed to the employees. "Prepare the payroll journal entry" was cut
+    off at the output limit after two rows, the model repeating empty cells."""
+    headers = [h or "" for h in table.headers]
+    # An invoice list also has gross and net columns; only a register with a
+    # payroll deduction is a payroll.
+    if not any(_PAYROLL_HEADER.search(h) for h in headers):
+        return []
+    gross = next((i for i, h in enumerate(headers) if _GROSS_PAY.search(h)), None)
+    net = next((i for i, h in enumerate(headers) if _NET_PAY.search(h) and i != gross), None)
+    if gross is None or net is None:
+        return []
+    totals: dict[int, Decimal] = {}
+    for i, header in enumerate(headers):
+        values = [_to_decimal(row[i]) for row in table.rows if i < len(row) and row[i].strip()]
+        if values and all(v is not None for v in values) and not _LIFE_HEADER.search(header):
+            totals[i] = sum(values, Decimal("0"))
+    if gross not in totals or net not in totals:
+        return []
+    others = [i for i in totals if i not in (gross, net)]
+    employer = [i for i in others if _EMPLOYER.search(headers[i])]
+    deductions = [i for i in others if i not in employer]
+    if not deductions:
+        return []
+    money = lambda v: _fmt(float(v))  # noqa: E731
+    tax_cols = [i for i in deductions + employer if _TO_TAX_AUTHORITY.search(headers[i])]
+    pension_cols = [i for i in deductions + employer if i not in tax_cols and _PENSION.search(headers[i])]
+    other_cols = [i for i in deductions + employer if i not in tax_cols and i not in pension_cols]
+    debits = [("Gross wages and salaries expense", totals[gross], headers[gross])]
+    readable = lambda h: re.sub(r"\bni\b", "National Insurance",  # noqa: E731
+                                re.sub(r"employer'?s?|\ber\b", "", h.replace("_", " "), flags=re.I),
+                                flags=re.I).strip() or h
+    debits += [(f"Employer's {readable(headers[i])} expense", totals[i], headers[i]) for i in employer]
+    credits = []
+    if tax_cols:
+        credits.append(("PAYE and National Insurance payable to the tax authority",
+                        sum((totals[i] for i in tax_cols), Decimal("0")), " + ".join(headers[i] for i in tax_cols)))
+    if pension_cols:
+        credits.append(("Pension contributions payable", sum((totals[i] for i in pension_cols), Decimal("0")),
+                        " + ".join(headers[i] for i in pension_cols)))
+    credits += [(f"{headers[i]} payable", totals[i], headers[i]) for i in other_cols]
+    credits.append(("Net wages payable to employees", totals[net], headers[net]))
+    debit_total = sum((v for _, v, _ in debits), Decimal("0"))
+    credit_total = sum((v for _, v, _ in credits), Decimal("0"))
+    mismatched = [(row[0] or "").strip() for row in table.rows
+                  if all(i < len(row) and _to_decimal(row[i]) is not None for i in [gross, net, *deductions])
+                  and abs(_to_decimal(row[gross]) - sum((_to_decimal(row[i]) for i in deductions), Decimal("0"))
+                          - _to_decimal(row[net])) > Decimal("0.01")]
+    entry = "; ".join([f"Dr {name} {money(v)} ({basis})" for name, v, basis in debits]
+                      + [f"Cr {name} {money(v)} ({basis})" for name, v, basis in credits])
+    lines = [f"- Payroll journal ({len(table.rows)} employees; present it as one table with Account, Debit and "
+             f"Credit columns, one account per row, then a Total row): {entry}; total debits = {money(debit_total)}; "
+             f"total credits = {money(credit_total)}"]
+    if debit_total != credit_total:
+        larger, smaller = ("debits", "credits") if debit_total > credit_total else ("credits", "debits")
+        lines.append(f"- The payroll journal does not balance: {larger} exceed {smaller} by "
+                     f"{money(abs(debit_total - credit_total))} — gross pay is not equal to the deductions plus net pay")
+    lines.append(f"- Net pay check ({headers[gross]} − " + " − ".join(headers[i] for i in deductions)
+                 + f" = {headers[net]}): " + ("every row agrees" if not mismatched else
+                                              "rows that do not agree: " + ", ".join(mismatched[:MAX_ASSETS_LISTED])))
+    return lines
+
+
+def _when_label(when: float) -> str:
+    year, month = divmod(round(when * 12), 12)
+    return f"{_MONTH_NAMES[month]} {year}"
+
+
+def _depreciation_fit(table: Table, numeric: list[int], category: list[int]) -> list[str]:
+    """Whether each asset's accumulated depreciation fits one common date.
+
+    Straight-line, accumulated depreciation ÷ the annual charge is the years
+    charged; from the acquisition date that is the date the asset is
+    depreciated to, and a register is depreciated to one date. A 10-year
+    fixture bought in September 2023 and 90% depreciated was summarised as
+    "suitable for financial reporting": nine years of charge put it at 2032,
+    while the other assets sit around 2025."""
+    cost = next((i for i in numeric if _COST_HEADER.search(table.headers[i] or "")
+                 and not _NOT_COST.search(table.headers[i] or "")), None)
+    life = next((i for i in numeric if _LIFE_HEADER.search(table.headers[i] or "")), None)
+    accumulated = next((i for i, h in enumerate(table.headers) if _ACCUMULATED_HEADER.search(h or "")), None)
+    acquired = _date_column(table)
+    if None in (cost, life, accumulated, acquired):
+        return []
+    residual = next((i for i in numeric if _RESIDUAL_HEADER.search(table.headers[i] or "")), None)
+    cell = lambda row, i: _to_number(row[i]) if i is not None and i < len(row) else None  # noqa: E731
+    partial: list[tuple[str, str, float, float, float, float]] = []
+    full: list[tuple[str, str, float, float, float]] = []
+    for row in table.rows:
+        amount, years, charged = cell(row, cost), cell(row, life), cell(row, accumulated)
+        when = _month_of(row[acquired]) if acquired < len(row) else None
+        if amount is None or not years or years <= 0 or charged is None or when is None:
+            continue
+        depreciable = amount - (cell(row, residual) or 0.0)
+        if depreciable <= 0:
+            continue
+        start = when[0] + (when[1] - 1) / 12
+        label = (row[0] or "").strip()
+        group = row[category[0]].strip() if category and category[0] < len(row) else ""
+        if charged >= depreciable - 0.01:
+            full.append((label, group, years, start, start + years))
+        else:
+            partial.append((label, group, years, start, charged / depreciable, start + charged / depreciable * years))
+    if len(partial) < 3:
+        return []
+    ends = sorted(p[5] for p in partial)
+    middle = ends[len(ends) // 2] if len(ends) % 2 else (ends[len(ends) // 2 - 1] + ends[len(ends) // 2]) / 2
+    describe = lambda label, group, years, start: (  # noqa: E731
+        f"{label} ({group + ', ' if group else ''}{_fmt(years)}-year life, acquired {_when_label(start)})")
+    flags = [f"{describe(label, group, years, start)} is {share * 100:.0f}% depreciated = "
+             f"{_fmt(round(share * years, 2))} years of charge, depreciated to about {_when_label(end)}"
+             for label, group, years, start, share, end in partial if abs(end - middle) > DEPRECIATION_FIT_YEARS]
+    flags += [f"{describe(label, group, years, start)} is fully depreciated, which takes until {_when_label(end)}"
+              for label, group, years, start, end in full if end > middle + DEPRECIATION_FIT_YEARS]
+    lines = [f"- Depreciation fit (straight-line; accumulated depreciation ÷ annual charge = years charged, counted "
+             f"from the acquisition date): a register is depreciated to one date; the assets put it at about "
+             f"{_when_label(middle)} (middle value), ranging from {_when_label(ends[0])} to {_when_label(ends[-1])}"]
+    if flags:
+        lines.append(f"- Assets whose depreciation does not fit that date by more than {_fmt(DEPRECIATION_FIT_YEARS)} "
+                     "year (state these as items to check — the method, useful life, an impairment or the figure "
+                     "itself; the register is not ready for reporting until they are explained): "
+                     + "; ".join(flags[:MAX_ASSETS_LISTED]))
+    else:
+        lines.append(f"- Every asset's depreciation fits that date within {_fmt(DEPRECIATION_FIT_YEARS)} year")
+    return lines
+
+
 def _month_of(cell: str) -> tuple[int, int] | None:
     """(year, month) of a date cell: 2026-01-31, 31/01/2026 (day first, as in
     UK ledgers) or 01/31/2026 (when the second part cannot be a month)."""
@@ -503,19 +645,179 @@ def _kind_lines(rows: list[list[str]], name, category: list[int], keys: list[int
     return lines
 
 
+# Data checks the QA bank (Document 01, G02-G06 and J04) requires before any
+# total: a Summary tab's =SUM row was added again (20,000 for 10,000), an
+# exact duplicate transaction was counted (11,150,000), a row with a blank
+# quarter vanished from the quarters, a stale displayed value was not
+# flagged, and a purchase order / receipt / invoice gave "Total quantity =
+# 29" instead of the unmatched unit.
+# "=SUM(B2:B5) => 10000": a total of rows above it in the same column.
+_SAME_COLUMN_SUM = re.compile(r"^=\s*SUM\(\s*\$?([A-Z]{1,3})\$?\d+\s*:\s*\$?\1\$?\d+\s*\)\s*=>", re.IGNORECASE)
+_ID_HEADER = re.compile(r"(?:^|[\s_])(?:id|ref|reference|no|number|code)$|^(?:id|ref)[\s_]|_id\b|transaction[\s_]*id",
+                        re.IGNORECASE)
+_DISPLAYED_HEADER = re.compile(r"displayed|cached|reported|stated|legacy|shown", re.IGNORECASE)
+_RECOMPUTED_HEADER = re.compile(r"recalculated|recomputed|calculated|expected|computed", re.IGNORECASE)
+_KIND_HEADER = re.compile(r"record[\s_]*type|document[\s_]*type|^type$|doc[\s_]*type", re.IGNORECASE)
+_QUANTITY_HEADER = re.compile(r"quantity|qty|units", re.IGNORECASE)
+_AMOUNT_HEADER = re.compile(r"total|amount|value", re.IGNORECASE)
+_PO = re.compile(r"purchase[\s_]*order|^po\b", re.IGNORECASE)
+_RECEIPT = re.compile(r"goods[\s_]*receipt|received|receiving|^grn?\b", re.IGNORECASE)
+_INVOICE = re.compile(r"invoice|bill", re.IGNORECASE)
+MAX_FINDINGS_LISTED = 12
+
+
+def _is_total(row: list[str]) -> bool:
+    """A row labelled Total (its first filled cell: a trial balance's Total
+    row has an empty account code before it), or one whose formula sums the
+    rows above it in the same column."""
+    label = next((c for c in row if c.strip()), "")
+    return bool(_TOTAL_ROW.match(label)) or any(_SAME_COLUMN_SUM.match((c or "").strip()) for c in row)
+
+
+def _row_name(row: list[str], id_col: int | None) -> str:
+    if id_col is not None and id_col < len(row) and row[id_col].strip():
+        return row[id_col].strip()
+    return next((c.strip() for c in row if c.strip()), "row")
+
+
+def _id_column(table: Table) -> int | None:
+    for i, header in enumerate(table.headers):
+        cells = [row[i].strip() for row in table.rows if i < len(row) and row[i].strip()]
+        if cells and _ID_HEADER.search(header or "") and len(set(cells)) >= 0.8 * len(cells):
+            return i
+    return None
+
+
+def _duplicate_lines(table: Table, rows: list[list[str]], amount: int | None) -> tuple[list[list[str]], list[str]]:
+    """Exact repeats of a row with the same ID are excluded from the totals
+    and named; the same ID with different values is named, not excluded."""
+    id_col = _id_column(table)
+    if id_col is None:
+        return rows, []
+    seen: dict[str, list[str]] = {}
+    kept, exact, differing = [], defaultdict(int), []
+    for row in rows:
+        key = row[id_col].strip() if id_col < len(row) else ""
+        if key and key in seen:
+            if [c.strip() for c in seen[key]] == [c.strip() for c in row]:
+                exact[key] += 1
+                continue
+            differing.append(key)
+        elif key:
+            seen[key] = row
+        kept.append(row)
+    lines = []
+    if exact:
+        dropped = sum(exact.values())
+        removed = sum((_to_decimal(seen[k][amount]) or Decimal("0")) * n for k, n in exact.items()) \
+            if amount is not None and all(amount < len(seen[k]) for k in exact) else None
+        lines.append(f"- Duplicate rows: {', '.join(f'{k} appears {n + 1} times' for k, n in list(exact.items())[:MAX_FINDINGS_LISTED])} "
+                     f"with identical values; {dropped} repeated row(s) are excluded from every total below"
+                     + (f" ({table.headers[amount]} {_fmt(float(removed))} excluded; the total including the "
+                        f"repeats would be {_fmt(float(sum((_to_decimal(r[amount]) or Decimal('0')) for r in rows if amount < len(r))))})"
+                        if removed is not None else "")
+                     + ". Keep the original rows for the audit trail; confirm the duplicate with the source system.")
+    if differing:
+        lines.append(f"- {table.headers[id_col]} repeated with different values (not excluded; check them): "
+                     + ", ".join(dict.fromkeys(differing[:MAX_FINDINGS_LISTED])))
+    return kept, lines
+
+
+def _blank_category_lines(table: Table, rows: list[list[str]], category: list[int], amount: int | None) -> list[str]:
+    """A row with an amount but no quarter / category is in the totals but in
+    no group, and its group must not be guessed."""
+    id_col = _id_column(table)
+    lines = []
+    for c in category:
+        blank = [r for r in rows if not (c < len(r) and r[c].strip())
+                 and amount is not None and amount < len(r) and _to_decimal(r[amount]) is not None]
+        if blank and len(blank) <= len(rows) / 2:
+            listed = "; ".join(f"{_row_name(r, id_col)} {_fmt(float(_to_decimal(r[amount])))}" for r in blank[:MAX_FINDINGS_LISTED])
+            lines.append(f"- {len(blank)} row(s) have no {table.headers[c]} ({listed}): they are in the totals but in no "
+                         f"{table.headers[c]} below. Do not assign them to a {table.headers[c]}; report the known "
+                         f"{table.headers[c]} figures and the unassigned amount separately.")
+    return lines
+
+
+def _value_check_lines(table: Table, rows: list[list[str]]) -> list[str]:
+    """A displayed / reported value against its recalculated one, row by row."""
+    shown = next((i for i, h in enumerate(table.headers) if _DISPLAYED_HEADER.search(h or "")), None)
+    redone = next((i for i, h in enumerate(table.headers)
+                   if i != shown and _RECOMPUTED_HEADER.search(h or "") and not _DISPLAYED_HEADER.search(h or "")), None)
+    if shown is None or redone is None:
+        return []
+    pairs = [(r, _to_decimal(r[shown]), _to_decimal(r[redone])) for r in rows if max(shown, redone) < len(r)]
+    pairs = [(r, a, b) for r, a, b in pairs if a is not None and b is not None]
+    if not pairs:
+        return []
+    differ = [(r, a, b) for r, a, b in pairs if a != b]
+    head = f"- {table.headers[shown]} against {table.headers[redone]}"
+    if not differ:
+        return [f"{head}: every row agrees ({len(pairs)} rows)"]
+    return [f"{head}: {len(differ)} of {len(pairs)} rows do not agree — "
+            + "; ".join(f"{_row_name(r, None)}: {table.headers[shown]} {_fmt(float(a))}, {table.headers[redone]} "
+                        f"{_fmt(float(b))}, difference {_fmt(float(a - b))}" for r, a, b in differ[:MAX_FINDINGS_LISTED])
+            + f". The {table.headers[shown]} value is stale or wrong: do not use it as the result; use the "
+              f"recalculated figure and flag the difference for review."]
+
+
+def _three_way_lines(table: Table) -> list[str]:
+    """A purchase order, goods receipt and supplier invoice: the unmatched
+    quantity and amount, and a hold instead of a payment."""
+    kind = next((i for i, h in enumerate(table.headers) if _KIND_HEADER.search(h or "")), None)
+    qty = next((i for i, h in enumerate(table.headers) if _QUANTITY_HEADER.search(h or "")), None)
+    if kind is None or qty is None:
+        return []
+    amount = next((i for i, h in enumerate(table.headers) if i not in (kind, qty) and _AMOUNT_HEADER.search(h or "")
+                   and not re.search(r"unit|price", h or "", re.I)), None)
+    found: dict[str, list[list[str]]] = {"po": [], "receipt": [], "invoice": []}
+    for row in table.rows:
+        label = row[kind] if kind < len(row) else ""
+        for key, pattern in (("po", _PO), ("receipt", _RECEIPT), ("invoice", _INVOICE)):
+            if pattern.search(label):
+                found[key].append(row)
+                break
+    if not all(found.values()):
+        return []
+    total = lambda rows, i: sum((_to_decimal(r[i]) or Decimal("0")) for r in rows if i < len(r))  # noqa: E731
+    ordered, received, invoiced = (total(found[k], qty) for k in ("po", "receipt", "invoice"))
+    refs = ", ".join(_row_name(r, _id_column(table)) for k in ("po", "receipt", "invoice") for r in found[k])
+    line = (f"- Three-way match ({refs}): ordered {_fmt(float(ordered))}, received {_fmt(float(received))}, "
+            f"invoiced {_fmt(float(invoiced))}")
+    if amount is not None:
+        billed, got = total(found["invoice"], amount), total(found["receipt"], amount)
+        line += f"; invoice {table.headers[amount]} {_fmt(float(billed))} against receipt {_fmt(float(got))}"
+    if invoiced == received == ordered:
+        return [line + "; quantities match. Payment still needs the authorized approval; do not record it as paid."]
+    unmatched = invoiced - received
+    line += f"; invoiced but not received = {_fmt(float(unmatched))}"
+    if amount is not None:
+        line += f" ({_fmt(float(total(found['invoice'], amount) - total(found['receipt'], amount)))} unmatched)"
+    return [line + ". The invoice does not match: place it on hold / exception for authorized review. Do not approve "
+                   "or pay it, and do not say a payment was made."]
+
+
 def _table_lines(table: Table, include_top_n: bool = True, by_month_group: bool = True,
                  query: str | None = None) -> list[str]:
-    # The label is the first filled cell: a trial balance's Total row has an
-    # empty account code before it, and was counted as an account (50%).
-    rows = [r for r in table.rows if not _TOTAL_ROW.match(next((c for c in r if c.strip()), ""))]
+    heading = f"Table '{table.title}' ({', '.join(h for h in table.headers if h)})"
+    three_way = _three_way_lines(table)
+    if three_way:
+        # Totals across an order, a receipt and an invoice mean nothing.
+        return [f"{heading}: {len(table.rows)} records", *three_way]
+    rows = [r for r in table.rows if not _is_total(r)]
     if not rows:
         return []
+    checks = _value_check_lines(table, rows)
     table = Table(table.title, table.headers, rows, table.key, table.sheet)
     numeric, category, rates = _columns(table)
     if not numeric:
-        return []
+        return [f"{heading}: {len(rows)} data rows", *checks] if checks else []
+    amount = next((i for i in numeric if i not in rates), None)
+    rows, duplicates = _duplicate_lines(table, rows, amount)
+    checks += duplicates + _blank_category_lines(table, rows, category, amount)
+    table = Table(table.title, table.headers, rows, table.key, table.sheet)
     name = lambda i: table.headers[i] or f"Column {i + 1}"  # noqa: E731
-    lines = [f"Table '{table.title}' ({', '.join(h for h in table.headers if h)}): {len(rows)} data rows"]
+    lines = [f"{heading}: {len(rows)} data rows", *checks]
     running = _running_balance_column(table)
     totals: dict[int, float] = {}
     for i in numeric:
@@ -533,6 +835,8 @@ def _table_lines(table: Table, include_top_n: bool = True, by_month_group: bool 
         lines.append(f"- Total {name(i)} = {_fmt(totals[i])}; average {_fmt(totals[i] / len(values))}; "
                      f"highest {_fmt(max(values))}; lowest {_fmt(min(values))}")
     lines.extend(_straight_line_depreciation(table, numeric, category))
+    lines.extend(_depreciation_fit(table, numeric, category))
+    lines.extend(_payroll_journal(table))
     lines.extend(_monthly_lines(table, totals, category, by_month_group))
     keys = list(totals)
     for a in keys:
@@ -780,7 +1084,11 @@ def _trial_balance_lines(table: Table, by_month: bool = True) -> list[str]:
                      f"net margin = {_pct(after_tax, revenue)}")
     if total("current_liability"):
         inventory = sum(v for k, v in groups.get("current_asset", []) if re.search(r"inventor|stock", k, re.I))
-        lines.append(f"- Current ratio = {total('current_asset') / total('current_liability'):.2f}; quick ratio = "
+        # Each ratio states its formula: the quick ratio was described as
+        # "(Cash + Petty cash ÷ Current liabilities)" beside this value.
+        lines.append(f"- Current ratio (current assets ÷ current liabilities) = "
+                     f"{total('current_asset') / total('current_liability'):.2f}; quick ratio ((current assets − "
+                     f"inventory) ÷ current liabilities) = "
                      f"{(total('current_asset') - inventory) / total('current_liability'):.2f}")
     if groups.get("suspense"):
         suspense = total("suspense")
@@ -935,6 +1243,109 @@ def _bank_reconciliation_lines(tables: list[Table]) -> list[str]:
     return lines
 
 
+# The prompt block's name, which the user never sees: "Source: asset-level
+# figures summed – see “Verified figures”" and "[verified figures]" pointed
+# the reader at a list that is not in the answer.
+_LABEL = r"[\"“”'‘’]?verified\s+(?:figures|totals)[\"“”'‘’]?"
+_INTERNAL_LABELS = (
+    (re.compile(rf"\s*\[{_LABEL}\]", re.I), ""),
+    (re.compile(rf"\s*\((?:see\s+)?(?:the\s+)?{_LABEL}[^()]*\)", re.I), ""),
+    (re.compile(rf"\s*[–—-]\s*see\s+(?:the\s+)?{_LABEL}", re.I), ""),
+    (re.compile(rf"(?<!\w)(?:the\s+)?{_LABEL}(?:\s+(?:list|block|section))?", re.I), "the document's figures"),
+)
+
+
+def strip_internal_labels(text: str) -> str:
+    for pattern, replacement in _INTERNAL_LABELS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+# Statement PDFs often put each label and its amount on separate lines
+# ("FY2025 Revenue" / "10,000"), which no table reader saw, so the model read
+# raw text. With a released statement and an unreleased draft attached, it
+# credited the draft's own line "Released FY2025 Revenue (F2) 10,000" to the
+# released statement's notes (Document 01 F03). Each stated figure is listed
+# with its file, page and the document's release status, and a figure the
+# documents state differently is set out side by side.
+_UNRELEASED = re.compile(r"\bunreleased\b|\bnever\s+released\b|\bnot\s+(?:yet\s+)?released\b|\bdraft\b|"
+                         r"\breview[\s_]+required\b", re.IGNORECASE)
+_RELEASED = re.compile(r"\breleased\b|\bfinal\b|\bapproved\b|\bpublished\b", re.IGNORECASE)
+_LABEL_LINE = re.compile(r"^(?=.*[A-Za-z]{3})[^|]{3,80}$")
+_STATUS_WORDS = re.compile(r"\b(?:draft|released|unreleased|approved|final|provisional)\b|\(F\d\)|\bv\d+\b", re.IGNORECASE)
+MIN_STATED_FIGURES = 3
+MAX_STATED_PER_PAGE = 30
+
+
+def _single_amount(line: str) -> Decimal | None:
+    text = line.strip()
+    return _to_decimal(text) if text and len(text) <= 24 else None
+
+
+def _stated_figures(text: str) -> list[tuple[str, Decimal]]:
+    """(label, amount) for each label line directly followed by a line that
+    is one amount and nothing else."""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    pairs = []
+    for label, value_line in zip(lines, lines[1:]):
+        amount = _single_amount(value_line)
+        if amount is not None and _single_amount(label) is None and _LABEL_LINE.match(label):
+            pairs.append((label, amount))
+    return pairs
+
+
+def _document_status(text: str, file: str) -> str:
+    if _UNRELEASED.search(text) or _UNRELEASED.search(file):
+        return "unreleased draft"
+    if _RELEASED.search(text) or _RELEASED.search(file):
+        return "released"
+    return "release status not stated"
+
+
+def _stated_figure_lines(sources: list[WebSource]) -> list[str]:
+    pages: "OrderedDict[str, list[tuple[str, str]]]" = OrderedDict()   # file -> [(location, text)]
+    for source in sources:
+        title = source.title or ""
+        location = title.split(" — ", 1)[1] if " — " in title else ""
+        pages.setdefault(_file_of(source), []).append((location, source.snippet or ""))
+    found: dict[str, list[tuple[str, str, Decimal]]] = {}
+    status: dict[str, str] = {}
+    for file, chunks in pages.items():
+        figures = [(location, label, amount) for location, text in chunks for label, amount in _stated_figures(text)]
+        if len(figures) >= MIN_STATED_FIGURES:
+            found[file] = figures
+            status[file] = _document_status(" ".join(text for _, text in chunks), file)
+    if not found:
+        return []
+    lines = []
+    for file, figures in found.items():
+        by_page: "OrderedDict[str, list[str]]" = OrderedDict()
+        for location, label, amount in figures:
+            by_page.setdefault(location, []).append(f"{label} {_fmt(float(amount))}")
+        for location, items in by_page.items():
+            lines.append(f"Figures stated in '{file}' ({status[file]}){', ' + location if location else ''}: "
+                         + "; ".join(items[:MAX_STATED_PER_PAGE]))
+    if len(found) > 1:
+        same: dict[str, list[tuple[str, str, str, Decimal]]] = defaultdict(list)
+        for file, figures in found.items():
+            for location, label, amount in figures:
+                key = " ".join(_STATUS_WORDS.sub(" ", label).lower().split())
+                if key:
+                    same[key].append((file, location, label, amount))
+        conflicts = [entries for entries in same.values()
+                     if len({e[3] for e in entries}) > 1 and len({e[0] for e in entries}) > 1]
+        for entries in conflicts[:MAX_FINDINGS_LISTED]:
+            lines.append("- Stated differently: " + "; ".join(
+                f"'{file}' ({status[file]}){', ' + location if location else ''} says {label} = {_fmt(float(amount))}"
+                for file, location, label, amount in entries))
+        if any(status[e[0]] == "released" for entries in conflicts for e in entries) and \
+                any(status[e[0]] == "unreleased draft" for entries in conflicts for e in entries):
+            lines.append("- The released document controls the reported figure; an unreleased draft does not, even if "
+                         "it is newer. Quote each figure only from the document and page it is listed under above: a "
+                         "draft that repeats a released figure is still the draft speaking.")
+    return lines
+
+
 def verified_document_figures(sources: list[WebSource], query: str | None = None) -> str:
     """A bounded prompt block of figures computed from the documents' tables,
     or "" when the documents hold no numeric table. With a question, the
@@ -942,7 +1353,7 @@ def verified_document_figures(sources: list[WebSource], query: str | None = None
     include_top_n = query is None or bool(_RANKING_QUESTION.search(query))
     by_month = query is None or bool(_MONTHLY_QUESTION.search(query))
     tables = tables_from_sources(sources)
-    lines: list[str] = _bank_reconciliation_lines(tables)
+    lines: list[str] = _stated_figure_lines(sources) + _bank_reconciliation_lines(tables)
     for table in tables:
         statement = _trial_balance_lines(table, by_month)
         lines.extend(statement)
