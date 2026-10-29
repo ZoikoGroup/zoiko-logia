@@ -107,6 +107,42 @@ def _rate_per_item(query: str) -> bool:
             and item_rate(query, ("purchases", "purchase", "inputs")) is not None)
 
 
+def _country_stated(question: str, earlier: str) -> bool:
+    """The country is stated in this question, or in an earlier turn when this
+    question does not move to another country's currency: a "UK business" two
+    messages back carried over to "supplies for €6,000" (24 Oct 2026)."""
+    from app.orchestration.source_taxonomy import currency_contradicts, detect_jurisdictions
+    if detect_jurisdictions(question, infer_from_tax_terms=False) or _SINGLE_COUNTRY_CURRENCY.search(question):
+        return True
+    before = detect_jurisdictions(earlier, infer_from_tax_terms=False) or (
+        ["UK"] if re.search(r"£|\b(?:gbp|hmrc|sterling)\b", earlier, re.I) else [])
+    return bool(before) and not any(currency_contradicts(key, question) for key in before)
+
+
+# The rule word must be about VAT or GST itself ("VAT rate", "register for
+# VAT"), and the foreign currency an amount: "Compare the GBP/USD reference
+# rate … and cite the VAT rules" asks about an exchange rate.
+_VAT_RATE_OR_RULE = re.compile(
+    r"\b(?:vat|gst)\s+(?:rates?|threshold|registration|exempt\w*)\b"
+    r"|\b(?:rates?|threshold)\s+(?:of|for)\s+(?:vat|gst)\b"
+    r"|\b(?:register|registration|reclaim\w*)\s+(?:for\s+)?(?:the\s+)?(?:vat|gst)\b", re.I)
+_FOREIGN_AMOUNT = re.compile(
+    r"[€$¥]\s?\d|\b\d[\d,.]*\s?(?:eur|euros?|usd|dollars?|aud|cad|sgd|aed|chf|jpy)\b"
+    r"|\b(?:eur|usd|aud|cad|sgd|aed|chf|jpy)\s?\d", re.I)
+
+
+def missing_vat_country(query: str) -> str | None:
+    """A VAT or GST rate or rule asked about in another country's currency,
+    with no country named: "What VAT rate applies to my €5,000 sale?" was
+    answered with UK rates. Asked, not assumed."""
+    from app.orchestration.source_taxonomy import detect_jurisdictions
+    q = query or ""
+    if not (_VAT_RATE_OR_RULE.search(q) and _FOREIGN_AMOUNT.search(q)) or detect_jurisdictions(q):
+        return None
+    return ("Which country is the business VAT- or GST-registered in? Rates and rules differ by country, and the "
+            "amount you gave is not in pounds, so I won't assume the UK.")
+
+
 def missing_vat_inputs(query: str, history=None) -> str | None:
     """The inputs a VAT/GST amount needs that the question does not give —
     only those — or None when it can be calculated (or is not that question).
@@ -133,7 +169,7 @@ def missing_vat_inputs(query: str, history=None) -> str | None:
     sales_and_purchases = bool(re.search(r"\b(?:sales|turnover|output)\b", q, re.I)
                                and re.search(r"\b(?:purchases?|costs?|expenses|input)\b", q, re.I))
     missing = []
-    if not detect_jurisdictions(context, infer_from_tax_terms=False) and not _SINGLE_COUNTRY_CURRENCY.search(context):
+    if not _country_stated(q, earlier):
         missing.append("which country the business is VAT-registered in")
     if not has_rate:
         missing.append("the VAT rate or rates that apply (standard, reduced, zero-rated or exempt)")
@@ -262,14 +298,38 @@ _QUESTION_START = re.compile(
 _REQUEST_WORD = re.compile(
     r"\b(?:calculate|compute|convert|show|explain|list|compare|find|give|tell|draw|create|plot|chart|"
     r"graph|prepare|summari[sz]e|check|verify|analy[sz]e|estimate|help|please|need|want|describe|define|"
-    r"translate|retrieve|get|make|write|draft|review|confirm|highlight|outline|identify|correct|update|"
+    r"translate|retrieve|get|make|write|rewrite|rephrase|proofread|draft|review|confirm|highlight|outline|identify|correct|update|"
     r"comment|critique|assess|evaluate|validate|"
     r"work\s+out|break\s+down|visuali[sz]e)\b", re.I)
 _STATEMENT_VERB = re.compile(
     r"\b(?:is|are|was|were|came|comes|has|have|had|did|does\s+not|do\s+not|provided|states?|stated|said|"
-    r"shows?|showed|reported|returned|gave|removed|failed|works?|worked)\b", re.I)
+    r"shows?|showed|reported|returned|gave|removed|failed|works?|worked|may|might|can|could|should)\b", re.I)
 _FIRST_PERSON = re.compile(r"\b(?:i|i'm|i've|my|our|we|we're|us)\b", re.I)
 _AMOUNT = re.compile(r"[₹£$€]\s*\d|\d[\d,.]*\s*(?:%|lakh|crore|million|usd|inr|gbp|eur)\b", re.I)
+
+STATEMENT_CLARIFICATION = "What would you like me to do with this text? Choose an action or describe what you need."
+# A bullet, a numbered item, a table row (tab or pipe separated) or a
+# "Label: description" line: material the user pasted, not their request.
+_PASTED_ITEM = re.compile(r"^\s*(?:[•●▪◦\-*–]\s|\d+[.)]\s|[^\t\n]*\t|\|.*\|)")
+_LABEL_LINE = re.compile(r"^\s*([A-Z][\w&()' -]{2,60}):\s+\S")
+_SUBORDINATE_OPENING = re.compile(r"^\W*(?:when|where|while|if|once|after|before)\s+[^,?\n]{3,120},\s*", re.I)
+_ECHOED_CLARIFICATION = re.compile(
+    r"(?:That reads as a statement rather than a question\.\s*What would you like me to do with it\b[^?]*\?"
+    r"|" + re.escape(STATEMENT_CLARIFICATION) + r")\s*(?:Context:\s*)?", re.I)
+STATEMENT_ACTIONS = [
+    "Check whether these claims are accurate.",
+    "Explain this text in plain language.",
+    "Rewrite this text for clarity.",
+]
+
+
+def _pasted_item(line: str) -> bool:
+    """A line of pasted material. "Phase 1: Immediate Preparedness" is a
+    label; "Plot monthly sales as a line chart: Jan 40, …" and "Sales: Jan
+    200, Feb 250. Only give the total." carry a request."""
+    if _PASTED_ITEM.match(line):
+        return True
+    return bool(_LABEL_LINE.match(line) and not _REQUEST_WORD.search(line) and not _QUESTION_START.search(line))
 
 
 def statement_not_question(query: str) -> str | None:
@@ -284,12 +344,20 @@ def statement_not_question(query: str) -> str | None:
     # Questions are often pasted inside quotation marks; the quotes say
     # nothing about whether it is a question.
     text = (query or "").strip().strip("\"'“”‘’ ").strip()
+    # Kriton's own clarification pasted back with the text asks nothing new;
+    # its "?" made the whole paste read as a question (27 Oct 2026).
+    text = _ECHOED_CLARIFICATION.sub("", text).strip()
     words = re.findall(r"[A-Za-z']+", text)
     if "?" in text or len(words) < 4:
         return None
-    if (_QUESTION_START.search(text) or _REQUEST_WORD.search(text)
+    # The user's own framing, not the pasted material: "Verify the Beneficial
+    # Ownership…" in a table row and "Review Local Documentation" in a bullet
+    # are its content, not a request to Kriton (27 Oct 2026).
+    framing = "\n".join(line for line in text.splitlines() if not _pasted_item(line))
+    # "When addressing an audit, leaders should…" opens a clause, not a question.
+    framing = _SUBORDINATE_OPENING.sub("", framing.strip(), count=1)
+    if (_QUESTION_START.search(framing) or _REQUEST_WORD.search(framing)
             or _FIRST_PERSON.search(text) or _AMOUNT.search(text)
             or not _STATEMENT_VERB.search(text)):
         return None
-    return ("That reads as a statement rather than a question. What would you like me to do with it — "
-            "check whether it is correct, explain it, or something else?")
+    return STATEMENT_CLARIFICATION

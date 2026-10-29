@@ -1,0 +1,107 @@
+{
+  "scope": "Real providers and pipeline; persistence and governed library isolated with test seams, no tenant writes.",
+  "runs": [
+    {
+      "query": "Prepare a response plan for a multinational tax audit. Include team coordination, correspondence management, document collection, and exposure assessment. Separate optional process suggestions from legal and accounting requirements.",
+      "seconds": 24.07,
+      "error": null,
+      "completeness": "partial",
+      "answer": "**Legal and Accounting Requirements**\n\nThe retrieved evidence does not contain any specific statutes, tax authority guidelines, or accounting standards that prescribe mandatory steps for a multinational tax audit response plan. Consequently, I cannot cite any authoritative rule or requirement for the items listed below.\n\n**General Operational Guidance**\n\n*The following practical actions are commonly adopted by tax and audit professionals to manage a multinational tax audit. They are presented as general practice suggestions and are not tied to a specific legal source.*\n\n| Process Area | Suggested Actions | Rationale (practical) |\n| -------------- | ------------------- | ----------------------- |\n| Team Coordination | \u2022 Appoint a central audit response coordinator.<br>\u2022 Form a cross\u2011border team with tax, finance, legal, and local country experts.<br>\u2022 Define clear roles, escalation paths, and decision\u2011making authority. | Ensures unified communication and avoids duplicated effort. |\n| Correspondence Management | \u2022 Create a shared, secure repository (e.g., encrypted cloud folder) for all audit letters, requests, and responses.<br>\u2022 Log each incoming/outgoing item with date, jurisdiction, and responsible team member.<br>\u2022 Use standardized templates for replies to maintain consistency. | Facilitates tracking, audit trail, and timely responses. |\n| Document Collection | \u2022 Compile a master index of required documents (financial statements, transfer\u2011pricing studies, intercompany agreements, tax returns, supporting schedules).<br>\u2022 Request documents from local subsidiaries well in advance of deadlines.<br>\u2022 Verify completeness and authenticity before submission. | Reduces risk of missing or incomplete information that could increase exposure. |\n| Exposure Assessment | \u2022 Perform a preliminary risk analysis based on known audit issues (e.g., transfer pricing, permanent establishment, withholding tax).<br>\u2022 Estimate potential adjustments and associated tax, interest, and penalty impacts using the applicable tax rates of each jurisdiction.<br>\u2022 Document assumptions and uncertainties for senior management review. | Provides a basis for budgeting, negotiation strategy, and financial reporting. |\n\n*Note: The above guidance reflects typical industry practice and should be adapted to the specific jurisdictions, tax laws, and corporate policies relevant to the audit.*",
+      "citations": [],
+      "limitations": [
+        "Not fully verified: no source was found to confirm it. Check the figures and facts before relying on this answer. A reviewer has also been notified.",
+        "Incomplete answer: some requested information could not be verified from the retrieved evidence.",
+        "No source was cited for this answer. Official sources to check (suggestions, not evidence): OECD (oecd.org) for transfer pricing and international tax, and the relevant local tax authority for domestic audit procedures."
+      ]
+    },
+    {
+      "query": "Compare leases, impairment, and provisions under IFRS. Explain the purpose of each and the supporting documentation typically needed. Cite applicable standards and distinguish requirements from practical suggestions.",
+      "seconds": 44.58,
+      "error": null,
+      "completeness": "partial",
+      "answer": "**Leases**\n\nPurpose: To report information that faithfully represents lease transactions and provides a basis for users of financial statements\u202f[REF-5]\nSupporting documentation typically needed: lease contracts, schedules of lease payments, and any non\u2011lease component agreements\n\n**Impairment**\n\nPurpose: To ensure that assets are carried at no more than their recoverable amount and to recognise an impairment loss when recoverable amount is lower\u202f[REF-3]\n\n**Provisions**\n\nPurpose: To apply appropriate recognition criteria and measurement bases to provisions, contingent liabilities and contingent assets and to disclose sufficient information for users to understand their nature, timing and amount\u202f[REF-2]\nRequirement: An entity applies IAS\u202f37 unless another Standard deals with a specific type of provision, in which case that Standard prevails\u202f[REF-2]\n\n**Distinguishing Requirements from Practical Suggestions**\nGeneral explanation: Leases, impairment, and provisions are distinct IFRS concepts: leases recognise the right\u2011to\u2011use asset and related liability based on contractual terms, impairment reflects a decline in an asset\u2019s recoverable amount requiring evidence of the asset\u2019s value and assumptions used, and provisions are recognized for present obligations of uncertain timing or amount, supported by documentation of the underlying event, a reliable estimate of the outflow, and justification that a settlement is probable.\n\n**Unresolved Points**\n\n- The evidence does not specify the exact list of documents that IFRS mandates for lease disclosures beyond \u201clease contracts and non\u2011lease component agreements\u201d\u202f[REF-1].",
+      "citations": [
+        {
+          "ref_id": "REF-1",
+          "source_id": "https://www.ifrs.org/content/dam/ifrs/publications/html-standards/english/2026/issued/ifrs16.html",
+          "title": "IFRS 16 \u2014 official text (IFRS Foundation)",
+          "url": "https://www.ifrs.org/content/dam/ifrs/publications/html-standards/english/2026/issued/ifrs16.html",
+          "evidence_preview": "1 | This Standard sets out the principles for the recognition, measurement, presentation and disclosure of leases. The objective is to ensure that lessees and lessors provide relevant information in a manner that faithfully represents those",
+          "provider": "IFRS Foundation",
+          "fetched_at": null,
+          "freshness": null,
+          "authority": "official",
+          "jurisdiction": null,
+          "effective_from": null,
+          "effective_to": null,
+          "source_version_id": null
+        },
+        {
+          "ref_id": "REF-2",
+          "source_id": "https://www.ifrs.org/content/dam/ifrs/publications/html-standards/english/2026/issued/ias37.html",
+          "title": "IAS 37 \u2014 official text (IFRS Foundation)",
+          "url": "https://www.ifrs.org/content/dam/ifrs/publications/html-standards/english/2026/issued/ias37.html",
+          "evidence_preview": "The objective of this Standard is to ensure that appropriate recognition criteria and measurement bases are applied to provisions, contingent liabilities and contingent assets and that sufficient information is disclosed in the notes to ena",
+          "provider": "IFRS Foundation",
+          "fetched_at": null,
+          "freshness": null,
+          "authority": "official",
+          "jurisdiction": null,
+          "effective_from": null,
+          "effective_to": null,
+          "source_version_id": null
+        },
+        {
+          "ref_id": "REF-3",
+          "source_id": "https://www.ifrs.org/content/dam/ifrs/publications/html-standards/english/2026/issued/ias36.html",
+          "title": "IAS 36 \u2014 official text (IFRS Foundation)",
+          "url": "https://www.ifrs.org/content/dam/ifrs/publications/html-standards/english/2026/issued/ias36.html",
+          "evidence_preview": "1 | The objective of this Standard is to prescribe the procedures that an entity applies to ensure that its assets are carried at no more than their recoverable amount. An asset is carried at more than its recoverable amount if its carrying",
+          "provider": "IFRS Foundation",
+          "fetched_at": null,
+          "freshness": null,
+          "authority": "official",
+          "jurisdiction": null,
+          "effective_from": null,
+          "effective_to": null,
+          "source_version_id": null
+        },
+        {
+          "ref_id": "REF-5",
+          "source_id": "https://www.ifrs.org/issued-standards/list-of-standards/ifrs-16-leases/",
+          "title": "IFRS 16 Leases - IFRS Foundation",
+          "url": "https://www.ifrs.org/issued-standards/list-of-standards/ifrs-16-leases/",
+          "evidence_preview": "The objective of IFRS 16 is to report information that (a) faithfully represents lease transactions and (b) provides a basis for users of financial statements\u00a0...",
+          "provider": null,
+          "fetched_at": null,
+          "freshness": null,
+          "authority": "official",
+          "jurisdiction": null,
+          "effective_from": null,
+          "effective_to": null,
+          "source_version_id": null
+        }
+      ],
+      "limitations": [
+        "Parts marked \u201cGeneral explanation\u201d come from established accounting knowledge, not from a cited source. Check an official source before relying on them.",
+        "Incomplete answer: some requested information could not be verified from the retrieved evidence.",
+        "Parts of this answer are general explanation, not verified against a source. Figures, rates, deadlines and rules in it are sourced or calculated.",
+        "Incomplete answer: requested parts remain unanswered: comparison; documentation impairment; documentation provisions; standard citations; distinguish requirements.",
+        "Statements the cited sources do not support were removed from this answer. Check the sources for anything not covered here."
+      ]
+    },
+    {
+      "query": "Compare transfer pricing, permanent establishment, and withholding taxes. For each, explain its purpose, audit focus, and practical preparation steps. Use a table and identify any evidence gaps.",
+      "seconds": 32.15,
+      "error": null,
+      "completeness": "none",
+      "answer": "The sources provided do not establish an answer to this.",
+      "citations": [],
+      "limitations": [
+        "The retrieved evidence does not establish the requested answer. No factual answer was verified.",
+        "Live source retrieval is unavailable or degraded because the primary search provider has exhausted its configured usage limit. Missing evidence is a retrieval limitation, not proof that the claim is false.",
+        "No source was cited for this answer. Official sources to check (suggestions, not evidence): OECD (oecd.org) for transfer pricing and international tax, and the relevant local tax authority for domestic audit procedures."
+      ]
+    }
+  ]
+}

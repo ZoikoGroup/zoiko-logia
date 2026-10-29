@@ -670,7 +670,9 @@ def _normalise_arithmetic(text: str) -> str:
 
 _DEBIT_HEADER = re.compile(r"\b(dr|debit)\b", re.I)
 _CREDIT_HEADER = re.compile(r"\b(cr|credit)\b", re.I)
-_AMOUNT = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+# Thousands grouped by commas or by spaces (ordinary, no-break, narrow, thin):
+# "133 650.60" in a journal table was read as 133 (28 Oct 2026).
+_AMOUNT = re.compile(r"-?\d{1,3}(?:[    ]\d{3})+(?:\.\d+)?(?!\d)|-?\d[\d,]*(?:\.\d+)?")
 
 
 def _cells(line: str) -> list[str]:
@@ -680,15 +682,26 @@ def _cells(line: str) -> list[str]:
 def _amount(cell: str) -> Decimal | None:
     match = _AMOUNT.search(cell.replace("₹", "").replace("Rs.", ""))
     try:
-        return Decimal(match.group().replace(",", "")) if match else None
+        return Decimal(re.sub(r"[,    ]", "", match.group())) if match else None
     except InvalidOperation:
         return None
+
+
+_SAYS_UNBALANCED = re.compile(
+    r"\b(?:does\s+not|doesn['’]t|do\s+not|don['’]t|did\s+not|fails?\s+to|will\s+not|won['’]t)\s+balance\b"
+    r"|\b(?:un|not\s+|out\s+of\s+)balanced?\b|\bimbalance\b", re.I)
 
 
 def _journal_balance_failures(answer_text: str) -> list[str]:
     """A journal table whose debit and credit columns do not total the same.
     "Share Capital Dr 10,000 / Calls in Arrears Dr 3,000 / Share Forfeiture
-    Cr 7,000" (13,000 against 7,000) went out as an answer."""
+    Cr 7,000" (13,000 against 7,000) went out as an answer.
+
+    Not when the answer says the entry does not balance: "Check if it
+    balances" for the user's own unbalanced entry was answered correctly and
+    then replaced by bare working as a calculation error (27 Oct 2026)."""
+    if _SAYS_UNBALANCED.search(answer_text or ""):
+        return []
     failures: list[str] = []
     lines = answer_text.splitlines()
     index = 0
@@ -716,8 +729,13 @@ def _journal_balance_failures(answer_text: str) -> list[str]:
 
         debit, credit = numeric_column(debit), numeric_column(credit)
         totals = [Decimal(0), Decimal(0)]
+        stated: list[Decimal | None] = [None, None]
         for row in rows:
-            if row and re.search(r"\btotal\b", row[0], re.I):
+            # "| | **Total** | 133,650.60 | 126,370.91 |": the label may sit in
+            # any column but the amounts; it was summed in, and a wrong stated
+            # total was never compared.
+            if any(re.search(r"\btotal\b", cell, re.I) for at, cell in enumerate(row) if at not in (debit, credit)):
+                stated = [_amount(row[column]) if column < len(row) else None for column in (debit, credit)]
                 continue
             for slot, column in enumerate((debit, credit)):
                 value = _amount(row[column]) if column < len(row) else None
@@ -728,6 +746,55 @@ def _journal_balance_failures(answer_text: str) -> list[str]:
                 f"Journal entry does not balance: debits total {_format_decimal(totals[0])}, "
                 f"credits total {_format_decimal(totals[1])}."
             )
+        for side, shown, total in zip(("debit", "credit"), stated, totals):
+            if shown is not None and total > 0 and abs(shown - total) > Decimal("0.5"):
+                failures.append(
+                    f"Journal total does not match its lines: the {side} total is shown as "
+                    f"{_format_decimal(shown)}, but the {side} lines add up to {_format_decimal(total)}."
+                )
+    return failures + _text_journal_balance_failures(answer_text)
+
+
+# "Dr Right-of-use asset £133,650.60" / "Credit Lease liability: $126,370.91".
+_TEXT_JOURNAL_LINE = re.compile(
+    r"^\s*(?:[-*•]\s*)?(?:\*\*)?(?P<side>Dr|Debit|Cr|Credit)\b\.?(?:\*\*)?\s*:?\s+(?P<rest>.+)$", re.I)
+_TEXT_AMOUNT = re.compile(r"(?:[£$€₹]|\b(?:GBP|USD|EUR|INR|Rs\.?)\s*)?\d(?:[\d,]*\d)?(?:\.\d+)?")
+
+
+def _text_journal_balance_failures(answer_text: str) -> list[str]:
+    """A journal written as text lines ("Dr … / Cr …") whose sides differ.
+    Only table journals were checked, so "Dr Right-of-use asset £133,650.60 /
+    Cr Lease liability £126,370.91" went out unflagged. An entry is checked
+    only when every line states exactly one amount; anything less certain
+    (a working, a year in the account name, a "To …" line) is left alone."""
+    failures: list[str] = []
+    entry: list[tuple[str, Decimal | None]] = []
+
+    def close() -> None:
+        sides = {"dr": Decimal(0), "cr": Decimal(0)}
+        if entry and all(value is not None for _, value in entry):
+            for side, value in entry:
+                sides[side] += value
+            if sides["dr"] > 0 and sides["cr"] > 0 and abs(sides["dr"] - sides["cr"]) > Decimal("0.5"):
+                failures.append(
+                    f"Journal entry does not balance: debits total {_format_decimal(sides['dr'])}, "
+                    f"credits total {_format_decimal(sides['cr'])}."
+                )
+        entry.clear()
+
+    for line in answer_text.splitlines():
+        segments = [segment for segment in re.split(r";\s*", line) if segment.strip()]
+        lines = [_TEXT_JOURNAL_LINE.match(segment) for segment in segments]
+        if not segments or not all(lines):
+            close()
+            continue
+        for match in lines:
+            side = "dr" if match.group("side").lower().startswith("d") else "cr"
+            if side == "dr" and any(earlier == "cr" for earlier, _ in entry):
+                close()        # a debit after credits starts the next entry
+            amounts = _TEXT_AMOUNT.findall(match.group("rest"))
+            entry.append((side, _amount(amounts[0]) if len(amounts) == 1 else None))
+    close()
     return failures
 
 

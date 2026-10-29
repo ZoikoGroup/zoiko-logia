@@ -75,8 +75,17 @@ def _base() -> str:
     return base
 
 
+_SUPPLIED_RATE = re.compile(r"\b(?:discount|interest)\s+rate\s*(?:of|is|was|at|=|:)?\s*\d+(?:\.\d+)?\s*%", re.I)
+_OFFICIAL_NAME = re.compile(r"\b(?:bank|base|policy)\s+rate\b", re.I)
+
+
 def _definition_for_query(query: str) -> str | None:
     if not _HINT.search(query or ""):
+        return None
+    # "We lease a warehouse … discount rate 6%" states the user's own rate: it
+    # was answered with a year of UK Bank Rate data (27 Oct 2026). Asking about
+    # the official rate by name ("Is the Bank Rate 4%?") still fetches it.
+    if _SUPPLIED_RATE.search(query or "") and not _OFFICIAL_NAME.search(query or ""):
         return None
     # "US bank rate" and "India base rate" both contain the literal words this
     # connector matches on, so without the scope check it would return the UK

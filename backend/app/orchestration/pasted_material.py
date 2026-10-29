@@ -31,7 +31,13 @@ _REFERS_TO_MATERIAL = re.compile(
 def review_instruction(query: str) -> str | None:
     """The instruction line when the message is pasted material plus a short
     instruction about it (last line, or first line), else None."""
-    lines = [line.strip() for line in (query or "").strip().splitlines() if line.strip()]
+    text = (query or "").strip()
+    head, separator, material = text.partition(" Context: ")
+    if (separator and len(material) >= MIN_MATERIAL_CHARS and len(head) <= MAX_INSTRUCTION_CHARS
+            and re.match(r"^(?:rewrite|rephrase|proofread|simplify|shorten|summari[sz]e|explain\s+this\s+text)\b", head, re.I)
+            and _REFERS_TO_MATERIAL.search(head)):
+        return head.strip()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
     if len(lines) < 3:
         return None
     for instruction, rest in ((lines[-1], lines[:-1]), (lines[0], lines[1:])):

@@ -1564,6 +1564,9 @@ export type AskKritonRequest = {
   jurisdiction?: string;
   mode?: string;
   clarification_cycle?: number;
+  /** The query_id of the clarification this message answers; previous_query
+   * then carries the request being clarified (lib/clarification-reply.ts). */
+  reply_to?: string;
   /** Correlates requests in the same chat; never grants access. */
   conversation_id?: string;
   conversation_history?: { role: "user" | "assistant"; content: string }[];
@@ -1659,6 +1662,8 @@ export type OutcomeType =
   | "unavailable"
   | "refused"
   | "clarification_required"
+  /** A context statement or correction noted for the conversation; nothing was asked. */
+  | "acknowledged"
   | "escalated"
   | "limited_response"
   | "rejected";
@@ -1694,6 +1699,7 @@ export type SafetyState = {
 export type NextAction = {
   type: string;  // ask_clarifying_question | escalate | refusal | security_incident | composition_failed
   message: string;
+  suggestions?: string[];
 };
 
 /** Â§12 — opaque audit reference; never exposes internal hashes */
@@ -1899,6 +1905,20 @@ export type AnswerPresentation = {
   planner_confidence?: number;
 };
 
+/** Arithmetic, sources and assumptions are verified separately: correct arithmetic is not proof of the rules
+ * or of the transaction's assumptions. Absent on answers stored before it. */
+export type VerificationBreakdown = {
+  arithmetic: "verified" | "mismatch" | "not_applicable";
+  sources: "verified" | "partial" | "unsupported" | "not_applicable";
+  assumptions: "confirmed" | "stated" | "not_applicable";
+  /** Accounting-treatment claims (entries, recognition, standards): "cited_checks_passed" is a citation and
+   * evidence-check status, never "treatment verified"; "not_verified" means insufficient evidence, not wrong.
+   * Absent on older answers. */
+  treatment?: "cited_checks_passed" | "not_verified" | "issue_found" | "not_applicable";
+  overall: "fully_verified" | "partially_verified" | "not_verified";
+  calculation_id?: string | null;
+};
+
 export type ComposedAnswer = {
   text: string;
   citations: SourceCitation[];
@@ -1912,6 +1932,8 @@ export type ComposedAnswer = {
   response_kind?: "calculation" | "chart" | "chart_explanation" | null;
   /** Set by the backend and recorded in the audit trail; absent on older cached answers. */
   completeness?: "complete" | "partial" | "none" | null;
+  /** What was verified, part by part; recorded in the audit trail with the same calculation_id. */
+  verification?: VerificationBreakdown | null;
   presentation?: AnswerPresentation | null;
   response_mode?: "concise" | "educational" | "analytical" | "calculation" | "workflow" | "compound";
   /** Preferred, ordered rendering path — not yet returned by the backend. */

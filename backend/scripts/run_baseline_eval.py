@@ -10,6 +10,7 @@ and record accuracy by failure category.
     .venv/bin/python scripts/run_baseline_eval.py --only uk_vat_holdout  # held out: never tuned against
     .venv/bin/python scripts/run_baseline_eval.py --only gold     # reviewer-approved/corrected answers
     .venv/bin/python scripts/run_baseline_eval.py --only regression  # every question reported in live testing
+    .venv/bin/python scripts/run_baseline_eval.py --only accounting  # reviewed accounting cases: figures and treatment
 
 Needs the backend running (BASELINE_API_URL, default http://127.0.0.1:8010)
 and signs in as the seeded demo user (scripts/seed_dev_user.py), so eval
@@ -88,7 +89,8 @@ def load_cases(only: str | None) -> list[dict]:
     # Knowledge-base sets, run on request only (not in the default run).
     for dataset, filename in (("uk_vat", "uk_vat_questions.json"), ("uk_vat_holdout", "uk_vat_holdout.json"),
                               ("india_gst", "india_gst_questions.json"),
-                              ("regression", "session_regression.json")):
+                              ("regression", "session_regression.json"),
+                              ("accounting", "accounting_review.json")):
         if only == dataset:
             for case in json.loads((EVALS / filename).read_text())["cases"]:
                 cases.append({**case, "source": dataset})
@@ -338,6 +340,20 @@ def score(case: dict, result: dict) -> list[str]:
         normalised_needle = _normalised(needle).lower()
         if needle.lower() in raw_lowered or (normalised_needle.strip() and normalised_needle in lowered):
             failures.append(f"forbidden: contains {needle!r}")
+    if case.get("no_accounting_findings"):
+        # The treatment, not only the figures: a VAT example passed every
+        # content check with its accounting wrong (24 Oct 2026).
+        from app.orchestration.accounting_validation import accounting_findings
+        found = sorted({finding.rule for finding in accounting_findings(_reply_text(result))})
+        if found:
+            failures.append(f"treatment: {', '.join(found)}")
+    if case.get("no_evidence_findings", case.get("source") == "accounting"):
+        # What the released answer's own evidence check found unsupported
+        # (verification_service.evidence_findings): a citation is not proof.
+        from app.orchestration.verification_service import EVIDENCE_NOTE_PREFIX
+        flagged = [item for item in answer.get("limitations") or [] if item.startswith(EVIDENCE_NOTE_PREFIX)]
+        if flagged:
+            failures.append("evidence: " + flagged[0][:200])
     for phrase in case.get("expect_missing_inputs", []):
         if phrase.lower() not in lowered:
             failures.append(f"missing_inputs: expected Kriton to ask about {phrase!r}")
@@ -566,7 +582,7 @@ def main() -> None:
     parser.add_argument("--label", default="baseline", help="report file prefix, e.g. uk-vat-before")
     parser.add_argument("--scoring", choices=["v1", "v2"], default="v1",
                         help="v2 also reads space-grouped thousands (\"192 000\") as numbers")
-    parser.add_argument("--only", choices=["baseline", "agent", "uk_vat", "uk_vat_holdout", "india_gst", "regression", "gold",
+    parser.add_argument("--only", choices=["baseline", "agent", "uk_vat", "uk_vat_holdout", "india_gst", "regression", "gold", "accounting",
                                            "existing", "intelligence", "everything", "planner_shadow", "shadow_eval", "shadow_eval_v2", "shadow_eval_v3"],
                         help="run one dataset (existing = all 206; everything = existing + intelligence)")
     args = parser.parse_args()

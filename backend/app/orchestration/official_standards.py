@@ -25,6 +25,8 @@ _STANDARD_NAMED = re.compile(r"\b(IFRS|IAS)\s?(\d{1,2})\b")
 _STANDARD_MAX_BYTES = 4_000_000
 _STANDARD_TIMEOUT_SECONDS = 15.0
 _STANDARD_CACHE_SECONDS = 24 * 3600
+_STANDARD_FAILURE_CACHE_SECONDS = 30
+MAX_REQUEST_STANDARDS = 8
 _STANDARD_EXCERPT_CHARS = 3000
 _standard_cache: dict[str, tuple[float, str]] = {}
 _standard_locks: dict[str, asyncio.Lock] = {}
@@ -37,7 +39,7 @@ async def _official_standard_text(code: str) -> str:
     # One download per standard: several claims about IFRS 18 wait for it.
     async with _standard_locks.setdefault(code, asyncio.Lock()):
         cached = _standard_cache.get(code)
-        if cached and time.monotonic() - cached[0] < _STANDARD_CACHE_SECONDS:
+        if cached and time.monotonic() - cached[0] < (_STANDARD_CACHE_SECONDS if cached[1] else _STANDARD_FAILURE_CACHE_SECONDS):
             return cached[1]
         text = await _download_standard(code)
         _standard_cache[code] = (time.monotonic(), text)
@@ -246,7 +248,7 @@ _TOPIC_STANDARDS = [
     (r"\bstatement of cash flows?\b|\bcash flow statement\b", ("IAS", "7")),
     (r"\bprovisions?\b|\bcontingent liabilit(?:y|ies)\b|\bcontingent assets?\b", ("IAS", "37")),
     (r"\bproperty,? plant and equipment\b|\bppe\b|\bdepreciation\b|\buseful life\b", ("IAS", "16")),
-    (r"\bimpairment of (?:non-financial )?assets\b|\brecoverable amount\b|\bvalue in use\b", ("IAS", "36")),
+    (r"\bimpairment\b|\brecoverable amount\b|\bvalue in use\b", ("IAS", "36")),
     (r"\bintangible assets?\b", ("IAS", "38")),
     (r"\bincome tax(?:es)?\b|\bdeferred tax\b", ("IAS", "12")),
     (r"\bpresentation (?:and disclosure )?(?:of|in) financial statements\b|\bmanagement-defined performance\b", ("IFRS", "18")),
@@ -256,29 +258,49 @@ _OTHER_FRAMEWORK = re.compile(r"\b(?:US GAAP|ASC\s?\d|FRS 10[2-5]|Ind\s?AS)\b", 
 
 def standards_for(text: str) -> list[tuple[str, str]]:
     """The IFRS standards a question or claim is about: those it names, else
-    those its topic belongs to (at most two)."""
+    those its topic belongs to, bounded without silently dropping a third topic."""
     named = list(dict.fromkeys(_STANDARD_NAMED.findall(text or "")))
     if named:
-        return named[:2]
+        return named[:MAX_REQUEST_STANDARDS]
     if _OTHER_FRAMEWORK.search(text or "") and not re.search(r"\bIFRS\b", text or ""):
         return []
     topical = [standard for pattern, standard in _TOPIC_STANDARDS if re.search(pattern, text or "", re.I)]
-    return list(dict.fromkeys(topical))[:2]
+    if (re.search(r'\b(?:inventor\w*|financial assets?|receivables?|credit loss\w*)\b', text or '', re.I)
+            and not re.search(r'non[- ]financial|recoverable amount|value in use', text or '', re.I)):
+        topical = [standard for standard in topical if standard != ('IAS', '36')]
+    return list(dict.fromkeys(topical))[:MAX_REQUEST_STANDARDS]
 
 
 async def official_standard_excerpts(claim: str) -> list[WebSource]:
 
-    found: list[WebSource] = []
-    for family, number in standards_for(claim):
+    async def read(family, number):
         code = f"{family.lower()}{number}"
         text = await _official_standard_text(code)
         if not text:
-            continue
-        excerpt = best_passages(text, claim, _STANDARD_EXCERPT_CHARS)
+            return None
+        # A comparison's other topics are not relevant terms inside this
+        # standard: "impairment" in a leases question otherwise ranks a
+        # cross-reference above the lease recognition requirements.
+        focused = claim
+        for pattern, standard in _TOPIC_STANDARDS:
+            if standard != (family, number):
+                focused = re.sub(pattern, " ", focused, flags=re.I)
+        objective = ""
+        if re.search(r'\b(?:purpose|objective)s?\b', claim, re.I):
+            opening = re.search(r'(?:^|\n)Objective\s*\n([^\n]+)', text)
+            if opening:
+                paragraph = _PUNCT_SPACE.sub(r'\1', _CROSS_REFERENCE.sub('', opening[1].replace('\u2060', '')))
+                objective = paragraph if len(paragraph) <= 1100 else best_passages(
+                    paragraph, "objective purpose procedures recognition measurement accounting treatment", 1100)
+        details = best_passages(text, focused, _STANDARD_EXCERPT_CHARS - len(objective) - (len(_JOIN) if objective else 0))
+        excerpt = _JOIN.join(part for part in (objective, details) if part)
         if excerpt:
-            found.append(WebSource(title=f"{family} {number} — official text (IFRS Foundation)",
-                                   url=_OFFICIAL_STANDARD_URL.format(code=code), snippet=excerpt,
-                                   provider="IFRS Foundation"))
-    return found
+            return WebSource(title=f"{family} {number} — official text (IFRS Foundation)",
+                             url=_OFFICIAL_STANDARD_URL.format(code=code), snippet=excerpt,
+                             provider="IFRS Foundation")
+        return None
+
+    return [source for source in await asyncio.gather(*(read(family, number) for family, number in standards_for(claim)))
+            if source is not None]
 
 

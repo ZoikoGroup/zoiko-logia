@@ -26,6 +26,10 @@ _OFFICIAL: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 _DEFAULT = "the IFRS Foundation (ifrs.org) or your country's tax authority and standard setter"
 MAX_SUGGESTIONS = 3
+_TAX_AUDIT = re.compile(
+    r"\b(?:tax(?:ation)?\s+(?:audits?|controvers\w*|authorit\w*)|transfer[- ]pricing|"
+    r"permanent establishment|withholding|intercompany|multi[- ]jurisdictional tax)\b", re.I)
+_FINANCIAL_AUDIT = re.compile(r"\b(?:financial[- ]statement|statutory audit|isa\s*\d+|iaasb|assurance)\b", re.I)
 
 
 def keep_document_citations(cited: list, available: list) -> list:
@@ -41,7 +45,12 @@ def keep_document_citations(cited: list, available: list) -> list:
 
 
 def official_sources_note(query: str) -> str:
-    matches = [label for pattern, label in _OFFICIAL if pattern.search(query or "")]
+    text = query or ""
+    tax_audit = bool(_TAX_AUDIT.search(text))
+    matches = (["OECD (oecd.org) for transfer pricing and international tax, and the relevant local tax authority for domestic audit procedures"]
+               if tax_audit else [])
+    matches.extend(label for pattern, label in _OFFICIAL if pattern.search(text)
+                   and not (tax_audit and label.startswith("IAASB") and not _FINANCIAL_AUDIT.search(text)))
     suggestions = list(dict.fromkeys(matches))[:MAX_SUGGESTIONS] or [_DEFAULT]
     return ("No source was cited for this answer. Official sources to check (suggestions, not evidence): "
             + "; ".join(suggestions) + ".")

@@ -1,10 +1,11 @@
 // The state a Kriton response is shown in (ZL-ENG-AGT-01 §12). Every result
 // and every failed request maps to exactly one, so the user always sees what
 // happened rather than a raw HTTP code or a misleading answer.
-import type { AskKritonResponse } from "@/lib/api";
+import type { AskKritonResponse, VerificationBreakdown } from "@/lib/api";
 
 export type AnswerState =
   | "answered"
+  | "acknowledged"
   | "need-more-information"
   | "sources-unavailable"
   | "review-pending"
@@ -92,6 +93,8 @@ export function stateForResult(result: Pick<AskKritonResponse, "outcome" | "next
       return "service-unavailable";
     case "clarification_required":
       return "need-more-information";
+    case "acknowledged":
+      return "acknowledged";
     case "escalated":
       return "review-pending";
     case "refused":
@@ -112,4 +115,47 @@ export function suppliedAnswerLabel(answer: AskKritonResponse["answer"]): string
     case "calculation": return "Answered — calculated from supplied figures";
   }
   return answer?.computed_from_question ? "Answered — from figures in this conversation" : null;
+}
+
+// "Answered — calculated and verified" and "source grounded" overstated
+// answers whose arithmetic was right but whose assumptions or sources were
+// not (24 Oct 2026). A fully verified answer keeps its label; any other says
+// what was verified.
+export function verifiedLabel(label: string, verification?: VerificationBreakdown | null): string {
+  if (!verification || !label.startsWith("Answered") || verification.overall === "fully_verified") return label;
+  if (verification.arithmetic === "mismatch") return "Answered — a figure differs from the calculation";
+  // Correct sums under an unverified treatment must not read as a verified
+  // answer; a cited treatment is not a verified one either.
+  const treatmentOpen = !!verification.treatment && verification.treatment !== "not_applicable";
+  if (treatmentOpen && verification.arithmetic === "verified") {
+    return "Answered — arithmetic verified; accounting treatment not verified";
+  }
+  if ((label === "Answered — calculated and verified" || verification.sources === "not_applicable")
+      && verification.arithmetic === "verified") {
+    return verification.assumptions === "stated"
+      ? "Answered — arithmetic verified, assumptions not confirmed"
+      : "Answered — arithmetic verified";
+  }
+  if (label === "Answered — source grounded" && verification.sources === "partial") return "Answered — partly source-verified";
+  return label;
+}
+
+const PART_TEXT = {
+  arithmetic: { verified: "verified", mismatch: "a figure differs from the calculation" },
+  sources: { verified: "verified", partial: "partly verified", unsupported: "not source-verified" },
+  assumptions: { confirmed: "your figures only", stated: "stated, not confirmed" },
+  treatment: { cited_checks_passed: "cited; evidence checks passed", not_verified: "not verified", issue_found: "needs review" },
+} as const;
+
+/** One line naming each part that applies: "Arithmetic: verified · Assumptions: stated, not confirmed". */
+export function verificationSummary(verification?: VerificationBreakdown | null): string | null {
+  if (!verification) return null;
+  const parts: string[] = [];
+  if (verification.arithmetic !== "not_applicable") parts.push(`Arithmetic: ${PART_TEXT.arithmetic[verification.arithmetic]}`);
+  if (verification.sources !== "not_applicable") parts.push(`Sources: ${PART_TEXT.sources[verification.sources]}`);
+  if (verification.assumptions !== "not_applicable") parts.push(`Assumptions: ${PART_TEXT.assumptions[verification.assumptions]}`);
+  if (verification.treatment && verification.treatment !== "not_applicable") {
+    parts.push(`Accounting treatment: ${PART_TEXT.treatment[verification.treatment]}`);
+  }
+  return parts.length ? parts.join(" · ") : null;
 }
