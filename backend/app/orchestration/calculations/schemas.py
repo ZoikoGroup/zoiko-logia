@@ -38,6 +38,23 @@ class CalculationResult(BaseModel):
     # agree with its own inputs, what arithmetic can settle versus what only
     # the preparer can confirm, an input carried from an earlier message.
     notes: list[str] = Field(default_factory=list)
+    # Extra result tables ({"title", "header", "rows"}): a lease schedule.
+    tables: list[dict] = Field(default_factory=list)
+    # How the figures were rounded, stated with every result (reliability plan
+    # phase 2): the engine never rounds mid-way (engine.py).
+    rounding: str = ("Exact decimal arithmetic with intermediate values unrounded; amounts and percentages are "
+                     "shown rounded half-up to 2 decimal places.")
+
+    def fingerprint(self) -> str:
+        """A content id for this result: the same formulas, inputs and outputs
+        always give the same id, so the answer, the calculation check and the
+        audit record can be shown to refer to one calculation."""
+        import hashlib
+        import json
+        body = {"formulas": self.formula_ids, "version": self.formula_version,
+                "inputs": [[i.name, str(i.value), i.currency] for i in self.inputs],
+                "outputs": [[o.name, None if o.value is None else str(o.value)] for o in self.outputs]}
+        return "calc-" + hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]
 
 
 

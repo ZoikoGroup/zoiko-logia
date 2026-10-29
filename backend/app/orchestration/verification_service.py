@@ -129,7 +129,10 @@ _INVENTED_MARKER = re.compile(
 )
 
 
-_CALCULATED_TAG = re.compile(r"\[\s*calculat\w*(?:\s+result)?\s*[:=]?\s*([^\]\n]{0,40})\]", re.I)
+# Only the marker words, bare or carrying a figure: "[calculator]" and
+# "[calculation basis]" are the reader's text and were being deleted (25 Oct 2026).
+_CALCULATED_TAG = re.compile(
+    r"\[\s*calculat(?:ed|ion|e)\b(?:\s+result)?\s*[:=]?\s*((?:[^\]\n]{0,40}?\d[^\]\n]{0,40}?)?)\]", re.I)
 # A tool call written into the answer as text instead of made: '【calculate:
 # expression="180000 * 20000 / 200000", label="Allocated price"}】', sometimes
 # unclosed. Shown to users in table cells on 22 Oct 2026. Needs a tool name and
@@ -200,11 +203,19 @@ _BAD_PARAGRAPH_RANGE = re.compile(
     rf"(\b(?:IAS|IFRS|ASC|FRS|ISA|AS|SA)\s?\d+(?:{_H}\d+)*)[ \t]*(?:§|¶|para(?:graph)?s?\.?)[ \t]*(\d+){_H}[ \t]*(?:§|¶)?(\d+)")
 
 
+# "What is tax – a grounded example (corrected)", "Corrected journal entries"
+# after a figure-correction round (24 Oct 2026).
+_REVISION_TAG = re.compile(r"[ \t]*\((?:corrected|revised|updated|recalculated|re-?calculated)\)", re.I)
+_REVISION_HEADING_WORD = re.compile(
+    r"^([ \t]*(?:#{1,6}[ \t]+|\*\*|__))(?:corrected|revised|updated|recalculated)\s+(\w)", re.I | re.M)
+
+
 def _strip_revision_narration(text: str) -> str:
     ends = list(_REVISION_PREAMBLE_END.finditer(text))
     if ends and ends[0].start() < 2000 and _REVISION_PREAMBLE.search(text[:ends[0].start()]):
         text = text[ends[0].end():].lstrip("\n")
     text = _REVISION_SENTENCE.sub("", text)
+    text = _REVISION_HEADING_WORD.sub(lambda m: m.group(1) + m.group(2).upper(), _REVISION_TAG.sub("", text))
     text = re.sub(r"\n{3,}", "\n\n", _CALCULATION_NUMBER.sub("", text))
     return _BAD_PARAGRAPH_RANGE.sub(
         lambda m: m.group(1) if int(m.group(3)) <= int(m.group(2)) else m.group(0), text)
@@ -217,6 +228,9 @@ def remove_tool_mentions(text: str) -> str:
     text = _TOOL_MENTION.sub("", text)
     text = _TOOL_SENTENCE.sub("", text)
     return re.sub(r"([.!?]) {2,}(?=\S)", r"\1 ", re.sub(r"[ \t]+\n", "\n", text))
+
+
+_INTERNAL_CALC_TAG = re.compile(r"[ \t]*\{\s*\[\s*calc[^\]}]*\]\s*\}|[ \t]*\[\s*calc[-‐‑‒–—_][^\]\n]*\]", re.I)
 
 
 def normalize_citations(answer: str, valid_refs: set[str]) -> str:
@@ -242,6 +256,14 @@ def normalize_citations(answer: str, valid_refs: set[str]) -> str:
     text = remove_tool_mentions(_TOOL_CALL_TEXT.sub("", answer or ""))
     text = _INLINE_GAP_TAG.sub("", text)
     text = _INVENTED_MARKER.sub("", _CITATION_VARIANT.sub(canonical, text))
+    # Calculation references the model writes for itself ("{[calc‑valuation_allowance]}",
+    # "[calc-3]") reached the reader (25 Oct 2026); they name nothing the reader can see.
+    text = _INTERNAL_CALC_TAG.sub("", text)
+    # "**[REF-1]**": the marker is shown as a source link and removed from the
+    # text, leaving "****" (an IFRS 16 answer, 28 Oct 2026). Unwrap it; an
+    # emphasis left empty by a dropped marker goes too.
+    text = re.sub(r"(\*\*|__)\s*((?:\[REF-\d+\][\s,;]*)+?)\s*\1", r"\2", text)
+    text = re.sub(r"(?<![*\w])\*\*\*\*(?![*\w])", "", text)
     # "[calculate result £6,486]": keep the figure, drop the bracket label.
     return _CALCULATED_TAG.sub(lambda m: m.group(1).strip(), text)
 
@@ -284,13 +306,21 @@ class VerifiedFigures:
         return bool(self.results)
 
 
+_PAY_OBLIGATION = re.compile(r"\b(?:must|has to|have to|needs? to|will need to|is required to)\s+(pay|remit|account for)\b",
+                             re.I)
+
+
 def _from_verified_calculation(claim: str, calculated) -> bool:
     """A statement presenting a verified calculation: it shows at least one
     computed result, every other figure is an input the result came from, and
     it asserts no rule, rate, threshold or deadline. A sentence that only
     repeats the user's figures ("The £120,000 is recognised on day one") is
     still a claim and needs a source."""
-    if not calculated or _RULE_ASSERTION.search(claim):
+    # "The business must pay £14,000 to HMRC" states the result as what is
+    # owed, not a rule: it was removed as unsupported (24 Oct 2026). Only the
+    # obligation to pay or remit the amount is set aside; any other rule word
+    # still needs a source, and every figure must still be calculated.
+    if not calculated or _RULE_ASSERTION.search(_PAY_OBLIGATION.sub(r"\1", claim)):
         return False
     results = calculated.results if isinstance(calculated, VerifiedFigures) else set(calculated)
     inputs = calculated.inputs if isinstance(calculated, VerifiedFigures) else set()
@@ -384,6 +414,11 @@ def calculated_figures(result, *, question: str = "", receipts: list[dict] | Non
     if result is not None:
         results |= {_number_key(o.value) for o in result.outputs or [] if o.value is not None}
         inputs |= {_number_key(i.value) for i in result.inputs or [] if i.value is not None}
+        # A deterministic schedule's rows are calculator results too: a lease
+        # schedule's year-4 and year-5 balances were removed as untraceable.
+        for table in getattr(result, "tables", None) or []:
+            for row in table.get("rows", []):
+                results |= numbers(" ".join(row[1:]))
     stated = numbers(question)
     assumed: list[str] = []
     for receipt in receipts or []:
@@ -583,6 +618,35 @@ async def verify_for_release(answer: str, *, question: str, evidence: list[str],
                              requires_authority: bool, chart_artifacts: list[str] | None = None,
                              source_jurisdictions: dict[str, str] | None = None,
                              calculated: set[str] | None = None) -> AnswerVerification:
+    guidance = operational_guidance_claims(answer, question) if requires_authority else []
+    authoritative_lines = []
+    for line, in_guidance in _operational_section_lines(answer):
+        if in_guidance:
+            for statement, _ in _release_claim_pairs(line):
+                if statement in guidance:
+                    line = line.replace(statement, "", 1)
+        authoritative_lines.append(line)
+    authoritative_answer = "\n".join(authoritative_lines) if guidance else answer
+    if guidance and not _release_claim_pairs(authoritative_answer):
+        return AnswerVerification(True, general_explanations=guidance)
+    result = await _verify_authoritative_answer(
+        authoritative_answer, question=question, evidence=evidence, requires_authority=requires_authority,
+        chart_artifacts=chart_artifacts, source_jurisdictions=source_jurisdictions, calculated=calculated,
+    )
+    result.general_explanations = list(dict.fromkeys(guidance + result.general_explanations))
+    # A safe guidance section can survive removal of unsupported rule claims.
+    if guidance and not result.passed and not evidence and not result.rejected_claims:
+        result.rejected_claims = [original for original, _ in _release_claim_pairs(authoritative_answer)]
+        result.rejected_reasons = ["missing_citation"] * len(result.rejected_claims)
+    if guidance and result.rejected_claims:
+        result.prunable = True
+    return result
+
+
+async def _verify_authoritative_answer(answer: str, *, question: str, evidence: list[str],
+                                      requires_authority: bool, chart_artifacts: list[str] | None = None,
+                                      source_jurisdictions: dict[str, str] | None = None,
+                                      calculated: set[str] | None = None) -> AnswerVerification:
     """Only a complete, supported verdict releases authoritative model prose.
 
     This runs after every corrective rewrite. Self-contained calculations and
@@ -599,9 +663,15 @@ async def verify_for_release(answer: str, *, question: str, evidence: list[str],
     # the calculator is its provenance, not a research source. Filtered here,
     # before the evidence check: a mixed request whose research part found
     # nothing had its verified £480 withheld for "evidence unavailable".
-    restated = [original for original, _ in pairs
-                if not re.search(r"\[REF-\d+\]", original) and _from_verified_calculation(original, calculated)]
+    # Cited or not: "the amount due to HMRC for the quarter is £14,000 [REF-1]"
+    # restates the calculator's result, which no source states, and was
+    # removed as "not in cited evidence" (24 Oct 2026). _from_verified_calculation
+    # still refuses any sentence that asserts a rule, rate or threshold.
+    restated = [original for original, _ in pairs if _from_verified_calculation(original, calculated)]
     pairs = [(original, claim) for original, claim in pairs if original not in restated]
+    own_arithmetic = _user_arithmetic(pairs, answer, question)
+    pairs = [(original, claim) for original, claim in pairs if original not in own_arithmetic]
+    restated += own_arithmetic
     if not pairs:
         if restated:
             return AnswerVerification(True)
@@ -769,7 +839,8 @@ async def verify_for_release(answer: str, *, question: str, evidence: list[str],
         "Rejected: " + "; ".join(f"\"{claim[:120]}\"" for claim in rejected[:3])
     ]
     return AnswerVerification(
-        False, failures, rejected_claims=rejected, prunable=supported > 0 or bool(general), rejected_reasons=reasons,
+        False, failures, rejected_claims=rejected, prunable=supported > 0 or bool(general) or bool(own_arithmetic),
+        rejected_reasons=reasons,
         general_explanations=general,
     )
 
@@ -780,7 +851,8 @@ _GAP_ONLY_REASONS = {"missing_citation", "not_in_cited_evidence", "citation_not_
 # vocabulary. Those keep their full evidence requirement.
 _SPECIFIC_CLAIM = re.compile(
     r"\d|[£$€₹%]|\b(?:tax|vat|gst|hmrc|irs|cbic|duty|duties|tax rate|vat rate|interest rate|rate of|threshold|"
-    r"deadline|due date|penalt\w*|fine[sd]?|law|legal\w*|legislat\w*|regulat\w*|act|section|rule|standard|ifrs|ias|"
+    r"deadline|due date|penalt\w*|fine[sd]?|laws?|legal\w*|legislat\w*|regulat\w*|acts?|sections?|rules?|standards?|ifrs|ias|"
+    r"gdpr|ccpa|hipaa|sox|data[- ]protection|privacy\s+(?:requirements?|obligations?)|"
     r"gaap|frs|asc|ind as|must|shall|required|requires|mandatory|obliged|entitled|allowed|permitted|prohibited|"
     r"exempt\w*|recogni[sz]\w*|measur\w*|depreciat\w*|amorti[sz]\w*|impair\w*|capitali[sz]\w*|deductib\w*|"
     r"reclaim\w*|refund\w*|liabilit\w*|registered|registration|filing|disclos\w*|current|currently|latest|today)\b",
@@ -837,6 +909,58 @@ def is_general_explanation(statement: str) -> bool:
             and not detect_jurisdictions(text, infer_from_tax_terms=False))
 
 
+def requests_operational_guidance(question: str) -> bool:
+    return bool(re.search(
+        r"\b(?:operational\s+(?:framework|guidance|plan|checklist)|(?:response|preparedness|containment)\s+"
+        r"(?:plan|framework|checklist)|(?:prepare|draft|create)\b[^.\n]{0,80}\b(?:audit\s+)?(?:response\s+)?checklist)\b",
+        question or "", re.I))
+
+
+def operational_guidance_claims(answer: str, question: str) -> list[str]:
+    """Only labelled, optional process suggestions bypass factual sourcing.
+
+    A heading alone cannot exempt a rule, amount, jurisdiction or accounting
+    treatment. Retain the existing conservative general-explanation check.
+    """
+    # The heading and the content classify a suggestion. Its evidence
+    # requirement must not depend on one exact wording of the user's ask.
+    # Coverage is checked separately against the complete original request.
+    kept: list[str] = []
+    for line, in_guidance in _operational_section_lines(answer):
+        if not in_guidance:
+            continue
+        for original, claim in _release_claim_pairs(line):
+            # "Tax correspondence" names the workflow's subject; it does
+            # not assert a tax rule. All remaining specificity checks apply.
+            process_text = re.sub(r"\btax\b", "", original, flags=re.I)
+            if (re.match(r"^(?:consider|designate|collect|organise|organize|assign|establish|appoint|"
+                         r"keep|compile|reconcile|set up|maintain|compare|document|route|track|review|coordinate)\s+", claim, re.I)
+                    and is_general_explanation(process_text)):
+                kept.append(original)
+    return kept
+
+
+def _operational_section_lines(answer: str):
+    """Nested topic headings stay inside the labelled guidance section."""
+    level = None
+    for line in (answer or "").splitlines():
+        heading = re.match(r"^\s*(#{1,6})\s+(.+?)\s*$", line)
+        bold_heading = re.fullmatch(r'\s*\*\*(.{1,120}?)\*\*\s*', line) if not heading else None
+        if bold_heading:
+            heading = re.match(r'^(#) (.+)$', '# ' + bold_heading[1])
+        if heading:
+            depth = len(heading.group(1))
+            title = heading.group(2).strip(" *#").lower()
+            if re.fullmatch(r'(?:general operational guidance|optional (?:process|practical|documentation|supporting[- ]document) suggestions|practical suggestions)'
+                            r'\s*(?:\([^\n()]*\))?', title):
+                level = depth
+            elif level is not None and (depth <= level or re.search(r'\b(?:requirements?|obligations?|mandatory)\b', title)):
+                level = None
+            yield line, False
+        else:
+            yield line, level is not None
+
+
 _REF_MARKER = re.compile(r"\s*\[REF-\d+\]")
 _NUMBER_TOKEN = re.compile(r"\d[\d,]*(?:\.\d+)?")
 
@@ -861,11 +985,16 @@ def unbind_arithmetic_citations(answer: str, known: str) -> str:
     return "\n".join(lines)
 
 
-def prune_rejected_claims(answer: str, rejected: list[str], note: str | None = None) -> str:
+def prune_rejected_claims(answer: str, rejected: list[str], note: str | None = None,
+                          facts: str | None = None) -> str:
     """The answer without the rejected statements, and without bullets or
     list introductions they leave empty. The result must be verified again.
-    `note` replaces the default line under a heading the removal emptied."""
+    `note` replaces the default line under a heading the removal emptied.
+    With `facts` (the user's figures and the calculator's results), a line
+    calculated from a figure only the removed statements gave goes too."""
     pruned = claim_verification.remove_claims(answer, rejected, note=note)
+    if facts is not None:
+        pruned = claim_verification.without_dependent_figures(pruned, rejected, facts)
     lines = [line for line in pruned.splitlines() if line.strip() not in ("-", "*", "•")]
     return claim_verification.mark_emptied_headings(re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip(), before=answer,
                                                      note=note)
@@ -890,6 +1019,60 @@ _ARITHMETIC_LINE = re.compile(
 _STATED_FACT = re.compile(r"\b(?:is|are|was|were|applies|apply|must|charged|rate of)\b", re.I)
 
 
+# Words that bring in a figure from outside the user's facts, or confirm one
+# as a fact: "Yes, it is correct: the rate is 6.5%." for "Is the current
+# repo rate at 6.5%?" repeats the user's figure but asserts the outside fact.
+_OUTSIDE_FACT = re.compile(r"\b(?:average|typical(?:ly)?|benchmark|industry|market|median|normally|usually|"
+                           r"current(?:ly)?|still|in\s+force|correct|confirm\w*|yes|today|latest)\b", re.I)
+
+
+def _user_arithmetic(pairs: list[tuple[str, str]], answer: str, question: str) -> list[str]:
+    """Statements that only do arithmetic on the user's own figures, in words
+    or as a table row: "Gross profit is £300,000." for revenue £800,000 and
+    cost of sales £500,000. No source states such a figure, so strict mode
+    removed it as uncited while "= £300,000" was kept (Stage 4, 27 Oct 2026).
+
+    Every figure must be the user's or correct arithmetic from them (the
+    figure check, with the user's text as the only evidence), and the
+    statement must assert no rate, rule, threshold, standard, obligation or
+    accounting treatment. Never exempted merely because some figures are the
+    user's: a statement that only repeats them ("Ask the auditor how to treat
+    the £120,000") is still a claim. Cited statements are judged as usual."""
+    from app.orchestration.calculation_service import validate_answer_calculations
+    from app.orchestration.figure_reconciliation import material_figures, unreconciled_figures
+    given = {value for _, value in material_figures(question or "")}
+    if not pairs or not given:
+        return []
+    unsupported = set(unreconciled_figures(answer, question, "", question))
+
+    def arithmetic_only(text: str) -> bool:
+        figures = [shown for shown, _ in material_figures(text)]
+        return bool(figures) and not unsupported.intersection(figures) and not (
+            re.search(r"\[REF-\d+\]", text) or _RULE_ASSERTION.search(text) or _PAY_OBLIGATION.search(text)
+            or _TREATMENT_CONTENT.search(text) or _FRAMEWORK_REFERENCE.search(text) or _OUTSIDE_FACT.search(text)
+            or validate_answer_calculations(text))
+
+    def computes(text: str) -> bool:
+        return any(value not in given for _, value in material_figures(text))
+
+    candidates = [original for original, _ in pairs if arithmetic_only(original)]
+    # A worked table's rows restating the user's inputs stand with its result row.
+    tables_computing = {_table_of(answer, row) for row in candidates if row.startswith("|") and computes(row)}
+    return [original for original in candidates
+            if computes(original) or (original.startswith("|") and _table_of(answer, original) in tables_computing)]
+
+
+def _table_of(answer: str, row: str) -> int:
+    """The line number where the table holding `row` starts, or -1."""
+    lines = answer.splitlines()
+    at = next((index for index, line in enumerate(lines) if line.strip() == row.strip()), None)
+    if at is None:
+        return -1
+    while at > 0 and lines[at - 1].lstrip().startswith("|"):
+        at -= 1
+    return at
+
+
 def _is_pure_arithmetic(piece: str) -> bool:
     """A label and an equation only. "The standard rate is 20%, so VAT =
     £1,000 × 20% = £200" also asserts a rate, so it still needs a source."""
@@ -899,7 +1082,7 @@ def _is_pure_arithmetic(piece: str) -> bool:
 _BOLD_ONLY = re.compile(r"(\*\*|__)[^*_]+\1")
 _GAP_STATEMENT = re.compile(
     r"\b(?:sources?|evidence|guidance|documents?)\b[^.]*?\b(?:do(?:es)?\s+not|don['’]t|doesn['’]t)\s+"
-    r"(?:state|specify|cover|include|give|provide|mention|say|address|confirm|establish|contain|list|show)\b"
+    r"(?:state|specify|cover|include|give|provide|mention|say|address|confirm|establish|contain|list|show|detail|explain|resolve|demonstrate)\b"
     r"|\bnot\s+(?:stated|covered|specified|given|available|provided|included|found)\s+in\s+the\s+(?:provided\s+|cited\s+|retrieved\s+)?"
     r"(?:sources?|evidence)\b"
     # "The sources provided do not contain information on India's GST
@@ -1208,6 +1391,15 @@ def requires_authoritative_evidence(question: str, context: str = "") -> bool:
     supplied scenario as context, applying a named framework to the user's own
     facts is a professional explanation instead: it may use professional
     knowledge, labelled as not source-verified."""
+    from app.orchestration.derived_output import is_derived_output_request
+    head, separator, subject = (question or "").partition(" Context: ")
+    if separator and subject.strip() and is_derived_output_request(head):
+        # A follow-up chip ("Explain this with a grounded example. Context:
+        # what is tax") is held to its subject's standard, not to the word
+        # "tax" in it: strictly sourced, a general example lost "corporate tax
+        # is levied on profit" and a cited comparison table (24 Oct 2026). A
+        # subject that needs sources (a rate, a threshold) still does.
+        return requires_authoritative_evidence(subject.strip(), context)
     if not _authority_terms(question):
         return False
     return not (context and applies_to_supplied_facts(question, context))
@@ -1278,3 +1470,322 @@ def decide_release_failure(answer: str, check: AnswerVerification, *, risk_level
         escalate=False, text="The sources provided do not establish an answer to this.",
         note="I could not verify an answer against the available evidence. Please try again.",
     )
+
+
+# ── Evidence validation (reliability plan phase 4, 24 Oct 2026) ──────────────
+# verify_for_release judges claims against their cited evidence, but only for
+# answers that need authoritative sourcing, and through a model. These checks
+# are deterministic and run on every released answer: a citation's presence
+# is not proof, so a figure must be in the very source cited for it, and the
+# source must be in force for the period, of the jurisdiction asked about,
+# not withdrawn, not contradicted by another cited source, and of a kind that
+# can state the rule. Findings are disclosed and audited; nothing is invented
+# or rewritten to look supported.
+
+@dataclass(frozen=True)
+class EvidenceFinding:
+    code: str
+    statement: str
+    refs: tuple[str, ...]
+    message: str
+
+
+EVIDENCE_FINDING_CODES = ("figure_not_in_cited_source", "jurisdiction_mismatch", "outside_effective_period",
+                          "withdrawn_source", "conflicting_sources", "no_authoritative_source")
+# The cited evidence does not bear the statement out: the answer is not
+# presented as fully source-grounded, and a reviewer should check it.
+UNSUPPORTED_FINDING_CODES = {"figure_not_in_cited_source", "jurisdiction_mismatch", "outside_effective_period",
+                             "withdrawn_source", "conflicting_sources"}
+# Every finding asks for review; a web or professional-body source is a
+# question of authority for the rule's jurisdiction, not proof the statement
+# is wrong, so it is a source-authority review that leaves the status alone.
+REVIEW_FINDING_CODES = UNSUPPORTED_FINDING_CODES | {"no_authoritative_source"}
+EVIDENCE_NOTE_PREFIX = "Evidence check"
+AUTHORITY_NOTE_PREFIX = "Source-authority review"
+
+_WITHDRAWN = re.compile(
+    r"\bthis (?:guidance|page|publication|notice|manual|form|document|collection) (?:was|has been) "
+    r"(?:withdrawn|archived|replaced|superseded)\b|\bwithdrawn on \d|\bno longer (?:applies|in force|valid|current)\b"
+    r"|\bhas been (?:superseded|repealed|revoked)\b|\bwas repealed\b", re.I)
+_RULE_CLAIM = re.compile(
+    r"%|[£$€₹]\s?\d|\b(?:rate|threshold|limit|allowance|deadline|due\s+date|must|shall|required|requires|mandatory|"
+    r"penalt\w*|exempt\w*|zero[- ]rated|(?:IFRS|IAS|ASC|FRS|Ind\s?AS)\s?\d+)\b", re.I)
+_HISTORY = re.compile(r"\b(?:from|until|before|after|since|previously|formerly|was|were|prior|between|"
+                      r"19\d{2}|20\d{2})\b", re.I)
+_KEY_STOP = {"the", "a", "an", "is", "are", "was", "of", "at", "to", "for", "be", "by", "on", "in", "and", "its",
+             "it", "this", "that", "currently", "now", "set", "charged", "applies", "apply", "per", "with"}
+_GOVERNING = {"official", "internal", "document", "data"}
+
+
+def _figure_key(statement: str, shown: str) -> str:
+    """The two content words before a figure — "standard rate" in "the
+    standard rate of VAT is 20%" — or "" when there are not two."""
+    before = statement[:statement.find(shown)] if shown in statement else ""
+    words = [w for w in re.findall(r"[a-z]+", before.lower()) if w not in _KEY_STOP and w not in ("vat", "gst")]
+    return " ".join(words[-2:]) if len(words) >= 2 else ""
+
+
+def _kind(shown: str) -> str:
+    from app.orchestration.figure_reconciliation import _is_percentage
+    return "percent" if _is_percentage(shown) else "amount"
+
+
+def _rule_figures(statement: str) -> list[tuple[str, float, float, float]]:
+    """(as written, value, amount, tolerance) for each rate or money figure."""
+    from app.orchestration.figure_reconciliation import _amount, _scaled_tolerance, material_figures
+    figures = []
+    for shown, value in material_figures(statement):
+        if _kind(shown) == "percent" or re.search(r"[£$€₹]", shown):
+            figures.append((shown, value, _amount(shown, value), _scaled_tolerance(shown, value)))
+    return figures
+
+
+def _states(text: str, shown: str, amount: float, tolerance: float) -> bool:
+    from app.orchestration.figure_reconciliation import _direct_values, _percent_values, is_known
+    pool = _percent_values(text, "") if _kind(shown) == "percent" else _direct_values(text, "")
+    return is_known(amount, pool, tolerance)
+
+
+def _source_disagrees(text: str, key: str, shown: str, amount: float, tolerance: float) -> bool:
+    """A source sentence on the same figure (same two key words, same kind)
+    that states another value and not this one, outside a dated history."""
+    for sentence in re.split(r"(?<=[.!?])\s+|\n", text or ""):
+        lowered = sentence.lower()
+        if not key or not all(word in lowered for word in key.split()) or _HISTORY.search(sentence):
+            continue
+        same_kind = [(s, a, t) for s, _, a, t in _rule_figures(sentence) if _kind(s) == _kind(shown)]
+        if same_kind and not any(abs(a - amount) <= max(t, tolerance) for _, a, t in same_kind):
+            return True
+    return False
+
+
+def _period(question: str):
+    from datetime import date
+    years = [int(y) for y in re.findall(r"\b(19\d{2}|20\d{2})\b", question or "")]
+    if years and not re.search(r"\b(?:current|today|now|latest)\b", question or "", re.I):
+        return date(min(years), 1, 1), date(max(years), 12, 31)
+    today = date.today()
+    return today, today
+
+
+def evidence_findings(answer: str, *, question: str, evidence_by_ref: dict[str, str], citations: list,
+                      facts: str = "", derived: list[float] = (),
+                      conflict_version_ids: list[str] = ()) -> list[EvidenceFinding]:
+    """What the cited evidence does not bear out, statement by statement.
+
+    `citations` are the answer's SourceCitations (their authority,
+    jurisdiction and dates); `evidence_by_ref` the full text behind each
+    reference; `facts` the user's own figures and `derived` calculator results,
+    which no source needs to state. An illustrative example's scenario lines
+    state no rule and are not checked."""
+    from app.orchestration.derived_output import scenario_text
+    from app.orchestration.figure_reconciliation import _direct_values, is_known
+    from app.orchestration.source_taxonomy import (
+        ACCOUNTING, AUDIT, PAYROLL, TAX, detect_jurisdictions, detect_topics, jurisdiction_label,
+    )
+    meta = {citation.ref_id: citation for citation in citations or []}
+    scenario = {line.strip() for line in scenario_text(answer).splitlines() if line.strip()}
+    known = _direct_values(facts, "") + list(derived)
+    question_jurisdictions = detect_jurisdictions(question)
+    start, end = _period(question)
+    conflicts = set(conflict_version_ids or ())
+    findings: list[EvidenceFinding] = []
+    stated: dict[tuple[str, str], list[tuple[float, float, tuple[str, ...], str]]] = {}
+
+    def add(code, statement, refs, message):
+        findings.append(EvidenceFinding(code, statement, tuple(refs), message))
+
+    for original, _ in _release_claim_pairs(answer):
+        if any(original in line for line in scenario):
+            continue
+        refs = tuple(ref for ref in dict.fromkeys(re.findall(r"\[(REF-\d+)\]", original)) if ref in evidence_by_ref)
+        if not refs:
+            continue
+        sources = [meta.get(ref) for ref in refs]
+        withdrawn = [ref for ref in refs if _WITHDRAWN.search(evidence_by_ref[ref])]
+        if withdrawn:
+            add("withdrawn_source", original, withdrawn,
+                "a cited source says it has been withdrawn or superseded, so it may no longer apply")
+        stale = [ref for ref, source in zip(refs, sources)
+                 if source and ((source.effective_to and source.effective_to < start)
+                                or (source.effective_from and source.effective_from > end))]
+        if stale:
+            period = f"{start.year}" if start.year == end.year else f"{start.year}–{end.year}"
+            add("outside_effective_period", original, stale,
+                f"a cited source version was not in force for the period asked about ({period})")
+        if any(source and source.source_version_id in conflicts for source in sources):
+            add("conflicting_sources", original, refs,
+                "a cited source is registered as conflicting with another source used for this answer")
+        jurisdictions = {ref: source.jurisdiction for ref, source in zip(refs, sources) if source and source.jurisdiction}
+        mismatch = _jurisdiction_mismatch(original, set(refs), question_jurisdictions=question_jurisdictions,
+                                          source_jurisdictions=jurisdictions, evidence_by_ref=evidence_by_ref)
+        if mismatch and len(jurisdictions) == len(refs):
+            add("jurisdiction_mismatch", original, refs,
+                f"a source for {jurisdiction_label(mismatch)} is cited for a statement about "
+                f"{', '.join(jurisdiction_label(j) for j in question_jurisdictions)}")
+        if (_RULE_CLAIM.search(original) and detect_topics(original) & {TAX, ACCOUNTING, AUDIT, PAYROLL}
+                and all(source and source.authority and source.authority not in _GOVERNING for source in sources)):
+            where = question_jurisdictions or detect_jurisdictions(original)
+            add("no_authoritative_source", original, refs,
+                f"a {' / '.join(jurisdiction_label(j) for j in where) + ' ' if where else ''}tax or accounting rule "
+                f"is supported only by {' and '.join(sorted({s.authority for s in sources}))} sources, not by the "
+                "official guidance or standard")
+        if re.search(r"[=×÷]", original) or all(source and source.authority == "document" for source in sources):
+            continue
+        cited_text = " ".join(evidence_by_ref[ref] for ref in refs)
+        for shown, _, amount, tolerance in _rule_figures(original):
+            if is_known(amount, known, tolerance):
+                continue
+            key = _figure_key(original, shown)
+            if key and not _HISTORY.search(original):
+                stated.setdefault((key, _kind(shown)), []).append((amount, tolerance, refs, original))
+            if not _states(cited_text, shown, amount, tolerance):
+                elsewhere = any(_states(text, shown, amount, tolerance)
+                                for ref, text in evidence_by_ref.items() if ref not in refs)
+                add("figure_not_in_cited_source", original, refs,
+                    f"{shown.strip()} is not stated in the source cited for it"
+                    + (" (another retrieved source states it)" if elsewhere else ""))
+                continue
+            disagreeing = [ref for ref in refs if not _states(evidence_by_ref[ref], shown, amount, tolerance)
+                           and _source_disagrees(evidence_by_ref[ref], key, shown, amount, tolerance)]
+            if disagreeing:
+                add("conflicting_sources", original, refs,
+                    f"the cited sources disagree on the {key}: {', '.join(disagreeing)} states a different figure "
+                    f"from {shown.strip()}")
+    # The answer itself gives one figure two values from different sources.
+    for (key, _), values in stated.items():
+        distinct = []
+        for amount, tolerance, refs, statement in values:
+            if not any(abs(amount - other) <= max(tolerance, t) for other, t, _, _ in distinct):
+                distinct.append((amount, tolerance, refs, statement))
+        if len(distinct) > 1 and len({refs for _, _, refs, _ in distinct}) > 1:
+            add("conflicting_sources", distinct[1][3], tuple(ref for *_, refs, _ in distinct for ref in refs),
+                f"the answer gives the {key} as different figures from different sources")
+    unique: dict[tuple[str, str], EvidenceFinding] = {}
+    for finding in findings:
+        unique.setdefault((finding.code, finding.statement), finding)
+    return list(unique.values())
+
+
+def evidence_notes(findings: list[EvidenceFinding]) -> list[str]:
+    """The limitations shown with the answer: what its evidence does not
+    support, to be reviewed before it is relied on, and apart from it the
+    rules whose source should be checked for authority."""
+    unsupported = [f.message for f in findings if f.code in UNSUPPORTED_FINDING_CODES]
+    authority = [f.message for f in findings if f.code == "no_authoritative_source"]
+    notes = []
+    if unsupported:
+        notes.append(f"{EVIDENCE_NOTE_PREFIX}: " + "; ".join(dict.fromkeys(unsupported))
+                     + ". Have these statements reviewed before relying on them.")
+    if authority:
+        notes.append(f"{AUTHORITY_NOTE_PREFIX}: " + "; ".join(dict.fromkeys(authority))
+                     + ". Check the rule against the official source for its jurisdiction.")
+    return notes
+
+
+# ── What was verified, kept apart (reliability brief, 24 Oct 2026) ───────────
+# "Answered — calculated and verified" was shown for any engine calculation and
+# "source grounded" for any answer with one citation, so arithmetic or a
+# single source read as proof of the whole answer. Each part is now judged on
+# its own, from the findings and notes the pipeline already produced.
+
+# A note that the result rests on something not confirmed.
+ASSUMPTION_MARKERS = re.compile(r"\bassumes?\b|\bdoes not (?:confirm|establish)\b|\bnames no country\b", re.I)
+_PARTLY_SOURCED = ("Partly source-verified", "Statements the cited sources do not support", "could not be confirmed",
+                   "General explanation", "Incomplete answer")
+
+
+# A claim of accounting or tax treatment, not a word that also appears in
+# arithmetic: "credit terms", "provision of services" and "deferred payment"
+# state no treatment, while "the reverse charge applies" and "revenue
+# recognition" do (32 reviewed sentences, 25 Oct 2026).
+_ACCOUNT = (r"(?:revenue|income|sales|assets?|liabilit\w*|expenses?|costs?|gains?|losses?|leases?|receivables?|"
+            r"payables?|equity|inventory|cash|bank|reserves?|right-of-use|goodwill|provisions?|accruals?)")
+_TREATMENT_CONTENT = re.compile("|".join([
+    # An entry: a debit side and a credit side ("Dr. Smith" is a title), or the words.
+    r"\b(?:Dr|Debit)\b(?!\.\s*[A-Z][a-z]+\b(?!\s+" + _ACCOUNT + r"))[\s\S]{0,160}?\b(?:Cr|Credit)\b",
+    r"\bjournal\s+entr(?:y|ies)\b|\b(?:debit|credit)\s+(?:the\s+)?[A-Z]?[a-z\-]+\s+(?:account|" + _ACCOUNT + r")\b",
+    r"\b(?:IFRS|IAS|ASC\s?\d|US\s+GAAP|FRS\s?\d|Ind\s?AS)\b",
+    r"\brecogni[sz](?:e|es|ed|ing)\b[^.\n;]{0,30}\b" + _ACCOUNT,
+    r"\brecognition\s+of\s+(?:the\s+|an?\s+)?(?:[\w-]+\s+)?" + _ACCOUNT,
+    r"\b" + _ACCOUNT + r"\s+recogni(?:[sz]ed|tion)\b",
+    r"\b(?:capitali[sz]\w*|amorti[sz]\w*|depreciat\w*|impair\w*|reclassif\w*)\b",
+    r"\b(?:accrual|accrued\s+" + _ACCOUNT + r")\b",
+    r"\bdeferred\s+(?:revenue|income|tax|consideration)\b|\bdefer(?:s|red|ring)?\s+(?:the\s+)?(?:revenue|income|recognition)\b",
+    r"\b(?:make|recogni[sz]e|create|book|record)\s+a\s+provision\b|\bprovisions?\s+for\b",
+    # Tax treatment: entitlement to input tax, and the status of a supply.
+    r"\b(?:claim|eligible|entitled|cannot|can\s?not|blocked|reverse|recover\w*)\b[^.\n]{0,60}"
+    r"\b(?:input\s+tax\s+credit|ITC|input\s+(?:VAT|tax|GST))\b",
+    r"\b(?:input\s+tax\s+credit|ITC|input\s+(?:VAT|tax|GST))\b[^.\n]{0,40}\b(?:claim\w*|recover\w*|blocked|eligible|disallow\w*)\b",
+    r"\breverse[\s-]charge\b|\b(?:exempt|zero[\s-]rated|outside\s+the\s+scope|place\s+of\s+supply|partial\s+exemption)\b",
+]), re.I)
+
+
+def _treatment_claims_cited(text: str) -> bool | None:
+    """None when the text claims no treatment; otherwise whether every claim's
+    sentence (an entry's lines together) carries its own [REF-n]. One cited
+    sentence beside an uncited journal is not a cited treatment."""
+    claims = list(_TREATMENT_CONTENT.finditer(text))
+    if not claims:
+        return None
+    for claim in claims:
+        start = max(text.rfind(mark, 0, claim.start()) for mark in (". ", "\n\n", "\n- ", "\n* "))
+        ends = [i for i in (text.find(mark, claim.end()) for mark in (". ", "\n\n")) if i != -1]
+        end = min(ends) + 1 if ends else len(text)
+        trailing = re.match(r"\s*\[REF-\d+\]", text[end:])  # "…over time. [REF-1]"
+        sentence = text[max(start, 0):end + (trailing.end() if trailing else 0)]
+        if not re.search(r"\[REF-\d+\]", sentence):
+            return False
+    return True
+
+
+def verification_breakdown(*, completeness: str | None, citations: int, limitations: list[str], calculation=None,
+                           receipts: int = 0, mismatches=(), treatment=(), evidence=(), computed: bool = False,
+                           source_binding: bool | None = None, answer_text: str = ""):
+    """The answer's verification, part by part. `calculation` is the canonical
+    engine result; `mismatches` the answer's figures that differ from it;
+    `treatment` accounting-treatment findings; `evidence` evidence findings."""
+    from app.orchestration.schemas import VerificationBreakdown
+    # Nothing is verified for an answer that was not given: the withheld
+    # ASC 606 answer showed "Arithmetic: verified" (25 Oct 2026).
+    answered = completeness != "none"
+    arithmetic = ("mismatch" if mismatches else "verified" if answered and (calculation is not None or receipts)
+                  else "not_applicable")
+    if citations and source_binding is False:
+        sources = "unsupported"
+    elif citations:
+        partial = (any(finding.code in REVIEW_FINDING_CODES for finding in evidence)
+                   or any(marker in item for item in limitations or []
+                          for marker in (*_PARTLY_SOURCED, EVIDENCE_NOTE_PREFIX, AUTHORITY_NOTE_PREFIX)))
+        sources = "partial" if partial else "verified"
+    else:
+        sources = "not_applicable" if calculation is not None or computed else "unsupported"
+    notes = [*(calculation.notes if calculation is not None else []), *(limitations or [])]
+    if treatment or any(ASSUMPTION_MARKERS.search(note) for note in notes):
+        assumptions = "stated"
+    else:
+        assumptions = "confirmed" if calculation is not None else "not_applicable"
+    cited = _treatment_claims_cited(answer_text or "") if answered else None
+    if treatment:
+        treatment_state = "issue_found"
+    elif cited is None:
+        treatment_state = "not_applicable"
+    else:
+        # The evidence review checks cited figures, jurisdiction, dates and
+        # withdrawn or conflicting sources; it does not prove the source
+        # states the treatment, which is why the reader is told "cited".
+        treatment_state = "cited_checks_passed" if cited and sources == "verified" else "not_verified"
+    if completeness == "none":
+        overall = "not_verified"
+    elif (completeness == "complete" and arithmetic != "mismatch" and sources in ("verified", "not_applicable")
+          and assumptions in ("confirmed", "not_applicable") and not treatment
+          and treatment_state == "not_applicable"
+          and "verified" in (arithmetic, sources)):
+        overall = "fully_verified"
+    elif arithmetic == "verified" or sources in ("verified", "partial"):
+        overall = "partially_verified"
+    else:
+        overall = "not_verified"
+    return VerificationBreakdown(arithmetic=arithmetic, sources=sources, assumptions=assumptions,
+                                 treatment=treatment_state, overall=overall,
+                                 calculation_id=calculation.fingerprint() if calculation is not None else None)

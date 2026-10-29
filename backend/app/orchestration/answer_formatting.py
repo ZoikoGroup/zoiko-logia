@@ -4,6 +4,26 @@ import json
 from decimal import Decimal
 
 
+# Kriton's own notes are limitations shown under the answer, never part of the
+# answer text. A line of the text that opens with one was written by the
+# model: copied from pasted test instructions on 28 Oct 2026 ("Accounting
+# review needed: the entry needs a further credit of £7,279.69, not a debit"),
+# it read as a check Kriton had run.
+def _reserved_labels() -> tuple[str, ...]:
+    from app.orchestration.accounting_validation import CALCULATION_PREFIX, REVIEW_PREFIX
+    return (REVIEW_PREFIX, CALCULATION_PREFIX, "Incomplete answer:", "General explanation — not source-verified",
+            "General explanation from established accounting knowledge", "No source was cited for this answer")
+
+
+def remove_reserved_notes(text: str) -> str:
+    """The answer text without lines the model wrote in the form of Kriton's
+    own notes (markdown emphasis, quote or bullet markers ignored)."""
+    labels = tuple(label.lower() for label in _reserved_labels())
+    kept = [line for line in (text or "").split("\n")
+            if not re.sub(r"^[\s>*_#\-•]+", "", line).lower().startswith(labels)]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip("\n")
+
+
 def normalize_markdown_tables(text: str) -> str:
     lines = text.splitlines()
     in_fence = False
@@ -231,7 +251,50 @@ _PLACEHOLDER = re.compile(
 def remove_visual_placeholders(text: str) -> str:
     """A line such as "[The chart below]" is the model marking where a chart
     goes; the chart is rendered on its own, so the marker was shown as text."""
-    return re.sub(r"\n{3,}", "\n\n", _PLACEHOLDER.sub("", text or ""))
+    return re.sub(r"\n{3,}", "\n\n", _PLACEHOLDER.sub("", _without_bare_chart_json(text or "")))
+
+
+_CHART_JSON_START = re.compile(r'^\s*\{\s*$|^\s*\{\s*"type"\s*:', re.M)
+_CHART_TYPE = re.compile(r'"type"\s*:\s*"(?:bar|line|pie|area|scatter|radar|candlestick|stacked[_ ]?bar)"', re.I)
+
+
+def _without_bare_chart_json(text: str) -> str:
+    """Chart JSON the model wrote as text instead of calling render_chart,
+    outside any ```chart fence: shown raw, with its figures emptied by the
+    figure check ('"data":' and nothing after it), on 27 Oct 2026. Kriton's
+    own chart offer draws the chart. A ```chart fence (a rendered chart) is
+    left alone; a ```json or unlabelled fence holding only a chart spec is not
+    a chart either — it showed as raw text in a lease answer (28 Oct 2026) —
+    so it goes too. Any other code block is kept."""
+    out, index, fenced = [], 0, False
+    lines = text.split("\n")
+    while index < len(lines):
+        line = lines[index]
+        opening = re.match(r"\s*```\s*(\w*)\s*$", line)
+        if not fenced and opening and opening.group(1).lower() in {"", "json"}:
+            end = next((i for i in range(index + 1, min(len(lines), index + 120))
+                        if lines[i].strip().startswith("```")), None)
+            if end is not None:
+                block = "\n".join(lines[index + 1:end])
+                if (_CHART_JSON_START.match(block) and _CHART_TYPE.search(block)
+                        and re.search(r'"(?:series|categories|data)"', block)):
+                    index = end + 1
+                    continue
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        if not fenced and _CHART_JSON_START.match(line):
+            depth, end = 0, index
+            for end in range(index, min(len(lines), index + 80)):
+                depth += lines[end].count("{") - lines[end].count("}")
+                if depth <= 0:
+                    break
+            block = "\n".join(lines[index:end + 1])
+            if depth <= 0 and _CHART_TYPE.search(block) and re.search(r'"(?:series|categories|data)"', block):
+                index = end + 1
+                continue
+        out.append(line)
+        index += 1
+    return "\n".join(out)
 
 
 _NUMBERED_ITEM = re.compile(r"^(\s*)(\d+)([.)])(\s+)")

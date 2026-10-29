@@ -201,6 +201,12 @@ class AskKritonRequest(BaseModel):
     # resolve_policy() can escalate instead of looping forever on a query that
     # keeps coming back "needs clarification".
     clarification_cycle: int = 0
+    # The query_id of the clarification this message answers, sent by the
+    # client only when the user is replying to Kriton's question; previous_query
+    # then carries the request being clarified. The reply is processed together
+    # with that request (a calculator sees both). Without it, a client that
+    # sends clarification_cycle > 0 keeps the older inferred behaviour.
+    reply_to: Optional[str] = Field(default=None, max_length=200)
     # Client-generated — scopes audit correlation to one chat thread.
     conversation_id: Optional[str] = None
     # Recent turns, including earlier answers that carry figures, so a
@@ -390,6 +396,17 @@ class SourceCitation(BaseModel):
     provider: Optional[str] = None
     fetched_at: Optional[str] = None
     freshness: Optional[str] = None   # realtime | delayed | historical | filing
+    # Who stands behind the source (evidence validation, reliability plan
+    # phase 4): official (government, legislation, standard-setter, or a
+    # governed source registered as primary) | professional | secondary (a
+    # governed source registered as secondary) | internal | web | document |
+    # data. With the jurisdiction and, for a registered source, the dates its
+    # version is in force and the version itself.
+    authority: Optional[str] = None
+    jurisdiction: Optional[str] = None
+    effective_from: Optional[date] = None
+    effective_to: Optional[date] = None
+    source_version_id: Optional[str] = None
 
 
 class WidgetInput(BaseModel):
@@ -424,6 +441,34 @@ class CalculationWidget(BaseModel):
     calculation_id: str
 
 
+class VerificationBreakdown(BaseModel):
+    """What was verified, kept apart: correct arithmetic is not proof that the
+    rules were sourced or that the transaction's assumptions hold, and an
+    answer is "fully verified" only when every part that applies is
+    (reliability brief, 24 Oct 2026). `calculation_id` names the calculation
+    the arithmetic was checked against, as the audit record does."""
+    arithmetic: Literal["verified", "mismatch", "not_applicable"] = "not_applicable"
+    sources: Literal["verified", "partial", "unsupported", "not_applicable"] = "not_applicable"
+    assumptions: Literal["confirmed", "stated", "not_applicable"] = "not_applicable"
+    # Correct arithmetic says nothing about the accounting treatment
+    # (25 Oct 2026: four US GAAP answers had right sums and wrong treatment).
+    #   "cited_checks_passed": every treatment claim carries a citation and the
+    #     cited sources passed the evidence checks (figures, jurisdiction, dates,
+    #     withdrawn or conflicting sources). It is NOT "treatment verified": no
+    #     check yet confirms that applicable, authoritative evidence states the
+    #     treatment, so no state here says the treatment is verified.
+    #   "not_verified": the evidence is insufficient; it is not a finding that
+    #     the treatment is wrong.
+    #   "issue_found": a defined accounting check (accounting_findings) flagged it.
+    treatment: Literal["cited_checks_passed", "not_verified", "issue_found", "not_applicable"] = "not_applicable"
+    # "fully_verified" only when the answer makes no treatment claim, since a
+    # claim cannot yet be verified. "partially_verified" means some parts were
+    # verified and others were not; it is not a finding that anything is wrong.
+    # A detected problem shows as arithmetic "mismatch" or treatment "issue_found".
+    overall: Literal["fully_verified", "partially_verified", "not_verified"] = "not_verified"
+    calculation_id: Optional[str] = None
+
+
 class ComposedAnswer(BaseModel):
     text: str
     citations: List[SourceCitation] = Field(default_factory=list)
@@ -442,6 +487,8 @@ class ComposedAnswer(BaseModel):
     # audit event, so the page and the audit trail cannot disagree. Additive:
     # `outcome` keeps its meaning for existing consumers.
     completeness: Optional[Literal["complete", "partial", "none"]] = None
+    # Set with completeness in finish(); None for answers stored before it.
+    verification: Optional[VerificationBreakdown] = None
     # Internal fields — kept for model_gateway wiring; never exposed to frontend
     prompt_id: str = "inline"
     prompt_name: str = "Inline RAG Prompt"
@@ -469,6 +516,7 @@ class SafetyState(BaseModel):
 class NextAction(BaseModel):
     type: str                                # ask_clarifying_question | escalate | ...
     message: str
+    suggestions: List[str] = Field(default_factory=list)
 
 
 # ── Audit Reference — §12 (opaque — never expose internal hashes) ─────────────
@@ -513,7 +561,7 @@ class AskKritonResponse(BaseModel):
     requested_deliverables: List[RequestedDeliverable] = Field(default_factory=list)
     query_id: str
     correlation_id: str
-    outcome: str       # answered | unavailable | refused | clarification_required | escalated | rejected
+    outcome: str       # answered | unavailable | refused | clarification_required | acknowledged | escalated | rejected
     route: str         # LLM | REFUSAL | CLARIFICATION | HUMAN_REVIEW | SECURITY_INCIDENT | REJECTED
     safety: SafetyState
     confidence_state: str

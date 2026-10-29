@@ -84,6 +84,15 @@ class GenerationBudget:
         return prompt, completion
 
     async def create(self, client: Any, *, seconds: float, **kwargs: Any) -> Any:
+        sections = kwargs.pop('_context_sections', [])
+        if sections and self.max_request_tokens > 0:
+            from app.domains.model_gateway.research_context import pack_messages, output_reserve
+            packed, before, after = pack_messages(
+                kwargs['messages'], kwargs.get('tools'), sections,
+                self.max_request_tokens - output_reserve(self.max_request_tokens, self.max_completion_tokens))
+            kwargs['messages'] = packed
+            logger.info('Research context estimated_input_before=%d estimated_input_after=%d request_limit=%d',
+                        before, after, self.max_request_tokens)
         if self.terminal_failure is not None:
             raise self.terminal_failure
         model = str(kwargs.get('model', ''))

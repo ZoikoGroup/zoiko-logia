@@ -38,11 +38,13 @@ describe("Sidebar responsiveness", () => {
     fireEvent.click(screen.getAllByRole("link", { name: "Governance Dashboard" })[1]);
     expect(close).toHaveBeenCalledOnce();
   });
-  it("shows pending navigation and uses the original theme", () => {
+  it("shows pending navigation and uses the ZoikoLogia navy sidebar with the logo", () => {
     navigation.pending = true;
     const { container } = render(<Sidebar mobileOpen={false} onMobileClose={vi.fn()} />);
     expect(screen.getByText("Opening Command Center…")).toBeInTheDocument();
     expect(container.querySelector(".overview-sidebar")).toBeNull();
-    expect(container.querySelector("aside")).toHaveClass("bg-panel");
+    // The same navy as the Super Admin control plane (SuperAdminChrome).
+    expect(container.querySelector("aside")).toHaveClass("bg-[#0E2747]");
+    expect(screen.getByRole("img", { name: "ZoikoLogia" })).toHaveAttribute("src", "/brand/zoikologia-logo.png");
   });
 });

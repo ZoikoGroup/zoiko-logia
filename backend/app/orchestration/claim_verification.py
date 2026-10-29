@@ -117,7 +117,10 @@ _SYSTEM = (
     "outstanding tax given as when to LEAVE), or a different rate, deadline, form or "
     "condition;\n"
     "- \"not_in_evidence\": the evidence does not address it.\n"
-    "For supported claims include references naming the exact supporting REF-N identifiers "
+    "Match the professional domain as well as the vocabulary: national-accounts economic ownership "
+    "does not establish transfer-pricing entitlement; an exposure draft does not establish a final rule. "
+    "A related discussion cannot support or contradict a claim under a different regime. "
+    "For supported AND contradicted claims include references naming the exact supporting REF-N identifiers "
     "from the evidence. Never name a reference that is absent from the evidence. "
     "Be strict about contradicted: only when the evidence clearly says otherwise. "
     "Reply with JSON only: {\"results\": [{\"claim\": <number>, \"verdict\": "
@@ -262,6 +265,12 @@ async def verify_claims(claims: list[str], evidence: list[str], question: str = 
         seen.add(identifier)
         claim = claims[identifier - 1]
         kind = verdict.get("verdict")
+        references = verdict.get("references", [])
+        available = set(re.findall(r"\[(REF-\d+)\]", block))
+        if isinstance(references, list) and all(isinstance(ref, str) for ref in references):
+            bound = list(dict.fromkeys(ref for ref in references if ref in available))
+            if bound:
+                result.evidence_refs[identifier] = bound
         if kind in ("contradicted", "not_in_evidence"):
             result.rejected_ids.append(identifier)
         if kind == "contradicted":
@@ -269,9 +278,6 @@ async def verify_claims(claims: list[str], evidence: list[str], question: str = 
             result.contradicted.append(Contradiction(claim, str(verdict.get("evidence_says") or "").strip()))
         elif kind == "supported":
             result.supported += 1
-            references = verdict.get("references", [])
-            if isinstance(references, list) and all(isinstance(ref, str) for ref in references):
-                result.evidence_refs[identifier] = references
         elif kind == "not_in_evidence":
             result.not_in_evidence += 1
         else:
@@ -317,9 +323,118 @@ def remove_claims(answer: str, claims: list[str], note: str | None = None) -> st
         # A bullet whose whole sentence was removed: drop the bare "- ".
         if line != original and not line.strip(" -*•\t"):
             continue
+        # What a removal leaves of a sentence: "must register for VAT." after
+        # "Because turnover exceeds £90,000, GreenTech" went (24 Oct 2026).
+        if line != original and _is_fragment(line):
+            continue
         lines.append(line)
     lines = _without_emptied_tables(lines, answer.splitlines())
+    lines = _without_orphaned_lead_ins(lines, answer.splitlines())
     return mark_emptied_headings(re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip(), before=answer, note=note)
+
+
+# "The table is a summary of the definitions…" stayed after every row of its
+# table was removed (24 Oct 2026). A line that introduced a table (it names
+# the table, or ends with a colon) goes when the table under it is gone.
+_TABLE_LEAD_IN = re.compile(r"\btables?\b|:\s*$", re.I)
+
+
+def _followed_by_table(lines: list[str], index: int) -> bool:
+    following = next((later for later in lines[index + 1:] if later.strip()), "")
+    return following.lstrip().startswith("|")
+
+
+def _without_orphaned_lead_ins(lines: list[str], before: list[str]) -> list[str]:
+    introduced = {line for index, line in enumerate(before)
+                  if line.strip() and not line.lstrip().startswith(("|", "#"))
+                  and _TABLE_LEAD_IN.search(line) and _followed_by_table(before, index)}
+    return [line for index, line in enumerate(lines)
+            if not (line in introduced and not _followed_by_table(lines, index))]
+
+
+# A figure stated only by removed statements leaves the lines calculated from
+# it unexplained: "Total VAT collected = 1,000 × £40 = £40,000" after "the VAT
+# rate is 20%… £200 × 20% = £40" was removed (24 Oct 2026). Figures the user
+# gave, or the calculator produced (`facts`), are never treated this way.
+_STATED_FIGURE = re.compile(r"[£$€₹]\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?%")
+_NUMBER_TOKEN = re.compile(r"\d[\d,]*(?:\.\d+)?")
+_OPERATOR = re.compile(r"[×*÷/+]|\s[x−–-]\s")
+
+
+def _figure_values(text: str, *, stated_only: bool = True) -> set[str]:
+    tokens = _STATED_FIGURE.findall(text) if stated_only else _NUMBER_TOKEN.findall(text)
+    values = set()
+    for token in tokens:
+        number = _NUMBER_TOKEN.search(token)
+        if number:
+            values.add(number.group(0).replace(",", "").rstrip("0").rstrip(".") if "." in number.group(0)
+                       else number.group(0).replace(",", ""))
+    return values
+
+
+def _operands(line: str) -> str | None:
+    """The working of an equation line (everything before its last "="), or
+    None when the line is not a calculation."""
+    if "=" not in line:
+        return None
+    working = line.rsplit("=", 1)[0]
+    return working if _OPERATOR.search(working) else None
+
+
+def without_dependent_figures(answer: str, removed: list[str], facts: str) -> str:
+    known = _figure_values(facts, stated_only=False)
+    gone = set().union(*(_figure_values(claim) for claim in removed)) - known if removed else set()
+    lines = answer.splitlines()
+    for _ in range(4):
+        stated = set().union(set(), *(_figure_values(line) for line in lines if _operands(line) is None))
+        orphans = gone - stated
+        dropped = [line for line in lines if (working := _operands(line)) and _figure_values(working) & orphans]
+        if not dropped:
+            break
+        lines = [line for line in lines if line not in dropped]
+        gone |= set().union(*(_figure_values(line) for line in dropped)) - known
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines))
+
+
+# A heading with nothing under it before the next section of the same or a
+# higher level: "Personal income tax" sat empty above "Checklist" once its only
+# sentence was removed and the note under it replaced (24 Oct 2026).
+_MARKDOWN_HEADING = re.compile(r"^\s*(#{1,6})\s+\S")
+_BOLD_HEADING = re.compile(r"^\s*(?:\*\*|__)[^*_]+(?:\*\*|__)\s*:?\s*$")
+
+
+def _heading_level(line: str) -> int | None:
+    markdown = _MARKDOWN_HEADING.match(line)
+    if markdown:
+        return len(markdown.group(1))
+    return 7 if _BOLD_HEADING.match(line) else None
+
+
+def drop_empty_headings(answer: str) -> str:
+    lines = answer.splitlines()
+    kept = []
+    for index, line in enumerate(lines):
+        level = _heading_level(line)
+        if level is not None:
+            following = next((later for later in lines[index + 1:] if later.strip()), None)
+            following_level = _heading_level(following) if following is not None else 0
+            if following is None or (following_level is not None and following_level <= level):
+                continue
+        kept.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+
+
+def _is_fragment(line: str) -> bool:
+    """A line that no longer reads as a statement: it starts mid-sentence (in
+    lower case) or is a couple of words with no figure. Table rows and
+    headings are left to their own checks."""
+    if line.lstrip().startswith(("|", "#")):
+        return False
+    text = re.sub(r"^[\s>*\-•\d.)]+", "", line).strip(" *_\t")
+    if not text:
+        return True
+    words = text.split()
+    return text[0].islower() or (len(words) < 3 and not re.search(r"\d", text))
 
 
 def _without_emptied_tables(lines: list[str], before: list[str]) -> list[str]:

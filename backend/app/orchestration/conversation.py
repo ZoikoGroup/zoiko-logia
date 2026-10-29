@@ -42,7 +42,80 @@ def bare_chart_hint(query: str, history: list[ConversationMessage]) -> str:
     )
 
 
-def conversation_prompt(history: list[ConversationMessage], *, max_chars: int = 10000) -> str:
+_JURISDICTION_OR_FRAMEWORK = re.compile(
+    r"\b(?:United\s+Kingdom|UK|England|Scotland|Wales|Northern\s+Ireland|Ireland|India|United\s+States|USA?|"
+    r"Canada|Australia|New\s+Zealand|Singapore|UAE|United\s+Arab\s+Emirates|Germany|France|EU|"
+    r"IFRS(?:\s?\d+)?|IAS\s?\d+|US\s+GAAP|UK\s+GAAP|FRS\s?\d+|Ind\s?AS(?:\s?\d+)?|ASC\s?\d+)\b")
+_PERIOD = re.compile(r"\b(?:year|period|quarter|month)s?\s+end(?:ing|ed)?\b|\bFY\s?\d{2,4}\b|"
+                     r"\b(?:financial|accounting|tax)\s+year\b", re.I)
+_SCENARIO_NOTE = re.compile(r"\b(?:correct(?:ion|ed)?|actually|instead|should\s+(?:be|read)|assum\w+|"
+                            r"not\s+\d)\b", re.I)
+_MONEY = re.compile(r"[£$€₹¥]\s?\d|\d\s?%|\b\d[\d,]*(?:\.\d+)?\s?(?:GBP|USD|EUR|INR|AED|lakhs?|crores?|million)\b",
+                    re.I)
+_GENERIC_WORDS = {
+    "calculate", "calculation", "work", "show", "give", "explain", "make", "please", "using", "with", "from",
+    "that", "this", "those", "these", "then", "now", "also", "what", "which", "would", "could", "should",
+    "first", "second", "year", "years", "month", "months", "each", "same", "figures", "figure", "amount",
+    "amounts", "total", "interest", "rate", "value", "about", "over", "under", "into", "their", "there",
+    "them", "they", "have", "does", "differ", "difference", "between", "again", "instead", "only",
+}
+
+
+_REFERENT = re.compile(r"\b(?:this|that|these|those|the\s+same|the\s+above)\s+([a-z]{4,})", re.I)
+_REQUEST = re.compile(r"\?|\b(?:calculate|compute|work\s+out|explain|determine|prepare|show|how|what|which|why|"
+                      r"when|should|can|could|please)\b", re.I)
+
+
+def _topic_words(text: str) -> set[str]:
+    return {word.rstrip("s") for word in re.findall(r"[a-z]{4,}", (text or "").lower())
+            if word not in _GENERIC_WORDS and word.rstrip("s") not in _GENERIC_WORDS}
+
+
+def _same_subject(query: str, text: str) -> bool:
+    """The earlier message is about what the request points at: "that lease"
+    needs "lease"; with no pointer, two subject words in common. One shared
+    word ("price", "purchase") linked a goodwill question to a lease."""
+    referent = _REFERENT.search(query or "")
+    if referent and referent.group(1).lower().rstrip("s") not in _GENERIC_WORDS:
+        return referent.group(1).lower().rstrip("s") in _topic_words(text)
+    return len(_topic_words(query) & _topic_words(text)) >= 2
+
+
+def with_essential_context(query: str, history: list[ConversationMessage],
+                           selected: list[ConversationMessage]) -> list[ConversationMessage]:
+    """The resolver's turns for a follow-up, plus each earlier user message
+    that states its essentials. "…for that lease" after a lease conversation
+    kept only the latest exchange: the jurisdiction, framework, year end,
+    figures and the correction were never sent (Stage 5, 27 Oct 2026).
+
+    Added, in conversation order (a correction stays after what it corrects):
+    a plain statement of the jurisdiction, framework or reporting period
+    that states no amount and asks nothing ("We are a UK company reporting
+    under IFRS 16…"); and a message with amounts, a correction or an
+    assumption about the same subject as the request. Another scenario's
+    figures or questions are not added. The resolver's own choice is never
+    removed."""
+    chosen = {id(message) for message in selected}
+    for message in history:
+        if message.role != "user" or id(message) in chosen:
+            continue
+        text = message.content
+        background = (bool(_JURISDICTION_OR_FRAMEWORK.search(text) or _PERIOD.search(text))
+                      and not _MONEY.search(text) and not _REQUEST.search(text))
+        scenario = bool(_MONEY.search(text) or _SCENARIO_NOTE.search(text)) and _same_subject(query, text)
+        if background or scenario:
+            chosen.add(id(message))
+    return [message for message in history if id(message) in chosen]
+
+
+def essential_messages(query: str, history: list[ConversationMessage]) -> list[str]:
+    """User messages in `history` that state the request's essentials; kept
+    whole when the history is shortened to fit."""
+    return [message.content for message in with_essential_context(query, history, [])]
+
+
+def conversation_prompt(history: list[ConversationMessage], *, max_chars: int = 10000,
+                        essential=()) -> str:
     history = screened_history(history)
     if not history:
         return ""
@@ -66,7 +139,14 @@ def conversation_prompt(history: list[ConversationMessage], *, max_chars: int = 
     # truncated amount, currency or instruction.
     selected = []
     remaining = max_chars
-    priorities = [i for i, m in enumerate(unique) if m['role'] == 'user']
+    # Essentials are kept whole even past the allowance: if they cannot fit,
+    # the request is refused for its size, never sent without them.
+    required = set(essential)
+    for index, message in enumerate(unique):
+        if message['role'] == 'user' and message['content'] in required:
+            selected.append(index)
+            remaining -= len(message['content']) + 40
+    priorities = [i for i, m in enumerate(unique) if m['role'] == 'user' and i not in selected]
     priorities = priorities[:1] + list(reversed(priorities[1:]))
     priorities += [i for i in reversed(range(len(unique))) if unique[i]['role'] != 'user']
     for index in priorities:

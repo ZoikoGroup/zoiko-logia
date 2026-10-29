@@ -71,6 +71,32 @@ def _comma_grouped(text: str) -> str:
     return _CURRENCY_SPACE_GROUPED.sub(lambda match: match.group(1) + match.group(2).replace(" ", ","), text)
 
 
+# An illustrative example inside a source: its figures describe the example's
+# entity, not the user's. Applied to a user's case they are an assumed input:
+# "the SME expects to recover only 20%" in a source example became "if the
+# same expectation applies here … £15,000 × 20% = £3,000, impairment £12,000"
+# for a customer in administration whose recovery the user never gave
+# (28 Oct 2026). From the marker to the end of its paragraph; the rule text
+# before it keeps its figures.
+_EXAMPLE_MARKER = re.compile(
+    r"(?im)^\s*(?:example|illustration|illustrative\s+example|case\s+study)\b"
+    r"|\b(?:illustrative\s+example|worked\s+example|example\s+\d+|illustration\s+\d+"
+    r"|in\s+(?:this|the|that|our)\s+example|suppose\s+(?:that\s+)?(?:an?|the)\b|assume\s+that|hypothetical)\b"
+)
+
+
+def without_example_figures(source_text: str) -> str:
+    """A source passage with the figures of its illustrative examples masked,
+    so they are never evidence for, or operands in, a figure about the user's
+    own case. Only for retrieved source text, never the user's own words."""
+    def masked(paragraph: str) -> str:
+        marker = _EXAMPLE_MARKER.search(paragraph)
+        if not marker:
+            return paragraph
+        return paragraph[:marker.start()] + re.sub(r"\d", "#", paragraph[marker.start():])
+    return "".join(masked(part) for part in re.split(r"(\n\s*\n)", source_text or ""))
+
+
 def _readable(evidence: str) -> str:
     """The conversation reaches the prompt as ASCII-escaped JSON, so an
     earlier answer's "£540,000" read as "\\u00a3540,000": the number 3,540,000
@@ -576,11 +602,12 @@ def unreconciled_figures(text: str, evidence: str, calculations: str = "", state
     4. a difference or percentage change between two figures of the answer
        already supported.
     """
-    from app.orchestration.derived_output import without_scenarios
+    from app.orchestration.derived_output import scenario_text, without_scenarios
     body = without_scenarios(text)
     if not material_figures(body):
         return []
-    facts = stated if stated is not None else evidence
+    # An example's own givens are the facts its checked lines work from.
+    facts = "\n".join([stated if stated is not None else evidence, scenario_text(text)])
     direct = _direct_values(evidence, calculations) + _line_totals(facts)
     direct_percent = _percent_values(evidence, calculations)
     base = _derivation_base(facts, calculations)
@@ -895,11 +922,14 @@ def statements_with_figures(text: str, figures: list[str]) -> list[str]:
     """Each sentence or table row of `text` that states one of `figures` (as
     unreconciled_figures names them), verbatim, for claim_verification.
     remove_claims. One unverified figure removes the statement that carries
-    it, not the whole answer."""
+    it, not the whole answer. A scenario line of an illustrative example is
+    never one: it was not checked, and "Turnover: £950,000" went with the row
+    that failed on £950,000 (24 Oct 2026)."""
+    from app.orchestration.derived_output import without_scenarios
     targets = {value for shown, value in material_figures(text) if shown in set(figures)}
     found: list[str] = []
     in_fence = False
-    for line in (text or "").splitlines():
+    for line in without_scenarios(text).splitlines():
         if line.strip().startswith("```"):
             in_fence = not in_fence
             continue
@@ -993,9 +1023,9 @@ def hand_derived_figures(text: str, evidence: str, calculations: str = "", state
     them as one step from verified figures, yet a release check that requires
     the calculator removes them — the FX scenarios at 1.20 and 1.30 were lost
     that way (2026-10-17). Scale-word roundings ("£1.2m") are not listed."""
-    from app.orchestration.derived_output import without_scenarios
+    from app.orchestration.derived_output import scenario_text, without_scenarios
     body = without_scenarios(text)
-    facts = stated if stated is not None else evidence
+    facts = "\n".join([stated if stated is not None else evidence, scenario_text(text)])
     direct = _direct_values(evidence, calculations) + _line_totals(facts)
     direct_percent = _percent_values(evidence, calculations)
     found = []

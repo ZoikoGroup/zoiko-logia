@@ -18,15 +18,12 @@ import {
 } from "lucide-react";
 import type { Conversation } from "@/lib/ask-kriton-storage";
 
-function ZoikoGlyph({ className = "h-9 w-9" }: { className?: string }) {
+/** The ZoikoLogia logo on a white strip, as in the admin and Super Admin
+ * sidebars (components/layout/Sidebar.tsx). */
+function ZoikoLogo({ width = 170 }: { width?: number }) {
   return (
-    <div className={`${className} relative shrink-0 overflow-hidden rounded-xl bg-[#16799A] shadow-[0_18px_44px_rgba(0,0,0,0.28)]`}>
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_24%_18%,rgba(255,255,255,0.32),transparent_34%)]" />
-      <div className="absolute left-[25%] top-[26%] h-[48%] w-[50%] rounded-sm border-[3px] border-white" />
-      <div className="absolute bottom-[31%] left-[36%] h-[26%] w-[8%] bg-[#F3C437]" />
-      <div className="absolute bottom-[31%] left-[48%] h-[26%] w-[8%] bg-[#F3C437]" />
-      <div className="absolute bottom-[31%] left-[60%] h-[26%] w-[8%] bg-[#F3C437]" />
-    </div>
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src="/brand/zoikologia-logo.png" alt="ZoikoLogia" width={393} height={69} style={{ width }} className="h-auto max-w-full" />
   );
 }
 
@@ -233,19 +230,14 @@ type KritonNavigationProps = {
 export function DesktopSidebar(props: RecentsListProps & KritonNavigationProps) {
   return (
     <aside className="kriton-sidebar-background hidden min-h-0 border-r border-line md:flex md:flex-col">
-      <div className="flex items-center justify-between px-5 py-5">
-        <div className="flex items-center gap-3">
-          <ZoikoGlyph className="h-9 w-9 rounded-lg" />
-          <div>
-            <div className="text-lg font-bold tracking-normal text-ink">Kriton</div>
-            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted">ZoikoLogia</div>
-          </div>
-        </div>
+      <div className="flex h-[68px] shrink-0 items-center justify-between gap-2 bg-white px-4">
+        <Link href="/" aria-label="ZoikoLogia home"><ZoikoLogo /></Link>
         <button type="button" onClick={props.onOpenChats} aria-label="Search chats" title="Search chats"
-          className="rounded-lg p-1.5 text-muted hover:bg-soft hover:text-ink">
+          className="rounded-lg p-1.5 text-[#5A6278] hover:bg-black/5 hover:text-[#0B1533]">
           <Search size={17} />
         </button>
       </div>
+      <div className="px-5 pb-2 pt-4 text-lg font-bold tracking-normal text-ink">Kriton</div>
 
       <nav className="space-y-1 px-3">
         <NavRow icon={Plus} label="New chat" onClick={props.onNewChat} />
@@ -276,15 +268,13 @@ export function MobileDrawer(props: RecentsListProps & KritonNavigationProps & {
     <div className="fixed inset-0 z-40 md:hidden" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40" onClick={props.onClose} />
       <div className="kriton-sidebar-background relative flex h-full w-[86%] max-w-xs flex-col border-r border-line shadow-2xl">
-        <div className="flex items-center justify-between px-5 py-5">
-          <div className="flex items-center gap-3">
-            <ZoikoGlyph className="h-8 w-8 rounded-lg" />
-            <div className="text-base font-bold text-ink">Kriton</div>
-          </div>
-          <button onClick={props.onClose} aria-label="Close menu" className="rounded-lg p-1.5 text-muted hover:bg-soft">
+        <div className="flex h-[64px] shrink-0 items-center justify-between gap-2 bg-white px-4">
+          <ZoikoLogo width={160} />
+          <button onClick={props.onClose} aria-label="Close menu" className="rounded-lg p-1.5 text-[#5A6278] hover:bg-black/5">
             <X size={18} />
           </button>
         </div>
+        <div className="px-5 pb-2 pt-4 text-base font-bold text-ink">Kriton</div>
         <nav className="space-y-1 px-3">
           <NavRow icon={Plus} label="New chat" onClick={() => { props.onNewChat(); props.onClose(); }} />
           <NavRow icon={MessageSquare} label="Chats" onClick={() => { props.onOpenChats(); props.onClose(); }} />

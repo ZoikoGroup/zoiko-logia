@@ -1,0 +1,12 @@
+{
+  "ready_http": 200,
+  "running_source_matches_workspace": true,
+  "build": {
+    "revision": "development",
+    "commit": "f7f53724438a7c5de3d32da54c9a0bd2c653ec33",
+    "source_hash": "653287fb81cb5f9d0508ab32dbae3222757fa06a125de88be7a14b997de0772b",
+    "build_id": "development:653287fb81cb5f9d0508ab32dbae3222757fa06a125de88be7a14b997de0772b",
+    "config_hash": "c26cd66d3dd168fb6a1f46bd3194570b3e52885953fcb3a354a76d89cb69d720",
+    "captured_at": "2026-10-27T05:37:51.795097+00:00"
+  }
+}

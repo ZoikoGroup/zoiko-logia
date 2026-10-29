@@ -199,9 +199,13 @@ async def audit_claim_review_completed(db, *, query_id, correlation_id, tenant_i
                 replay_relevance="REQUIRED")
 
 async def audit_composition_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
-                                       prompt_id: str, output_hash: str):
+                                       prompt_id: str, output_hash: str, model: str | None = None,
+                                       model_route_reason: str | None = None):
+    # Which model wrote the answer and why: a worked example was answered by
+    # the fast model and nothing recorded it (24 Oct 2026). A model name, never a key.
+    routing = {"model": model, "model_route_reason": model_route_reason} if model else {}
     await _emit(db, "composition_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
-                {"prompt_id": prompt_id, "output_hash": output_hash})
+                {"prompt_id": prompt_id, "output_hash": output_hash, **routing})
 
 async def audit_agent_tool_called(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                   step: int, tool: str, arguments_hash: str, ok: bool,
@@ -330,9 +334,11 @@ async def audit_refusal_returned(db, *, query_id, correlation_id, tenant_id, aud
                 {"reason": reason}, replay_relevance="REQUIRED")
 
 async def audit_clarification_returned(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
-                                        clarification_cycle: int):
+                                        clarification_cycle: int, kind: str = "question"):
+    # kind: "question" (Kriton asked for something) or "acknowledgement" (a
+    # context statement noted, nothing asked; outcome "acknowledged").
     await _emit(db, "clarification_returned", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
-                {"clarification_cycle": clarification_cycle})
+                {"clarification_cycle": clarification_cycle, "kind": kind})
 
 async def audit_security_incident_recorded(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                                             incident_id: str, trigger: str, evidence_reference: str):
@@ -359,6 +365,38 @@ async def audit_answer_statements_removed(db, *, query_id, correlation_id, tenan
     await _emit(db, "answer_statements_removed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
                 {"stages": stages, "completeness": completeness, "outcome": outcome, "reason_codes_version": "1"},
                 replay_relevance="REQUIRED")
+
+
+async def audit_accounting_review_flagged(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                          findings: list[dict]):
+    """Accounting treatment the answer was released with but a reviewer should
+    check (accounting_validation.py): each a rule id, a statement hash and a
+    redacted excerpt. Emitted only when something was flagged."""
+    await _emit(db, "accounting_review_flagged", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"findings": findings, "rules_version": "1"}, replay_relevance="REQUIRED")
+
+
+async def audit_answer_verification_recorded(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                                             verification: dict, calculation: dict | None, mismatches: list[dict],
+                                             answer_hash: str):
+    """What the released answer's verification was, part by part, with the
+    canonical calculation it was checked against (its fingerprint and exact
+    outputs) and any figure of the answer that differed from it: the page,
+    the calculation and this record name the same calculation_id."""
+    await _emit(db, "answer_verification_recorded", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"verification": verification, "calculation": calculation, "mismatches": mismatches,
+                 "answer_hash": answer_hash, "version": "1"}, replay_relevance="REQUIRED")
+
+
+async def audit_evidence_validation_completed(db, *, query_id, correlation_id, tenant_id, audit_chain_id,
+                                              actor_id, sources: list[dict], findings: list[dict]):
+    """The provenance of every source an answer cites (authority, jurisdiction,
+    version and dates in force) and what the evidence checks found
+    (verification_service.evidence_findings), each finding a code, its
+    references, a statement hash and a redacted excerpt."""
+    await _emit(db, "evidence_validation_completed", query_id, correlation_id, tenant_id, audit_chain_id, actor_id,
+                {"sources": sources, "findings": findings, "review_recommended": any(f["review"] for f in findings),
+                 "rules_version": "1"}, replay_relevance="REQUIRED")
 
 
 async def audit_response_returned(db, *, query_id, correlation_id, tenant_id, audit_chain_id, actor_id,

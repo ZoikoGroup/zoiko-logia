@@ -40,7 +40,8 @@ _AMOUNT = re.compile(
 _REQUEST_VERB = (
     r"calculate|compute|determine|explain|identify|classify|prepare|provide|show|state|describe|evaluate|"
     r"assess|record|recommend|compare|list|analy[sz]e|work\s+out|estimate|reconcile|draft|write|give|tell|"
-    r"discuss|outline|summari[sz]e|journali[sz]e|quantify|measure|allocate|recogni[sz]e|present"
+    r"discuss|outline|summari[sz]e|journali[sz]e|quantify|measure|allocate|recogni[sz]e|present|check|verify|review|validate|"
+    r"increase|decrease|correct|recalculate|adjust"
 )
 _COMPUTE_VERB = (r"calculate|compute|determine|prepare|record|journali[sz]e|work\s+out|estimate|reconcile|"
                  r"quantify|measure|allocate|recogni[sz]e|draft|construct")
@@ -254,7 +255,18 @@ def _refers_to(current: str, earlier: str) -> bool:
     "that amount" ↔ an earlier message's figure)."""
     earlier_words = _content_words(earlier)
     for match in _DEMONSTRATIVE.finditer(current or ""):
-        if _content_words(match.group(1)) & earlier_words:
+        # Modifiers after the referent are not its identity: "those facts
+        # alone" must not link to an earlier claim containing "alone".
+        words = match.group(1).split()
+        referent = next((word for word in words if word.lower() not in {"particular", "specific", "aforementioned"}), "")
+        prefix = current[:match.start()]
+        if _content_words(referent) & _content_words(prefix):
+            continue
+        local_scenario = any(not asks_something(sentence) and len(sentence.split()) >= 8
+                             for sentence in _sentences(prefix))
+        if local_scenario and referent.lower() in {"fact", "facts", "scenario", "result", "results", "figures", "amounts"}:
+            continue
+        if _content_words(referent) & earlier_words:
             return True
     for match in _THAT_REFERENCE.finditer(current or ""):
         if (match.group(1) or "").lower() in _CLAUSE_VERBS:
@@ -332,10 +344,26 @@ def _depends_on(current: str, users: list[tuple[int, str]], history: Sequence,
     if current_entities - known and len(own) >= 2:
         return None, [], False
     with_figures = [(index, text) for index, text in users if scenario_figures(text)]
+    supplied_reference = re.search(
+        r'\b(?:my|our|the)\s+(?:previously\s+)?(?:supplied|provided|reported|original)\s+(?:figures|amounts|data|results)\b'
+        r'|\b(?:original\s+and\s+(?:corrected|revised)|(?:corrected|revised)\s+and\s+original)\s+results\b',
+        current or '', re.I)
+    if supplied_reference and not own and with_figures:
+        return with_figures[-1][0], ["supplied_input_reference"], False
+    # "Now calculate … for that lease" after an unrelated break-even question
+    # was continued from the break-even turn: "Now" was read before "that
+    # lease". A reference naming an earlier turn that the previous one does not
+    # describe links to that earlier turn (27 Oct 2026).
+    if not _MONEY.search(current or "") and not _refers_to(current, previous_text):
+        for index, text in reversed(users[:-1]):
+            if _refers_to(current, text):
+                return index, ["demonstrative_reference"], False
     # The previous message's own scenario, not merely the latest message with
     # figures: after a clarification choice those differ.
     if _CONTINUATION.match(current or "") and asks_something(current) and with_figures:
         return previous_index, ["continuation"], False
+    if re.match(r'^\W*(?:increase|decrease|correct|recalculate)\b', current or '', re.I) and with_figures:
+        return previous_index, ["scenario_revision"], False
     if _PRONOUN_OBJECT.search(current or "") and not own and with_figures:
         return previous_index, ["pronoun_reference"], False
     # A reference to something set out earlier ("this lease", "that amount").

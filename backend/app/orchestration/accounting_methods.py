@@ -65,6 +65,15 @@ _NOTES: tuple[tuple[object, str], ...] = (
      "intangible such as a trade name), credit a recognised contingent liability, debit goodwill (or credit a "
      "bargain-purchase gain), and credit the parent's investment in the subsidiary. Do not record the "
      "subsidiary's book net assets as an asset."),
+    # "What is tax" listed "Output tax (UK VAT)" as a type of tax beside
+    # income tax and VAT (24 Oct 2026).
+    # About tax itself ("what is tax"), not "what is a tax point for VAT?".
+    (_all(r"\bwhat\s+(?:is|are)\s+(?:a\s+)?tax(?:es|ation)?\s*[?.!]?\s*$|\btypes?\s+of\s+tax(?:es|ation)?\b"
+          r"|\bkinds?\s+of\s+tax(?:es)?\b|\bdefine\s+tax(?:ation)?\s*[?.!]?\s*$"),
+     "Types of tax: name the taxes themselves, for example personal income tax, corporate income tax, value-added "
+     "tax or goods and services tax, property taxes, excise and customs duties, and payroll taxes or social security "
+     "contributions. Output tax and input tax are not separate taxes: they are the VAT a business charges on its "
+     "sales and the VAT it pays on its purchases."),
     (_all(r"\b(?:performance\s+obligations?|stand-?\s?alone\s+selling\s+prices?|transaction\s+price)\b",
           r"\bjournal\s+entr"),
      "Revenue from contracts: a journal entry on a given date recognises revenue only for performance "

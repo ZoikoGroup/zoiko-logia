@@ -43,7 +43,7 @@ import {
   type WorkspaceDocument,
   type Engagement,
 } from "@/lib/api";
-import { stateForError, stateForResult, suppliedAnswerLabel, visibleAnswerLimitations } from "@/lib/answer-state";
+import { stateForError, stateForResult, suppliedAnswerLabel, verificationSummary, verifiedLabel, visibleAnswerLimitations } from "@/lib/answer-state";
 import {
   answerBodyOnly,
   downloadTextFile,
@@ -51,6 +51,7 @@ import {
   writeTextToClipboard,
 } from "@/lib/presentation";
 import { getFollowUpSuggestions } from "@/lib/follow-up-suggestions";
+import { openClarification } from "@/lib/clarification-reply";
 import { uniqueCitations } from "@/lib/unique-citations";
 import { ThinkingIndicator } from "@/components/ask-kriton/ThinkingIndicator";
 import { DesktopSidebar, MobileDrawer } from "@/components/ask-kriton/Sidebar";
@@ -99,6 +100,7 @@ const OUTCOME_STYLES: Record<string, { label: string; dot: string; text: string 
   answered: { label: "Answered", dot: "bg-ok", text: "text-ok" },
   unavailable: { label: "Not answered", dot: "bg-warn", text: "text-warn" },
   clarification_required: { label: "Clarification needed", dot: "bg-info", text: "text-info" },
+  acknowledged: { label: "Noted", dot: "bg-ok", text: "text-ok" },
   escalated: { label: "Review pending", dot: "bg-warn", text: "text-warn" },
   limited_response: { label: "Limited", dot: "bg-warn", text: "text-warn" },
   refused: { label: "Refused", dot: "bg-bad", text: "text-bad" },
@@ -111,30 +113,6 @@ function genId(prefix: string): string {
 
 function timestamp(): number {
   return Date.now();
-}
-
-/** Trailing consecutive clarification_required turns — resets to 0 the moment
- * a turn actually gets answered, so the count reflects one live back-and-forth. */
-function clarificationCycleFor(conversation: Conversation | null): number {
-  if (!conversation) return 0;
-  let cycle = 0;
-  for (let i = conversation.turns.length - 1; i >= 0; i--) {
-    if (conversation.turns[i].result?.outcome === "clarification_required") cycle++;
-    else break;
-  }
-  return cycle;
-}
-
-function ZoikoGlyph({ className = "h-9 w-9" }: { className?: string }) {
-  return (
-    <div className={`${className} relative shrink-0 overflow-hidden rounded-xl bg-[#16799A] shadow-[0_18px_44px_rgba(0,0,0,0.28)]`}>
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_24%_18%,rgba(255,255,255,0.32),transparent_34%)]" />
-      <div className="absolute left-[25%] top-[26%] h-[48%] w-[50%] rounded-sm border-[3px] border-white" />
-      <div className="absolute bottom-[31%] left-[36%] h-[26%] w-[8%] bg-[#F3C437]" />
-      <div className="absolute bottom-[31%] left-[48%] h-[26%] w-[8%] bg-[#F3C437]" />
-      <div className="absolute bottom-[31%] left-[60%] h-[26%] w-[8%] bg-[#F3C437]" />
-    </div>
-  );
 }
 
 /**
@@ -546,7 +524,9 @@ const ConversationTurn = memo(function ConversationTurn({
   const citationCount = result?.answer?.citations.length ?? 0;
   // A provider/composition failure travels the refusal route, but it is not a
   // policy decision — saying "policy blocked" sent users looking for a rule.
-  const routeLabel = result?.next_action?.type === "report_incomplete"
+  const baseRouteLabel = outcome === "acknowledged"
+    ? "Noted — kept for this conversation"
+    : result?.next_action?.type === "report_incomplete"
     ? "Not answered — report incomplete"
     : result?.next_action?.type === "provider_rate_limited"
     ? "Not answered — AI provider usage allowance reached"
@@ -583,6 +563,10 @@ const ConversationTurn = memo(function ConversationTurn({
         ? "Calculation undefined — verified"
         : suppliedAnswerLabel(result?.answer ?? null) ?? "Answered — calculated and verified"
       : ROUTE_LABELS[route ?? ""] ?? route;
+  const routeLabel = baseRouteLabel ? verifiedLabel(baseRouteLabel, result?.answer?.verification) : baseRouteLabel;
+  // A withheld answer has nothing verified to report (25 Oct 2026).
+  const verificationLine = baseRouteLabel?.startsWith("Not answered")
+    ? null : verificationSummary(result?.answer?.verification);
   // The backend reports "answered" for these too; the badge must not say
   // "Answered" next to a line that says the answer was not (fully) given.
   const shownOutcomeStyle = routeLabel?.startsWith("Not answered")
@@ -664,6 +648,7 @@ const ConversationTurn = memo(function ConversationTurn({
                   {shownOutcomeStyle && <span className={`text-xs font-semibold ${shownOutcomeStyle.text}`}>{shownOutcomeStyle.label}</span>}
                 </div>
                 <p className="mt-0.5 text-xs text-muted">{routeLabel}</p>
+                {verificationLine && <p className="mt-0.5 text-[11px] text-muted">{verificationLine}</p>}
               </div>
               <div className="flex items-center gap-2">
                 <Link
@@ -974,6 +959,10 @@ export default function AskKritonPage() {
     const now = timestamp();
     const priorConversation = conversations.find((c) => c.id === convId) ?? null;
     const completedTurns = [...(priorConversation?.turns ?? [])];
+    // A single message sent while Kriton waits on its question answers it,
+    // unless the user chose to send it as a new question.
+    const open = openClarification(completedTurns);
+    const reply = questions.length === 1 && open && newQuestionFor !== open.replyTo ? open : null;
 
     // Snapshot only the documents currently visible in the composer. Previous
     // turns retain their attachment metadata for display and audit, but must
@@ -1023,10 +1012,12 @@ export default function AskKritonPage() {
           request_id: idempotencyKey,
           // Backend limit (AskKritonRequest.previous_query max_length): a long
           // pasted previous message otherwise rejects the whole request (422).
-          previous_query: completedTurns.at(-1)?.submittedQuery.trim().slice(0, 4000) || undefined,
+          // A reply carries the request being clarified instead.
+          previous_query: reply?.request || completedTurns.at(-1)?.submittedQuery.trim().slice(0, 4000) || undefined,
           jurisdiction,
           mode,
-          clarification_cycle: questions.length === 1 ? clarificationCycleFor(priorConversation) : 0,
+          clarification_cycle: reply?.cycle ?? 0,
+          reply_to: reply?.replyTo,
           conversation_id: convId,
           conversation_history: conversationHistory(completedTurns),
           // An attached file defines the entity/source scope for questions
@@ -1067,9 +1058,13 @@ export default function AskKritonPage() {
   }
 
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // The question (by reply_to id) the user chose not to answer: their next
+  // message goes as a new question. Kriton's next question resets it.
+  const [newQuestionFor, setNewQuestionFor] = useState<string | null>(null);
 
   const activeConversation = conversations.find((c) => c.id === activeId) ?? null;
   const hasConversation = activeConversation !== null && activeConversation.turns.length > 0;
+  const pendingQuestion = activeConversation && !submitting ? openClarification(activeConversation.turns) : null;
   const sorted = useMemo(() => sortConversations(conversations), [conversations]);
   const conversationSources = useMemo(
     () => uniqueCitations(conversations.flatMap((c) => c.turns.flatMap((t) => t.result?.answer?.citations ?? []))),
@@ -1120,12 +1115,14 @@ export default function AskKritonPage() {
         <MobileDrawer {...sidebarProps} showMenu open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} />
 
         <section className="relative flex min-h-0 min-w-0 flex-col">
-          <header className="relative z-10 flex h-14 shrink-0 items-center justify-between border-b border-line bg-panel/80 px-4 md:hidden">
+          <header className="relative z-10 flex h-14 shrink-0 items-center justify-between border-b border-line bg-white px-4 md:hidden">
             <div className="flex items-center gap-2">
-              <ZoikoGlyph className="h-8 w-8 rounded-lg" />
-              <span className="font-bold text-ink">Kriton</span>
+              {/* The ZoikoLogia logo, as in the admin sidebar. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/brand/zoikologia-logo.png" alt="ZoikoLogia" width={393} height={69} className="h-auto w-[130px]" />
+              <span className="font-bold text-[#0B1533]">Kriton</span>
             </div>
-            <button onClick={() => setMobileMenuOpen(true)} aria-label="Open recent chats" className="text-muted">
+            <button onClick={() => setMobileMenuOpen(true)} aria-label="Open recent chats" className="text-[#5A6278]">
               <History size={19} />
             </button>
           </header>
@@ -1358,6 +1355,22 @@ export default function AskKritonPage() {
               view however far back the conversation is scrolled. */}
           {hasConversation && (
             <div className="relative z-20 shrink-0 px-4 pb-4 pt-2 md:pb-5">
+              {pendingQuestion && (
+                <div className="mx-auto mb-2 flex w-full max-w-3xl flex-wrap items-center justify-between gap-2 rounded-lg border border-info/30 bg-info/10 px-3 py-2 text-xs text-ink">
+                  <span>
+                    {newQuestionFor === pendingQuestion.replyTo
+                      ? "Your next message will be sent as a new question."
+                      : "Your next message answers Kriton's question above."}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setNewQuestionFor((current) => current === pendingQuestion.replyTo ? null : pendingQuestion.replyTo)}
+                    className="font-semibold text-info hover:underline"
+                  >
+                    {newQuestionFor === pendingQuestion.replyTo ? "Answer Kriton's question instead" : "Send as a new question"}
+                  </button>
+                </div>
+              )}
               <Composer
                 variant="sticky"
                 query={query}

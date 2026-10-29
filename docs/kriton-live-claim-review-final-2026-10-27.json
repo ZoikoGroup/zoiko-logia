@@ -1,0 +1,44 @@
+{
+  "elapsed_seconds": 25.76,
+  "counts": {
+    "Correct": 1,
+    "Partly confirmed": 0,
+    "Incorrect": 1,
+    "Could not verify": 1
+  },
+  "verdicts": [
+    {
+      "claim": "Persistent subsidiary losses can attract transfer-pricing scrutiny.",
+      "verdict": "Correct",
+      "refs": [
+        "REF-2"
+      ],
+      "evidence_says": "",
+      "reason": ""
+    },
+    {
+      "claim": "Legal ownership alone always entitles an entity to all intellectual-property returns.",
+      "verdict": "Incorrect",
+      "refs": [
+        "REF-2"
+      ],
+      "evidence_says": "The guidelines describe how receipts and expenses associated with intangibles are to be allocated among group members and may specify the form and amount of payment, indicating that ownership alone does not automatically entitle an entity to all IP returns.",
+      "reason": ""
+    },
+    {
+      "claim": "Large royalty payments automatically prove tax avoidance.",
+      "verdict": "Could not verify",
+      "refs": [],
+      "evidence_says": "",
+      "reason": "The retrieved evidence does not establish this claim."
+    }
+  ],
+  "sources": [
+    {
+      "title": "OECD Transfer Pricing Guidelines for Multinational Enterprises and Tax Administrations 2022",
+      "url": "https://www.oecd.org/en/publications/oecd-transfer-pricing-guidelines-for-multinational-enterprises-and-tax-administrations-2022_0e655865-en.html",
+      "characters": 10445
+    }
+  ],
+  "answer": "I checked 3 factual claims in the text, each against sources searched for it: 1 correct, 1 incorrect, 1 could not be verified.\n\n| # | Claim in the text | Verdict | Source |\n|---|---|---|---|\n| 1 | Persistent subsidiary losses can attract transfer-pricing scrutiny. | **Correct** | [OECD Transfer Pricing Guidelines for Multinat\u2026](https://www.oecd.org/en/publications/oecd-transfer-pricing-guidelines-for-multinational-enterprises-and-tax-administrations-2022_0e655865-en.html) |\n| 2 | Legal ownership alone always entitles an entity to all intellectual-property returns. | **Incorrect** | [OECD Transfer Pricing Guidelines for Multinat\u2026](https://www.oecd.org/en/publications/oecd-transfer-pricing-guidelines-for-multinational-enterprises-and-tax-administrations-2022_0e655865-en.html) |\n| 3 | Large royalty payments automatically prove tax avoidance. | **Could not verify** | \u2014 |\n\n### Verification gaps\n\n- Claim 3: The retrieved evidence does not establish this claim.\nAn unverified claim has not been established as false.\n\n### Corrections\n- **Legal ownership alone always entitles an entity to all intellectual-property returns.** \u2014 the source says: The guidelines describe how receipts and expenses associated with intangibles are to be allocated among group members and may specify the form and amount of payment, indicating that ownership alone does not automatically entitle an entity to all IP returns. ([OECD Transfer Pricing Guidelines for Multinat\u2026](https://www.oecd.org/en/publications/oecd-transfer-pricing-guidelines-for-multinational-enterprises-and-tax-administrations-2022_0e655865-en.html))\n\nClaims marked \"Could not verify\" were not stated in the sources found for them. They may still be correct; check them against the official standard.\n\nOpinions and recommendations in the text (for example about how a system should work) were not assessed \u2014 only factual claims about the rules."
+}

@@ -26,13 +26,19 @@ _EMPTY = re.compile(r"^\s*(?:[-–—]|n/?a|nil|—|)\s*$", re.I)
 _UNIT_WORDS = r"(?:days?|months?|years?|times|x|×|bbl|units?|shares?|usd|gbp|eur|inr|brl|aud|cad|jpy|per\s+share)"
 _PERIOD = re.compile(
     r"^\s*(?:year|yr|fy|q[1-4]|quarter|h[12]|half|month|week|day|period|t)\s*[-‑]?\s*\d{1,4}\b"
-    r"|^\s*(?:19|20)\d{2}(?:\s*[-/–]\s*\d{2,4})?\s*$"
+    # "2025 (Yr 1)" and "FY2025" too: a lease schedule's years were read as
+    # separate items and offered as grouped bars (28 Oct 2026).
+    r"|^\s*(?:19|20)\d{2}(?:\s*[-/–]\s*\d{2,4})?\s*(?:\([^)]{1,20}\))?\s*$"
     r"|^\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?(?:\s+\d{2,4})?\s*$"
     r"|^\s*\d{1,2}\s*(?:\(.*\))?\s*$", re.I)
 _TOTAL_ROW = re.compile(r"^\s*(?:\*\*)?\s*(?:total|sum|grand\s+total|overall)\b", re.I)
 _SHARE_WORDS = re.compile(r"\b(?:share|split|mix|allocation|allocated|breakdown|composition|weights?|proportion)\b", re.I)
 _JOURNAL = re.compile(r"\b(?:debit|credit|dr|cr|account|accounts|treatment|criteri\w*|rationale)\b", re.I)
 _CURRENCY = re.compile(r"[$£€₹¥]|\b(?:USD|GBP|EUR|INR|BRL|AUD|CAD|JPY)\b", re.I)
+_WORKING = re.compile(r"\b(?:calculations?|workings?|formulae?|formulas|computations?|derivation|how\s+calculated)\b",
+                      re.I)
+_INDEX_HEADER = re.compile(r"^(?:#|no\.?|nos?\.|s\.?\s?no\.?|sr\.?(?:\s?no\.?)?|sl\.?(?:\s?no\.?)?|item\s+no\.?|ref\.?|row)$",
+                           re.I)
 
 
 @dataclass(frozen=True)
@@ -98,6 +104,10 @@ def _value(cell: str) -> Decimal | None:
 # (allocations, revenue, a liability): "Amount by item" charted them as
 # comparable bars (23 Oct 2026).
 _SUMMARY_HEADING = re.compile(r"\bsummary\b|\bkey\s+(?:figures|results|metrics)\b|\bat\s+a\s+glance\b", re.I)
+# The calculator's own "### Result" table lists different computed quantities
+# (a lease liability, a year's interest, depreciation): "Value by item" bars
+# compared them as like items (28 Oct 2026). Its schedule tables still chart.
+_RESULT_HEADING = re.compile(r"(?:^|\s)#{2,6}\s*Results?\s*$", re.I)
 
 
 def _heading_before(text: str, start: int) -> str:
@@ -109,7 +119,8 @@ def _tables(text: str) -> list[tuple[list[str], list[list[str]]]]:
     tables = []
     for match in re.finditer(r"(?:^[ \t]*\|[^\n]*\|[ \t]*\n?){3,}", text or "", re.M):
         block = match.group(0)
-        if _SUMMARY_HEADING.search(_heading_before(text, match.start())):
+        heading = _heading_before(text, match.start())
+        if _SUMMARY_HEADING.search(heading) or _RESULT_HEADING.search(heading):
             continue
         rows = [[cell.strip() for cell in line.strip().strip("|").split("|")] for line in block.strip().splitlines()]
         if len(rows) < 4 or not all(re.fullmatch(r"\s*:?-{2,}:?\s*", cell) for cell in rows[1]):
@@ -140,11 +151,16 @@ def _choose(header: list[str], data: list[list[str]]) -> tuple[str, dict, str] |
     """The chart type, chart and reason for one table, or None."""
     # A journal entry or a rule table is not a dataset: debits and credits
     # plotted as bars mean nothing.
-    if any(_JOURNAL.search(cell) for cell in header):
+    if any(_JOURNAL.search(cell) or re.search(r"\b(?:claim|verdict|citation|reference|status|identifier)\b|^\s*#\s*$", cell, re.I)
+           for cell in header):
         return None
+    worked = any(_WORKING.search(_clean_label(cell)) for cell in header)
     columns = list(zip(*data))
     numeric = {}
     for index in range(len(header)):
+        # A row number is not a measure: "No. and Instances by finding".
+        if _INDEX_HEADER.match(_clean_label(header[index])):
+            continue
         values = [_value(cell) for cell in columns[index]]
         stated = [value for value in values if value is not None]
         unstated = [cell for cell, value in zip(columns[index], values) if value is None and not _EMPTY.match(cell)]
@@ -153,12 +169,13 @@ def _choose(header: list[str], data: list[list[str]]) -> tuple[str, dict, str] |
         money = {bool(_CURRENCY.search(cell)) for cell, value in zip(columns[index], values) if value is not None}
         if len(stated) >= 2 and not unstated and len(money) == 1:
             numeric[index] = values
-    labels_at = next((index for index in range(len(header)) if index not in numeric), None)
+    labels_at = next((index for index in range(len(header))
+                      if index not in numeric and not _INDEX_HEADER.match(_clean_label(header[index]))), None)
     if labels_at is None and len(numeric) >= 2:
         # Every column is a number: the first one labels the rows ("| 1 |
         # 3,500,000 | 5.17 | 676,886.75 |" is Year 1).
-        labels_at = 0
-        numeric.pop(0)
+        labels_at = min(numeric)     # after any row-number column
+        numeric.pop(labels_at)
     if labels_at is None or not numeric:
         return None
     categories = [_clean_label(cell) for cell in columns[labels_at]]
@@ -168,6 +185,12 @@ def _choose(header: list[str], data: list[list[str]]) -> tuple[str, dict, str] |
     primary = max(numeric)
     primary_unit = _unit(header[primary], list(columns[primary]))
     if primary_unit.startswith("money:") and "/" in primary_unit:
+        return None
+    # A worked calculation's amounts are different quantities (a present value,
+    # a year's interest, a depreciation charge) beside how each was found:
+    # "Amount by step" compared them as like bars (ARO and lease answers,
+    # 25 Oct 2026). Worked ratios in one unit ("Result (days)") still compare.
+    if worked and primary_unit.startswith("money:"):
         return None
     # Plotted together only when measured in the same unit (budget and actual,
     # 2025 and 2026); a rate column beside an amount column is left out.
@@ -205,6 +228,10 @@ def _choose(header: list[str], data: list[list[str]]) -> tuple[str, dict, str] |
                               and abs(total - 100) <= 0.5))
         if part_to_whole:
             kind, reason = "pie", "The parts add up to a whole, so a pie shows each one's share."
+        elif len(series) == 1 and _one_is_a_difference(values, labels):
+            # "Output VAT 20,000 / Input VAT 10,000 / VAT payable 10,000": the
+            # payable is the other two's difference, not a third item to compare.
+            return None
         else:
             kind = "bar"
             reason = ("Two or more measures across the same items compare best as grouped bars." if len(series) > 1
@@ -214,16 +241,39 @@ def _choose(header: list[str], data: list[list[str]]) -> tuple[str, dict, str] |
     return kind, chart, reason
 
 
+_DERIVED_LABEL = re.compile(r"\b(?:payable|net|difference|balance|profit|loss|due|refund\w*|surplus|deficit|"
+                            r"remaining|variance|change)\b", re.I)
+
+
+def _one_is_a_difference(values: list[float], labels: list[str]) -> bool:
+    """A row named as a worked result ("VAT payable") that is another row less
+    a third: the result beside its operands. The label is required: counts of
+    3, 5 and 2 audit findings are not a calculation."""
+    if not 3 <= len(values) <= 8:
+        return False
+    for i, result in enumerate(values):
+        if not _DERIVED_LABEL.search(labels[i] if i < len(labels) else ""):
+            continue
+        for j, a in enumerate(values):
+            for k, b in enumerate(values):
+                if len({i, j, k}) == 3 and abs((a - b) - result) <= max(abs(result) * 0.0005, 0.005):
+                    return True
+    return False
+
+
 def chart_from_answer(text: str) -> tuple[str, dict, str] | None:
-    """The best chart for the answer's largest chartable table."""
+    """The best chart for the answer's chartable tables: a series over time
+    first (a schedule's years), then the largest. By size alone a 4-year
+    lease schedule lost to a 5-row table of unlike results (28 Oct 2026)."""
     best = None
     for header, data in _tables(text):
         chosen = _choose(header, data)
         if chosen is None:
             continue
         size = len(chosen[1].get("categories") or chosen[1].get("data") or [])
-        if best is None or size >= best[0]:
-            best = (size, chosen)
+        rank = (chosen[0] == "line", size)
+        if best is None or rank >= best[0]:
+            best = (rank, chosen)
     return best[1] if best else None
 
 
