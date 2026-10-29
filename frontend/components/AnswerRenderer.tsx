@@ -191,6 +191,9 @@ export function stripInlineRefs(text: string): string {
       // The word that pointed at the marker goes with it: "apply the criteria
       // in [REF-3] and…" read "criteria in and…".
       .replace(REF_POINTER, "")
+      // A dash that introduced the marker: '"…define working capital." – [REF-3]'
+      // left a dangling "–" after each quote.
+      .replace(REF_DASH, "")
       .replace(REF_MARKER, "")
       // "the balance sheet ([REF-2])" left "the balance sheet ()".
       .replace(/[ \t]*\(\s*[,;]?\s*\)/g, "")
@@ -201,7 +204,8 @@ export function stripInlineRefs(text: string): string {
 
 const REF_POINTER =
   /[ \t]+(?:in|from|see|per|under|according\s+to|as\s+(?:stated|shown|set\s+out)\s+in|cited\s+in)(?=\s*(?:\[\s*(?:REF[\s\-‐-―]?)?\d+|\(\s*REF[\s\-‐-―]?\d+))/gi;
-const SOURCE_HEADING = /^\s*(?:sources?|refs?|references?|citations?)\s*$/i;
+const REF_DASH = /[ \t]*[–—][ \t]*(?=\[\s*(?:REF[\s\-‐-―]?)?\d+|\(\s*REF[\s\-‐-―]?\d+)/gi;
+const SOURCE_HEADING =/^\s*(?:sources?|refs?|references?|citations?)\s*$/i;
 
 /** A table's Source column whose cells were only citation markers is empty
  *  once they are removed; it is dropped rather than shown blank. */

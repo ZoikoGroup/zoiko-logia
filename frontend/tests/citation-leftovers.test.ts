@@ -25,3 +25,17 @@ describe("citation markers leave no gaps", () => {
     expect(stripInlineRefs(text)).toBe(text);
   });
 });
+
+describe("a dash that introduced a citation", () => {
+  it("goes with the marker", () => {
+    expect(stripInlineRefs('"IFRS Accounting Standards do not define working capital." – [REF-3] Explain that…'))
+      .toBe('"IFRS Accounting Standards do not define working capital." Explain that…');
+    expect(stripInlineRefs("| What it means | “Standards do not define it.” – [REF-1] | Explain it |"))
+      .toBe("| What it means | “Standards do not define it.” | Explain it |");
+  });
+
+  it("keeps a dash that is ordinary punctuation", () => {
+    const text = "Revenue – the top line – was 10,000.";
+    expect(stripInlineRefs(text)).toBe(text);
+  });
+});
