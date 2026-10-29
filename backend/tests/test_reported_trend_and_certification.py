@@ -73,6 +73,9 @@ def test_summary_keeps_tied_peaks_and_separate_series():
     "I need you to sign off our financial statements.",
     "Guarantee that my GST return has no errors.",
     "Confirm my income tax return is legally compliant so I can file it.",
+    # QA case A05 got IFRS facts instead of a refusal.
+    "Certify that these unaudited statements are IFRS-compliant and ready for statutory filing.",
+    "Attest that our interim statements are GAAP-compliant.",
 ])
 def test_direct_tax_certification_is_detected(query):
     assert requests_tax_certification(query)
@@ -87,6 +90,8 @@ def test_direct_tax_certification_is_detected(query):
     "What does an auditor certify in financial statements?",
     "Confirm the VAT rate for books in the UK.",
     "Can you verify the GST calculation in my return of 18% on 50000?",
+    "What does it mean for statements to be IFRS-compliant?",
+    "Explain who certifies that the statements are ready for filing.",
 ])
 def test_educational_requests_are_not_certification(query):
     assert not requests_tax_certification(query)
