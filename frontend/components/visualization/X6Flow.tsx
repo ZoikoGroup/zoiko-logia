@@ -7,9 +7,28 @@ import { useTheme } from "@/components/shell/ThemeProvider";
 import type { VisualizationGraphEdge, VisualizationGraphNode } from "@/lib/api";
 import { WORKFLOW_HEIGHT } from "@/components/visualization/vizSize";
 
-const STAGE_WIDTH = 140;
-const STAGE_HEIGHT = 44;
-const STAGE_GAP = 90;
+const STAGE_WIDTH = 150;
+const STAGE_HEIGHT = 52;
+const STAGE_GAP = 60;
+const ROW_GAP = 56;
+const MARGIN = 24;
+// Room on the right for the zoom buttons.
+const BUTTON_MARGIN = 48;
+
+/**
+ * Stage positions in rows that fit the container, each row running the
+ * opposite way to the one above so every arrow stays short. One long row of
+ * eight stages was shrunk to half size to fit, and its labels were
+ * unreadable (QA cases E01, E03, E04).
+ */
+export function workflowPositions(count: number, width: number): { x: number; y: number }[] {
+  const perRow = Math.max(1, Math.floor((width - MARGIN - BUTTON_MARGIN + STAGE_GAP) / (STAGE_WIDTH + STAGE_GAP)));
+  return Array.from({ length: count }, (_, i) => {
+    const row = Math.floor(i / perRow);
+    const column = row % 2 === 0 ? i % perRow : perRow - 1 - (i % perRow);
+    return { x: MARGIN + column * (STAGE_WIDTH + STAGE_GAP), y: MARGIN + row * (STAGE_HEIGHT + ROW_GAP) };
+  });
+}
 
 /**
  * X6 interactive-workflow renderer (spec §10). PROCESS_FLOW specs are always
@@ -27,6 +46,7 @@ export function X6Flow({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<import("@antv/x6").Graph | null>(null);
+  const fitRef = useRef<(() => void) | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   // cssVar() below reads a snapshot at construction time — re-run on theme
@@ -58,24 +78,39 @@ export function X6Flow({
         });
         graphRef.current = graph;
 
+        // Full size and centred when the stages fit; shrunk only when they
+        // do not. zoomToFit alone drew a fitting flow at about 60% (QA E04).
+        const fit = () => {
+          const box = graph.getContentBBox();
+          const width = containerRef.current?.clientWidth || 600;
+          if (box.width + 2 * MARGIN > width || box.height + 2 * MARGIN > WORKFLOW_HEIGHT) {
+            graph.zoomToFit({ padding: MARGIN, maxScale: 1 });
+          } else {
+            graph.zoomTo(1);
+            graph.centerContent();
+          }
+        };
+        fitRef.current = fit;
         resizeObserver = new ResizeObserver(() => {
           if (!containerRef.current) return;
           graph.resize(containerRef.current.clientWidth || 600, WORKFLOW_HEIGHT);
-          graph.zoomToFit({ padding: 24, maxScale: 1 });
+          fit();
         });
         resizeObserver.observe(containerRef.current);
 
+        const positions = workflowPositions(nodes.length, containerRef.current.clientWidth || 600);
         nodes.forEach((n, i) => {
           graph.addNode({
             id: n.id,
-            x: i * (STAGE_WIDTH + STAGE_GAP),
-            y: 60,
+            x: positions[i].x,
+            y: positions[i].y,
             width: STAGE_WIDTH,
             height: STAGE_HEIGHT,
             label: n.label,
             attrs: {
               body: { fill: panel, stroke: brand, strokeWidth: 1.5, rx: 10, ry: 10 },
-              label: { fill: ink, fontSize: 12, fontWeight: 600 },
+              // Long labels wrap inside the box instead of spilling over it.
+              label: { fill: ink, fontSize: 12, fontWeight: 600, textWrap: { width: -16, height: -8, ellipsis: true, breakWord: false } },
             },
           });
         });
@@ -89,7 +124,7 @@ export function X6Flow({
           });
         });
 
-        graph.zoomToFit({ padding: 24, maxScale: 1 });
+        fit();
         graph.on("node:click", ({ node }: { node: { id: string } }) => setSelected(node.id));
 
       } catch {
@@ -146,7 +181,7 @@ export function X6Flow({
           </button>
           <button
             type="button" title="Fit to view" aria-label="Fit process flow to view"
-            onClick={() => graphRef.current?.zoomToFit({ padding: 24, maxScale: 1 })}
+            onClick={() => fitRef.current?.()}
             className="rounded-md border border-line bg-panel p-1 text-muted shadow-sm hover:text-ink"
           >
             <Maximize2 size={13} />
