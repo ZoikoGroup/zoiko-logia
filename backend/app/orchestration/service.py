@@ -50,7 +50,9 @@ from app.orchestration.agent_plan import WRITE_REQUEST_NOTICE, plan_request
 from app.orchestration.answer_formatting import renumber_ordered_lists, separate_headings
 from app.orchestration.citation_spans import evidence_by_ref, exact_spans
 from app.orchestration import workflow_state
-from app.orchestration.professional_boundary import CERTIFICATION_REFUSAL, requests_tax_certification
+from app.orchestration.professional_boundary import (
+    CERTIFICATION_REFUSAL, LEDGER_OVERWRITE_REFUSAL, requests_tax_certification, requests_unreviewed_ledger_overwrite,
+)
 from app.orchestration.series_summary import ground_series_summary
 from app.orchestration.retrieve import build_source_bundle
 from app.orchestration.routing_matrix import (
@@ -1652,6 +1654,23 @@ async def ask_kriton(
             safety=SafetyState(risk_level="HIGH", policy_state="blocked"),
             confidence_state=CONF_INSUFFICIENT, source_bundle=None, answer=None,
             next_action=NextAction(type="refusal", message=CERTIFICATION_REFUSAL),
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        )
+        return await finish(response)
+    # Same boundary for a process that lets a model change the approved
+    # ledger with no reviewer (QA case E05, P0).
+    if requests_unreviewed_ledger_overwrite(request.query):
+        await audit_refusal_returned(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, reason="Unreviewed automatic ledger overwrite requested",
+        )
+        response = AskKritonResponse(
+            query_id=query_id, correlation_id=correlation_id,
+            outcome="refused", route=ROUTE_REFUSAL,
+            safety=SafetyState(risk_level="HIGH", policy_state="blocked"),
+            confidence_state=CONF_INSUFFICIENT, source_bundle=None, answer=None,
+            next_action=NextAction(type="refusal", message=LEDGER_OVERWRITE_REFUSAL),
             audit_reference=AuditReference(audit_chain_id=audit_chain_id),
         )
         return await finish(response)
