@@ -4439,18 +4439,25 @@ async def ask_kriton(
         # externally source-grounded.
         rag_citations = []
 
-    from app.orchestration.verification_service import is_evidence_gap_statement
-    evidence_gap_only = not release_claims(final_text) and is_evidence_gap_statement(final_text)
+    from app.orchestration.verification_service import is_evidence_gap_statement, is_referral
+    evidence_gap_only = (not [claim for claim in release_claims(final_text) if not is_referral(claim)]
+                         and is_evidence_gap_statement(final_text))
     # A concept question the sources did not cover gets a labelled general
     # explanation instead of "Not answered" (concept_fallback.py).
+    # So does one whose agent run used up its token budget reading search
+    # results and wrote nothing (QA case E02 retest).
     from app.orchestration.concept_fallback import GENERAL_NOTE, general_explanation, is_concept_question
-    if evidence_gap_only and not is_offdomain_refusal and is_concept_question(
+    budget_left_no_answer = (agent_outcome is not None and bool(agent_outcome.incomplete_reason)
+                             and "No complete answer was generated" in (final_text or ""))
+    if (evidence_gap_only or budget_left_no_answer) and not is_offdomain_refusal and is_concept_question(
             request.query, has_documents=bool(document_sources), uses_live_data=bool(live_evidence.observations)):
         explanation = await general_explanation(
             request.query, model_gateway_service.run_grounded_completion, _MODEL_PROVIDER_FAILURE)
         if explanation:
             final_text = composed_text = explanation
             evidence_gap_only = False
+            if budget_left_no_answer:
+                agent_outcome.incomplete_reason = ""
             rag_citations = []
             limitations.insert(0, GENERAL_NOTE)
     # An explanation gap ("the sources do not state the factors that…") is

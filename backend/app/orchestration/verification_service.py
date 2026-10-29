@@ -920,6 +920,20 @@ def is_evidence_gap_statement(text: str) -> bool:
     return bool(_GAP_STATEMENT.search(text)) and not _SPECIFIC_VALUE.search(text)
 
 
+# "To answer this question you would need to consult an organisation's
+# accounting policies…" after a gap statement points elsewhere; it states
+# nothing, so the answer is still only a gap (QA case E02).
+_REFERRAL = re.compile(
+    r"^(?:to answer (?:this|the) question,?\s+)?(?:you\s+(?:would|will|may|might)\s+(?:need|have)\s+to|please)\s+"
+    r"(?:consult|refer\s+to|check|review|see)\b",
+    re.I,
+)
+
+
+def is_referral(text: str) -> bool:
+    return bool(_REFERRAL.search(text.strip())) and not _SPECIFIC_VALUE.search(text)
+
+
 _VISUAL_POINTER = re.compile(
     r"^(?:the|this|a)\s+(?:\w+\s+){0,3}(?:chart|graph|plot|table|diagram|flowchart|visual(?:isation|ization)?)\b"
     r"[^.]*\b(?:below|above|attached|following)\b", re.I,
