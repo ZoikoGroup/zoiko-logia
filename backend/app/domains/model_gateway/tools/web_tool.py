@@ -16,7 +16,7 @@ from app.domains.model_gateway.tool_registry import ToolResult, ToolSpec
 from app.orchestration.websearch import web_search_each
 
 TOOL_NAME = "search_web"
-_MAX_SNIPPET = 900
+_MAX_SNIPPET = 3000
 
 
 class SearchWebArgs(BaseModel):
@@ -31,9 +31,22 @@ class SearchWebArgs(BaseModel):
 async def _handle(args: SearchWebArgs) -> ToolResult:
     sources = await web_search_each(args.query, jurisdiction=args.jurisdiction, limit=5)
     if not sources:
+        from app.orchestration.websearch import retrieval_failure_note
+        issue = retrieval_failure_note()
+        if issue:
+            return ToolResult.failure("retrieval_unavailable", issue + " Do not present external rules as verified. "
+                                      "Optional workflow suggestions may still be given as labelled general practice.")
         return ToolResult.failure("no_data", "No trusted source was found for this search. Do not answer from memory; "
-                                             "say the sources found do not establish it.")
-    lines = [f"{source.title}\nURL: {source.url}\n{(source.snippet or '')[:_MAX_SNIPPET]}" for source in sources]
+                                             "say which external facts remain unverified. Optional workflow suggestions "
+                                             "may still be given as labelled general practice.")
+    from app.orchestration.websearch import _focused_excerpt
+    # The registry caps the complete result. Share its budget before that
+    # cap so later subjects do not disappear behind the first long source.
+    from app.domains.model_gateway.tool_registry import MAX_RESULT_CHARS
+    headers = [f"{source.title}\nURL: {source.url}\n" for source in sources]
+    allowance = min(_MAX_SNIPPET, max(0, (MAX_RESULT_CHARS - 100 - sum(map(len, headers))) // len(sources)))
+    lines = [header + _focused_excerpt(source.snippet or '', args.query, allowance)
+             for header, source in zip(headers, sources)]
     return ToolResult(ok=True, content="Trusted search results:\n\n" + "\n\n".join(lines), sources=tuple(sources))
 
 

@@ -213,6 +213,59 @@ main select:focus {
   box-shadow: 0 0 0 4px rgba(11, 95, 122, 0.12), 0 10px 26px rgba(11, 95, 122, 0.08);
 }
 
+/* Sign-in pages: the ZoikoLogia sign-in template is light, whatever theme
+   the app is in (the app defaults to dark before anyone signs in). */
+.auth-light {
+  color-scheme: light;
+  --bg: #f7f8fa;
+  --panel: #ffffff;
+  --ink: #0b1533;
+  --muted: #5a6278;
+  --line: #e3e6ec;
+  --soft: #ffffff;
+  --chip: #f4f6f8;
+  --brand: #f57a14;
+  --brand-2: #dd6a0c;
+  --ok: #1f7a4d;
+  --bad: #b42318;
+}
+.auth-light input:not([type="checkbox"]):not([type="radio"]) {
+  background: #ffffff;
+  border-color: #e3e6ec;
+  box-shadow: none;
+  color: #111827;
+}
+.auth-light input:not([type="checkbox"]):not([type="radio"])::placeholder {
+  color: #a0a8b0;
+}
+.auth-light input:not([type="checkbox"]):not([type="radio"]):focus {
+  border-color: #f57a14;
+  box-shadow: 0 0 0 3px rgba(245, 122, 20, 0.18);
+}
+
+/* Super Admin control plane: the light ZoikoLogia command-center design,
+   whatever theme the tenant workspace uses (the control plane has no toggle). */
+.platform-light {
+  color-scheme: light;
+  --bg: #f5f7fa;
+  --panel: #ffffff;
+  --ink: #0b1533;
+  --muted: #5f6b7e;
+  --line: #e4e8ee;
+  --soft: #f1f4f8;
+  --chip: #f4f6f8;
+  --brand: #0b5f7a;
+  --brand-2: #0d7898;
+  --ok: #1f7a4d;
+  --warn: #9a6700;
+  --bad: #c0392b;
+  --info: #1f5fae;
+  --hero: #0e2747;
+  --hero-2: #12335c;
+  --accent: #f28c28;
+  --accent-ink: #b45309;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .transition-all {
     transition-duration: 0.01ms !important;

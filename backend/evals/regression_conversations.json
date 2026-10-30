@@ -1,0 +1,1366 @@
+{
+ "version": "regression-conversations-2",
+ "implemented_stage": 2,
+ "notes": "Regression conversations from the 27-28 Oct 2026 test chats. 'offline' runs the real pipeline with the model stubbed; 'recorded' applies Kriton's checks to an answer the model actually wrote; 'live' needs retrieval or live data and runs only with approval. An expectation with target_stage above implemented_stage is the agreed behaviour of a later stage and is reported as pending, not as a pass.",
+ "cases": [
+  {
+   "id": "calc-depreciation-eight",
+   "source": "27 Oct round 1",
+   "tags": [
+    "calculation"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Calculate straight-line depreciation on equipment costing £40,000 with residual value £4,000 over eight years.",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "annual_depreciation": "£4,500.00"
+      },
+      "model_not_called": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "calc-depreciation-nine",
+   "source": "28 Oct round 1",
+   "tags": [
+    "calculation"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Calculate straight-line depreciation on a machine costing £60,000 with residual value £6,000 over nine years.",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "annual_depreciation": "£6,000.00"
+      },
+      "model_not_called": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "calc-depreciation-eight-b",
+   "source": "28 Oct round 3",
+   "tags": [
+    "calculation"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Calculate straight-line depreciation on a machine costing £84,000 with residual value £4,000 over eight years.",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "annual_depreciation": "£10,000.00"
+      },
+      "model_not_called": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "calc-gp-margin-generated",
+   "source": "28 Oct round 1",
+   "tags": [
+    "calculation"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Calculate gross profit and margin: we generated £450,000 in revenue and cost of sales was £270,000.",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "gross_profit": "£180,000.00",
+       "gross_margin": "40.00%"
+      },
+      "model_not_called": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "calc-gp-margin-ifrs15",
+   "source": "28 Oct round 1",
+   "tags": [
+    "calculation"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Under IFRS 15, revenue £1,200,000 and cost of sales £780,000. What is the gross profit and margin?",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "gross_profit": "£420,000.00",
+       "gross_margin": "35.00%"
+      },
+      "model_not_called": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "calc-gp-margin-plain",
+   "source": "28 Oct round 3",
+   "tags": [
+    "calculation"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Calculate gross profit and margin: revenue £640,000 and cost of sales £416,000.",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "gross_profit": "£224,000.00",
+       "gross_margin": "35.00%"
+      },
+      "model_not_called": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "calc-gp-sales-came-to",
+   "source": "27 Oct stage 2",
+   "tags": [
+    "calculation"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Calculate gross profit: total sales came to £800,000 and cost of sales was £500,000.",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "gross_profit": "£300,000.00"
+      },
+      "model_not_called": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "calc-break-even-sold-at",
+   "source": "28 Oct round 1 (expectation corrected to 6,000)",
+   "tags": [
+    "calculation"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "What is the break-even point for a product sold at £40 with variable cost £25 and fixed costs £90,000?",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "contribution_per_unit": "£15.00",
+       "break_even_units": "6000.00 units"
+      },
+      "model_not_called": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "calc-break-even-selling-at",
+   "source": "27 Oct re-test",
+   "tags": [
+    "calculation"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "What is the break-even point for a product selling at £25 with variable cost £15 and fixed costs £50,000?",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "break_even_units": "5000.00 units"
+      },
+      "model_not_called": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "calc-break-even-sold-at-12",
+   "source": "28 Oct round 3",
+   "tags": [
+    "calculation"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "What is the break-even point for a product sold at £12 with variable cost £7 and fixed costs £45,000?",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "break_even_units": "9000.00 units"
+      },
+      "model_not_called": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "vat-standard-rated",
+   "source": "28 Oct rounds 1-3",
+   "tags": [
+    "calculation",
+    "vat",
+    "chart"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "UK company, VAT at 20%, all standard-rated, figures exclude VAT: sales £100,000, purchases £50,000. Calculate VAT payable.",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "output_vat_on_sales": "£20,000.00",
+       "input_vat_on_purchases": "£10,000.00",
+       "vat_payable": "£10,000.00"
+      },
+      "chart_offer": "none"
+     }
+    }
+   ]
+  },
+  {
+   "id": "vat-standard-rated-b",
+   "source": "28 Oct round 3",
+   "tags": [
+    "calculation",
+    "vat"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "UK company, VAT at 20%, all standard-rated, figures exclude VAT: sales £250,000, purchases £90,000. Calculate VAT payable.",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "vat_payable": "£32,000.00"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "vat-asks-treatment-then-reply",
+   "source": "27 Oct re-test",
+   "tags": [
+    "vat",
+    "clarification",
+    "follow-up",
+    "known-failure"
+   ],
+   "mode": "offline",
+   "note": "Known failure at baseline: the calculators see only the reply's own text, so the earlier request is not completed and the model answers instead. Explicit reply references (stage 2) are the fix.",
+   "turns": [
+    {
+     "user": "UK company, VAT at 20%, figures exclude VAT: sales £100,000, purchases £50,000. Calculate VAT payable.",
+     "expect": {
+      "outcome": "clarification_required",
+      "message_contains": [
+       "zero-rated"
+      ]
+     }
+    },
+    {
+     "user": "All standard-rated.",
+     "expect": {
+      "calculation": {
+       "vat_payable": "£10,000.00"
+      },
+      "reply_to_clarification": true,
+      "target_stage": 2
+     }
+    }
+   ]
+  },
+  {
+   "id": "vat-what-if",
+   "source": "28 Oct round 1",
+   "tags": [
+    "vat",
+    "follow-up"
+   ],
+   "mode": "offline",
+   "note": "Follow-up answered by the model in the live run; offline only the first turn's figures are checked strictly.",
+   "turns": [
+    {
+     "user": "UK company, VAT at 20%, all standard-rated, figures exclude VAT: sales £100,000, purchases £50,000. Calculate VAT payable.",
+     "expect": {
+      "calculation": {
+       "vat_payable": "£10,000.00"
+      }
+     }
+    },
+    {
+     "user": "Now what if purchases were £60,000?",
+     "expect": {
+      "live_expected": "VAT payable £8,000 (output £20,000 − input £12,000)"
+     }
+    }
+   ]
+  },
+  {
+   "id": "new-task-after-clarification",
+   "source": "27 Oct re-test",
+   "tags": [
+    "clarification",
+    "contamination"
+   ],
+   "mode": "offline",
+   "note": "A complete new task after a clarification must not carry the previous request.",
+   "turns": [
+    {
+     "user": "UK company, VAT at 20%, figures exclude VAT: sales £100,000, purchases £50,000. Calculate VAT payable.",
+     "expect": {
+      "outcome": "clarification_required"
+     }
+    },
+    {
+     "user": "Record the journal entry: Dr Right-of-use asset £133,650.60, Cr Lease liability £126,370.91. Check if it balances.",
+     "expect": {
+      "no_vat_calculation": true,
+      "prompt_not_contains": [
+       "Previous user request for context"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "lease-ifrs16-arrears",
+   "source": "28 Oct rounds 1-2",
+   "tags": [
+    "lease",
+    "calculation",
+    "chart"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Calculate the IFRS 16 lease liability for a warehouse: annual payments of £30,000 in arrears, discount rate 6%, lease term 5 years.",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "lease_liability": "£126,370.91",
+       "first_year_interest": "£7,582.25",
+       "first_year_depreciation": "£25,274.18"
+      },
+      "model_not_called": true,
+      "chart_offer": "line",
+      "no_calculation_check_flag": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "lease-ifrs16-cash-flow",
+   "source": "28 Oct round 1",
+   "tags": [
+    "lease",
+    "calculation",
+    "chart"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "We lease a warehouse: annual payments of £30,000 in arrears, discount rate 6%, lease term 5 years. Show the IFRS 16 accounting for the lessee, including the cash flow statement.",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "lease_liability": "£126,370.91",
+       "first_year_interest": "£7,582.25",
+       "first_year_depreciation": "£25,274.18"
+      },
+      "model_not_called": true,
+      "chart_offer": "line",
+      "no_calculation_check_flag": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "lease-4-year",
+   "source": "28 Oct round 2",
+   "tags": [
+    "lease",
+    "calculation",
+    "chart"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Calculate the lease liability: annual payments of £20,000 in arrears, discount rate 5%, lease term 4 years.",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "lease_liability": "£70,919.01",
+       "first_year_interest": "£3,545.95"
+      },
+      "model_not_called": true,
+      "chart_offer": "line",
+      "no_calculation_check_flag": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "lease-3-year",
+   "source": "28 Oct round 3",
+   "tags": [
+    "lease",
+    "calculation",
+    "chart"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Calculate the IFRS 16 lease liability: annual payments of £15,000 in arrears, discount rate 7%, lease term 3 years.",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "lease_liability": "£39,364.74",
+       "first_year_interest": "£2,755.53",
+       "first_year_depreciation": "£13,121.58"
+      },
+      "model_not_called": true,
+      "chart_offer": "bar",
+      "no_calculation_check_flag": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "lease-advance",
+   "source": "28 Oct round 3",
+   "tags": [
+    "lease",
+    "calculation",
+    "chart"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Calculate the IFRS 16 lease liability: annual payments of £12,000 in advance, discount rate 6%, lease term 5 years.",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "lease_liability": "£53,581.27",
+       "first_year_interest": "£2,494.88",
+       "first_year_depreciation": "£10,716.25"
+      },
+      "model_not_called": true,
+      "chart_offer": "line",
+      "no_calculation_check_flag": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "lease-quarterly",
+   "source": "28 Oct rounds 3-4",
+   "tags": [
+    "lease",
+    "calculation",
+    "chart"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Calculate the lease liability: quarterly payments of £5,000 in arrears, discount rate 8% a year, lease term 2 years.",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "lease_liability": "£36,627.41",
+       "first_year_interest": "£2,411.24"
+      },
+      "model_not_called": true,
+      "chart_offer": "line",
+      "no_calculation_check_flag": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "lease-asc842-operating",
+   "source": "28 Oct round 3",
+   "tags": [
+    "lease",
+    "calculation",
+    "chart"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Under ASC 842, an operating lease has annual payments of $40,000 in arrears for 4 years at a 5% discount rate. Calculate the lease liability and the annual lease cost.",
+     "expect": {
+      "route": "CALCULATION",
+      "calculation": {
+       "lease_liability": "$141,838.02",
+       "annual_lease_cost": "$40,000.00"
+      },
+      "model_not_called": true,
+      "chart_offer": "line",
+      "no_calculation_check_flag": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "lease-missing-timing",
+   "source": "28 Oct round 3",
+   "tags": [
+    "lease",
+    "missing-input"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Calculate the lease liability for payments of £10,000 a year at 5% for 3 years.",
+     "expect": {
+      "outcome": "clarification_required",
+      "message_contains": [
+       "in advance",
+       "in arrears"
+      ],
+      "no_calculation": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "lease-two-in-one-message",
+   "source": "28 Oct round 4",
+   "tags": [
+    "lease",
+    "ambiguity",
+    "known-failure"
+   ],
+   "mode": "offline",
+   "note": "Round 6 (not approved): fails on the live code, which calculated the £10,000 lease with the van's 'in arrears'.",
+   "turns": [
+    {
+     "user": "Calculate the lease liability for payments of £10,000 a year at 5% for 3 years.\nWhen it asks advance or arrears, send We lease a van: annual payments of £8,000 in arrears, discount rate 5%, lease term 3 years.",
+     "expect": {
+      "outcome": "clarification_required",
+      "message_contains": [
+       "more than one lease"
+      ],
+      "no_calculation": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "context-uk-ifrs16",
+   "source": "28 Oct rounds 1-3",
+   "tags": [
+    "context"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "We are a United Kingdom company reporting under IFRS 16 for the year ending 31 December 2025.",
+     "expect": {
+      "model_not_called": true,
+      "message_contains": [
+       "United Kingdom",
+       "IFRS 16",
+       "31 December 2025"
+      ],
+      "message_starts": "Noted"
+     }
+    }
+   ]
+  },
+  {
+   "id": "context-uk-ifrs16-outcome",
+   "source": "item 2 target",
+   "tags": [
+    "context",
+    "message-types"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "We are a United Kingdom company reporting under IFRS 16 for the year ending 31 December 2025.",
+     "expect": {
+      "outcome": "acknowledged",
+      "target_stage": 2
+     }
+    }
+   ]
+  },
+  {
+   "id": "context-revenue-statement",
+   "source": "28 Oct round 2",
+   "tags": [
+    "context"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "The company recognised revenue of £500,000 for the year.\nManagement believes the receivables are fully recoverable.\nThe auditor has not yet reviewed the bad debt provision.",
+     "expect": {
+      "model_not_called": true,
+      "message_starts": "Noted"
+     }
+    }
+   ]
+  },
+  {
+   "id": "context-then-lease-statement",
+   "source": "28 Oct rounds 2-3 (fix A)",
+   "tags": [
+    "context",
+    "clarification"
+   ],
+   "mode": "offline",
+   "note": "Acknowledgements count as clarifications in the frontend, so the second statement used to be taken as a reply.",
+   "turns": [
+    {
+     "user": "We are a United Kingdom company reporting under IFRS 16 for the year ending 31 December 2025.",
+     "expect": {
+      "message_starts": "Noted"
+     }
+    },
+    {
+     "user": "We lease equipment: annual payments of £20,000 in arrears, discount rate 5%, lease term 4 years.",
+     "expect": {
+      "message_contains": [
+       "£20,000",
+       "5%",
+       "4 years"
+      ],
+      "model_not_called": true,
+      "message_starts": "Noted"
+     }
+    }
+   ]
+  },
+  {
+   "id": "lease-follow-up-after-break-even",
+   "source": "28 Oct rounds 1-3",
+   "tags": [
+    "follow-up",
+    "lease"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "We are a United Kingdom company reporting under IFRS 16 for the year ending 31 December 2025.",
+     "expect": {
+      "message_starts": "Noted"
+     }
+    },
+    {
+     "user": "We lease equipment: annual payments of £20,000 in arrears, discount rate 5%, lease term 4 years.",
+     "expect": {
+      "message_starts": "Noted"
+     }
+    },
+    {
+     "user": "Separately: what is the break-even point for a product selling at £50 with variable cost £30 and fixed costs £40,000?",
+     "expect": {
+      "calculation": {
+       "break_even_units": "2000.00 units"
+      }
+     }
+    },
+    {
+     "user": "Now calculate the lease liability and first-year interest for that lease.",
+     "expect": {
+      "calculation": {
+       "lease_liability": "£70,919.01",
+       "first_year_interest": "£3,545.95"
+      },
+      "model_not_called": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "lease-follow-up-two-leases-latest",
+   "source": "28 Oct round 2 (fix B)",
+   "tags": [
+    "follow-up",
+    "lease",
+    "ambiguity"
+   ],
+   "mode": "offline",
+   "note": "'That lease' is the most recent lease.",
+   "turns": [
+    {
+     "user": "We lease a warehouse: annual payments of £30,000 in arrears, discount rate 6%, lease term 5 years. Show the IFRS 16 accounting for the lessee, including the cash flow statement.",
+     "expect": {
+      "calculation": {
+       "lease_liability": "£126,370.91"
+      }
+     }
+    },
+    {
+     "user": "We are a United Kingdom company reporting under IFRS 16 for the year ending 31 December 2025.",
+     "expect": {
+      "message_starts": "Noted"
+     }
+    },
+    {
+     "user": "We lease equipment: annual payments of £20,000 in arrears, discount rate 5%, lease term 4 years.",
+     "expect": {
+      "message_starts": "Noted"
+     }
+    },
+    {
+     "user": "Separately: what is the break-even point for a product selling at £50 with variable cost £30 and fixed costs £40,000?",
+     "expect": {
+      "calculation": {
+       "break_even_units": "2000.00 units"
+      }
+     }
+    },
+    {
+     "user": "Now calculate the lease liability and first-year interest for that lease.",
+     "expect": {
+      "calculation": {
+       "lease_liability": "£70,919.01"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "lease-follow-up-among-many",
+   "source": "28 Oct round 3 (fix 3)",
+   "tags": [
+    "follow-up",
+    "lease",
+    "ambiguity"
+   ],
+   "mode": "offline",
+   "note": "Terms of other leases must not mix in (an 'in advance' lease made it ask about timing).",
+   "turns": [
+    {
+     "user": "Calculate the IFRS 16 lease liability: annual payments of £12,000 in advance, discount rate 6%, lease term 5 years.",
+     "expect": {
+      "calculation": {
+       "lease_liability": "£53,581.27"
+      }
+     }
+    },
+    {
+     "user": "We are an Indian company reporting under Ind AS for the year ending 31 March 2026.",
+     "expect": {
+      "message_contains": [
+       "Ind AS",
+       "31 March 2026"
+      ],
+      "message_starts": "Noted"
+     }
+    },
+    {
+     "user": "We lease office space: annual payments of ₹6,00,000 in arrears, discount rate 9%, lease term 3 years.",
+     "expect": {
+      "message_starts": "Noted"
+     }
+    },
+    {
+     "user": "Now calculate the lease liability for that lease.",
+     "expect": {
+      "calculation": {
+       "lease_liability": "₹1,518,776.80",
+       "first_year_interest": "₹136,689.91"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "lease-correction",
+   "source": "28 Oct rounds 3-4",
+   "tags": [
+    "correction",
+    "lease",
+    "follow-up"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "We lease a van: annual payments of £8,000 in arrears, discount rate 5%, lease term 3 years.",
+     "expect": {
+      "message_starts": "Noted"
+     }
+    },
+    {
+     "user": "Correction: the lease term is 4 years, not 3.",
+     "expect": {
+      "message_contains": [
+       "correction"
+      ],
+      "message_starts": "Noted"
+     }
+    },
+    {
+     "user": "Now calculate the lease liability for that lease.",
+     "expect": {
+      "calculation": {
+       "lease_liability": "£28,367.60"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "lease-correction-target",
+   "source": "item 2 target",
+   "tags": [
+    "correction",
+    "message-types"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "We lease a van: annual payments of £8,000 in arrears, discount rate 5%, lease term 3 years.",
+     "expect": {
+      "outcome": "acknowledged",
+      "target_stage": 2
+     }
+    },
+    {
+     "user": "Correction: the lease term is 4 years, not 3.",
+     "expect": {
+      "outcome": "acknowledged",
+      "target_stage": 2
+     }
+    }
+   ]
+  },
+  {
+   "id": "lease-correction-among-many",
+   "source": "28 Oct round 3",
+   "tags": [
+    "correction",
+    "lease",
+    "follow-up",
+    "ambiguity"
+   ],
+   "mode": "offline",
+   "note": "Used to ask 'which of 5 leases?'; the correction belongs to the van.",
+   "turns": [
+    {
+     "user": "Calculate the IFRS 16 lease liability: annual payments of £12,000 in advance, discount rate 6%, lease term 5 years.",
+     "expect": {}
+    },
+    {
+     "user": "We are an Indian company reporting under Ind AS for the year ending 31 March 2026.",
+     "expect": {}
+    },
+    {
+     "user": "We lease office space: annual payments of ₹6,00,000 in arrears, discount rate 9%, lease term 3 years.",
+     "expect": {}
+    },
+    {
+     "user": "We lease a van: annual payments of £8,000 in arrears, discount rate 5%, lease term 3 years.",
+     "expect": {
+      "message_starts": "Noted"
+     }
+    },
+    {
+     "user": "Correction: the lease term is 4 years, not 3.",
+     "expect": {
+      "message_starts": "Noted"
+     }
+    },
+    {
+     "user": "Now calculate the lease liability for that lease.",
+     "expect": {
+      "calculation": {
+       "lease_liability": "£28,367.60"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "statement-during-clarification",
+   "source": "28 Oct round 3 (fix 4)",
+   "tags": [
+    "context",
+    "clarification"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Calculate the lease liability for payments of £10,000 a year at 5% for 3 years.",
+     "expect": {
+      "outcome": "clarification_required"
+     }
+    },
+    {
+     "user": "We lease a van: annual payments of £8,000 in arrears, discount rate 5%, lease term 3 years.",
+     "expect": {
+      "message_contains": [
+       "£8,000"
+      ],
+      "model_not_called": true,
+      "message_starts": "Noted"
+     }
+    }
+   ]
+  },
+  {
+   "id": "statement-during-clarification-target",
+   "source": "items 2-3 target",
+   "tags": [
+    "context",
+    "clarification",
+    "message-types"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Calculate the lease liability for payments of £10,000 a year at 5% for 3 years.",
+     "expect": {
+      "outcome": "clarification_required"
+     }
+    },
+    {
+     "user": "We lease a van: annual payments of £8,000 in arrears, discount rate 5%, lease term 3 years.",
+     "expect": {
+      "outcome": "acknowledged",
+      "target_stage": 2
+     }
+    }
+   ]
+  },
+  {
+   "id": "explicit-reply-completes-lease",
+   "source": "stage 2",
+   "tags": [
+    "lease",
+    "clarification",
+    "message-types"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Calculate the lease liability for payments of £10,000 a year at 5% for 3 years.",
+     "expect": {
+      "outcome": "clarification_required",
+      "message_contains": [
+       "in advance",
+       "in arrears"
+      ]
+     }
+    },
+    {
+     "user": "In arrears.",
+     "expect": {
+      "reply_to_clarification": true,
+      "calculation": {
+       "lease_liability": "£27,232.48"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "ambiguous-reply-is-not-carried",
+   "source": "28 Oct live test (stage 2)",
+   "tags": [
+    "lease",
+    "clarification",
+    "message-types"
+   ],
+   "mode": "offline",
+   "note": "A reply after which Kriton asked the same question answered nothing and is not carried; it made every later reply ambiguous and the question repeated without end.",
+   "turns": [
+    {
+     "user": "Calculate the lease liability for payments of £10,000 a year at 5% for 3 years.",
+     "expect": {
+      "outcome": "clarification_required"
+     }
+    },
+    {
+     "user": "\"in advance or in arrears?\"",
+     "expect": {
+      "reply_to_clarification": true,
+      "outcome": "clarification_required"
+     }
+    },
+    {
+     "user": "In arrears.",
+     "expect": {
+      "reply_to_clarification": true,
+      "calculation": {
+       "lease_liability": "£27,232.48"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "explicit-reply-is-not-acknowledged",
+   "source": "stage 2",
+   "tags": [
+    "context",
+    "clarification",
+    "message-types"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Calculate the lease liability for payments of £10,000 a year at 5% for 3 years.",
+     "expect": {
+      "outcome": "clarification_required"
+     }
+    },
+    {
+     "user": "We lease a van: annual payments of £8,000 in arrears, discount rate 5%, lease term 3 years.",
+     "expect": {
+      "reply_to_clarification": true,
+      "message_not_starts": "Noted"
+     }
+    }
+   ]
+  },
+  {
+   "id": "reply-is-not-context",
+   "source": "28 Oct round 4",
+   "tags": [
+    "clarification"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "UK company, VAT at 20%, figures exclude VAT: sales £100,000, purchases £50,000. Calculate VAT payable.",
+     "expect": {
+      "outcome": "clarification_required"
+     }
+    },
+    {
+     "user": "Our turnover is £95,000 for the last 12 months.",
+     "expect": {
+      "message_not_starts": "Noted"
+     }
+    }
+   ]
+  },
+  {
+   "id": "pasted-material-statement",
+   "source": "27 Oct tax-audit inputs",
+   "tags": [
+    "ambiguity",
+    "pasted"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Recurring dividend from subsidiary: the parent recognised the dividend as income.\nManagement fees: charged to all group entities at cost plus 5%.\nTransfer pricing: the documentation was last updated in 2022.",
+     "expect": {
+      "outcome": "clarification_required",
+      "message_contains": [
+       "What would you like me to do"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "instruction-not-context",
+   "source": "28 Oct evaluation comparison",
+   "tags": [
+    "context",
+    "intent"
+   ],
+   "mode": "offline",
+   "note": "",
+   "turns": [
+    {
+     "user": "Pass the journal entry for depreciation of ₹50,000 on machinery.",
+     "expect": {
+      "message_not_starts": "Noted"
+     }
+    }
+   ]
+  },
+  {
+   "id": "rec-journal-does-not-balance",
+   "source": "28 Oct round 2",
+   "tags": [
+    "journal",
+    "recorded"
+   ],
+   "mode": "recorded",
+   "note": "",
+   "turns": [
+    {
+     "user": "Dr Right-of-use asset £133,650.60, Cr Lease liability £126,370.91. Check if it balances.",
+     "expect": {
+      "recorded_answer": "| Account | Debit (£) | Credit (£) |\n|---|---|---|\n| Right‑of‑use asset | 133 650.60 | – |\n| Lease liability | – | 126 370.91 |\n| Total | 133 650.60 | 126 370.91 |\n\nThe journal entry does not balance; a further credit of £7,279.69 is needed.",
+      "journal_failures": false,
+      "findings_exclude": [
+       "balancing_entry_wrong_side"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "rec-journal-wrong-side",
+   "source": "28 Oct round 2",
+   "tags": [
+    "journal",
+    "recorded",
+    "treatment"
+   ],
+   "mode": "recorded",
+   "note": "",
+   "turns": [
+    {
+     "user": "Dr Right-of-use asset £133,650.60, Cr Lease liability £126,370.91. Check if it balances.",
+     "expect": {
+      "recorded_answer": "| Account | Debit (£) | Credit (£) |\n|---|---|---|\n| Right‑of‑use asset | 133 650.60 | – |\n| Lease liability | – | 126 370.91 |\n| Total | 133 650.60 | 126 370.91 |\n\nThe journal entry does not balance; a £7 279.69 debit is missing.",
+      "findings_include": [
+       "balancing_entry_wrong_side"
+      ],
+      "note_contains": [
+       "needs a further credit of 7,279.69"
+      ],
+      "note_not_contains": [
+       "figures add up"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "rec-journal-credits-exceed",
+   "source": "28 Oct round 3",
+   "tags": [
+    "journal",
+    "recorded"
+   ],
+   "mode": "recorded",
+   "note": "",
+   "turns": [
+    {
+     "user": "Dr Equipment £5,000, Cr Bank £5,600. Check if it balances.",
+     "expect": {
+      "recorded_answer": "Debit side: Equipment £5,000\nCredit side: Bank £5,600\nThe entry is out of balance by £600. You would need an additional debit of £600.",
+      "findings_exclude": [
+       "balancing_entry_wrong_side"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "rec-ifrs16-operating-cash-flows",
+   "source": "27 Oct round 2",
+   "tags": [
+    "treatment",
+    "recorded",
+    "lease"
+   ],
+   "mode": "recorded",
+   "note": "",
+   "turns": [
+    {
+     "user": "We lease a warehouse: annual payments of £30,000 in arrears, discount rate 6%, lease term 5 years. Show the IFRS 16 accounting for the lessee, including the cash flow statement.",
+     "expect": {
+      "recorded_answer": "IFRS 16 lessee accounting.\n| Statement | Presentation |\n|---|---|\n| Statement of Cash Flows | Lease payments are classified within operating activities (IFRS 16 permits this treatment). |",
+      "findings_include": [
+       "ifrs16_lease_payments_operating"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "rec-chart-json-leak",
+   "source": "28 Oct round 1",
+   "tags": [
+    "display",
+    "recorded"
+   ],
+   "mode": "recorded",
+   "note": "",
+   "turns": [
+    {
+     "user": "We lease equipment: annual payments of £20,000 in arrears, discount rate 5%, lease term 4 years.",
+     "expect": {
+      "recorded_answer": "Assumptions as above.\n\n```json\n{\n \"type\": \"bar\",\n \"categories\": [\"Year 1\", \"Year 2\"],\n \"series\": [{\"name\": \"Lease Payment\", \"data\":}]\n}\n```\nEnd.",
+      "displayed_not_contains": [
+       "\"type\"",
+       "```"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "rec-calculator-posting-not-balance",
+   "source": "28 Oct round 3",
+   "tags": [
+    "lease",
+    "recorded"
+   ],
+   "mode": "recorded",
+   "note": "",
+   "turns": [
+    {
+     "user": "Calculate the lease liability: quarterly payments of £5,000 in arrears, discount rate 8% a year, lease term 2 years.",
+     "expect": {
+      "recorded_answer_is_calculator_output": true,
+      "no_discrepancy": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "live-bank-rate",
+   "source": "27-28 Oct live runs",
+   "tags": [
+    "live"
+   ],
+   "mode": "live",
+   "note": "",
+   "turns": [
+    {
+     "user": "What is the current UK Bank Rate?",
+     "expect": {
+      "live_expected": "3.75%, effective 2025-12-18, Bank of England IUDBEDR, cited"
+     }
+    }
+   ]
+  },
+  {
+   "id": "live-uk-vat-threshold",
+   "source": "27-28 Oct live runs",
+   "tags": [
+    "live"
+   ],
+   "mode": "live",
+   "note": "",
+   "turns": [
+    {
+     "user": "What is the UK VAT registration threshold?",
+     "expect": {
+      "live_expected": "£90,000, GOV.UK"
+     }
+    }
+   ]
+  },
+  {
+   "id": "live-singapore-gst",
+   "source": "27-28 Oct live runs",
+   "tags": [
+    "live"
+   ],
+   "mode": "live",
+   "note": "",
+   "turns": [
+    {
+     "user": "What is the current standard GST rate in Singapore? Cite the official source.",
+     "expect": {
+      "live_expected": "9%, IRAS"
+     }
+    }
+   ]
+  },
+  {
+   "id": "live-fx",
+   "source": "27-28 Oct live runs",
+   "tags": [
+    "live"
+   ],
+   "mode": "live",
+   "note": "",
+   "turns": [
+    {
+     "user": "Convert £10,000 to euros at today's exchange rate.",
+     "expect": {
+      "live_expected": "a dated, cited rate"
+     }
+    }
+   ]
+  },
+  {
+   "id": "live-pillar-two",
+   "source": "27-28 Oct live runs",
+   "tags": [
+    "live",
+    "known-failure"
+   ],
+   "mode": "live",
+   "note": "",
+   "turns": [
+    {
+     "user": "What did the OECD Pillar Two GloBE minimum tax rate get set at, and when did it start? Cite the source.",
+     "expect": {
+      "live_expected": "15%; Income Inclusion Rule from 2024 (OECD)"
+     }
+    }
+   ]
+  },
+  {
+   "id": "live-context-action",
+   "source": "27-28 Oct live runs",
+   "tags": [
+    "live"
+   ],
+   "mode": "live",
+   "note": "",
+   "turns": [
+    {
+     "user": "Explain the accounting treatment Context: The company recognised revenue of £500,000 for the year.",
+     "expect": {
+      "live_expected": "answered as a labelled general explanation, not refused"
+     }
+    }
+   ]
+  }
+ ]
+}

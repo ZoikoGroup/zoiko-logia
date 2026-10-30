@@ -22,11 +22,12 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
 from app.orchestration import claim_verification
 from app.orchestration.websearch import WebSource, is_pasted_material, web_search
+from app.orchestration.research_parts import structured_research_parts, targeted_retry_query
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,8 @@ _INSTRUCTION_CHARS = 400
 # analysis and got a claim table instead.
 _REVIEW_INSTRUCTION = re.compile(
     r"\bfact[- ]?check\b"
+    r"|\b(?:check|verify|assess|review)\s+(?:each|every)\s+(?:claim|statement)\b"
+    r"|\bcheck\s+whether\s+these\s+claims\s+are\s+accurate\b"
     r"|\b(?:check|verify|confirm|validate|assess|tell me)\s+(?:if|whether)\s+(?:it|this|that|these|the\s+above|"
     r"the\s+(?:text|content|information|claims?|statements?|response|answer|analysis))?\s*(?:is|are)\s+"
     r"(?:correct|right|accurate|true|valid)"
@@ -88,6 +91,7 @@ class ClaimVerdict:
     verdict: str
     refs: list[str] = field(default_factory=list)
     evidence_says: str = ""
+    reason: str = ""
 
 
 @dataclass
@@ -104,9 +108,15 @@ class ReviewResult:
 def is_review_request(query: str) -> bool:
     """Pasted material with an instruction to check it."""
     text = (query or "").strip()
-    if not is_pasted_material(text):
-        return False
     if _PRODUCE_REQUEST.search(text):
+        return False
+    # Explicit claim-review instructions need neither a character threshold
+    # nor colon-labelled bullets. Plain bullets are factual material too.
+    explicit = _REVIEW_INSTRUCTION.search(text[:_INSTRUCTION_CHARS] + "\n" + text[-_INSTRUCTION_CHARS:])
+    bullets = re.findall(r"^\s*(?:[-*•]|\d+[.)])\s+\S.+$", text, re.M)
+    if explicit and len(bullets) >= 2:
+        return True
+    if not is_pasted_material(text) and not (len(text) >= 300 and structured_research_parts(text)):
         return False
     return bool(_REVIEW_INSTRUCTION.search(text[:_INSTRUCTION_CHARS] + "\n" + text[-_INSTRUCTION_CHARS:]))
 
@@ -140,42 +150,49 @@ from app.orchestration.official_standards import (  # noqa: E402
 )
 
 
-async def _search_each(claims: list[str], jurisdiction: str) -> list[list[WebSource]]:
+async def _search_each(claims: list[str], jurisdiction: str, *, retry: bool = False,
+                       queries: list[str] | None = None) -> list[list[WebSource]]:
     gate = asyncio.Semaphore(_SEARCH_CONCURRENCY)
 
-    async def search(claim: str) -> list[WebSource]:
+    async def search(claim: str, query: str) -> list[WebSource]:
         async with gate:
             try:
                 official, results = await asyncio.wait_for(asyncio.gather(
                     _official_excerpts(claim),
-                    web_search(claim, jurisdiction=jurisdiction, limit=_SOURCES_PER_CLAIM, read_pages=1),
+                    web_search(query,
+                               jurisdiction=jurisdiction, limit=_SOURCES_PER_CLAIM, read_pages=_SOURCES_PER_CLAIM),
                 ), timeout=_SEARCH_TIMEOUT_SECONDS + _STANDARD_TIMEOUT_SECONDS)
             except Exception:  # noqa: BLE001 — a failed search leaves the claim unverified
                 return []
         # The official text first: it is the authority the claim is about.
         return official + [r for r in results if r.url not in {o.url for o in official}]
 
-    return list(await asyncio.gather(*(search(claim) for claim in claims)))
+    phrases = queries or [targeted_retry_query(claim) if retry else claim for claim in claims]
+    return list(await asyncio.gather(*(search(claim, query) for claim, query in zip(claims, phrases))))
 
 
-async def _judge_each(claims: list[str], evidence: list[list[str]]) -> list[ClaimVerdict]:
+async def _judge_each(claims: list[str], evidence: list[list[str]], *, context: str = "") -> list[ClaimVerdict]:
     gate = asyncio.Semaphore(_JUDGE_CONCURRENCY)
 
     async def judge(claim: str, items: list[str]) -> ClaimVerdict:
         if not items:
-            return ClaimVerdict(claim, UNVERIFIED)
+            from app.orchestration.websearch import retrieval_failure_note
+            return ClaimVerdict(claim, UNVERIFIED, reason=retrieval_failure_note() or "No relevant source was retrieved.")
         async with gate:
-            result = await claim_verification.verify_claims([claim], items, claim)
+            question = f"Review this claim in its original professional context:\n{context[:10000]}\n\nClaim: {claim}" if context else claim
+            result = await claim_verification.verify_claims([claim], items, question)
             if not result.ran:
-                result = await claim_verification.verify_claims([claim], items, claim)
+                result = await claim_verification.verify_claims([claim], items, question)
         if not result.ran:
-            return ClaimVerdict(claim, UNVERIFIED)
+            return ClaimVerdict(claim, UNVERIFIED, reason="Evidence verification could not complete.")
         if result.contradicted and _SAYS_NOTHING.search(result.contradicted[0].evidence_says):
             # "The evidence … does not mention X" is a gap, not a contradiction:
             # a true IFRS 18 claim was reported "Incorrect" on that reasoning.
-            return ClaimVerdict(claim, UNVERIFIED)
+            return ClaimVerdict(claim, UNVERIFIED, reason="The retrieved evidence does not address this claim.")
         if result.contradicted:
-            cited = list(dict.fromkeys(re.findall(r"REF-\d+", " ".join(items))))[:2]
+            cited = [ref for ref in result.evidence_refs.get(1, []) if any(f"[{ref}]" in item for item in items)]
+            if not cited:
+                return ClaimVerdict(claim, UNVERIFIED, reason="A contrary interpretation was returned without an identifiable supporting passage.")
             says = result.contradicted[0].evidence_says
             # The source stating a shorter form of the same rule is not a
             # contradiction: IAS 1's third balance sheet, quoted without
@@ -185,7 +202,7 @@ async def _judge_each(claims: list[str], evidence: list[list[str]]) -> list[Clai
         refs = [ref for ref in result.evidence_refs.get(1, []) if any(f"[{ref}]" in item for item in items)]
         if result.supported and refs:
             return ClaimVerdict(claim, CORRECT, refs=refs)
-        return ClaimVerdict(claim, UNVERIFIED)
+        return ClaimVerdict(claim, UNVERIFIED, reason="The retrieved evidence does not establish this claim.")
 
     return list(await asyncio.gather(*(judge(c, e) for c, e in zip(claims, evidence))))
 
@@ -206,7 +223,10 @@ def _restates_part_of(claim: str, evidence_says: str) -> bool:
     def numbers(text: str) -> set[str]:
         return {n.rstrip(".,").replace(",", "") for n in _NUMBER.findall(text)}
 
-    if not evidence_says or numbers(evidence_says) - numbers(claim):
+    # Lexical similarity cannot turn a negation of a rule into partial
+    # confirmation ("requires X" versus "does not require X").
+    if (not evidence_says or numbers(evidence_says) - numbers(claim)
+            or re.search(r"\b(?:not|never|no|cannot|can't|doesn't|don't)\b", evidence_says, re.I)):
         return False
     said = _stems(evidence_says)
     return bool(said) and len(said & _stems(claim)) / len(said) >= 0.6
@@ -309,6 +329,12 @@ def _render(verdicts: list[ClaimVerdict], used: dict[str, int], cited: list[WebS
         ]
     for index, v in enumerate(verdicts, start=1):
         lines.append(f"| {index} | {_cell(v.claim)} | **{v.verdict}** | {sources(v)} |")
+    unresolved = [(index, v) for index, v in enumerate(verdicts, start=1) if v.verdict == UNVERIFIED]
+    if unresolved:
+        lines.extend(["", "### Verification gaps", ""])
+        lines.extend(f"- Claim {index}: {v.reason or 'The retrieved evidence does not establish this claim.'}"
+                     for index, v in unresolved)
+        lines.append("An unverified claim has not been established as false.")
     if figures:
         wrong_totals = sum(check.startswith("❌") for check in figures)
         lines += (["", "### Figures in the text"] if verdicts else []) + [
@@ -342,21 +368,42 @@ async def review_pasted_text(material: str, *, jurisdiction: str = "") -> Review
         if not figures:
             return None
         return ReviewResult(verdicts=[], sources=[], text=_render([], {}, [], figures))
-    found = await _search_each(claims, jurisdiction)
+    from app.orchestration.evidence_planning import plan_evidence_search
+    plan = await plan_evidence_search(material, claims, claims=claims)
+    found = await _search_each(claims, jurisdiction, queries=[subject.query for subject in plan.subjects])
     # One REF number per distinct source across all claims.
     sources: list[WebSource] = []
     ref_of: dict[str, str] = {}
-    evidence: list[list[str]] = []
-    for results in found:
+    def register(results: list[WebSource]) -> list[str]:
         items = []
         for source in results:
             key = source.url or source.title
             if key not in ref_of:
                 sources.append(source)
                 ref_of[key] = f"REF-{len(sources)}"
+            else:
+                index = int(ref_of[key].split("-")[1]) - 1
+                previous = sources[index]
+                if source.snippet and source.snippet not in (previous.snippet or ""):
+                    sources[index] = replace(previous, snippet="\n\n".join(
+                        text for text in (previous.snippet, source.snippet) if text))
             items.append(f"[{ref_of[key]}] {source.title}: {source.snippet}")
-        evidence.append(items)
-    verdicts = await _judge_each(claims, evidence)
+        return items
+
+    evidence = [register(results) for results in found]
+    verdicts = await _judge_each(claims, evidence, context=material)
+    # One additional search for evidence gaps, never a loop. A verifier
+    # outage is not a retrieval failure and must not trigger more searches.
+    missing = [index for index, verdict in enumerate(verdicts)
+               if verdict.verdict == UNVERIFIED and verdict.reason != "Evidence verification could not complete."]
+    if missing:
+        extra = await _search_each([claims[index] for index in missing], jurisdiction, retry=True,
+                                  queries=[plan.subjects[index].alternative for index in missing])
+        for index, results in zip(missing, extra):
+            evidence[index] = list(dict.fromkeys(evidence[index] + register(results)))
+        retried = await _judge_each([claims[index] for index in missing], [evidence[index] for index in missing], context=material)
+        for index, verdict in zip(missing, retried):
+            verdicts[index] = verdict
     # Only sources a verdict rests on are cited, renumbered in reading order.
     used: dict[str, int] = {}
     for v in verdicts:

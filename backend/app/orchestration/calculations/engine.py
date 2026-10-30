@@ -13,6 +13,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from app.orchestration.calculations.schemas import (
     CalculationInput, CalculationOutput, CalculationResult,
 )
+from app.orchestration.number_words import SPELLED_NUMBER_PATTERN, spelled_number_to_int
 
 # Ends on a digit: "-?\d[\d,]*" also took the comma in "£200,000, cost of
 # goods sold of £125,000", so revenue's £200,000 was read as the cost.
@@ -27,7 +28,7 @@ _CALCULATION_HINT = re.compile(
 )
 
 _ALIASES: dict[str, tuple[str, ...]] = {
-    "revenue": ("revenue", "sales", "turnover"),
+    "revenue": ("revenue", "revenues", "sales", "turnover"),
     # "cost of goods sold is £160,000" was not read, so a question giving it
     # was answered "please provide cost of sales".
     "cost_of_sales": ("cost of goods sold", "cost of goods", "cost of revenue", "cost of sales",
@@ -56,7 +57,9 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "useful_life": ("useful life", "asset life", "year life", "years life", "year useful life"),
     # Read only by break-even, where a bare "price £25 per unit" is the
     # selling price; the terse form missed the calculator altogether.
-    "selling_price": ("selling price", "sale price", "price per unit", "unit price", "sells for", "sell for", "price"),
+    # "a product selling at £25" was asked for its selling price (27 Oct 2026).
+    "selling_price": ("selling price", "sale price", "price per unit", "unit price", "sells for", "sell for",
+                      "selling for", "selling at", "sells at", "sell at", "sold at", "price"),
     "variable_cost": ("variable cost", "variable cost per unit"),
     "fixed_costs": ("fixed costs", "fixed cost"),
     "principal": ("principal", "amount invested", "investment"),
@@ -80,7 +83,8 @@ def _decimal(raw: str) -> Decimal | None:
         return None
 
 
-def _find_value(query: str, aliases: tuple[str, ...], *, percentage: bool = False) -> tuple[Decimal, str | None] | None:
+def _find_value(query: str, aliases: tuple[str, ...], *, percentage: bool = False,
+                not_after: re.Pattern[str] | None = None) -> tuple[Decimal, str | None] | None:
     alias_pattern = "|".join(re.escape(alias) for alias in sorted(aliases, key=len, reverse=True))
     currency = r"(?P<symbol>[£$€₹])?\s*(?:(?P<code>GBP|USD|EUR|INR|AED)\s*)?"
     suffix = r"\s*%" if percentage else ""
@@ -89,12 +93,18 @@ def _find_value(query: str, aliases: tuple[str, ...], *, percentage: bool = Fals
     # Words only, so the gap can never step over a different figure.
     gap = r"(?:\s+[a-z]+){0,4}?" if percentage else ""
     patterns = [
-        re.compile(rf"\b(?:{alias_pattern})\b{gap}\s*(?:is|are|was|were|of|at|=|:)?\s*{currency}(?P<number>{_NUMBER_TEXT}){suffix}", re.I),
+        # "revenue for the year £800,000", "total sales came to £800,000".
+        re.compile(rf"\b(?P<alias>{alias_pattern})\b{gap}(?:\s+for\s+the\s+(?:year|period|quarter|month))?\s*"
+                   rf"(?:is|are|was|were|of|at|came\s+to|amounted\s+to|totall?ed|=|:)?\s*{currency}(?P<number>{_NUMBER_TEXT}){suffix}", re.I),
         # [\s-]*: a hyphenated "5-year life" or "10-year term" labels its number.
-        re.compile(rf"{currency}(?P<number>{_NUMBER_TEXT}){suffix}[\s-]*(?:for|of|as)?\s*\b(?:{alias_pattern})\b", re.I),
+        # "in": "we generated £800,000 in revenue".
+        re.compile(rf"{currency}(?P<number>{_NUMBER_TEXT}){suffix}[\s-]*(?:for|of|as|in)?\s*\b(?P<alias>{alias_pattern})\b", re.I),
     ]
     for pattern in patterns:
-        match = pattern.search(query)
+        # not_after: the "sales" of "cost of sales £500,000" is not revenue;
+        # reading it so showed gross profit £0.00 as a verified calculation.
+        match = next((found for found in pattern.finditer(query)
+                      if not (not_after and not_after.search(query[:found.start("alias")]))), None)
         if not match:
             continue
         if not percentage and re.match(r'\s*%', query[match.end():]):
@@ -108,8 +118,18 @@ def _find_value(query: str, aliases: tuple[str, ...], *, percentage: bool = Fals
     return None
 
 
+_COST_OF = re.compile(r"\bcosts?\s+of\s+(?:goods\s+)?$", re.I)
+
+
 def _input(query: str, name: str, *, kind: str = "money", percentage: bool = False) -> CalculationInput | None:
-    found = _find_value(query, _ALIASES[name], percentage=percentage)
+    if name == "useful_life" and kind == "years":
+        from app.orchestration.number_words import SPELLED_NUMBER_PATTERN, spelled_number_to_int
+        query = re.sub(
+            r"\b(" + SPELLED_NUMBER_PATTERN + r")(?=[ -]+(?:full\s+)?years?\b)",
+            lambda match: str(spelled_number_to_int(match.group(1))), query, flags=re.I,
+        )
+    found = _find_value(query, _ALIASES[name], percentage=percentage,
+                        not_after=_COST_OF if name == "revenue" else None)
     if found is None:
         return None
     value, currency = found
@@ -448,6 +468,65 @@ def item_rate(query: str, aliases: tuple[str, ...]) -> Decimal | None:
     return _decimal(match.group(1)) if match else None
 
 
+# How people state a sale or a purchase without the words "sales" or
+# "purchases": "sells goods for £10,000", "buys supplies for £6,000", "takings
+# for the day are £1,440". Not read before, so those VAT questions were left
+# to the model (24 Oct 2026). Not "invoice": an invoice total is the reverse-VAT
+# formula's (gross and net amounts, below).
+_SELL_WORDS = r"sells?|sold|sale|takings"
+_BUY_WORDS = r"buys?|bought|purchases?|pays?|paid"
+
+
+_RECOVERY = re.compile(
+    r"(?P<pct>\d+(?:\.\d+)?)\s*%\s+of\s+(?:the\s+|its\s+)?(?:input\s+(?:vat|tax|gst)|vat\s+on\s+(?:its\s+)?purchases)\s+"
+    r"(?:is\s+|are\s+|can\s+be\s+)?(?:recoverable|reclaimable|recovered|reclaimed)"
+    r"|\brecover(?:s|able)?\s+(?:only\s+)?(?P<pct2>\d+(?:\.\d+)?)\s*%\s+of\s+(?:the\s+|its\s+)?input\s+(?:vat|tax|gst)", re.I)
+# Recovery limited without a stated share: partial exemption, exempt or
+# non-business use. Applied only when the share is given.
+_PARTIAL_RECOVERY = re.compile(r"\b(?:partial(?:ly)?\s+exempt\w*|partial\s+exemption|exempt\s+supplies|non[- ]business)\b",
+                               re.I)
+# Adjustments the engine never applies, so it does not present a result
+# that leaves them out.
+_OTHER_ADJUSTMENT = re.compile(
+    r"\b(?:blocked|bad\s+debt\s+relief|reverse[- ]charge|capital\s+goods\s+scheme|import\s+vat|postponed\s+(?:import\s+)?vat|"
+    r"error\s+correction|errors?\s+from\s+(?:an?\s+)?(?:earlier|previous|prior))\b", re.I)
+_NO_COUNTRY_NOTE = ("The question names no country: the calculation uses the rate and treatment you gave and does not "
+                    "confirm which country's VAT rules apply.")
+
+
+_TIE_NOTE = ("VAT is rounded to the penny and the other figures follow from the rounded VAT, so the figures shown "
+             "add up; the exact values are used for checking.")
+
+
+def _penny(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _trade_amount(query: str, verbs: str) -> tuple[Decimal, str | None] | None:
+    match = re.search(rf"\b(?:{verbs})\b(?:\s+[a-z]+){{0,4}}?\s+(?:for|of|are|is|totalling|total)\s+"
+                      rf"(?P<symbol>[£$€₹])?\s*(?:(?P<code>GBP|USD|EUR|INR|AED)\s*)?(?P<number>{_NUMBER_TEXT})(?!\s*%)",
+                      query, re.I)
+    if not match or (value := _decimal(match.group("number"))) is None:
+        return None
+    code = match.group("code")
+    return value, code.upper() if code else _CURRENCY_SYMBOLS.get(match.group("symbol") or "")
+
+
+def _treatment_after(query: str, amount: Decimal) -> bool | None:
+    """True when the words after an amount say it includes VAT, False when
+    they say it excludes it, None when they say neither before the next figure."""
+    for written in {f"{amount:,f}".rstrip("0").rstrip("."), f"{amount:f}".rstrip("0").rstrip("."), f"{amount:,}"}:
+        at = query.find(written)
+        if at < 0:
+            continue
+        after = re.split(r"[£$€₹]|\d", query[at + len(written):], maxsplit=1)[0][:60]
+        if _INCLUSIVE.search(after):
+            return True
+        if _EXCLUSIVE.search(after):
+            return False
+    return None
+
+
 def vat_amounts(query: str) -> CalculationResult | None:
     """VAT once the country, one rate and the VAT treatment are all stated
     (input_requirements.missing_vat_inputs asks for whichever is missing).
@@ -456,17 +535,46 @@ def vat_amounts(query: str) -> CalculationResult | None:
     q = query or ""
     if not _VAT_WORD.search(q):
         return None
-    rates = re.findall(r"(?<![\d.])(\d+(?:\.\d+)?)\s*%", q)
+    # A share of input VAT that is recoverable is not a VAT rate.
+    recovery_match = _RECOVERY.search(q)
+    recovery = _decimal(recovery_match.group("pct") or recovery_match.group("pct2")) if recovery_match else None
+    if recovery is not None and not 0 <= recovery <= 100:
+        return None
+    unrecovered = _RECOVERY.sub(" ", q)
+    # Adjustments the engine does not apply: a full-recovery result is not
+    # presented for them. Partial exemption is applied only with its share.
+    if _OTHER_ADJUSTMENT.search(unrecovered):
+        return None
+    if _PARTIAL_RECOVERY.search(unrecovered) and recovery is None:
+        return CalculationResult(
+            matched=True, status="clarification_required", formula_ids=["vat_liability"], error_code="MISSING_INPUT",
+            message="The business is partly exempt or has non-business use, so only part of its input VAT may be "
+                    "recoverable. What percentage of its input VAT is recoverable? With that I can calculate the VAT "
+                    "payable.")
+    rates = re.findall(r"(?<![\d.])(\d+(?:\.\d+)?)\s*%", unrecovered)
+    # "cost of sales £40,000" is not sales: it was output VAT £8,000 and a
+    # £2,000 refund where £10,000 was payable.
+    sales = _find_value(q, ("sales", "turnover", "outputs"), not_after=_COST_OF) or _trade_amount(q, _SELL_WORDS)
+    purchases = _find_value(q, ("purchases", "purchase", "inputs")) or _trade_amount(q, _BUY_WORDS)
     # Output instructions such as "calculate sales excluding VAT" do not
     # change an input explicitly stated as including VAT in the first clause.
     input_clause = re.split(r'[.!?]\s+', q, maxsplit=1)[0]
     if not _INCLUSIVE.search(input_clause) and not _EXCLUSIVE.search(input_clause):
         input_clause = q
     inclusive, exclusive = bool(_INCLUSIVE.search(input_clause)), bool(_EXCLUSIVE.search(input_clause))
-    if not rates or inclusive == exclusive:
+    # "Sales of £120,000 excluding VAT and purchases of £60,000 including
+    # VAT": each amount is as its own clause states it. Both words in one
+    # question were read as ambiguous, and the calculation was left to the
+    # model (24 Oct 2026).
+    treatment = {}
+    if inclusive and exclusive and sales and purchases:
+        treatment = {"sales": _treatment_after(q, sales[0]), "purchases": _treatment_after(q, purchases[0])}
+        if None in treatment.values():
+            return None
+    elif not rates or inclusive == exclusive:
         return None
-    sales = _find_value(q, ("sales", "turnover", "outputs"))
-    purchases = _find_value(q, ("purchases", "purchase", "inputs"))
+    if not rates:
+        return None
     # "Sales £120,000 at 20% and purchases £48,000 at 5%": each item's own rate.
     sales_rate, purchases_rate = item_rate(q, ("sales", "turnover", "outputs")), item_rate(q, ("purchases", "purchase", "inputs"))
     if sales and purchases and sales_rate is not None and purchases_rate is not None:
@@ -478,21 +586,29 @@ def vat_amounts(query: str) -> CalculationResult | None:
     if any(r is None or not 0 <= r <= 100 for r in (rate_out, rate_in)):
         return None
     rate = rate_out
-    single = sales if sales and not purchases else (None if sales else _find_value(q, ("vat on", "gst on", "vat of", "gst of", "vat in", "receives", "customer receipts", "on", "in")))
+    single = (sales if sales and not purchases else purchases if purchases and not sales
+              else None if sales else _find_value(q, ("vat on", "gst on", "vat of", "gst of", "vat in", "receives", "customer receipts", "on", "in")))
     if not (sales and purchases) and not single:
         return None
     currency = next((found[1] for found in (sales, purchases, single) if found and found[1]), None)
 
-    def share(amount, r):
-        return amount * r / (100 + r) if inclusive else amount * r / 100
+    def share(amount, r, item="sales"):
+        included = treatment.get(item, inclusive)
+        return amount * r / (100 + r) if included else amount * r / 100
 
-    def formula(r):
-        return f"× {r:f} ÷ (100 + {r:f})" if inclusive else f"× {r:f} ÷ 100"
+    def formula(r, item="sales"):
+        return f"× {r:f} ÷ (100 + {r:f})" if treatment.get(item, inclusive) else f"× {r:f} ÷ 100"
 
-    treatment = "including" if inclusive else "excluding"
     rates_text = (f"a single rate of {rate_out:f}%" if rate_out == rate_in
                   else f"{rate_out:f}% on sales and {rate_in:f}% on purchases")
-    notes = [f"The amounts are taken as {treatment} VAT, as stated, at {rates_text}."]
+    from app.orchestration.source_taxonomy import detect_jurisdictions
+    no_country = not detect_jurisdictions(q, infer_from_tax_terms=False)
+    if treatment:
+        stated = (f"sales {'including' if treatment['sales'] else 'excluding'} VAT and purchases "
+                  f"{'including' if treatment['purchases'] else 'excluding'} VAT")
+        notes = [f"The amounts are taken as stated, {stated}, at {rates_text}."]
+    else:
+        notes = [f"The amounts are taken as {'including' if inclusive else 'excluding'} VAT, as stated, at {rates_text}."]
     if sales and purchases:
         sales_returns = _find_value(q, ('sales returns', 'sales return'))
         purchase_returns = _find_value(q, ('purchase returns', 'purchase return', 'purchases returns'))
@@ -506,19 +622,34 @@ def vat_amounts(query: str) -> CalculationResult | None:
         if net_sales < 0 or net_purchases < 0:
             return CalculationResult(matched=True, status='clarification_required', error_code='INVALID_RETURNS',
                                      message='Returns exceed the corresponding supplied sales or purchases; please check those inputs.')
-        output, input_vat = share(net_sales, rate_out), share(net_purchases, rate_in)
-        payable = output - input_vat
+        output, input_vat = share(net_sales, rate_out, "sales"), share(net_purchases, rate_in, "purchases")
+        recoverable = input_vat * recovery / 100 if recovery is not None else input_vat
+        payable = output - recoverable
         outputs = [
             CalculationOutput(name="output_vat_on_sales", value=output, display_value=_money(output, currency), kind="money"),
             CalculationOutput(name="input_vat_on_purchases", value=input_vat, display_value=_money(input_vat, currency), kind="money"),
-            CalculationOutput(name="vat_payable" if payable >= 0 else "vat_repayable", value=abs(payable),
-                              display_value=_money(abs(payable), currency), kind="money"),
         ]
-        steps = [f"Output VAT = {_money(net_sales, currency)} {formula(rate_out)} = {_money(output, currency)}",
-                 f"Input VAT = {_money(net_purchases, currency)} {formula(rate_in)} = {_money(input_vat, currency)}",
-                 f"VAT {'payable' if payable >= 0 else 'repayable'} = {_money(output, currency)} − {_money(input_vat, currency)} = {_money(abs(payable), currency)}"]
-        notes.append("The input tax amount is calculated from the supplied figures and rates. "
-                     "This arithmetic does not establish legal eligibility or recoverability; no external eligibility assessment has been made.")
+        if recovery is not None:
+            outputs.append(CalculationOutput(name="recoverable_input_vat", value=recoverable,
+                                             display_value=_money(_penny(recoverable), currency), kind="money"))
+        outputs.append(CalculationOutput(name="vat_payable" if payable >= 0 else "vat_repayable", value=abs(payable),
+                                         display_value=_money(abs(_penny(output) - _penny(recoverable)), currency),
+                                         kind="money"))
+        steps = [f"Output VAT = {_money(net_sales, currency)} {formula(rate_out, 'sales')} = {_money(output, currency)}",
+                 f"Input VAT = {_money(net_purchases, currency)} {formula(rate_in, 'purchases')} = {_money(input_vat, currency)}",
+                 *([f"Recoverable input VAT = {_money(input_vat, currency)} × {recovery:f}% = {_money(_penny(recoverable), currency)}"]
+                   if recovery is not None else []),
+                 f"VAT {'payable' if payable >= 0 else 'repayable'} = {_money(output, currency)} − {_money(_penny(recoverable), currency)} = {_money(abs(_penny(output) - _penny(recoverable)), currency)}"]
+        if _penny(output) != output or _penny(recoverable) != recoverable:
+            notes.append(_TIE_NOTE)
+        # In the question's own tax: a GST answer said "valid VAT invoices".
+        gst = bool(re.search(r"\bgst\b", q, re.I) and not re.search(r"\bvat\b", q, re.I))
+        tax, credit = ("GST", "input tax credit") if gst else ("VAT", "input VAT")
+        share_text = f"all of the {credit}" if recovery is None else f"{recovery:f}% of the {credit}, as you stated,"
+        notes.append(f"The {'payable' if payable >= 0 else 'repayable'} figure assumes {share_text} is recoverable "
+                     "(the purchases are used for taxable supplies, valid tax invoices are held and nothing is "
+                     f"blocked) and that there are no other {tax} adjustments for the period. This arithmetic does not "
+                     "establish legal eligibility or recoverability; no eligibility assessment has been made.")
         inputs = [_supplied('gross_sales', gross_sales, currency), _supplied('gross_purchases', gross_purchases, currency),
                   _supplied('sales_rate', rate_out, kind='percentage'), _supplied('purchases_rate', rate_in, kind='percentage')]
         if sales_returns or purchase_returns:
@@ -546,20 +677,41 @@ def vat_amounts(query: str) -> CalculationResult | None:
                 notes.append(f'{label} ledger {_money(reported[0], currency)} '
                              + ('matches' if reported[0] == computed else 'does not match')
                              + f' the calculated {_money(computed, currency)}.')
+        if no_country:
+            notes.append(_NO_COUNTRY_NOTE)
         result = _success_with_notes(["vat_liability"], outputs, steps, notes)
         result.inputs = inputs
         return result
     amount = single[0]
     vat = share(amount, rate)
+    if single is purchases and (recovery is not None or re.search(r"\breclaim\w*|\brecover\w*|\binput (?:vat|tax)\b", q, re.I)):
+        notes.append("Whether this VAT can be reclaimed depends on the purchase being used for taxable supplies and a "
+                     "valid VAT invoice being held; the calculation does not confirm that.")
     other = amount - vat if inclusive else amount + vat
-    outputs = [CalculationOutput(name="vat_amount", value=vat, display_value=_money(vat, currency), kind="money"),
+    # The VAT is rounded to the penny and the other figure follows from it, so
+    # the figures shown add up to the amount given: £99.99 including VAT was
+    # shown as £16.67 VAT and £83.33 net, which make £100.00 (24 Oct 2026).
+    # The exact values are kept for checking.
+    shown_vat = _penny(vat)
+    shown_other = amount - shown_vat if inclusive else amount + shown_vat
+    outputs = [CalculationOutput(name="vat_amount", value=vat, display_value=_money(shown_vat, currency), kind="money"),
                CalculationOutput(name="amount_excluding_vat" if inclusive else "total_including_vat", value=other,
-                                 display_value=_money(other, currency), kind="money")]
-    steps = [f"VAT = {_money(amount, currency)} {formula(rate)} = {_money(vat, currency)}",
-             (f"Amount excluding VAT = {_money(amount, currency)} − {_money(vat, currency)} = {_money(other, currency)}" if inclusive
-              else f"Total including VAT = {_money(amount, currency)} + {_money(vat, currency)} = {_money(other, currency)}")]
+                                 display_value=_money(shown_other, currency), kind="money")]
+    steps = [f"VAT = {_money(amount, currency)} {formula(rate)} = {_money(shown_vat, currency)}",
+             (f"Amount excluding VAT = {_money(amount, currency)} − {_money(shown_vat, currency)} = {_money(shown_other, currency)}" if inclusive
+              else f"Total including VAT = {_money(amount, currency)} + {_money(shown_vat, currency)} = {_money(shown_other, currency)}")]
+    if shown_vat != vat:
+        notes.append(_TIE_NOTE)
+    if recovery is not None and single is purchases:
+        recoverable_single = vat * recovery / 100
+        outputs.append(CalculationOutput(name="recoverable_input_vat", value=recoverable_single,
+                                         display_value=_money(_penny(recoverable_single), currency), kind="money"))
+        steps.append(f"Recoverable input VAT = {_money(shown_vat, currency)} × {recovery:f}% = "
+                     f"{_money(_penny(recoverable_single), currency)}")
     if inclusive:
         notes.append('The inclusive amount already contains VAT. Multiplying it by the rate overstates VAT; use rate ÷ (100 + rate) instead.')
+    if no_country:
+        notes.append(_NO_COUNTRY_NOTE)
     result = _success_with_notes(["vat_from_inclusive" if inclusive else "vat_on_net"], outputs, steps, notes)
     result.inputs = [_supplied('amount',amount,currency),_supplied('vat_rate',rate,kind='percentage')]
     return result
@@ -1056,6 +1208,70 @@ def _supplied_as_value(query: str, formula: str) -> bool:
     ))
 
 
+_PRESENT_VALUE = re.compile(
+    rf"\bpresent value of\s+(?P<symbol>[£$€₹])?\s*(?:(?P<code>GBP|USD|EUR|INR|AED)\s*)?(?P<amount>{_NUMBER_TEXT})"
+    rf"(?:\s+[a-z]+){{0,3}}?\s+(?:in|after)\s+(?P<years>\d+)\s+years?\b[^.?%]{{0,40}}?(?P<rate>\d+(?:\.\d+)?)\s*%",
+    re.I)
+
+
+def present_value(query: str) -> CalculationResult | None:
+    """The present value of one amount received after whole years, discounted
+    annually at a stated rate: amount ÷ (1 + rate)^years. Left to the model's
+    calculator call before, with no deterministic result to check it by."""
+    match = _PRESENT_VALUE.search(query or "")
+    if not match:
+        return None
+    amount, years, rate = _decimal(match.group("amount")), int(match.group("years")), _decimal(match.group("rate"))
+    if amount is None or rate is None or not 0 < years <= 100 or not 0 <= rate < 100:
+        return None
+    currency = match.group("code").upper() if match.group("code") else _CURRENCY_SYMBOLS.get(match.group("symbol") or "")
+    factor = (1 + rate / 100) ** years
+    value = amount / factor
+    result = _success_with_notes(
+        ["present_value"],
+        [CalculationOutput(name="present_value", value=value, display_value=_money(value, currency), kind="money"),
+         CalculationOutput(name="discount_factor", value=1 / factor,
+                           display_value=f"{(1 / factor).quantize(Decimal('0.000001'), rounding=ROUND_HALF_UP)}")],
+        [f"Present value = {_money(amount, currency)} ÷ (1 + {rate:f}%)^{years} = {_money(amount, currency)} ÷ "
+         f"{factor.quantize(Decimal('0.000001'), rounding=ROUND_HALF_UP)} = {_money(value, currency)}"],
+        [f"Discounted annually at {rate:f}% for {years} whole year(s), the amount received at the end of year {years}."])
+    result.inputs = [_supplied("future_amount", amount, currency), _supplied("discount_rate", rate, kind="percentage"),
+                     _supplied("years", Decimal(years), kind="years")]
+    return result
+
+
+_CURRENCY_WORDS = {"pound": "GBP", "pounds": "GBP", "sterling": "GBP", "gbp": "GBP", "dollar": "USD", "dollars": "USD",
+                   "usd": "USD", "euro": "EUR", "euros": "EUR", "eur": "EUR", "rupee": "INR", "rupees": "INR", "inr": "INR"}
+_STATED_FX = re.compile(
+    rf"\bconvert\s+(?P<from_symbol>[£$€₹])\s*(?P<amount>{_NUMBER_TEXT})\s+(?:to|into)\s+(?P<to_word>[a-z]+)\b[^.?]*?"
+    rf"(?P<one_symbol>[£$€₹])\s*1\s*=\s*(?P<per_symbol>[£$€₹])\s*(?P<rate>{_NUMBER_TEXT})", re.I)
+
+
+def stated_rate_conversion(query: str) -> CalculationResult | None:
+    """A conversion at the exchange rate the user states ("at £1 = $1.25"),
+    not a live rate: no lookup, only the arithmetic, in the right direction."""
+    match = _STATED_FX.search(query or "")
+    if not match:
+        return None
+    source = _CURRENCY_SYMBOLS[match.group("from_symbol")]
+    target = _CURRENCY_WORDS.get(match.group("to_word").lower())
+    one, per = _CURRENCY_SYMBOLS[match.group("one_symbol")], _CURRENCY_SYMBOLS[match.group("per_symbol")]
+    amount, rate = _decimal(match.group("amount")), _decimal(match.group("rate"))
+    if not target or amount is None or not rate or {one, per} != {source, target}:
+        return None
+    converted = amount / rate if per == source else amount * rate
+    operation = "÷" if per == source else "×"
+    result = _success_with_notes(
+        ["stated_rate_conversion"],
+        [CalculationOutput(name="converted_amount", value=converted, display_value=_money(converted, target),
+                           kind="money")],
+        [f"{_money(amount, source)} {operation} {rate:f} = {_money(converted, target)}"],
+        [f"Converted at the stated rate of {match.group('one_symbol')}1 = {match.group('per_symbol')}{rate:f}, "
+         "not a live market rate."])
+    result.inputs = [_supplied("amount", amount, source), _supplied("exchange_rate", rate, kind="number")]
+    return result
+
+
 def calculate_from_query(query: str) -> CalculationResult:
     """Recognize and execute supported self-contained accounting calculations.
 
@@ -1087,6 +1303,10 @@ def _calculate_from_query(query: str) -> CalculationResult:
     loan = supplied_loan_payment(q)
     if loan is not None:
         return loan
+    for formula in (present_value, stated_rate_conversion):
+        found = formula(q)
+        if found is not None:
+            return found
     from .investigations import supplied_investigation
     investigation = supplied_investigation(q)
     if investigation is not None:
@@ -1306,8 +1526,11 @@ def _calculate_from_query(query: str) -> CalculationResult:
             steps.append(f"Tax at {rate:f}% = {amount:f} × {rate:f} ÷ 100 = {tax:f}")
         return _success(["supplied_tax"], [], outputs, steps)
 
-    wants_gross_margin = bool(re.search(r"\bgross (?:profit )?margin\b", q, re.I))
     wants_gross_profit = bool(re.search(r"\bgross profit\b", q, re.I))
+    # "What is the gross profit and margin?" got the profit only, labelled
+    # fully answered (27 Oct 2026).
+    wants_gross_margin = bool(re.search(r"\bgross (?:profit )?margin\b", q, re.I)
+                              or re.search(r"\bgross profit\s+(?:and|&|plus)\s+(?:the\s+|its\s+)?(?:gross\s+)?margin\b", q, re.I))
     if (re.search(r'\bsales returns\b',q,re.I)
             and re.search(r'\b(?:operating profit|profit before tax|net sales)\b',q,re.I)):
         # A complete supported statement was attempted above. If its inputs
@@ -1481,9 +1704,14 @@ def _calculate_from_query(query: str) -> CalculationResult:
         if residual is None and re.search(r"\b(?:no|zero) (?:resale|residual|salvage) value\b", q, re.I):
             residual = _supplied("residual_value", Decimal(0), cost.currency if cost else None)
         life = _input(q, "useful_life", kind="years")
-        if life is None and (over := re.search(r"\b(?:over|lasts?|useful life(?: is| of)?)\s+(\d+(?:\.\d+)?)\s+years?\b", q, re.I)):
+        if life is None and (over := re.search(
+                r"\b(?:over|lasts?|(?:useful\s+)?life(?:\s+(?:is|of))?)\s+(\d+(?:\.\d+)?|" + SPELLED_NUMBER_PATTERN + r")[\s-]+years?\b",
+                q, re.I)):
             # "…residual value over 5 years" is the useful life; it was asked for.
-            life = _supplied("useful_life", Decimal(over.group(1)), kind="years")
+            # "over eight years" was asked for too: only digits were read.
+            raw = over.group(1)
+            life = _supplied("useful_life", Decimal(raw) if raw[0].isdigit() else Decimal(spelled_number_to_int(raw)),
+                             kind="years")
         inputs = [item for item in (cost, residual, life) if item]
         missing = [name for name, item in (("asset_cost", cost), ("residual_value", residual), ("useful_life", life)) if not item]
         if missing:
@@ -1576,6 +1804,13 @@ def _calculate_from_query(query: str) -> CalculationResult:
     return CalculationResult()
 
 
+def _label(name: str) -> str:
+    """"vat_amount" as "VAT amount": the tax names keep their capitals."""
+    text = name.replace("_", " ")
+    text = text[:1].upper() + text[1:]
+    return re.sub(r"\b(vat|gst|hmrc|eps|uk|us)\b", lambda m: m.group(1).upper(), text, flags=re.I)
+
+
 def calculation_markdown(result: CalculationResult) -> str:
     if result.status in {"undefined", "clarification_required"}:
         lines = [result.message]
@@ -1590,10 +1825,15 @@ def calculation_markdown(result: CalculationResult) -> str:
             values = {item.name: item.display_value for item in result.outputs}
             lines.extend(['| Item | Original | Revised |', '| --- | --- | --- |'])
             for name in ('net_sales', 'gross_profit', 'operating_profit', 'profit_before_tax'):
-                lines.append(f'| {name.replace("_", " ").title()} | {values["original_" + name]} | {values["revised_" + name]} |')
+                lines.append(f'| {_label(name)} | {values["original_" + name]} | {values["revised_" + name]} |')
         else:
             lines.extend(["| Item | Value |", "| --- | --- |"] )
-            lines.extend(f"| {item.name.replace('_', ' ').title()} | {item.display_value} |" for item in result.outputs)
+            lines.extend(f"| {_label(item.name)} | {item.display_value} |" for item in result.outputs)
+    for table in result.tables:
+        lines.append(f"\n### {table['title']}")
+        lines.append("| " + " | ".join(table["header"]) + " |")
+        lines.append("|" + " --- |" * len(table["header"]))
+        lines.extend("| " + " | ".join(row) + " |" for row in table["rows"])
     if result.notes:
         lines.append("\n### Notes")
         lines.extend(f"- {note}" for note in result.notes)

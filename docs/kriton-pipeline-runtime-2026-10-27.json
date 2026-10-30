@@ -1,0 +1,21 @@
+{
+  "workspace_hash": "1c664d4aa5dd4dcd51d5af99309dcc762c7bf2136b6d2c532b0d2a3448ab1ec6",
+  "version": {
+    "status": 200,
+    "body": {
+      "revision": "development",
+      "commit": "f7f53724438a7c5de3d32da54c9a0bd2c653ec33",
+      "source_hash": "1c664d4aa5dd4dcd51d5af99309dcc762c7bf2136b6d2c532b0d2a3448ab1ec6",
+      "build_id": "development:1c664d4aa5dd4dcd51d5af99309dcc762c7bf2136b6d2c532b0d2a3448ab1ec6",
+      "config_hash": "46137a83bd6a5e4f5d25f6b6c15cb92284754408157bc0b9f2d1a85914feb13f",
+      "captured_at": "2026-10-27T06:25:53.802260+00:00"
+    }
+  },
+  "ready": {
+    "status": 200,
+    "body": {
+      "status": "ready"
+    }
+  },
+  "source_hash_matches": true
+}

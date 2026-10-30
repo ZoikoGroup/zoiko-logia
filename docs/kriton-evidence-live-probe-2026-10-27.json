@@ -1,0 +1,22 @@
+{
+  "plan": "semantic",
+  "results": [
+    {
+      "subject": "Transfer Pricing",
+      "sources": []
+    },
+    {
+      "subject": "Permanent Establishment",
+      "sources": []
+    },
+    {
+      "subject": "Withholding Taxes",
+      "sources": []
+    }
+  ],
+  "search_status": {
+    "configured": true,
+    "paused": true,
+    "reason": "HTTP 432: This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com"
+  }
+}

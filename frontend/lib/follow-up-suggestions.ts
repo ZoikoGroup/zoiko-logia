@@ -131,14 +131,17 @@ const FALLBACK_QUESTIONS = ["Explain this in more detail.", "Give me a grounded 
 
 // Rule 1 — an answer that required user input still missing gets no suggestions.
 function missingInputRule(result: AskKritonResponse): string[] | null {
-  const incomplete = result.outcome !== "answered" && result.outcome !== "clarification_required";
+  const incomplete = result.outcome !== "answered" && result.outcome !== "clarification_required"
+    && result.outcome !== "acknowledged";
   return incomplete ? [] : null;
 }
 
-// Rule 2 — a pending clarification IS the only follow-up.
+// Only explicit actions are clickable. Re-sending a clarification question
+// with Context appended asks the assistant its own question and creates a loop.
+// An acknowledgement offers what to do with the noted context the same way.
 function clarificationPendingRule(result: AskKritonResponse): string[] | null {
-  if (result.outcome !== "clarification_required") return null;
-  return [result.next_action?.message ?? "Please provide more context."];
+  if (result.outcome !== "clarification_required" && result.outcome !== "acknowledged") return null;
+  return result.next_action?.suggestions ?? [];
 }
 
 // Rule 3 — a claim-by-claim review of pasted text (backend review_mode.py).
@@ -159,10 +162,11 @@ function reviewRule(answerText: string): string[] | null {
   // was offered after a review with 0 incorrect and 0 partly confirmed.
   const count = (label: string) => Number(text.match(new RegExp(`(\\d+) ${label}`))?.[1] ?? 0);
   const questions: string[] = [];
+  if (count("correct") + count("partly confirmed") + count("incorrect") === 0) return [];
   if (count("incorrect") + count("partly confirmed") > 0) questions.push(REVIEW_QUESTIONS[0]);
-  questions.push(REVIEW_QUESTIONS[1]);
+  if (count("correct") + count("partly confirmed") > 0) questions.push(REVIEW_QUESTIONS[1]);
   if (count("could not be verified") > 0) questions.push(REVIEW_QUESTIONS[2]);
-  if (questions.length < 3) questions.push("Explain the confirmed rules in more detail.");
+  if (questions.length < 3 && count("correct") > 0) questions.push("Explain the confirmed rules in more detail.");
   return questions;
 }
 
@@ -189,6 +193,7 @@ export function getFollowUpSuggestions(result: AskKritonResponse | null, origina
   if (byOutcome.length > 0 || result.outcome !== "answered") return byOutcome;
 
   const answerText = result.answer?.text ?? "";
+  if (!answerText.trim() || result.answer?.completeness === "none") return [];
 
   return firstMatch([
     () => reviewRule(answerText),

@@ -328,10 +328,41 @@ class GroqAdapter:
                 getattr(e, "status_code", None),
                 model,
             )
+            recovered = await self._recover_text_only(model, messages, e, stage="composition")
+            if recovered is not None:
+                return recovered
             # Type and status only: the provider's error body can carry account
             # identifiers and billing URLs (gateway failure handling still
             # treats this text as a failure, never as an answer).
             return f"[Error connecting to Groq API: {type(e).__name__} status={getattr(e, 'status_code', None)}]"
+
+    async def _recover_text_only(self, model: str, messages: list, exc: BaseException, *, stage: str) -> str | None:
+        """One retry of the original request with no tools declared, for a
+        provider rejection that leaving the tools out may fix
+        (errors.text_only_recovery_reason). The prompt is unchanged, so its
+        retrieved evidence and verified calculations are kept. Returns the
+        answer, or None when the failure is not recoverable or the retry also
+        fails. Both outcomes are logged with a safe reason code only."""
+        from app.domains.model_gateway.errors import text_only_recovery_reason
+        reason = text_only_recovery_reason(exc)
+        if reason is None:
+            return None
+        try:
+            response = await self._create(model=model, temperature=0.0, messages=list(messages) + [{
+                "role": "user",
+                "content": "Charts and tools are unavailable for this answer. Answer in plain text only; do not "
+                           "write chart JSON or call any tool.",
+            }])
+            text = response.choices[0].message.content or ""
+        except Exception as retry_exc:
+            logger.warning("Provider recovery failed: stage=%s reason=%s retry_error=%s status=%s",
+                           stage, reason, type(retry_exc).__name__, getattr(retry_exc, "status_code", None))
+            return None
+        if not text.strip():
+            logger.warning("Provider recovery failed: stage=%s reason=%s retry_error=empty_answer", stage, reason)
+            return None
+        logger.warning("Provider recovery succeeded: stage=%s reason=%s outcome=text_only_answer", stage, reason)
+        return text
 
     async def _create_with_tool_recovery(self, model: str, messages: list):
         """Groq validates a proposed render_chart call against the schema
@@ -412,10 +443,18 @@ class GroqAdapter:
         # "Tool choice is none, but model called a tool" instead of silently
         # ignoring it. Declaring the tool but forbidding its use is what
         # actually stops that.
-        final = await self._create(
-            model=model, messages=follow_up, tools=[CHART_TOOL_SCHEMA], tool_choice="none", temperature=0.0,
-        )
-        final_text = final.choices[0].message.content or ""
+        try:
+            final = await self._create(
+                model=model, messages=follow_up, tools=[CHART_TOOL_SCHEMA], tool_choice="none", temperature=0.0,
+            )
+            final_text = final.choices[0].message.content or ""
+        except Exception as exc:
+            # A failed chart must not take the answer with it: after a waterfall
+            # chart failed validation, the model called the tool again and the
+            # provider rejected the turn (400), losing a whole lease answer.
+            final_text = await self._recover_text_only(model, messages, exc, stage="after_chart")
+            if final_text is None:
+                raise
         if not fences:
             return final_text
         # The validated tool chart is the one that renders: drop any chart the

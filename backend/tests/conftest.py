@@ -33,6 +33,8 @@ def _isolate_external_services(monkeypatch):
     monkeypatch.setenv("EMBEDDING_PROVIDER", "none")
     # Claim verification calls a live model; tests that cover it stub it.
     monkeypatch.setenv("CLAIM_VERIFICATION", "off")
+    # Tests of semantic retrieval/coverage explicitly enable and stub them.
+    monkeypatch.setenv("EVIDENCE_PLANNING", "off")
     # A developer's local .env may skip the setup-fingerprint check for a
     # shared database; tests always run with the production behaviour.
     from app.core.config import get_settings

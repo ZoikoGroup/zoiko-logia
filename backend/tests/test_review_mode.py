@@ -30,8 +30,9 @@ def stubbed(monkeypatch):
     async def judge(claims, evidence, question=""):
         claim = claims[0]
         if "2025" in claim:
+            ref = evidence[0][1:evidence[0].index("]")]
             return claim_verification.VerificationResult(
-                checked=1, ran=True, rejected_ids=[1],
+                checked=1, ran=True, rejected_ids=[1], evidence_refs={1: [ref]},
                 contradicted=[claim_verification.Contradiction(claim, "effective from 1 January 2027")])
         ref = evidence[0][1:evidence[0].index("]")]
         return claim_verification.VerificationResult(checked=1, supported=1, ran=True, evidence_refs={1: [ref]})
@@ -115,7 +116,8 @@ async def test_a_source_stating_a_shorter_form_of_the_rule_is_partly_confirmed(m
             CLAIMS[1]: "IFRS 18 is effective from 1 January 2027"}     # a different date
 
     async def judge(claims, evidence, question=""):
-        return claim_verification.VerificationResult(checked=1, ran=True, rejected_ids=[1], contradicted=[
+        ref = evidence[0][1:evidence[0].index("]")]
+        return claim_verification.VerificationResult(checked=1, ran=True, rejected_ids=[1], evidence_refs={1: [ref]}, contradicted=[
             claim_verification.Contradiction(claims[0], says.get(claims[0], ""))])
     monkeypatch.setattr(claim_verification, "verify_claims", judge)
     review = await review_pasted_text(PASTED_REVIEW)

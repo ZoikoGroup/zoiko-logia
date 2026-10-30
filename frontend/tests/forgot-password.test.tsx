@@ -4,8 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 const auth = vi.hoisted(() => ({ resetPassword: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("@/components/layout/AppHeader", () => ({ BrandMark: () => null }));
-vi.mock("@/services/auth.service", () => ({
-  AuthError: class extends Error {},
+// The page sits in the sign-in template (AuthShell), which reads the auth
+// settings; only the reset call is replaced.
+vi.mock("@/services/auth.service", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/services/auth.service")>()),
   resetPassword: auth.resetPassword,
 }));
 

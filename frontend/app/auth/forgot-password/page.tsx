@@ -2,14 +2,15 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, LockKeyhole, Mail, MailCheck } from "lucide-react";
-import { BrandMark } from "@/components/layout/AppHeader";
+import { LockKeyhole, Mail, MailCheck } from "lucide-react";
+import { AuthShell, TemplateLogo } from "@/components/auth/AuthCard";
 import { AuthError, resetPassword } from "@/services/auth.service";
 
 type Step = "email" | "sent";
 
 const RESEND_SECONDS = 60;
-const input = "h-9 w-full rounded-lg border bg-soft pl-10 pr-3 text-sm text-ink placeholder:text-muted outline-none focus:border-brand";
+const input = "h-9 w-full rounded-lg border border-line bg-white pl-10 pr-3 text-sm outline-none";
+const primary = "inline-flex h-10 w-full items-center justify-center rounded-lg bg-[#F57A14] px-4 text-sm font-bold text-white shadow-[0_10px_24px_rgba(245,122,20,0.25)] transition-colors hover:bg-[#DD6A0C] disabled:opacity-60";
 
 /** Forgot password: Supabase emails a reset link (its own mailer — no
  * third-party email API), which opens /auth/reset-password signed in for the
@@ -52,72 +53,66 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <main className="flex min-h-screen w-full items-center justify-center bg-bg px-5 py-10 text-ink">
-      <div className="relative w-full max-w-md">
-        <div className="relative overflow-hidden rounded-2xl border border-line bg-panel p-5 shadow-[0_18px_50px_rgba(11,95,122,0.10)] sm:p-6">
-          <div className="mb-3 flex items-center gap-3">
-            <BrandMark className="h-9 w-9" />
-            <div>
-              <p className="text-sm font-bold text-ink">ZoikoLogia</p>
-              <p className="text-xs text-muted">Governance intelligence workspace</p>
-            </div>
-          </div>
+    <AuthShell tab="reset">
+      <div className="p-5 sm:p-6">
+        <div className="mb-3 text-center">
+          <TemplateLogo />
+        </div>
 
-          {step === "email" && (
-            <>
-              <h2 className="text-2xl font-bold tracking-normal text-ink">Reset your password</h2>
-              <p className="mt-1.5 text-sm leading-6 text-muted">Enter your email and we&apos;ll send you a link to reset your password.</p>
-              <form onSubmit={sendLink} className="mt-3 space-y-2">
-                <label htmlFor="reset-email" className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">Email</label>
+        {step === "email" && (
+          <>
+            <h2 className="text-center text-2xl font-extrabold tracking-tight text-ink">Reset your password</h2>
+            <p className="mt-0.5 text-center text-sm text-muted">Enter your email and we&apos;ll send you a link to reset your password.</p>
+            <form onSubmit={sendLink} className="mt-4 space-y-2.5">
+              <div>
+                <label htmlFor="reset-email" className="mb-1 block text-xs font-medium text-[#111827]">Email</label>
                 <div className="relative">
                   <Mail size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-                  <input id="reset-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="sarah@company.com"
-                    autoComplete="email" className={`${input} border-line`} />
+                  <input id="reset-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@company.com"
+                    autoComplete="email" className={input} />
                 </div>
-                {error && <p role="alert" className="rounded-lg border border-bad/25 bg-bad/10 px-3 py-2 text-xs font-medium text-bad">{error}</p>}
-                <button type="submit" disabled={busy}
-                  className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-ink px-4 text-sm font-bold text-panel shadow-[0_12px_28px_rgba(21,25,34,0.18)] transition-colors hover:bg-brand disabled:opacity-60">
-                  {busy ? "Sending link…" : <>Send reset link <ArrowRight size={16} /></>}
-                </button>
-              </form>
-              <p className="mt-3 text-center text-sm text-muted">
-                Remembered it?{" "}
-                <button type="button" onClick={() => router.push("/login")} className="font-semibold text-brand hover:underline">Sign in</button>
-              </p>
-            </>
-          )}
-
-          {step === "sent" && (
-            <>
-              <div className="mb-3 flex items-center gap-2 rounded-lg border border-brand/20 bg-brand/10 px-3 py-2 text-xs font-semibold text-brand">
-                <MailCheck size={14} /> Check your email
               </div>
-              <h2 className="text-2xl font-bold tracking-normal text-ink">Reset link sent</h2>
-              <p className="mt-1.5 text-sm leading-6 text-muted">
-                If an account exists for <span className="font-semibold text-ink">{email.trim()}</span>, we sent a link to reset
-                your password. Open it in this browser to choose a new password. Check spam if you don&apos;t see it.
-              </p>
-              {notice && <p role="status" className="mt-3 rounded-lg border border-brand/20 bg-brand/10 px-3 py-2 text-xs font-medium text-brand">{notice}</p>}
-              {error && <p role="alert" className="mt-3 rounded-lg border border-bad/25 bg-bad/10 px-3 py-2 text-xs font-medium text-bad">{error}</p>}
-              <button type="button" onClick={() => router.push("/login")}
-                className="mt-3 inline-flex h-9 w-full items-center justify-center rounded-lg bg-ink px-4 text-sm font-bold text-panel shadow-[0_12px_28px_rgba(21,25,34,0.18)] transition-colors hover:bg-brand">
-                Back to sign in
+              {error && <p role="alert" className="rounded-lg border border-bad/25 bg-bad/10 px-3 py-2 text-xs font-medium text-bad">{error}</p>}
+              <button type="submit" disabled={busy} className={primary}>
+                {busy ? "Sending link…" : "Send reset link"}
               </button>
-              <div className="mt-3 flex items-center justify-between text-sm">
-                <button type="button" onClick={() => { setStep("email"); setError(""); setNotice(""); }} className="font-semibold text-brand hover:underline">Use a different email</button>
-                <button type="button" disabled={cooldown > 0 || busy} onClick={() => sendLink()} className="font-semibold text-brand hover:underline disabled:text-muted disabled:no-underline">
-                  {cooldown > 0 ? `Resend link in ${cooldown}s` : "Resend link"}
-                </button>
-              </div>
-            </>
-          )}
+            </form>
+            <p className="mt-3 text-center text-sm text-muted">
+              Remembered it?{" "}
+              <button type="button" onClick={() => router.push("/login")} className="ml-1 font-bold text-brand hover:underline">Log In</button>
+            </p>
+          </>
+        )}
 
-          <div className="mt-5 flex items-center justify-center gap-1.5">
-            <LockKeyhole size={14} className="text-muted" />
-            <span className="text-xs text-muted">Reset links are sent by email only, work once and expire.</span>
-          </div>
+        {step === "sent" && (
+          <>
+            <div className="mb-3 flex items-center gap-2 rounded-lg border border-brand/20 bg-brand/10 px-3 py-2 text-xs font-semibold text-brand">
+              <MailCheck size={14} /> Check your email
+            </div>
+            <h2 className="text-center text-2xl font-extrabold tracking-tight text-ink">Reset link sent</h2>
+            <p className="mt-1.5 text-sm leading-6 text-muted">
+              If an account exists for <span className="font-semibold text-ink">{email.trim()}</span>, we sent a link to reset
+              your password. Open it in this browser to choose a new password. Check spam if you don&apos;t see it.
+            </p>
+            {notice && <p role="status" className="mt-3 rounded-lg border border-brand/20 bg-brand/10 px-3 py-2 text-xs font-medium text-brand">{notice}</p>}
+            {error && <p role="alert" className="mt-3 rounded-lg border border-bad/25 bg-bad/10 px-3 py-2 text-xs font-medium text-bad">{error}</p>}
+            <button type="button" onClick={() => router.push("/login")} className={`mt-3 ${primary}`}>
+              Back to Log In
+            </button>
+            <div className="mt-3 flex items-center justify-between text-sm">
+              <button type="button" onClick={() => { setStep("email"); setError(""); setNotice(""); }} className="font-semibold text-brand hover:underline">Use a different email</button>
+              <button type="button" disabled={cooldown > 0 || busy} onClick={() => sendLink()} className="font-semibold text-brand hover:underline disabled:text-muted disabled:no-underline">
+                {cooldown > 0 ? `Resend link in ${cooldown}s` : "Resend link"}
+              </button>
+            </div>
+          </>
+        )}
+
+        <div className="mt-4 flex items-center justify-center gap-1.5">
+          <LockKeyhole size={14} className="text-muted" />
+          <span className="text-xs text-muted">Reset links are sent by email only, work once and expire.</span>
         </div>
       </div>
-    </main>
+    </AuthShell>
   );
 }

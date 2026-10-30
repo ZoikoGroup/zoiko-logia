@@ -29,7 +29,7 @@ import html
 import logging
 import os
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from dataclasses import asdict, dataclass
 
 from app.domains.calculations.schemas import LiveObservation
@@ -119,7 +119,7 @@ except Exception:                   # pragma: no cover - package absent/broken
 # Bumped whenever WebSource's field set changes. Entries written by an older
 # build then simply miss, instead of deserialising into a half-populated
 # object that looks valid and cites wrongly.
-_CACHE_KEY_PREFIX = "websearch:v4:"
+_CACHE_KEY_PREFIX = "websearch:v10:"
 
 # DB 3: 0 and 1 carry Celery's queue and results, 2 the rate limiter. A
 # separate DB means flushing this cache can never drop a queued job.
@@ -306,6 +306,7 @@ def _spread_across_organisations(
 # relevant part (tables kept row by row) is passed on instead.
 _PAGE_TIMEOUT_SECONDS = 4.0
 _PAGE_MAX_BYTES = 2_000_000
+_PDF_MAX_BYTES = 8_000_000
 _PAGE_EXCERPT_CHARS = 3000
 _OFFICIAL_HOST = re.compile(
     r"(?:^|\.)(?:gov|gov\.[a-z]{2}|gc\.ca|nic\.in|europa\.eu|ifrs\.org|fasb\.org|"
@@ -423,8 +424,9 @@ def _relevant_excerpt(text: str, query: str, limit: int = _PAGE_EXCERPT_CHARS) -
         term: 3.0 / max(1.0, sum(1 for line in lowered if term in line) / 4)
         for term in terms
     }
+    wants_figure = bool(_WANTS_FIGURE.search(query))
     scores = [
-        sum(weight[term] for term in terms if term in line) + (2 if _FIGURE.search(original) else 0)
+        sum(weight[term] for term in terms if term in line) + (2 if wants_figure and _FIGURE.search(original) else 0)
         for line, original in zip(lowered, lines)
     ]
     starts = range(0, max(1, len(lines) - _EXCERPT_WINDOW + 1), 3)
@@ -455,12 +457,68 @@ async def _read_html(client: httpx.AsyncClient, url: str) -> str:
         return bytes(body).decode(response.encoding or "utf-8", errors="replace")
 
 
+def _publication_pdf(markup: str, url: str) -> str | None:
+    """Follow a publication's explicit download, never an arbitrary PDF link."""
+    from app.orchestration.publication_catalogue import known_publication_download
+    known = known_publication_download(url)
+    if known:
+        return known
+    matches = re.findall(r'<meta\b[^>]*\bname=["\']citation_pdf_url["\'][^>]*\bcontent=["\']([^"\']+)', markup, re.I)
+    matches += [href for href, label in re.findall(r'<a\b[^>]*\bhref=["\']([^"\']+)["\'][^>]*>(.*?)</a>', markup, re.I | re.S)
+                if re.search(r'\bdownload\b', _cell_text(label), re.I) and re.search(r'\.pdf(?:[?#]|$)', href, re.I)]
+    for href in matches:
+        target = urljoin(url, html.unescape(href))
+        if urlparse(target).scheme == "https" and organisation_key(target, []) == organisation_key(url, []):
+            return target
+    return None
+
+
 async def _page_excerpt(client: httpx.AsyncClient, url: str, query: str) -> str:
     try:
         # httpx's timeout is per read, so a slowly trickling page could run
         # far past it; this bounds the whole read.
-        html = await asyncio.wait_for(_read_html(client, url), timeout=_PAGE_TIMEOUT_SECONDS)
-        return _relevant_excerpt(_html_to_text(html), query) if html else ""
+        async def read(target: str, *, follow_publication: bool = True) -> str:
+            async with client.stream("GET", target) as response:
+                if response.status_code != 200:
+                    known = _publication_pdf("", target) if follow_publication else None
+                    if known:
+                        document = await read(known, follow_publication=False)
+                        return f"[Publication document: {known}]\n{document}" if document else ""
+                    return ""
+                content_type = response.headers.get("content-type", "").lower()
+                pdf = "application/pdf" in content_type
+                if not pdf and "html" not in content_type:
+                    return ""
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > (_PDF_MAX_BYTES if pdf else _PAGE_MAX_BYTES):
+                        return ""
+                if not pdf:
+                    markup = bytes(body).decode(response.encoding or "utf-8", errors="replace")
+                    excerpt = _relevant_excerpt(_html_to_text(markup), query)
+                    linked = _publication_pdf(markup, target) if follow_publication else None
+                    if linked:
+                        try:
+                            document = await read(linked, follow_publication=False)
+                            if document:
+                                return f"[Publication document: {linked}]\n{document}"
+                        except Exception:
+                            pass
+                    return excerpt
+
+                def extract() -> str:
+                    from app.orchestration.pdf_evidence import read_pdf_pages
+                    pages = []
+                    for index, text in read_pdf_pages(bytes(body)):
+                        excerpt = _relevant_excerpt(text, query, limit=1800)
+                        if excerpt:
+                            pages.extend(f"[PDF page {index}] {line}" for line in excerpt.splitlines())
+                    return _relevant_excerpt("\n".join(pages), query)
+
+                return await asyncio.to_thread(extract)
+
+        return await asyncio.wait_for(read(url), timeout=_PAGE_TIMEOUT_SECONDS)
     except Exception:  # noqa: BLE001 — a page that can't be read keeps its search snippet
         return ""
 
@@ -511,6 +569,10 @@ _HISTORY_PAGE = re.compile(r"\b(?:previous changes|historic(?:al)? (?:rates|chan
 _ASKS_ABOUT_HISTORY = re.compile(
     r"\b(?:previous(?:ly)?|historic(?:al)?|history|used to|old|former(?:ly)?|before|in (?:19|20)\d\d|(?:19|20)\d\d)\b", re.I,
 )
+_PROVISIONAL_SOURCE = re.compile(
+    r"\b(?:exposure draft|discussion draft|consultation (?:draft|responses?)|comment letters?|"
+    r"comments? (?:from|by)|proposed accounting standards? update)\b", re.I)
+_ASKS_ABOUT_PROPOSALS = re.compile(r"\b(?:draft|proposed|proposal|consultation|comment letters?)\b", re.I)
 
 
 _QUERY_FILLER = re.compile(
@@ -534,6 +596,22 @@ def _is_relevant(query: str, source: WebSource) -> bool:
     kept when its title shares a meaningful word with the question, or its
     title and snippet together share two."""
     wanted = _terms(query)
+    # Task words say what to do with a subject, not which subject a page
+    # covers. A match on "audit" alone used to admit an organisation's
+    # internal-audit page for a permanent-establishment tax question.
+    task_words = _terms("audit focus practical preparation steps requirements documentation compliance "
+                        "guidance official explain compare review purpose overview source evidence")
+    core = wanted - task_words
+    content_terms = _terms(f"{source.title} {source.snippet}")
+    if core and len(core & content_terms) < min(2, len(core)) and not _spells_out_abbreviation(core, f"{source.title} {source.snippet}"):
+        return False
+    from app.orchestration.framework_scope import framework_families
+    requested_frameworks = framework_families(query)
+    found_frameworks = framework_families(f"{source.title} {source.snippet}")
+    if len(requested_frameworks) == 1 and found_frameworks and not requested_frameworks & found_frameworks:
+        # Preserve scarce result slots for the requested framework instead
+        # of fetching foreign rules only to withhold them at final release.
+        return False
     # A page about a different procedure on the same tax (a VAT refund page
     # for a VAT-return question) — see app/orchestration/procedures.py.
     if names_another_procedure(query, source.title):
@@ -542,6 +620,16 @@ def _is_relevant(query: str, source: WebSource) -> bool:
     # states old figures as plainly as current ones: a "when must I leave
     # cash accounting?" answer gave the old £437,500 tolerance as the rule.
     if _HISTORY_PAGE.search(source.title) and not _ASKS_ABOUT_HISTORY.search(query):
+        return False
+    if _PROVISIONAL_SOURCE.search(source.title) and not _ASKS_ABOUT_PROPOSALS.search(query):
+        # An authority's website can host third-party submissions. Hosting
+        # does not make an academic comment or draft an issued requirement.
+        return False
+    from app.orchestration.source_taxonomy import TAX, ACCOUNTING
+    if (detect_topics(query) == {TAX} and ACCOUNTING in detect_topics(source.title)
+            and _STANDARD_REFERENCE.search(source.title) and not _STANDARD_REFERENCE.search(query)):
+        # A draft revenue-recognition standard is not authority for an
+        # international-tax claim just because both discuss ownership.
         return False
     return (bool(wanted & _terms(source.title)) or len(wanted & _terms(f"{source.title} {source.snippet}")) >= 2
             or _spells_out_abbreviation(wanted, f"{source.title} {source.snippet}"))
@@ -689,6 +777,21 @@ def tavily_status() -> dict:
             "reason": _tavily_paused["reason"] if paused else ""}
 
 
+def retrieval_failure_note() -> str:
+    """Expose an operational failure without echoing provider error bodies."""
+    status = tavily_status()
+    if not status["paused"]:
+        return ""
+    if re.match(r"HTTP 43[23]:", status["reason"]):
+        cause = "the primary search provider has exhausted its configured usage limit"
+    elif re.match(r"HTTP 40[13]:", status["reason"]):
+        cause = "the primary search provider rejected its configured credentials"
+    else:
+        cause = "the primary search provider is temporarily rate limited"
+    return ("Live source retrieval is unavailable or degraded because " + cause
+            + ". Missing evidence is a retrieval limitation, not proof that the claim is false.")
+
+
 _GOVUK_SEARCH_URL = "https://www.gov.uk/api/search.json"
 
 
@@ -732,6 +835,16 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pa
         return cached
     started = asyncio.get_running_loop().time()
 
+    async def within_budget(awaitable, default):
+        remaining = _SEARCH_BUDGET_SECONDS - (asyncio.get_running_loop().time() - started)
+        if remaining <= 0:
+            awaitable.close()
+            return default
+        try:
+            return await asyncio.wait_for(awaitable, timeout=remaining)
+        except asyncio.TimeoutError:
+            return default
+
     base = _searxng_url()
     # Topic narrows the allowlist from "every body in this jurisdiction" to
     # the ones with authority over THIS question (source_taxonomy.py). An
@@ -750,10 +863,10 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pa
     }
     # Tavily returns None when it is not configured or failed; SearXNG
     # (self-hosted) is then the backup.
-    results = await _tavily_results(query, domains)
+    results = await within_budget(_tavily_results(query, domains), None)
     used_backup = results is None
     if used_backup:
-        results = await _searxng_results(base, params)
+        results = await within_budget(_searxng_results(base, params), [])
 
     def relevant(raw: list[dict]) -> list[WebSource]:
         """Entries with a usable URL that are actually about the question."""
@@ -788,7 +901,7 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pa
     # terms, restricted to the same official sites.
     keywords = _keyword_query(query)
     if used_backup and not trusted and keywords and keywords.lower() != query.lower():
-        retry = await _searxng_results(base, {**params, "q": f"{keywords} {sites}".strip() if sites else keywords})
+        retry = await within_budget(_searxng_results(base, {**params, "q": f"{keywords} {sites}".strip() if sites else keywords}), [])
         retry_parsed = relevant(retry)
         retry_trusted = [s for s in retry_parsed if matches_allowlist(s.url, domains)]
         if retry_trusted or not parsed:
@@ -797,12 +910,12 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pa
         # The site-restricted search found nothing at all (a concept question
         # such as "cash vs accrual accounting" restricted to ifrs.org). One
         # unrestricted search; results stay untrusted unless on the allowlist.
-        parsed = relevant(await _searxng_results(base, {**params, "q": keywords or query}))
+        parsed = relevant(await within_budget(_searxng_results(base, {**params, "q": keywords or query}), []))
         trusted = [s for s in parsed if matches_allowlist(s.url, domains)]
     if not trusted and any(domain == "gov.uk" or domain.endswith(".gov.uk") for domain in domains):
         # Official UK fallback: GOV.UK's own search, by key terms first.
         for govuk_query in dict.fromkeys(q for q in (keywords, query) if q):
-            govuk = relevant(await _govuk_results(govuk_query))
+            govuk = relevant(await within_budget(_govuk_results(govuk_query), []))
             govuk_trusted = [s for s in govuk if matches_allowlist(s.url, domains)]
             if govuk_trusted:
                 parsed, trusted = govuk + parsed, govuk_trusted
@@ -849,7 +962,7 @@ async def web_search(query: str, jurisdiction: str = "", limit: int = 5, read_pa
     # pages for "due", and caching them served that junk (filtered to no
     # sources downstream) for the whole TTL.
     if trusted:
-        await _cache_put(cache_key, selected)
+        await within_budget(_cache_put(cache_key, selected), None)
     return selected
 
 
@@ -930,6 +1043,10 @@ def question_count(query: str) -> int:
 
 def sub_questions(query: str) -> list[str]:
     """The separate questions in a message, or [query] when it holds one."""
+    from app.orchestration.research_parts import structured_research_parts
+    structured = structured_research_parts(query)
+    if structured:
+        return structured
     if is_pasted_material(query):
         return [query]
     parts = [part.strip() for part in _QUESTION_BOUNDARY.split(query.strip()) if part.strip()]
@@ -981,8 +1098,17 @@ async def web_search_each(query: str, jurisdiction: str = "", limit: int = 5) ->
     """web_search for a single question; for a message with several questions,
     one search per question (bounded concurrency), merged without duplicates
     so every part of the answer has sources of its own."""
-    query = search_focus(query)
-    parts = evidence_search_queries(query)
+    from app.orchestration.research_parts import structured_research_parts, targeted_retry_query
+    from app.orchestration.evidence_planning import plan_evidence_search
+    original_query = query
+    # Split before shortening: focusing a pasted table on its first/last
+    # lines used to erase its middle rows before a search was even planned.
+    if not structured_research_parts(query):
+        query = search_focus(query)
+    plan = await plan_evidence_search(original_query, evidence_search_queries(query))
+    parts = [subject.query for subject in plan.subjects]
+    alternatives = {subject.query: subject.alternative for subject in plan.subjects}
+    logger.info("Evidence search plan method=%s subjects=%s failure=%s", plan.method, len(parts), plan.failure)
     hosted = bool(_tavily_key())
     gate = asyncio.Semaphore(_HOSTED_SUB_SEARCH_CONCURRENCY if hosted else _SUB_SEARCH_CONCURRENCY)
 
@@ -992,16 +1118,22 @@ async def web_search_each(query: str, jurisdiction: str = "", limit: int = 5) ->
         part_jurisdiction = named[0] if len(named) == 1 else jurisdiction
         async with gate:
             try:
-                return await asyncio.wait_for(
-                    web_search(part, jurisdiction=part_jurisdiction, limit=limit if len(parts) == 1 else _SOURCES_PER_SUB_QUESTION, read_pages=1),
-                    timeout=_SUB_SEARCH_TIMEOUT_SECONDS,
-                )
+                async def retrieve() -> list[WebSource]:
+                    results = await web_search(part, jurisdiction=part_jurisdiction,
+                                               limit=limit if len(parts) == 1 else _SOURCES_PER_SUB_QUESTION,
+                                               read_pages=1)
+                    if not results and len(parts) > 1:
+                        results = await web_search(alternatives.get(part) or targeted_retry_query(part), jurisdiction=part_jurisdiction,
+                                                   limit=_SOURCES_PER_SUB_QUESTION, read_pages=1)
+                    return results
+
+                return await asyncio.wait_for(retrieve(), timeout=_SUB_SEARCH_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
                 logger.warning("Sub-question search timed out; other parts keep their sources")
                 return []
 
     merged: list[WebSource] = []
-    seen: set[str] = set()
+    positions: dict[str, int] = {}
     from app.orchestration.input_requirements import uk_vat_rules_requested
     from app.orchestration.official_evidence import official_sources
     from app.orchestration.source_taxonomy import detect_jurisdictions
@@ -1018,14 +1150,28 @@ async def web_search_each(query: str, jurisdiction: str = "", limit: int = 5) ->
         searches.insert(0, _uk_vat_rules_source())
     for group in await asyncio.gather(*searches):
         for source in group:
-            if source.url not in seen:
-                seen.add(source.url)
+            key = source.url or source.source_id or source.title
+            if key not in positions:
+                positions[key] = len(merged)
                 merged.append(source)
+            else:
+                index = positions[key]
+                previous = merged[index]
+                if source.snippet and source.snippet not in (previous.snippet or ""):
+                    # One official page may supply a different passage for
+                    # each row. Keep those passages, with a single citation,
+                    # without mutating a cached WebSource shared by requests.
+                    merged[index] = dataclasses.replace(previous, snippet="\n\n".join(
+                        snippet for snippet in (previous.snippet, source.snippet) if snippet))
     return merged
 
 
 def evidence_search_queries(query: str) -> list[str]:
     """Cover the decision rules, not just an application form or narrow FAQ."""
+    from app.orchestration.research_parts import structured_research_parts
+    structured = structured_research_parts(query)
+    if structured:
+        return structured
     if re.search(r"\b(?:vat|gst)\b", query, re.I) and re.search(r"\brates?\b", query, re.I) and not re.search(r"\bregistration\b", query, re.I):
         from app.orchestration.source_taxonomy import detect_jurisdictions
         countries = detect_jurisdictions(query)

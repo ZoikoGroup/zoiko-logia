@@ -134,3 +134,24 @@ def provider_request_failure(exc: BaseException) -> ProviderRequestRejected | No
     if getattr(exc, 'status_code', None) == 429:
         return ProviderRateLimited()
     return None
+
+
+_TOOL_RELATED = re.compile(r"\b(?:tool|function|chart)", re.I)
+
+
+def text_only_recovery_reason(exc: BaseException) -> str | None:
+    """A safe reason code when one retry without tools may recover the answer,
+    else None. A provider 400 after a chart attempt ("Tool choice is none, but
+    model called a tool", tool_use_failed, output_parse_failed) lost two whole
+    lease answers on 28 Oct 2026. Never for a classified failure (spending
+    limit, credentials, size, rate limit, timeout): those are not changed by
+    leaving the tools out. Only the error code is returned, never the body."""
+    if provider_request_failure(exc) is not None or getattr(exc, "status_code", None) != 400:
+        return None
+    body = getattr(exc, "body", None)
+    error = body.get("error", body) if isinstance(body, dict) else None
+    error = error if isinstance(error, dict) else {}
+    code = re.sub(r"[^a-z_]", "", str(error.get("code") or "").lower())[:40]
+    if code in {"tool_use_failed", "output_parse_failed"} or _TOOL_RELATED.search(str(error.get("message") or "")):
+        return code or "tool_related_bad_request"
+    return "bad_request"

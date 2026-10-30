@@ -50,7 +50,7 @@ def test_macro_indicator_detects_economy_not_tax():
 
 
 def test_a_question_may_span_several_topics():
-    assert {PAYROLL, TAX, AUDIT} <= detect_topics("payroll tax audit obligations")
+    assert {PAYROLL, TAX, AUDIT} <= detect_topics("payroll tax and financial-statement audit obligations")
 
 
 def test_word_boundaries_guard_against_substring_matches():

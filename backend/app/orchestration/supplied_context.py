@@ -110,6 +110,11 @@ def _wanted(ask: str) -> Optional[str]:
 def missing_in_supplied_context(query: str, history: Iterable[str] = ()) -> Optional[MissingInContext]:
     """What the request asks for that the material it refers to lacks, or None."""
     text = (query or "").strip()
+    # Current inputs can satisfy the request regardless of what an earlier
+    # answer contains. "Using only these figures" can refer to this message.
+    wanted_here = _wanted(text)
+    if wanted_here == "figures" and len(_AMOUNT.findall(text)) >= 2:
+        return None
     follow_up = _CONTEXT_FOLLOW_UP.match(text)
     if follow_up:
         ask, material = follow_up.group("ask"), follow_up.group("material")
