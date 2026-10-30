@@ -331,7 +331,7 @@ function normaliseMarkdownTables(text: string): string {
     }
 
     if (isRow) {
-      out.push(deindented);
+      out.push(indentSubItemCells(deindented));
       // Close the block when the next line is neither a row nor already blank.
       const next = lines[i + 1];
       const nextIsRow = next !== undefined && TABLE_ROW.test(next.replace(/^\s+(?=\|)/, ""));
@@ -343,6 +343,17 @@ function normaliseMarkdownTables(text: string): string {
   }
 
   return out.join("\n");
+}
+
+/**
+ * A table cell written as a sub-item ("– Rent" under "Operating expenses") is
+ * shown as "Rent", indented, without the dash. Non-breaking spaces, because
+ * Markdown trims ordinary spaces at the start of a cell. A minus amount
+ * ("- 5,000", "- (5,000)"), a lone dash placeholder and the rule line are
+ * left alone.
+ */
+export function indentSubItemCells(row: string): string {
+  return row.replace(/\|(\s*)[–—-]\s+(?=[^\s\d(|])/g, "|$1    ");
 }
 
 // ── Figure toolbar ───────────────────────────────────────────────────────────
