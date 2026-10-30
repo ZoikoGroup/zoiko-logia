@@ -1583,9 +1583,7 @@ _DOMAIN_GATE = (
     "own — that word names how to draw the answer, not what it is about. "
     # QA case E06 ("does a diamond mean approval or a calculation?") was
     # refused as off-topic.
-    "Process documentation used in accounting, audit and internal-control work — "
-    "flowcharts, process sketches and what their symbols mean (e.g. a diamond or a "
-    "rectangle) — IS in scope even without an accounting keyword: answer it. "
+    "Flowcharts, process sketches and what their symbols mean ARE in scope: answer them. "
     "Business and financial arithmetic — percentages, ratios, divisions, growth "
     "rates, margins, interest, currency conversions and checking or correcting a "
     "stated calculation (e.g. 'Correct 200 ÷ 500 = 0.4%') — IS in scope: answer it. "

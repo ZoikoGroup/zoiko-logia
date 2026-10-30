@@ -56,8 +56,8 @@ def test_flowchart_symbol_questions_are_in_scope():
     assert "what their symbols mean" in build_web_grounded_prompt(query, [])
     assert "what their symbols mean" in groq_adapter._SYSTEM_PROMPT
     # Agent mode sends its own shorter system prompt.
-    assert "what their symbols mean" in groq_adapter.KRITON_AGENT_SYSTEM_PROMPT
-    assert "what their symbols mean" in groq_adapter.KRITON_COMPOSITION_SYSTEM_PROMPT
+    assert "flowcharts and what their symbols mean" in groq_adapter.KRITON_AGENT_SYSTEM_PROMPT
+    assert "flowcharts and what their symbols mean" in groq_adapter.KRITON_COMPOSITION_SYSTEM_PROMPT
 
 
 def test_pipeline_keeps_the_restored_steps_wired():
