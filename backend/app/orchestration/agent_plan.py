@@ -100,6 +100,15 @@ _PRACTICE_GUIDANCE = re.compile(
     r"set up|introduce|start|first|organi[sz]e)\b", re.I)
 GENERAL_GUIDANCE_REASON = "practical guidance; general explanation allowed (Decision C)"
 _MULTI_PART = re.compile(r"\?.+\?|\b(and also|as well as|then|also show|plus)\b", re.I)
+# A comment on, or summary of, the earlier answer or the attached files needs
+# nothing fetched or computed. "comment on the above" after three PDFs searched
+# the knowledge base three times, tried the calculator twice and ran out of
+# token budget before writing anything (30 Oct 2026).
+_ABOUT_WHAT_IS_HERE = re.compile(
+    r"^\s*(?:please\s+|can you\s+|could you\s+)?(?:comment on|summari[sz]e|review|critique|give (?:your |me )?"
+    r"(?:comments?|feedback|views?|thoughts) on|what do you think (?:of|about))\s+"
+    r"(?:above|it|them|(?:the|this|these|that|those)(?:\s+above)?(?:\s+(?:answer|response|statements?|summary|"
+    r"report|files?|documents?|results?|table))?)\s*[.!?]?\s*$", re.I)
 
 
 @dataclass(frozen=True)
@@ -157,6 +166,9 @@ _EXCLUDED_SPAN = re.compile(r"\b(?:ignore|ignoring|disregard|disregarding|leave 
 
 def plan_request(question: str, *, has_documents: bool = False, history: bool = False) -> ExecutionPlan:
     q = question or ""
+    if (has_documents or history) and _ABOUT_WHAT_IS_HERE.search(q):
+        return ExecutionPlan(mode="simple", tools=(), reasons=(
+            "comment on the earlier answer or attached files; no tools needed",), write_request=False)
     rule_text = _EXCLUDED_SPAN.sub(" ", q)
     # Figures to work with — not periods ("5 years") or calendar years ("2024").
     numbers = len(_NUMBER.findall(_PERIOD.sub(" ", q)))

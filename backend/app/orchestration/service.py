@@ -208,7 +208,13 @@ _ELLIPTICAL_FOLLOW_UP = re.compile(
     # the margin?" was planned as web research and answered "the sources do
     # not contain the figures" (int-followup-cost-down-paraphrase).
     r"^\s*(?:suppose|assume|imagine|what\s+if)\b|\bwhere\s+does\s+(?:that|this)\s+leave\b|"
-    r"\bon\s+top\s+of\s+that\b",
+    r"\bon\s+top\s+of\s+that\b|"
+    # "comment on the above" after an income statement was planned as new
+    # research without the statement: it searched, calculated new ratios,
+    # used 95,033 tokens and the answer was withheld as unverified.
+    r"^\s*(?:please\s+)?(?:comment\s+on|review|summari[sz]e|critique|explain|"
+    r"give\s+(?:your\s+|me\s+)?(?:comments?|feedback|views?|thoughts)\s+on|what\s+do\s+you\s+think\s+(?:of|about))"
+    r"\s+(?:the\s+)?(?:above|previous|last|your)\b",
     re.I,
 )
 
