@@ -52,6 +52,12 @@ INSTRUCTIONS = (
     "- An income statement, cash flow statement or statement of changes in equity covers a period: head it "
     "\"for the year ended <date>\", never \"as at\". Only a balance sheet is \"as at <date>\".\n"
     "- Label each ratio with the formula it was calculated with.\n"
+    # The same income statement came back with each expense listed in one run
+    # and as a single "Operating expenses 574,000" line in another (30 Oct 2026).
+    "- List every account on its own line under its heading (each operating expense under Operating expenses, "
+    "bank charges and interest under Finance costs, each asset and liability under its group), then the "
+    "heading's subtotal; never show a heading as a single total without its accounts. Write the account name "
+    "alone in the first column, with no leading dash.\n"
 )
 
 # Document 01 §16.2, assurance layer A: the most an unreviewed draft may claim.

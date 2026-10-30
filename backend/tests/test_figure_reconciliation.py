@@ -60,3 +60,29 @@ async def test_a_zero_denominator_is_a_clear_controlled_error():
         assert result.error_code == "invalid_arguments" and "Division by zero" in result.content
     other = await build_default_registry().execute("calculate", {"expression": "2 +* 3"}, granted_permissions=frozenset())
     assert "Division by zero" not in other.content
+
+
+def test_an_amount_marked_k_in_a_thousands_source_is_the_stated_amount():
+    # A waterfall's "Revenue | 10,000 k" was read as 10,000,000 and removed,
+    # so the chart lost its first bar and was not drawn (QA case D03).
+    evidence = "NORTHBRIDGE / INCOME STATEMENT; values USD thousands\nFY2025 Revenue\n10,000"
+    answer = "| Step | Amount (USD k) |\n|---|---|\n| Revenue | 10,000 k |"
+    assert unreconciled_figures(answer, evidence) == []
+    # Without a thousands source, "10,000 k" is still ten million and unverified.
+    assert unreconciled_figures(answer.replace("(USD k)", ""), "FY2025 Revenue 10,000") == ["10,000 k"]
+    # And a thousands source does not make an unstated amount verified.
+    assert unreconciled_figures("| Revenue | 12,000 k |", evidence) == ["12,000 k"]
+
+
+def test_a_whole_shown_as_100_percent_of_itself_is_kept():
+    # "| Revenue | 10 000 | 100.00 % |" removed a waterfall's starting row.
+    evidence = "FY2025 Revenue\n10,000\nFY2025 Cost of goods sold\n(6,200)"
+    assert unreconciled_figures("| Revenue | 10,000 | 100.00% |", evidence) == []
+    # 100% beside an unverified amount, or on its own, is still not evidence.
+    assert unreconciled_figures("| Revenue | 12,000 | 100.00% |", evidence) != []
+    assert unreconciled_figures("Customer retention was 100.00%.", evidence) == ["100.00%"]
+
+
+def test_a_waterfall_is_a_chart_request():
+    from app.domains.model_gateway.agent import chart_requested
+    assert chart_requested("Build a waterfall from FY2025 revenue to net income.")

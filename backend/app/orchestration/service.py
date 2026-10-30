@@ -50,7 +50,9 @@ from app.orchestration.agent_plan import WRITE_REQUEST_NOTICE, plan_request
 from app.orchestration.answer_formatting import renumber_ordered_lists, separate_headings
 from app.orchestration.citation_spans import evidence_by_ref, exact_spans
 from app.orchestration import workflow_state
-from app.orchestration.professional_boundary import CERTIFICATION_REFUSAL, requests_tax_certification
+from app.orchestration.professional_boundary import (
+    CERTIFICATION_REFUSAL, LEDGER_OVERWRITE_REFUSAL, requests_tax_certification, requests_unreviewed_ledger_overwrite,
+)
 from app.orchestration.series_summary import ground_series_summary
 from app.orchestration.retrieve import build_source_bundle
 from app.orchestration.routing_matrix import (
@@ -206,7 +208,13 @@ _ELLIPTICAL_FOLLOW_UP = re.compile(
     # the margin?" was planned as web research and answered "the sources do
     # not contain the figures" (int-followup-cost-down-paraphrase).
     r"^\s*(?:suppose|assume|imagine|what\s+if)\b|\bwhere\s+does\s+(?:that|this)\s+leave\b|"
-    r"\bon\s+top\s+of\s+that\b",
+    r"\bon\s+top\s+of\s+that\b|"
+    # "comment on the above" after an income statement was planned as new
+    # research without the statement: it searched, calculated new ratios,
+    # used 95,033 tokens and the answer was withheld as unverified.
+    r"^\s*(?:please\s+)?(?:comment\s+on|review|summari[sz]e|critique|explain|"
+    r"give\s+(?:your\s+|me\s+)?(?:comments?|feedback|views?|thoughts)\s+on|what\s+do\s+you\s+think\s+(?:of|about))"
+    r"\s+(?:the\s+)?(?:above|previous|last|your)\b",
     re.I,
 )
 
@@ -694,9 +702,13 @@ def _grounded_domain_fallback(query: str, evidence: EvidenceModel, series_ref: s
         if any(edge.type == "exception" for edge in graph.edges):
             return ("Kriton mapped the invoice workflow and the requested exception branches. "
                     "The resolve-and-retry loops are illustrative; check them against your actual dispute and approval procedures.")
+        # The stages as an ordered list too, taken from the same graph so the
+        # list and the drawing cannot disagree (QA case E04 asked for both
+        # and got one sentence above the drawing).
+        stages = "\n".join(f"{number}. {node}" for number, node in enumerate(graph.nodes, 1))
         return (
             f"Kriton mapped the {len(graph.nodes)} supplied accounting-workflow stages in order. "
-            "The validated process visualization below does not add or remove stages."
+            "The validated process visualization below does not add or remove stages.\n\n" + stages
         )
     return None
 
@@ -2080,6 +2092,23 @@ async def ask_kriton(
             safety=SafetyState(risk_level="HIGH", policy_state="blocked"),
             confidence_state=CONF_INSUFFICIENT, source_bundle=None, answer=None,
             next_action=NextAction(type="refusal", message=CERTIFICATION_REFUSAL),
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        )
+        return await finish(response)
+    # Same boundary for a process that lets a model change the approved
+    # ledger with no reviewer (QA case E05, P0).
+    if requests_unreviewed_ledger_overwrite(request.query):
+        await audit_refusal_returned(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, reason="Unreviewed automatic ledger overwrite requested",
+        )
+        response = AskKritonResponse(
+            query_id=query_id, correlation_id=correlation_id,
+            outcome="refused", route=ROUTE_REFUSAL,
+            safety=SafetyState(risk_level="HIGH", policy_state="blocked"),
+            confidence_state=CONF_INSUFFICIENT, source_bundle=None, answer=None,
+            next_action=NextAction(type="refusal", message=LEDGER_OVERWRITE_REFUSAL),
             audit_reference=AuditReference(audit_chain_id=audit_chain_id),
         )
         return await finish(response)
@@ -5020,18 +5049,25 @@ async def ask_kriton(
         # externally source-grounded.
         rag_citations = []
 
-    from app.orchestration.verification_service import is_evidence_gap_statement
-    evidence_gap_only = not release_claims(final_text) and is_evidence_gap_statement(final_text)
+    from app.orchestration.verification_service import is_evidence_gap_statement, is_referral
+    evidence_gap_only = (not [claim for claim in release_claims(final_text) if not is_referral(claim)]
+                         and is_evidence_gap_statement(final_text))
     # A concept question the sources did not cover gets a labelled general
     # explanation instead of "Not answered" (concept_fallback.py).
+    # So does one whose agent run used up its token budget reading search
+    # results and wrote nothing (QA case E02 retest).
     from app.orchestration.concept_fallback import GENERAL_NOTE, general_explanation, is_concept_question
-    if evidence_gap_only and not is_offdomain_refusal and is_concept_question(
+    budget_left_no_answer = (agent_outcome is not None and bool(agent_outcome.incomplete_reason)
+                             and "No complete answer was generated" in (final_text or ""))
+    if (evidence_gap_only or budget_left_no_answer) and not is_offdomain_refusal and is_concept_question(
             request.query, has_documents=bool(document_sources), uses_live_data=bool(live_evidence.observations)):
         explanation = await general_explanation(
             request.query, model_gateway_service.run_grounded_completion, _MODEL_PROVIDER_FAILURE)
         if explanation:
             final_text = composed_text = explanation
             evidence_gap_only = False
+            if budget_left_no_answer:
+                agent_outcome.incomplete_reason = ""
             rag_citations = []
             limitations.insert(0, GENERAL_NOTE)
     # An explanation gap ("the sources do not state the factors that…") is
@@ -5167,7 +5203,10 @@ async def ask_kriton(
     # A calculation on the question's own figures, or a chart redrawn from
     # figures already in the conversation, needs no source — calling it
     # "model knowledge" misdescribes it.
-    computed_from_question = not evidence_gap_only and not rag_citations and not is_offdomain_refusal and (
+    # An illustrated diagram's stages are a standard process, not the
+    # question's figures (QA cases E01, E03, E04 were labelled "from figures
+    # in this conversation").
+    computed_from_question = not evidence_gap_only and not rag_citations and not is_offdomain_refusal and not illustrative_diagram and (
         deterministic_calculation is not None
         or self_contained_calculation
         or (agent_outcome is not None and any(

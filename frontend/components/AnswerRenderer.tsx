@@ -185,11 +185,51 @@ export function VisualizationRenderer({ viz: rawViz }: { viz: VisualizationSpec 
  * the separate Sources panel, so the answer body should read cleanly. Also
  * tidies up the leftover spaces/punctuation the removal leaves behind.
  */
-function stripInlineRefs(text: string): string {
-  return text
-    .replace(REF_MARKER, "")
-    .replace(/[ \t]+([.,;:])/g, "$1")
-    .replace(/[ \t]{2,}/g, " ");
+export function stripInlineRefs(text: string): string {
+  return dropEmptySourceColumns(
+    text
+      // The word that pointed at the marker goes with it: "apply the criteria
+      // in [REF-3] and…" read "criteria in and…".
+      .replace(REF_POINTER, "")
+      // A dash that introduced the marker: '"…define working capital." – [REF-3]'
+      // left a dangling "–" after each quote.
+      .replace(REF_DASH, "")
+      .replace(REF_MARKER, "")
+      // "the balance sheet ([REF-2])" left "the balance sheet ()".
+      .replace(/[ \t]*\(\s*[,;]?\s*\)/g, "")
+      .replace(/[ \t]+([.,;:])/g, "$1")
+      .replace(/[ \t]{2,}/g, " "),
+  );
+}
+
+const REF_POINTER =
+  /[ \t]+(?:in|from|see|per|under|according\s+to|as\s+(?:stated|shown|set\s+out)\s+in|cited\s+in)(?=\s*(?:\[\s*(?:REF[\s\-‐-―]?)?\d+|\(\s*REF[\s\-‐-―]?\d+))/gi;
+const REF_DASH = /[ \t]*[–—][ \t]*(?=\[\s*(?:REF[\s\-‐-―]?)?\d+|\(\s*REF[\s\-‐-―]?\d+)/gi;
+const SOURCE_HEADING =/^\s*(?:sources?|refs?|references?|citations?)\s*$/i;
+
+/** A table's Source column whose cells were only citation markers is empty
+ *  once they are removed; it is dropped rather than shown blank. */
+function dropEmptySourceColumns(text: string): string {
+  const lines = text.split("\n");
+  const cells = (line: string) => line.trim().replace(/^\||\|$/g, "").split("|");
+  const isSeparator = (line: string) => cells(line).every((c) => /^\s*:?-{2,}:?\s*$/.test(c));
+  for (let start = 0; start < lines.length; start++) {
+    if (!lines[start].trim().startsWith("|") || !lines[start + 1] || !isSeparator(lines[start + 1])) continue;
+    let end = start + 2;
+    while (end < lines.length && lines[end].trim().startsWith("|")) end++;
+    const header = cells(lines[start]);
+    const body = lines.slice(start + 2, end).map(cells);
+    const empty = header
+      .map((h, i) => (SOURCE_HEADING.test(h) && body.length > 0 && body.every((row) => !(row[i] ?? "").trim()) ? i : -1))
+      .filter((i) => i >= 0);
+    if (empty.length && empty.length < header.length) {
+      for (let row = start; row < end; row++) {
+        lines[row] = "| " + cells(lines[row]).filter((_, i) => !empty.includes(i)).map((c) => c.trim()).join(" | ") + " |";
+      }
+    }
+    start = end - 1;
+  }
+  return lines.join("\n");
 }
 
 function normaliseMathUnicode() {
@@ -291,7 +331,7 @@ function normaliseMarkdownTables(text: string): string {
     }
 
     if (isRow) {
-      out.push(deindented);
+      out.push(indentSubItemCells(deindented));
       // Close the block when the next line is neither a row nor already blank.
       const next = lines[i + 1];
       const nextIsRow = next !== undefined && TABLE_ROW.test(next.replace(/^\s+(?=\|)/, ""));
@@ -303,6 +343,17 @@ function normaliseMarkdownTables(text: string): string {
   }
 
   return out.join("\n");
+}
+
+/**
+ * A table cell written as a sub-item ("– Rent" under "Operating expenses") is
+ * shown as "Rent", indented, without the dash. Non-breaking spaces, because
+ * Markdown trims ordinary spaces at the start of a cell. A minus amount
+ * ("- 5,000", "- (5,000)"), a lone dash placeholder and the rule line are
+ * left alone.
+ */
+export function indentSubItemCells(row: string): string {
+  return row.replace(/\|(\s*)[–—-]\s+(?=[^\s\d(|])/g, "|$1    ");
 }
 
 // ── Figure toolbar ───────────────────────────────────────────────────────────

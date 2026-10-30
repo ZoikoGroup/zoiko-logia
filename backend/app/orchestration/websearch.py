@@ -1362,7 +1362,15 @@ _VISUAL_INSTRUCTIONS = (
         "short text explanation. THE OPENING FENCE MUST BE EXACTLY ```mermaid "
         "— a bare ``` fence, or one labelled text/plaintext, is displayed to "
         "the reader as monospace source code instead of being drawn as a "
-        "diagram, which is the one outcome to avoid. Choose the Mermaid "
+        "diagram, which is the one outcome to avoid. "
+        # QA case E01 ("Draw an accounts-payable three-way match flow") came
+        # back as boxes and arrows typed with │ ▼ ──► in plain code blocks,
+        # with the mismatch path missing from the flow.
+        "Never draw a diagram as text art (boxes, pipes or arrows typed with "
+        "characters such as │ ▼ ──► or |): it is shown as characters, not as a "
+        "diagram. In a process flow, draw each check or approval as a decision "
+        "node with labelled branches, including the failure path (for example "
+        "a mismatch going to hold or review). Choose the Mermaid "
         "diagram type that best fits the request:\n"
         "- 'flowchart TD' (top-down) for processes, workflows, the accounting "
         "cycle, decision trees, org charts / organisation hierarchies and tree "
@@ -1573,6 +1581,9 @@ _DOMAIN_GATE = (
     "figure from the domains above IS in scope even when the sentence leads "
     "with a chart/diagram TYPE word that sounds generic or technical on its "
     "own — that word names how to draw the answer, not what it is about. "
+    # QA case E06 ("does a diamond mean approval or a calculation?") was
+    # refused as off-topic.
+    "Flowcharts, process sketches and what their symbols mean ARE in scope: answer them. "
     "Business and financial arithmetic — percentages, ratios, divisions, growth "
     "rates, margins, interest, currency conversions and checking or correcting a "
     "stated calculation (e.g. 'Correct 200 ÷ 500 = 0.4%') — IS in scope: answer it. "

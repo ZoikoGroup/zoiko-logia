@@ -57,6 +57,43 @@ async def test_a_swimlane_without_steps_is_drawn_and_labelled(pipeline):
     assert response.answer.limitations[0] == NOTE
 
 
+E01 = "Draw an accounts-payable three-way match flow from PO to payment."
+FLOW_STEPS = "Raise PO -> Receive goods -> Match invoice to PO and receipt -> Approve invoice -> Pay supplier"
+
+
+def test_a_flow_from_one_step_to_another_is_a_flowchart_request():
+    # QA case E01 named no diagram type: nothing was drawn and the model
+    # typed the flow as text art.
+    assert needs_illustration(E01)
+    assert needs_illustration("Draw the data flow from source trial balance to published financial statements.")
+    assert not needs_illustration("Show the cash flow from operations to free cash flow.")
+    assert not needs_illustration("Explain the flow from PO to payment.")   # nothing asked to be drawn
+
+
+async def test_a_flow_from_po_to_payment_is_drawn_and_labelled(pipeline, monkeypatch):
+    monkeypatch.setattr(service.model_gateway_service, "run_grounded_completion", AsyncMock(return_value=FLOW_STEPS))
+    out = await illustrated_query(E01, AsyncMock(return_value=FLOW_STEPS), FAILURE)
+    assert extract_graph(out).nodes[0] == "Raise PO" and extract_graph(out).nodes[-1] == "Pay supplier"
+    response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                                        request=AskKritonRequest(query=E01))
+    assert response.visualization is not None
+    assert response.answer.limitations[0] == NOTE
+    assert not response.answer.computed_from_question   # a standard process, not the question's figures
+    # QA case E04: the same steps as an ordered list, in the drawing's order.
+    assert "1. Raise PO\n2. Receive goods\n3. Match invoice to PO and receipt\n4. Approve invoice\n5. Pay supplier" \
+        in response.answer.text
+
+
+async def test_a_list_after_the_step_line_does_not_discard_the_steps():
+    # QA case E04 asked for a flowchart and an ordered list; the reply had both.
+    reply = ("Raise requisition -> Approve requisition -> Issue purchase order -> Receive goods -> Pay supplier"
+             "\n\n1. Raise requisition\n2. Approve requisition\n3. Issue purchase order")
+    out = await illustrated_query("Give the same purchase-to-pay flow as a flowchart and an ordered text list.",
+                                  AsyncMock(return_value=reply), FAILURE)
+    assert extract_graph(out).nodes == ["Raise requisition", "Approve requisition", "Issue purchase order",
+                                        "Receive goods", "Pay supplier"]
+
+
 async def test_extra_text_after_the_diagram_name_does_not_break_the_lanes():
     from app.orchestration.kroki_diagrams import extract_kroki_graph
 
