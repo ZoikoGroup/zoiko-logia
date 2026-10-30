@@ -25,6 +25,14 @@ def test_statement_requests_are_recognised():
         assert not is_statement_request(question), question
 
 
+def test_statement_rules_ask_for_each_account_under_its_heading():
+    # One run listed each expense, another showed only "Operating expenses 574,000".
+    from app.orchestration.statement_rules import INSTRUCTIONS
+
+    assert "List every account on its own line under its heading" in INSTRUCTIONS
+    assert "no leading dash" in INSTRUCTIONS
+
+
 def test_fiscal_year_labels_in_a_statement_pdf_count_as_comparatives():
     # "Prior-year figures: not provided" was said of a PDF stating FY2024 revenue.
     pdf = "Figures stated in 'NB.pdf' (released), Page 1: FY2025 Revenue 10,000; FY2024 Revenue 8,000"
