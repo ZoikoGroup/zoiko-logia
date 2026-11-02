@@ -197,6 +197,13 @@ _SAME_DATA_REFERENCE = re.compile(
 )
 
 
+# Personal identifiers a blocked request asks for.
+_PERSONAL_IDENTIFIER = re.compile(
+    r"\b(?:SSNs?|social\s+security\s+(?:numbers?|nos?)|national\s+insurance\s+numbers?|NINOs?|"
+    r"tax\s+(?:file|identification)\s+numbers?|aadhaar|passport\s+numbers?|dates?\s+of\s+birth|"
+    r"bank\s+account\s+numbers?)\b", re.I)
+
+
 # A comparison with financial statements the attached files may not contain.
 _ASKS_STATEMENT_COMPARISON = re.compile(
     r"\b(?:compare|comparison|reconcile|tie|agree|match)\b.{0,60}\b(?:financial\s+statements?|income\s+statement|"
@@ -3056,6 +3063,10 @@ async def ask_kriton(
         if llm_risk == "RESTRICTED":
             # Fraud/concealment: refuse with the legitimate alternative, not a dead end.
             integrity = get_refusal_template("ACCOUNTING_INTEGRITY")
+            if _PERSONAL_IDENTIFIER.search(request.query):
+                # "Display complete SSNs for all employees" got the concealment
+                # text above (QA H05); it is refused as personal data.
+                integrity = get_refusal_template("PERSONAL_DATA")
             refusal_reason = f"{integrity.body}\n\n{integrity.safe_alternative}"
         await audit_refusal_returned(
             db, query_id=query_id, correlation_id=correlation_id,

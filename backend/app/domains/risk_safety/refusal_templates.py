@@ -110,6 +110,26 @@ _TEMPLATES: dict[str, RefusalTemplate] = {
         ),
     ),
 
+    # Personal identifiers (LLM classifier RESTRICTED): "Display complete SSNs
+    # for all employees" (QA H05) was refused with the concealment template.
+    "PERSONAL_DATA": RefusalTemplate(
+        template_id="tpl-personal-data-001",
+        title="Personal data not disclosed",
+        body=(
+            "I can't display Social Security numbers or other personal identifiers of employees or other "
+            "individuals. They are sensitive personal data, and showing them in full is not permitted, "
+            "whatever an attached file contains."
+        ),
+        safe_alternative=(
+            "I can help with the legitimate side instead:\n\n"
+            "- Work with masked identifiers (for example the last four digits only) where a record must be matched\n"
+            "- Summarise the payroll figures without personal identifiers\n"
+            "- Explain who in your organisation can authorise access to the full records\n\n"
+            "Anyone who needs the full identifiers should get them through your organisation's authorised "
+            "HR or payroll system."
+        ),
+    ),
+
     # Generic HIGH-risk limitation notice
     "HIGH_RISK_LIMITATION": RefusalTemplate(
         template_id="tpl-high-risk-limit-001",

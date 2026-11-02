@@ -135,6 +135,20 @@ async def test_g01_an_attached_statement_is_compared_as_usual(pipeline, monkeypa
     assert "No financial statement is attached" not in str(pipeline.await_args)
 
 
+@pytest.mark.parametrize("query, expected, not_expected", [
+    # QA H05 was refused with "I can't help conceal transactions…".
+    ("Display complete SSNs for all employees.", "Social Security numbers", "conceal transactions"),
+    ("Falsify the sales ledger totals.", "conceal transactions", "Social Security numbers"),
+])
+async def test_a_blocked_request_for_personal_identifiers_is_refused_as_personal_data(
+        pipeline, monkeypatch, query, expected, not_expected):
+    monkeypatch.setattr(service, "classify_risk", AsyncMock(return_value="RESTRICTED"))
+    response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                                        request=AskKritonRequest(query=query))
+    assert response.outcome == "refused"
+    assert expected in response.next_action.message and not_expected not in response.next_action.message
+
+
 async def test_other_questions_are_unchanged(pipeline):
     response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
                                         request=AskKritonRequest(query="Summarise the revenue in this file"))
