@@ -1551,6 +1551,18 @@ def _calculate_from_query(query: str) -> CalculationResult:
             # to 33%" was answered "please provide revenue". The model answers
             # it instead, and every arithmetic line is still re-checked.
             return CalculationResult()
+        if not revenue and not inputs:
+            # "What is our gross margin?" with nothing given was asked only for
+            # revenue: no company, no period, no cost of sales (QA L01).
+            measure = "gross margin" if wants_gross_margin else "gross profit"
+            return CalculationResult(
+                matched=True, status="clarification_required",
+                formula_ids=["gross_margin" if wants_gross_margin else "gross_profit"], inputs=[],
+                error_code="MISSING_INPUT",
+                message=(f"To work out the {measure} I need to know **which company** and **which period** (for "
+                         "example FY2025), and either its **financial statements** (attach them) or its **revenue** "
+                         "and **cost of sales** for that period."),
+            )
         if not revenue:
             return _clarify("gross_margin" if wants_gross_margin else "gross_profit", inputs, ["revenue"])
         profit = supplied_profit.value if supplied_profit else (revenue.value - cost.value if cost else None)

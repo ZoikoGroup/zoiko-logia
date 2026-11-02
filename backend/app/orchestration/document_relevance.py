@@ -59,8 +59,10 @@ def _matches(wanted: set[str], vocabulary: set[str]) -> int:
 # "Summarise the document", "explain the above table", "analyse this".
 _DOCUMENT_REFERENCE = re.compile(
     r"\b(?:document|doc|file|attach\w*|upload\w*|spreadsheet|workbook|sheet|tab|table|rows?|columns?|"
-    r"above|previous|earlier|same\s+data)\b"
-    r"|\b(?:summari[sz]e|analy[sz]e|review|check|explain|describe|translate)\s+(?:this|it|that|them|these)\b",
+    r"above|previous|earlier|same\s+(?:data|company|entity|business|client|period|report))\b"
+    r"|\b(?:summari[sz]e|analy[sz]e|review|check|explain|describe|translate)\s+(?:this|it|that|them|these)\b"
+    # The next step on the same file: "Now show FY2024, same company." (QA L02).
+    r"|^\W*(?:ok(?:ay)?,?\s+)?now\s+(?:show|do|calculate|compute|give|try|make|run|repeat|redo)\b",
     re.IGNORECASE)
 # Question words that say nothing about a file's content.
 _GENERAL = frozenset((

@@ -264,6 +264,10 @@ _ELLIPTICAL_FOLLOW_UP = re.compile(
     # "comment on the above" after an income statement was planned as new
     # research without the statement: it searched, calculated new ratios,
     # used 95,033 tokens and the answer was withheld as unverified.
+    # "Now show FY2024, same company." after a FY2025 gross margin from an
+    # attached PDF was answered about the World Bank from the web (QA L02).
+    r"\bsame\s+(?:company|entity|business|client|organi[sz]ation|firm|period|basis|file|document|report)\b|"
+    r"^\W*(?:ok(?:ay)?,?\s+)?now\s+(?:show|do|calculate|compute|give|try|make|run|repeat|redo)\b|"
     r"^\s*(?:please\s+)?(?:comment\s+on|review|summari[sz]e|critique|explain|"
     r"give\s+(?:your\s+|me\s+)?(?:comments?|feedback|views?|thoughts)\s+on|what\s+do\s+you\s+think\s+(?:of|about))"
     r"\s+(?:the\s+)?(?:above|previous|last|your)\b",

@@ -83,6 +83,31 @@ def test_a_comment_on_the_earlier_answer_is_a_follow_up(question):
 
 
 @pytest.mark.parametrize("question", [
+    # QA L02: answered about the World Bank from the web instead of the chat's PDF.
+    "Now show FY2024, same company.", "Same company, but for 2023.", "OK, now calculate it for Q3.",
+])
+def test_same_company_and_now_show_are_follow_ups_and_keep_the_chat_file(question):
+    from app.orchestration.document_relevance import question_is_about_documents
+    from app.orchestration.service import _looks_like_contextual_follow_up
+    from app.orchestration.websearch import WebSource
+    statement = WebSource(title="NB-STATEMENTS_RELEASED.pdf — Page 1", url="", source_id="nb",
+                          snippet="FY2025 Revenue\n10,000\nFY2024 Revenue\n8,000")
+    assert _looks_like_contextual_follow_up(question)
+    assert question_is_about_documents(question, [statement])
+
+
+def test_l01_a_gross_margin_question_with_nothing_given_asks_for_company_period_and_figures():
+    # It asked only for "revenue".
+    from app.orchestration.calculations.engine import calculate_from_query
+    result = calculate_from_query("What is our gross margin?")
+    assert result.status == "clarification_required"
+    for part in ("**which company**", "**which period**", "**financial statements**", "**cost of sales**"):
+        assert part in result.message
+    assert "Please provide the following calculation input(s): revenue" in calculate_from_query(
+        "What is our gross margin if cost of sales is 600?").message
+
+
+@pytest.mark.parametrize("question", [
     "Explain the matching principle", "Review the IFRS 16 rules for short leases", "Summarise UK VAT rules",
 ])
 def test_a_new_explain_or_review_question_is_not_a_follow_up(question):
