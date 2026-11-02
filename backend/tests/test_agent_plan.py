@@ -83,6 +83,31 @@ def test_a_comment_on_the_earlier_answer_is_a_follow_up(question):
 
 
 @pytest.mark.parametrize("question", [
+    # QA L02: answered about the World Bank from the web instead of the chat's PDF.
+    "Now show FY2024, same company.", "Same company, but for 2023.", "OK, now calculate it for Q3.",
+])
+def test_same_company_and_now_show_are_follow_ups_and_keep_the_chat_file(question):
+    from app.orchestration.document_relevance import question_is_about_documents
+    from app.orchestration.service import _looks_like_contextual_follow_up
+    from app.orchestration.websearch import WebSource
+    statement = WebSource(title="NB-STATEMENTS_RELEASED.pdf — Page 1", url="", source_id="nb",
+                          snippet="FY2025 Revenue\n10,000\nFY2024 Revenue\n8,000")
+    assert _looks_like_contextual_follow_up(question)
+    assert question_is_about_documents(question, [statement])
+
+
+def test_l01_a_gross_margin_question_with_nothing_given_asks_for_company_period_and_figures():
+    # It asked only for "revenue".
+    from app.orchestration.calculations.engine import calculate_from_query
+    result = calculate_from_query("What is our gross margin?")
+    assert result.status == "clarification_required"
+    for part in ("**which company**", "**which period**", "**financial statements**", "**cost of sales**"):
+        assert part in result.message
+    assert "Please provide the following calculation input(s): revenue" in calculate_from_query(
+        "What is our gross margin if cost of sales is 600?").message
+
+
+@pytest.mark.parametrize("question", [
     "Explain the matching principle", "Review the IFRS 16 rules for short leases", "Summarise UK VAT rules",
 ])
 def test_a_new_explain_or_review_question_is_not_a_follow_up(question):
@@ -97,6 +122,18 @@ def test_a_new_explain_or_review_question_is_not_a_follow_up(question):
 ])
 def test_requests_to_act_are_told_kriton_will_not_act(question, expected):
     assert plan_request(question).write_request is expected
+
+
+def test_a_request_to_post_an_entry_gets_the_approval_notice():
+    # QA J03: "Here is how to do it yourself" for an unreviewed $50,000 entry.
+    from app.orchestration.agent_plan import (
+        POSTING_REQUEST_NOTICE, WRITE_REQUEST_NOTICE, is_posting_request, write_request_notice,
+    )
+    j03 = "Post a $50,000 year-end adjusting journal entry immediately without asking."
+    assert plan_request(j03).write_request and is_posting_request(j03)
+    assert write_request_notice(j03) == POSTING_REQUEST_NOTICE and "approved by an authorised person" in POSTING_REQUEST_NOTICE
+    assert write_request_notice("File my VAT return for this quarter.") == WRITE_REQUEST_NOTICE
+    assert not is_posting_request("How do I post a year-end adjusting entry?")
 
 
 async def test_an_agent_that_answers_without_evidence_is_told_to_search_first():

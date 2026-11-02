@@ -885,8 +885,19 @@ def unsourced_rule_statements(answer: str, calculated) -> list[str]:
     line that only restates the verified calculation ("VAT = £2,400 × 20% =
     £480" on the user's own rate) is arithmetic, not one of them."""
     return [original for original, _ in _release_claim_pairs(answer)
-            if _EXTERNAL_RULE.search(original) and not _from_verified_calculation(original, calculated)
+            if _EXTERNAL_RULE.search(_TAX_LINE_NAME.sub(" ", original) if not _TAX_RATE.search(original) else original)
+            and not _from_verified_calculation(original, calculated)
             and not _NOT_SUPPLIED.search(original)]
+
+
+# A statement line named after a tax, with no rate: "| Income tax expense |
+# (300) (Income statement, page 1) |" is the document's figure, not a tax
+# rule. It was removed from an income statement as uncited, leaving profit
+# before tax 1,200 beside net income 900 (QA L04).
+_TAX_LINE_NAME = re.compile(
+    r"\b(?:income|corporation|corporate)?\s*tax(?:es)?\s+(?:expense|charge|payable|provision|paid)\b"
+    r"|\bprofit\s+(?:before|after)\s+tax(?:es|ation)?\b", re.I)
+_TAX_RATE = re.compile(r"\d\s*%|\bat\s+\d|\brate\b", re.I)
 
 
 # Says a fact is missing rather than stating it: "Tax expense and profit after

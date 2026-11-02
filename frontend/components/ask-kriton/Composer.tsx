@@ -15,7 +15,7 @@ import {
 import { getAuthToken, getKritonAttachment, uploadKritonAttachment, deleteKritonAttachment, ApiError, type WorkspaceDocument } from "@/lib/api";
 
 const JURISDICTIONS = ["", "UK", "US", "US-CA", "IFRS", "UAE", "India", "EU"];
-const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".xlsx", ".pptx", ".csv", ".txt", ".md"];
+const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".xlsx", ".pptx", ".csv", ".txt", ".md", ".png", ".jpg", ".jpeg"];
 
 // Retrieval ranks chunks across every attached document, so a very wide
 // selection dilutes the ranking rather than improving it — and each file is

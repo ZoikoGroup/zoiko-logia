@@ -47,6 +47,17 @@ def test_a_follow_up_about_the_file_uses_it_and_an_unrelated_one_does_not():
         assert not about(question, [VAT]), question
 
 
+def test_a_follow_up_that_names_the_file_by_its_code_uses_it():
+    # QA I02: "Under F8, what changes on January 1, 2026?" dropped
+    # F8_SOURCE_REGISTRY.csv and was refused as off-topic.
+    from app.orchestration.document_relevance import question_is_about_documents as about
+    registry = WebSource(title="F8_SOURCE_REGISTRY.csv — Sheet1", url="", source_id="f8",
+                         snippet="source_id\tsection_id\teffective_from\trule\nNB-POLICY-2026\t§A1\t2026-01-01\tthreshold = 20")
+    assert about("Under F8, what changes on January 1, 2026?", [registry])
+    assert not about("Under F9, what changes on January 1, 2026?", [registry])
+    assert not about("What changed in FY2026?", [registry])          # a year is not a file code
+
+
 STATEMENT = WebSource(title="NB-STATEMENTS_RELEASED.pdf — Page 1", url="",
                       snippet="FY2025 Revenue\n10,000\nFY2025 NET INCOME\n900\nNote 2. Q4 revenue\n3,100", source_id="nb")
 

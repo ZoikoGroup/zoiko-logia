@@ -146,6 +146,15 @@ def test_a_disclosure_that_a_tax_figure_is_missing_is_kept():
     assert unsourced_rule_statements(kept + "\n" + added, calculated) == [added]
 
 
+def test_an_income_tax_expense_line_from_the_document_is_a_figure_not_a_tax_rule():
+    # QA L04: the row was removed as uncited; profit before tax 1,200 was left beside net income 900.
+    calculated = calculated_figures(None, question="Show the FY2025 income statement as a table.", receipts=[])
+    row = "| Income tax expense | (300) (Income statement, page 1) |"
+    rate = "| Corporation tax at 19% | 228 |"
+    assert unsourced_rule_statements(row + "\n" + "| Profit before taxes | 1,200 |", calculated) == []
+    assert unsourced_rule_statements(rate, calculated) == [rate]
+
+
 def test_the_stored_questions_are_as_traced():
     # The traced prompts are the user's stored questions; keep the fixtures honest.
     assert "previous financial year" in FINANCIALS and "current year" in FINANCIALS

@@ -996,6 +996,120 @@ def _formula_check_lines(sources: list[WebSource]) -> list[str]:
     return lines
 
 
+# A source registry: rule cards with an effective interval, an authority tier
+# and access rights (QA group I, fixture F8). "The controlling guidance
+# effective December 31, 2025" was answered by mixing in another section's
+# cards and deciding nothing (I01). The as-of resolver works by section:
+# the cards in effect on each date the question names, what starts or ends
+# on it, equal-tier conflicts (escalated, never chosen) and cards whose
+# rights forbid quoting them.
+_REGISTRY_COLUMNS = {
+    "id": re.compile(r"^source[\s_]*id$|^card[\s_]*id$", re.I),
+    "from": re.compile(r"^effective[\s_]*from$", re.I),
+    "to": re.compile(r"^effective[\s_]*to$", re.I),
+    "section": re.compile(r"^section(?:[\s_]*id)?$", re.I),
+    "tier": re.compile(r"authority[\s_]*tier|^tier$", re.I),
+    "rights": re.compile(r"^rights$|licen[cs]e", re.I),
+    "rule": re.compile(r"^rule$|^text$|guidance", re.I),
+    "title": re.compile(r"^title$", re.I),
+}
+_MONTH_NUMBER = {name.lower(): n for n, name in enumerate(_MONTH_NAMES, start=1)}
+_QUESTION_DATE = re.compile(
+    r"\b(?P<month>[A-Z][a-z]{2,8})\.?\s+(?P<day>\d{1,2}),?\s+(?P<year>(?:19|20)\d{2})\b"
+    r"|\b(?P<day2>\d{1,2})\s+(?P<month2>[A-Z][a-z]{2,8})\.?,?\s+(?P<year2>(?:19|20)\d{2})\b"
+    r"|\b(?P<iso>(?:19|20)\d{2}-\d{2}-\d{2})\b")
+_NO_QUOTE_RIGHTS = re.compile(r"prohibit|denied|restricted|unlicen[cs]ed|no[\s_]*access|do[\s_]*not", re.I)
+
+
+def _question_dates(query: str | None):
+    import datetime
+
+    dates = []
+    for match in _QUESTION_DATE.finditer(query or ""):
+        try:
+            if match.group("iso"):
+                dates.append(datetime.date.fromisoformat(match.group("iso")))
+                continue
+            month = _MONTH_NUMBER.get((match.group("month") or match.group("month2") or "")[:3].lower())
+            day, year = match.group("day") or match.group("day2"), match.group("year") or match.group("year2")
+            if month:
+                dates.append(datetime.date(int(year), month, int(day)))
+        except ValueError:
+            continue
+    return list(dict.fromkeys(dates))
+
+
+def _source_registry_lines(table: Table, query: str | None) -> list[str]:
+    import datetime
+
+    column = {key: next((i for i, h in enumerate(table.headers) if pattern.search((h or "").strip())), None)
+              for key, pattern in _REGISTRY_COLUMNS.items()}
+    if column["id"] is None or column["from"] is None:
+        return []
+    cell = lambda row, key: row[column[key]].strip() if column[key] is not None and column[key] < len(row) else ""  # noqa: E731
+    cards = []
+    for row in table.rows:
+        try:
+            start = datetime.date.fromisoformat(cell(row, "from"))
+            end = datetime.date.fromisoformat(cell(row, "to")) if cell(row, "to") else None
+        except ValueError:
+            continue
+        cards.append({"id": cell(row, "id"), "section": cell(row, "section") or "(no section)", "tier": cell(row, "tier"),
+                      "rights": cell(row, "rights"), "rule": cell(row, "rule"), "title": cell(row, "title"),
+                      "start": start, "end": end})
+    if not cards:
+        return []
+
+    def label(card) -> str:
+        interval = f"{card['start']} to {card['end'] or 'open-ended'}"
+        text = (f"{card['id']} {card['section']}" + (f", tier {card['tier']}" if card["tier"] else "")
+                + f", effective {interval}")
+        if _NO_QUOTE_RIGHTS.search(card["rights"]):
+            return text + f", rights {card['rights']}: do not quote or summarise its text; say access is denied"
+        return text + (f": \"{card['rule']}\"" if card["rule"] else "")
+
+    lines = [f"Source registry '{table.title}' (as-of resolution by Kriton; a card is in effect from its effective "
+             f"start to its effective end, inclusive, and is never applied before its start):"]
+    dates = _question_dates(query)
+    for date in dates[:4]:
+        in_effect = [c for c in cards if c["start"] <= date and (c["end"] is None or date <= c["end"])]
+        lines.append(f"- As of {date}:")
+        sections = dict.fromkeys(c["section"] for c in in_effect)
+        for section in sections:
+            here = [c for c in in_effect if c["section"] == section]
+            quotable = [c for c in here if not _NO_QUOTE_RIGHTS.search(c["rights"])]
+            tiers = sorted({c["tier"] for c in quotable if c["tier"]}, key=lambda t: (len(t), t))
+            top = [c for c in quotable if not tiers or c["tier"] == tiers[0]]
+            verdict = ""
+            if len(top) > 1 and len({c["rule"] for c in top}) > 1:
+                verdict = (" — CONFLICT: these cards have equal authority and are all in effect but state different "
+                           "rules; do not choose one, report the conflict as unresolved and escalate it for review")
+            elif len(top) == 1 and len(quotable) > 1:
+                verdict = f" — {top[0]['id']} controls (tier {top[0]['tier']}, the highest authority in effect here)"
+            elif len(top) == 1:
+                verdict = f" — {top[0]['id']} controls"
+            lines.append(f"  - Section {section}: " + "; ".join(label(c) for c in here) + verdict)
+        later = [c for c in cards if c["start"] > date]
+        if later:
+            lines.append("  - Not yet in effect on this date (do not apply): " + "; ".join(
+                f"{c['id']} {c['section']} from {c['start']}" for c in later))
+        starting = [c for c in cards if c["start"] == date]
+        ending = [c for c in cards if c["end"] is not None and c["end"] == date - datetime.timedelta(days=1)]
+        if starting or ending:
+            lines.append(f"  - Changes on {date}: " + "; ".join(
+                [f"{c['id']} {c['section']} ends on {c['end']}" for c in ending]
+                + [f"{c['id']} {c['section']} takes effect" for c in starting]
+                + [f"{c['id']} replaces {old['id']} in section {c['section']}" for c in starting for old in ending
+                   if old["section"] == c["section"]]))
+    if not dates:
+        lines += [f"- {label(c)}" for c in cards]
+    denied = [c["id"] for c in cards if _NO_QUOTE_RIGHTS.search(c["rights"])]
+    if denied:
+        lines.append(f"- Rights denied: {', '.join(denied)} must not be quoted, summarised or reconstructed; offer "
+                     f"only the permitted access route (the licence holder or an authorised administrator).")
+    return lines
+
+
 def _three_way_lines(table: Table) -> list[str]:
     """A purchase order, goods receipt and supplier invoice: the unmatched
     quantity and amount, and a hold instead of a payment."""
@@ -1028,8 +1142,16 @@ def _three_way_lines(table: Table) -> list[str]:
     line += f"; invoiced but not received = {_fmt(float(unmatched))}"
     if amount is not None:
         line += f" ({_fmt(float(total(found['invoice'], amount) - total(found['receipt'], amount)))} unmatched)"
-    return [line + ". The invoice does not match: place it on hold / exception for authorized review. Do not approve "
-                   "or pay it, and do not say a payment was made."]
+    # QA J04 put the held invoice's full 1,000 to accounts payable, the
+    # unreceived 100 as a "purchase adjustment".
+    received = (f" ({_fmt(float(total(found['receipt'], amount)))})" if amount is not None else "")
+    return [line + ". The invoice does not match: place the whole invoice on hold / exception for authorized review. "
+                   "Do not approve or pay it, not even the received part: recommend no partial payment until the "
+                   "exception is resolved (for example by a credit note or the missing delivery), and do not say a "
+                   "payment was made. Approving a payment is a decision for an authorised approver, not for Kriton. "
+                   "While it is on hold, record only the goods received"
+                   f"{received} as owed (goods received not invoiced); do not post the invoice or the unmatched amount "
+                   "to accounts payable or to any adjustment account until the difference is resolved."]
 
 
 def _table_lines(table: Table, include_top_n: bool = True, by_month_group: bool = True,
@@ -1592,6 +1714,11 @@ def verified_document_figures(sources: list[WebSource], query: str | None = None
     if query is None or _FORMULA_QUESTION.search(query):
         lines += _formula_check_lines(sources)
     for table in tables:
+        registry = _source_registry_lines(table, query)
+        if registry:
+            # Totals of authority tiers mean nothing.
+            lines.extend(registry)
+            continue
         statement = _trial_balance_lines(table, by_month)
         lines.extend(statement)
         # A ledger's monthly income and expenses already cover its accounts'

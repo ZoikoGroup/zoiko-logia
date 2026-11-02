@@ -38,6 +38,9 @@ class DocumentTaskPlan:
     retrieval_mode: str
     output_format: str = "chat"
     response_mode: str = "chat"
+    # Every file format asked for, in the order named: "in Word and PDF" made
+    # only the PDF (QA L04). output_format stays the first of them.
+    formats: tuple[str, ...] = ()
 
 
 def plan_document_task(query: str, *, has_documents: bool) -> DocumentTaskPlan:
@@ -67,7 +70,11 @@ def plan_document_task(query: str, *, has_documents: bool) -> DocumentTaskPlan:
                 output_format = "pdf"
             else:
                 output_format = "docx"
-        return DocumentTaskPlan("document_generation", "full_document", output_format, "chat_with_artifact")
+        # "Word" alone, as in "in Word and PDF", names a file format here.
+        named = sorted(((match.start(), kind) for kind, pattern in (*format_patterns, ("docx", r"\bword\b"))
+                        for match in [re.search(pattern, lowered)] if match), key=lambda item: item[0])
+        formats = tuple(dict.fromkeys(kind for _, kind in named)) or (output_format,)
+        return DocumentTaskPlan("document_generation", "full_document", formats[0], "chat_with_artifact", formats)
     # A plain summary request needs complete-document evidence, but it is still
     # a chat response. Only an explicit create/generate/export instruction may
     # produce a downloadable artifact.
@@ -171,7 +178,12 @@ def build_document_generation_prompt(query: str, sources: list[WebSource], analy
         "Use ONLY the evidence and verified calculations below. Do not use external knowledge.\n"
         "Do not alter or independently recalculate verified figures. If requested information is absent, say so.\n"
         "Produce the requested sections with a concise executive summary and clear Markdown tables.\n"
-        "Do not print REF markers in the prose; citations are attached separately by Kriton.\n\n"
+        "Do not print REF markers in the prose; citations are attached separately by Kriton.\n"
+        # "Export this income statement in Word and PDF" was answered "I am
+        # unable to generate or deliver Word (.docx) or PDF files" while the
+        # PDF was attached below it (QA L04).
+        "Kriton creates the requested file(s) from your answer and attaches them below it: do not say you cannot "
+        "generate, export or deliver files, and do not tell the user to copy the content into another program.\n\n"
         f"=== Verified deterministic analysis ===\n{json.dumps(analysis, indent=2)}\n\n"
         f"=== Uploaded document evidence ===\n{evidence}\n\n"
         f"=== User request ===\n{query}"

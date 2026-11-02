@@ -157,6 +157,19 @@ def restore_matching_tax_chart(text: str, artifacts: list[str]) -> str:
     return text
 
 
+_TABLE_REQUEST = re.compile(r'\b(?:as a table|in table form|in tabular form|show (?:the |me )?(?:underlying |raw |source )?table)\b', re.I)
+_CHART_WORD = re.compile(r'\b(?:chart|graph|plot|diagram|visual\w*)\b', re.I)
+_MARKDOWN_TABLE = re.compile(r'^\s*\|.+\|\s*\n\s*\|\s*:?-{3,}', re.M)
+
+
+def table_request_answered(query: str, text: str) -> bool:
+    """"Show the FY2025 income statement as a table" asks for a table, not a
+    chart: an answer with a table has given it. It was marked "Incomplete
+    answer: Requested visual" beside the table (QA L04)."""
+    return bool(_TABLE_REQUEST.search(query or '') and not _CHART_WORD.search(query or '')
+                and _MARKDOWN_TABLE.search(text or ''))
+
+
 def missing_visual_message(query: str) -> str:
     if re.search(r'\b(?:flowchart|flow chart|process diagram|workflow)\b', query, re.I):
         return 'The requested process visual could not be built. Provide the stages and branches explicitly (for example, A → B; B → C).'

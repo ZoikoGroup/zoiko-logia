@@ -179,6 +179,59 @@ def test_ocr_boxes_become_tab_rows_with_empty_cells_kept_in_their_column():
     ]
 
 
+def _box(x, y, text):
+    return [[x - 30, y - 12], [x + 30, y - 12], [x + 30, y + 12], [x - 30, y + 12]], text, 0.95
+
+
+# The QA bar chart as OCR reads it (H01): axis scale at x=84, a value printed
+# above each quarter, the quarters along the bottom.
+BAR_CHART = [_box(700, 38, "Northbridge FY2025 Quarterly Revenue"),
+             *(_box(84, y, tick) for y, tick in ((123, "3500"), (196, "3000"), (270, "2500"), (344, "2000"))),
+             _box(1140, 165, "3,100"), _box(847, 253, "2,500"), _box(555, 282, "2,300"), _box(261, 311, "2,100"),
+             _box(261, 663, "Q1"), _box(555, 663, "Q2"), _box(847, 663, "Q3"), _box(1140, 663, "Q4")]
+
+
+def test_h01_a_chart_value_is_matched_to_the_label_below_it_not_read_top_to_bottom():
+    # Read top to bottom, the scale's 3500 became Q1 and Q1 "the highest".
+    from app.domains.kriton_workspace.ocr import chart_note
+
+    note = chart_note(BAR_CHART)
+    assert "Q1 2,100; Q2 2,300; Q3 2,500; Q4 3,100; the printed values add up to 10,000" in note
+    assert "(3500, 3000, 2500, 2000) are the axis scale, not values" in note
+
+
+def test_h02_a_chart_page_keeps_its_title_but_not_the_loose_numbers():
+    # Left in the text, the scale was paired with the title ("Revenue-$11,000
+    # 3,500") and 3,500 + 3,100 + 3,000 + 2,500 summed as the quarters.
+    from app.domains.kriton_workspace.ocr import page_text
+
+    boxes = [_box(700, 38, "Northbridge FY2025 Revenue - $11,000 (USD 000s)"), *BAR_CHART[1:]]
+    text = page_text(boxes)
+    assert text.splitlines()[0].startswith("[Chart read by position") and "add up to 10,000" in text
+    assert "$11,000" in text and "\n3500" not in text and "\n3,100" not in text
+    figures = verified_document_figures([_src(text, "chart.pdf — Page 1")], "What is inconsistent?")
+    assert "3,500" not in figures
+
+
+def test_h06_a_chart_with_no_values_or_scale_says_none_can_be_read():
+    from app.domains.kriton_workspace.ocr import chart_note
+
+    note = chart_note([_box(650, 38, "Revenue Trend (scale suppressed)"),
+                       *(_box(x, 663, q) for x, q in ((80, "Q1"), (460, "Q2"), (839, "Q3"), (1219, "Q4")))])
+    assert "no value is printed for any of them and the axis scale is not shown" in note
+    assert "Do not state values, growth rates or percentages" in note
+
+
+def test_a_page_that_is_not_a_chart_gets_no_chart_note():
+    from app.domains.kriton_workspace.ocr import chart_note
+
+    receipt = [_box(200, 50, "NORTHBRIDGE TEST RECEIPT"), _box(150, 200, "Goods / services"), _box(400, 200, "$80.00"),
+               _box(150, 350, "TOTAL"), _box(400, 350, "$88.00"), _box(150, 420, "PAID | 2025-06-12")]
+    table_footer = [_box(100, 80, "Customer"), _box(400, 80, "Revenue"), _box(100, 140, "Acme"),
+                    _box(400, 140, "1,000"), _box(100, 600, "Signed"), _box(400, 600, "Date")]
+    assert chart_note(receipt) == "" and chart_note(table_footer) == ""
+
+
 def test_a_scanned_pdf_is_read_with_ocr():
     pytest.importorskip("rapidocr_onnxruntime")
     pytest.importorskip("pypdfium2")
@@ -198,6 +251,43 @@ def test_a_scanned_pdf_is_read_with_ocr():
     assert page.metadata == {"page": 1, "ocr": True}
     block = verified_document_figures([_src(page.text, "scan.pdf — Page 1")])
     assert "Total Revenue = 2,264,000" in block and "Revenue by Product: Software = 1,199,000 (52.96%)" in block
+
+
+def test_an_uploaded_image_is_read_with_ocr_and_accepted_by_the_upload_endpoint():
+    # QA group H uploads screenshots, charts and receipts as images; only
+    # PDF, Office and CSV files could be attached.
+    pytest.importorskip("rapidocr_onnxruntime")
+    from PIL import Image, ImageDraw, ImageFont
+
+    from app.domains.kriton_workspace import router as workspace_router
+
+    font = ImageFont.load_default(size=30)
+    image = Image.new("RGB", (900, 420), "white")
+    draw = ImageDraw.Draw(image)
+    for r, (label, amount) in enumerate([("Goods / services", "$80.00"), ("Sales tax (10%)", "$8.00"), ("TOTAL", "$88.00")]):
+        draw.text((60, 60 + r * 110), label, fill="black", font=font)
+        draw.text((560, 60 + r * 110), amount, fill="black", font=font)
+    for suffix, kind in ((".png", "PNG"), (".jpg", "JPEG")):
+        upload = io.BytesIO()
+        image.save(upload, kind)
+        [block] = extract_document(f"receipt{suffix}", upload.getvalue())
+        assert block.location == "Image" and block.metadata == {"image": True, "ocr": True}
+        assert "TOTAL\t$88.00" in block.text and "Sales tax (10%)\t$8.00" in block.text
+        assert suffix in workspace_router._ALLOWED_ATTACHMENT_EXTENSIONS
+        assert workspace_router._ATTACHMENT_MIME_TYPES[suffix].startswith("image/")
+
+
+def test_a_small_uploaded_image_is_marked_unreliable_like_a_small_scan():
+    pytest.importorskip("rapidocr_onnxruntime")
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", (180, 104), "white")
+    ImageDraw.Draw(image).text((10, 40), "Amount due: $1,777.77", fill="black")
+    upload = io.BytesIO()
+    image.save(upload, "PNG")
+    blocks = extract_document("invoice.png", upload.getvalue())
+    assert blocks == [] or (blocks[0].text.startswith("[Low-resolution scan: the page image is only 180 x 104 pixels")
+                            and not re.search(r"\d", blocks[0].text.split("]", 1)[1]))
 
 
 def test_h03_a_low_resolution_scan_is_marked_unreliable():
@@ -640,6 +730,38 @@ def test_the_formula_check_is_only_for_formula_questions_and_needs_reliable_cell
     assert "Formula check" not in verified_document_figures([gappy], "Check the formulas")
 
 
+F8 = _src("source_id\tsection_id\tauthority_tier\teffective_from\teffective_to\trights\trule\n"
+          "NB-POLICY-2025\t§A1\t1\t2025-01-01\t2025-12-31\tLICENSED_TEST_USE\tthreshold = 10\n"
+          "NB-POLICY-2026\t§A1\t1\t2026-01-01\t\tLICENSED_TEST_USE\tthreshold = 20\n"
+          "NB-RESTRICTED-001\t§R\t1\t2025-02-12\t\tPROHIBITED_FULL_TEXT\t<DO_NOT_RETRIEVE_OR_QUOTE>\n"
+          "NB-CONFLICT-1\t§C\t2\t2025-04-15\t\tLICENSED_TEST_USE\tcutoff = 30\n"
+          "NB-CONFLICT-2\t§C\t2\t2025-04-15\t\tLICENSED_TEST_USE\tcutoff = 35", "F8_SOURCE_REGISTRY.csv — Sheet1")
+
+
+def test_i01_the_card_in_effect_on_the_date_controls_and_a_later_one_is_not_applied():
+    # The answer mixed in the §C cards and decided nothing.
+    figures = verified_document_figures(
+        [F8], "Under the rules in F8, what is the controlling recognition guidance effective December 31, 2025?")
+    assert "- As of 2025-12-31:" in figures
+    assert 'NB-POLICY-2025 §A1, tier 1, effective 2025-01-01 to 2025-12-31: "threshold = 10" — NB-POLICY-2025 controls' in figures
+    assert "Not yet in effect on this date (do not apply): NB-POLICY-2026 §A1 from 2026-01-01" in figures
+    assert "Total authority_tier" not in figures                 # a tier is not an amount
+
+
+def test_i02_a_date_names_what_ends_and_what_takes_effect():
+    figures = verified_document_figures([F8], "Under F8, what changes on January 1, 2026?")
+    assert ("Changes on 2026-01-01: NB-POLICY-2025 §A1 ends on 2025-12-31; NB-POLICY-2026 §A1 takes effect; "
+            "NB-POLICY-2026 replaces NB-POLICY-2025 in section §A1") in figures
+
+
+def test_i05_an_equal_tier_conflict_is_escalated_and_i04_a_denied_card_is_never_quoted():
+    figures = verified_document_figures([F8], "Two authorized documents in F8 disagree; which one controls as of June 30, 2025?")
+    assert "NB-CONFLICT-2 §C, tier 2" in figures and "CONFLICT: these cards have equal authority" in figures
+    assert "escalate it for review" in figures
+    assert "<DO_NOT_RETRIEVE_OR_QUOTE>" not in figures
+    assert "Rights denied: NB-RESTRICTED-001 must not be quoted" in figures
+
+
 def test_j04_a_three_way_mismatch_is_held_not_paid():
     match = ["record_type\treference\titem\tquantity\tunit_price_usd\ttotal_usd",
              "PURCHASE_ORDER\tPO-1\tDock\t10\t100\t1000", "GOODS_RECEIPT\tGR-1\tDock\t9\t100\t900",
@@ -648,6 +770,12 @@ def test_j04_a_three_way_mismatch_is_held_not_paid():
     assert "ordered 10, received 9, invoiced 10" in figures and "invoiced but not received = 1 (100 unmatched)" in figures
     assert "Do not approve or pay it" in figures
     assert "Total quantity" not in figures              # totals across order, receipt and invoice mean nothing
+    # The answer then credited accounts payable with the held invoice's 1,000.
+    assert "record only the goods received (900) as owed" in figures
+    assert "do not post the invoice or the unmatched amount to accounts payable" in figures
+    # A retest then recommended paying the received 900 now.
+    assert "not even the received part: recommend no partial payment" in figures
+    assert "a decision for an authorised approver, not for Kriton" in figures
 
 
 _RELEASED_PDF = ("NORTHBRIDGE / INCOME STATEMENT\nNB-STMT-RELEASE-v1 | §1 Income Statement / p.1\nFY2025 Revenue\n10,000\n"

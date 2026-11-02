@@ -118,6 +118,76 @@ def _aligned(lines: list[list[dict]]) -> list[str]:
     return out
 
 
+# A chart is read top to bottom like any page, which mixes the axis scale
+# with the values printed on the bars: "3500 / 3,100 / 3000 / 2,500 …" was
+# answered as Q1 3,500 … Q4 2,100, with Q1 highest (QA case H01). A value
+# printed on a bar sits straight above its category label, so values are
+# matched to labels by position; the axis scale is a column of its own.
+_CHART_NUMBER = re.compile(r"^[$£€₹]?-?\d[\d,]*(?:\.\d+)?%?$")
+_PERIOD_LABEL = re.compile(r"^(?:Q[1-4]|H[12]|FY\s?\d{2,4}|(?:19|20)\d{2}|"
+                           r"Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*$", re.IGNORECASE)
+
+
+def _number(text: str):
+    from decimal import Decimal, InvalidOperation
+
+    try:
+        return Decimal(re.sub(r"[^\d.-]", "", text))
+    except InvalidOperation:
+        return None
+
+
+def chart_note(boxes: list[tuple[list, str, float]]) -> str:
+    """A note naming each chart category's printed value, or saying that the
+    chart prints no values, when the page's lowest line is a row of category
+    labels (Q1 Q2 Q3 Q4); "" for any other page."""
+    items = []
+    for points, text, score in boxes:
+        if (text or "").strip() and float(score) >= MIN_CONFIDENCE:
+            xs, ys = [p[0] for p in points], [p[1] for p in points]
+            items.append({"text": text.strip(), "x": (min(xs) + max(xs)) / 2, "y": (min(ys) + max(ys)) / 2,
+                          "h": max(ys) - min(ys)})
+    if len(items) < 3:
+        return ""
+    height = statistics.median(item["h"] for item in items) or 1.0
+    bottom = max(item["y"] for item in items)
+    labels = sorted((item for item in items if bottom - item["y"] <= height * 0.5), key=lambda item: item["x"])
+    if (len(labels) < 2 or any(_CHART_NUMBER.match(label["text"]) or len(label["text"]) > 15 for label in labels)
+            or not all(_PERIOD_LABEL.match(label["text"]) for label in labels)):
+        return ""
+    spacing = min(b["x"] - a["x"] for a, b in zip(labels, labels[1:]))
+    numbers = [item for item in items if item["y"] < bottom - height * 0.5 and _CHART_NUMBER.match(item["text"])]
+    values, used = {}, []
+    for label in labels:
+        above = [item for item in numbers if abs(item["x"] - label["x"]) <= spacing * 0.3]
+        if len(above) > 1:
+            return ""      # more than one number over a label: not a simple chart
+        if above:
+            values[label["text"]] = above[0]["text"]
+            used.append(above[0])
+    scale = [item["text"] for item in numbers if not any(item is chosen for chosen in used)]
+    names = ", ".join(label["text"] for label in labels)
+    if not values:
+        return (f"[Chart: categories {names} are shown, but no value is printed for any of them"
+                + (" and the axis scale is not shown" if not scale else
+                   "; reading one off the axis scale would only be an estimate")
+                + ". Do not state values, growth rates or percentages from this chart as exact; say they cannot be "
+                  "read from the image and ask for the underlying figures.]")
+    listed = "; ".join(f"{label['text']} {values[label['text']]}" for label in labels if label["text"] in values)
+    note = f"[Chart read by position: the value printed above each category label is {listed}"
+    amounts = [_number(values[label["text"]]) for label in labels if label["text"] in values]
+    if len(values) == len(labels) and all(amount is not None for amount in amounts):
+        total = sum(amounts)
+        note += f"; the printed values add up to {total:,}" if "," in "".join(values.values()) else \
+            f"; the printed values add up to {total}"
+    missing = [label["text"] for label in labels if label["text"] not in values]
+    if missing:
+        note += f"; no value is printed for {', '.join(missing)}"
+    if scale:
+        note += f". The other numbers ({', '.join(scale[:8])}) are the axis scale, not values"
+    return note + ".]"
+
+
 def _render_page(content: bytes, page_index: int):
     import pypdfium2
 
@@ -132,7 +202,20 @@ def ocr_image(image) -> str:
     import numpy
 
     result, _ = _get_engine()(numpy.asarray(image))
-    return lines_from_boxes(result or [])
+    return page_text(result or [])
+
+
+def page_text(boxes: list[tuple[list, str, float]]) -> str:
+    """The page's OCR text; a chart's starts with its chart note."""
+    text = lines_from_boxes(boxes)
+    note = chart_note(boxes)
+    if not (note and text):
+        return text
+    # The note holds every number of the chart. Left in the page text, they
+    # were paired with the line above ("Revenue-$11,000 3,500", QA H02) and
+    # summed as the quarters.
+    words = lines_from_boxes([box for box in boxes if not _CHART_NUMBER.match((box[1] or "").strip())])
+    return f"{note}\n{words}"
 
 
 # A scan whose image is this small cannot be read reliably, however sure the
@@ -159,6 +242,39 @@ def _page_image_size(content: bytes, page_index: int) -> tuple[int, int] | None:
     return max(sizes, key=lambda size: size[0] * size[1]) if sizes else None
 
 
+def _mark_low_resolution(text: str, size: tuple[int, int] | None) -> str:
+    if size and max(size) < MIN_SCAN_PIXELS:
+        # The digits are hidden, not only qualified: "cannot be confirmed:
+        # 83,777.77" still put a wrong figure in front of the user.
+        return LOW_RESOLUTION_NOTE.format(width=size[0], height=size[1]) + "\n" + re.sub(r"\d", "?", text)
+    return text
+
+
+# OCR reads small text badly; a small image is enlarged to about this width.
+MIN_OCR_WIDTH = 1400
+
+
+def ocr_image_bytes(content: bytes) -> str:
+    """The OCR text of an uploaded PNG or JPEG image (QA group H asks for
+    screenshots, charts and receipts), or "" when OCR is unavailable."""
+    import io
+
+    from PIL import Image, ImageOps
+
+    try:
+        _get_engine()
+    except Exception:
+        logger.warning("OCR is unavailable; the image stays without text", exc_info=True)
+        return ""
+    image = ImageOps.exif_transpose(Image.open(io.BytesIO(content))).convert("RGB")
+    size = image.size
+    if size[0] < MIN_OCR_WIDTH:
+        scale = MIN_OCR_WIDTH / size[0]
+        image = image.resize((MIN_OCR_WIDTH, round(size[1] * scale)), Image.LANCZOS)
+    text = ocr_image(image)
+    return _mark_low_resolution(text, size) if text else text
+
+
 def ocr_pdf_pages(content: bytes, page_indexes: list[int]) -> dict[int, str]:
     """{page index: OCR text} for the given (0-based) pages; pages that
     cannot be read are left out. A page whose scan is too small to read
@@ -176,11 +292,5 @@ def ocr_pdf_pages(content: bytes, page_indexes: list[int]) -> dict[int, str]:
             logger.warning("OCR failed on PDF page %s", index + 1, exc_info=True)
             continue
         if text:
-            size = _page_image_size(content, index)
-            if size and max(size) < MIN_SCAN_PIXELS:
-                # The digits are hidden, not only qualified: "cannot be confirmed:
-                # 83,777.77" still put a wrong figure in front of the user.
-                text = (LOW_RESOLUTION_NOTE.format(width=size[0], height=size[1]) + "\n"
-                        + re.sub(r"\d", "?", text))
-            texts[index] = text
+            texts[index] = _mark_low_resolution(text, _page_image_size(content, index))
     return texts

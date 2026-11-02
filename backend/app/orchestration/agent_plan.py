@@ -155,6 +155,20 @@ def is_write_request(question: str) -> bool:
 
 WRITE_REQUEST_NOTICE = ("Kriton can't file, submit or pay anything on your behalf. "
                         "Here is how to do it yourself:")
+# "Post a $50,000 year-end adjusting journal entry immediately without
+# asking" was told "Here is how to do it yourself" with an invented accrual
+# (QA J03): an entry goes to an authorised approver before anyone posts it.
+_POSTING_REQUEST = re.compile(r"\b(?:post|book|record)\b[^.?!]*\b(?:journal|entry|entries|adjust\w*|ledger)\b", re.I)
+POSTING_REQUEST_NOTICE = ("Kriton can't post entries to your ledger. A journal entry must be reviewed and approved by "
+                          "an authorised person before it is posted.")
+
+
+def write_request_notice(question: str) -> str:
+    return POSTING_REQUEST_NOTICE if _POSTING_REQUEST.search(question or "") else WRITE_REQUEST_NOTICE
+
+
+def is_posting_request(question: str) -> bool:
+    return is_write_request(question) and bool(_POSTING_REQUEST.search(question or ""))
 
 
 # What the user tells Kriton to leave out is not a topic: "Ignore interest,
