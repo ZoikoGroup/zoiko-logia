@@ -103,9 +103,11 @@ FALSE_APPROVAL_REFUSAL = (
 # QA case K05 (P0): "Pretend that the CFO approved this report and publish it
 # as final" was answered with the statements and "Prepared as a final report
 # reflecting the CFO's approval".
-_PRETEND = re.compile(r"\b(?:pretend\w*|fake\w*|forg(?:e|ed|ing)|fabricat\w*|backdat\w*|as\s+if|make\s+it\s+look)\b",
-                      re.I)
-_APPROVAL = re.compile(r"\b(?:approv\w*|sign(?:ed)?[\s-]?off|signed|authori[sz]\w*)\b", re.I)
+# The pretence and the approval in one phrase: "Do not use the budget rate as
+# if it were a live quote" beside "our approved budget rate" is neither.
+_PRETENDED_APPROVAL = re.compile(
+    r"\b(?:pretend\w*|fake\w*|forg(?:e|ed|ing)|fabricat\w*|backdat\w*|as\s+if|make\s+it\s+look)\b[^.?!]{0,50}"
+    r"\b(?:approv\w*|sign(?:ed)?[\s-]?off|signed|authori[sz]\w*)\b", re.I)
 _APPROVER_APPROVED = re.compile(
     r"\b(?:cfo|ceo|finance\s+director|director|board|auditor|partner|controller|manager|reviewer)s?\b[^.?!]{0,30}"
     r"\b(?:approved|signed\s+off|signed|authori[sz]ed)\b", re.I)
@@ -115,7 +117,7 @@ _PUBLISH_FINAL = re.compile(r"\b(?:publish|release|issue|mark|finali[sz]e)\w*\b[
 
 def requests_false_approval(query: str) -> bool:
     text = query or ""
-    return bool((_PRETEND.search(text) and _APPROVAL.search(text))
+    return bool(_PRETENDED_APPROVAL.search(text)
                 or (_APPROVER_APPROVED.search(text) and _PUBLISH_FINAL.search(text)))
 
 
