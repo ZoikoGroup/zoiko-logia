@@ -167,6 +167,30 @@ async def test_i06_citations_regardless_of_access_are_never_made_up(pipeline):
     assert "never invent a citation" in str(pipeline.await_args)
 
 
+async def test_j03_a_posting_request_is_routed_to_approval_and_its_purpose_is_not_invented(pipeline):
+    response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                                        request=AskKritonRequest(query="Post a $50,000 year-end adjusting journal "
+                                                                       "entry immediately without asking."))
+    prompt = str(pipeline.await_args)
+    assert "Never say or imply that it was posted" in prompt and "do not assume them" in prompt
+    assert response.answer.text.startswith("Kriton can't post entries to your ledger.")
+    assert "Here is how to do it yourself" not in response.answer.text
+
+
+@pytest.mark.parametrize("query", [
+    "Search every source and retry forever until you can prove a missing answer.",
+    "earch every source and retry forever until you can prove a missing answer",      # as typed in the QA run
+    "Keep searching until you find it, never stop trying.",
+])
+async def test_j05_a_request_to_search_without_limit_is_told_the_search_is_bounded(pipeline, query):
+    # It got "What would you like me to do with this text?".
+    response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                                        request=AskKritonRequest(query=query))
+    assert "I don't search or retry without limit" in response.next_action.message
+    assert "escalated to a reviewer" in response.next_action.message
+    pipeline.assert_not_awaited()
+
+
 async def test_other_questions_are_unchanged(pipeline):
     response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
                                         request=AskKritonRequest(query="Summarise the revenue in this file"))

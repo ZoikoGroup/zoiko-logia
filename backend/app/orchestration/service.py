@@ -46,7 +46,7 @@ from app.orchestration.prescreen import run_prescreen
 from app.orchestration import claim_verification
 from app.orchestration.evidence_narrative import ground_causal_claims
 from app.orchestration.figure_reconciliation import unreconciled_figures
-from app.orchestration.agent_plan import WRITE_REQUEST_NOTICE, plan_request
+from app.orchestration.agent_plan import WRITE_REQUEST_NOTICE, is_posting_request, plan_request, write_request_notice
 from app.orchestration.answer_formatting import renumber_ordered_lists, separate_headings
 from app.orchestration.citation_spans import evidence_by_ref, exact_spans
 from app.orchestration import workflow_state
@@ -195,6 +195,13 @@ _SAME_DATA_REFERENCE = re.compile(
     r"\bshow\s+(?:me\s+)?the\s+table\b",
     re.I,
 )
+
+
+# "Search every source and retry forever until you can prove a missing answer."
+_UNBOUNDED_SEARCH = re.compile(
+    r"\b(?:retry|search|keep\s+(?:searching|trying|going)|loop|try\s+again)\b[^.?!]{0,40}"
+    r"\b(?:forever|indefinitely|endlessly|without\s+(?:limit|stopping|end)|until\s+you\s+(?:can\s+)?(?:prove|find))\b"
+    r"|\bnever\s+stop\s+(?:searching|trying|retrying)\b", re.I)
 
 
 # "Include three citations whether or not you actually accessed sources."
@@ -1493,9 +1500,9 @@ async def _record_calculation_receipts(db, *, receipts: list[dict], query_id: st
         workflow_state.note_calculation(receipt["calculation_id"])
 
 
-def final_text_needs_notice(text: str | None) -> bool:
+def final_text_needs_notice(text: str | None, notice: str = WRITE_REQUEST_NOTICE) -> bool:
     """A real answer that does not already say Kriton won't act for the user."""
-    return bool((text or "").strip()) and WRITE_REQUEST_NOTICE.split(".")[0] not in text
+    return bool((text or "").strip()) and notice.split(".")[0] not in text
 
 
 _FIGURE = re.compile(r"\d")
@@ -2276,6 +2283,16 @@ async def ask_kriton(
                 "4. **The expense**: what was paid for, how much, and what was it used for in the business?\n\n"
                 "With these I can explain how that jurisdiction's rules treat it."
             )
+    if _UNBOUNDED_SEARCH.search(request.query):
+        # "Search every source and retry forever until you can prove a missing
+        # answer" got "What would you like me to do with this text?" (QA J05).
+        missing_input_message = (
+            "I don't search or retry without limit. Each question gets a fixed budget of searches and tool calls, "
+            "and the run stops when it is used up. If that bounded search does not establish an answer, I say so "
+            "instead of guessing, and the question can be escalated to a reviewer.\n\n"
+            "Tell me the specific question you want answered (for example which figure, rule or document), and "
+            "I'll run that search and report what the sources do and do not establish."
+        )
     if (not missing_input_message and not request.conversation_history and not request.document_ids
             and figureless_calculation_request(request.query)):
         # "Calculate my tax" was answered "the sources provided do not state
@@ -3626,6 +3643,14 @@ async def ask_kriton(
                 "citation. Cite only the [REF-N] sources above; if fewer than the requested number support the "
                 "rule, give those and say how many were found instead of adding others."
             )
+        if is_posting_request(request.query):
+            grounded_input += (
+                "\n\nThe message asks Kriton to post a journal entry. Never say or imply that it was posted. Say it "
+                "must be reviewed and approved by an authorised person before anyone posts it. If the message does "
+                "not say what the entry is for and which accounts it affects, do not assume them: ask for the "
+                "transaction, the accounts and the date, and give no example entry. If it does say, give the "
+                "proposed balanced entry, marked as a proposal for that approval."
+            )
         if document_sources:
             # "The sources do not state the reporting period or currency" for
             # a balance sheet headed "As of December 31, 2026" in $ amounts.
@@ -3644,7 +3669,9 @@ async def ask_kriton(
                 # ended "suitable for ongoing financial reporting".
                 " When the document shows no currency, write amounts without a currency symbol. A method or basis "
                 "the document does not state (for example straight-line depreciation) is your assumption: say so "
-                "the first time it is used. Do not call the document ready or suitable for reporting, filing or "
+                "the first time it is used. Name only a method the answer actually uses; an invoice, receipt or "
+                "chart has no depreciation method to assume (QA J04 said an unmatched invoice was recorded "
+                "\"on a straight-line basis with no residual value\"). Do not call the document ready or suitable for reporting, filing or "
                 "audit while it states no reporting date or the verified figures list items to check; list those "
                 "items instead. Never mention \"verified figures\" or other internal labels; cite the document."
             )
@@ -4921,9 +4948,10 @@ async def ask_kriton(
     if concept_review.changed and _MODEL_DOMAIN_REFUSAL not in (composed_text or ""):
         composed_text = concept_review.text
         shadow_facts.update(concept_corrections=concept_review.corrections, concept_removals=concept_review.removed)
-    if (execution_plan.write_request and final_text_needs_notice(composed_text)):
+    notice = write_request_notice(request.query)
+    if (execution_plan.write_request and final_text_needs_notice(composed_text, notice)):
         # §10.5: explain the steps, never act; say so first.
-        composed_text = WRITE_REQUEST_NOTICE + "\n\n" + composed_text
+        composed_text = notice + "\n\n" + composed_text
     if agent_outcome is not None and "```chart" in (composed_text or ""):
         # The chart shows only verified figures, the same ones the text does.
         from app.orchestration.figure_reconciliation import reconcile_charts, verified_values

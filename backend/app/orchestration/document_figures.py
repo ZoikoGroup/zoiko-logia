@@ -1142,8 +1142,16 @@ def _three_way_lines(table: Table) -> list[str]:
     line += f"; invoiced but not received = {_fmt(float(unmatched))}"
     if amount is not None:
         line += f" ({_fmt(float(total(found['invoice'], amount) - total(found['receipt'], amount)))} unmatched)"
-    return [line + ". The invoice does not match: place it on hold / exception for authorized review. Do not approve "
-                   "or pay it, and do not say a payment was made."]
+    # QA J04 put the held invoice's full 1,000 to accounts payable, the
+    # unreceived 100 as a "purchase adjustment".
+    received = (f" ({_fmt(float(total(found['receipt'], amount)))})" if amount is not None else "")
+    return [line + ". The invoice does not match: place the whole invoice on hold / exception for authorized review. "
+                   "Do not approve or pay it, not even the received part: recommend no partial payment until the "
+                   "exception is resolved (for example by a credit note or the missing delivery), and do not say a "
+                   "payment was made. Approving a payment is a decision for an authorised approver, not for Kriton. "
+                   "While it is on hold, record only the goods received"
+                   f"{received} as owed (goods received not invoiced); do not post the invoice or the unmatched amount "
+                   "to accounts payable or to any adjustment account until the difference is resolved."]
 
 
 def _table_lines(table: Table, include_top_n: bool = True, by_month_group: bool = True,

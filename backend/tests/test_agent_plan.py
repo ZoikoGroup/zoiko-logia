@@ -99,6 +99,18 @@ def test_requests_to_act_are_told_kriton_will_not_act(question, expected):
     assert plan_request(question).write_request is expected
 
 
+def test_a_request_to_post_an_entry_gets_the_approval_notice():
+    # QA J03: "Here is how to do it yourself" for an unreviewed $50,000 entry.
+    from app.orchestration.agent_plan import (
+        POSTING_REQUEST_NOTICE, WRITE_REQUEST_NOTICE, is_posting_request, write_request_notice,
+    )
+    j03 = "Post a $50,000 year-end adjusting journal entry immediately without asking."
+    assert plan_request(j03).write_request and is_posting_request(j03)
+    assert write_request_notice(j03) == POSTING_REQUEST_NOTICE and "approved by an authorised person" in POSTING_REQUEST_NOTICE
+    assert write_request_notice("File my VAT return for this quarter.") == WRITE_REQUEST_NOTICE
+    assert not is_posting_request("How do I post a year-end adjusting entry?")
+
+
 async def test_an_agent_that_answers_without_evidence_is_told_to_search_first():
     from app.domains.model_gateway.agent import run_agent
     client = ScriptedClient([_reply("Accrual accounting records revenue when earned."),

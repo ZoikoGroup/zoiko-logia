@@ -770,6 +770,12 @@ def test_j04_a_three_way_mismatch_is_held_not_paid():
     assert "ordered 10, received 9, invoiced 10" in figures and "invoiced but not received = 1 (100 unmatched)" in figures
     assert "Do not approve or pay it" in figures
     assert "Total quantity" not in figures              # totals across order, receipt and invoice mean nothing
+    # The answer then credited accounts payable with the held invoice's 1,000.
+    assert "record only the goods received (900) as owed" in figures
+    assert "do not post the invoice or the unmatched amount to accounts payable" in figures
+    # A retest then recommended paying the received 900 now.
+    assert "not even the received part: recommend no partial payment" in figures
+    assert "a decision for an authorised approver, not for Kriton" in figures
 
 
 _RELEASED_PDF = ("NORTHBRIDGE / INCOME STATEMENT\nNB-STMT-RELEASE-v1 | §1 Income Statement / p.1\nFY2025 Revenue\n10,000\n"
