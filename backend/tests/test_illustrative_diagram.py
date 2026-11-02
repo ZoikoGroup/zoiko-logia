@@ -84,6 +84,68 @@ async def test_a_flow_from_po_to_payment_is_drawn_and_labelled(pipeline, monkeyp
         in response.answer.text
 
 
+BRANCHED = ("Raise PO -> Receive goods -> Receive invoice -> Three way match passed? Yes -> Approve invoice -> "
+            "Pay supplier; No -> Place invoice on hold -> Reviewer resolves exception -> Three way match passed")
+
+
+async def test_e01_a_mismatch_routes_to_hold_in_the_drawing_and_the_list(pipeline, monkeypatch):
+    # QA case E01 was drawn as one straight line, with no "mismatches route to hold".
+    from app.orchestration.illustrative_diagram import FLOW, _FORMATS
+    assert "? Yes ->" in _FORMATS[FLOW][1] and "? No ->" in _FORMATS[FLOW][1]
+    monkeypatch.setattr(service.model_gateway_service, "run_grounded_completion", AsyncMock(return_value=BRANCHED))
+    edges = [(e.source, e.target, e.type) for e in extract_graph(
+        await illustrated_query(E01, AsyncMock(return_value=BRANCHED), FAILURE)).edges]
+    assert ("Three way match passed", "Place invoice on hold", "No") in edges
+    response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                                        request=AskKritonRequest(query=E01))
+    assert response.visualization is not None
+    assert "4. Three way match passed? Yes → Approve invoice; No → Place invoice on hold" in response.answer.text
+    assert "8. Reviewer resolves exception → back to Three way match passed" in response.answer.text
+
+
+def test_e04_each_decision_keeps_its_own_yes_and_no_paths():
+    # Every Yes and No path hung off the first decision, and "Approve PO?" was a plain step.
+    reply = ("Requisition submitted -> Approve requisition? Yes -> Create purchase order -> Approve PO? Yes -> "
+             "Receive goods -> Match invoice? Yes -> Pay vendor; Approve requisition? No -> Reject requisition; "
+             "Match invoice? No -> Resolve invoice issue -> Match invoice")
+    from app.orchestration.illustrative_diagram import FLOW, _with_structure
+    graph = extract_graph(_with_structure("Give the purchase-to-pay flow as a flowchart.", FLOW, reply, FAILURE))
+    edges = {(e.source, e.type, e.target) for e in graph.edges}
+    assert {("Approve requisition", "Yes", "Create purchase order"), ("Approve PO", "Yes", "Receive goods"),
+            ("Match invoice", "Yes", "Pay vendor"), ("Approve requisition", "No", "Reject requisition"),
+            ("Match invoice", "No", "Resolve invoice issue"), ("Resolve invoice issue", "next", "Match invoice")} <= edges
+    assert not any(node.endswith("?") for node in graph.nodes)
+    # A path written twice is one arrow ("Yes → Receive invoice" was listed twice).
+    twice = extract_graph(_with_structure("Give the purchase-to-pay flow as a flowchart.", FLOW,
+                                          "Order goods -> Goods received? Yes -> Receive invoice -> Pay; Goods received? "
+                                          "No -> Follow up vendor -> Goods received? Yes -> Receive invoice", FAILURE))
+    assert [(e.source, e.type, e.target) for e in twice.edges].count(("Goods received", "Yes", "Receive invoice")) == 1
+    # The decisions are one diagram request, not separate questions.
+    from app.orchestration.websearch import sub_questions
+    query = _with_structure("Give the purchase-to-pay flow as a flowchart.", FLOW, reply, FAILURE)
+    assert sub_questions(query) == [query]
+    assert len(sub_questions("What is VAT? What is GST?")) == 2
+
+
+@pytest.mark.parametrize("reply", [
+    "Raise requisition -> Requisition approved? Yes -> Create purchase order -> Order approved? Yes -> "
+    "Receive goods -> Pay supplier; Requisition approved? No -> Revise requisition; Order approved? No -> Hold order",
+    # The 14-stage flow of the QA retest, as the model wrote it.
+    "Start -> Requisition approved? Yes -> Create purchase order -> PO approved? Yes -> Receive goods -> Goods "
+    "receipt matched? Yes -> Invoice received -> Invoice matched? Yes -> Payment processed -> End; Requisition "
+    "approved? No -> Revise requisition -> Start; PO approved? No -> Hold purchase order -> Create purchase order; "
+    "Goods receipt matched? No -> Return goods -> Receive goods; Invoice matched? No -> Resolve discrepancy -> "
+    "Invoice received",
+])
+async def test_e04_a_branched_flow_is_drawn_not_reported_as_missing(pipeline, monkeypatch, reply):
+    query = "Give the same purchase-to-pay flow as a flowchart and an ordered text list."
+    monkeypatch.setattr(service.model_gateway_service, "run_grounded_completion", AsyncMock(return_value=reply))
+    response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                                        request=AskKritonRequest(query=query))
+    assert response.visualization is not None
+    assert not any("could not be built" in note or "questions" in note for note in response.answer.limitations)
+
+
 async def test_a_list_after_the_step_line_does_not_discard_the_steps():
     # QA case E04 asked for a flowchart and an ordered list; the reply had both.
     reply = ("Raise requisition -> Approve requisition -> Issue purchase order -> Receive goods -> Pay supplier"

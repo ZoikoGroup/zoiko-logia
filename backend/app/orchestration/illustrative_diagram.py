@@ -29,7 +29,19 @@ _DRAW_REQUEST = re.compile(r"\b(?:draw|create|make|show|give|generate|prepare|di
 
 # The typed form each kind's parser accepts, with one accounting example.
 _FORMATS: dict[str, tuple[str, str]] = {
-    FLOW: ("flowchart", "Step one -> Step two -> Step three (one line, steps joined by ->)"),
+    # A straight line could not show "mismatches route to hold" (QA case E01):
+    # the decision form is the one extract_decision_flow reads.
+    # The E01 retest copied a placeholder example ("Step one", "First check
+    # passed"); the example is a real process and the names must be the
+    # requested process's own.
+    FLOW: ("flowchart", "Receive expense claim -> Receipts attached? Yes -> Manager reviews claim -> Within policy? "
+                        "Yes -> Reimburse employee; Receipts attached? No -> Request receipts -> Receive expense "
+                        "claim; Within policy? No -> Reject claim (an example only: use the requested process's "
+                        "own step and check names; steps joined by ->; where the process checks something, end that "
+                        "step with ? and continue with its Yes path; after the main line, give each check's No path "
+                        "as ; then the check's exact name with ? then No -> and its exception steps, which may "
+                        "return to an earlier step by repeating its exact name; include the exception path whenever "
+                        "the process has one)"),
     kroki.SWIMLANE: ("swimlane diagram", "Clerk: Raise PO -> Manager: Approve PO -> Finance: Pay supplier "
                                         "(every step written as Role: step, steps joined by ->)"),
     kroki.BPMN: ("BPMN diagram", "Raise PO -> Approve PO -> Receive goods -> Pay supplier (steps joined by ->)"),

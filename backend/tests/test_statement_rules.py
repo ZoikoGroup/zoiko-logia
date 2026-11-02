@@ -290,6 +290,20 @@ def test_l04_a_note_about_the_documents_date_or_currency_is_not_an_unanswered_pa
     assert not service._DOCUMENT_DETAIL_GAP.search("The sources do not state the 2026 VAT threshold")
 
 
+async def test_e02_e06_process_and_symbol_questions_get_their_missing_points(pipeline):
+    await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                             request=AskKritonRequest(query="Show how a draft journal entry becomes an approved "
+                                                            "posted journal entry."))
+    prompt = str(pipeline.await_args)
+    assert "returns to draft" in prompt and "segregation of duties" in prompt and "audit trail" in prompt
+    assert "do not write diagram code or JSON" in prompt
+    await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                             request=AskKritonRequest(query="In an unlabeled process sketch, does a diamond mean "
+                                                            "approval or a calculation?"))
+    assert "ask for the legend" in str(pipeline.await_args)
+    assert not service._DIAGRAM_SYMBOL_QUESTION.search("What does EBITDA mean?")
+
+
 async def test_other_questions_are_unchanged(pipeline):
     response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
                                         request=AskKritonRequest(query="Summarise the revenue in this file"))

@@ -201,6 +201,17 @@ _SAME_DATA_REFERENCE = re.compile(
 )
 
 
+# "Show how a draft journal entry becomes an approved posted journal entry" (QA E02).
+_APPROVAL_PROCESS_QUESTION = re.compile(
+    r"\b(?:draft|pending|unapproved)\b[^.?!]{0,60}\b(?:becomes?|turns?\s+into|moves?\s+to|gets?)\b[^.?!]{0,40}"
+    r"\b(?:approved|posted|final|released)\b"
+    r"|\b(?:approval|review|posting|sign[\s-]?off)\s+(?:workflow|process|state|lifecycle|life\s+cycle)\b", re.I)
+# "Does a diamond mean approval or a calculation?" (QA E06).
+_DIAGRAM_SYMBOL_QUESTION = re.compile(
+    r"\b(?:diamond|rhombus|rectangle|oval|parallelogram|cylinder|symbol|shape)s?\b[^.?!]{0,60}"
+    r"\b(?:mean|means|represent|represents|stand\s+for|signif\w*|indicate\w*)\b", re.I)
+
+
 # "Search every source and retry forever until you can prove a missing answer."
 _UNBOUNDED_SEARCH = re.compile(
     r"\b(?:retry|search|keep\s+(?:searching|trying|going)|loop|try\s+again)\b[^.?!]{0,40}"
@@ -769,7 +780,18 @@ def _grounded_domain_fallback(query: str, evidence: EvidenceModel, series_ref: s
         # The stages as an ordered list too, taken from the same graph so the
         # list and the drawing cannot disagree (QA case E04 asked for both
         # and got one sentence above the drawing).
-        stages = "\n".join(f"{number}. {node}" for number, node in enumerate(graph.nodes, 1))
+        # A decision lists its paths, and a step leading back says so: the
+        # three-way match's "No → Place invoice on hold" (QA E01) would
+        # otherwise read as the next step after payment.
+        def stage(number: int, node: str) -> str:
+            branches = [edge for edge in graph.edges if edge.source == node and edge.type != "next"]
+            if branches:
+                return f"{number}. {node}? " + "; ".join(f"{edge.type} → {edge.target}" for edge in branches)
+            back = [edge.target for edge in graph.edges if edge.source == node and edge.type == "next"
+                    and graph.nodes.index(edge.target) < graph.nodes.index(node)]
+            return f"{number}. {node}" + (f" → back to {back[0]}" if back else "")
+
+        stages = "\n".join(stage(number, node) for number, node in enumerate(graph.nodes, 1))
         return (
             f"Kriton mapped the {len(graph.nodes)} supplied accounting-workflow stages in order. "
             "The validated process visualization below does not add or remove stages.\n\n" + stages
@@ -3701,6 +3723,29 @@ async def ask_kriton(
                 "sentence, that you cite only sources actually retrieved for this answer and never invent a "
                 "citation. Cite only the [REF-N] sources above; if fewer than the requested number support the "
                 "rule, give those and say how many were found instead of adding others."
+            )
+        if _APPROVAL_PROCESS_QUESTION.search(request.query):
+            # QA E02 "Show how a draft journal entry becomes an approved posted
+            # journal entry" gave the happy path only: no return to draft, no
+            # audit record, no segregation of duties.
+            grounded_input += (
+                "\n\nThis asks how an item moves through an approval process. Include, besides the normal path: "
+                "what happens when a check fails or the reviewer rejects it (for example it returns to draft for "
+                "correction and goes through review again), who may approve it (the preparer cannot approve their "
+                "own entry: segregation of duties), and that each change of state is kept in an audit trail that "
+                "cannot be edited; a posted entry is corrected by a new reversing or adjusting entry, never edited. "
+                # The E02 retest printed a JSON "flowchart" and said "The chart
+                # is rendered by the system"; nothing was drawn.
+                "Describe the steps in text or a table: do not write diagram code or JSON, and do not say a chart "
+                "or diagram is shown."
+            )
+        if _DIAGRAM_SYMBOL_QUESTION.search(request.query):
+            # QA E06 "In an unlabeled process sketch, does a diamond mean
+            # approval or a calculation?" gave the convention as a fact.
+            grounded_input += (
+                "\n\nThis asks what a shape means in a diagram. Give the standard flowchart convention, then say "
+                "that in an unlabelled sketch its meaning cannot be confirmed without the diagram's legend or its "
+                "author, and ask for the legend. Do not state that it means one thing in this sketch."
             )
         if is_posting_request(request.query):
             grounded_input += (

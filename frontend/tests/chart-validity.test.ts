@@ -39,6 +39,25 @@ describe("checkChartValidity", () => {
     expect(checkChartValidity(viz)).toBe("OK");
   });
 
+  it("draws a decision flow that loops back to its first stage, not a plain cycle", () => {
+    // QA E01: "Revise PO → back to the start" made every stage a destination and
+    // the three-way match fell back to a relationship table.
+    const nodes = ["Raise PO", "PO approved", "Pay", "Revise PO"].map((id) => ({ id, label: id }));
+    const edges = [
+      { source: "Raise PO", target: "PO approved", type: "next", directed: true },
+      { source: "PO approved", target: "Pay", type: "Yes", directed: true },
+      { source: "PO approved", target: "Revise PO", type: "No", directed: true },
+      { source: "Revise PO", target: "Raise PO", type: "next", directed: true },
+    ];
+    expect(checkChartValidity(runtimeSpec({ type: "PROCESS_FLOW", nodes, edges }))).toBe("OK");
+    const cycle = [
+      { source: "A", target: "B", type: "next", directed: true },
+      { source: "B", target: "A", type: "next", directed: true },
+    ];
+    expect(checkChartValidity(runtimeSpec({ type: "PROCESS_FLOW", nodes: [{ id: "A", label: "A" }, { id: "B", label: "B" }],
+      edges: cycle }))).toBe("STRUCTURALLY_INVALID");
+  });
+
   it.each(["BAR", "HISTOGRAM", "SCATTER", "HEATMAP", "DONUT", "CANDLESTICK", "GROUPED_BAR", "TABLE", "EVIDENCE_GRAPH", "PROCESS_FLOW"])(
     "does not throw when a legacy %s payload omits its collection fields",
     (type) => {

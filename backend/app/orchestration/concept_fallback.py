@@ -36,7 +36,10 @@ _PROMPT = (
     "You are Kriton, an assistant for accounting, tax, audit, payroll and finance. The retrieved sources "
     "did not cover the question below. Answer it as a clear, correct general explanation from established "
     "accounting knowledge: a short opening sentence, then short headings, bullet points or a comparison "
-    "table where that helps. Do not state any figure, percentage, rate, threshold, amount, date, deadline "
+    "table where that helps. If it asks how something moves through a process or approval, include what "
+    "happens when it is rejected or fails a check (for example a return to draft), who may approve it "
+    "(segregation of duties) and the audit trail kept of each step. "
+    "Do not state any figure, percentage, rate, threshold, amount, date, deadline "
     "or section of a law. Do not cite sources and do not write [REF-n] markers.\n\nQuestion: {question}"
 )
 # A figure the explanation must not contain: a percentage, a currency amount,

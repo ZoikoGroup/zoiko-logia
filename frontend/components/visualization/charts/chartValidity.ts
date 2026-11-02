@@ -117,7 +117,12 @@ export function checkChartValidity(viz: VisualizationSpec): ChartValidity {
       const idSet = new Set(nodes.map((n) => n.id));
       const targets = new Set(edges.map((e) => e.target));
       if (edges.some((e) => !idSet.has(e.source) || !idSet.has(e.target))) return "STRUCTURALLY_INVALID";
-      if (![...idSet].some((id) => !targets.has(id))) return "STRUCTURALLY_INVALID";
+      // As the backend validator: the first stage starts a flow with decisions
+      // that loops back to it ("Revise PO → back to the start", QA E01/E04);
+      // a plain A → B → A cycle still has no entry point.
+      const firstStarts = edges.some((e) => e.source === nodes[0].id)
+        && edges.some((e) => e.type && e.type !== "next");
+      if (![...idSet].some((id) => !targets.has(id)) && !firstStarts) return "STRUCTURALLY_INVALID";
       return "OK";
     }
   }

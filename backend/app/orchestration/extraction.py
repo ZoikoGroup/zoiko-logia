@@ -143,7 +143,10 @@ def extract_decision_flow(query: str) -> ExtractedGraph | None:
             current = node(part)
             if current is None:
                 return None
-            if previous is not None:
+            # The same path written twice is one arrow: "Goods received? Yes →
+            # Receive invoice" listed twice in the E04 retest.
+            if previous is not None and not any(
+                    (e.source, e.target, e.type) == (previous, current, edge_type) for e in edges):
                 edges.append(ExtractedEdge(source=previous, target=current, type=edge_type))
             previous, edge_type = current, "next"
         return previous
@@ -159,8 +162,14 @@ def extract_decision_flow(query: str) -> ExtractedGraph | None:
             branch = _BRANCH.match(piece)
             if branch and decision:
                 label, rest = branch.groups()
-                if chain(decision, _ARROW_SPLIT.split(rest), label.capitalize()) is None:
+                last = chain(decision, _ARROW_SPLIT.split(rest.rstrip("?")), label.capitalize())
+                if last is None:
                     return None
+                # "… Approve requisition? Yes → Create PO → Approve PO? Yes → …":
+                # a path ending in a question is the next decision. Every later
+                # branch hung off the first one (QA case E04 retest).
+                if piece.endswith("?"):
+                    decision = last
                 continue
             parts = [part for part in _ARROW_SPLIT.split(piece.rstrip("?")) if part.strip()]
             last = chain(None, parts)
