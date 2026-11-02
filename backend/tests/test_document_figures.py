@@ -730,6 +730,38 @@ def test_the_formula_check_is_only_for_formula_questions_and_needs_reliable_cell
     assert "Formula check" not in verified_document_figures([gappy], "Check the formulas")
 
 
+F8 = _src("source_id\tsection_id\tauthority_tier\teffective_from\teffective_to\trights\trule\n"
+          "NB-POLICY-2025\t§A1\t1\t2025-01-01\t2025-12-31\tLICENSED_TEST_USE\tthreshold = 10\n"
+          "NB-POLICY-2026\t§A1\t1\t2026-01-01\t\tLICENSED_TEST_USE\tthreshold = 20\n"
+          "NB-RESTRICTED-001\t§R\t1\t2025-02-12\t\tPROHIBITED_FULL_TEXT\t<DO_NOT_RETRIEVE_OR_QUOTE>\n"
+          "NB-CONFLICT-1\t§C\t2\t2025-04-15\t\tLICENSED_TEST_USE\tcutoff = 30\n"
+          "NB-CONFLICT-2\t§C\t2\t2025-04-15\t\tLICENSED_TEST_USE\tcutoff = 35", "F8_SOURCE_REGISTRY.csv — Sheet1")
+
+
+def test_i01_the_card_in_effect_on_the_date_controls_and_a_later_one_is_not_applied():
+    # The answer mixed in the §C cards and decided nothing.
+    figures = verified_document_figures(
+        [F8], "Under the rules in F8, what is the controlling recognition guidance effective December 31, 2025?")
+    assert "- As of 2025-12-31:" in figures
+    assert 'NB-POLICY-2025 §A1, tier 1, effective 2025-01-01 to 2025-12-31: "threshold = 10" — NB-POLICY-2025 controls' in figures
+    assert "Not yet in effect on this date (do not apply): NB-POLICY-2026 §A1 from 2026-01-01" in figures
+    assert "Total authority_tier" not in figures                 # a tier is not an amount
+
+
+def test_i02_a_date_names_what_ends_and_what_takes_effect():
+    figures = verified_document_figures([F8], "Under F8, what changes on January 1, 2026?")
+    assert ("Changes on 2026-01-01: NB-POLICY-2025 §A1 ends on 2025-12-31; NB-POLICY-2026 §A1 takes effect; "
+            "NB-POLICY-2026 replaces NB-POLICY-2025 in section §A1") in figures
+
+
+def test_i05_an_equal_tier_conflict_is_escalated_and_i04_a_denied_card_is_never_quoted():
+    figures = verified_document_figures([F8], "Two authorized documents in F8 disagree; which one controls as of June 30, 2025?")
+    assert "NB-CONFLICT-2 §C, tier 2" in figures and "CONFLICT: these cards have equal authority" in figures
+    assert "escalate it for review" in figures
+    assert "<DO_NOT_RETRIEVE_OR_QUOTE>" not in figures
+    assert "Rights denied: NB-RESTRICTED-001 must not be quoted" in figures
+
+
 def test_j04_a_three_way_mismatch_is_held_not_paid():
     match = ["record_type\treference\titem\tquantity\tunit_price_usd\ttotal_usd",
              "PURCHASE_ORDER\tPO-1\tDock\t10\t100\t1000", "GOODS_RECEIPT\tGR-1\tDock\t9\t100\t900",

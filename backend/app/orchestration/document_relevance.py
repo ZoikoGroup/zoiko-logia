@@ -104,11 +104,23 @@ def _brings_its_own_figures(query: str, sources: list[WebSource]) -> bool:
                                  for written in own)
 
 
+# A file named by its code: "Under F8, what changes on January 1, 2026?"
+# about F8_SOURCE_REGISTRY.csv dropped the file, and the question, left with
+# no evidence, was refused as off-topic (QA I02). "FY2025" is a year, not a code.
+_FILE_CODE = re.compile(r"\b[A-Za-z]{1,4}-?\d{1,3}\b")
+
+
+def _names_a_file_code(query: str, sources: list[WebSource]) -> bool:
+    codes = {code.lower().replace("-", "") for code in _FILE_CODE.findall(query or "")}
+    return bool(codes) and any(code in re.split(r"[^a-z0-9]+", _file(source).lower().replace("-", ""))
+                               for source in sources for code in codes)
+
+
 def question_is_about_documents(query: str, sources: list[WebSource]) -> bool:
     """Whether a follow-up with no new upload is about the chat's files. One
     that is not ("What is IPR?" after a VAT file) is answered as a new
     question, not from the files. When unsure, the files are kept."""
-    if _DOCUMENT_REFERENCE.search(query or ""):
+    if _DOCUMENT_REFERENCE.search(query or "") or _names_a_file_code(query, sources):
         return True
     if _brings_its_own_figures(query, sources):
         return False
