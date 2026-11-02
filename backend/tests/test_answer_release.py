@@ -295,3 +295,15 @@ def test_nothing_verifiable_left_becomes_an_honest_gap_and_unavailable_checker_i
     unavailable = AnswerVerification(False, ["Claim verification unavailable or incomplete"])
     kept = decide_release_failure("The threshold is £90,000 [REF-1].", unavailable, risk_level="LOW", validation_passed=True)
     assert not kept.escalate and kept.text == "The sources provided do not establish an answer to this." and "could not verify" in kept.note
+
+
+def test_tax_ruled_out_is_not_a_tax_question():
+    # "…assuming no tax" held a textbook journal entry to official tax sources (QA case A03).
+    from app.orchestration.verification_service import requires_authoritative_evidence
+    assert not requires_authoritative_evidence(
+        "Show the initial journal entry for a $12,000 invoice issued on credit for earned consulting services, "
+        "assuming no tax.")
+    assert not requires_authoritative_evidence("Record a £500 sale excluding VAT as a journal entry.")
+    # Tax that is asked about still needs its source.
+    assert requires_authoritative_evidence("What VAT applies to a £500 sale of consulting services?")
+    assert requires_authoritative_evidence("Show the journal entry for a £1,200 sale including 20% VAT.")

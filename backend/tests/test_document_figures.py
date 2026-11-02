@@ -601,6 +601,45 @@ def test_g03_a_stale_displayed_value_is_flagged_against_the_recalculation():
             "The Legacy displayed value is stale or wrong") in figures
 
 
+BOOK = [
+    _src("Id\tAmount\nA\t650000\nB\t700000\nC\t750000", "book.xlsx — 'Transactions'!1:4"),
+    _src("Rate\n1000", "book.xlsx — 'Controls'!1:2"),
+    _src("Quarter\tCalculated\tExpected\tDifference\n"
+         "Q1\t=SUM(Transactions!B2:B4)/Controls!A2 => 2100\t2100\t=B2-C2 => 0\n"
+         "Q2\t=B2*2 => 4300\t4200\t=B3-C3 => 100\n"
+         "Q3\t=VLOOKUP(A4,Transactions!A2:B4,2) => 7\t7\t=B4-C4 => 0", "book.xlsx — 'Summary'!1:4"),
+]
+
+
+def test_g03_each_formula_is_recalculated_and_named_by_its_cell():
+    # "Show whether summary-sheet formulas and displayed values agree" named no
+    # formula and no cell: "the standard aggregations shown in the sheet".
+    figures = verified_document_figures(BOOK, "Show whether summary-sheet formulas and displayed values agree.")
+    assert ("Summary!B2 =SUM(Transactions!B2:B4)/Controls!A2: displayed 2,100; recalculated 2,100 "
+            "(Controls!A2 = 1,000). Agrees.") in figures
+    assert "Summary!B3 =B2*2: displayed 4,300; recalculated 4,200" in figures
+    assert "Does NOT agree (difference 100)" in figures and "flag Summary!B3 for review" in figures
+    # D3 uses B3 recalculated, not B3 as displayed: the stale 4,300 carried through.
+    assert "Summary!D3 =B3-C3: displayed 100; recalculated 0" in figures
+    assert "Summary!B4 =VLOOKUP(A4,Transactions!A2:B4,2): displayed 7; not recalculated (VLOOKUP is not supported)" in figures
+    assert "2 agree, 2 do not agree, 2 not recalculated" in figures
+
+
+def test_g03_a_stale_sheet_names_its_cells_and_quotes_a_sheet_name_with_spaces():
+    sheet = _src("Metric\tLegacy displayed\tRecalculated\tDifference\nQ4\t3200\t3100\t=B2-C2 => 100",
+                 "stale.xlsx — 'Stale Legacy Summary'!1:2")
+    figures = verified_document_figures([sheet], "Do the displayed values agree?")
+    assert "'Stale Legacy Summary'!B2 = 3,200; 'Stale Legacy Summary'!C2 = 3,100" in figures
+    assert "Legacy displayed value is stale or wrong" in figures
+
+
+def test_the_formula_check_is_only_for_formula_questions_and_needs_reliable_cell_addresses():
+    assert "Formula check" not in verified_document_figures(BOOK, "What is total revenue?")
+    # Blank rows were left out of this block: its cells cannot be addressed.
+    gappy = _src("Quarter\tTotal\nQ1\t=SUM(B5:B6) => 5", "gap.xlsx — 'Summary'!1:4")
+    assert "Formula check" not in verified_document_figures([gappy], "Check the formulas")
+
+
 def test_j04_a_three_way_mismatch_is_held_not_paid():
     match = ["record_type\treference\titem\tquantity\tunit_price_usd\ttotal_usd",
              "PURCHASE_ORDER\tPO-1\tDock\t10\t100\t1000", "GOODS_RECEIPT\tGR-1\tDock\t9\t100\t900",

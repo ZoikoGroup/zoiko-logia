@@ -45,3 +45,21 @@ def test_a_follow_up_about_the_file_uses_it_and_an_unrelated_one_does_not():
     # Not about the file: answered as a new question, the file kept for later.
     for question in ("What is IPR?", "Explain intellectual property rights", "Who won the cricket world cup?"):
         assert not about(question, [VAT]), question
+
+
+STATEMENT = WebSource(title="NB-STATEMENTS_RELEASED.pdf — Page 1", url="",
+                      snippet="FY2025 Revenue\n10,000\nFY2025 NET INCOME\n900\nNote 2. Q4 revenue\n3,100", source_id="nb")
+
+
+def test_a_question_with_its_own_new_amount_is_not_answered_from_the_file():
+    from app.orchestration.document_relevance import question_is_about_documents as about
+    # Asked after attaching a statement PDF: an invented quarterly allocation,
+    # and "insufficient evidence" for a textbook journal entry.
+    assert not about("When should my company recognize this $2 million contract revenue?", [STATEMENT])
+    assert not about("Show the initial journal entry for a $12,000 invoice issued on credit for earned consulting "
+                     "services, assuming no tax.", [STATEMENT])
+    # The file's own figures, a reference to it, or no amount at all keep it.
+    assert about("Why was revenue 10,000 in FY2025?", [STATEMENT])
+    assert about("Explain the Q4 revenue of $3,100k", [STATEMENT])
+    assert about("From this file, what if revenue were $12,000?", [STATEMENT])
+    assert about("What were the top 5 revenue lines?", [STATEMENT])

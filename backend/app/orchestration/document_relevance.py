@@ -72,12 +72,46 @@ _GENERAL = frozenset((
 ))
 
 
+# An amount the question states itself: "$2 million", "£12,000", "4,500".
+# Small counts ("top 5", "four sentences") and codes ("E012", "FY2025") are
+# not figures of their own.
+_OWN_FIGURE = re.compile(
+    r"(?<![\w.])(?P<currency>[$£€₹])?\s?(?P<number>\d[\d,]*(?:\.\d+)?)\s?(?P<scale>million|billion|m\b|bn\b|k\b)?",
+    re.IGNORECASE)
+_SCALE = {"million": 1e6, "m": 1e6, "billion": 1e9, "bn": 1e9, "k": 1e3}
+
+
+def _brings_its_own_figures(query: str, sources: list[WebSource]) -> bool:
+    """The question states an amount the files do not contain: it is a new
+    question, not about them. "When should my company recognise this $2
+    million contract revenue?" and "the journal entry for a $12,000 invoice",
+    asked after attaching a statement PDF, were answered from the PDF (an
+    invented quarterly allocation; "insufficient evidence")."""
+    content = re.sub(r"(?<=\d),(?=\d)", "", " ".join(source.snippet or "" for source in sources))
+    own = []
+    for match in _OWN_FIGURE.finditer(query or ""):
+        digits = match.group("number").replace(",", "")
+        if not (match.group("currency") or match.group("scale") or len(digits.split(".")[0]) >= 4):
+            continue
+        scale = _SCALE.get((match.group("scale") or "").lower(), 1)
+        value = float(digits) * scale
+        # "$2 million" is 2000000, never the bare 2 ("Note 2."); a file in
+        # thousands states it as 2,000.
+        written = ({f"{value:.0f}"} if match.group("scale") else {digits}) | (
+            {f"{value / 1000:.0f}"} if value >= 1e6 else set())
+        own.append(written)
+    return bool(own) and not any(any(re.search(rf"(?<![\d.]){re.escape(w)}(?![\d])", content) for w in written)
+                                 for written in own)
+
+
 def question_is_about_documents(query: str, sources: list[WebSource]) -> bool:
     """Whether a follow-up with no new upload is about the chat's files. One
     that is not ("What is IPR?" after a VAT file) is answered as a new
     question, not from the files. When unsure, the files are kept."""
     if _DOCUMENT_REFERENCE.search(query or ""):
         return True
+    if _brings_its_own_figures(query, sources):
+        return False
     wanted = _terms(query) - _GENERAL
     if not wanted:
         return True      # "why?", "and the total?": nothing new to ask about

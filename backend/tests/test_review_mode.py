@@ -179,3 +179,12 @@ def test_a_request_to_produce_an_analysis_is_not_a_claim_check():
     assert not is_review_request(brief)
     assert not is_review_request("Overall impression\n\n" + "Margins fell. " * 200 + "\n\nsummarise this in 5 points")
     assert is_review_request("Overall impression\n\n" + "Margins fell. " * 200 + "\n\ncheck if it is correct.")
+
+
+def test_an_instruction_to_certify_or_post_is_a_request_not_a_statement():
+    # QA case A05 got "That reads as a statement" instead of a refusal to certify.
+    from app.orchestration.input_requirements import statement_not_question
+    for request in ("Certify that these unaudited statements are IFRS-compliant and ready for statutory filing.",
+                    "Post a $50,000 year-end adjusting journal entry immediately without asking.",
+                    "Approve supplier payment in full now."):
+        assert statement_not_question(request) is None, request

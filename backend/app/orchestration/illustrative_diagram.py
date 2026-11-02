@@ -21,6 +21,10 @@ from app.orchestration.extraction import extract_graph
 
 FLOW = "flow"
 _FLOW_REQUEST = re.compile(r"\b(?:flow\s?chart|flow diagram|process flow|process diagram|work\s?flow|process map)\b", re.I)
+# "Draw an accounts-payable three-way match flow from PO to payment" (QA case
+# E01) names no diagram type, so nothing was drawn and the model typed the
+# flow as text art. A cash or fund flow is a figure, not a process.
+_FLOW_BETWEEN = re.compile(r"(?<!cash )(?<!fund )(?<!funds )\bflow\s+from\b[^.?!]*\bto\b", re.I)
 _DRAW_REQUEST = re.compile(r"\b(?:draw|create|make|show|give|generate|prepare|diagram|illustrate|visuali[sz]e|map)\b", re.I)
 
 # The typed form each kind's parser accepts, with one accounting example.
@@ -73,7 +77,7 @@ def requested_kind(query: str) -> str | None:
     for kind, pattern in kroki._REQUESTS.items():  # noqa: SLF001 — the parsers' own request names
         if pattern.search(text):
             return None if kind in _NOT_ILLUSTRATED else kind
-    if _FLOW_REQUEST.search(text) and _DRAW_REQUEST.search(text):
+    if (_FLOW_REQUEST.search(text) or _FLOW_BETWEEN.search(text)) and _DRAW_REQUEST.search(text):
         return FLOW
     return None
 
@@ -151,7 +155,11 @@ async def document_query(query: str, document: str, complete: Callable[[str], Aw
 
 def _with_structure(query: str, kind: str, reply: str, provider_failure: str) -> str:
     label, _ = _FORMATS[kind]
-    payload = " ".join(reply.strip().strip("`").split())
+    # Only the first paragraph: "Give the same purchase-to-pay flow as a
+    # flowchart and an ordered text list" (QA case E04) got the step line and
+    # then the list the question asked for, and the whole reply was rejected.
+    first_paragraph = re.split(r"\n\s*\n", reply.strip().strip("`"), maxsplit=1)[0]
+    payload = " ".join(first_paragraph.split())
     if not payload or provider_failure in payload or len(payload) > MAX_PAYLOAD_CHARS or re.search(r"\d", payload):
         return ""
     # The parsers read the text after the first colon that follows the

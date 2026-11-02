@@ -7,6 +7,7 @@ import pytest
 from app.domains.model_gateway.agent import AgentOutcome
 from app.orchestration import learned_answers, review, service
 from app.orchestration.schemas import AskKritonRequest
+from app.orchestration.websearch import WebSource
 from app.orchestration.statement_rules import (
     CASH_FLOW_NOTE, COMPARATIVES_NOTE, STATUS_NOTE, is_statement_request, open_items, remove_unsupported_claims,
 )
@@ -23,6 +24,14 @@ def test_statement_requests_are_recognised():
                      "Sum quarterly revenue and compare with the financial statement.",
                      "What is a balance sheet?", "Explain the cash flow statement"):
         assert not is_statement_request(question), question
+
+
+def test_statement_rules_ask_for_each_account_under_its_heading():
+    # One run listed each expense, another showed only "Operating expenses 574,000".
+    from app.orchestration.statement_rules import INSTRUCTIONS
+
+    assert "List every account on its own line under its heading" in INSTRUCTIONS
+    assert "no leading dash" in INSTRUCTIONS
 
 
 def test_fiscal_year_labels_in_a_statement_pdf_count_as_comparatives():
@@ -93,6 +102,37 @@ async def test_an_income_statement_answer_is_labelled_a_draft_without_a_complian
     assert response.answer.limitations[0] == STATUS_NOTE and COMPARATIVES_NOTE in response.answer.limitations
     prompt = str(pipeline.await_args)
     assert "Financial statement rules (ZoikoLogia Document 01)" in prompt
+
+
+async def test_figures_from_an_attached_document_are_placed_by_page_or_table(pipeline, monkeypatch):
+    # QA F02/F05: correct figures, but no page, statement or table named.
+    page = WebSource(title="NB-STATEMENTS_RELEASED.pdf — Page 1", url="", snippet="Revenue 10,000", source_id="d1")
+    monkeypatch.setattr(service, "retrieve_document_sources", AsyncMock(return_value=[page]))
+    await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                             request=AskKritonRequest(query="What is FY2025 revenue?", document_ids=["d1"]))
+    assert "(Income statement, page 1)" in str(pipeline.await_args)
+
+
+G01 = "Sum quarterly revenue and compare with the financial statement."
+CSV = WebSource(title="NB-TRANSACTIONS.csv — Table", url="", source_id="d1",
+                snippet="transaction_id\tquarter\tamount_usd\nNB-SALE-001\tQ1\t650000\nTOTAL\tFY2025\t10000000")
+
+
+async def test_g01_a_comparison_with_a_statement_that_is_not_attached_says_so(pipeline, monkeypatch):
+    # The transactions CSV's own TOTAL row was called "the financial-statement total".
+    monkeypatch.setattr(service, "retrieve_document_sources", AsyncMock(return_value=[CSV]))
+    await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                             request=AskKritonRequest(query=G01, document_ids=["d1"]))
+    assert "No financial statement is attached" in str(pipeline.await_args)
+
+
+async def test_g01_an_attached_statement_is_compared_as_usual(pipeline, monkeypatch):
+    statement = WebSource(title="NB-STATEMENTS_RELEASED.pdf — Page 1", url="", source_id="d2",
+                          snippet="NORTHBRIDGE / INCOME STATEMENT\nFY2025 Revenue\n10,000")
+    monkeypatch.setattr(service, "retrieve_document_sources", AsyncMock(return_value=[CSV, statement]))
+    await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                             request=AskKritonRequest(query=G01, document_ids=["d1", "d2"]))
+    assert "No financial statement is attached" not in str(pipeline.await_args)
 
 
 async def test_other_questions_are_unchanged(pipeline):

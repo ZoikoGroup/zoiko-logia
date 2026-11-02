@@ -551,6 +551,9 @@ const ConversationTurn = memo(function ConversationTurn({
       ? "Answered — source grounded"
       : result?.answer?.computed_from_question
         ? "Answered — from figures in this conversation"
+      // A drawn standard process the user did not type (QA cases E01, E03, E04).
+      : visibleLimitations.some((limitation) => limitation.startsWith("General illustration"))
+        ? "Answered — general illustration"
       : result?.visualization
         ? "Answered — structured from your input"
         : "Answered — no cited sources"

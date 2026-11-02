@@ -17,6 +17,22 @@ def test_simple_questions_skip_the_tool_loop(question):
     assert plan.mode == "simple" and plan.tools == () and plan.as_prompt() == ""
 
 
+@pytest.mark.parametrize("question", [
+    "comment on the above", "Summarise this.", "summarise these files", "Please review the above answer",
+    "What do you think of the statements?",
+])
+def test_a_comment_on_what_is_already_here_skips_the_tool_loop(question):
+    # "comment on the above" after three PDFs searched three times, tried the
+    # calculator twice and ran out of token budget before writing anything.
+    assert plan_request(question, has_documents=True).mode == "simple"
+    assert plan_request(question, history=True).tools == ()
+
+
+def test_a_comment_request_with_nothing_to_comment_on_or_a_new_task_is_planned_as_usual():
+    assert plan_request("comment on the above").mode == "agent"           # nothing earlier, nothing attached
+    assert plan_request("Summarise the UK VAT rules for 2026", history=True).mode == "agent"
+
+
 @pytest.mark.parametrize("question, tools", [
     (MARGINS, ("calculate", "render_chart")),
     ("Convert 10,000 GBP to EUR at the latest rate and show the rate date.", ("get_exchange_rate",)),
@@ -53,6 +69,25 @@ def test_a_new_question_in_an_existing_conversation_can_still_be_simple():
     from app.orchestration.service import _looks_like_contextual_follow_up
     assert not _looks_like_contextual_follow_up("What is accrual accounting?")
     assert plan_request("What is accrual accounting?", history=False).mode == "simple"
+
+
+@pytest.mark.parametrize("question", [
+    "comment on the above", "Comment on the above.", "please review the above statements",
+    "What do you think of the above?", "summarise your answer", "explain the above",
+])
+def test_a_comment_on_the_earlier_answer_is_a_follow_up(question):
+    # Not a follow-up, the earlier income statement was left out of the prompt
+    # and the planner rule above never applied (95,033 tokens, answer withheld).
+    from app.orchestration.service import _looks_like_contextual_follow_up
+    assert _looks_like_contextual_follow_up(question)
+
+
+@pytest.mark.parametrize("question", [
+    "Explain the matching principle", "Review the IFRS 16 rules for short leases", "Summarise UK VAT rules",
+])
+def test_a_new_explain_or_review_question_is_not_a_follow_up(question):
+    from app.orchestration.service import _looks_like_contextual_follow_up
+    assert not _looks_like_contextual_follow_up(question)
 
 
 @pytest.mark.parametrize("question, expected", [

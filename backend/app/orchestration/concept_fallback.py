@@ -26,7 +26,10 @@ GENERAL_NOTE = ("General explanation from established accounting knowledge: the 
 _CONCEPT = re.compile(
     r"\b(?:what\s+(?:is|are|does)|what's|define|definition|meaning|explain|describe|"
     r"differences?|distinguish|difference\s+between|compare|vs\.?|versus|types?\s+of|kinds\s+of|"
-    r"purpose\s+of|role\s+of|objectives?\s+of|features?\s+of|advantages|importance\s+of|how\s+does)\b",
+    r"purpose\s+of|role\s+of|objectives?\s+of|features?\s+of|advantages|importance\s+of|how\s+does|"
+    # "Show how a draft journal entry becomes an approved posted journal
+    # entry" (QA case E02) got only "the sources do not contain this".
+    r"show\s+how|how\s+an?\s+\w[\w\s-]*?\s+becomes)\b",
     re.IGNORECASE,
 )
 _PROMPT = (

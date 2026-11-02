@@ -1103,6 +1103,20 @@ def is_evidence_gap_statement(text: str) -> bool:
     return bool(_GAP_STATEMENT.search(text)) and not _SPECIFIC_VALUE.search(text)
 
 
+# "To answer this question you would need to consult an organisation's
+# accounting policies…" after a gap statement points elsewhere; it states
+# nothing, so the answer is still only a gap (QA case E02).
+_REFERRAL = re.compile(
+    r"^(?:to answer (?:this|the) question,?\s+)?(?:you\s+(?:would|will|may|might)\s+(?:need|have)\s+to|please)\s+"
+    r"(?:consult|refer\s+to|check|review|see)\b",
+    re.I,
+)
+
+
+def is_referral(text: str) -> bool:
+    return bool(_REFERRAL.search(text.strip())) and not _SPECIFIC_VALUE.search(text)
+
+
 _VISUAL_POINTER = re.compile(
     r"^(?:the|this|a)\s+(?:\w+\s+){0,3}(?:chart|graph|plot|table|diagram|flowchart|visual(?:isation|ization)?)\b"
     r"[^.]*\b(?:below|above|attached|following)\b", re.I,
@@ -1405,10 +1419,20 @@ def requires_authoritative_evidence(question: str, context: str = "") -> bool:
     return not (context and applies_to_supplied_facts(question, context))
 
 
+_TAX_EXCLUDED = re.compile(
+    r"\b(?:assum\w*\s+|with\s+)?(?:no|without|ignor\w*|exclud\w*|ex\.?|net\s+of|before)\s+(?:any\s+)?"
+    r"(?:vat|gst|sales\s+tax|tax(?:es)?)\b",
+    re.I,
+)
+
+
 def _authority_terms(question: str) -> bool:
     """Whether the wording calls for an authority (GitHub main's definition
     leniency, verbatim); the context exemption is applied by the caller."""
-    text = question or ""
+    # Tax ruled out is not a tax question: "the journal entry for a $12,000
+    # invoice …, assuming no tax" was held to official tax sources and a
+    # correct Dr Receivable / Cr Revenue was withheld (QA case A03).
+    text = _TAX_EXCLUDED.sub(" ", question or "")
     lowered = text.lower()
     # Pure definitions of terms ("what is X", "define X") need not be forced
     # into the strict citation regime that can trigger an evidence-gap answer.

@@ -38,6 +38,28 @@ def test_formatting_rules_answer_every_question_and_show_working():
     assert "Indian" in rules and "grouping" in rules
 
 
+def test_drawn_flow_is_mermaid_with_its_failure_branch_not_text_art():
+    # QA case E01 came back as │ ▼ ──► text art with no mismatch branch.
+    rules = formatting_instructions("Draw an accounts-payable three-way match flow from PO to payment.")
+    assert "```mermaid" in rules
+    assert "Never draw a diagram as text art" in rules
+    assert "failure path" in rules
+    assert "text art" not in formatting_instructions("What is accrual accounting?")
+
+
+def test_flowchart_symbol_questions_are_in_scope():
+    # QA case E06 was refused as off-topic.
+    from app.domains.model_gateway.providers import groq_adapter
+    from app.orchestration.websearch import build_web_grounded_prompt
+
+    query = "In an unlabeled process sketch, does a diamond mean approval or a calculation?"
+    assert "what their symbols mean" in build_web_grounded_prompt(query, [])
+    assert "what their symbols mean" in groq_adapter._SYSTEM_PROMPT
+    # Agent mode sends its own shorter system prompt.
+    assert "flowcharts and what their symbols mean" in groq_adapter.KRITON_AGENT_SYSTEM_PROMPT
+    assert "flowcharts and what their symbols mean" in groq_adapter.KRITON_COMPOSITION_SYSTEM_PROMPT
+
+
 def test_pipeline_keeps_the_restored_steps_wired():
     source = inspect.getsource(service.ask_kriton)
     # 559f16b / d8119d5: wrong arithmetic is corrected once before validation.
