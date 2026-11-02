@@ -761,6 +761,241 @@ def _value_check_lines(table: Table, rows: list[list[str]]) -> list[str]:
               f"recalculated figure and flag the difference for review."]
 
 
+# QA G03: "Show whether summary-sheet formulas and displayed values agree" was
+# answered with "the standard aggregations shown in the sheet", naming no
+# formula and no cell. Each formula cell is recalculated here from the cells
+# it uses and named by its own cell reference.
+_FORMULA_QUESTION = re.compile(r"formula|recalculat|stale|\bcells?\b|displayed|cached", re.IGNORECASE)
+_BLOCK_RANGE = re.compile(r"\s+—\s+(?:'(?P<q>[^']+)'|(?P<s>[^'!]+?))!(?P<start>\d+):(?P<end>\d+)$")
+_FORMULA_TOKEN = re.compile(
+    r"\s*(?:(?P<func>[A-Za-z][A-Za-z0-9.]*)\(|"
+    r"(?P<ref>(?:(?:'[^']+'|[A-Za-z_]\w*)!)?\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?)|"
+    r"(?P<num>\d+(?:\.\d+)?)|(?P<op>[-+*/(),]))")
+_CELL = re.compile(r"(?:(?:'(?P<q>[^']+)'|(?P<s>[A-Za-z_]\w*))!)?\$?(?P<col>[A-Za-z]{1,3})\$?(?P<row>\d+)")
+_FUNCTIONS = ("SUM", "AVERAGE", "MIN", "MAX", "COUNT")
+MAX_FORMULAS_LISTED = 30
+
+
+class _FormulaError(Exception):
+    """A formula this check cannot recalculate; the message says why."""
+
+
+def _column_number(letters: str) -> int:
+    number = 0
+    for letter in letters.upper():
+        number = number * 26 + ord(letter) - 64
+    return number
+
+
+def _column_letters(number: int) -> str:
+    letters = ""
+    while number:
+        number, rest = divmod(number - 1, 26)
+        letters = chr(65 + rest) + letters
+    return letters
+
+
+def _workbook_cells(sources: list[WebSource]) -> tuple[dict, dict]:
+    """Each workbook sheet's cells by (row, column), from the extractor's
+    blocks ("book.xlsx — 'Summary'!1:6"), and each document's file name. A
+    block whose line count does not match its row range (blank rows were
+    left out) has no reliable cell addresses and is skipped."""
+    sheets: dict[tuple[str, str], dict[tuple[int, int], str]] = {}
+    names: dict[tuple[str, str], str] = {}
+    files: dict[str, str] = {}
+    for file, key, text, title in _join_split_chunks(sources):
+        match = _BLOCK_RANGE.search(title)
+        if not match:
+            continue
+        start, end = int(match.group("start")), int(match.group("end"))
+        lines = text.split("\n")
+        if len(lines) != end - start + 1:
+            continue
+        sheet = (match.group("q") or match.group("s")).strip()
+        cells = sheets.setdefault((key, sheet.lower()), {})
+        names[(key, sheet.lower())] = sheet
+        files[key] = file
+        for offset, line in enumerate(lines):
+            for column, cell in enumerate(line.split("\t"), start=1):
+                if cell.strip():
+                    cells[(start + offset, column)] = cell.strip()
+    return sheets, {"names": names, "files": files}
+
+
+def _recalculate(formula: str, sheets: dict, key: str, sheet: str, depth: int = 0) -> Decimal:
+    """The formula's value from the cells it uses (their own formulas
+    recalculated too): + - * / and SUM, AVERAGE, MIN, MAX, COUNT."""
+    if depth > 20:
+        raise _FormulaError("the chain of formulas is too long")
+    body, tokens, position = formula.strip().lstrip("="), [], 0
+    while body[position:].strip():
+        match = _FORMULA_TOKEN.match(body, position)
+        if not match:
+            raise _FormulaError(f"'{body[position:].strip()[:15]}' is not supported")
+        tokens.append(match)
+        position = match.end()
+    index = [0]
+
+    def cells_of(text: str) -> tuple[str, list[tuple[int, int]]]:
+        first_text, _, last_text = text.partition(":")
+        first = _CELL.fullmatch(first_text)
+        last = _CELL.fullmatch(last_text) if last_text else first
+        target = (first.group("q") or first.group("s") or sheet).lower()
+        if (key, target) not in sheets:
+            raise _FormulaError(f"sheet '{first.group('q') or first.group('s')}' was not read")
+        rows = sorted((int(first.group("row")), int(last.group("row"))))
+        columns = sorted((_column_number(first.group("col")), _column_number(last.group("col"))))
+        return target, [(r, c) for r in range(rows[0], rows[1] + 1) for c in range(columns[0], columns[1] + 1)]
+
+    def value_of(target: str, cell: tuple[int, int], in_range: bool) -> Decimal | None:
+        raw = sheets[(key, target)].get(cell, "")
+        if raw.startswith("=") and " => " in raw:
+            return _recalculate(raw.rsplit(" => ", 1)[0], sheets, key, target, depth + 1)
+        if not raw:
+            return None if in_range else Decimal("0")   # a blank cell counts as 0, as in Excel
+        value = _to_decimal(raw)
+        if value is None and not in_range:
+            raise _FormulaError(f"{_column_letters(cell[1])}{cell[0]} holds text")
+        return value
+
+    def peek(kind: str, text: str | None = None) -> bool:
+        if index[0] >= len(tokens) or tokens[index[0]].group(kind) is None:
+            return False
+        return text is None or tokens[index[0]].group(kind) == text
+
+    def expression() -> Decimal:
+        value = term()
+        while peek("op", "+") or peek("op", "-"):
+            sign = tokens[index[0]].group("op")
+            index[0] += 1
+            value = value + term() if sign == "+" else value - term()
+        return value
+
+    def term() -> Decimal:
+        value = factor()
+        while peek("op", "*") or peek("op", "/"):
+            sign = tokens[index[0]].group("op")
+            index[0] += 1
+            other = factor()
+            if sign == "/" and other == 0:
+                raise _FormulaError("it divides by zero")
+            value = value * other if sign == "*" else value / other
+        return value
+
+    def factor() -> Decimal:
+        if index[0] >= len(tokens):
+            raise _FormulaError("the formula ends early")
+        token = tokens[index[0]]
+        index[0] += 1
+        if token.group("op") in ("-", "+"):
+            value = factor()
+            return -value if token.group("op") == "-" else value
+        if token.group("num"):
+            return Decimal(token.group("num"))
+        if token.group("ref"):
+            if ":" in token.group("ref"):
+                raise _FormulaError("a range is used outside a function")
+            target, (cell,) = cells_of(token.group("ref"))
+            return value_of(target, cell, in_range=False)
+        if token.group("op") == "(":
+            value = expression()
+            if not peek("op", ")"):
+                raise _FormulaError("a bracket is not closed")
+            index[0] += 1
+            return value
+        if token.group("func"):
+            name = token.group("func").upper()
+            if name not in _FUNCTIONS:
+                raise _FormulaError(f"{name} is not supported")
+            values: list[Decimal] = []
+            while not peek("op", ")"):
+                if peek("ref") and ":" in tokens[index[0]].group("ref"):
+                    target, cells = cells_of(tokens[index[0]].group("ref"))
+                    index[0] += 1
+                    values += [v for v in (value_of(target, c, in_range=True) for c in cells) if v is not None]
+                else:
+                    values.append(expression())
+                if peek("op", ","):
+                    index[0] += 1
+                elif not peek("op", ")"):
+                    raise _FormulaError("a bracket is not closed")
+            index[0] += 1
+            if name == "COUNT":
+                return Decimal(len(values))
+            if not values:
+                raise _FormulaError(f"{name} has no numbers")
+            if name == "SUM":
+                return sum(values, Decimal("0"))
+            if name == "AVERAGE":
+                return sum(values, Decimal("0")) / len(values)
+            return min(values) if name == "MIN" else max(values)
+        raise _FormulaError(f"'{token.group(0).strip()}' is not supported")
+
+    value = expression()
+    if index[0] != len(tokens):
+        raise _FormulaError(f"'{tokens[index[0]].group(0).strip()}' is not supported")
+    return value
+
+
+def _cell_name(sheet: str, row: int, column: int) -> str:
+    return f"{repr(sheet) if re.search(r'[^A-Za-z0-9_]', sheet) else sheet}!{_column_letters(column)}{row}"
+
+
+def _formula_check_lines(sources: list[WebSource]) -> list[str]:
+    """Every formula cell of the attached workbooks: its displayed value
+    against Kriton's recalculation, named by cell."""
+    sheets, meta = _workbook_cells(sources)
+    lines: list[str] = []
+    for document, file in meta["files"].items():
+        findings: list[tuple[int, str]] = []
+        agree = differ = undone = 0
+        for (key, target), cells in sheets.items():
+            if key != document:
+                continue
+            sheet = meta["names"][(key, target)]
+            for (row, column), raw in sorted(cells.items()):
+                if not (raw.startswith("=") and " => " in raw):
+                    continue
+                formula, shown_text = raw.rsplit(" => ", 1)
+                shown = _to_decimal(shown_text)
+                name = _cell_name(sheet, row, column)
+                inputs = []
+                for ref in dict.fromkeys(m.group(0) for m in _CELL.finditer(formula)
+                                         if ":" not in formula[m.end():m.end() + 1] and formula[m.start() - 1:m.start()] != ":"):
+                    cell = _CELL.fullmatch(ref)
+                    other = (cell.group("q") or cell.group("s") or sheet).lower()
+                    value = sheets.get((key, other), {}).get((int(cell.group("row")), _column_number(cell.group("col"))))
+                    number = _to_decimal(value or "")
+                    if number is not None:
+                        inputs.append(f"{_cell_name(meta['names'][(key, other)], int(cell.group('row')), _column_number(cell.group('col')))} = {_fmt(float(number))}")
+                used = f" ({'; '.join(inputs[:4])})" if inputs else ""
+                displayed = f"displayed {_fmt(float(shown))}" if shown is not None else "no displayed value saved in the file"
+                try:
+                    value = _recalculate(formula, sheets, key, target)
+                except _FormulaError as reason:
+                    undone += 1
+                    findings.append((1, f"- {name} {formula}: {displayed}; not recalculated ({reason}). Check it by hand."))
+                    continue
+                if shown is not None and abs(shown - value) > Decimal("0.005"):
+                    differ += 1
+                    findings.append((0, f"- {name} {formula}: {displayed}; recalculated {_fmt(float(value))}{used}. Does "
+                                        f"NOT agree (difference {_fmt(float(shown - value))}): the displayed value is stale "
+                                        f"or wrong; use the recalculated figure and flag {name} for review."))
+                else:
+                    agree += 1
+                    findings.append((2, f"- {name} {formula}: {displayed}; recalculated {_fmt(float(value))}{used}. Agrees."))
+        if not findings:
+            continue
+        findings.sort(key=lambda item: item[0])
+        shown_lines = [text for _, text in findings[:MAX_FORMULAS_LISTED]]
+        if len(findings) > MAX_FORMULAS_LISTED:
+            shown_lines.append(f"- … and {len(findings) - MAX_FORMULAS_LISTED} more formulas, not listed")
+        lines += [f"Formula check of '{file}' (each formula cell recalculated by Kriton from the cells it uses; "
+                  f"{agree} agree, {differ} do not agree, {undone} not recalculated). Name each cell as shown:",
+                  *shown_lines]
+    return lines
+
+
 def _three_way_lines(table: Table) -> list[str]:
     """A purchase order, goods receipt and supplier invoice: the unmatched
     quantity and amount, and a hold instead of a payment."""
@@ -1354,6 +1589,8 @@ def verified_document_figures(sources: list[WebSource], query: str | None = None
     by_month = query is None or bool(_MONTHLY_QUESTION.search(query))
     tables = tables_from_sources(sources)
     lines: list[str] = _stated_figure_lines(sources) + _bank_reconciliation_lines(tables)
+    if query is None or _FORMULA_QUESTION.search(query):
+        lines += _formula_check_lines(sources)
     for table in tables:
         statement = _trial_balance_lines(table, by_month)
         lines.extend(statement)
