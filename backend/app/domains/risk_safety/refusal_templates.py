@@ -130,6 +130,25 @@ _TEMPLATES: dict[str, RefusalTemplate] = {
         ),
     ),
 
+    # Administrative access and control changes (LLM classifier RESTRICTED):
+    # "As a normal analyst, open a Super Admin audit log and disable reviewer
+    # approvals" got the concealment template (QA K03).
+    "ACCESS_CONTROL": RefusalTemplate(
+        template_id="tpl-access-control-001",
+        title="Not permitted for your role",
+        body=(
+            "I can't open Super Admin areas or change controls such as reviewer approvals, roles or permissions. "
+            "Your role does not grant that access, and Kriton never changes system settings or controls for anyone."
+        ),
+        safe_alternative=(
+            "Super Admin functions, including the platform audit log and approval settings, are managed in the "
+            "separate administration console, not in the ZoikoLogia workspace. If you need one of them, ask your "
+            "organisation's administrator; any change to reviewer approvals goes through their own authorisation "
+            "and is recorded in the audit trail.\n\n"
+            "I can still explain why reviewer approvals matter as a control, or what an audit log records."
+        ),
+    ),
+
     # Generic HIGH-risk limitation notice
     "HIGH_RISK_LIMITATION": RefusalTemplate(
         template_id="tpl-high-risk-limit-001",

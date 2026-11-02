@@ -53,6 +53,9 @@ from app.orchestration import workflow_state
 from app.orchestration.professional_boundary import (
     CERTIFICATION_REFUSAL, LEDGER_OVERWRITE_REFUSAL, requests_tax_certification, requests_unreviewed_ledger_overwrite,
 )
+from app.orchestration.professional_boundary import (
+    FALSE_APPROVAL_REFUSAL, REVOKED_ACCESS_REFUSAL, requests_false_approval, requests_revoked_content,
+)
 from app.orchestration.series_summary import ground_series_summary
 from app.orchestration.retrieve import build_source_bundle
 from app.orchestration.routing_matrix import (
@@ -214,6 +217,14 @@ _CITATIONS_REGARDLESS = re.compile(
 # "Can our company deduct this expense for tax?"
 _TAX_DEDUCTION_QUESTION = re.compile(
     r"\b(?:deduct(?:ible|ion|ed)?|allowable|tax[\s-]+deductible|claim\b.{0,40}\btax|write\s+(?:it\s+)?off)\b", re.I)
+
+
+# Admin areas and controls a blocked request asks to open or change (QA K03).
+_CONTROL_CHANGE_REQUEST = re.compile(
+    r"\b(?:super\s*-?\s*admin|admin(?:istrator)?\s+(?:console|panel|settings)|audit\s+logs?)\b"
+    r"|\b(?:disable|turn\s+off|bypass|remove|switch\s+off|skip)\b[^.?!]{0,40}"
+    r"\b(?:approvals?|reviewers?|controls?|permissions?|roles?|mfa|two[-\s]factor|segregation)\b"
+    r"|\b(?:grant|give|elevate|escalate)\b[^.?!]{0,30}\b(?:admin|privileges?|permissions?|roles?)\b", re.I)
 
 
 # Restricted source text a blocked request asks to reproduce.
@@ -2153,6 +2164,28 @@ async def ask_kriton(
             audit_reference=AuditReference(audit_chain_id=audit_chain_id),
         )
         return await finish(response)
+    # A file the user says they can no longer access is not quoted, from
+    # retrieval or from earlier turns (QA case K04, P0); an approval that was
+    # not given is not presented as given (K05, P0).
+    boundary = (("Content requested after the user's access was revoked", REVOKED_ACCESS_REFUSAL)
+                if requests_revoked_content(request.query) else
+                ("Pretended or unverified approval requested", FALSE_APPROVAL_REFUSAL)
+                if requests_false_approval(request.query) else None)
+    if boundary:
+        await audit_refusal_returned(
+            db, query_id=query_id, correlation_id=correlation_id,
+            tenant_id=tenant_id, audit_chain_id=audit_chain_id,
+            actor_id=actor_id, reason=boundary[0],
+        )
+        response = AskKritonResponse(
+            query_id=query_id, correlation_id=correlation_id,
+            outcome="refused", route=ROUTE_REFUSAL,
+            safety=SafetyState(risk_level="HIGH", policy_state="blocked"),
+            confidence_state=CONF_INSUFFICIENT, source_bundle=None, answer=None,
+            next_action=NextAction(type="refusal", message=boundary[1]),
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        )
+        return await finish(response)
 
     from app.orchestration import conversation_memory
     remembered_turns = await conversation_memory.load_turns(
@@ -3120,6 +3153,8 @@ async def ask_kriton(
                 # "Cite a prohibited, unlicensed premium standard text in full"
                 # got the concealment text too (QA I04).
                 integrity = get_refusal_template("RESTRICTED_SOURCE_PROHIBITED")
+            elif _CONTROL_CHANGE_REQUEST.search(request.query):
+                integrity = get_refusal_template("ACCESS_CONTROL")
             refusal_reason = f"{integrity.body}\n\n{integrity.safe_alternative}"
         await audit_refusal_returned(
             db, query_id=query_id, correlation_id=correlation_id,
