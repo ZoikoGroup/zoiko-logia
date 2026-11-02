@@ -275,6 +275,13 @@ def _extract_pptx(content: bytes) -> list[ExtractedBlock]:
     return blocks
 
 
+def _extract_image(content: bytes) -> list[ExtractedBlock]:
+    from app.domains.kriton_workspace.ocr import ocr_image_bytes
+
+    text = ocr_image_bytes(content)
+    return [ExtractedBlock(text, "Image", {"image": True, "ocr": True})] if text else []
+
+
 def extract_document(filename: str, content: bytes) -> list[ExtractedBlock]:
     suffix = Path(filename).suffix.lower()
     extractor = {
@@ -282,6 +289,9 @@ def extract_document(filename: str, content: bytes) -> list[ExtractedBlock]:
         ".docx": _extract_docx,
         ".xlsx": _extract_xlsx,
         ".pptx": _extract_pptx,
+        ".png": _extract_image,
+        ".jpg": _extract_image,
+        ".jpeg": _extract_image,
         # The file name stands in for the worksheet title a CSV does not have.
         ".csv": lambda data: _extract_csv(data, Path(filename).stem or "Sheet1"),
     }.get(suffix)
