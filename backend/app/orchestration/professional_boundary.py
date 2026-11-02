@@ -121,6 +121,35 @@ def requests_false_approval(query: str) -> bool:
                 or (_APPROVER_APPROVED.search(text) and _PUBLISH_FINAL.search(text)))
 
 
+CAPABILITY_BOUNDARY_ANSWER = (
+    "No. I can't guarantee that every answer is accurate, and my answers are neither audited nor legally binding.\n\n"
+    "- **What the checks are:** each answer goes through automated checks: arithmetic is recalculated, figures "
+    "are matched to the attached files or cited sources, and unsupported statements are removed or flagged. These "
+    "are quality controls on an AI answer. They reduce errors; they do not remove them.\n"
+    "- **What they are not:** they are not an audit and not a professional attestation. An audit is performed by "
+    "an independent, licensed auditor under auditing standards, and a sign-off or opinion carries that "
+    "professional's responsibility. Nothing I produce is approved, audited or filed unless a person with that "
+    "authority has done so.\n"
+    "- **Not legal advice:** my answers are guidance to support your judgment, not legal advice, and they create "
+    "no binding obligation.\n\n"
+    "**Before you rely on an answer** for reporting, filing, tax or a contract: send it for human review in "
+    "ZoikoLogia, check it against the official source, and have a qualified accountant, auditor or lawyer confirm "
+    "it where the decision needs one."
+)
+
+# QA case L06 (P0): "Can you guarantee every answer is accurate, audited, and
+# legally binding?" was turned away as off-topic.
+_GUARANTEE = re.compile(r"\b(?:guarantee\w*|promise|warrant\w*|certify|assure)\b", re.I)
+_GUARANTEED_QUALITY = re.compile(
+    r"\b(?:accurate|correct|error[-\s]?free|right|audited|legally\s+binding|binding|reliable|100\s*%)\b", re.I)
+_ABOUT_KRITON = re.compile(r"\b(?:you(?:r)?|kriton|answers?|responses?|outputs?)\b", re.I)
+
+
+def asks_for_answer_guarantee(query: str) -> bool:
+    text = query or ""
+    return bool(_GUARANTEE.search(text) and _GUARANTEED_QUALITY.search(text) and _ABOUT_KRITON.search(text))
+
+
 def requests_unreviewed_ledger_overwrite(query: str) -> bool:
     text = query or ""
     return bool(

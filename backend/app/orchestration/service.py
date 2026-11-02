@@ -54,7 +54,8 @@ from app.orchestration.professional_boundary import (
     CERTIFICATION_REFUSAL, LEDGER_OVERWRITE_REFUSAL, requests_tax_certification, requests_unreviewed_ledger_overwrite,
 )
 from app.orchestration.professional_boundary import (
-    FALSE_APPROVAL_REFUSAL, REVOKED_ACCESS_REFUSAL, requests_false_approval, requests_revoked_content,
+    CAPABILITY_BOUNDARY_ANSWER, FALSE_APPROVAL_REFUSAL, REVOKED_ACCESS_REFUSAL, asks_for_answer_guarantee,
+    requests_false_approval, requests_revoked_content,
 )
 from app.orchestration.series_summary import ground_series_summary
 from app.orchestration.retrieve import build_source_bundle
@@ -217,6 +218,13 @@ _CITATIONS_REGARDLESS = re.compile(
 # "Can our company deduct this expense for tax?"
 _TAX_DEDUCTION_QUESTION = re.compile(
     r"\b(?:deduct(?:ible|ion|ed)?|allowable|tax[\s-]+deductible|claim\b.{0,40}\btax|write\s+(?:it\s+)?off)\b", re.I)
+
+
+# "The source document does not specify a reporting date or a currency
+# symbol" describes the file, not a part of the question left unanswered: a
+# complete FY2025 income statement was marked "Partial" for it (QA L04).
+_DOCUMENT_DETAIL_GAP = re.compile(
+    r"\b(?:reporting\s+date|date\s+line|as[\s-]of|currency(?:\s+symbol)?|title|heading)\b", re.I)
 
 
 # Admin areas and controls a blocked request asks to open or change (QA K03).
@@ -2187,6 +2195,18 @@ async def ask_kriton(
             safety=SafetyState(risk_level="HIGH", policy_state="blocked"),
             confidence_state=CONF_INSUFFICIENT, source_bundle=None, answer=None,
             next_action=NextAction(type="refusal", message=boundary[1]),
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        )
+        return await finish(response)
+    # What Kriton's checks are and are not, never turned away as off-topic
+    # (QA case L06, P0).
+    if asks_for_answer_guarantee(request.query) and not request.document_ids:
+        response = AskKritonResponse(
+            query_id=query_id, correlation_id=correlation_id,
+            outcome="answered", route=ROUTE_LLM,
+            safety=SafetyState(risk_level="LOW", policy_state="allowed"),
+            confidence_state=CONF_SUFFICIENT, source_bundle=None,
+            answer=ComposedAnswer(text=CAPABILITY_BOUNDARY_ANSWER),
             audit_reference=AuditReference(audit_chain_id=audit_chain_id),
         )
         return await finish(response)
@@ -5229,7 +5249,8 @@ async def ask_kriton(
         if gaps_filled:
             composed_text = final_text
             limitations.append(GAP_NOTE)
-    if (re.search(r"(?:sources?|evidence)[^.\n]*(?:do not|does not|not establish|not state)", final_text, re.I)
+    if (any(not _DOCUMENT_DETAIL_GAP.search(match.group(0)) for match in re.finditer(
+            r"(?:sources?|evidence)[^.\n]*(?:do not|does not|not establish|not state)[^.\n]*", final_text, re.I))
             # "No ONS data … could be retrieved from the available sources":
             # one part answered, another not, shown as fully answered.
             or _PART_NOT_FOUND.search(final_text)) and not evidence_gap_only:
@@ -5525,9 +5546,10 @@ async def ask_kriton(
         visualization = credit_sale_diagram(request.query, final_text, spec_id=f"{query_id}-credit-sale",
                                              sources=[c.url for c in rag_citations if c.url])
 
-    from app.orchestration.answer_formatting import has_retained_agent_chart, missing_visual_message
+    from app.orchestration.answer_formatting import has_retained_agent_chart, missing_visual_message, table_request_answered
     retained_agent_chart = agent_outcome is not None and has_retained_agent_chart(final_text, agent_outcome.artifacts)
-    if detect_explicit_visual_request(request.query) and visualization is None and not secondary_visualizations and not retained_agent_chart:
+    if (detect_explicit_visual_request(request.query) and visualization is None and not secondary_visualizations
+            and not retained_agent_chart and not table_request_answered(request.query, final_text)):
         visual_note = missing_visual_message(request.query)
         # Limitations are rendered beside the answer; don't also append the
         # identical warning to the text (which displayed it twice).
@@ -5547,26 +5569,28 @@ async def ask_kriton(
         and document_sources
     ):
         try:
-            artifact = await create_generated_artifact(
-                db,
-                title="Kriton Management Report",
-                narrative=final_text,
-                analysis=document_analysis,
-                format_name=document_plan.output_format,
-                tenant_id=tenant_id,
-                user_id=actor_id,
-                conversation_id=request.conversation_id,
-                query_id=query_id,
-                source_document_ids=resolved_document_ids,
-                request_text=request.query,
-            )
-            generated_artifacts.append(GeneratedArtifactPublic(
-                id=artifact.id,
-                filename=artifact.filename,
-                mime_type=artifact.mime_type,
-                download_url=f"/kriton-workspace/artifacts/{artifact.id}/download",
-                expires_at=artifact.expires_at.isoformat() if artifact.expires_at else None,
-            ))
+            export_narrative = final_text + _export_record(answer.limitations, answer.citations or rag_citations)
+            for format_name in document_plan.formats or (document_plan.output_format,):
+                artifact = await create_generated_artifact(
+                    db,
+                    title="Kriton Management Report",
+                    narrative=export_narrative,
+                    analysis=document_analysis,
+                    format_name=format_name,
+                    tenant_id=tenant_id,
+                    user_id=actor_id,
+                    conversation_id=request.conversation_id,
+                    query_id=query_id,
+                    source_document_ids=resolved_document_ids,
+                    request_text=request.query,
+                )
+                generated_artifacts.append(GeneratedArtifactPublic(
+                    id=artifact.id,
+                    filename=artifact.filename,
+                    mime_type=artifact.mime_type,
+                    download_url=f"/kriton-workspace/artifacts/{artifact.id}/download",
+                    expires_at=artifact.expires_at.isoformat() if artifact.expires_at else None,
+                ))
         except Exception as exc:
             # Preserve the valid grounded answer, but make the additive file
             # failure visible instead of silently degrading to Download .md.
@@ -5615,6 +5639,21 @@ async def ask_kriton(
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _export_record(limitations: list[str], citations) -> str:
+    """The answer's status, sources and date for a downloaded file. The Word
+    and PDF exports of a draft income statement held only its tables: the
+    "Draft — not approved, audited or filed" status, the sources and the date
+    shown beside it on screen were left out (QA L04, M17)."""
+    from datetime import datetime, timezone
+    lines = ["", "", "---", "", "## Status and sources", ""]
+    lines += [f"- {note}" for note in dict.fromkeys(limitations or [])]
+    sources = list(dict.fromkeys(getattr(c, "title", "") or getattr(c, "url", "") for c in citations or []))
+    lines.append("- Sources: " + ("; ".join(s for s in sources if s) or "none cited"))
+    lines.append(f"- Generated by Kriton on {datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC from the answer shown on "
+                 "screen. Not reviewed or approved unless the status above says so.")
+    return "\n".join(lines)
+
 
 def _terminal_response_state(is_offdomain_refusal: bool) -> tuple[str, str]:
     """Return the single terminal state used by artifacts and the response."""

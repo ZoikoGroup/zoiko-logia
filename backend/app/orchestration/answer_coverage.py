@@ -121,7 +121,9 @@ def check_requested_deliverables(question, answer, *, has_visual=False):
     from app.orchestration.response_planner import detect_explicit_visual_request
     if detect_explicit_visual_request(question) and allows_automatic_chart(question):
         # Legacy validated chart fences are still supported by AnswerRenderer.
-        present = has_visual or bool(re.search(r'```chart\s*\n[\s\S]+?```', answer))
+        from app.orchestration.answer_formatting import table_request_answered
+        present = (has_visual or bool(re.search(r'```chart\s*\n[\s\S]+?```', answer))
+                   or table_request_answered(question, answer))
         if present:
             checks.append(RequestedDeliverable(description='Requested visual', status='complete'))
         elif not re.search(r'chart[^.\n]{0,70}(?:need|cannot|could not|not available|not establish|not support)|(?:need|cannot)[^.\n]{0,70}chart', answer, re.I):

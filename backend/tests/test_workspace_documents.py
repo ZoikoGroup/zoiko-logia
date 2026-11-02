@@ -266,6 +266,15 @@ def test_output_format_aliases_select_modern_download_formats():
         assert plan_document_task(query, has_documents=True).output_format == expected
 
 
+def test_every_named_format_is_created_in_the_order_asked():
+    # QA L04: "Export this income statement in Word and PDF." made only the PDF.
+    plan = plan_document_task("Export this income statement in Word and PDF.", has_documents=True)
+    assert plan.response_mode == "chat_with_artifact" and plan.formats == ("docx", "pdf")
+    assert plan.output_format == "docx"
+    assert plan_document_task("Create a PDF board report", has_documents=True).formats == ("pdf",)
+    assert plan_document_task("Create a management report.", has_documents=True).formats == ("docx",)
+
+
 def test_every_supported_artifact_format_opens_with_its_native_parser():
     narrative = (
         "## Executive Summary\nRevenue increased.\n"
