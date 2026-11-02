@@ -7,6 +7,7 @@ import pytest
 from app.domains.model_gateway.agent import AgentOutcome
 from app.orchestration import learned_answers, review, service
 from app.orchestration.schemas import AskKritonRequest
+from app.orchestration.websearch import WebSource
 from app.orchestration.statement_rules import (
     CASH_FLOW_NOTE, COMPARATIVES_NOTE, STATUS_NOTE, is_statement_request, open_items, remove_unsupported_claims,
 )
@@ -101,6 +102,15 @@ async def test_an_income_statement_answer_is_labelled_a_draft_without_a_complian
     assert response.answer.limitations[0] == STATUS_NOTE and COMPARATIVES_NOTE in response.answer.limitations
     prompt = str(pipeline.await_args)
     assert "Financial statement rules (ZoikoLogia Document 01)" in prompt
+
+
+async def test_figures_from_an_attached_document_are_placed_by_page_or_table(pipeline, monkeypatch):
+    # QA F02/F05: correct figures, but no page, statement or table named.
+    page = WebSource(title="NB-STATEMENTS_RELEASED.pdf — Page 1", url="", snippet="Revenue 10,000", source_id="d1")
+    monkeypatch.setattr(service, "retrieve_document_sources", AsyncMock(return_value=[page]))
+    await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                             request=AskKritonRequest(query="What is FY2025 revenue?", document_ids=["d1"]))
+    assert "(Income statement, page 1)" in str(pipeline.await_args)
 
 
 async def test_other_questions_are_unchanged(pipeline):

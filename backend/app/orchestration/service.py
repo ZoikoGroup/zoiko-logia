@@ -3567,6 +3567,11 @@ async def ask_kriton(
                 "\n\nThe attached document's own text states its title, date line (for example \"As of …\") "
                 "and currency (symbols or a column heading such as \"AMOUNT ($)\"); read them before saying the "
                 "document does not state them. Cite each extracted figure with its page's [REF-N]."
+                # "FY2025 revenue: 10,000" (QA F02) and a balance-sheet and
+                # cash-flow summary (F05) named no page or section: the marker
+                # alone is only a link at the bottom of the answer.
+                " Also write where it is, beside the figure: the statement or heading and the page or table, for "
+                "example \"(Income statement, page 1)\" or \"(Table 2)\"."
                 # A fixed-asset register summary wrote "$627 000" after saying the
                 # sheet shows no currency, stated "straight-line, no residual value"
                 # as the register's method, cited "see 'Verified figures'" and
