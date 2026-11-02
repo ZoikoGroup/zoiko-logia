@@ -197,6 +197,15 @@ _SAME_DATA_REFERENCE = re.compile(
 )
 
 
+# A comparison with financial statements the attached files may not contain.
+_ASKS_STATEMENT_COMPARISON = re.compile(
+    r"\b(?:compare|comparison|reconcile|tie|agree|match)\b.{0,60}\b(?:financial\s+statements?|income\s+statement|"
+    r"profit\s+and\s+loss|p\s*&\s*l|balance\s+sheet|statement\s+of\s+(?:profit|financial\s+position))", re.I)
+_STATEMENT_IN_DOCUMENT = re.compile(
+    r"income\s+statement|profit\s+and\s+loss|statement\s+of\s+(?:profit|comprehensive\s+income|financial\s+position)|"
+    r"balance\s+sheet|\bP\s*&\s*L\b", re.I)
+
+
 _ELLIPTICAL_FOLLOW_UP = re.compile(
     r"^\s*(?:what|how)\s+about\b|"
     r"^\s*(?:and|also|instead|then)\b|"
@@ -3600,6 +3609,17 @@ async def ask_kriton(
                     "its ID, even when the text does not mention it — that the text missed them is itself a finding. "
                     "End with a one-line verdict that names the most serious problem; do not call the text accurate "
                     "or correct overall while any of these problems remains."
+                )
+            if _ASKS_STATEMENT_COMPARISON.search(request.query) and not any(
+                    _STATEMENT_IN_DOCUMENT.search(source.snippet or "") for source in document_sources):
+                # QA G01: "Sum quarterly revenue and compare with the financial
+                # statement" of a transactions CSV called the file's own TOTAL
+                # row "the financial-statement total" and reported a match.
+                grounded_input += (
+                    "\n\nNo financial statement is attached: the attached files hold no income statement, profit "
+                    "and loss account or balance sheet. Say so first. Do not call a total or summary row of the "
+                    "attached file the financial statement's figure; name it as the file's own total. Give the "
+                    "file's figures, and ask for the financial statement to be attached to complete the comparison."
                 )
         # Earlier turns supply figures a follow-up refers to ("cost of sales
         # increased by 10%, revenue unchanged"), screened like the live query.
