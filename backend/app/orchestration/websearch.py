@@ -1035,10 +1035,16 @@ def search_focus(query: str) -> str:
 
 def question_count(query: str) -> int:
     """How many separate questions a message asks (before the search cap)."""
-    if is_pasted_material(query):
+    if is_pasted_material(query) or _DECISION_FLOW.search(query or ""):
         return 1
     parts = [part.strip() for part in _QUESTION_BOUNDARY.split((query or "").strip()) if part.strip()]
     return max(1, len([part for part in parts if len(part.split()) >= 3]))
+
+
+# A flow's decisions, not questions: "Requisition approved? Yes -> Create
+# purchase order; ... Order approved? No -> Hold order" was counted as nine
+# questions, and the drawing it described was dropped (QA case E04).
+_DECISION_FLOW = re.compile(r"\?\s*(?:yes|no)\s*[:,]?\s*(?:-->|->|→)", re.I)
 
 
 def sub_questions(query: str) -> list[str]:
@@ -1047,7 +1053,7 @@ def sub_questions(query: str) -> list[str]:
     structured = structured_research_parts(query)
     if structured:
         return structured
-    if is_pasted_material(query):
+    if is_pasted_material(query) or _DECISION_FLOW.search(query):
         return [query]
     parts = [part.strip() for part in _QUESTION_BOUNDARY.split(query.strip()) if part.strip()]
     parts = [part for part in parts if len(part.split()) >= 3]

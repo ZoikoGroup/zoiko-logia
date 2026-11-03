@@ -117,3 +117,86 @@ def test_header_words_are_not_treated_as_categories():
 
     assert "asset" not in labels
     assert "category" not in labels
+
+
+# ── a workbook of several sheets (QA group D, fixture F0) ────────────────
+
+def _f0() -> list[WebSource]:
+    return [
+        WebSource(title="F0.xlsx — 'Statements'!1:5", url="", provider="uploaded_document",
+                  snippet="Measure\tFY2024 / Opening\tFY2025 / Closing\nRevenue\t8000\t10000\n"
+                          "Cost of goods sold\t5000\t6200\nDeferred revenue\t300\t400\nEquity\t2700\t3600"),
+        WebSource(title="F0.xlsx — 'Quarterly revenue'!1:5", url="", provider="uploaded_document",
+                  snippet="Quarter\tFY2025 revenue (USD thousands)\nQ1\t2100\nQ2\t2300\nQ3\t2500\nQ4\t3100"),
+    ]
+
+
+def _values(query: str) -> list[tuple[str, float]]:
+    return [(o.dimension, o.value) for o in build_document_evidence(query, _f0()).observations]
+
+
+def test_each_sheet_is_its_own_section_and_the_quarters_are_charted_alone():
+    # D01 charted twenty bars: every statement line beside the four quarters.
+    quarters = [("Q1", 2100.0), ("Q2", 2300.0), ("Q3", 2500.0), ("Q4", 3100.0)]
+    assert _values("Plot F0 2025 quarterly revenue as a bar chart.") == quarters
+    assert _values("Present the Q1-Q4 chart for a screen-reader user.") == quarters
+
+
+def test_the_named_lines_of_the_year_asked_are_charted():
+    # D04 would have charted FY2024's 8,000 and every statement line.
+    assert _values("Chart FY2025 revenue, COGS and gross profit.") == [("Revenue", 10000.0),
+                                                                      ("Cost of goods sold", 6200.0)]
+
+
+def test_quarters_read_from_a_file_are_described_as_a_series_with_their_changes():
+    # D01/D02: "These are separate line items, not a series over time" under Q1–Q4,
+    # and "label Q4 QoQ growth" got no growth figure.
+    from app.orchestration.service import _grounded_domain_fallback
+    query = "Make a line chart of quarterly revenue and label Q4 QoQ growth."
+    text = _grounded_domain_fallback(query, build_document_evidence(query, _f0()))
+    assert "Q4 3,100 (+24.00% on Q3)" in text and "Q2 2,300 (+9.52% on Q1)" in text
+    assert "not a series over time" not in text
+
+
+def test_d03_a_waterfall_is_the_signed_profit_and_loss_bridge_only():
+    # D03 stacked all sixteen statement lines, cash and equity included, to 34,100.
+    from app.orchestration.service import _grounded_domain_fallback
+    statement = WebSource(
+        title="F0.xlsx — 'Statements'!1:8", url="", provider="uploaded_document",
+        snippet="Measure\tFY2024 / Opening\tFY2025 / Closing\nRevenue\t8000\t10000\nCost of goods sold\t5000\t6200\n"
+                "Depreciation\tNot prescribed\t400\nIncome tax expense\tNot prescribed\t300\nCash\t700\t1200\n"
+                "Deferred revenue\t300\t400\nEquity\t2700\t3600")
+    flows = WebSource(title="F0.xlsx — 'Cash flow and equity'!1:2", url="", provider="uploaded_document",
+                      snippet="Item\tFY2025 (USD thousands)\nNet income\t3100")
+    query = "Build a waterfall from FY2025 revenue to net income."
+    evidence = build_document_evidence(query, [statement, flows])
+    assert [(o.dimension, o.value) for o in evidence.observations] == [
+        ("Revenue", 10000.0), ("Cost of goods sold", -6200.0), ("Depreciation", -400.0), ("Income tax expense", -300.0)]
+    assert "it ends at 3,100, the net result" in _grounded_domain_fallback(query, evidence)
+    # Steps that do not reach the file's own net income are not drawn as a bridge.
+    wrong = WebSource(title=flows.title, url="", provider="uploaded_document",
+                      snippet="Item\tFY2025 (USD thousands)\nNet income\t900")
+    assert all(o.value >= 0 for o in build_document_evidence(query, [statement, wrong]).observations)
+
+
+def test_d03_a_bridge_caption_names_its_end_result_not_its_last_step():
+    # "decreased from 10000 (Revenue) to -300 (Income tax expense)" stood under the waterfall.
+    from app.orchestration.evidence import EvidenceModel, Observation
+    from app.orchestration.visualization.orchestrator import _summarize_series
+    steps = [("Revenue", 10000), ("Cost of goods sold", -6200), ("Expenses", -2100), ("Depreciation", -400),
+             ("Interest", -100), ("Income tax expense", -300)]
+    evidence = EvidenceModel(observations=[Observation(dimension=d, value=v, measure="value") for d, v in steps],
+                             dimensions=["category"], measures=["value"])
+    caption = _summarize_series("Revenue to net income", evidence, None)
+    assert caption == "Revenue to net income: starts at 10,000 (Revenue) and, after 5 steps, ends at 900."
+
+
+def test_d06_an_accessible_presentation_gets_alt_text_and_the_table_route():
+    # D06's chart narration had no alternative text and no keyboard / screen-reader route.
+    from app.orchestration.service import _grounded_domain_fallback
+    query = "Present the Q1-Q4 chart for mobile and a keyboard-only screen-reader user."
+    text = _grounded_domain_fallback(query, build_document_evidence(query, _f0()))
+    assert "**Alternative text:** a chart of 4 values in order: Q1 2,100, Q2 2,300, Q3 2,500, Q4 3,100." in text
+    assert "screen reader" in text and "nothing is shown by colour alone" in text
+    plain = "Plot F0 2025 quarterly revenue as a bar chart."
+    assert "Alternative text" not in _grounded_domain_fallback(plain, build_document_evidence(plain, _f0()))

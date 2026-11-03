@@ -118,11 +118,34 @@ def _names_a_file_code(query: str, sources: list[WebSource]) -> bool:
                                for source in sources for code in codes)
 
 
+# "Compare FY2024 and FY2025 gross margins in percentage points" after the
+# F0 workbook (columns "FY2024 / Opening", "FY2025 / Closing") dropped the
+# file: no word of the question is in it, and years were not read. Left with
+# nothing, it was refused as off-topic (QA C02).
+_FISCAL_YEAR = re.compile(r"\b(?:FY\s?)?((?:19|20)\d{2})\b", re.I)
+
+
+def _names_a_year_in_the_files(query: str, sources: list[WebSource]) -> bool:
+    # Quarters too: "Present the Q1-Q4 chart for mobile and a keyboard-only
+    # screen-reader user" dropped the file its quarters came from (QA D06).
+    quarters = {q.upper() for q in re.findall(r"\b[QH][1-4]\b", query or "", re.I)}
+    if quarters:
+        content = " ".join(f"{source.title or ''} {source.snippet or ''}" for source in sources)
+        if any(re.search(rf"\b{quarter}\b", content) for quarter in quarters):
+            return True
+    years = set(_FISCAL_YEAR.findall(query or ""))
+    if not years:
+        return False
+    content = " ".join(f"{source.title or ''} {source.snippet or ''}" for source in sources)
+    return any(re.search(rf"(?<!\d){year}(?!\d)", content) for year in years)
+
+
 def question_is_about_documents(query: str, sources: list[WebSource]) -> bool:
     """Whether a follow-up with no new upload is about the chat's files. One
     that is not ("What is IPR?" after a VAT file) is answered as a new
     question, not from the files. When unsure, the files are kept."""
-    if _DOCUMENT_REFERENCE.search(query or "") or _names_a_file_code(query, sources):
+    if _DOCUMENT_REFERENCE.search(query or "") or _names_a_file_code(query, sources) \
+            or _names_a_year_in_the_files(query, sources):
         return True
     if _brings_its_own_figures(query, sources):
         return False

@@ -290,6 +290,60 @@ def test_l04_a_note_about_the_documents_date_or_currency_is_not_an_unanswered_pa
     assert not service._DOCUMENT_DETAIL_GAP.search("The sources do not state the 2026 VAT threshold")
 
 
+async def test_e02_e06_process_and_symbol_questions_get_their_missing_points(pipeline):
+    await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                             request=AskKritonRequest(query="Show how a draft journal entry becomes an approved "
+                                                            "posted journal entry."))
+    prompt = str(pipeline.await_args)
+    assert "returns to draft" in prompt and "segregation of duties" in prompt and "audit trail" in prompt
+    assert "do not write diagram code or JSON" in prompt
+    await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                             request=AskKritonRequest(query="In an unlabeled process sketch, does a diamond mean "
+                                                            "approval or a calculation?"))
+    assert "ask for the legend" in str(pipeline.await_args)
+    assert not service._DIAGRAM_SYMBOL_QUESTION.search("What does EBITDA mean?")
+
+
+async def test_c01_c02_growth_is_a_percentage_and_a_margin_change_is_in_points(pipeline):
+    # C01 called 25% revenue growth "25.00 percentage points higher".
+    await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                             request=AskKritonRequest(query="Calculate year-over-year FY2025 revenue growth."))
+    assert "+0.50 percentage points, not +0.5% growth" in str(pipeline.await_args)
+    assert not service._PERCENT_CHANGE_QUESTION.search("What is the VAT rate in the UK?")
+
+
+async def test_c06_a_price_from_memory_is_declined_with_the_way_to_get_it(pipeline):
+    # It was turned away as off-topic.
+    response = await service.ask_kriton(
+        AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+        request=AskKritonRequest(query="What is the exact closing price of an unprovided security on October 27, "
+                                       "2026? Quote it from memory."))
+    assert "I don't quote market prices from memory" in response.next_action.message
+    assert "ticker and exchange" in response.next_action.message
+    pipeline.assert_not_awaited()
+    assert not service._PRICE_FROM_MEMORY.search("What was Apple's closing price on 27 October 2026?")
+
+
+async def test_d06_an_accessible_presentation_is_not_read_as_data_groups(pipeline):
+    # D06 asked for "Q1-Q4 values for each user group".
+    await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                             request=AskKritonRequest(query="Present the Q1-Q4 chart for mobile and a keyboard-only "
+                                                            "screen-reader user."))
+    prompt = str(pipeline.await_args)
+    assert "say how to present the chart, not what to plot" in prompt and "alternative-text" in prompt
+    assert not service._ACCESSIBLE_PRESENTATION.search("Plot quarterly revenue as a bar chart.")
+
+
+def test_b03_a_calculator_call_written_into_a_table_cell_is_removed():
+    # "exact calculation({ "expression": "700 + 500", "label": ... })`" stood in the reconciliation table.
+    from app.orchestration.verification_service import normalize_citations
+    row = ('| Cash | Opening 700 ; change 500 | exact calculation({ "expression": "700 + 500", '
+           '"label": "Ending cash from cash-flow" })` | 1,200 |')
+    cleaned = normalize_citations(row, set())
+    assert "expression" not in cleaned and "calculation(" not in cleaned
+    assert cleaned.startswith("| Cash | Opening 700 ; change 500 |") and cleaned.endswith("| 1,200 |")
+
+
 async def test_other_questions_are_unchanged(pipeline):
     response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
                                         request=AskKritonRequest(query="Summarise the revenue in this file"))

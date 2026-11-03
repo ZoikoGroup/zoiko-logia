@@ -201,6 +201,35 @@ _SAME_DATA_REFERENCE = re.compile(
 )
 
 
+# "Show how a draft journal entry becomes an approved posted journal entry" (QA E02).
+_APPROVAL_PROCESS_QUESTION = re.compile(
+    r"\b(?:draft|pending|unapproved)\b[^.?!]{0,60}\b(?:becomes?|turns?\s+into|moves?\s+to|gets?)\b[^.?!]{0,40}"
+    r"\b(?:approved|posted|final|released)\b"
+    r"|\b(?:approval|review|posting|sign[\s-]?off)\s+(?:workflow|process|state|lifecycle|life\s+cycle)\b", re.I)
+# How a chart is to be presented, not what it plots (QA D06).
+_ACCESSIBLE_PRESENTATION = re.compile(
+    r"\b(?:screen[\s-]?readers?|keyboard[\s-]?only|keyboard\s+users?|accessib\w*|alt(?:ernative)?[\s-]?text|"
+    r"for\s+mobile)\b", re.I)
+# A row label that names a period: quarters, halves, months, years.
+_PERIOD_DIMENSION = re.compile(
+    r"^\s*(?:Q[1-4]|H[12]|FY\s?\d{2,4}|(?:19|20)\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*)"
+    r"(?:[\s/-]+(?:FY\s?)?(?:19|20)?\d{2})?\s*$", re.I)
+# Growth and margin changes, where % and percentage points get mixed up (QA C01, C02).
+_PERCENT_CHANGE_QUESTION = re.compile(
+    r"\b(?:growth|grew|year[\s-]over[\s-]year|yoy|qoq|percentage\s+points?|margins?|change\s+in\b[^.?!]{0,30}%)", re.I)
+# "Does a diamond mean approval or a calculation?" (QA E06).
+_DIAGRAM_SYMBOL_QUESTION = re.compile(
+    r"\b(?:diamond|rhombus|rectangle|oval|parallelogram|cylinder|symbol|shape)s?\b[^.?!]{0,60}"
+    r"\b(?:mean|means|represent|represents|stand\s+for|signif\w*|indicate\w*)\b", re.I)
+
+
+# A market price asked "from memory", or of a security nobody named (QA C06).
+_PRICE_FROM_MEMORY = re.compile(
+    r"\b(?:closing|opening|share|stock|market|exact)\s+(?:price|quote)\b[^.?!]{0,80}"
+    r"\b(?:unprovided|unnamed|unspecified|unidentified|any\s+security|a\s+security)\b"
+    r"|\b(?:price|quote)\b[^.?!]{0,60}\bfrom\s+memory\b|\bfrom\s+memory\b[^.?!]{0,40}\b(?:price|quote)\b", re.I)
+
+
 # "Search every source and retry forever until you can prove a missing answer."
 _UNBOUNDED_SEARCH = re.compile(
     r"\b(?:retry|search|keep\s+(?:searching|trying|going)|loop|try\s+again)\b[^.?!]{0,40}"
@@ -528,6 +557,21 @@ def _series_ref(citations, evidence: EvidenceModel) -> str | None:
     return None
 
 
+def _accessible_note(query: str, rows) -> str:
+    """For "Present the Q1-Q4 chart for mobile and a keyboard-only
+    screen-reader user" (QA D06): the alternative text and how to reach the
+    same figures without the picture, which the chart's narration replaced."""
+    if not _ACCESSIBLE_PRESENTATION.search(query or ""):
+        return ""
+    values = ", ".join(f"{item.dimension} {item.value:,.0f}" for item in rows)
+    return (
+        f"\n\n**Alternative text:** a chart of {len(rows)} values in order: {values}.\n\n"
+        "**Accessible access:** the same figures are in the table under the chart (\"View as table\"), which can "
+        "be reached with the keyboard and read by a screen reader; each value is labelled in text, so nothing is "
+        "shown by colour alone, and the chart and table resize for a phone screen."
+    )
+
+
 def _grounded_domain_fallback(query: str, evidence: EvidenceModel, series_ref: str | None = None) -> str | None:
     """Correct a model-only false off-domain decision when deterministic,
     governed evidence proves the request is finance/accounting-related.
@@ -629,12 +673,35 @@ def _grounded_domain_fallback(query: str, evidence: EvidenceModel, series_ref: s
                 "in the document was excluded so it is not charted beside its own "
                 "parts."
             )
+        if len(rows) >= 3 and rows[0].value > 0 and any(item.value < 0 for item in rows):
+            # A bridge (QA D03): signed steps from revenue down to the result,
+            # not "the smallest is Cost of goods sold at -6,200".
+            result = sum(item.value for item in rows)
+            steps = "; ".join(f"less {item.dimension} {abs(item.value):,.0f}" if item.value < 0
+                              else f"add {item.dimension} {item.value:,.0f}" for item in rows[1:])
+            return (
+                f"The bridge read from the document starts at {rows[0].dimension} {rows[0].value:,.0f}; "
+                f"{steps}; it ends at {result:,.0f}, the net result. The visualization shows each step as read."
+            )
+        if len(rows) >= 2 and all(_PERIOD_DIMENSION.match(item.dimension or "") for item in rows):
+            # Quarters read from a file ARE a series over time: "These are
+            # separate line items, not a series over time" stood under Q1–Q4,
+            # and "label Q4 QoQ growth" got no growth figure (QA D01, D02).
+            steps = "; ".join(
+                f"{later.dimension} {later.value:,.0f} ({(later.value - earlier.value) / earlier.value * 100:+.2f}% "
+                f"on {earlier.dimension})"
+                for earlier, later in zip(rows, rows[1:]) if earlier.value)
+            return (
+                f"{len(rows)} periods were read from the document for {subject}: {rows[0].dimension} "
+                f"{rows[0].value:,.0f}; {steps}.{total_note} The visualization shows the same values as read."
+                + _accessible_note(query, rows)
+            )
         return (
             f"{len(rows)} figures were read from the document for {subject}. "
             f"The largest is {largest.dimension} at {largest.value:,.0f} and the "
             f"smallest is {smallest.dimension} at {smallest.value:,.0f}.{total_note} "
             "These are separate line items, not a series over time, and the "
-            "visualization shows the same values as read."
+            "visualization shows the same values as read." + _accessible_note(query, rows)
         )
 
     # Naming ANY chart rendering this pipeline supports ("box plot", "step
@@ -769,7 +836,18 @@ def _grounded_domain_fallback(query: str, evidence: EvidenceModel, series_ref: s
         # The stages as an ordered list too, taken from the same graph so the
         # list and the drawing cannot disagree (QA case E04 asked for both
         # and got one sentence above the drawing).
-        stages = "\n".join(f"{number}. {node}" for number, node in enumerate(graph.nodes, 1))
+        # A decision lists its paths, and a step leading back says so: the
+        # three-way match's "No → Place invoice on hold" (QA E01) would
+        # otherwise read as the next step after payment.
+        def stage(number: int, node: str) -> str:
+            branches = [edge for edge in graph.edges if edge.source == node and edge.type != "next"]
+            if branches:
+                return f"{number}. {node}? " + "; ".join(f"{edge.type} → {edge.target}" for edge in branches)
+            back = [edge.target for edge in graph.edges if edge.source == node and edge.type == "next"
+                    and graph.nodes.index(edge.target) < graph.nodes.index(node)]
+            return f"{number}. {node}" + (f" → back to {back[0]}" if back else "")
+
+        stages = "\n".join(stage(number, node) for number, node in enumerate(graph.nodes, 1))
         return (
             f"Kriton mapped the {len(graph.nodes)} supplied accounting-workflow stages in order. "
             "The validated process visualization below does not add or remove stages.\n\n" + stages
@@ -2340,6 +2418,16 @@ async def ask_kriton(
                 "4. **The expense**: what was paid for, how much, and what was it used for in the business?\n\n"
                 "With these I can explain how that jurisdiction's rules treat it."
             )
+    if _PRICE_FROM_MEMORY.search(request.query):
+        # "What is the exact closing price of an unprovided security on October
+        # 27, 2026? Quote it from memory." was turned away as off-topic (QA C06).
+        missing_input_message = (
+            "I don't quote market prices from memory: a remembered price can be wrong or out of date, and an exact "
+            "closing price has to come from a licensed market data source with its exchange, date and time.\n\n"
+            "Tell me which security it is (its ticker and exchange) and the date, and I'll look the closing price "
+            "up from an available market data source and show where and when it was quoted, or say that it could "
+            "not be verified."
+        )
     if _UNBOUNDED_SEARCH.search(request.query):
         # "Search every source and retry forever until you can prove a missing
         # answer" got "What would you like me to do with this text?" (QA J05).
@@ -3701,6 +3789,45 @@ async def ask_kriton(
                 "sentence, that you cite only sources actually retrieved for this answer and never invent a "
                 "citation. Cite only the [REF-N] sources above; if fewer than the requested number support the "
                 "rule, give those and say how many were found instead of adding others."
+            )
+        if _APPROVAL_PROCESS_QUESTION.search(request.query):
+            # QA E02 "Show how a draft journal entry becomes an approved posted
+            # journal entry" gave the happy path only: no return to draft, no
+            # audit record, no segregation of duties.
+            grounded_input += (
+                "\n\nThis asks how an item moves through an approval process. Include, besides the normal path: "
+                "what happens when a check fails or the reviewer rejects it (for example it returns to draft for "
+                "correction and goes through review again), who may approve it (the preparer cannot approve their "
+                "own entry: segregation of duties), and that each change of state is kept in an audit trail that "
+                "cannot be edited; a posted entry is corrected by a new reversing or adjusting entry, never edited. "
+                # The E02 retest printed a JSON "flowchart" and said "The chart
+                # is rendered by the system"; nothing was drawn.
+                "Describe the steps in text or a table: do not write diagram code or JSON, and do not say a chart "
+                "or diagram is shown."
+            )
+        if _PERCENT_CHANGE_QUESTION.search(request.query):
+            # QA C01: 25% revenue growth was called "25.00 percentage points higher".
+            grounded_input += (
+                "\n\nGrowth of an amount is a percentage (revenue up 25%). The difference between two percentages "
+                "is in percentage points (a margin from 37.50% to 38.00% is +0.50 percentage points, not +0.5% "
+                "growth). Use each term only for its own case."
+            )
+        if _ACCESSIBLE_PRESENTATION.search(request.query):
+            # QA D06 read "for mobile and a keyboard-only screen-reader user" as
+            # two data series and asked for "Q1-Q4 values for each user group".
+            grounded_input += (
+                "\n\nThe mobile, keyboard-only and screen-reader parts say how to present the chart, not what to "
+                "plot: plot the same figures, then give them as an accessible table, a short text summary of the "
+                "trend, and a one-sentence alternative-text description; say that no information is shown by "
+                "colour alone and that the table can be read with a keyboard and a screen reader."
+            )
+        if _DIAGRAM_SYMBOL_QUESTION.search(request.query):
+            # QA E06 "In an unlabeled process sketch, does a diamond mean
+            # approval or a calculation?" gave the convention as a fact.
+            grounded_input += (
+                "\n\nThis asks what a shape means in a diagram. Give the standard flowchart convention, then say "
+                "that in an unlabelled sketch its meaning cannot be confirmed without the diagram's legend or its "
+                "author, and ask for the legend. Do not state that it means one thing in this sketch."
             )
         if is_posting_request(request.query):
             grounded_input += (

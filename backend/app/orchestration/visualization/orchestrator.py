@@ -459,6 +459,12 @@ def _summarize_series(name: str, evidence: EvidenceModel, unit: str | None) -> s
     if len(obs) < 2:
         return f"{name}: {obs[0].value:g}{(' ' + unit) if unit else ''}." if obs else ""
     first, last = obs[0], obs[-1]
+    if first.value > 0 and any(o.value < 0 for o in obs[1:]):
+        # A bridge's steps, not a series: "decreased from 10000 (Revenue) to
+        # -300 (Income tax expense)" stood under a waterfall ending at 900 (QA D03).
+        result = sum(o.value for o in obs)
+        return (f"{name}: starts at {first.value:,.0f} ({first.dimension}) and, after {len(obs) - 1} steps, "
+                f"ends at {result:,.0f}{(' ' + unit) if unit else ''}.")
     # Endpoint-only comparison can call a series "held steady" even when it
     # swung wildly in between (e.g. GDP growth cratering then rebounding) —
     # see service.py's _grounded_domain_fallback for the same fix and the

@@ -121,6 +121,17 @@ export function X6Flow({
             attrs: {
               line: { stroke: line, strokeWidth: 1.5, targetMarker: { name: "block", width: 8, height: 6 } },
             },
+            // A branch or a step leading back is routed round the boxes: drawn
+            // straight, "Requisition approved → No → Revise requisition" ran
+            // through "Receive goods" and its label read "ReceiNogoods".
+            ...(e.type && e.type !== "next"
+              ? { router: { name: "manhattan", args: { padding: 12 } }, connector: { name: "rounded" } }
+              : {}),
+            // A decision's paths say which is which: the three-way match's
+            // "No → Place invoice on hold" (QA E01) was an unlabelled line.
+            labels: e.type && e.type !== "next"
+              ? [{ attrs: { label: { text: e.type, fill: ink, fontSize: 11, fontWeight: 600 }, body: { fill: panel, stroke: line } } }]
+              : [],
           });
         });
 

@@ -263,7 +263,14 @@ class VisualizationValidator:
             sources.add(e.source)
             targets.add(e.target)
         # A start stage must exist — one that's never a destination — or the
-        # flow has no clear entry point to begin rendering from.
-        if node_id_set and not (node_id_set - targets):
+        # flow has no clear entry point to begin rendering from. The first
+        # stage still starts a flow that loops back to it: "Revise requisition
+        # → back to Start" made Start a destination and the whole purchase-to-
+        # pay drawing was rejected (QA case E04). Only in a flow with decisions,
+        # where the loop back is an exception path: a plain A → B → A cycle
+        # still has no entry point.
+        first_starts = (bool(spec.nodes) and spec.nodes[0].id in sources
+                        and any(e.type not in ("next", "") for e in spec.edges))
+        if node_id_set and not (node_id_set - targets) and not first_starts:
             failures.append("PROCESS_FLOW has no identifiable start stage (every stage is a destination)")
         return failures

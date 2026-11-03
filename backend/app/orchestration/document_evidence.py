@@ -194,7 +194,7 @@ def _group_of(line: str) -> str | None:
     return stripped
 
 
-def _extract_pairs(sources: list[WebSource]) -> list[tuple[str, float, str, str]]:
+def _extract_pairs(sources: list[WebSource], query: str = "") -> list[tuple[str, float, str, str]]:
     """(label, value, section, group) for every label/number row that reads
     unambiguously.
 
@@ -215,9 +215,15 @@ def _extract_pairs(sources: list[WebSource]) -> list[tuple[str, float, str, str]
     false.
     """
     pairs: list[tuple[str, float, str, str]] = []
+    years = set(_QUERY_YEAR.findall(query))
     for source in sources:
-        section = ""
+        # A workbook sheet is its own section: "Plot F0 2025 quarterly revenue"
+        # charted the statements sheet and the quarters sheet as one list of
+        # twenty bars (QA case D01), as no heading in the cells separated them.
+        sheet = _SHEET_TITLE.search(source.title or "")
+        section = sheet.group(1).strip() if sheet else ""
         group = ""
+        column = None
         for raw in source.snippet.splitlines():
             heading = _section_of(raw)
             if heading:
@@ -229,15 +235,54 @@ def _extract_pairs(sources: list[WebSource]) -> list[tuple[str, float, str, str]
                 group = sub_heading
                 continue
             for row in _rows(raw):
+                # A header naming the year asked about picks that column: the
+                # first number of "Revenue | 8000 | 10000" is FY2024's.
+                if years and len(row) > 2 and all(_parse_number(cell) is None for cell in row[1:]):
+                    column = next((i for i, cell in enumerate(row) if i and set(_QUERY_YEAR.findall(cell)) & years),
+                                  column)
+                    continue
                 if len(row) < 2 or not _is_usable_label(row[0]):
                     continue
-                value = next(
-                    (v for v in (_parse_number(cell) for cell in row[1:]) if v is not None),
-                    None,
-                )
+                value = (_parse_number(row[column]) if column is not None and column < len(row) else
+                         next((v for v in (_parse_number(cell) for cell in row[1:]) if v is not None), None))
                 if value is not None:
                     pairs.append((row[0].strip(), value, section, group))
     return pairs
+
+
+_SHEET_TITLE = re.compile(r"\s—\s+'([^']+)'!\d+:\d+\s*$")
+_QUERY_YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+
+
+# "Revenue, COGS and gross profit" names the statement's "Cost of goods sold":
+# the abbreviation alone matched nothing and the quarters sheet was charted
+# instead (QA case D04).
+_ABBREVIATIONS = {"cogs": "cost goods sold", "opex": "operating expenses", "capex": "capital expenditures",
+                  "ppe": "property plant equipment", "ebitda": "ebitda earnings", "sga": "selling general administrative"}
+
+
+def _query_words(query: str) -> set[str]:
+    text = query.lower()
+    for short, long in _ABBREVIATIONS.items():
+        text = re.sub(rf"\b{short}\b", f"{short} {long}", text)
+    # "the Q1-Q4 chart" names the quarters by their labels (QA case D06).
+    return set(re.findall(r"[a-z]{4,}", text)) | ({"quarter"} if _QUARTER.search(text) else set())
+
+
+_QUARTER = re.compile(r"\bq[1-4]\b|quarter", re.IGNORECASE)
+
+
+def _select_named(
+    query: str, pairs: list[tuple[str, float, str, str]]
+) -> list[tuple[str, float, str, str]]:
+    """The rows the question names, when it names enough of them: "FY2025
+    revenue, COGS and gross profit" charted all sixteen statement lines. A
+    row is named when every word of its label is in the question, so plain
+    "revenue" does not bring in "Deferred revenue"."""
+    words = _query_words(query)
+    kept = [pair for pair in pairs
+            if (label := set(re.findall(r"[a-z]{4,}", pair[0].lower()))) and label <= words]
+    return kept if len(kept) >= _MIN_POINTS else pairs
 
 
 def _select_section(
@@ -255,7 +300,7 @@ def _select_section(
     if len(sections) <= 1:
         return pairs
 
-    words = {w for w in re.findall(r"[a-z]{4,}", query.lower())}
+    words = _query_words(query)
     scored = []
     for name, rows in sections.items():
         # Score on the heading AND the row labels. A heading alone is too
@@ -266,6 +311,8 @@ def _select_section(
         label_words: set[str] = set()
         for label, _, _, _ in rows:
             label_words |= set(re.findall(r"[a-z]{4,}", label.lower()))
+            if re.fullmatch(r"\s*q[1-4]\s*", label, re.IGNORECASE):
+                label_words.add("quarter")
         score = 2 * len(heading_words & words) + len(label_words & words)
         scored.append((score, len(rows), name))
     scored.sort(reverse=True)
@@ -307,6 +354,44 @@ def _select_group(
     return pairs
 
 
+# A bridge from revenue to profit: "Build a waterfall from FY2025 revenue to
+# net income" stacked all sixteen statement lines upward, cash and equity
+# included, to 34,100 (QA case D03). Only profit-and-loss lines belong in it,
+# revenue added and every cost taken away.
+_BRIDGE_REQUEST = re.compile(r"\b(?:waterfall|bridge)\b", re.I)
+_INCOME_LINE = re.compile(r"^\s*(?:revenue|net\s+sales|sales|turnover|other\s+income)\b", re.I)
+_COST_LINE = re.compile(r"cost|expense|depreciation|amorti[sz]ation|interest|tax", re.I)
+_BALANCE_LINE = re.compile(r"payable|receivable|deferred|assets?\b|borrowing|equity|\bcash\b|inventor|pp&e|loan", re.I)
+_PROFIT_LINE = re.compile(r"^\s*(?:net\s+income|net\s+profit|profit\s+for\s+the\s+(?:year|period))\s*$", re.I)
+
+
+def _bridge_evidence(query: str, sources: list[WebSource], pairs) -> EvidenceModel | None:
+    steps: list[tuple[str, float]] = []
+    for label, value, _, _ in pairs:
+        if _BALANCE_LINE.search(label) or _TOTAL_ROW.match(label):
+            continue
+        if _INCOME_LINE.match(label):
+            steps.append((label, abs(value)))
+        elif _COST_LINE.search(label):
+            steps.append((label, -abs(value)))
+    if len(steps) < 3 or steps[0][1] <= 0:
+        return None
+    result = sum(value for _, value in steps)
+    stated = [value for label, value, _, _ in _extract_pairs(sources, query) if _PROFIT_LINE.match(label)]
+    if stated and all(abs(value - result) > 0.005 for value in stated):
+        return None     # the steps do not reach the file's own profit: no bridge rather than a wrong one
+    return EvidenceModel(
+        subject=_subject(query),
+        provider="uploaded_document",
+        observations=[Observation(dimension=label, value=value, measure="value") for label, value in steps],
+        dimensions=["category"],
+        measures=["value"],
+        sources=list(dict.fromkeys(source.title for source in sources)),
+        facts=[f"{label}: {value:g}" for label, value in steps] + [f"Net result of the bridge: {result:g}"],
+        coverage_complete=True,
+    )
+
+
 def build_document_evidence(query: str, sources: list[WebSource]) -> EvidenceModel:
     """Chart evidence read from uploaded documents, or empty evidence when the
     tables cannot be read unambiguously.
@@ -321,8 +406,13 @@ def build_document_evidence(query: str, sources: list[WebSource]) -> EvidenceMod
     # Section first (totals still present, so they can identify the statement),
     # then the kind of figure the question asked about, then drop the totals so
     # none is charted beside its own components.
+    if _BRIDGE_REQUEST.search(query):
+        bridge = _bridge_evidence(query, sources, _select_section(query, _extract_pairs(sources, query)))
+        if bridge is not None:
+            return bridge
     pairs = [
-        pair for pair in _select_group(query, _select_section(query, _extract_pairs(sources)))
+        pair for pair in _select_named(query, _select_group(query, _select_section(
+            query, _extract_pairs(sources, query))))
         if not _TOTAL_ROW.match(pair[0])
     ]
     if len(pairs) < _MIN_POINTS:

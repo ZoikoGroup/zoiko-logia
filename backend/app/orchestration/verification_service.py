@@ -170,7 +170,10 @@ _TOOL_SENTENCE = re.compile(
 # {"expression": "120000 + 45000", "label": "Total inventory to remove"}).
 _TOOL_ARGUMENTS_JSON = re.compile(
     r"```(?:json)?[ \t]*\n?\s*\{[^{}]*\"expressions?\"\s*:[^{}]*\}\s*```"
-    r"|(?m:^[ \t]*\{[^{}]*\"expressions?\"\s*:[^{}]*\}[ \t]*$)")
+    r"|(?m:^[ \t]*\{[^{}]*\"expressions?\"\s*:[^{}]*\}[ \t]*$)"
+    # Written as a call inside a table cell: "exact calculation({ "expression":
+    # "700 + 500", "label": "Ending cash" })`" (QA B03 retest).
+    r"|`?(?:exact\s+)?calculat\w*\s*\(\s*\{[^{}]*\"expressions?\"\s*:[^{}]*\}\s*\)`?")
 
 
 # "Aggregate = 180,000 + 140,000 + 210,000 = 530,000 [The sources provided do
