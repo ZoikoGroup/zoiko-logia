@@ -200,3 +200,18 @@ def test_d06_an_accessible_presentation_gets_alt_text_and_the_table_route():
     assert "screen reader" in text and "nothing is shown by colour alone" in text
     plain = "Plot F0 2025 quarterly revenue as a bar chart."
     assert "Alternative text" not in _grounded_domain_fallback(plain, build_document_evidence(plain, _f0()))
+
+
+def test_a_document_chart_narration_links_the_file_it_was_read_from():
+    # D01-D06 were marked "Partial — retrieved sources were not linked": the
+    # narration stated the file's figures but carried no [REF-n] for the file.
+    from app.orchestration.service import _document_refs
+    from app.orchestration.schemas import SourceCitation
+    query = "Plot F0 2025 quarterly revenue as a bar chart."
+    evidence = build_document_evidence(query, _f0())
+    title = evidence.sources[0]
+    chunks = [SourceCitation(ref_id=f"REF-{i}", source_id=f"doc-{i}", title=title, provider="uploaded_document")
+              for i in (1, 2)]
+    web = SourceCitation(ref_id="REF-3", source_id="https://example.com", title="Web page", provider="web")
+    assert _document_refs([*chunks, web], evidence) == f" Source: {title.split(' — ')[0]} [REF-1]."
+    assert _document_refs([web], evidence) == ""

@@ -557,6 +557,22 @@ def _series_ref(citations, evidence: EvidenceModel) -> str | None:
     return None
 
 
+def _document_refs(citations, evidence: EvidenceModel) -> str:
+    """" Source: F0.xlsx [REF-1]." for the uploaded files a document chart was
+    read from. The narration states their figures but named no source, so a
+    correct D01-D06 chart answer was marked "Partial — retrieved sources were
+    not linked". The file is named because the answer view hides the marker:
+    "Read from [REF-1]." was shown as "Read,."."""
+    if evidence.provider != "uploaded_document":
+        return ""
+    refs: dict[str, str] = {}   # one reference per file, not per retrieved chunk or sheet
+    for citation in citations or []:
+        if (citation.provider == "uploaded_document" and citation.ref_id
+                and citation.title in evidence.sources):
+            refs.setdefault(citation.title.split(" — ")[0].strip(), citation.ref_id)
+    return (" Source: " + ", ".join(f"{name} [{ref}]" for name, ref in refs.items()) + ".") if refs else ""
+
+
 def _accessible_note(query: str, rows) -> str:
     """For "Present the Q1-Q4 chart for mobile and a keyboard-only
     screen-reader user" (QA D06): the alternative text and how to reach the
@@ -4512,7 +4528,7 @@ async def ask_kriton(
     if live_evidence.observations and detect_explicit_visual_request(request.query):
         grounded_summary = _grounded_domain_fallback(request.query, live_evidence)
         if grounded_summary:
-            composed_text = grounded_summary
+            composed_text = grounded_summary + _document_refs(rag_citations, live_evidence)
             uses_deterministic_summary = True
 
     if not uses_user_supplied_structure:
