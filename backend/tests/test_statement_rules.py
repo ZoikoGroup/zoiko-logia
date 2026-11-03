@@ -484,6 +484,8 @@ def test_the_statement_rules_place_finance_items_after_operating_profit_and_keep
     assert "Bank charges placed by name are provisional" in INSTRUCTIONS
     assert "bank charges and interest under Finance costs" not in INSTRUCTIONS
     assert "Keep account codes and source references off the statement lines" in INSTRUCTIONS
+    # The summary read "£576.9 k" beside 576,900 in the table.
+    assert "Write every amount in full exactly as in the statement (576,900, not £576.9 k" in INSTRUCTIONS
 
 
 def test_an_income_statement_split_by_blank_lines_stays_one_table():
@@ -498,3 +500,23 @@ def test_an_income_statement_split_by_blank_lines_stays_one_table():
     assert "| **Operating profit** | **218,600** |" in table
     # A new table with its own header is left separate.
     assert fixed[-4:-2] == ["", "| Metric | Result |"] and fixed[-1] == "| Gross margin | 43.00% |"
+
+
+def test_statement_amounts_carry_no_currency_symbol():
+    # "Income accounts (£1,862,000) – Expense accounts (£1,707,600) = £154,400" beside a GBP table.
+    from app.orchestration.statement_rules import without_currency_symbols
+    assert (without_currency_symbols("Income statement (GBP)\nIncome accounts (£1,862,000) – Expense accounts "
+                                     "(£1,707,600) = £154,400.")
+            == "Income statement (GBP)\nIncome accounts (1,862,000) – Expense accounts (1,707,600) = 154,400.")
+    assert without_currency_symbols("Dividends paid ($ 40,000) in USD.") == "Dividends paid (40,000) in USD."
+    assert without_currency_symbols("Currency: GBP (£)") == "Currency: GBP (£)"   # not an amount
+    # Any document answer: the currency stays known.
+    assert without_currency_symbols("Rent was £96,000.") == "Rent was 96,000.\n\nAmounts are in GBP."
+    mixed = "Invoice £100 was paid as $127."
+    assert without_currency_symbols(mixed) == mixed                             # two currencies: kept
+    assert without_currency_symbols("Revenue was $10,000.") == "Revenue was $10,000."   # which dollar?
+
+
+def test_every_document_answer_is_asked_for_full_amounts():
+    from app.orchestration.statement_rules import DOCUMENT_AMOUNTS_RULE
+    assert "576,900, not £576.9 k" in DOCUMENT_AMOUNTS_RULE and "no currency symbol" in DOCUMENT_AMOUNTS_RULE
