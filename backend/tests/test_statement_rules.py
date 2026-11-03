@@ -304,6 +304,16 @@ async def test_e02_e06_process_and_symbol_questions_get_their_missing_points(pip
     assert not service._DIAGRAM_SYMBOL_QUESTION.search("What does EBITDA mean?")
 
 
+def test_b03_a_calculator_call_written_into_a_table_cell_is_removed():
+    # "exact calculation({ "expression": "700 + 500", "label": ... })`" stood in the reconciliation table.
+    from app.orchestration.verification_service import normalize_citations
+    row = ('| Cash | Opening 700 ; change 500 | exact calculation({ "expression": "700 + 500", '
+           '"label": "Ending cash from cash-flow" })` | 1,200 |')
+    cleaned = normalize_citations(row, set())
+    assert "expression" not in cleaned and "calculation(" not in cleaned
+    assert cleaned.startswith("| Cash | Opening 700 ; change 500 |") and cleaned.endswith("| 1,200 |")
+
+
 async def test_other_questions_are_unchanged(pipeline):
     response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
                                         request=AskKritonRequest(query="Summarise the revenue in this file"))

@@ -762,6 +762,42 @@ def test_i05_an_equal_tier_conflict_is_escalated_and_i04_a_denied_card_is_never_
     assert "Rights denied: NB-RESTRICTED-001 must not be quoted" in figures
 
 
+def test_a_two_period_statement_gets_changes_and_averages_not_column_totals():
+    # QA fixture F0: the closing column was totalled (revenue + equity = 34,100),
+    # the opening column ignored, and B04/C03 had no changes or averages.
+    statement = _src("Measure\tFY2024 / Opening\tFY2025 / Closing\nRevenue\t8000\t10000\n"
+                     "Depreciation\tNot prescribed\t400\nAccounts receivable\t950\t1250\nInventory\t800\t1100\n"
+                     "Accounts payable\t700\t1000\nEquity\t2700\t3600", "f0.xlsx — 'Statements'!1:7")
+    flows = _src("Item\tFY2025 (USD thousands)\nOperating cash flow\t1200\nInvesting cash flow\t-800\n"
+                 "Capital expenditures\t800\nOpening equity\t2700\nNet income\t900", "f0.xlsx — 'Cash'!1:6")
+    figures = verified_document_figures([statement, flows])
+    assert "- Accounts receivable: 950, 1,250, change 300, average 1,100" in figures
+    assert "- Accounts payable: 700, 1,000, change 300, average 850" in figures
+    assert "- Depreciation: 400 (no FY2024 / Opening figure)" in figures
+    assert "Total FY2025 / Closing" not in figures and "Total FY2025 (USD thousands)" not in figures
+    assert "- Investing cash flow: -800" in figures
+    expenses = _src("Item\tFY2025\nRent\t96000\nUtilities\t18400\nInsurance\t12300", "costs.xlsx — 'Costs'!1:4")
+    assert "Total FY2025 = 126,700" in verified_document_figures([expenses])      # like items are still totalled
+
+
+F0_STATEMENT = ("Measure\tFY2024 / Opening\tFY2025 / Closing\nRevenue\t8000\t10000\nCost of goods sold\t5000\t6200\n"
+                "Cash\t700\t1200\nAccounts receivable\t950\t1250\nInventory\t800\t1100\nNet PP&E\t3300\t3700\n"
+                "Other assets\t250\t250\nAccounts payable\t700\t1000\nTax payable\t200\t300\n"
+                "Long-term borrowings\t2100\t2200\nDeferred revenue\t300\t400\nEquity\t2700\t3600")
+
+
+def test_b03_the_balance_sheet_in_a_statement_is_totalled_per_period():
+    # B03 checked cash and equity but never assets = liabilities + equity.
+    figures = verified_document_figures([_src(F0_STATEMENT, "f0.xlsx — 'Statements'!1:13")])
+    assert ("Balance sheet, FY2024 / Opening: total assets 6,000; total liabilities 3,300; equity 2,700; "
+            "liabilities + equity 6,000; balances") in figures
+    assert "Balance sheet, FY2025 / Closing: total assets 7,500; total liabilities 3,900; equity 3,600" in figures
+    # "Deferred revenue" is a liability, not revenue; B05 raises payables to 1,100.
+    corrupted = F0_STATEMENT.replace("Accounts payable\t700\t1000", "Accounts payable\t700\t1100")
+    assert "does NOT balance: assets differ by -100" in verified_document_figures(
+        [_src(corrupted, "f0.xlsx — 'Statements'!1:13")])
+
+
 def test_j04_a_three_way_mismatch_is_held_not_paid():
     match = ["record_type\treference\titem\tquantity\tunit_price_usd\ttotal_usd",
              "PURCHASE_ORDER\tPO-1\tDock\t10\t100\t1000", "GOODS_RECEIPT\tGR-1\tDock\t9\t100\t900",

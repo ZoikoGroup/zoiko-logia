@@ -1154,8 +1154,101 @@ def _three_way_lines(table: Table) -> list[str]:
                    "to accounts payable or to any adjustment account until the difference is resolved."]
 
 
+# A statement with an opening and a closing column: "Measure | FY2024 /
+# Opening | FY2025 / Closing" (QA fixture F0). Its column totals added revenue
+# to equity (34,100), its opening column was ignored, and the indirect cash
+# flow (B04) and working-capital days (C03) had no balance changes or averages.
+_PERIOD_HEADER = re.compile(r"\b(?:opening|closing|(?:fy\s?)?(?:19|20)\d{2})\b", re.IGNORECASE)
+_LINE_ITEM_HEADER = re.compile(r"^(?:measure|item|line(?:\s+item)?|account|caption|description)$", re.IGNORECASE)
+
+
+_MEASURE_KINDS = tuple((kind, re.compile(pattern, re.IGNORECASE)) for kind, pattern in (
+    ("cash flow", r"cash\s+flow|net\s+change\s+in\s+cash"), ("equity", r"\bequity\b"),
+    ("profit", r"net\s+income|profit|ebitda|ebit\b"), ("revenue", r"\brevenue|sales\b"),
+    ("balance", r"\b(?:assets?|liabilit|borrowings?|receivable|payable|inventory)"),
+    ("financing", r"capital\s+expenditure|capex|debt\s+(?:proceeds|repayments?)|dividends?"),
+))
+
+
+def _two_period_lines(table: Table) -> list[str]:
+    if len(table.headers) < 2 or not _LINE_ITEM_HEADER.match((table.headers[0] or "").strip()):
+        return []
+    periods = [i for i, h in enumerate(table.headers) if i and _PERIOD_HEADER.search(h or "")]
+    unlike = {kind for row in table.rows if row for kind, pattern in _MEASURE_KINDS if pattern.search(row[0])}
+    if len(periods) == 1 and len(table.headers) == 2 and len(unlike) >= 3:
+        # One period of unlike measures ("Opening equity", "Investing cash
+        # flow"): listed, never totalled (they summed to a meaningless 10,100).
+        # A list of like items (expense lines) is still totalled below.
+        column = periods[0]
+        items = [f"- {row[0].strip()}: {_fmt(float(value))}" for row in table.rows
+                 if row and row[0].strip() and column < len(row) and (value := _to_decimal(row[column])) is not None]
+        return ([f"Table '{table.title}' ({', '.join(table.headers)}): line items of one period, each a separate "
+                 f"measure; never totalled"] + items) if len(items) >= 2 else []
+    if len(periods) != 2:
+        return []
+    first, second = periods
+    lines = [f"Table '{table.title}' ({', '.join(h for h in table.headers if h)}): a statement by line item; its "
+             f"columns are periods and are never totalled. For each line: {table.headers[first]}, "
+             f"{table.headers[second]}, change, average of the two"]
+    for row in table.rows:
+        if not row or not row[0].strip():
+            continue
+        a = _to_decimal(row[first]) if first < len(row) else None
+        b = _to_decimal(row[second]) if second < len(row) else None
+        if b is None:
+            continue
+        if a is None:
+            lines.append(f"- {row[0].strip()}: {_fmt(float(b))} (no {table.headers[first]} figure)")
+            continue
+        lines.append(f"- {row[0].strip()}: {_fmt(float(a))}, {_fmt(float(b))}, change {_fmt(float(b - a))}, "
+                     f"average {_fmt(float((a + b) / 2))}")
+    return lines + _balance_check_lines(table, first, second) if len(lines) > 2 else []
+
+
+# The balance sheet within such a statement, totalled per period: "Confirm
+# that F0 balance sheet … reconcile" (QA B03) checked cash and equity but
+# never assets = liabilities + equity, which the file states only line by line.
+_ASSET_LINE = re.compile(r"\bcash\b|receivable|inventor|prepa|pp&e|property|plant|equipment|other\s+assets?|"
+                         r"intangible|goodwill|investments?", re.IGNORECASE)
+_LIABILITY_LINE = re.compile(r"payable|borrowing|loan|debt|deferred\s+revenue|accru|provision|lease\s+liabilit|"
+                             r"other\s+liabilit", re.IGNORECASE)
+_EQUITY_LINE = re.compile(r"^\s*(?:total\s+)?(?:shareholders'?\s+|stockholders'?\s+)?equity\s*$", re.IGNORECASE)
+_FLOW_LINE = re.compile(r"revenue|sales|cost|expense|depreciation|amorti|ebit|profit|income|margin", re.IGNORECASE)
+
+
+def _balance_check_lines(table: Table, first: int, second: int) -> list[str]:
+    groups: dict[str, list[list[str]]] = {"assets": [], "liabilities": [], "equity": []}
+    for row in table.rows:
+        label = row[0].strip() if row else ""
+        if not label:
+            continue
+        # Balance words first: "Deferred revenue" is a liability, not revenue.
+        kind = ("equity" if _EQUITY_LINE.match(label) else "liabilities" if _LIABILITY_LINE.search(label)
+                else "assets" if _ASSET_LINE.search(label) else None)
+        if kind is None:
+            if _FLOW_LINE.search(label):
+                continue        # a profit-and-loss line
+            return []           # a balance it cannot place: no totals rather than wrong ones
+        groups[kind].append(row)
+    if not all(groups.values()):
+        return []
+    lines = []
+    for column in (first, second):
+        totals = {kind: sum((_to_decimal(r[column]) or Decimal("0")) for r in rows if column < len(r))
+                  for kind, rows in groups.items()}
+        difference = totals["assets"] - totals["liabilities"] - totals["equity"]
+        lines.append(f"- Balance sheet, {table.headers[column]}: total assets {_fmt(float(totals['assets']))}; total "
+                     f"liabilities {_fmt(float(totals['liabilities']))}; equity {_fmt(float(totals['equity']))}; "
+                     f"liabilities + equity {_fmt(float(totals['liabilities'] + totals['equity']))}; "
+                     + ("balances" if difference == 0 else f"does NOT balance: assets differ by {_fmt(float(difference))}"))
+    return lines
+
+
 def _table_lines(table: Table, include_top_n: bool = True, by_month_group: bool = True,
                  query: str | None = None) -> list[str]:
+    two_period = _two_period_lines(table)
+    if two_period:
+        return two_period
     heading = f"Table '{table.title}' ({', '.join(h for h in table.headers if h)})"
     three_way = _three_way_lines(table)
     if three_way:
