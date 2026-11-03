@@ -34,6 +34,20 @@ it("renders real SVG and switches the same validated series from line to bars", 
   expect(JSON.stringify(viz)).toBe(before);
 });
 
+it("puts the unit on the value axis and each bar's value on the bar (QA D01)", async () => {
+  vi.stubGlobal("localStorage", { getItem:() => null, setItem:vi.fn() });
+  const viz = { id:"d01", type:"BAR", family:"STATISTICAL", renderer:"RECHARTS", title:"F0 2025 quarterly revenue", unit:"USD thousands",
+    encoding:{ x:{field:"period",type:"nominal"}, y:{field:"value",type:"quantitative",unit:"USD thousands"} },
+    data:[{x:"Q1",y:2100},{x:"Q2",y:2300},{x:"Q3",y:2500},{x:"Q4",y:3100}], series:[], sources:[] } as unknown as VisualizationSpec;
+  const { container } = render(<ChartRenderer viz={viz}/>);
+  await waitFor(() => expect(container.querySelectorAll(".recharts-bar-rectangle").length).toBe(4));
+  const svgText = () => container.querySelector("svg.recharts-surface")?.textContent ?? "";
+  expect(svgText()).toContain("USD thousands");
+  // Recharts draws the value labels once the bars' entry animation ends.
+  await waitFor(() => { for (const value of ["2,100", "2,300", "2,500", "3,100"]) expect(svgText()).toContain(value); },
+    { timeout: 4000 });
+});
+
 it("reports a renderer exception and keeps the readable dataset", () => {
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.spyOn(Adapter, "RechartsChart").mockImplementation(() => { throw new Error("synthetic render failure"); });

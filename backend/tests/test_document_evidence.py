@@ -215,3 +215,14 @@ def test_a_document_chart_narration_links_the_file_it_was_read_from():
     web = SourceCitation(ref_id="REF-3", source_id="https://example.com", title="Web page", provider="web")
     assert _document_refs([*chunks, web], evidence) == f" Source: {title.split(' — ')[0]} [REF-1]."
     assert _document_refs([web], evidence) == ""
+
+
+def test_d01_the_unit_the_file_states_goes_on_the_chart_and_the_title_is_not_the_question():
+    # D01 had no "USD thousands" on its axis; D02/D03 titles repeated the instruction.
+    from app.orchestration.document_evidence import _subject
+    query = "Plot F0 2025 quarterly revenue as a bar chart."
+    assert build_document_evidence(query, _f0()).units == ["USD thousands"]
+    mixed = [*_f0(), WebSource(title="other.csv", url="", provider="uploaded_document", snippet="Amount (GBP m)\n1\n2")]
+    assert build_document_evidence(query, mixed).units == []
+    assert _subject("Build a waterfall from FY2025 revenue to net income.") == "FY2025 revenue to net income"
+    assert _subject("Make a line chart of quarterly revenue and label Q4 QoQ growth.") == "Quarterly revenue"
