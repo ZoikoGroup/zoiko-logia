@@ -1,0 +1,59 @@
+{
+ "fixture_id": "F1",
+ "status": "DRAFT_UNRATIFIED",
+ "release_evidence": false,
+ "signature": "NOT_RUN",
+ "source": {
+  "file": "external:ZoikoLogia_Document_01_Multimodal_Chatbot_Test_Question_Bank.docx",
+  "sha256": "defc1479135b13e713cde2ecb34173c95df33f9782e313d3036af4a66b0437e0",
+  "section": "\u00a73, \u00a73.1"
+ },
+ "specification": "NB-TRANSACTIONS.csv / .xlsx: raw entries in USD dollars and FY/quarter summary normalized to USD thousands; ties exactly to F0. XLSX has formulas and two or more tabs.",
+ "derivations": [
+  "Each quarter's revenue is split into three monthly sales (31%, 33%, remainder, rounded to $1,000), dated the 28th; the bank prescribes only that entries tie exactly to F0.",
+  "Only revenue entries are included: the cases using F1 (G01-G06) test revenue only.",
+  "The CSV ends with a GRAND_TOTAL row (10,000,000) so G01 can test that it is not double counted.",
+  "The XLSX has Transactions and Summary tabs; Summary uses SUMIFS formulas in USD thousands. openpyxl stores formulas without cached results, so a reader that does not recalculate sees no displayed value.",
+  "G04 mutation: NB-SALE-005 repeated exactly. G06 mutation: NB-SALE-008's quarter left blank."
+ ],
+ "files": [
+  {
+   "name": "NB-TRANSACTIONS-BLANK-QUARTER.csv",
+   "sha256": "14a1d1435b121118fd9a49f0d502b058d3c2ef3994d69df7167445272f92a7ea",
+   "bytes": 1101,
+   "uploadable": true,
+   "used_by": [
+    "G06"
+   ]
+  },
+  {
+   "name": "NB-TRANSACTIONS-DUPLICATE-ROW.csv",
+   "sha256": "c1f12586a434b9acb7eddcd57228d92c6b14e0fd6193920f93b2e4afecf80b52",
+   "bytes": 1182,
+   "uploadable": true,
+   "used_by": [
+    "G04"
+   ]
+  },
+  {
+   "name": "NB-TRANSACTIONS.csv",
+   "sha256": "8a3c3753ce4ad15b8b0bf5ca46d7d2ddb5b0af367839a0ba30f80b0ae0c63fd0",
+   "bytes": 1103,
+   "uploadable": true,
+   "used_by": [
+    "G01",
+    "G05"
+   ]
+  },
+  {
+   "name": "NB-TRANSACTIONS.xlsx",
+   "sha256": "dacbfe3610b93f3c135b1497f41ddc399f5868bc584e96bcbff559676aafd9d7",
+   "bytes": 6201,
+   "uploadable": true,
+   "used_by": [
+    "G02",
+    "G03"
+   ]
+  }
+ ]
+}

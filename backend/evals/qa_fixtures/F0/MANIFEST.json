@@ -1,0 +1,57 @@
+{
+ "fixture_id": "F0",
+ "status": "DRAFT_UNRATIFIED",
+ "release_evidence": false,
+ "signature": "NOT_RUN",
+ "source": {
+  "file": "external:ZoikoLogia_Document_01_Multimodal_Chatbot_Test_Question_Bank.docx",
+  "sha256": "defc1479135b13e713cde2ecb34173c95df33f9782e313d3036af4a66b0437e0",
+  "section": "\u00a73, \u00a73.1"
+ },
+ "specification": "NB-FIN-v1: Northbridge Analytics Inc. synthetic financial dataset; USD thousands.",
+ "derivations": [
+  "Transcribed from \u00a73.1 and 'Additional F0 controls' exactly; no value added.",
+  "Seeded by attaching NB-FIN-v1.csv to each F0 case: the API's only seeding surface."
+ ],
+ "files": [
+  {
+   "name": "NB-FIN-v1.csv",
+   "sha256": "a2ccbe6c44873a33e0cf0a0e68a56d84262f22629058b0fd2c9789bfe32fcb7d",
+   "bytes": 1293,
+   "uploadable": true,
+   "used_by": [
+    "A01",
+    "A06",
+    "B01",
+    "B02",
+    "B03",
+    "B04",
+    "B05",
+    "B06",
+    "C01",
+    "C02",
+    "C03",
+    "C04",
+    "D01",
+    "D02",
+    "D03",
+    "D04",
+    "D05",
+    "D06",
+    "E03",
+    "J01",
+    "J02",
+    "L02",
+    "L03",
+    "L04"
+   ]
+  },
+  {
+   "name": "NB-FIN-v1.json",
+   "sha256": "acdaa637f3aec40e7cd34cdee25b739afdbee057c949e2e734a260880bc32968",
+   "bytes": 1280,
+   "uploadable": false,
+   "used_by": []
+  }
+ ]
+}

@@ -9,7 +9,7 @@ import {
   Lock, Users, Building, GitBranch, Settings, CreditCard, Bot,
 } from "lucide-react";
 import { FileSpreadsheet } from "lucide-react";
-import { RoleCode } from "./roles";
+import { RoleCode, WF01_ROLES } from "./roles";
 import { ADVISOR } from "./advisor";
 
 export type NavL3Tab = { label: string; slug: string };
@@ -48,6 +48,8 @@ const ALL_BACKEND: RoleCode[] = [
   // the base sections render for it; section gating below opens Accounting
   // Workflows to it, where item gating leaves just Review Tasks.
   "SME Reviewer",
+  // WF-01 platform release governance: Release Gates (and the base sections).
+  ...WF01_ROLES,
 ];
 
 const ALL: RoleCode[] = [
@@ -77,6 +79,7 @@ const REVIEW_ESCALATION_AUDIT: RoleCode[] = [
 ];
 const OPERATIONS: RoleCode[] = ["AI Governance Lead", "Admin"];
 const ADMINISTRATION: RoleCode[] = ["Admin"];
+const RELEASE_GATES: RoleCode[] = [...ADMINISTRATION, ...WF01_ROLES];
 
 export const NAV_SECTIONS: NavL1Section[] = [
   {
@@ -217,7 +220,7 @@ export const NAV_SECTIONS: NavL1Section[] = [
       { label: "Service Accounts", slug: "service-accounts", allowedRoles: ADMINISTRATION, icon: Bot },
       { label: "Break-glass Access", slug: "break-glass", allowedRoles: ALL_BACKEND, icon: Siren },
       { label: "Entities/Clients", slug: "entities-clients", allowedRoles: ADMINISTRATION, icon: Building },
-      { label: "Release Gates", slug: "release-gates", allowedRoles: ADMINISTRATION, icon: GitBranch },
+      { label: "Release Gates", slug: "release-gates", allowedRoles: RELEASE_GATES, icon: GitBranch },
       { label: "Tenant Settings", slug: "tenant-settings", allowedRoles: ADMINISTRATION, icon: Settings },
       { label: "Billing & Usage", slug: "billing-usage", allowedRoles: ADMINISTRATION, icon: CreditCard },
     ],

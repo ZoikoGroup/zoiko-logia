@@ -34,6 +34,17 @@ REVIEW_RESOLVE = "review.resolve"    # approve / correct / reject a review case;
 # have let them promote a release.
 EVALUATION_READ = "evaluation.read"
 EVALUATION_MANAGE = "evaluation.manage"
+# WF-01 platform release governance (ZL-WF-GAP-01, decision D2). Deliberately
+# not in ALL_PERMISSIONS: a tenant Admin does not govern platform releases.
+GOVERNANCE_READ = "governance.read"          # authority register, as-built ledger, QA ledger, verdicts
+AUTHORITY_PROPOSE = "authority.propose"      # Document Control: propose an identifier resolution
+AUTHORITY_RATIFY = "authority.ratify"        # Chief Architect: ratify another person's proposal
+QA_EXECUTE = "qa.execute"                    # QA Automation: start pinned runtime QA runs
+QA_ADJUDICATE = "qa.adjudicate"              # Independent QA: adjudicate observations
+ASBUILT_RECORD = "asbuilt.record"            # QA Automation / CI: record an as-built manifest
+RELEASE_VERIFY = "release.verify"            # CTO: verify as-built manifests, record release verdicts
+WF01_PERMISSIONS = frozenset({GOVERNANCE_READ, AUTHORITY_PROPOSE, AUTHORITY_RATIFY, QA_EXECUTE, QA_ADJUDICATE,
+                              ASBUILT_RECORD, RELEASE_VERIFY})
 
 ALL_PERMISSIONS = frozenset({
     SOURCE_READ,
@@ -86,6 +97,17 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     # permission. The role an individual ("Myself") sign-up receives, and one
     # a company Admin can assign to trainees.
     "Learner": frozenset(),
+    # WF-01 platform release governance (decision D2). Held only by these
+    # roles, never by a tenant Admin (ALL_PERMISSIONS does not include them),
+    # and effective only for members of the platform governance tenant
+    # (settings.KRITON_GOVERNANCE_TENANT_ID; unset refuses every write).
+    # Separation of duties: a proposer cannot ratify, a run's starter cannot
+    # adjudicate it, a manifest's recorder cannot verify it.
+    "Document Control": frozenset({GOVERNANCE_READ, AUTHORITY_PROPOSE}),
+    "Chief Architect": frozenset({GOVERNANCE_READ, AUTHORITY_RATIFY}),
+    "Independent QA": frozenset({GOVERNANCE_READ, QA_ADJUDICATE, EVALUATION_READ}),
+    "QA Automation": frozenset({GOVERNANCE_READ, QA_EXECUTE, ASBUILT_RECORD, EVALUATION_READ}),
+    "CTO": frozenset({GOVERNANCE_READ, RELEASE_VERIFY}),
 }
 
 
@@ -106,6 +128,7 @@ STEP_UP_PERMISSIONS: frozenset[str] = frozenset({
     SAFETY_MANAGE,
     REVIEW_RESOLVE,
     EVALUATION_MANAGE,
+    AUTHORITY_PROPOSE, AUTHORITY_RATIFY, QA_EXECUTE, QA_ADJUDICATE, ASBUILT_RECORD, RELEASE_VERIFY,
 })
 
 

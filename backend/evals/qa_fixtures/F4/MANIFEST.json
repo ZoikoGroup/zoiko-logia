@@ -1,0 +1,62 @@
+{
+ "fixture_id": "F4",
+ "status": "DRAFT_UNRATIFIED",
+ "release_evidence": false,
+ "signature": "NOT_RUN",
+ "source": {
+  "file": "external:ZoikoLogia_Document_01_Multimodal_Chatbot_Test_Question_Bank.docx",
+  "sha256": "defc1479135b13e713cde2ecb34173c95df33f9782e313d3036af4a66b0437e0",
+  "section": "\u00a73, \u00a73.1"
+ },
+ "specification": "NB-CHART.png / NB-FLOW.png: image-rendered Q1-Q4 chart and P2P approval diagram, with explicit legend and units.",
+ "derivations": [
+  "NB-FLOW.png shows PO, goods receipt, invoice, a 3-way-match decision, a reviewer hold and authorized payment, with a legend; the bank names only a P2P approval diagram.",
+  "H02, H04 and H06 mutations are the three extra PNGs named after them.",
+  "The target accepts .pdf/.docx/.xlsx/.pptx/.csv attachments only, so these PNGs cannot be uploaded: H01-H06 image uploads are BLOCKED, not converted."
+ ],
+ "files": [
+  {
+   "name": "NB-CHART-NO-YAXIS.png",
+   "sha256": "21042ee2347cd382047e7836f5906643fc399b1aa61ad5fc27d47c2db1196c63",
+   "bytes": 7862,
+   "uploadable": false,
+   "used_by": [
+    "H06"
+   ]
+  },
+  {
+   "name": "NB-CHART-TOTAL-11000.png",
+   "sha256": "4eeed29fae0abf0ffe9a1e19d36b112ce01cda216afdf1eadb189312f5854708",
+   "bytes": 22222,
+   "uploadable": false,
+   "used_by": [
+    "H02"
+   ]
+  },
+  {
+   "name": "NB-CHART.png",
+   "sha256": "78907a5d603600081585224a6ac91764828870a18b254bc7b7d0fa34a5e6ebde",
+   "bytes": 20884,
+   "uploadable": false,
+   "used_by": [
+    "H01"
+   ]
+  },
+  {
+   "name": "NB-FLOW.png",
+   "sha256": "6dd4608db93c4392c33c62cde8d8e91feaf7722674aac06be14507716427822e",
+   "bytes": 22178,
+   "uploadable": false,
+   "used_by": []
+  },
+  {
+   "name": "NB-RECEIPT-88.png",
+   "sha256": "5af0ce60e2d725ac928c1081c4cff62cbb33bd9c2467d75b623e421d6da1b4c8",
+   "bytes": 15207,
+   "uploadable": false,
+   "used_by": [
+    "H04"
+   ]
+  }
+ ]
+}

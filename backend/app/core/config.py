@@ -87,6 +87,23 @@ class Settings(BaseSettings):
     # development keeps working before anyone has enrolled a factor; staging
     # and production should turn it on once admins have enrolled.
     MFA_REQUIRED_FOR_PRIVILEGED: bool = False
+    # WF-01 platform release governance: the tenant whose members may hold the
+    # governance roles (Document Control, Chief Architect, Independent QA,
+    # QA Automation, CTO). Unset refuses every governance read and write.
+    KRITON_GOVERNANCE_TENANT_ID: str = ""
+    # The environment this deployment is (local-dev, staging, production). Only
+    # a committed build in "staging" can produce qualifying QA observations.
+    KRITON_ENVIRONMENT: str = "local-dev"
+    # WF-01 A3 runtime QA adapter: the deployed API it calls and the service
+    # account key it calls with. Unset -> adapter MISSING, observations NOT_RUN.
+    KRITON_QA_ADAPTER_BASE_URL: str = ""
+    KRITON_QA_ADAPTER_API_KEY: str = ""
+    # A service account in a second tenant, used only to seed fixture F7
+    # (another tenant's private data). Unset -> the F7 cases are BLOCKED.
+    KRITON_QA_ADAPTER_TENANT_B_API_KEY: str = ""
+    # Signing key for observations, adjudications and verdicts (X3). Unset ->
+    # records are hash-bound but UNSIGNED, which no release gate accepts.
+    KRITON_GOVERNANCE_SIGNING_KEY: str = ""
 
     # Self-service sign-up. When true (the current behaviour), the first
     # /auth/provision call from an unknown Supabase user creates a new tenant

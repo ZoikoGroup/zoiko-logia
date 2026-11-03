@@ -81,8 +81,8 @@ class ResultPack(Base):
     id = Column(String, primary_key=True, index=True)
     run_id = Column(String, ForeignKey("evaluation_runs.id", ondelete="CASCADE"), nullable=False)
     exact_config_hash = Column(String, nullable=False)
-    contamination_scan_status = Column(String, default="PASSED") # PASSED, FAILED
-    zero_tolerance_passed = Column(Boolean, default=True)
+    contamination_scan_status = Column(String, default="NOT_RUN") # PASSED, FAILED, NOT_RUN (D4: never assumed)
+    zero_tolerance_passed = Column(Boolean, default=False)
     promotion_eligible = Column(Boolean, default=False)
     created_at = Column(DateTime, default=_utcnow_naive)
 

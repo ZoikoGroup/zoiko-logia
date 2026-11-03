@@ -1,0 +1,314 @@
+{
+ "version": "wf01-requirement-map-1",
+ "status": "ENGINEERING_MAP",
+ "note": "Engineering requirement identifiers for the WF-01 A1-A3 implementation (decisions D1-D8, docs/wf01-decision-action-plan-2026-11-03.md). They are not controlled-document identifiers and resolve nothing in the authority register. Each is MAPPED in an as-built manifest only when the running application serves the route with the permission and every named test exists.",
+ "requirements": [
+  {
+   "requirement_id": "WF01-A1-REGISTER",
+   "service": "admin_governance.authority",
+   "method": "GET",
+   "path": "/api/v1/admin/authority/documents",
+   "permission": "governance.read",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_the_repository_register_keeps_zl_eng_06_unresolved"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A1-IMPORT",
+   "service": "admin_governance.authority",
+   "method": "POST",
+   "path": "/api/v1/admin/authority/import",
+   "permission": "authority.propose",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_collision_and_unavailable_references_stay_unresolved"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A1-RESOLVE",
+   "service": "admin_governance.authority",
+   "method": "GET",
+   "path": "/api/v1/admin/authority/resolve",
+   "permission": "governance.read",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_collision_and_unavailable_references_stay_unresolved",
+    "tests/test_wf01_governance.py::test_api_writes_need_an_idempotency_key_and_the_workflow_reads_no_go"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A1-PROPOSE",
+   "service": "admin_governance.authority",
+   "method": "POST",
+   "path": "/api/v1/admin/authority/proposals",
+   "permission": "authority.propose",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_a_document_not_held_cannot_be_given_an_identifier",
+    "tests/test_wf01_governance.py::test_proposal_validation_refuses_bad_and_duplicate_identifiers"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A1-RATIFY",
+   "service": "admin_governance.authority",
+   "method": "POST",
+   "path": "/api/v1/admin/authority/proposals/{proposal_id}/decision",
+   "permission": "authority.ratify",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_ratification_needs_another_person_and_current_revisions"
+   ]
+  },
+  {
+   "requirement_id": "WF01-D1-OWNERSHIP-READ",
+   "service": "admin_governance.gap_ownership",
+   "method": "GET",
+   "path": "/api/v1/admin/gap-ownership",
+   "permission": "governance.read",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_gap_allocation_covers_all_30_gaps_once"
+   ]
+  },
+  {
+   "requirement_id": "WF01-D1-OWNERSHIP-ADOPT",
+   "service": "admin_governance.gap_ownership",
+   "method": "POST",
+   "path": "/api/v1/admin/gap-ownership/adoptions",
+   "permission": "authority.propose",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_gap_ownership_adoption_is_not_ratification"
+   ]
+  },
+  {
+   "requirement_id": "WF01-D1-OWNERSHIP-RATIFY",
+   "service": "admin_governance.gap_ownership",
+   "method": "POST",
+   "path": "/api/v1/admin/gap-ownership/adoptions/{adoption_id}/ratification",
+   "permission": "authority.ratify",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_gap_ownership_adoption_is_not_ratification"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A2-PREVIEW",
+   "service": "operations.asbuilt",
+   "method": "GET",
+   "path": "/api/v1/operations/asbuilt/preview",
+   "permission": "governance.read",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_collect_maps_requirements_to_served_routes_and_tests"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A2-RECORD",
+   "service": "operations.asbuilt",
+   "method": "POST",
+   "path": "/api/v1/operations/asbuilt/manifests",
+   "permission": "asbuilt.record",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_asbuilt_verification_is_independent_and_refuses_uncommitted_or_unmapped"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A2-LATEST",
+   "service": "operations.asbuilt",
+   "method": "GET",
+   "path": "/api/v1/operations/asbuilt/manifests/latest",
+   "permission": "governance.read",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_asbuilt_verification_is_independent_and_refuses_uncommitted_or_unmapped"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A2-VERIFY",
+   "service": "operations.asbuilt",
+   "method": "POST",
+   "path": "/api/v1/operations/asbuilt/manifests/{manifest_id}/verifications",
+   "permission": "release.verify",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_asbuilt_verification_is_independent_and_refuses_uncommitted_or_unmapped"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A3-PACK",
+   "service": "evaluation.qa_ledger",
+   "method": "POST",
+   "path": "/api/v1/evaluation/qa/pack",
+   "permission": "qa.execute",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_pack_import_plans_292_not_run_observations"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A3-SUMMARY",
+   "service": "evaluation.qa_ledger",
+   "method": "GET",
+   "path": "/api/v1/evaluation/qa/summary",
+   "permission": "governance.read",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_pack_import_plans_292_not_run_observations"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A3-ADAPTER",
+   "service": "evaluation.qa_ledger",
+   "method": "GET",
+   "path": "/api/v1/evaluation/qa/adapter",
+   "permission": "governance.read",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_adapter_is_missing_without_configuration_and_unverified_with_a_bad_key"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A3-RUN",
+   "service": "evaluation.qa_ledger",
+   "method": "POST",
+   "path": "/api/v1/evaluation/qa/runs",
+   "permission": "qa.execute",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_runs_must_be_pinned_and_qualify_only_in_staging_on_a_clean_build"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A3-EXECUTE",
+   "service": "evaluation.qa_ledger",
+   "method": "POST",
+   "path": "/api/v1/evaluation/qa/runs/{run_id}/execute",
+   "permission": "qa.execute",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_execution_blocks_unprovisioned_fixtures_and_never_passes_unadjudicated",
+    "tests/test_wf01_governance.py::test_execution_refuses_without_a_connected_adapter"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A3-OBSERVATIONS",
+   "service": "evaluation.qa_ledger",
+   "method": "GET",
+   "path": "/api/v1/evaluation/qa/runs/{run_id}/observations",
+   "permission": "governance.read",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_execution_blocks_unprovisioned_fixtures_and_never_passes_unadjudicated"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A3-ADJUDICATE",
+   "service": "evaluation.qa_ledger",
+   "method": "POST",
+   "path": "/api/v1/evaluation/qa/observations/{observation_id}/adjudications",
+   "permission": "qa.adjudicate",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_execution_blocks_unprovisioned_fixtures_and_never_passes_unadjudicated"
+   ]
+  },
+  {
+   "requirement_id": "WF01-VERDICT-COMPUTE",
+   "service": "admin_governance.release_verdict",
+   "method": "GET",
+   "path": "/api/v1/admin/release-verdict",
+   "permission": "governance.read",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_verdict_is_no_go_on_an_empty_ledger_with_every_gate_unsatisfied",
+    "tests/test_wf01_governance.py::test_verdict_stays_no_go_with_the_repository_evidence"
+   ]
+  },
+  {
+   "requirement_id": "WF01-VERDICT-RECORD",
+   "service": "admin_governance.release_verdict",
+   "method": "POST",
+   "path": "/api/v1/admin/release-verdicts",
+   "permission": "release.verify",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_verdict_is_no_go_on_an_empty_ledger_with_every_gate_unsatisfied"
+   ]
+  },
+  {
+   "requirement_id": "WF01-VERDICT-PROMOTION",
+   "service": "admin_governance.releases",
+   "method": "POST",
+   "path": "/api/v1/admin/releases/{release_id}/actions",
+   "permission": "",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_platform_release_promotion_is_refused_while_no_go"
+   ]
+  },
+  {
+   "requirement_id": "WF01-D4-UNKNOWN-NOT-PASS",
+   "service": "evaluation.service",
+   "method": "POST",
+   "path": "/api/v1/evaluation/run",
+   "permission": "",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_governance.py::test_result_pack_defaults_are_not_pass",
+    "tests/test_wf01_governance.py::test_an_unmeasured_metric_fails_its_threshold"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A3-RUNS",
+   "service": "evaluation.qa_ledger",
+   "method": "GET",
+   "path": "/api/v1/evaluation/qa/runs",
+   "permission": "governance.read",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_fixtures.py::test_execution_attaches_provisioned_files_and_blocks_what_it_cannot_perform"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A3-EVALUATOR-OUTPUT",
+   "service": "evaluation.qa_ledger",
+   "method": "GET",
+   "path": "/api/v1/evaluation/qa/runs/{run_id}/evaluator-output",
+   "permission": "governance.read",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_fixtures.py::test_execution_attaches_provisioned_files_and_blocks_what_it_cannot_perform"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A3-FIXTURES",
+   "service": "evaluation.qa_ledger",
+   "method": "GET",
+   "path": "/api/v1/evaluation/qa/fixtures",
+   "permission": "governance.read",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_fixtures.py::test_every_fixture_file_matches_its_manifest_and_stays_draft",
+    "tests/test_wf01_fixtures.py::test_f0_reproduces_every_deterministic_gold_value_in_the_bank",
+    "tests/test_wf01_fixtures.py::test_f1_ties_exactly_to_f0_and_the_mutations_are_the_specified_ones",
+    "tests/test_wf01_fixtures.py::test_f2_f3_f5_f6_f7_carry_the_specified_properties",
+    "tests/test_wf01_fixtures.py::test_case_inputs_cover_all_72_cases_with_real_files"
+   ]
+  },
+  {
+   "requirement_id": "WF01-A3-FIXTURES-PROVISION",
+   "service": "evaluation.qa_ledger",
+   "method": "POST",
+   "path": "/api/v1/evaluation/qa/fixtures/provision",
+   "permission": "qa.execute",
+   "flag": "",
+   "tests": [
+    "tests/test_wf01_fixtures.py::test_provisioning_uploads_what_cases_need_and_records_unsupported_types",
+    "tests/test_wf01_fixtures.py::test_a_tampered_fixture_is_refused"
+   ]
+  }
+ ]
+}

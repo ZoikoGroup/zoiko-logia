@@ -2645,3 +2645,93 @@ export type PlatformDirectory = {
 export async function getPlatformDirectory(token: string, signal?: AbortSignal): Promise<PlatformDirectory> {
   return (await authedFetch("/platform/directory", token, { signal }, { asSelf: true })).json();
 }
+
+// ── WF-01 platform release governance ─────────────────────────────────────
+// Platform-scoped: the server refuses anyone outside the governance tenant or
+// without the WF-01 role (403 with a {code, message} detail). Every write
+// sends a fresh Idempotency-Key; nothing here derives a status client-side.
+
+export type VerdictGateState = "SATISFIED" | "PENDING" | "BLOCKED" | "NOT_RUN";
+export type ReleaseVerdictView = {
+  scope: string; verdict: "GO" | "NO_GO"; evidence_sha256: string;
+  gates: Record<string, { state: VerdictGateState; reason: string; evidence: Record<string, unknown> }>;
+};
+export type QaSummary = {
+  pack_sha256: string | null; cases: number; planned_observations: number;
+  case_counts?: Record<string, number>; observation_status: Record<string, number>;
+  qualifying_runs?: number; p0_passed?: number; p0_total?: number; case_status: Record<string, string>;
+};
+export type QaRunView = {
+  id: string; environment: string; qualifying: boolean; adapter_readiness: string; started_by: string;
+  pinned: Record<string, string>; created_at: string;
+};
+export type QaObservationView = {
+  id: string; case_id: string; repetition: number; state: string; reason: string; output_excerpt: string;
+  trace: Record<string, unknown> | null; automated_checks: Record<string, unknown> | null; adjudication: string;
+};
+export type QaFixtureFile = {
+  ref: string; fixture_id: string; sha256: string; intact: boolean; uploadable: boolean; used_by: string[];
+  manifest_status: string; tenant_slot: "A" | "B"; provision: string; document_id: string | null;
+};
+export type QaFixtures = {
+  target: string | null;
+  fixtures: Record<string, { status: string; signature: string; specification: string; derivations: string[] }>;
+  files: QaFixtureFile[];
+};
+export type AsBuiltView = {
+  id: string; commit_sha: string | null; tree_clean: boolean; branch: string; schema_head: string; environment: string;
+  routes_total: number; content_sha256: string; recorded_by: string; verification: string;
+  mappings: { requirement_id: string; method: string; path: string; status: string; reason: string }[];
+};
+export type GovernanceOverview = {
+  verdict: ReleaseVerdictView;
+  authority: { summary: { documents: number; states: Record<string, number>; unresolved_collisions: string[] } };
+  ownership: { current: { status: string; decision_id?: string; content_sha256?: string; proposed_sha256: string } };
+  asbuilt: { manifest: AsBuiltView | null };
+  qa: QaSummary;
+  adapter: { readiness: string; reason?: string; role?: string };
+  fixtures: QaFixtures;
+  runs: QaRunView[];
+};
+
+function governanceWrite<T>(path: string, token: string, body: unknown = {}): Promise<T> {
+  return authedFetch(path, token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+    body: JSON.stringify(body),
+  }).then((res) => res.json());
+}
+
+export async function getGovernanceOverview(token: string, signal?: AbortSignal): Promise<GovernanceOverview> {
+  const get = (path: string) => authedFetch(path, token, { signal }).then((res) => res.json());
+  // The verdict first: a refusal there (not a governance member) is the page's answer.
+  const verdict = await get("/admin/release-verdict");
+  const [authority, ownership, asbuilt, qa, adapter, fixtures, runs] = await Promise.all([
+    get("/admin/authority/documents"), get("/admin/gap-ownership"), get("/operations/asbuilt/manifests/latest"),
+    get("/evaluation/qa/summary"), get("/evaluation/qa/adapter"), get("/evaluation/qa/fixtures"), get("/evaluation/qa/runs"),
+  ]);
+  return { verdict, authority, ownership, asbuilt, qa, adapter, fixtures, runs };
+}
+export async function getQaObservations(token: string, runId: string, signal?: AbortSignal): Promise<QaObservationView[]> {
+  return (await authedFetch(`/evaluation/qa/runs/${encodeURIComponent(runId)}/observations`, token, { signal })).json();
+}
+export const importAuthorityRegister = (token: string) => governanceWrite("/admin/authority/import", token);
+export const adoptGapOwnership = (token: string) => governanceWrite("/admin/gap-ownership/adoptions", token);
+export const ratifyGapOwnership = (token: string, adoptionId: string, contentSha256: string) =>
+  governanceWrite(`/admin/gap-ownership/adoptions/${encodeURIComponent(adoptionId)}/ratification`, token,
+    { content_sha256: contentSha256 });
+export const recordAsBuilt = (token: string) => governanceWrite<AsBuiltView>("/operations/asbuilt/manifests", token);
+export const verifyAsBuilt = (token: string, manifestId: string, decision: "VERIFIED" | "REJECTED", note: string) =>
+  governanceWrite(`/operations/asbuilt/manifests/${encodeURIComponent(manifestId)}/verifications`, token, { decision, note });
+export const importQaPack = (token: string) => governanceWrite("/evaluation/qa/pack", token);
+export const provisionQaFixtures = (token: string) => governanceWrite("/evaluation/qa/fixtures/provision", token);
+export const createQaRun = (token: string, pinned: Record<string, string>) =>
+  governanceWrite<QaRunView>("/evaluation/qa/runs", token, { pinned });
+export const executeQaRun = (token: string, runId: string, caseIds: string[], limit: number) =>
+  governanceWrite(`/evaluation/qa/runs/${encodeURIComponent(runId)}/execute`, token, { case_ids: caseIds, limit });
+export const adjudicateQaObservation = (
+  token: string, observationId: string, verdict: "PASSED" | "FAILED" | "INCONCLUSIVE", oracleVersion: string, reason: string,
+) => governanceWrite(`/evaluation/qa/observations/${encodeURIComponent(observationId)}/adjudications`, token,
+  { verdict, oracle_version: oracleVersion, reason });
+export const recordReleaseVerdict = (token: string) => governanceWrite<ReleaseVerdictView & { id: string }>(
+  "/admin/release-verdicts", token);

@@ -22,3 +22,7 @@ from app.domains.admin_governance import models as admin_governance_models  # no
 from app.domains.review_console import models as review_console_models  # noqa: E402,F401
 from app.domains.billing import models as billing_models  # noqa: E402,F401
 from app.domains.financial_statements import models as financial_statements_models  # noqa: E402,F401
+# WF-01 release governance (ZL-WF-GAP-01): authority, as-built ledger, runtime QA ledger.
+from app.domains.admin_governance import governance_models as release_governance_models  # noqa: E402,F401
+from app.domains.operations import asbuilt_models as asbuilt_models  # noqa: E402,F401
+from app.domains.evaluation import qa_models as qa_ledger_models  # noqa: E402,F401

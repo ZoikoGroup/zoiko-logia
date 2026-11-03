@@ -30,6 +30,8 @@ from app.domains.identity.permissions import (
     REVIEW_RESOLVE,
     EVALUATION_READ,
     EVALUATION_MANAGE,
+    ASBUILT_RECORD, AUTHORITY_PROPOSE, AUTHORITY_RATIFY, GOVERNANCE_READ, QA_ADJUDICATE, QA_EXECUTE, RELEASE_VERIFY,
+    WF01_PERMISSIONS,
     permissions_for_role,
     user_has_permission,
 )
@@ -52,6 +54,9 @@ SEEDED_ROLES = {
     "SME Reviewer",
     # Individual ("Myself") sign-ups and trainees.
     "Learner",
+    # WF-01 platform release governance (decision D2); effective only in the
+    # governance tenant (governance_access.require_governance).
+    "Document Control", "Chief Architect", "Independent QA", "QA Automation", "CTO",
 }
 
 
@@ -65,10 +70,15 @@ async def test_permissions_declared_exactly_once_in_registry() -> None:
         SAFETY_READ, SAFETY_MANAGE, REVIEW_READ, REVIEW_RESOLVE, EVALUATION_READ, EVALUATION_MANAGE,
     }
     assert ALL_PERMISSIONS == declared
+    # Platform governance permissions are declared separately: a tenant Admin
+    # (ALL_PERMISSIONS) never carries them.
+    assert WF01_PERMISSIONS == {GOVERNANCE_READ, AUTHORITY_PROPOSE, AUTHORITY_RATIFY, QA_EXECUTE, QA_ADJUDICATE,
+                                ASBUILT_RECORD, RELEASE_VERIFY}
+    assert not (WF01_PERMISSIONS & ALL_PERMISSIONS)
     # Every permission a role carries must be a declared one — a mistyped
     # permission would otherwise silently deny forever (unknown permission).
     assigned = {p for perms in ROLE_PERMISSIONS.values() for p in perms}
-    assert assigned <= declared
+    assert assigned <= declared | WF01_PERMISSIONS
 
 
 async def test_role_matrix_matches_approved_mapping() -> None:
@@ -89,6 +99,11 @@ async def test_role_matrix_matches_approved_mapping() -> None:
     })
     assert ROLE_PERMISSIONS["SME Reviewer"] == frozenset({REVIEW_READ, REVIEW_RESOLVE})
     assert ROLE_PERMISSIONS["Learner"] == frozenset()
+    assert ROLE_PERMISSIONS["Document Control"] == frozenset({GOVERNANCE_READ, AUTHORITY_PROPOSE})
+    assert ROLE_PERMISSIONS["Chief Architect"] == frozenset({GOVERNANCE_READ, AUTHORITY_RATIFY})
+    assert ROLE_PERMISSIONS["Independent QA"] == frozenset({GOVERNANCE_READ, QA_ADJUDICATE, EVALUATION_READ})
+    assert ROLE_PERMISSIONS["QA Automation"] == frozenset({GOVERNANCE_READ, QA_EXECUTE, ASBUILT_RECORD, EVALUATION_READ})
+    assert ROLE_PERMISSIONS["CTO"] == frozenset({GOVERNANCE_READ, RELEASE_VERIFY})
 
 
 async def test_sme_reviewer_works_the_queue_but_cannot_run_or_promote_evaluations() -> None:

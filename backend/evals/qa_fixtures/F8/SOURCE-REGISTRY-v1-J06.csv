@@ -1,0 +1,8 @@
+card_id,version,title,effective_from,effective_to,authority,licence,permission,section,entity,supersedes,text
+SRC-REC-2025,1,Synthetic revenue recognition guidance,2025-01-01,2025-12-31,AUTHORIZED,LICENSED,READ,4.2,,,Recognise revenue when control of the promised service transfers to the customer (synthetic test rule).
+SRC-REC-2026,2,Synthetic revenue recognition guidance (revised),2026-01-01,,AUTHORIZED,LICENSED,READ,4.2,,SRC-REC-2025 v1,"From 1 January 2026, multi-element contracts must also allocate price by relative stand-alone selling price (synthetic test rule). Not retroactive."
+SRC-PREMIUM-STD,1,Premium standard (licensed text not held),2025-01-01,,AUTHORIZED,PROHIBITED_UNLICENSED,NONE,,,,[text withheld: no licence]
+SRC-POL-A,3,Entity capitalisation policy,2025-01-01,,AUTHORIZED,LICENSED,READ,2.1,Northbridge Analytics Inc.,,"Capitalise equipment above USD 5,000 (synthetic test rule)."
+SRC-POL-B,1,Group finance memo,2025-03-01,,AUTHORIZED,LICENSED,READ,1,Northbridge group,,"Capitalise equipment above USD 2,500 (synthetic test rule)."
+CONTRACT-NB-2025-017,1,Approved customer contract (stored),2025-07-01,,AUTHORIZED_CONTRACT,INTERNAL,READ,Schedule A,,,Unit price USD 95 (approved).
+PRICING-TOOL-FEED,2025-10-27,Pricing tool output,2025-10-27,,TOOL_OUTPUT_UNVERIFIED,INTERNAL,READ,,,,Unit price USD 100.

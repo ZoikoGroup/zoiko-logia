@@ -1,0 +1,1283 @@
+{
+ "version": "authority-register-0.1",
+ "built_at": "2026-11-03T16:06:02+00:00",
+ "workcard": "WF-01 A1 step 1",
+ "release_evidence": false,
+ "note": "Records what the controlled documents state. Not release evidence; no gate status. canonical_id is set only where one document unambiguously declares one identifier; every other case stays unresolved.",
+ "documents": [
+  {
+   "path": "docs/ZoikoLogia_4_Person_Project_Execution_Plan.docx",
+   "sha256": "05ffef1b7908c50e11b9d311ef000f84d724bf29c98240aabdc78fbcb523fb25",
+   "title": "ZoikoLogia Project Execution Plan (4-Person Team)",
+   "declared_ids": [],
+   "cited_ids": [],
+   "canonical_id": null,
+   "state": "ID_NOT_FOUND"
+  },
+  {
+   "path": "docs/ZoikoLogia_Admin_Governance_Console_Wireframe_Specification.docx",
+   "sha256": "3327d37584961ffe51a236ec397eb28fbc60b28b03658bb58e5a77de83a02988",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T2-05",
+     "evidence": "layer of the product. | Field | Value | Document ID | ZL-T2-05 (provisional Tier 2 ID pending master r"
+    }
+   ],
+   "cited_ids": [
+    "ZL-OV-01",
+    "ZL-T0-01",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-05",
+    "ZL-T0-06",
+    "ZL-T0-07",
+    "ZL-T0-09",
+    "ZL-T0-11",
+    "ZL-T1-02",
+    "ZL-T1-03",
+    "ZL-T1-06",
+    "ZL-T1-06A",
+    "ZL-T1-07",
+    "ZL-T1-08",
+    "ZL-T1-10",
+    "ZL-T1-12",
+    "ZL-T2-01",
+    "ZL-T2-04"
+   ],
+   "canonical_id": "ZL-T2-05",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Back_End_Architecture_Specification_Wireframe.docx",
+   "sha256": "1fb82fad9c65de52eea9d586d06a92089dd8ff99f72e9f7168eb4ab1c188473c",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T0-BE-WF-01",
+     "evidence": "e | Engineering Control Field | Value | Document ID | ZL-T0-BE-WF-01 (wireframe for Tier-0 Back-End Architec"
+    }
+   ],
+   "cited_ids": [
+    "ZL-OV-01",
+    "ZL-T2-01",
+    "ZL-T2-06"
+   ],
+   "canonical_id": "ZL-T0-BE-WF-01",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Customer_Support_Incident_Response_Trust_Operations_Wireframe_Specification.docx",
+   "sha256": "89253d3bc52828ca36eb46175707b82c8bc3c956c0907306f08c0a4e404503c6",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T2-06",
+     "evidence": "form | American English Field | Value | Document ID | ZL-T2-06 (provisional Tier 2 ID pending master r"
+    }
+   ],
+   "cited_ids": [
+    "ZL-OV-01",
+    "ZL-T0-01",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-05",
+    "ZL-T0-06",
+    "ZL-T0-07",
+    "ZL-T0-09",
+    "ZL-T0-11",
+    "ZL-T1-02",
+    "ZL-T1-03",
+    "ZL-T1-10",
+    "ZL-T1-12",
+    "ZL-T1-14",
+    "ZL-T2-01",
+    "ZL-T2-02",
+    "ZL-T2-03",
+    "ZL-T2-04",
+    "ZL-T2-05"
+   ],
+   "canonical_id": "ZL-T2-06",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Data_Model_Database_Schema_Specification_Wireframe.docx",
+   "sha256": "79b1462545e4e1e6828a361967453cc871c6aa6be16a3e8624046901bcbf6666",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T0-DM-WF-01",
+     "evidence": "Specification Wireframe Field | Value | Document ID | ZL-T0-DM-WF-01 (wireframe for Tier-0 Data Model & Data"
+    }
+   ],
+   "cited_ids": [
+    "ZL-T2-03",
+    "ZL-T2-05"
+   ],
+   "canonical_id": "ZL-T0-DM-WF-01",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Engineering_Architecture_and_Implementation_Guide.docx",
+   "sha256": "9e6a53215207b51166f7cb82d2cc1ab94385bd58053a6c92c8246f7d46cf9e64",
+   "title": "ZOIKOLOGIA™",
+   "declared_ids": [],
+   "cited_ids": [],
+   "canonical_id": null,
+   "state": "ID_NOT_FOUND"
+  },
+  {
+   "path": "docs/ZoikoLogia_Front_End_Architecture_and_UX_Wireframe_Specification.docx",
+   "sha256": "9f3672d2cbfe9fc4778be378e6ab0db665580f2a27e1c0dad07e4ec172466356",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T2-01",
+     "evidence": "chitecture & UX Wireframe Specification Document ID: ZL-T2-01 | Build-Ready Draft | Global, Multi-Lan"
+    }
+   ],
+   "cited_ids": [
+    "ZL-OV-01",
+    "ZL-T0-01",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-05",
+    "ZL-T0-07",
+    "ZL-T0-09",
+    "ZL-T0-11",
+    "ZL-T1-02",
+    "ZL-T1-03",
+    "ZL-T1-06",
+    "ZL-T1-07",
+    "ZL-T1-08",
+    "ZL-T1-10",
+    "ZL-T1-12",
+    "ZL-T1-14",
+    "ZL-T1-15"
+   ],
+   "canonical_id": "ZL-T2-01",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Kriton_AI_Advisor_Combined_Wireframe.docx",
+   "sha256": "73d1f45ac01ad82bb198d100f3a66c6028a283498637b8a38180648cb8dc2c02",
+   "title": "ZoikoLogia™ with Kriton™ Kriton™ AI Advisor Page Designer Wireframe & Implementation Specification (Combined Draft)",
+   "declared_ids": [],
+   "cited_ids": [],
+   "canonical_id": null,
+   "state": "ID_NOT_FOUND"
+  },
+  {
+   "path": "docs/ZoikoLogia_Kriton_AI_Safety_Risk_Classification_Escalation_Wireframe.docx",
+   "sha256": "8e52334e9da82b5774854019aa108bc043a70af9b09a2b9f18dd0310ad13f963",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T0-04-WF-01",
+     "evidence": "Specification Wireframe Field | Value | Document ID | ZL-T0-04-WF-01 — wireframe for ZL-T0-04 AI Safety, Ris"
+    }
+   ],
+   "cited_ids": [
+    "ZL-T0-01",
+    "ZL-T0-02",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-06",
+    "ZL-T0-07",
+    "ZL-T0-08",
+    "ZL-T0-10",
+    "ZL-T0-11",
+    "ZL-T0-13",
+    "ZL-T0-14"
+   ],
+   "canonical_id": "ZL-T0-04-WF-01",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Kriton_Audit_Logging_Evidence_Ledger_Wireframe.docx",
+   "sha256": "3bc3c790b1c9fbb12785b3dd2eb217cde02cf81457ae6ff95a8ab20723988735",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T0-07-WF-01",
+     "evidence": "Specification Wireframe Field | Value | Document ID | ZL-T0-07-WF-01 — wireframe for ZL-T0-07 Audit Logging "
+    }
+   ],
+   "cited_ids": [
+    "ZL-T0-01",
+    "ZL-T0-02",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-06",
+    "ZL-T0-07",
+    "ZL-T0-08",
+    "ZL-T0-10",
+    "ZL-T0-11",
+    "ZL-T0-12",
+    "ZL-T0-13",
+    "ZL-T0-14"
+   ],
+   "canonical_id": "ZL-T0-07-WF-01",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Kriton_Authoritative_Source_Library_Licensing_Register_Wireframe.docx",
+   "sha256": "c1536c6b967a9c3fdd8ea723b30f70d1eae62842190079df1a3369aa20face88",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T0-01-WF-01",
+     "evidence": "Specification Wireframe Field | Value | Document ID | ZL-T0-01-WF-01 — wireframe for ZL-T0-01 Authoritative "
+    }
+   ],
+   "cited_ids": [
+    "ZL-T0-01",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-06",
+    "ZL-T0-07",
+    "ZL-T0-08",
+    "ZL-T0-09",
+    "ZL-T0-10",
+    "ZL-T0-11",
+    "ZL-T0-13",
+    "ZL-T0-14"
+   ],
+   "canonical_id": "ZL-T0-01-WF-01",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Kriton_Event_Catalog_Wireframe.docx",
+   "sha256": "7320f87e47f1f86532eea1f0d2c81a6b34b82fe8825b711574ebca9e08c4b533",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T0-13-WF-01",
+     "evidence": "Specification Wireframe Field | Value | Document ID | ZL-T0-13-WF-01 — wireframe for ZL-T0-13 Event Catalog;"
+    }
+   ],
+   "cited_ids": [
+    "ZL-T0-01",
+    "ZL-T0-02",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-06",
+    "ZL-T0-07",
+    "ZL-T0-08",
+    "ZL-T0-09",
+    "ZL-T0-10",
+    "ZL-T0-11",
+    "ZL-T0-12",
+    "ZL-T0-13",
+    "ZL-T0-14"
+   ],
+   "canonical_id": "ZL-T0-13-WF-01",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Kriton_Knowledge_Graph_Accounting_Ontology_Wireframe.docx",
+   "sha256": "31e77e5ab216e7df1c36ae7a0f0584e53f2e0def9fa1c614cd9d370e7a425fef",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T0-02-WF-01",
+     "evidence": "unting Ontology Specification Wireframe Document ID | ZL-T0-02-WF-01 — wireframe for ZL-T0-02 Knowledge Grap"
+    }
+   ],
+   "cited_ids": [
+    "ZL-T0-01",
+    "ZL-T0-02",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-06",
+    "ZL-T0-07",
+    "ZL-T0-08",
+    "ZL-T0-10",
+    "ZL-T0-11",
+    "ZL-T0-13",
+    "ZL-T0-14"
+   ],
+   "canonical_id": "ZL-T0-02-WF-01",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Kriton_LLM_Evaluation_Benchmarking_Wireframe.docx",
+   "sha256": "441e9c340fb6c328a6b83d15c86c19327c3d7c6b8d0190a5494f93e0dc3a2faf",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [],
+   "cited_ids": [
+    "ZL-T0-01",
+    "ZL-T0-02",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-06",
+    "ZL-T0-07",
+    "ZL-T0-08",
+    "ZL-T0-09",
+    "ZL-T0-10",
+    "ZL-T0-11",
+    "ZL-T0-12",
+    "ZL-T0-13"
+   ],
+   "canonical_id": null,
+   "state": "ID_NOT_FOUND"
+  },
+  {
+   "path": "docs/ZoikoLogia_Kriton_LLM_System_Architecture_Model_Strategy_Wireframe.docx",
+   "sha256": "0f1cf0ba02c0f097585e94294d9623950273c5ddedfed19ff1b9c252bbc0bc40",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T0-LLM-WF-01",
+     "evidence": "Specification Wireframe Field | Value | Document ID | ZL-T0-LLM-WF-01 — wireframe for Tier-0 LLM System Archi"
+    }
+   ],
+   "cited_ids": [],
+   "canonical_id": "ZL-T0-LLM-WF-01",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx",
+   "sha256": "2d496b94bebf231724f2961bb4705a4ec28fbd01847999898fa9962935cef5b2",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T0-MRP-WF-01",
+     "evidence": "Specification Wireframe Field | Value | Document ID | ZL-T0-MRP-WF-01 — wireframe for Master Register Patch &"
+    }
+   ],
+   "cited_ids": [
+    "ZL-T0-01",
+    "ZL-T0-02",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-05",
+    "ZL-T0-06",
+    "ZL-T0-07",
+    "ZL-T0-08",
+    "ZL-T0-09",
+    "ZL-T0-10",
+    "ZL-T0-11",
+    "ZL-T0-12",
+    "ZL-T0-13",
+    "ZL-T0-14",
+    "ZL-T0-BE",
+    "ZL-T0-LLM",
+    "ZL-T0-PRD",
+    "ZL-T1-01",
+    "ZL-T1-02",
+    "ZL-T1-14",
+    "ZL-T2-01",
+    "ZL-T2-06"
+   ],
+   "canonical_id": "ZL-T0-MRP-WF-01",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Kriton_Privacy_Security_Data_Protection_Wireframe.docx",
+   "sha256": "60e8e0d3abd0f2606a351bb832821047b3d71d5fe0cec9e0f319962e69252405",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T0-09-WF-01",
+     "evidence": "Specification Wireframe Field | Value | Document ID | ZL-T0-09-WF-01 — wireframe for ZL-T0-09 Privacy, Secur"
+    }
+   ],
+   "cited_ids": [
+    "ZL-T0-01",
+    "ZL-T0-02",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-06",
+    "ZL-T0-07",
+    "ZL-T0-08",
+    "ZL-T0-09",
+    "ZL-T0-10",
+    "ZL-T0-11",
+    "ZL-T0-12",
+    "ZL-T0-13",
+    "ZL-T0-14"
+   ],
+   "canonical_id": "ZL-T0-09-WF-01",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Kriton_Provider_Due_Diligence_Register_Wireframe_Final_Refined.docx",
+   "sha256": "9602178ddfd837a3ec8c0476f30d9fad8502355abb16da5406fe3319405f8212",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T0-12-WF-02",
+     "evidence": "Specification Wireframe Field | Value | Document ID | ZL-T0-12-WF-02 — final-refined wireframe for ZL-T0-12 "
+    }
+   ],
+   "cited_ids": [
+    "ZL-T0-01",
+    "ZL-T0-02",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-06",
+    "ZL-T0-07",
+    "ZL-T0-08",
+    "ZL-T0-09",
+    "ZL-T0-10",
+    "ZL-T0-11",
+    "ZL-T0-12",
+    "ZL-T0-13",
+    "ZL-T0-14"
+   ],
+   "canonical_id": "ZL-T0-12-WF-02",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Kriton_QA_Test_Plan_Release_Gate_Wireframe_Final_Refined.docx",
+   "sha256": "6b93a1e4a1bcec7c998d03facb3c60743aad6e23e2b657947735f81ad13286e2",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T0-11-WF-02",
+     "evidence": "Specification Wireframe Field | Value | Document ID | ZL-T0-11-WF-02 — final-refined wireframe for ZL-T0-11 "
+    }
+   ],
+   "cited_ids": [
+    "ZL-T0-01",
+    "ZL-T0-02",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-05",
+    "ZL-T0-06",
+    "ZL-T0-07",
+    "ZL-T0-08",
+    "ZL-T0-09",
+    "ZL-T0-10",
+    "ZL-T0-11",
+    "ZL-T0-12",
+    "ZL-T0-13",
+    "ZL-T0-14"
+   ],
+   "canonical_id": "ZL-T0-11-WF-02",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Kriton_RAG_Specification_Wireframe.docx",
+   "sha256": "fc8057c48e6008aaf62356cce796b0b31d8a0e1af852e630473c6ce5713a56a6",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T0-03-WF-01",
+     "evidence": "Specification Wireframe Field | Value | Document ID | ZL-T0-03-WF-01 — wireframe for ZL-T0-03 RAG Specificat"
+    }
+   ],
+   "cited_ids": [
+    "ZL-T0-01",
+    "ZL-T0-02",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-06",
+    "ZL-T0-07",
+    "ZL-T0-08",
+    "ZL-T0-10",
+    "ZL-T0-11",
+    "ZL-T0-13",
+    "ZL-T0-14"
+   ],
+   "canonical_id": "ZL-T0-03-WF-01",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Learning_Practice_CPD_Workspace_Wireframe_Specification.docx",
+   "sha256": "ad1518d6f0975243d6df398effc56ecfacd2654d0264bc8bd202c02dffd8799a",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T2-02",
+     "evidence": "Wireframe Specification Field | Value | Document ID | ZL-T2-02 (provisional Tier 2 ID pending master r"
+    }
+   ],
+   "cited_ids": [
+    "ZL-OV-01",
+    "ZL-T0-01",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-05",
+    "ZL-T0-06",
+    "ZL-T0-07",
+    "ZL-T0-09",
+    "ZL-T0-11",
+    "ZL-T1-02",
+    "ZL-T1-03",
+    "ZL-T1-05",
+    "ZL-T1-06",
+    "ZL-T1-06A",
+    "ZL-T1-07",
+    "ZL-T1-08",
+    "ZL-T1-10",
+    "ZL-T1-12",
+    "ZL-T2-01",
+    "ZL-T2-04",
+    "ZL-T2-05"
+   ],
+   "canonical_id": "ZL-T2-02",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Master_Architecture_Build_Doctrine_Orientation_Document.docx",
+   "sha256": "369ce86ae468c396f5bb5cb50209b92f7c5612ada7253896984e032f609a215a",
+   "title": "ZOIKOLOGIA™ WITH KRITON™",
+   "declared_ids": [
+    {
+     "id": "ZL-OV-01",
+     "evidence": "rientation | Professional LLM Standards Document ID | ZL-OV-01 | Classification | Confidential — Engin"
+    }
+   ],
+   "cited_ids": [
+    "ZL-T0-01",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-06",
+    "ZL-T0-07",
+    "ZL-T0-09",
+    "ZL-T0-11",
+    "ZL-T1-04",
+    "ZL-T1-06",
+    "ZL-T1-10",
+    "ZL-T1-14"
+   ],
+   "canonical_id": "ZL-OV-01",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Product_Requirements_Document_Wireframe_Specification.docx",
+   "sha256": "823b015cf7b179ca3df8ea7c8347f1e6110438a00cf8b16e5b47d5c1e4aee487",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T1-01",
+     "evidence": "equired Field | Required Value / Rule | Document ID | ZL-T1-01 per the locked register unless the Tier"
+    },
+    {
+     "id": "ZL-T1-01-WF",
+     "evidence": "andards | Build Control Field | Value | Document ID | ZL-T1-01-WF (provisional — wireframe for the PRD as"
+    }
+   ],
+   "cited_ids": [
+    "ZL-OV-01",
+    "ZL-T0-00",
+    "ZL-T1-02",
+    "ZL-T2-01",
+    "ZL-T2-02",
+    "ZL-T2-03",
+    "ZL-T2-04",
+    "ZL-T2-05",
+    "ZL-T2-06"
+   ],
+   "canonical_id": null,
+   "state": "MULTIPLE_DECLARED_IDS"
+  },
+  {
+   "path": "docs/ZoikoLogia_Project_Execution_Roadmap.docx",
+   "sha256": "5f56f4ba2c43cd485d1988fcf7b1ecf820915cb82d07d46b0839e6065e883e61",
+   "title": "ZoikoLogia with Kriton",
+   "declared_ids": [],
+   "cited_ids": [
+    "ZL-OV-01",
+    "ZL-T0-01",
+    "ZL-T0-02",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-05",
+    "ZL-T0-06",
+    "ZL-T0-09",
+    "ZL-T0-10",
+    "ZL-T0-11",
+    "ZL-T0-12",
+    "ZL-T0-13",
+    "ZL-T1-01",
+    "ZL-T1-02",
+    "ZL-T1-08",
+    "ZL-T1-09",
+    "ZL-T2-01",
+    "ZL-T2-04",
+    "ZL-T2-05"
+   ],
+   "canonical_id": null,
+   "state": "ID_NOT_FOUND"
+  },
+  {
+   "path": "docs/ZoikoLogia_Review_Escalation_Audit_Workspace_Wireframe_Specification.docx",
+   "sha256": "55f6845567de03cd3d1b59e93d72475d5470ab14b9e01ae0b800694c45c21272",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T2-03",
+     "evidence": "l Intelligence Standard Field | Value | Document ID | ZL-T2-03 (provisional Tier 2 ID pending master r"
+    }
+   ],
+   "cited_ids": [
+    "ZL-OV-01",
+    "ZL-T0-01",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-05",
+    "ZL-T0-06",
+    "ZL-T0-07",
+    "ZL-T0-09",
+    "ZL-T0-11",
+    "ZL-T1-02",
+    "ZL-T1-03",
+    "ZL-T1-06A",
+    "ZL-T1-08",
+    "ZL-T1-10",
+    "ZL-T1-12",
+    "ZL-T1-14",
+    "ZL-T2-01",
+    "ZL-T2-02",
+    "ZL-T2-04",
+    "ZL-T2-05"
+   ],
+   "canonical_id": "ZL-T2-03",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_Technical_Product_Requirements_and_Engineering_Wireframe_Specification.docx",
+   "sha256": "939dac24c42f7f0e77654c1f5babc228275ebb8fa12a54def43b1c5e465a14db",
+   "title": "ZoikoLogia™ with Kriton™",
+   "declared_ids": [
+    {
+     "id": "ZL-T1-02",
+     "evidence": "s & Engineering Wireframe Specification Document ID: ZL-T1-02 | Version 1.2 | Build-Ready Draft Docum"
+    }
+   ],
+   "cited_ids": [
+    "ZL-T0-01",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-05",
+    "ZL-T0-06",
+    "ZL-T0-07",
+    "ZL-T0-08",
+    "ZL-T0-09",
+    "ZL-T0-11",
+    "ZL-T1-04",
+    "ZL-T1-05",
+    "ZL-T1-06",
+    "ZL-T1-07",
+    "ZL-T1-08",
+    "ZL-T1-11",
+    "ZL-T1-14"
+   ],
+   "canonical_id": "ZL-T1-02",
+   "state": "DECLARED"
+  },
+  {
+   "path": "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx",
+   "sha256": "abbe7f6548d6d3c2f05a4ac4e5e591e7840d1c36ebddaf78eddb679bc17336d8",
+   "title": "ZOIKOLOGIA™ WITH KRITON™",
+   "declared_ids": [
+    {
+     "id": "ZL-T2-04",
+     "evidence": "| Global Platform Ready Field | Value | Document ID | ZL-T2-04 | Document Name | ZoikoSuite Embedded K"
+    }
+   ],
+   "cited_ids": [
+    "ZL-OV-01",
+    "ZL-T0-01",
+    "ZL-T0-03",
+    "ZL-T0-04",
+    "ZL-T0-05",
+    "ZL-T0-07",
+    "ZL-T0-09",
+    "ZL-T0-11",
+    "ZL-T1-02",
+    "ZL-T1-03",
+    "ZL-T1-06",
+    "ZL-T1-06A",
+    "ZL-T1-07",
+    "ZL-T1-08",
+    "ZL-T1-10",
+    "ZL-T1-11",
+    "ZL-T1-12",
+    "ZL-T1-14",
+    "ZL-T1-15",
+    "ZL-T2-01"
+   ],
+   "canonical_id": "ZL-T2-04",
+   "state": "DECLARED"
+  }
+ ],
+ "collisions": [
+  {
+   "legacy_id": "ZL-ENG-06",
+   "state": "COLLISION_UNRESOLVED",
+   "candidates": [
+    {
+     "described_as": "information-quality standard",
+     "canonical_id": null
+    },
+    {
+     "described_as": "model-tiering standard",
+     "canonical_id": null
+    }
+   ],
+   "text_available_in_repo": false,
+   "resolution": null,
+   "note": "Neither standard's text is in the repository. Canonical identifiers are assigned by Document Control and ratified by the Chief Architect (WF-01 screen 02); none has been assigned.",
+   "cited_by": [],
+   "evidence": [
+    {
+     "file": "external:ZoikoLogia_Global_Specialist_AI_Gap_Analysis.docx",
+     "sha256": "bb3d0481ce775facd1e3484a0b0831ffaadd122a9920ae648ee7c0dd88d6df64",
+     "quote": "n that actually establishes it. Finding | Practical meaning | Confirmed document defect | Two different standards carry ZL-ENG-06. References cannot safely resolve by identifier alone. | Confirmed supplied-package limitation | 292 chatbot execution "
+    },
+    {
+     "file": "external:ZoikoLogia_Global_Specialist_AI_Gap_Analysis.docx",
+     "sha256": "bb3d0481ce775facd1e3484a0b0831ffaadd122a9920ae648ee7c0dd88d6df64",
+     "quote": "t identity and precedence C | P0 Evidence / gap: The information-quality standard and model-tiering standard both carry ZL-ENG-06. Generic Document 01–08 labels also recur across reporting and QA families. The master register retains open items. [I0"
+    },
+    {
+     "file": "external:ZoikoLogia_Architecture_and_QA_Handoff.docx",
+     "sha256": "c7460a2b4a30846886101c761494e1ecbecd0ef54bd48a30303df77604804fa4",
+     "quote": "not supersede signed requirements or prove test passes. | Known precedence items to close before release The identifier ZL-ENG-06 was used by two different standards. Document Control must assign unique permanent authority and preserve an alias/cros"
+    }
+   ]
+  }
+ ],
+ "unavailable_references": [
+  {
+   "id": "ZL-T0-00",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Product_Requirements_Document_Wireframe_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T0-01",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [
+    "ZL-T0-01-WF-01"
+   ],
+   "cited_by": [
+    "docs/ZoikoLogia_Admin_Governance_Console_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Customer_Support_Incident_Response_Trust_Operations_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Front_End_Architecture_and_UX_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Kriton_AI_Safety_Risk_Classification_Escalation_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Audit_Logging_Evidence_Ledger_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Authoritative_Source_Library_Licensing_Register_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Event_Catalog_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Knowledge_Graph_Accounting_Ontology_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_LLM_Evaluation_Benchmarking_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Privacy_Security_Data_Protection_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Provider_Due_Diligence_Register_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_QA_Test_Plan_Release_Gate_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_RAG_Specification_Wireframe.docx",
+    "docs/ZoikoLogia_Learning_Practice_CPD_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Master_Architecture_Build_Doctrine_Orientation_Document.docx",
+    "docs/ZoikoLogia_Project_Execution_Roadmap.docx",
+    "docs/ZoikoLogia_Review_Escalation_Audit_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Technical_Product_Requirements_and_Engineering_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T0-02",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [
+    "ZL-T0-02-WF-01"
+   ],
+   "cited_by": [
+    "docs/ZoikoLogia_Kriton_AI_Safety_Risk_Classification_Escalation_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Audit_Logging_Evidence_Ledger_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Event_Catalog_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Knowledge_Graph_Accounting_Ontology_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_LLM_Evaluation_Benchmarking_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Privacy_Security_Data_Protection_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Provider_Due_Diligence_Register_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_QA_Test_Plan_Release_Gate_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_RAG_Specification_Wireframe.docx",
+    "docs/ZoikoLogia_Project_Execution_Roadmap.docx"
+   ]
+  },
+  {
+   "id": "ZL-T0-03",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [
+    "ZL-T0-03-WF-01"
+   ],
+   "cited_by": [
+    "docs/ZoikoLogia_Admin_Governance_Console_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Customer_Support_Incident_Response_Trust_Operations_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Front_End_Architecture_and_UX_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Kriton_AI_Safety_Risk_Classification_Escalation_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Audit_Logging_Evidence_Ledger_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Authoritative_Source_Library_Licensing_Register_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Event_Catalog_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Knowledge_Graph_Accounting_Ontology_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_LLM_Evaluation_Benchmarking_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Privacy_Security_Data_Protection_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Provider_Due_Diligence_Register_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_QA_Test_Plan_Release_Gate_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_RAG_Specification_Wireframe.docx",
+    "docs/ZoikoLogia_Learning_Practice_CPD_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Master_Architecture_Build_Doctrine_Orientation_Document.docx",
+    "docs/ZoikoLogia_Project_Execution_Roadmap.docx",
+    "docs/ZoikoLogia_Review_Escalation_Audit_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Technical_Product_Requirements_and_Engineering_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T0-04",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [
+    "ZL-T0-04-WF-01"
+   ],
+   "cited_by": [
+    "docs/ZoikoLogia_Admin_Governance_Console_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Customer_Support_Incident_Response_Trust_Operations_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Front_End_Architecture_and_UX_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Kriton_AI_Safety_Risk_Classification_Escalation_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Audit_Logging_Evidence_Ledger_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Authoritative_Source_Library_Licensing_Register_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Event_Catalog_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Knowledge_Graph_Accounting_Ontology_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_LLM_Evaluation_Benchmarking_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Privacy_Security_Data_Protection_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Provider_Due_Diligence_Register_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_QA_Test_Plan_Release_Gate_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_RAG_Specification_Wireframe.docx",
+    "docs/ZoikoLogia_Learning_Practice_CPD_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Master_Architecture_Build_Doctrine_Orientation_Document.docx",
+    "docs/ZoikoLogia_Project_Execution_Roadmap.docx",
+    "docs/ZoikoLogia_Review_Escalation_Audit_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Technical_Product_Requirements_and_Engineering_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T0-05",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": true,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Admin_Governance_Console_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Customer_Support_Incident_Response_Trust_Operations_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Front_End_Architecture_and_UX_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_QA_Test_Plan_Release_Gate_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Learning_Practice_CPD_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Project_Execution_Roadmap.docx",
+    "docs/ZoikoLogia_Review_Escalation_Audit_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Technical_Product_Requirements_and_Engineering_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T0-06",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": true,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Admin_Governance_Console_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Customer_Support_Incident_Response_Trust_Operations_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Kriton_AI_Safety_Risk_Classification_Escalation_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Audit_Logging_Evidence_Ledger_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Authoritative_Source_Library_Licensing_Register_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Event_Catalog_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Knowledge_Graph_Accounting_Ontology_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_LLM_Evaluation_Benchmarking_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Privacy_Security_Data_Protection_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Provider_Due_Diligence_Register_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_QA_Test_Plan_Release_Gate_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_RAG_Specification_Wireframe.docx",
+    "docs/ZoikoLogia_Learning_Practice_CPD_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Master_Architecture_Build_Doctrine_Orientation_Document.docx",
+    "docs/ZoikoLogia_Project_Execution_Roadmap.docx",
+    "docs/ZoikoLogia_Review_Escalation_Audit_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Technical_Product_Requirements_and_Engineering_Wireframe_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T0-07",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [
+    "ZL-T0-07-WF-01"
+   ],
+   "cited_by": [
+    "docs/ZoikoLogia_Admin_Governance_Console_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Customer_Support_Incident_Response_Trust_Operations_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Front_End_Architecture_and_UX_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Kriton_AI_Safety_Risk_Classification_Escalation_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Audit_Logging_Evidence_Ledger_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Authoritative_Source_Library_Licensing_Register_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Event_Catalog_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Knowledge_Graph_Accounting_Ontology_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_LLM_Evaluation_Benchmarking_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Privacy_Security_Data_Protection_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Provider_Due_Diligence_Register_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_QA_Test_Plan_Release_Gate_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_RAG_Specification_Wireframe.docx",
+    "docs/ZoikoLogia_Learning_Practice_CPD_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Master_Architecture_Build_Doctrine_Orientation_Document.docx",
+    "docs/ZoikoLogia_Review_Escalation_Audit_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Technical_Product_Requirements_and_Engineering_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T0-08",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Kriton_AI_Safety_Risk_Classification_Escalation_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Audit_Logging_Evidence_Ledger_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Authoritative_Source_Library_Licensing_Register_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Event_Catalog_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Knowledge_Graph_Accounting_Ontology_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_LLM_Evaluation_Benchmarking_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Privacy_Security_Data_Protection_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Provider_Due_Diligence_Register_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_QA_Test_Plan_Release_Gate_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_RAG_Specification_Wireframe.docx",
+    "docs/ZoikoLogia_Technical_Product_Requirements_and_Engineering_Wireframe_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T0-09",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [
+    "ZL-T0-09-WF-01"
+   ],
+   "cited_by": [
+    "docs/ZoikoLogia_Admin_Governance_Console_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Customer_Support_Incident_Response_Trust_Operations_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Front_End_Architecture_and_UX_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Kriton_Authoritative_Source_Library_Licensing_Register_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Event_Catalog_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_LLM_Evaluation_Benchmarking_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Privacy_Security_Data_Protection_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Provider_Due_Diligence_Register_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_QA_Test_Plan_Release_Gate_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Learning_Practice_CPD_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Master_Architecture_Build_Doctrine_Orientation_Document.docx",
+    "docs/ZoikoLogia_Project_Execution_Roadmap.docx",
+    "docs/ZoikoLogia_Review_Escalation_Audit_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Technical_Product_Requirements_and_Engineering_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T0-10",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Kriton_AI_Safety_Risk_Classification_Escalation_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Audit_Logging_Evidence_Ledger_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Authoritative_Source_Library_Licensing_Register_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Event_Catalog_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Knowledge_Graph_Accounting_Ontology_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_LLM_Evaluation_Benchmarking_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Privacy_Security_Data_Protection_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Provider_Due_Diligence_Register_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_QA_Test_Plan_Release_Gate_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_RAG_Specification_Wireframe.docx",
+    "docs/ZoikoLogia_Project_Execution_Roadmap.docx"
+   ]
+  },
+  {
+   "id": "ZL-T0-11",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [
+    "ZL-T0-11-WF-02"
+   ],
+   "cited_by": [
+    "docs/ZoikoLogia_Admin_Governance_Console_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Customer_Support_Incident_Response_Trust_Operations_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Front_End_Architecture_and_UX_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Kriton_AI_Safety_Risk_Classification_Escalation_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Audit_Logging_Evidence_Ledger_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Authoritative_Source_Library_Licensing_Register_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Event_Catalog_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Knowledge_Graph_Accounting_Ontology_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_LLM_Evaluation_Benchmarking_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Privacy_Security_Data_Protection_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Provider_Due_Diligence_Register_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_QA_Test_Plan_Release_Gate_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_RAG_Specification_Wireframe.docx",
+    "docs/ZoikoLogia_Learning_Practice_CPD_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Master_Architecture_Build_Doctrine_Orientation_Document.docx",
+    "docs/ZoikoLogia_Project_Execution_Roadmap.docx",
+    "docs/ZoikoLogia_Review_Escalation_Audit_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Technical_Product_Requirements_and_Engineering_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T0-12",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [
+    "ZL-T0-12-WF-02"
+   ],
+   "cited_by": [
+    "docs/ZoikoLogia_Kriton_Audit_Logging_Evidence_Ledger_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Event_Catalog_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_LLM_Evaluation_Benchmarking_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Privacy_Security_Data_Protection_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Provider_Due_Diligence_Register_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_QA_Test_Plan_Release_Gate_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Project_Execution_Roadmap.docx"
+   ]
+  },
+  {
+   "id": "ZL-T0-13",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [
+    "ZL-T0-13-WF-01"
+   ],
+   "cited_by": [
+    "docs/ZoikoLogia_Kriton_AI_Safety_Risk_Classification_Escalation_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Audit_Logging_Evidence_Ledger_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Authoritative_Source_Library_Licensing_Register_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Event_Catalog_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Knowledge_Graph_Accounting_Ontology_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_LLM_Evaluation_Benchmarking_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Privacy_Security_Data_Protection_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Provider_Due_Diligence_Register_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_QA_Test_Plan_Release_Gate_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_RAG_Specification_Wireframe.docx",
+    "docs/ZoikoLogia_Project_Execution_Roadmap.docx"
+   ]
+  },
+  {
+   "id": "ZL-T0-14",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Kriton_AI_Safety_Risk_Classification_Escalation_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Audit_Logging_Evidence_Ledger_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Authoritative_Source_Library_Licensing_Register_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Event_Catalog_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Knowledge_Graph_Accounting_Ontology_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Privacy_Security_Data_Protection_Wireframe.docx",
+    "docs/ZoikoLogia_Kriton_Provider_Due_Diligence_Register_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_QA_Test_Plan_Release_Gate_Wireframe_Final_Refined.docx",
+    "docs/ZoikoLogia_Kriton_RAG_Specification_Wireframe.docx"
+   ]
+  },
+  {
+   "id": "ZL-T0-BE",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx"
+   ]
+  },
+  {
+   "id": "ZL-T0-LLM",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx"
+   ]
+  },
+  {
+   "id": "ZL-T0-PRD",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx"
+   ]
+  },
+  {
+   "id": "ZL-T1-03",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Admin_Governance_Console_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Customer_Support_Incident_Response_Trust_Operations_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Front_End_Architecture_and_UX_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Learning_Practice_CPD_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Review_Escalation_Audit_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T1-04",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Master_Architecture_Build_Doctrine_Orientation_Document.docx",
+    "docs/ZoikoLogia_Technical_Product_Requirements_and_Engineering_Wireframe_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T1-05",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Learning_Practice_CPD_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Technical_Product_Requirements_and_Engineering_Wireframe_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T1-06",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Admin_Governance_Console_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Front_End_Architecture_and_UX_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Learning_Practice_CPD_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Master_Architecture_Build_Doctrine_Orientation_Document.docx",
+    "docs/ZoikoLogia_Technical_Product_Requirements_and_Engineering_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T1-06A",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Admin_Governance_Console_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Learning_Practice_CPD_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Review_Escalation_Audit_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T1-07",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Admin_Governance_Console_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Front_End_Architecture_and_UX_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Learning_Practice_CPD_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Technical_Product_Requirements_and_Engineering_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T1-08",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Admin_Governance_Console_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Front_End_Architecture_and_UX_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Learning_Practice_CPD_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Project_Execution_Roadmap.docx",
+    "docs/ZoikoLogia_Review_Escalation_Audit_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Technical_Product_Requirements_and_Engineering_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T1-09",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Project_Execution_Roadmap.docx"
+   ]
+  },
+  {
+   "id": "ZL-T1-10",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Admin_Governance_Console_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Customer_Support_Incident_Response_Trust_Operations_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Front_End_Architecture_and_UX_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Learning_Practice_CPD_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Master_Architecture_Build_Doctrine_Orientation_Document.docx",
+    "docs/ZoikoLogia_Review_Escalation_Audit_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T1-11",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Technical_Product_Requirements_and_Engineering_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T1-12",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Admin_Governance_Console_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Customer_Support_Incident_Response_Trust_Operations_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Front_End_Architecture_and_UX_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Learning_Practice_CPD_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Review_Escalation_Audit_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T1-14",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Customer_Support_Incident_Response_Trust_Operations_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Front_End_Architecture_and_UX_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Kriton_Master_Register_Patch_Wireframe.docx",
+    "docs/ZoikoLogia_Master_Architecture_Build_Doctrine_Orientation_Document.docx",
+    "docs/ZoikoLogia_Review_Escalation_Audit_Workspace_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_Technical_Product_Requirements_and_Engineering_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx"
+   ]
+  },
+  {
+   "id": "ZL-T1-15",
+   "state": "EVIDENCE_UNAVAILABLE_IN_REPO",
+   "flagged_unrecovered_by_gap_analysis": false,
+   "wireframes_in_repo": [],
+   "cited_by": [
+    "docs/ZoikoLogia_Front_End_Architecture_and_UX_Wireframe_Specification.docx",
+    "docs/ZoikoLogia_ZoikoSuite_Embedded_Kriton_UX_Specification.docx"
+   ]
+  }
+ ],
+ "ratifications": []
+}

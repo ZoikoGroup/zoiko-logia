@@ -1,0 +1,26 @@
+{
+ "fixture_id": "F6",
+ "status": "DRAFT_UNRATIFIED",
+ "release_evidence": false,
+ "signature": "NOT_RUN",
+ "source": {
+  "file": "external:ZoikoLogia_Document_01_Multimodal_Chatbot_Test_Question_Bank.docx",
+  "sha256": "defc1479135b13e713cde2ecb34173c95df33f9782e313d3036af4a66b0437e0",
+  "section": "\u00a73, \u00a73.1"
+ },
+ "specification": "NB-3WAY.csv: purchase order 10 x $100; goods received 9; invoice 10.",
+ "derivations": [
+  "Item name and document identifiers are synthetic; quantities and prices are the bank's."
+ ],
+ "files": [
+  {
+   "name": "NB-3WAY.csv",
+   "sha256": "ed76e0e4efc9f66859caceffc6f7aaccfeae58e918069be39448d10215d686d8",
+   "bytes": 286,
+   "uploadable": true,
+   "used_by": [
+    "J04"
+   ]
+  }
+ ]
+}

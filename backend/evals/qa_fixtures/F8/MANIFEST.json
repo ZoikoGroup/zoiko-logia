@@ -1,0 +1,54 @@
+{
+ "fixture_id": "F8",
+ "status": "DRAFT_UNRATIFIED",
+ "release_evidence": false,
+ "signature": "NOT_RUN",
+ "source": {
+  "file": "external:ZoikoLogia_Document_01_Multimodal_Chatbot_Test_Question_Bank.docx",
+  "sha256": "defc1479135b13e713cde2ecb34173c95df33f9782e313d3036af4a66b0437e0",
+  "section": "\u00a73, \u00a73.1"
+ },
+ "specification": "SOURCE-REGISTRY-v1: synthetic, versioned guidance cards; 2025/2026 effective versions, permissions and source-licensing flags.",
+ "derivations": [
+  "Card identifiers, sections and rule texts are synthetic and labelled so; the bank prescribes only 2025/2026 effective versions, permissions and licensing flags.",
+  "SRC-POL-A and SRC-POL-B are the two authorized documents that disagree as of 2025-06-30 (I05).",
+  "J06 mutation: SOURCE-REGISTRY-v1-J06.csv adds the approved contract ($95) and the pricing-tool output ($100).",
+  "Seeded by attaching SOURCE-REGISTRY-v1.csv to each F8 case: the API's only seeding surface."
+ ],
+ "files": [
+  {
+   "name": "SOURCE-REGISTRY-v1-J06.csv",
+   "sha256": "53dfde9ff772aa1f03ee40e3a98c4f8fdd8b195cb852cfbcb8a098d57d9305b1",
+   "bytes": 1326,
+   "uploadable": true,
+   "used_by": [
+    "J06"
+   ]
+  },
+  {
+   "name": "SOURCE-REGISTRY-v1.csv",
+   "sha256": "e2ee825be47cbdef92730250d9fb408b9b27fef25b8d47c87d23435dd6fffff6",
+   "bytes": 1057,
+   "uploadable": true,
+   "used_by": [
+    "A02",
+    "C06",
+    "I01",
+    "I02",
+    "I03",
+    "I04",
+    "I05",
+    "I06",
+    "J05",
+    "L05"
+   ]
+  },
+  {
+   "name": "SOURCE-REGISTRY-v1.json",
+   "sha256": "191b283ef8523dffb62f747ef08bc6efcf2d3f0f4ca0cb53df6f42ef14fdc755",
+   "bytes": 2008,
+   "uploadable": false,
+   "used_by": []
+  }
+ ]
+}

@@ -327,3 +327,44 @@ async def decide_integration(record_id: str, body: DecisionBody, db: AsyncSessio
     except (ValueError, LookupError) as exc:
         raise _bad_request(exc) from exc
     return await registers.integration_view(db, user.tenant_id, record_id)
+
+
+# ── WF-01 A2: as-built manifests ───────────────────────────────────────────
+# The manifest is collected from this running application, never accepted
+# from the request; verification is a different person's record.
+
+from fastapi import Request  # noqa: E402
+
+from app.domains.admin_governance.governance_access import idempotency_key, require_governance  # noqa: E402
+from app.domains.identity.permissions import ASBUILT_RECORD, GOVERNANCE_READ, RELEASE_VERIFY  # noqa: E402
+from app.domains.operations import asbuilt  # noqa: E402
+
+
+@router.get("/asbuilt/manifests/latest")
+async def get_latest_asbuilt(db: AsyncSession = Depends(get_db),
+                             user: User = Depends(require_governance(GOVERNANCE_READ))) -> dict:
+    return {"manifest": await asbuilt.latest(db)}
+
+
+@router.get("/asbuilt/preview")
+async def preview_asbuilt(request: Request, user: User = Depends(require_governance(GOVERNANCE_READ))) -> dict:
+    return asbuilt.collect(request.app)
+
+
+@router.post("/asbuilt/manifests", status_code=201)
+async def record_asbuilt(request: Request, db: AsyncSession = Depends(get_db),
+                         user: User = Depends(require_governance(ASBUILT_RECORD)),
+                         key: str = Depends(idempotency_key)) -> dict:
+    return await asbuilt.record(db, user, asbuilt.collect(request.app), key)
+
+
+class AsBuiltVerificationBody(BaseModel):
+    decision: Literal["VERIFIED", "REJECTED"]
+    note: str = Field(default="", max_length=2000)
+
+
+@router.post("/asbuilt/manifests/{manifest_id}/verifications", status_code=201)
+async def verify_asbuilt(manifest_id: str, body: AsBuiltVerificationBody, db: AsyncSession = Depends(get_db),
+                         user: User = Depends(require_governance(RELEASE_VERIFY)),
+                         key: str = Depends(idempotency_key)) -> dict:
+    return await asbuilt.verify(db, user, manifest_id, decision=body.decision, note=body.note, key=key)

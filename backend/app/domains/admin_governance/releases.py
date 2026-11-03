@@ -262,6 +262,15 @@ async def transition(db: AsyncSession, actor: User, viewer_live: dict, release_i
     elif action == "deploy":
         if status != "approved":
             raise ReleaseError("Production promotion is blocked until every gate passes and the release is approved")
+        # A platform release (the governance tenant's) also needs the WF-01
+        # verdict, computed now: GO only when every gate is SATISFIED.
+        governance_tenant = get_settings().KRITON_GOVERNANCE_TENANT_ID.strip()
+        if governance_tenant and actor.tenant_id == governance_tenant:
+            from app.domains.admin_governance import release_verdict
+            computed = await release_verdict.compute(db)
+            if computed["verdict"] != "GO":
+                held = [f"{k} {g['state']}" for k, g in computed["gates"].items() if g["state"] != "SATISFIED"]
+                raise ReleaseError("Platform release verdict is NO_GO: " + ", ".join(held))
         r.status, r.deployed_at = "deployed", _now()
     elif action == "rollback":
         if r.status != "deployed":

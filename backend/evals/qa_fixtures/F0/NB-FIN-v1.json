@@ -1,0 +1,93 @@
+{
+ "fixture": "NB-FIN-v1",
+ "entity": "Northbridge Analytics Inc.",
+ "currency": "USD thousands",
+ "synthetic": true,
+ "income_statement": {
+  "revenue": [
+   8000,
+   10000
+  ],
+  "cost_of_goods_sold": [
+   5000,
+   6200
+  ],
+  "operating_expenses_excl_depreciation": [
+   null,
+   2100
+  ],
+  "depreciation": [
+   null,
+   400
+  ],
+  "interest_expense": [
+   null,
+   100
+  ],
+  "income_tax_expense": [
+   null,
+   300
+  ]
+ },
+ "balance_sheet": {
+  "cash": [
+   700,
+   1200
+  ],
+  "accounts_receivable": [
+   950,
+   1250
+  ],
+  "inventory": [
+   800,
+   1100
+  ],
+  "net_ppe": [
+   3300,
+   3700
+  ],
+  "other_assets": [
+   250,
+   250
+  ],
+  "accounts_payable": [
+   700,
+   1000
+  ],
+  "tax_payable": [
+   200,
+   300
+  ],
+  "long_term_borrowings": [
+   2100,
+   2200
+  ],
+  "deferred_revenue": [
+   300,
+   400
+  ],
+  "equity": [
+   2700,
+   3600
+  ]
+ },
+ "quarterly_revenue_2025": {
+  "Q1": 2100,
+  "Q2": 2300,
+  "Q3": 2500,
+  "Q4": 3100
+ },
+ "fy2025_controls": {
+  "capital_expenditures": 800,
+  "debt_proceeds": 600,
+  "debt_repayments": 500,
+  "dividends": 0,
+  "operating_cash_flow": 1200,
+  "investing_cash_flow": -800,
+  "financing_cash_flow": 100,
+  "net_change_in_cash": 500,
+  "net_income": 900,
+  "total_assets_opening": 6000,
+  "total_assets_closing": 7500
+ }
+}

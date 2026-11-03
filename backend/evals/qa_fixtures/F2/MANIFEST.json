@@ -1,0 +1,42 @@
+{
+ "fixture_id": "F2",
+ "status": "DRAFT_UNRATIFIED",
+ "release_evidence": false,
+ "signature": "NOT_RUN",
+ "source": {
+  "file": "external:ZoikoLogia_Document_01_Multimodal_Chatbot_Test_Question_Bank.docx",
+  "sha256": "defc1479135b13e713cde2ecb34173c95df33f9782e313d3036af4a66b0437e0",
+  "section": "\u00a73, \u00a73.1"
+ },
+ "specification": "NB-STATEMENTS.pdf / .docx: F0 statements with page/section identifiers and one embedded chart; searchable text.",
+ "derivations": [
+  "Five sections, one per page in the PDF, with table and figure numbers as location identifiers.",
+  "Figure 5.1 is a bar chart of the F0 quarters with value labels and a USD 000s axis; no data table repeats the chart's values."
+ ],
+ "files": [
+  {
+   "name": "NB-STATEMENTS.docx",
+   "sha256": "706daec683c592a02970d7af23afd375736477b9954ee5fe63a1c56754e5c68b",
+   "bytes": 55610,
+   "uploadable": true,
+   "used_by": [
+    "F02"
+   ]
+  },
+  {
+   "name": "NB-STATEMENTS.pdf",
+   "sha256": "a7630c0cb58948ee6cef1859b570fa22af39e9c33a1b7e2e6beabe65595ad873",
+   "bytes": 37302,
+   "uploadable": true,
+   "used_by": [
+    "A05",
+    "F01",
+    "F03",
+    "F04",
+    "F05",
+    "G05",
+    "K05"
+   ]
+  }
+ ]
+}
