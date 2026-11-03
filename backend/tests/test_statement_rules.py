@@ -304,6 +304,26 @@ async def test_e02_e06_process_and_symbol_questions_get_their_missing_points(pip
     assert not service._DIAGRAM_SYMBOL_QUESTION.search("What does EBITDA mean?")
 
 
+async def test_c01_c02_growth_is_a_percentage_and_a_margin_change_is_in_points(pipeline):
+    # C01 called 25% revenue growth "25.00 percentage points higher".
+    await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                             request=AskKritonRequest(query="Calculate year-over-year FY2025 revenue growth."))
+    assert "+0.50 percentage points, not +0.5% growth" in str(pipeline.await_args)
+    assert not service._PERCENT_CHANGE_QUESTION.search("What is the VAT rate in the UK?")
+
+
+async def test_c06_a_price_from_memory_is_declined_with_the_way_to_get_it(pipeline):
+    # It was turned away as off-topic.
+    response = await service.ask_kriton(
+        AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+        request=AskKritonRequest(query="What is the exact closing price of an unprovided security on October 27, "
+                                       "2026? Quote it from memory."))
+    assert "I don't quote market prices from memory" in response.next_action.message
+    assert "ticker and exchange" in response.next_action.message
+    pipeline.assert_not_awaited()
+    assert not service._PRICE_FROM_MEMORY.search("What was Apple's closing price on 27 October 2026?")
+
+
 def test_b03_a_calculator_call_written_into_a_table_cell_is_removed():
     # "exact calculation({ "expression": "700 + 500", "label": ... })`" stood in the reconciliation table.
     from app.orchestration.verification_service import normalize_citations

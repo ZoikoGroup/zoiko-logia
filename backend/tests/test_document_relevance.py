@@ -54,8 +54,19 @@ def test_a_follow_up_that_names_the_file_by_its_code_uses_it():
     registry = WebSource(title="F8_SOURCE_REGISTRY.csv — Sheet1", url="", source_id="f8",
                          snippet="source_id\tsection_id\teffective_from\trule\nNB-POLICY-2026\t§A1\t2026-01-01\tthreshold = 20")
     assert about("Under F8, what changes on January 1, 2026?", [registry])
-    assert not about("Under F9, what changes on January 1, 2026?", [registry])
-    assert not about("What changed in FY2026?", [registry])          # a year is not a file code
+    assert not about("Under F9, what changes on January 1, 2027?", [registry])
+    from app.orchestration.document_relevance import _names_a_file_code
+    assert not _names_a_file_code("What changed in FY2026?", [registry])   # a year is not a file code
+
+
+def test_a_follow_up_naming_a_year_of_the_file_uses_it():
+    # QA C02 was refused as off-topic after the file was dropped.
+    from app.orchestration.document_relevance import question_is_about_documents as about
+    workbook = WebSource(title="F0_NB-FIN-v1.xlsx — 'Statements'!1:18", url="", source_id="f0",
+                         snippet="Measure\tFY2024 / Opening\tFY2025 / Closing\nRevenue\t8000\t10000\n"
+                                 "Cost of goods sold\t5000\t6200")
+    assert about("Compare FY2024 and FY2025 gross margins in percentage points.", [workbook])
+    assert not about("What was the UK VAT threshold in 2019?", [workbook])     # a year the file does not hold
 
 
 STATEMENT = WebSource(title="NB-STATEMENTS_RELEASED.pdf — Page 1", url="",

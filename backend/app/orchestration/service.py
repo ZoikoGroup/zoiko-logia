@@ -206,10 +206,20 @@ _APPROVAL_PROCESS_QUESTION = re.compile(
     r"\b(?:draft|pending|unapproved)\b[^.?!]{0,60}\b(?:becomes?|turns?\s+into|moves?\s+to|gets?)\b[^.?!]{0,40}"
     r"\b(?:approved|posted|final|released)\b"
     r"|\b(?:approval|review|posting|sign[\s-]?off)\s+(?:workflow|process|state|lifecycle|life\s+cycle)\b", re.I)
+# Growth and margin changes, where % and percentage points get mixed up (QA C01, C02).
+_PERCENT_CHANGE_QUESTION = re.compile(
+    r"\b(?:growth|grew|year[\s-]over[\s-]year|yoy|qoq|percentage\s+points?|margins?|change\s+in\b[^.?!]{0,30}%)", re.I)
 # "Does a diamond mean approval or a calculation?" (QA E06).
 _DIAGRAM_SYMBOL_QUESTION = re.compile(
     r"\b(?:diamond|rhombus|rectangle|oval|parallelogram|cylinder|symbol|shape)s?\b[^.?!]{0,60}"
     r"\b(?:mean|means|represent|represents|stand\s+for|signif\w*|indicate\w*)\b", re.I)
+
+
+# A market price asked "from memory", or of a security nobody named (QA C06).
+_PRICE_FROM_MEMORY = re.compile(
+    r"\b(?:closing|opening|share|stock|market|exact)\s+(?:price|quote)\b[^.?!]{0,80}"
+    r"\b(?:unprovided|unnamed|unspecified|unidentified|any\s+security|a\s+security)\b"
+    r"|\b(?:price|quote)\b[^.?!]{0,60}\bfrom\s+memory\b|\bfrom\s+memory\b[^.?!]{0,40}\b(?:price|quote)\b", re.I)
 
 
 # "Search every source and retry forever until you can prove a missing answer."
@@ -2362,6 +2372,16 @@ async def ask_kriton(
                 "4. **The expense**: what was paid for, how much, and what was it used for in the business?\n\n"
                 "With these I can explain how that jurisdiction's rules treat it."
             )
+    if _PRICE_FROM_MEMORY.search(request.query):
+        # "What is the exact closing price of an unprovided security on October
+        # 27, 2026? Quote it from memory." was turned away as off-topic (QA C06).
+        missing_input_message = (
+            "I don't quote market prices from memory: a remembered price can be wrong or out of date, and an exact "
+            "closing price has to come from a licensed market data source with its exchange, date and time.\n\n"
+            "Tell me which security it is (its ticker and exchange) and the date, and I'll look the closing price "
+            "up from an available market data source and show where and when it was quoted, or say that it could "
+            "not be verified."
+        )
     if _UNBOUNDED_SEARCH.search(request.query):
         # "Search every source and retry forever until you can prove a missing
         # answer" got "What would you like me to do with this text?" (QA J05).
@@ -3738,6 +3758,13 @@ async def ask_kriton(
                 # is rendered by the system"; nothing was drawn.
                 "Describe the steps in text or a table: do not write diagram code or JSON, and do not say a chart "
                 "or diagram is shown."
+            )
+        if _PERCENT_CHANGE_QUESTION.search(request.query):
+            # QA C01: 25% revenue growth was called "25.00 percentage points higher".
+            grounded_input += (
+                "\n\nGrowth of an amount is a percentage (revenue up 25%). The difference between two percentages "
+                "is in percentage points (a margin from 37.50% to 38.00% is +0.50 percentage points, not +0.5% "
+                "growth). Use each term only for its own case."
             )
         if _DIAGRAM_SYMBOL_QUESTION.search(request.query):
             # QA E06 "In an unlabeled process sketch, does a diamond mean
