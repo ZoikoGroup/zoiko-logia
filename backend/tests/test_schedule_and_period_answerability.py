@@ -155,6 +155,17 @@ def test_an_income_tax_expense_line_from_the_document_is_a_figure_not_a_tax_rule
     assert unsourced_rule_statements(rate, calculated) == [rate]
 
 
+def test_an_effective_tax_rate_and_a_not_statutory_note_are_not_tax_rules():
+    # The Northbridge TB income statement lost both as "uncited" and was marked Partial.
+    calculated = calculated_figures(None, question="Generate the income statement for FY 2025-26", receipts=[])
+    effective = "Effective tax rate: 28.65 % (62,000 ÷ 216,400 × 100)"
+    row = "| Effective tax rate | Tax expense ÷ Profit before tax × 100 | 28.65 % |"
+    note = "The income statement is presented as a draft worksheet; it is not a statutory-ready set of accounts."
+    assert unsourced_rule_statements("\n".join([effective, row, note]), calculated) == []
+    statutory = "Effective tax rate 28.65%, against corporation tax at 25%."
+    assert unsourced_rule_statements(statutory, calculated) == [statutory]
+
+
 def test_the_stored_questions_are_as_traced():
     # The traced prompts are the user's stored questions; keep the fixtures honest.
     assert "previous financial year" in FINANCIALS and "current year" in FINANCIALS

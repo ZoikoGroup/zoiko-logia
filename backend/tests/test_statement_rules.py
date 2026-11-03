@@ -474,3 +474,27 @@ async def test_f03_export_this_answer_files_the_previous_answer_not_a_new_report
     pipeline.assert_not_awaited()
     narrative = service.create_generated_artifact.await_args.kwargs["narrative"]
     assert narrative.startswith(previous)
+
+
+def test_the_statement_rules_place_finance_items_after_operating_profit_and_keep_codes_off():
+    # Northbridge TB: 233,500 came from interest income inside operating profit and
+    # bank charges under finance costs; FS Document 01 keeps account codes for workpapers.
+    from app.orchestration.statement_rules import INSTRUCTIONS
+    assert "interest income under Finance income and interest expense under Finance costs, both after Operating profit" in INSTRUCTIONS
+    assert "Bank charges placed by name are provisional" in INSTRUCTIONS
+    assert "bank charges and interest under Finance costs" not in INSTRUCTIONS
+    assert "Keep account codes and source references off the statement lines" in INSTRUCTIONS
+
+
+def test_an_income_statement_split_by_blank_lines_stays_one_table():
+    # Every row after "Cost of sales" showed as "| Gross profit | 795,500 | | | …" in one paragraph.
+    from app.orchestration.answer_formatting import normalize_markdown_tables
+    split = ("| Statement of Profit or Loss | GBP |\n|---|---|\n| Revenue | 1,850,000 |\n| Cost of sales | 1,054,500 |\n\n"
+             "| **Gross profit** | **795,500** |\n| | |\n| **Operating expenses** | |\n| Salaries and wages | 284,000 |\n\n"
+             "| **Operating profit** | **218,600** |\n\nKey notes follow.\n\n| Metric | Result |\n|---|---|\n| Gross margin | 43.00% |")
+    fixed = normalize_markdown_tables(split).splitlines()
+    table = fixed[:fixed.index("Key notes follow.")]
+    assert all(line.startswith("|") for line in table[:-1]) and table[-1] == ""
+    assert "| **Operating profit** | **218,600** |" in table
+    # A new table with its own header is left separate.
+    assert fixed[-4:-2] == ["", "| Metric | Result |"] and fixed[-1] == "| Gross margin | 43.00% |"

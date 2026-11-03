@@ -55,9 +55,13 @@ INSTRUCTIONS = (
     # The same income statement came back with each expense listed in one run
     # and as a single "Operating expenses 574,000" line in another (30 Oct 2026).
     "- List every account on its own line under its heading (each operating expense under Operating expenses, "
-    "bank charges and interest under Finance costs, each asset and liability under its group), then the "
-    "heading's subtotal; never show a heading as a single total without its accounts. Write the account name "
-    "alone in the first column, with no leading dash.\n"
+    "each asset and liability under its group), then the heading's subtotal; never show a heading as a single "
+    "total without its accounts. Write the account name alone in the first column, with no leading dash.\n"
+    # Northbridge TB: interest income inside operating profit and bank charges
+    # under finance costs gave 233,500; the verified figures place them now.
+    "- Put each account under the heading the verified figures give it: interest income under Finance income and "
+    "interest expense under Finance costs, both after Operating profit, then the net finance line. Bank charges "
+    "placed by name are provisional: list them among the accounts to confirm.\n"
 )
 
 # Document 01 §16.2, assurance layer A: the most an unreviewed draft may claim.
