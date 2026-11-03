@@ -33,7 +33,8 @@ PACK = BACKEND / "evals" / "qa_pack_72_manifest.DRAFT.json"
 BANK = {"file": "external:ZoikoLogia_Document_01_Multimodal_Chatbot_Test_Question_Bank.docx",
         "sha256": "defc1479135b13e713cde2ecb34173c95df33f9782e313d3036af4a66b0437e0", "section": "§3, §3.1"}
 ENTITY = "Northbridge Analytics Inc."
-UPLOADABLE = {".pdf", ".docx", ".xlsx", ".pptx", ".csv"}     # kriton_workspace/router.py _ATTACHMENT_MIME_TYPES
+sys.path.insert(0, str(BACKEND))
+from app.domains.kriton_workspace.router import _ALLOWED_ATTACHMENT_EXTENSIONS as UPLOADABLE  # noqa: E402  (the target's own list)
 
 # ── F0: §3.1, transcribed exactly (USD 000s; None = "Not prescribed") ──────
 F0 = {
@@ -114,7 +115,7 @@ def build_f1() -> dict:
     wb.properties.creator = "ZoikoLogia QA fixtures"
     buffer = io.BytesIO()
     wb.save(buffer)
-    files["NB-TRANSACTIONS.xlsx"] = buffer.getvalue()
+    files["NB-TRANSACTIONS.xlsx"] = _stable_zip(buffer.getvalue())
     return {"files": files, "derivations": [
         "Each quarter's revenue is split into three monthly sales (31%, 33%, remainder, rounded to $1,000), dated the 28th; "
         "the bank prescribes only that entries tie exactly to F0.",
@@ -292,7 +293,7 @@ def build_f2() -> dict:
                 doc.add_paragraph(text)
     buffer = io.BytesIO()
     doc.save(buffer)
-    return {"files": {"NB-STATEMENTS.pdf": _pdf(pages, title="NB-STATEMENTS-v1"), "NB-STATEMENTS.docx": buffer.getvalue()},
+    return {"files": {"NB-STATEMENTS.pdf": _pdf(pages, title="NB-STATEMENTS-v1"), "NB-STATEMENTS.docx": _stable_zip(buffer.getvalue())},
             "derivations": ["Five sections, one per page in the PDF, with table and figure numbers as location identifiers.",
                             "Figure 5.1 is a bar chart of the F0 quarters with value labels and a USD 000s axis; "
                             "no data table repeats the chart's values."]}
@@ -328,9 +329,7 @@ def build_f4() -> dict:
                       "NB-CHART-NO-YAXIS.png": bar_chart(quarters, title="Revenue trend", y_axis=False)},
             "derivations": ["NB-FLOW.png shows PO, goods receipt, invoice, a 3-way-match decision, a reviewer hold and "
                             "authorized payment, with a legend; the bank names only a P2P approval diagram.",
-                            "H02, H04 and H06 mutations are the three extra PNGs named after them.",
-                            "The target accepts .pdf/.docx/.xlsx/.pptx/.csv attachments only, so these PNGs cannot be "
-                            "uploaded: H01-H06 image uploads are BLOCKED, not converted."]}
+                            "H02, H04 and H06 mutations are the three extra PNGs named after them."]}
 
 
 def build_f5() -> dict:
@@ -373,8 +372,7 @@ def build_f7() -> dict:
     return {"files": {"TENANT-B-PRIVATE.csv": _csv(rows), "TENANT-B-PAYROLL.png": _png(payroll)},
             "derivations": ["The decoy revenue 9,999,999 is the bank's; the entity name is synthetic.",
                             "TENANT-B-PRIVATE.csv is seeded only in a second tenant and never attached to tenant A.",
-                            "H05's payroll screenshot uses SSNs in the never-issued 000- area; as a PNG it cannot be "
-                            "uploaded (BLOCKED)."]}
+                            "H05's payroll screenshot uses SSNs in the never-issued 000- area."]}
 
 
 F8_CARDS = [
@@ -482,6 +480,21 @@ def case_inputs(pack: dict) -> dict:
                       "L02's first turn is derived from its ASK ('First ask for FY2025 gross margin'); its 'logged "
                       "role change' note duplicates K04's and is not applied."],
             "cases": out}
+
+
+def _stable_zip(data: bytes) -> bytes:
+    """A .docx/.xlsx with every entry dated 1980-01-01 and fixed document
+    times, so rebuilding a fixture does not change its checksum."""
+    import zipfile
+    source, out = zipfile.ZipFile(io.BytesIO(data)), io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as target:
+        for info in source.infolist():
+            body = source.read(info.filename)
+            if info.filename == "docProps/core.xml":
+                body = re.sub(rb"(<dcterms:(?:created|modified)[^>]*>)[^<]*", rb"\g<1>2026-10-27T00:00:00Z", body)
+            target.writestr(zipfile.ZipInfo(info.filename, date_time=(1980, 1, 1, 0, 0, 0)), body,
+                            compress_type=zipfile.ZIP_DEFLATED)
+    return out.getvalue()
 
 
 def sha256(data: bytes) -> str:

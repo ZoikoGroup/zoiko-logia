@@ -33,7 +33,7 @@ Assign the five roles to named people in the governance tenant: Document Control
 2. Ratifying the QA manifest and the fixtures (D5) means setting their status to `RATIFIED` in a reviewed commit. The verdict's `qa_pack` gate reads that status.
 3. On **Release Gates**:
    1. **Import QA pack**.
-   2. **Provision fixtures**. This uploads every file a case needs and puts F7 in tenant B. PNGs are recorded UNSUPPORTED, because the target accepts .pdf/.docx/.xlsx/.pptx/.csv only.
+   2. **Provision fixtures**. This uploads every file a case needs (images included) and puts F7 in tenant B. A file type the target refuses is recorded UNSUPPORTED, and its cases are BLOCKED. The accepted types are read from the target's upload route.
 
 ## 4. As-built (QA Automation, CTO)
 
@@ -46,7 +46,6 @@ Assign the five roles to named people in the governance tenant: Document Control
 1. QA Automation starts a **pinned run**. All nine fields are required. Pin `release_sha` to the verified commit; the fixture checksums are pinned automatically.
 2. Run **Execute next 10** until all 292 observations are recorded. Approve the model budget first (X5).
    - Cases are recorded **BLOCKED** with the reason when the adapter can't run them:
-     - H01–H06: image uploads not accepted;
      - K04: needs a role change mid-conversation;
      - L05: needs fault injection.
    - Those capabilities are WF-02 work.

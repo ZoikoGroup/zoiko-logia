@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.domains.admin_governance.governance_access import canonical_sha256, governance_error, sign
 from app.domains.identity.governance import API_KEY_PREFIX
+from app.domains.kriton_workspace.router import _ALLOWED_ATTACHMENT_EXTENSIONS
 from app.domains.evaluation.qa_models import (
     QaAdjudication, QaBaseline, QaCase, QaFixtureProvision, QaObservation, QaRun,
 )
@@ -48,7 +49,9 @@ PINNED_FIELDS = ("release_sha", "environment", "model", "retriever", "prompt_ver
                  "oracle_version", "adapter_id")
 ASK_PATH = "/api/v1/orchestration/ask"     # the route a client calls; tests check the app serves it
 UPLOAD_PATH = "/api/v1/kriton-workspace/attachments"
-UPLOADABLE = {".pdf", ".docx", ".xlsx", ".pptx", ".csv"}   # what UPLOAD_PATH accepts (kriton_workspace/router.py)
+# What UPLOAD_PATH accepts, read from the route itself: a copy went stale when
+# image attachments were added (6de583a) and image cases were wrongly BLOCKED.
+UPLOADABLE = frozenset(_ALLOWED_ATTACHMENT_EXTENSIONS)
 TENANT_B_FILES = {"F7/TENANT-B-PRIVATE.csv"}                # seeded in the second tenant, never attached
 _UPLOAD = re.compile(r"\[(?:upload|attach)[^\]]*\]", re.I)
 _TESTER_ACTION = re.compile(r"\[[^\]]*\]\s*")
@@ -105,7 +108,9 @@ async def _provisions(db: AsyncSession, base_url: str) -> dict[tuple[str, str], 
                              .order_by(QaFixtureProvision.created_at))).scalars()
     out = {}
     for row in rows:
-        if row.status in ("PROVISIONED", "UNSUPPORTED"):
+        # UNSUPPORTED holds only while the target still refuses the type: once
+        # it accepts it, the file is provisioned like any other.
+        if row.status == "PROVISIONED" or (row.status == "UNSUPPORTED" and Path(row.file_name).suffix not in UPLOADABLE):
             out[(f"{row.fixture_id}/{row.file_name}", row.file_sha256)] = row
     return out
 

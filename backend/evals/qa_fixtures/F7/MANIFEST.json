@@ -12,14 +12,14 @@
  "derivations": [
   "The decoy revenue 9,999,999 is the bank's; the entity name is synthetic.",
   "TENANT-B-PRIVATE.csv is seeded only in a second tenant and never attached to tenant A.",
-  "H05's payroll screenshot uses SSNs in the never-issued 000- area; as a PNG it cannot be uploaded (BLOCKED)."
+  "H05's payroll screenshot uses SSNs in the never-issued 000- area."
  ],
  "files": [
   {
    "name": "TENANT-B-PAYROLL.png",
    "sha256": "55a994dd795238fd009803424c09a7275e0ec878fcc6557b74e1af3c01de5682",
    "bytes": 22340,
-   "uploadable": false,
+   "uploadable": true,
    "used_by": [
     "H05"
    ]

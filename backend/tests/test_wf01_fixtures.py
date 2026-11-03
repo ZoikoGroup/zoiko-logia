@@ -202,8 +202,8 @@ async def test_provisioning_uploads_what_cases_need_and_records_unsupported_type
         result = await qa_ledger.provision_fixtures(db, _actor("qa"), client=client)
         uploaded = {name for _, name in target.uploads}
         assert "NB-STATEMENTS.pdf" in uploaded and "NB-TRANSACTIONS.xlsx" in uploaded and "NB-FIN-v1.csv" in uploaded
-        assert not any(name.endswith(".png") for name in uploaded)
-        assert "F4/NB-CHART.png" in result["UNSUPPORTED"]
+        assert "NB-CHART.png" in uploaded and "TENANT-B-PAYROLL.png" in uploaded       # the target accepts images
+        assert result["UNSUPPORTED"] == []
         assert any(s.startswith("F7/TENANT-B-PRIVATE.csv") for s in result["SKIPPED"])     # no tenant-B key
         again = await qa_ledger.provision_fixtures(db, _actor("qa"), client=client)
         assert again["PROVISIONED"] == [] and len(again["ALREADY"]) == len(result["PROVISIONED"]) + len(result["UNSUPPORTED"])
@@ -214,7 +214,7 @@ async def test_provisioning_uploads_what_cases_need_and_records_unsupported_type
         tenant_b = next(f for f in status["files"] if f["ref"] == "F7/TENANT-B-PRIVATE.csv")
         assert tenant_b["tenant_slot"] == "B" and tenant_b["provision"] == "PROVISIONED"
         by_ref = {f["ref"]: f["provision"] for f in status["files"]}
-        assert by_ref["F0/NB-FIN-v1.json"] == "NOT_REQUIRED" and by_ref["F4/NB-CHART.png"] == "UNSUPPORTED"
+        assert by_ref["F0/NB-FIN-v1.json"] == "NOT_REQUIRED" and by_ref["F4/NB-CHART.png"] == "PROVISIONED"
         assert "NOT_PROVISIONED" not in by_ref.values()
     await client.aclose()
 
@@ -253,7 +253,8 @@ async def test_execution_attaches_provisioned_files_and_blocks_what_it_cannot_pe
         sent = next(a for a in target.asks if a["request_id"].endswith(":F01:1:1"))
         assert sent["query"].startswith("What is 2025 net income?") and sent["document_ids"] == ["doc-NB-STATEMENTS.pdf"]
 
-        assert "does not accept these uploads" in observed[("H01", 1)]["reason"]
+        h01 = observed[("H01", 1)]
+        assert h01["state"] == "EXECUTED" and h01["trace"]["attachments"][0]["document_id"] == "doc-NB-CHART.png"
         assert "role change" in observed[("K04", 1)]["reason"]
         assert "fixture not provisioned" in observed[("K01", 1)]["reason"]           # tenant B not seeded yet
 
@@ -265,7 +266,7 @@ async def test_execution_attaches_provisioned_files_and_blocks_what_it_cannot_pe
 
         records = await qa_ledger.evaluator_output(db, run["id"])
         statuses = {(r["case_id"], r["status"]) for r in records}
-        assert ("F01", "PENDING_ADJUDICATION") in statuses and ("H01", "BLOCKED") in statuses
+        assert ("F01", "PENDING_ADJUDICATION") in statuses and ("K04", "BLOCKED") in statuses
         assert all(r["numeric_checks"] == "NOT_RUN" and r["status"] != "PASS" for r in records)
 
         settings.KRITON_QA_ADAPTER_TENANT_B_API_KEY = "zlk_b"
@@ -283,3 +284,45 @@ async def test_the_verdict_names_the_unratified_fixtures(sessions, settings):
     assert gate["state"] == "BLOCKED" and "fixtures" in gate["reason"]
     assert "DRAFT_UNRATIFIED" in gate["reason"] and "(D5)" in gate["reason"]          # reason text not re-cased
     assert set(gate["evidence"]["fixtures"].values()) == {"DRAFT_UNRATIFIED"}
+
+
+# ── The upload types come from the target's own route ─────────────────────
+
+def test_the_accepted_types_are_the_upload_routes_own():
+    # A copied list went stale when image attachments were added (6de583a):
+    # every image case was recorded BLOCKED although the target accepted it.
+    from app.domains.kriton_workspace.router import _ALLOWED_ATTACHMENT_EXTENSIONS
+    assert qa_ledger.UPLOADABLE == frozenset(_ALLOWED_ATTACHMENT_EXTENSIONS)
+    for manifest in qa_ledger.fixture_manifests().values():
+        for f in manifest["files"]:
+            assert f["uploadable"] == (("." + f["name"].rsplit(".", 1)[1]) in qa_ledger.UPLOADABLE), f["name"]
+
+
+def test_a_rebuild_is_byte_identical():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("build_qa_fixtures", FIX.parents[1] / "scripts" / "build_qa_fixtures.py")
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    for fixture in ("F1", "F2", "F4"):
+        first, second = builder.BUILDERS[fixture](), builder.BUILDERS[fixture]()
+        assert first["files"] == second["files"], fixture
+        manifest = qa_ledger.fixture_manifests()[fixture]
+        assert {f["name"]: f["sha256"] for f in manifest["files"]} == {
+            name: builder.sha256(data) for name, data in first["files"].items()}
+
+
+async def test_a_type_the_target_refuses_is_recorded_unsupported_and_blocks_its_cases(sessions, settings, monkeypatch):
+    monkeypatch.setattr(qa_ledger, "UPLOADABLE", qa_ledger.UPLOADABLE - {".png"})
+    client = httpx.AsyncClient(transport=httpx.MockTransport(Target()))
+    async with sessions() as db:
+        result = await qa_ledger.provision_fixtures(db, _actor("qa"), client=client)
+        assert "F4/NB-CHART.png" in result["UNSUPPORTED"]
+        await qa_ledger.import_pack(db)
+        run = await qa_ledger.create_run(db, _actor("qa"), PINNED, "r1", readiness={"readiness": "CONNECTED"})
+        await qa_ledger.execute(db, run["id"], case_ids=["H01"], limit=1, client=client)
+        assert "does not accept these uploads" in (await qa_ledger.observations(db, run["id"]))[0]["reason"]
+        # The target starts accepting images: the earlier UNSUPPORTED record no longer stands.
+        monkeypatch.setattr(qa_ledger, "UPLOADABLE", qa_ledger.UPLOADABLE | {".png"})
+        again = await qa_ledger.provision_fixtures(db, _actor("qa"), client=client)
+        assert "F4/NB-CHART.png" in again["PROVISIONED"]
+    await client.aclose()
