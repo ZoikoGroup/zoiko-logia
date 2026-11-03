@@ -47,7 +47,26 @@ function replayAnswer(answer: string): string {
   return "The preceding answer exceeds the conversation context limit. Ask for the relevant dataset rather than treating a truncated table as complete.";
 }
 
-export function conversationHistory(turns: Turn[]): ConversationMessage[] {
+/** "Export this answer as a Word document" (backend document_pipeline
+ * _EXPORT_PREVIOUS). The answer to export is sent even when it came from an
+ * attached file; the backend re-checks access to that file on this turn. */
+const EXPORTS_ANSWER =
+  /\b(?:export|save|download|convert|put|turn)\b[^.?!]{0,40}\b(?:this|that|the|your|previous|last|above)\s+(?:answer|response|reply|explanation)\b|\b(?:export|save|download)\b[^.?!]{0,20}\b(?:the\s+)?above\b/i;
+/** Backend HISTORY_MESSAGE_CHARS: a longer answer would be exported cut short. */
+const EXPORTED_ANSWER_CHARS = 8000;
+
+export function conversationHistory(turns: Turn[], query = ""): ConversationMessage[] {
+  const messages = replayedHistory(turns);
+  if (!EXPORTS_ANSWER.test(query)) return messages;
+  const latest = [...turns].reverse().find((turn) => turn.result?.outcome === "answered" && turn.result?.answer?.text?.trim());
+  const answer = latest?.result?.answer?.text?.trim() ?? "";
+  if (!latest || answer.length > EXPORTED_ANSWER_CHARS || !latest.attachments?.length) return messages;
+  // An answer from a turn with a file is not in the replayed history: add it last.
+  return [...messages, { role: "user" as const, content: latest.submittedQuery.slice(0, 4000) },
+    { role: "assistant" as const, content: answer }].slice(-MAX_HISTORY_MESSAGES);
+}
+
+function replayedHistory(turns: Turn[]): ConversationMessage[] {
   // Document-derived answers are not replayed as evidence on a later turn.
   // A document must be selected and authorized again before being consulted.
   const recent = turns.filter((turn) => turn.result && !turn.attachments?.length)

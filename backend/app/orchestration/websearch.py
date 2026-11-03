@@ -1842,6 +1842,15 @@ def build_web_grounded_prompt(query: str, sources: list[WebSource], *, agent_mod
         "or other market value — unless it appears in the evidence above. For "
         "those, say the figure needs confirming against the relevant "
         "authority and explain the underlying rule instead.\n"
+        # QA A02 cited IFRS 15 "B66–B68" for the over-time criteria (they are
+        # paragraph 35) and a "private-company expedient" IFRS 15 does not have.
+        "Give a paragraph or section number of a standard or law (\"IFRS 15.35\", "
+        "\"B64\", \"s.21\") only when that number appears in the evidence above; "
+        "otherwise name the requirement without a number. Do not attribute one "
+        "framework's rule or expedient to another (US GAAP to IFRS, or the reverse). "
+        # QA A06 recommended "early adoption" of an IASB tentative decision.
+        "A tentative decision, exposure draft or discussion paper is a proposal, not "
+        "a requirement: never recommend adopting it, early or otherwise.\n"
         + _FORMATTING_INSTRUCTIONS
         + f"\n=== Evidence Sources ===\n{context}\n\n"
         + f"=== User Question ===\n{query}"

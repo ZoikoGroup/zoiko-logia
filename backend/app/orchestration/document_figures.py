@@ -1337,7 +1337,14 @@ _NAME_HEADER = re.compile(r"name|account|description|ledger", re.IGNORECASE)
 _TB_RULES: tuple[tuple[str, str, re.Pattern], ...] = (
     ("suspense", "any", re.compile(r"suspense", re.I)),
     ("tax_charge", "debit", re.compile(r"tax\s+(?:charge|expense)|income\s+tax\b(?!.*payable)", re.I)),
-    ("finance_cost", "debit", re.compile(r"interest|finance\s+(?:cost|charge)|bank\s+charges", re.I)),
+    # Bank charges are an operating (administrative) expense, not a finance
+    # cost: they stood under "Finance costs" where every other assistant and
+    # the usual UK layout put them in operating expenses (Northbridge TB).
+    ("operating_expense", "debit", re.compile(r"bank\s+(?:charges|fees)", re.I)),
+    ("finance_cost", "debit", re.compile(r"interest|finance\s+(?:cost|charge)", re.I)),
+    # Interest earned is finance income, shown after operating profit; it was
+    # counted inside operating profit (233,500 for 218,600).
+    ("finance_income", "credit", re.compile(r"interest\s+(?:income|received|receivable|earned)|investment\s+income", re.I)),
     ("cost_of_sales", "debit", re.compile(r"cost\s+of\s+(?:sales|goods)|purchases|direct\s+costs?", re.I)),
     ("revenue", "credit", re.compile(r"revenue|sales|turnover|fee\s+income", re.I)),
     ("other_income", "credit", re.compile(r"income|gain", re.I)),
@@ -1363,7 +1370,8 @@ _TB_CONTRA: tuple[tuple[str, str, re.Pattern], ...] = (
 )
 _TB_LABEL = {
     "revenue": "Revenue", "other_income": "Other income", "cost_of_sales": "Cost of sales",
-    "operating_expense": "Operating expenses", "finance_cost": "Finance costs", "tax_charge": "Tax charge",
+    "operating_expense": "Operating expenses", "finance_income": "Finance income", "finance_cost": "Finance costs",
+    "tax_charge": "Tax charge",
     "non_current_asset": "Non-current assets", "current_asset": "Current assets",
     "current_liability": "Current liabilities", "non_current_liability": "Non-current liabilities", "equity": "Equity",
 }
@@ -1371,8 +1379,9 @@ _TB_LABEL = {
 
 # Income and expense groups of a ledger's monthly statement, with the side
 # that increases them.
-_PL_GROUPS = (("revenue", "credit"), ("other_income", "credit"), ("cost_of_sales", "debit"),
-              ("operating_expense", "debit"), ("finance_cost", "debit"), ("tax_charge", "debit"))
+_PL_GROUPS = (("revenue", "credit"), ("other_income", "credit"), ("finance_income", "credit"),
+              ("cost_of_sales", "debit"), ("operating_expense", "debit"), ("finance_cost", "debit"),
+              ("tax_charge", "debit"))
 
 
 def _ledger_monthly_lines(table: Table, debit: int, credit: int, name: int) -> list[str]:
@@ -1409,9 +1418,9 @@ def _ledger_monthly_lines(table: Table, debit: int, credit: int, name: int) -> l
     for group, _ in _PL_GROUPS:
         if group in per_group:
             lines.append(f"- {_TB_LABEL[group]} by month ({', '.join(members[group])}): {by_month(per_group[group])}")
-    income = {m: per_group["revenue"][m] + per_group["other_income"][m] for m in months}
+    income = {m: sum(per_group[g][m] for g, s in _PL_GROUPS if s == "credit") for m in months}
     expenses = {m: sum(per_group[g][m] for g, s in _PL_GROUPS if s == "debit") for m in months}
-    if "other_income" in per_group:   # otherwise it repeats Revenue by month
+    if "other_income" in per_group or "finance_income" in per_group:   # otherwise it repeats Revenue by month
         lines.append(f"- Total income by month: {by_month(income)}")
     lines.append(f"- Total expenses by month: {by_month(expenses)}")
     lines.append(f"- Profit (total income minus total expenses) by month: "
@@ -1469,6 +1478,10 @@ def _trial_balance_lines(table: Table, by_month: bool = True) -> list[str]:
                  and not re.search(r"code|number|no\b", h or "", re.I)), None)
     if name is None:
         return []
+    # "Account code" 6900 beside "Bank charges": each line carries its code
+    # so the statement can be traced to the ledger.
+    code = next((i for i, h in enumerate(headers) if i not in (debit, credit, name)
+                 and re.search(r"\bcode\b|account\s*(?:no|number)\b|^a/?c\s*no", h or "", re.I)), None)
     # A trial balance lists each account once. Repeated accounts make it a
     # ledger: its 252 lines were classified one by one, and "Cash at bank" on
     # the credit side stopped every statement total.
@@ -1483,19 +1496,21 @@ def _trial_balance_lines(table: Table, by_month: bool = True) -> list[str]:
         label = row[name].strip() if name < len(row) else ""
         if not label or _TOTAL_ROW.match(label):
             continue
-        dr = (_to_decimal(row[debit]) if debit < len(row) else None) or Decimal("0")
+        dr =(_to_decimal(row[debit]) if debit < len(row) else None) or Decimal("0")
         cr = (_to_decimal(row[credit]) if credit < len(row) else None) or Decimal("0")
         total_dr, total_cr = total_dr + dr, total_cr + cr
         side, amount = ("debit", dr - cr) if dr >= cr else ("credit", cr - dr)
+        account = (row[code].strip() if code is not None and code < len(row) else "")
+        shown = f"{label} [{account}]" if account else label
         contra = next((g for g, s, pattern in _TB_CONTRA if s == side and pattern.search(label)), None)
         if contra is not None:
-            groups[contra].append((label, -amount))
+            groups[contra].append((shown, -amount))
             continue
         group = next((g for g, s, pattern in _TB_RULES if (s in (side, "any")) and pattern.search(label)), None)
         if group is None:
             unplaced.append(label)
             continue
-        groups[group].append((label, amount))
+        groups[group].append((shown, amount))
     lines = [f"Trial balance '{table.title}': total debits = {_fmt(round(total_dr, 2))}; total credits = "
              f"{_fmt(round(total_cr, 2))}; difference = {_fmt(round(total_dr - total_cr, 2))}"]
     if unplaced:
@@ -1512,14 +1527,42 @@ def _trial_balance_lines(table: Table, by_month: bool = True) -> list[str]:
         return f"{_TB_LABEL[g]} = {_fmt(total(g))}" + (f" ({members})" if members else "")
     revenue, gross = total("revenue"), round(total("revenue") - total("cost_of_sales"), 2)
     operating = round(gross + total("other_income") - total("operating_expense"), 2)
-    before_tax = round(operating - total("finance_cost"), 2)
+    net_finance = round(total("finance_income") - total("finance_cost"), 2)
+    before_tax = round(operating + net_finance, 2)
     after_tax = round(before_tax - total("tax_charge"), 2)
-    lines.append("- Income statement (accounts classified by name; check against the chart of accounts): "
+    lines.append("- Income statement, in this order (accounts classified by name; check against the chart of "
+                 "accounts; account codes in square brackets): "
                  + "; ".join([line("revenue"), line("cost_of_sales"), f"Gross profit = {_fmt(gross)}",
                               *([line("other_income")] if groups.get("other_income") else []),
                               line("operating_expense"), f"Operating profit = {_fmt(operating)}",
-                              line("finance_cost"), f"Profit before tax = {_fmt(before_tax)}",
+                              *([line("finance_income")] if groups.get("finance_income") else []),
+                              line("finance_cost"),
+                              f"Net finance {'income' if net_finance > 0 else 'costs'} = {_fmt(abs(net_finance))}",
+                              f"Profit before tax = {_fmt(before_tax)}",
                               line("tax_charge"), f"Profit for the year = {_fmt(after_tax)}"]))
+    # Checks and notes a reviewer expects beside the statement (Claude's and
+    # ChatGPT's answers to the Northbridge TB had them; Kriton's did not).
+    income_accounts = round(sum(total(g) for g, s in _PL_GROUPS if s == "credit"), 2)
+    expense_accounts = round(sum(total(g) for g, s in _PL_GROUPS if s == "debit"), 2)
+    lines.append(f"- Checks to state in the answer: the trial balance agrees (total debits {_fmt(round(total_dr, 2))} = "
+                 f"total credits {_fmt(round(total_cr, 2))}); profit for the year {_fmt(after_tax)} = income accounts "
+                 f"{_fmt(income_accounts)} − expense accounts {_fmt(expense_accounts)}, difference "
+                 f"{_fmt(round(income_accounts - expense_accounts - after_tax, 2))}")
+    tax = total("tax_charge")
+    if tax and before_tax:
+        payable = [(k, v) for k, v in groups.get("current_liability", []) if re.search(r"corporation\s+tax|income\s+tax|tax\s+payable", k, re.I)]
+        note = f"- Tax: effective tax rate = tax charge {_fmt(tax)} ÷ profit before tax {_fmt(before_tax)} = {_pct(tax, before_tax)}"
+        if len(payable) == 1:
+            owed = payable[0][1]
+            note += (f"; the tax charge equals {payable[0][0]} {_fmt(owed)}" if owed == tax else
+                     f"; {payable[0][0]} is {_fmt(owed)}, {_fmt(abs(round(owed - tax, 2)))} different from the charge "
+                     "(tax paid in the year or an earlier year's balance: check)")
+        lines.append(note)
+    dividends = [(k, -v) for k, v in groups.get("equity", []) if re.search(r"dividend", k, re.I)]
+    if dividends:
+        lines.append("- Dividends: " + ", ".join(f"{k} {_fmt(v)}" for k, v in dividends) + " are a distribution "
+                     "to shareholders from retained earnings, not an expense: they are left out of the income statement "
+                     "and reduce equity. Say so in the answer.")
     assets = round(total("non_current_asset") + total("current_asset"), 2)
     liabilities = round(total("current_liability") + total("non_current_liability"), 2)
     net_assets = round(assets - liabilities, 2)
@@ -1788,12 +1831,79 @@ def _stated_figure_lines(sources: list[WebSource]) -> list[str]:
             lines.append("- Stated differently: " + "; ".join(
                 f"'{file}' ({status[file]}){', ' + location if location else ''} says {label} = {_fmt(float(amount))}"
                 for file, location, label, amount in entries))
+        # "Released" is all the files establish: QA F03 called the statement
+        # "the released filing" and "filed with the regulator".
         if any(status[e[0]] == "released" for entries in conflicts for e in entries) and \
                 any(status[e[0]] == "unreleased draft" for entries in conflicts for e in entries):
             lines.append("- The released document controls the reported figure; an unreleased draft does not, even if "
                          "it is newer. Quote each figure only from the document and page it is listed under above: a "
-                         "draft that repeats a released figure is still the draft speaking.")
+                         "draft that repeats a released figure is still the draft speaking. Call the released "
+                         "document 'released' only: nothing here shows it was filed with a regulator, audited or "
+                         "approved, so do not say so.")
     return lines
+
+
+# "The released statements are the only document designated as a released
+# filing… without regulatory filing or audit it is not the controlling
+# source" (QA F03), about a file marked "UNAUDITED … not statutory filing".
+# The prompt said not to; the model said it anyway, so the words are mended.
+_FILING_CLAIMS = (
+    (re.compile(r"\s*\((?:or\s+)?filed\s+with\s+(?:a|the)\s+regulator\)", re.I), ""),
+    (re.compile(r"\s+or\s+filed\s+with\s+(?:a|the)\s+regulator\b", re.I), ""),
+    (re.compile(r"\breleased\s+filing\b", re.I), "released statements"),
+    (re.compile(r"\bwithout\s+(?:a\s+)?(?:regulatory|statutory)\s+filing(?:\s+or\s+(?:an\s+)?audit)?\b", re.I),
+     "while it is unreleased"),
+    # The retest said "publicly-issued number", "the published figure".
+    (re.compile(r"\s*\(publicly[\s‐-―-]+issued\)", re.I), ""),
+    (re.compile(r"\bpublicly[\s‐-―-]+issued\b", re.I), "released"),
+    (re.compile(r"\bpublished\s+(figure|number|amount|statements?)\b", re.I), r"released \1"),
+)
+_FILING_STATED = re.compile(r"\b(?:filed\s+with|submitted\s+to|lodged\s+with|published)\b", re.I)
+
+
+def without_unstated_filing(text: str, sources: list[WebSource]) -> str:
+    """The answer with filing claims the attached documents do not make
+    rewritten to what they do say: that a document is released."""
+    if not text or not sources or any(_FILING_STATED.search(source.snippet or "") for source in sources):
+        return text
+    for pattern, replacement in _FILING_CLAIMS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+_CASH_QUESTION = re.compile(r"\bcash\b", re.IGNORECASE)
+_BRIDGE_FIGURES = {
+    "net income": re.compile(r"\bnet\s+(?:income|profit)\b[^\n\d(]*\n?\s*\(?([\d,]+(?:\.\d+)?)\)?", re.IGNORECASE),
+    # Not "Operating expenses excl depreciation (2,100)".
+    "depreciation": re.compile(r"(?<!excl\s)(?<!excl\.\s)(?<!excluding\s)\bdepreciation(?:\s+and\s+amorti[sz]ation)?\b"
+                               r"[^\n\d(]*\n?\s*\(?([\d,]+(?:\.\d+)?)\)?", re.IGNORECASE),
+    "operating cash flow": re.compile(r"\b(?:operating\s+cash\s+flow|cash\s+(?:flow|generated)\s+from\s+operat\w*)\b"
+                                      r"[^\n\d(]*\n?\s*\(?([\d,]+(?:\.\d+)?)\)?", re.IGNORECASE),
+}
+
+
+def _cash_bridge_lines(sources: list[WebSource]) -> list[str]:
+    """Which way the working-capital items move cash, from the statements'
+    own net income, depreciation and operating cash flow. QA A01 said the
+    working-capital changes "generated" cash; the file's bridge (900 + 400
+    − 300 − 300 + 300 + 100 + 100 = 1,200) has them using 100. Nothing when
+    a figure is missing or stated with two different values (two years)."""
+    text = "\n".join(source.snippet or "" for source in sources)
+    found: dict[str, float] = {}
+    for name, pattern in _BRIDGE_FIGURES.items():
+        values = {float(value.replace(",", "")) for value in pattern.findall(text)}
+        if len(values) != 1:
+            return []
+        found[name] = values.pop()
+    rest = found["operating cash flow"] - found["net income"] - found["depreciation"]
+    if not rest:
+        return []
+    effect = (f"REDUCED operating cash by {_fmt(abs(rest))}" if rest < 0
+              else f"ADDED {_fmt(rest)} to operating cash")
+    return [f"- Cash-flow bridge from the stated figures: operating cash flow {_fmt(found['operating cash flow'])} − "
+            f"net income {_fmt(found['net income'])} − depreciation add-back {_fmt(found['depreciation'])} = "
+            f"{_fmt(rest)}. The remaining reconciling items (the working-capital changes) together {effect}; "
+            "describe them that way, not the other way round."]
 
 
 def verified_document_figures(sources: list[WebSource], query: str | None = None) -> str:
@@ -1806,6 +1916,8 @@ def verified_document_figures(sources: list[WebSource], query: str | None = None
     lines: list[str] = _stated_figure_lines(sources) + _bank_reconciliation_lines(tables)
     if query is None or _FORMULA_QUESTION.search(query):
         lines += _formula_check_lines(sources)
+    if query is not None and _CASH_QUESTION.search(query):
+        lines += _cash_bridge_lines(sources)
     for table in tables:
         registry = _source_registry_lines(table, query)
         if registry:

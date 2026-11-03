@@ -429,3 +429,48 @@ def test_fs028_ratios_are_labelled_management_analysis():
 def test_every_document_01_rule_is_accounted_for():
     assert sorted(RULES) == [f"FS-{n:03d}" for n in range(1, 46)]
     assert all(title and where for title, where in RULES.values())
+
+
+def test_a02_a_standard_paragraph_number_is_given_only_from_the_evidence():
+    # A02 cited IFRS 15 "B66-B68" for the over-time criteria (they are paragraph 35).
+    from app.orchestration.websearch import WebSource, build_web_grounded_prompt
+    source = WebSource(title="IFRS 15 overview", url="https://www.ifrs.org/x", snippet="Revenue is recognised when control passes.")
+    prompt = build_web_grounded_prompt("How should a $2m contract be recognised under IFRS 15?", [source])
+    assert "only when that number appears in the evidence above" in prompt
+    assert "Do not attribute one framework's rule or expedient to another" in prompt
+    # A06 recommended "early adoption" of an IASB tentative decision.
+    assert "never recommend adopting it, early or otherwise" in prompt
+
+
+async def test_a02_revenue_timing_with_no_contract_facts_is_answered_conditionally(pipeline):
+    # A02 got an invented $600,000 / $22,000 allocation and ASC paragraphs labelled IFRS 15.
+    response = await service.ask_kriton(
+        AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+        request=AskKritonRequest(query="When should my company recognize this $2 million contract revenue?"))
+    message = response.next_action.message
+    assert "**over time**" in message and "**point in time**" in message and "Framework and country" in message
+    pipeline.assert_not_awaited()
+    for facts in ("When should we recognise revenue on a 12-month software subscription paid upfront?",
+                  "Under IFRS 15, when is revenue recognised for goods delivered in March?"):
+        assert service._REVENUE_TIMING_QUESTION.search(facts) and service._CONTRACT_FACTS.search(facts)
+    assert not service._REVENUE_TIMING_QUESTION.search("What was FY2025 revenue?")
+
+
+async def test_f03_export_this_answer_files_the_previous_answer_not_a_new_report(pipeline, monkeypatch):
+    # "Export this answer as a Word document" got a new management report from the files.
+    from app.orchestration.schemas import ConversationMessage
+    statement = WebSource(title="NB-STATEMENTS_RELEASED.pdf — Page 1", url="", source_id="d1",
+                          snippet="NORTHBRIDGE / INCOME STATEMENT\nFY2025 Revenue\n10,000")
+    monkeypatch.setattr(service, "retrieve_document_sources", AsyncMock(return_value=[statement]))
+    monkeypatch.setattr(service, "resolve_conversation_document_ids", AsyncMock(return_value=["d1"]))
+    monkeypatch.setattr(service, "create_generated_artifact", AsyncMock(side_effect=RuntimeError("no storage in tests")))
+    previous = "Released FY2025 revenue is 10,000 (NB-STATEMENTS_RELEASED.pdf, page 1)."
+    await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                             request=AskKritonRequest(
+                                 query="Export this answer as a Word document.", document_ids=["d1"],
+                                 conversation_history=[
+                                     ConversationMessage(role="user", content="Which document is the released revenue?"),
+                                     ConversationMessage(role="assistant", content=previous)]))
+    pipeline.assert_not_awaited()
+    narrative = service.create_generated_artifact.await_args.kwargs["narrative"]
+    assert narrative.startswith(previous)
