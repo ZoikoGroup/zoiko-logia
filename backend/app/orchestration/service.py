@@ -206,6 +206,10 @@ _APPROVAL_PROCESS_QUESTION = re.compile(
     r"\b(?:draft|pending|unapproved)\b[^.?!]{0,60}\b(?:becomes?|turns?\s+into|moves?\s+to|gets?)\b[^.?!]{0,40}"
     r"\b(?:approved|posted|final|released)\b"
     r"|\b(?:approval|review|posting|sign[\s-]?off)\s+(?:workflow|process|state|lifecycle|life\s+cycle)\b", re.I)
+# A row label that names a period: quarters, halves, months, years.
+_PERIOD_DIMENSION = re.compile(
+    r"^\s*(?:Q[1-4]|H[12]|FY\s?\d{2,4}|(?:19|20)\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*)"
+    r"(?:[\s/-]+(?:FY\s?)?(?:19|20)?\d{2})?\s*$", re.I)
 # Growth and margin changes, where % and percentage points get mixed up (QA C01, C02).
 _PERCENT_CHANGE_QUESTION = re.compile(
     r"\b(?:growth|grew|year[\s-]over[\s-]year|yoy|qoq|percentage\s+points?|margins?|change\s+in\b[^.?!]{0,30}%)", re.I)
@@ -649,6 +653,28 @@ def _grounded_domain_fallback(query: str, evidence: EvidenceModel, series_ref: s
                 "of that. This is the sum of those lines only — any total stated "
                 "in the document was excluded so it is not charted beside its own "
                 "parts."
+            )
+        if len(rows) >= 3 and rows[0].value > 0 and any(item.value < 0 for item in rows):
+            # A bridge (QA D03): signed steps from revenue down to the result,
+            # not "the smallest is Cost of goods sold at -6,200".
+            result = sum(item.value for item in rows)
+            steps = "; ".join(f"less {item.dimension} {abs(item.value):,.0f}" if item.value < 0
+                              else f"add {item.dimension} {item.value:,.0f}" for item in rows[1:])
+            return (
+                f"The bridge read from the document starts at {rows[0].dimension} {rows[0].value:,.0f}; "
+                f"{steps}; it ends at {result:,.0f}, the net result. The visualization shows each step as read."
+            )
+        if len(rows) >= 2 and all(_PERIOD_DIMENSION.match(item.dimension or "") for item in rows):
+            # Quarters read from a file ARE a series over time: "These are
+            # separate line items, not a series over time" stood under Q1–Q4,
+            # and "label Q4 QoQ growth" got no growth figure (QA D01, D02).
+            steps = "; ".join(
+                f"{later.dimension} {later.value:,.0f} ({(later.value - earlier.value) / earlier.value * 100:+.2f}% "
+                f"on {earlier.dimension})"
+                for earlier, later in zip(rows, rows[1:]) if earlier.value)
+            return (
+                f"{len(rows)} periods were read from the document for {subject}: {rows[0].dimension} "
+                f"{rows[0].value:,.0f}; {steps}.{total_note} The visualization shows the same values as read."
             )
         return (
             f"{len(rows)} figures were read from the document for {subject}. "
