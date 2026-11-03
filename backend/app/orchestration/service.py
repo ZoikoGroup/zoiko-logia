@@ -244,6 +244,36 @@ _CITATIONS_REGARDLESS = re.compile(
     re.I)
 
 
+# "When should my company recognize this $2 million contract revenue?" with
+# nothing said about what the contract promises (QA A02).
+_REVENUE_TIMING_QUESTION = re.compile(
+    r"\bwhen\b[^.?!]{0,60}\brecogni[sz]\w*\b[^.?!]{0,60}\brevenue\b"
+    r"|\bwhen\b[^.?!]{0,40}\brevenue\b[^.?!]{0,40}\brecogni[sz]\w*", re.I)
+_CONTRACT_FACTS = re.compile(
+    r"\b(?:deliver\w*|licen[cs]e\w*|subscription\w*|services?|goods|products?|months?|years?|install\w*|"
+    r"milestones?|performance\s+obligations?|over\s+time|point\s+in\s+time|ifrs|gaap|asc\s*606|frs\s*102|"
+    r"ind\s+as|paid|invoiced?|signed|accept\w*|construction|software)\b", re.I)
+REVENUE_TIMING_CLARIFICATION = (
+    "When contract revenue is recognised depends on what the contract promises and when the customer gets control "
+    "of it, so I can't give a date without the contract facts. Under IFRS 15 and US GAAP (ASC 606), which share "
+    "the same five-step model:\n\n"
+    "- If the customer receives the benefit as you perform (for example a service delivered over a period), or "
+    "your work creates or enhances an asset the customer controls, the revenue is recognised **over time** as "
+    "you perform.\n"
+    "- Otherwise it is recognised at the **point in time** control passes, usually on delivery or acceptance.\n"
+    "- If the contract contains several distinct promises, the contract price is split between them and each part "
+    "follows its own timing.\n\n"
+    "To say which applies, I need:\n\n"
+    "1. **Framework and country**: IFRS, US GAAP, FRS 102, Ind AS or another, and where the company reports.\n"
+    "2. **What the contract promises**: goods, services, a licence or a combination, and over what period.\n"
+    "3. **Delivery and acceptance**: when each item is delivered or performed, and any acceptance conditions.\n"
+    "4. **Payment terms**: amounts and timing, refunds, and any variable or performance-based fees.\n"
+    "5. **Contract status**: whether it is signed and enforceable, and the contract and reporting dates.\n\n"
+    "With these I can set out when and how much revenue to recognise in each period. A qualified accountant "
+    "should confirm the treatment before it is booked."
+)
+
+
 # "Can our company deduct this expense for tax?"
 _TAX_DEDUCTION_QUESTION = re.compile(
     r"\b(?:deduct(?:ible|ion|ed)?|allowable|tax[\s-]+deductible|claim\b.{0,40}\btax|write\s+(?:it\s+)?off)\b", re.I)
@@ -555,6 +585,22 @@ def _series_ref(citations, evidence: EvidenceModel) -> str | None:
         if any(key in text for key in keys):
             return citation.ref_id
     return None
+
+
+def _document_refs(citations, evidence: EvidenceModel) -> str:
+    """" Source: F0.xlsx [REF-1]." for the uploaded files a document chart was
+    read from. The narration states their figures but named no source, so a
+    correct D01-D06 chart answer was marked "Partial — retrieved sources were
+    not linked". The file is named because the answer view hides the marker:
+    "Read from [REF-1]." was shown as "Read,."."""
+    if evidence.provider != "uploaded_document":
+        return ""
+    refs: dict[str, str] = {}   # one reference per file, not per retrieved chunk or sheet
+    for citation in citations or []:
+        if (citation.provider == "uploaded_document" and citation.ref_id
+                and citation.title in evidence.sources):
+            refs.setdefault(citation.title.split(" — ")[0].strip(), citation.ref_id)
+    return (" Source: " + ", ".join(f"{name} [{ref}]" for name, ref in refs.items()) + ".") if refs else ""
 
 
 def _accessible_note(query: str, rows) -> str:
@@ -1998,7 +2044,11 @@ async def ask_kriton(
         if response.answer is not None:
             from app.orchestration.verification_service import ASSUMPTION_MARKERS, verification_breakdown
             released_text = response.answer.text or ''
-            bound_sources = any(
+            # A generated file is written without [REF-n] markers on purpose
+            # (build_document_generation_prompt: citations are attached
+            # separately), so every export was marked "Partial — retrieved
+            # sources were not linked" (QA F03 export, L04).
+            bound_sources = bool(response.artifacts or response.artifact_error) or any(
                 f'[{citation.ref_id}]' in released_text or bool(citation.url and citation.url in released_text)
                 for citation in response.answer.citations)
             if response.answer.citations and not bound_sources and response.answer.completeness == 'complete':
@@ -2438,6 +2488,13 @@ async def ask_kriton(
             "Tell me the specific question you want answered (for example which figure, rule or document), and "
             "I'll run that search and report what the sources do and do not establish."
         )
+    if (not missing_input_message and not request.conversation_history and not request.document_ids
+            and _REVENUE_TIMING_QUESTION.search(request.query) and not _CONTRACT_FACTS.search(request.query)):
+        # "When should my company recognize this $2 million contract revenue?"
+        # got a long answer with an invented $600,000 / $22,000 allocation and
+        # ASC paragraph numbers labelled IFRS 15 (QA A02): no fact about the
+        # contract was given, so the timing can only be stated conditionally.
+        missing_input_message = REVENUE_TIMING_CLARIFICATION
     if (not missing_input_message and not request.conversation_history and not request.document_ids
             and figureless_calculation_request(request.query)):
         # "Calculate my tax" was answered "the sources provided do not state
@@ -3580,7 +3637,12 @@ async def ask_kriton(
         grounded_input = build_document_generation_prompt(
             request.query, document_sources, document_analysis
         )
-        deterministic_chart_text = None
+        # "Export this answer as a Word document" exports the answer just
+        # given; only a request for a new document is written by the model.
+        from app.orchestration.document_pipeline import previous_answer_to_export
+        # The whole conversation: request.conversation_history is trimmed to
+        # turns the question follows up on, and "this answer" was not one.
+        deterministic_chart_text = previous_answer_to_export(request.query, whole_conversation)
         prompt = None
     else:
         # Evidence-complete visual questions do not need an LLM to restate their
@@ -3969,6 +4031,9 @@ async def ask_kriton(
     statement_request = is_statement_request(request.query)
     if statement_request:
         grounded_input += STATEMENT_RULES
+    if document_sources:
+        from app.orchestration.statement_rules import DOCUMENT_AMOUNTS_RULE
+        grounded_input += DOCUMENT_AMOUNTS_RULE
     # The method, not the answer, for calculations whose arithmetic was right
     # and method wrong in the 23 Oct 2026 review (accounting_methods.py).
     from app.orchestration.accounting_methods import accounting_method_guidance
@@ -4512,7 +4577,7 @@ async def ask_kriton(
     if live_evidence.observations and detect_explicit_visual_request(request.query):
         grounded_summary = _grounded_domain_fallback(request.query, live_evidence)
         if grounded_summary:
-            composed_text = grounded_summary
+            composed_text = grounded_summary + _document_refs(rag_citations, live_evidence)
             uses_deterministic_summary = True
 
     if not uses_user_supplied_structure:
@@ -4521,6 +4586,9 @@ async def ask_kriton(
         # the user sees (the answer view does not render LaTeX).
         composed_text = separate_headings(normalize_markdown_tables(latex_to_plain(composed_text)))
         composed_text = normalize_citations(composed_text, {citation.ref_id for citation in rag_citations})
+        if document_sources:
+            from app.orchestration.document_figures import without_unstated_filing
+            composed_text = without_unstated_filing(composed_text, document_sources)
 
     from app.orchestration.review import external_evidence_snapshot
     review_evidence_snapshot = external_evidence_snapshot([
@@ -5452,6 +5520,11 @@ async def ask_kriton(
     jurisdiction_note = jurisdiction_limitation(request.query, removed_statements)
     if jurisdiction_note:
         limitations.append(jurisdiction_note)
+    if document_sources and not evidence_gap_only and not is_offdomain_refusal and (final_text or "").strip():
+        # Any answer from an uploaded document gives its amounts as the
+        # document states them, without "£" (statement_rules).
+        from app.orchestration.statement_rules import without_currency_symbols
+        final_text = without_currency_symbols(final_text)
     if statement_request and not evidence_gap_only and not is_offdomain_refusal and (final_text or "").strip():
         # A statement answer is an unreviewed draft: no compliance, audit,
         # approval or filing claim, and its open items are named.

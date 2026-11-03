@@ -83,6 +83,25 @@ def plan_document_task(query: str, *, has_documents: bool) -> DocumentTaskPlan:
     return DocumentTaskPlan("document_question", "targeted", output_format)
 
 
+# "Export this answer as a Word document" asks for the answer just given, not
+# a new report: it got a fresh management report from the files, with a claim
+# the answer never made (QA F03 export).
+_EXPORT_PREVIOUS = re.compile(
+    r"\b(?:export|save|download|convert|put|turn)\b[^.?!]{0,40}"
+    r"\b(?:this|that|the|your|previous|last|above)\s+(?:answer|response|reply|explanation)\b"
+    r"|\b(?:export|save|download)\b[^.?!]{0,20}\b(?:the\s+)?above\b", re.IGNORECASE)
+
+
+def previous_answer_to_export(query: str, history) -> str | None:
+    """The previous answer's text when the request asks to export it, else None."""
+    if not _EXPORT_PREVIOUS.search(query or ""):
+        return None
+    for message in reversed(list(history or [])):
+        if getattr(message, "role", None) == "assistant" and (getattr(message, "content", "") or "").strip():
+            return message.content.strip()
+    return None
+
+
 def _number(value: str) -> Decimal | None:
     cleaned = value.strip().replace(",", "").replace("$", "").replace("£", "").replace("€", "")
     if not cleaned or cleaned.startswith("="):

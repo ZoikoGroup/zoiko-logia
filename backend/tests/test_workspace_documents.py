@@ -398,3 +398,24 @@ async def test_upload_to_conversation_retrieval_end_to_end(monkeypatch, tmp_path
             assert sources[0].source_id == document.id
     finally:
         await engine.dispose()
+
+
+def test_an_export_keeps_the_underscores_inside_a_name_and_drops_emphasis_marks():
+    # "NB-STATEMENTS_RELEASED" was exported as "NB-STATEMENTSRELEASED".
+    from app.domains.kriton_workspace.artifacts import _plain
+    assert _plain("Source: NB-STATEMENTS_RELEASED.pdf, page 2") == "Source: NB-STATEMENTS_RELEASED.pdf, page 2"
+    assert _plain("**Draft** — _not approved_ and `F0_NB-FIN-v1.xlsx`") == "Draft — not approved and F0_NB-FIN-v1.xlsx"
+    assert _plain("__Status__ and *sources*") == "Status and sources"
+
+
+def test_exporting_this_answer_exports_the_previous_answer_not_a_new_report():
+    # "Export this answer as a Word document" got a new management report from the files.
+    from app.orchestration.document_pipeline import previous_answer_to_export
+    from app.orchestration.schemas import ConversationMessage
+    history = [ConversationMessage(role="user", content="Which document is the released FY2025 revenue?"),
+               ConversationMessage(role="assistant", content="Released FY2025 revenue is 10,000 (p.1).")]
+    assert plan_document_task("Export this answer as a Word document.", has_documents=True).task_type == "document_generation"
+    assert previous_answer_to_export("Export this answer as a Word document.", history) == "Released FY2025 revenue is 10,000 (p.1)."
+    assert previous_answer_to_export("Save the above as a PDF", history) == "Released FY2025 revenue is 10,000 (p.1)."
+    assert previous_answer_to_export("Generate a management report in Word.", history) is None
+    assert previous_answer_to_export("Export this answer as a Word document.", []) is None

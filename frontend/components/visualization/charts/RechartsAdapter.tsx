@@ -77,6 +77,28 @@ export function RechartsChart({ viz }: { viz: VisualizationSpec }) {
     formatter: (value: unknown) => typeof value === "number" ? numberTick(value) : String(value),
   };
   const rotateLabels = rows.length > 4;
+  // A slanted label is cut at the chart's edge: "Operating expenses, excl.
+  // depreciation" showed as "…enses, excl. depreciation" (QA D03). Long
+  // labels are shortened (the tooltip keeps the full name) and the axis is
+  // given the height the slanted text needs.
+  const shortTick = (value: unknown) => {
+    const text = String(value);
+    return text.length > 22 ? `${text.slice(0, 21)}…` : text;
+  };
+  const longest = rows.reduce((max, row) => Math.max(max, Math.min(String(row.category).length, 22)), 0);
+  const categoryAxisProps = {
+    ...axisProps, interval: 0, angle: rotateLabels ? -35 : 0, tickFormatter: shortTick,
+    textAnchor: rotateLabels ? "end" : "middle", height: rotateLabels ? Math.max(56, 20 + longest * 4) : 30,
+  } as const;
+  // The unit the figures are in ("USD thousands") on the value axis, and each
+  // bar's value printed on it (QA D01: no unit and no bar labels).
+  const unitLabel = viz.unit && viz.unit !== "%" ? viz.unit : undefined;
+  const valueAxisProps = unitLabel
+    ? { label: { value: unitLabel, angle: -90, position: "insideLeft" as const, fill: muted, fontSize: 11, style: { textAnchor: "middle" as const } }, width: 72 }
+    : {};
+  // Recharts 3 draws a bar's labels only once its entry animation ends, so
+  // labelled bars are drawn without one: the values show at once.
+  const labelBars = rows.length <= 12;
 
   if (viz.type === "LINE" && viz.series.length > 1) {
     const categories = viz.series[0].data.map((point) => point.x);
@@ -170,13 +192,14 @@ export function RechartsChart({ viz }: { viz: VisualizationSpec }) {
     ).values;
     return (
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={waterfallRows} margin={{ top: 8, right: 16, bottom: rotateLabels ? 24 : 8, left: 0 }}>
+        <BarChart data={waterfallRows} margin={{ top: labelBars ? 20 : 8, right: 16, bottom: rotateLabels ? 24 : 8, left: 0 }}>
           <CartesianGrid stroke={line} strokeDasharray="3 3" vertical={false} />
-          <XAxis dataKey="category" {...axisProps} interval={0} angle={rotateLabels ? -35 : 0} textAnchor={rotateLabels ? "end" : "middle"} height={rotateLabels ? 56 : 30} />
-          <YAxis {...axisProps} tickFormatter={numberTick} />
+          <XAxis dataKey="category" {...categoryAxisProps} />
+          <YAxis {...axisProps} {...valueAxisProps} tickFormatter={numberTick} />
           <Tooltip {...tooltipStyle} formatter={(_value, _name, item) => [numberTick(item.payload.delta), seriesName]} />
-          <Bar dataKey="range" name={seriesName}>
+          <Bar dataKey="range" name={seriesName} isAnimationActive={!labelBars}>
             {waterfallRows.map((row, index) => <Cell key={`${row.category}-${index}`} fill={row.delta >= 0 ? color : cssVar("--bad", "#b42318")} />)}
+            {labelBars && <LabelList dataKey="delta" position="top" fill={ink} fontSize={10} formatter={(value: unknown) => numberTick(Number(value))} />}
           </Bar>
         </BarChart>
       </ResponsiveContainer>
@@ -187,16 +210,17 @@ export function RechartsChart({ viz }: { viz: VisualizationSpec }) {
     const isHorizontal = viz.variant === "HORIZONTAL_BAR" || viz.variant === "DIVERGING_BAR";
     return (
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={rows} layout={isHorizontal ? "vertical" : "horizontal"} margin={{ top: 8, right: 16, bottom: rotateLabels ? 24 : 8, left: 0 }}>
+        <BarChart data={rows} layout={isHorizontal ? "vertical" : "horizontal"} margin={{ top: labelBars && !isHorizontal ? 20 : 8, right: 16, bottom: rotateLabels ? 24 : 8, left: 0 }}>
           <CartesianGrid stroke={line} strokeDasharray="3 3" vertical={false} />
           {isHorizontal ? (
             <><XAxis type="number" {...axisProps} tickFormatter={numberTick} /><YAxis type="category" dataKey="category" {...axisProps} width={72} /><ReferenceLine x={0} stroke={muted} /></>
           ) : (
-            <><XAxis dataKey="category" {...axisProps} interval={0} angle={rotateLabels ? -35 : 0} textAnchor={rotateLabels ? "end" : "middle"} height={rotateLabels ? 56 : 30} /><YAxis {...axisProps} tickFormatter={numberTick} /></>
+            <><XAxis dataKey="category" {...categoryAxisProps} /><YAxis {...axisProps} {...valueAxisProps} tickFormatter={numberTick} /></>
           )}
           <Tooltip {...tooltipStyle} />
-          <Bar dataKey="value" name={seriesName} fill={color} radius={isHorizontal ? [0, 4, 4, 0] : [4, 4, 0, 0]} maxBarSize={54}>
+          <Bar dataKey="value" name={seriesName} fill={color} radius={isHorizontal ? [0, 4, 4, 0] : [4, 4, 0, 0]} maxBarSize={54} isAnimationActive={!(labelBars && !isHorizontal)}>
             {viz.variant === "DIVERGING_BAR" && rows.map((row, index) => <Cell key={`${row.category}-${index}`} fill={row.value >= 0 ? color : cssVar("--bad", "#b42318")} />)}
+            {labelBars && !isHorizontal && <LabelList dataKey="value" position="top" fill={ink} fontSize={10} formatter={(value: unknown) => numberTick(Number(value))} />}
           </Bar>
         </BarChart>
       </ResponsiveContainer>

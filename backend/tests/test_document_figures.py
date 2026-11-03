@@ -618,11 +618,14 @@ def test_contra_balances_and_common_accounts_still_give_the_statements():
             "9999\tSuspense\t200\t", "\tTotal\t1520\t1520"]
     figures = verified_document_figures([WebSource(title="tb.csv — Sheet1", url="", snippet="\n".join(rows), source_id="d1")])
     assert "Accounts not classified" not in figures
-    assert "Operating expenses = 70 (Employer NI and pension 40, Professional fees 30)" in figures
+    # Each account carries its code, as in the trial balance.
+    assert "Operating expenses = 70 (Employer NI and pension [6010] 40, Professional fees [6600] 30)" in figures
     assert "Profit for the year = 330" in figures
-    assert "Non-current assets = 300 (Land and buildings 400, Accumulated depreciation -100)" in figures
+    assert "Non-current assets = 300 (Land and buildings [1000] 400, Accumulated depreciation [1090] -100)" in figures
     assert "Current assets = 180" in figures and "Non-current liabilities = 100" in figures
-    assert "Dividends paid -50" in figures
+    assert "Dividends paid [3200] -50" in figures
+    # Dividends are a distribution, not an expense, and the answer says so.
+    assert "Dividends: Dividends paid [3200] 50 are a distribution" in figures
     assert "Total = " not in figures                   # the sheet's own Total row is not an account
 
 
@@ -832,6 +835,7 @@ def test_f03_each_stated_figure_keeps_its_own_document_page_and_status():
     assert "Figures stated in 'draft.pdf' (unreleased draft), Page 1: Draft FY2025 Revenue 10,500; " in figures
     assert "'released.pdf' (released), Page 1 says FY2025 Revenue = 10,000; 'draft.pdf' (unreleased draft)" in figures
     assert "a draft that repeats a released figure is still the draft speaking" in figures
+    assert "nothing here shows it was filed with a regulator, audited or approved" in figures
     assert not unreconciled_figures("Net income was 900 (released.pdf, page 1).", figures)
 
 
@@ -839,3 +843,57 @@ def test_prose_with_a_few_numbers_is_not_read_as_stated_figures():
     memo = "Internal audit memo\nWe tested 40 purchase orders.\nFindings\n5\nManagement responses are due."
     assert "Figures stated in" not in verified_document_figures([WebSource(title="memo.docx — Section 1", url="",
                                                                            snippet=memo, source_id="d1")])
+
+
+def test_a01_the_working_capital_direction_comes_from_the_stated_bridge():
+    # A01 said the working-capital changes "generated" cash; the file's bridge has them using 100.
+    page1 = WebSource(title="NB.pdf — p.1", url="", provider="uploaded_document",
+                      snippet="FY2025 Operating expenses excl depreciation\n(2,100)\nFY2025 Depreciation\n(400)\n"
+                              "FY2025 NET INCOME\n900")
+    page2 = WebSource(title="NB.pdf — p.2", url="", provider="uploaded_document",
+                      snippet="FY2025 OPERATING CASH FLOW\n1,200\nFY2025 investing cash flow\n(800)")
+    figures = verified_document_figures([page1, page2], "Why do net income and operating cash flow differ?")
+    assert "together REDUCED operating cash by 100" in figures
+    assert "REDUCED" not in verified_document_figures([page1, page2], "What is net income?")
+    assert "Cash-flow bridge" not in verified_document_figures([page1], "Why does cash differ from profit?")
+
+
+def test_f03_a_filing_the_files_do_not_state_is_written_out_of_the_answer():
+    from app.orchestration.document_figures import without_unstated_filing
+    released = WebSource(title="NB-STATEMENTS_RELEASED.pdf — p.1", url="", provider="uploaded_document",
+                         snippet="FY2025 Revenue\n10,000\nSYNTHETIC / UNAUDITED; not statutory filing.")
+    answer = ("The released statements are the only document that is designated as a released filing. "
+              "The draft may be newer, but without regulatory filing or audit it is not the controlling source. "
+              "Only the document that has been formally released (or filed with the regulator) controls.")
+    mended = without_unstated_filing(answer, [released])
+    assert "filing" not in mended and "regulator" not in mended
+    assert "while it is unreleased it is not the controlling source" in mended
+    assert "formally released controls" in mended
+    retest = ("This is the controlling, publicly‑issued number. It does not supersede the published figure. "
+              "A released (publicly issued) statement controls.")
+    assert without_unstated_filing(retest, [released]) == (
+        "This is the controlling, released number. It does not supersede the released figure. "
+        "A released statement controls.")
+    filed = WebSource(title="annual.pdf", url="", provider="uploaded_document", snippet="Filed with Companies House on 3 March.")
+    assert without_unstated_filing(answer, [filed]) == answer
+
+
+def test_northbridge_tb_income_statement_matches_the_usual_uk_layout_and_checks():
+    # Kriton gave operating profit 233,500: interest income inside it and bank
+    # charges as a finance cost. Claude, Gemini and Perplexity gave 218,600.
+    rows = ["Account code\tAccount name\tDebit (GBP)\tCredit (GBP)",
+            "1400\tCash at bank\t127400\t", "2300\tCorporation tax payable\t\t62000", "3000\tShare capital\t\t100000",
+            "3100\tRetained earnings brought forward\t\t420700", "3200\tDividends paid\t40000\t",
+            "4000\tRevenue\t\t1850000", "4100\tInterest income\t\t12000", "5000\tCost of sales\t1054500\t",
+            "6000\tSalaries and wages\t284000\t", "6900\tBank charges\t2900\t", "7000\tInterest expense\t14200\t",
+            "8000\tCorporation tax expense\t62000\t", "1200\tTrade receivables\t1009700\t",
+            "2000\tTrade payables\t\t150000", "\tTotal\t2594700\t2594700"]
+    figures = verified_document_figures([WebSource(title="tb.xlsx — Trial Balance", url="", snippet="\n".join(rows),
+                                                   source_id="d1")])
+    assert "Operating expenses = 286,900 (Salaries and wages [6000] 284,000, Bank charges [6900] 2,900)" in figures
+    assert "Operating profit = 508,600; Finance income = 12,000 (Interest income [4100] 12,000)" in figures
+    assert "Finance costs = 14,200 (Interest expense [7000] 14,200); Net finance costs = 2,200" in figures
+    assert "Profit before tax = 506,400" in figures and "Profit for the year = 444,400" in figures
+    assert "total debits 2,594,700 = total credits 2,594,700" in figures and "difference 0" in figures
+    assert "the tax charge equals Corporation tax payable [2300] 62,000" in figures
+    assert "Dividends paid [3200] 40,000 are a distribution" in figures

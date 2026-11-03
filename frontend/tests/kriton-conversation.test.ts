@@ -21,3 +21,18 @@ describe("complete chart context", () => {
     expect(history.at(-1)?.content).not.toContain("```chart");
   });
 });
+
+describe("exporting an answer from a file turn", () => {
+  // "Export this answer as a Word document" got a new report: the answer came from
+  // a turn with an attached file, and those answers are never replayed.
+  const fileTurn = { submittedQuery: "Which document is the released FY2025 revenue?", attachments: [{ id: "d1" }],
+    result: { outcome: "answered", answer: { text: "Released FY2025 revenue is 10,000 (page 1)." } } } as unknown as Turn;
+  it("sends that answer when the request is to export it", () => {
+    const history = conversationHistory([fileTurn], "Export this answer as a Word document");
+    expect(history.at(-1)).toEqual({ role: "assistant", content: "Released FY2025 revenue is 10,000 (page 1)." });
+  });
+  it("still keeps file answers out of any other request", () => {
+    expect(conversationHistory([fileTurn], "Now show it as a chart")).toEqual([]);
+    expect(conversationHistory([fileTurn])).toEqual([]);
+  });
+});

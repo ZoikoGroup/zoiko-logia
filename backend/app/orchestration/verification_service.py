@@ -887,10 +887,24 @@ def unsourced_rule_statements(answer: str, calculated) -> list[str]:
     answer has no sources and skips the claim check, so these are removed. A
     line that only restates the verified calculation ("VAT = £2,400 × 20% =
     £480" on the user's own rate) is arithmetic, not one of them."""
-    return [original for original, _ in _release_claim_pairs(answer)
-            if _EXTERNAL_RULE.search(_TAX_LINE_NAME.sub(" ", original) if not _TAX_RATE.search(original) else original)
-            and not _from_verified_calculation(original, calculated)
-            and not _NOT_SUPPLIED.search(original)]
+    found = []
+    for original, _ in _release_claim_pairs(answer):
+        text = _EFFECTIVE_TAX_RATE.sub(" ", original)
+        if (_EXTERNAL_RULE.search(_TAX_LINE_NAME.sub(" ", text) if not _TAX_RATE.search(text) else text)
+                and not _from_verified_calculation(original, calculated)
+                and not _NOT_SUPPLIED.search(original) and not _DISCLAIMS.search(original)):
+            found.append(original)
+    return found
+
+
+# "Effective tax rate: 28.65% (62,000 ÷ 216,400)" is a ratio of the
+# statement's own figures, not a tax rate from the law; it was removed from a
+# trial-balance income statement as an uncited rule, and the answer marked
+# Partial. A statutory rate beside it ("corporation tax at 25%") still counts.
+_EFFECTIVE_TAX_RATE = re.compile(r"\beffective\s+tax\s+rate\b", re.I)
+# Says what the output is not: "presented as a draft worksheet; it is not a
+# statutory-ready set of accounts" was removed for naming "statutory".
+_DISCLAIMS = re.compile(r"\bnot\s+(?:\w+[\s-]+){0,3}(?:statutory|audited|approved|filed)\b", re.I)
 
 
 # A statement line named after a tax, with no rate: "| Income tax expense |

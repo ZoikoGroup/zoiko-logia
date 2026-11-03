@@ -386,7 +386,7 @@ function ResponseActions({
                 {state === "busy" ? <Loader2 size={17} className="animate-spin text-brand" /> : <FileText size={17} className="text-brand" />}
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-xs font-semibold text-ink">{artifact.filename}</span>
-                  <span className="block text-[11px] text-muted">Generated document Â· Click to download</span>
+                  <span className="block text-[11px] text-muted">Generated document · Click to download</span>
                 </span>
                 <Download size={15} className="text-brand" />
               </button>
@@ -1022,7 +1022,7 @@ export default function AskKritonPage() {
           clarification_cycle: reply?.cycle ?? 0,
           reply_to: reply?.replyTo,
           conversation_id: convId,
-          conversation_history: conversationHistory(completedTurns),
+          conversation_history: conversationHistory(completedTurns, turn.submittedQuery),
           // An attached file defines the entity/source scope for questions
           // about it: a document miss is not replaced with same-name web
           // results (another company called "Apex"). A question that is not

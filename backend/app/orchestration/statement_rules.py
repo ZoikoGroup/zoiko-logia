@@ -52,12 +52,20 @@ INSTRUCTIONS = (
     "- An income statement, cash flow statement or statement of changes in equity covers a period: head it "
     "\"for the year ended <date>\", never \"as at\". Only a balance sheet is \"as at <date>\".\n"
     "- Label each ratio with the formula it was calculated with.\n"
+    # The summary under the Northbridge statement read "£1.85 m", "£576.9 k"
+    # beside a table of 1,850,000 and 576,900.
+    "- Write every amount in full exactly as in the statement (576,900, not £576.9 k or £0.58 m), with no currency "
+    "symbol; name the currency once, in the heading or column (GBP).\n"
     # The same income statement came back with each expense listed in one run
     # and as a single "Operating expenses 574,000" line in another (30 Oct 2026).
     "- List every account on its own line under its heading (each operating expense under Operating expenses, "
-    "bank charges and interest under Finance costs, each asset and liability under its group), then the "
-    "heading's subtotal; never show a heading as a single total without its accounts. Write the account name "
-    "alone in the first column, with no leading dash.\n"
+    "each asset and liability under its group), then the heading's subtotal; never show a heading as a single "
+    "total without its accounts. Write the account name alone in the first column, with no leading dash.\n"
+    # Northbridge TB: interest income inside operating profit and bank charges
+    # under finance costs gave 233,500; the verified figures place them now.
+    "- Put each account under the heading the verified figures give it: interest income under Finance income and "
+    "interest expense under Finance costs, both after Operating profit, then the net finance line. Bank charges "
+    "placed by name are provisional: list them among the accounts to confirm.\n"
 )
 
 # Document 01 §16.2, assurance layer A: the most an unreviewed draft may claim.
@@ -215,6 +223,34 @@ def open_items(query: str, answer: str, source_text: str) -> list[str]:
     if _RATIO.search(answer or ""):
         notes.append(RATIOS_NOTE)
     return notes
+
+
+_CURRENCY_SYMBOL = re.compile(r"([£$€₹])\s?(?=\d)")
+_SYMBOL_CODE = {"£": "GBP", "€": "EUR", "₹": "INR"}
+_CURRENCY_CODE = re.compile(r"\b(?:GBP|USD|EUR|INR|AUD|CAD|NZD|SGD|HKD|JPY|CHF)\b")
+
+# Asked of every answer drawn from an uploaded document, not only statements.
+DOCUMENT_AMOUNTS_RULE = (
+    "\n- Write every amount from the documents in full, as the documents state it (576,900, not £576.9 k or "
+    "£0.58 m), with no currency symbol; name the currency once.\n")
+
+
+def without_currency_symbols(text: str) -> str:
+    """Amounts as the document states them: "Income accounts (£1,862,000) –
+    Expense accounts (£1,707,600) = £154,400" beside a table of plain GBP
+    figures; the rule asked the model not to, and it kept the £. Dropping a
+    symbol never changes an amount, but the currency must stay known: mixed
+    symbols are kept, a currency the answer never names is stated, and a bare
+    "$" (US, Australian, Canadian…) is kept when no code says which."""
+    symbols = {match.group(1) for match in _CURRENCY_SYMBOL.finditer(text)}
+    if len(symbols) != 1:
+        return text
+    symbol = symbols.pop()
+    named = _CURRENCY_CODE.search(text)
+    if not named and symbol not in _SYMBOL_CODE:
+        return text
+    stripped = _CURRENCY_SYMBOL.sub("", text)
+    return stripped if named else f"{stripped.rstrip()}\n\nAmounts are in {_SYMBOL_CODE[symbol]}."
 
 
 def removed_claims_note(removed: list[str]) -> str:

@@ -24,8 +24,54 @@ def remove_reserved_notes(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip("\n")
 
 
+_SEPARATOR_ROW = re.compile(r'[|:\-\s]+')
+
+
+def _row_width(line: str) -> int:
+    return len(line.strip().strip('|').split('|'))
+
+
+def _rejoin_split_tables(lines: list[str]) -> list[str]:
+    """A blank line inside a table ends it: the model separated the income
+    statement's sections ("Gross profit", "Operating profit") with blank
+    lines, and every row after "Cost of sales" was shown as one paragraph of
+    "| Gross profit | 795,500 | | | …" (Northbridge TB). Rows of the same
+    width that follow a table across blank lines, with no header of their
+    own, are rows of that table."""
+    out: list[str] = []
+    in_table = False
+    in_fence = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.strip().startswith('```'):
+            in_fence = not in_fence
+            in_table = False
+        elif not in_fence and line.strip().startswith('|'):
+            following = lines[i + 1] if i + 1 < len(lines) else ''
+            if _SEPARATOR_ROW.fullmatch(following) and '-' in following:
+                in_table = True
+        elif not in_fence and not line.strip() and in_table:
+            j = i
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            nxt = lines[j] if j < len(lines) else ''
+            after = lines[j + 1] if j + 1 < len(lines) else ''
+            previous = next((row for row in reversed(out) if row.strip()), '')
+            if (nxt.strip().startswith('|') and not (_SEPARATOR_ROW.fullmatch(after) and '-' in after)
+                    and _row_width(nxt) == _row_width(previous)):
+                i = j
+                continue
+            in_table = False
+        else:
+            in_table = in_table and line.strip().startswith('|')
+        out.append(line)
+        i += 1
+    return out
+
+
 def normalize_markdown_tables(text: str) -> str:
-    lines = text.splitlines()
+    lines = _rejoin_split_tables(text.splitlines())
     in_fence = False
     width = None
     for i, line in enumerate(lines):

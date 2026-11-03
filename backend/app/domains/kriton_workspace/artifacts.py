@@ -24,7 +24,10 @@ _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 def _plain(text: str) -> str:
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", "", text)
-    return re.sub(r"[*_`]", "", re.sub(r"\[([^]]+)]\([^)]+\)", r"\1", text)).strip()
+    text = re.sub(r"\[([^]]+)]\([^)]+\)", r"\1", text).replace("`", "")
+    # Emphasis marks sit at a word's edge; an underscore inside a name is part
+    # of it ("NB-STATEMENTS_RELEASED" was exported as "NB-STATEMENTSRELEASED").
+    return re.sub(r"(?<!\w)[*_]+|[*_]+(?!\w)", "", text).strip()
 
 
 def _docx_bytes(spec: DocumentSpec) -> bytes:

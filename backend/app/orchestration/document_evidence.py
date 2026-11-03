@@ -386,6 +386,7 @@ def _bridge_evidence(query: str, sources: list[WebSource], pairs) -> EvidenceMod
         observations=[Observation(dimension=label, value=value, measure="value") for label, value in steps],
         dimensions=["category"],
         measures=["value"],
+        units=_unit(sources),
         sources=list(dict.fromkeys(source.title for source in sources)),
         facts=[f"{label}: {value:g}" for label, value in steps] + [f"Net result of the bridge: {result:g}"],
         coverage_complete=True,
@@ -448,6 +449,7 @@ def build_document_evidence(query: str, sources: list[WebSource]) -> EvidenceMod
         ],
         dimensions=["category"],
         measures=["value"],
+        units=_unit(sources),
         sources=titles,
         facts=[f"{label}: {value:g}" for label, value in ordered],
         coverage_complete=True,
@@ -489,17 +491,39 @@ def _composition_requested(query: str) -> bool:
     }
 
 
+_UNIT = re.compile(r"\b(USD|GBP|EUR|INR|AUD|CAD|JPY|CHF)\s*(thousands|millions|billions|000s|'000|m|bn)\b", re.I)
+_UNIT_SCALE = {"000s": "thousands", "'000": "thousands", "m": "millions", "bn": "billions"}
+
+
+def _unit(sources: list[WebSource]) -> list[str]:
+    """The unit the file states its figures in ("USD thousands"), for the
+    chart's value axis (QA D01). Nothing when the files state none, or more
+    than one — an axis must not claim a unit some of its figures are not in."""
+    found = {f"{currency.upper()} {_UNIT_SCALE.get(scale.lower(), scale.lower())}"
+             for source in sources for currency, scale in _UNIT.findall(source.snippet or "")}
+    return list(found) if len(found) == 1 else []
+
+
+# What a question asks done to the chart, not what it charts: "Make a line
+# chart of quarterly revenue and label Q4 QoQ growth" was titled "Quarterly
+# revenue and label Q4 QoQ growth", "Build a waterfall from…" "Build waterfall
+# from…" (QA D02, D03).
+_INSTRUCTION_TAIL = re.compile(r"\s+(?:and|then|with)\s+(?:label|labels|show|add|mark|highlight|annotate|include)\b.*$", re.I)
+
+
 def _subject(query: str) -> str:
     """A readable chart title from the question, with the chart-type and
     filler words stripped."""
+    query = _INSTRUCTION_TAIL.sub("", query.strip().rstrip(".?!"))
     subject = re.sub(
-        r"\b(compare|comparison|show|display|plot|draw|create|make|give|me|a|an|the|of|in|as|"
-        r"bar|line|pie|donut|doughnut|column|chart|charts|graph|graphs|table|visual|"
+        r"\b(compare|comparison|show|display|plot|draw|create|make|build|give|me|a|an|the|of|in|as|"
+        r"bar|line|pie|donut|doughnut|column|chart|charts|graph|graphs|table|visual|waterfall|"
         r"visualise|visualize|this|that|these|those|document|documents|file|files|"
         r"attached|uploaded|please)\b",
         " ", query, flags=re.I,
     )
     subject = re.sub(r"\s+", " ", subject).strip(" -.,:")
+    subject = re.sub(r"^(?:from|for|on|showing)\s+", "", subject, flags=re.I)
     # A long pasted message is not a title; it was shown in full, three times.
     if not subject or len(subject) > 80:
         return "Uploaded document"
