@@ -1,0 +1,4818 @@
+{
+ "version": "country-terms-3",
+ "built": "2026-10-31",
+ "description": "Builds backend/registry/country_terms.json (30 Oct 2026, approved experiment).\n\nCountry-specific tax forms, returns, schemes, charges and identifiers, each\nmapped to ONE country, with the authority that issues or administers it and\nthe official source it is listed on. Built per country from the authority's own\ncategories (individual return, company return, indirect-tax return, payroll and\nwithholding forms, identifiers, distinctive schemes and charges), BEFORE set 11\nwas written, and frozen by hash. Version 2 (31 Oct 2026): each phrase carries its live verification (authority page URL, time, content hash, quote) or\nstatus unverified; 48 direct page reads, no model; version 3 adds 13 India reads (cbic-gst.gov.in, incometax.gov.in).\n\nTerms used by more than one country, or with a common non-tax meaning, are\nlisted under \"ambiguous\" and never map. Matching is on whole words;\n\"case_sensitive\" acronyms match only in capitals (\"BAS\", not \"bas\").",
+ "entries": [
+  {
+   "id": "uk-001",
+   "country": "UK",
+   "kind": "return",
+   "term": "SA100 Self Assessment tax return",
+   "phrases": [
+    "sa100"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "verified",
+   "phrase_verification": {
+    "sa100": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/self-assessment-tax-return-forms",
+     "verified_at": "2026-10-30T18:39:26.786886+00:00",
+     "content_sha256": "f2f440d3493c4382ab54b83450be5cf38662c39245e1d513154c71f8aac91964",
+     "quote": "ll get a penalty . This guide is also available in Welsh (Cymraeg) . The main tax return (SA100) You can file your Self Assessment tax return online . If you need a paper form you can: "
+    }
+   }
+  },
+  {
+   "id": "uk-002",
+   "country": "UK",
+   "kind": "return",
+   "term": "SA103 self-employment pages",
+   "phrases": [
+    "sa103",
+    "sa103s",
+    "sa103f"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "verified",
+   "phrase_verification": {
+    "sa103": {
+     "status": "unverified"
+    },
+    "sa103s": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/self-assessment-tax-return-forms",
+     "verified_at": "2026-10-30T18:39:26.786886+00:00",
+     "content_sha256": "f2f440d3493c4382ab54b83450be5cf38662c39245e1d513154c71f8aac91964",
+     "quote": "s of income: employees or company directors - SA102 supplementary pages self-employment - SA103S supplementary pages or SA103F supplementary pages business partnerships - SA104S suppleme"
+    },
+    "sa103f": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/self-assessment-tax-return-forms",
+     "verified_at": "2026-10-30T18:39:26.786886+00:00",
+     "content_sha256": "f2f440d3493c4382ab54b83450be5cf38662c39245e1d513154c71f8aac91964",
+     "quote": "any directors - SA102 supplementary pages self-employment - SA103S supplementary pages or SA103F supplementary pages business partnerships - SA104S supplementary pages or SA104F suppleme"
+    }
+   }
+  },
+  {
+   "id": "uk-003",
+   "country": "UK",
+   "kind": "form",
+   "term": "SA302 tax calculation",
+   "phrases": [
+    "sa302"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "sa302": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "uk-004",
+   "country": "UK",
+   "kind": "return",
+   "term": "CT600 Company Tax Return",
+   "phrases": [
+    "ct600"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "ct600": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "uk-005",
+   "country": "UK",
+   "kind": "return",
+   "term": "VAT100 VAT return",
+   "phrases": [
+    "vat100"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "vat100": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "uk-006",
+   "country": "UK",
+   "kind": "form",
+   "term": "P32 employer payment record",
+   "phrases": [
+    "p32"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "p32": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "uk-007",
+   "country": "UK",
+   "kind": "form",
+   "term": "P11D benefits in kind",
+   "phrases": [
+    "p11d",
+    "p11d(b)"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "verified",
+   "phrase_verification": {
+    "p11d": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/paye-forms-p45-p60-p11d",
+     "verified_at": "2026-10-30T18:37:40.036648+00:00",
+     "content_sha256": "e7c1abc057a329e876507554b851e0d92428b8a7eace0018064eb9c102d35d9d",
+     "quote": "Your P45, P60 and P11D form: Why you get each form - GOV.UK Cookies on GOV.UK We use some essential cookies to m"
+    },
+    "p11d(b)": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "uk-008",
+   "country": "UK",
+   "kind": "form",
+   "term": "P60 end of year certificate",
+   "phrases": [
+    "p60"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "verified",
+   "phrase_verification": {
+    "p60": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/paye-forms-p45-p60-p11d",
+     "verified_at": "2026-10-30T18:37:40.036648+00:00",
+     "content_sha256": "e7c1abc057a329e876507554b851e0d92428b8a7eace0018064eb9c102d35d9d",
+     "quote": "Your P45, P60 and P11D form: Why you get each form - GOV.UK Cookies on GOV.UK We use some essential coo"
+    }
+   }
+  },
+  {
+   "id": "uk-009",
+   "country": "UK",
+   "kind": "form",
+   "term": "P45 leaving certificate",
+   "phrases": [
+    "p45"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "verified",
+   "phrase_verification": {
+    "p45": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/paye-forms-p45-p60-p11d",
+     "verified_at": "2026-10-30T18:37:40.036648+00:00",
+     "content_sha256": "e7c1abc057a329e876507554b851e0d92428b8a7eace0018064eb9c102d35d9d",
+     "quote": "Your P45, P60 and P11D form: Why you get each form - GOV.UK Cookies on GOV.UK We use some essentia"
+    }
+   }
+  },
+  {
+   "id": "uk-010",
+   "country": "UK",
+   "kind": "identifier",
+   "term": "Unique Taxpayer Reference",
+   "phrases": [
+    "UTR",
+    "unique taxpayer reference"
+   ],
+   "case_sensitive": true,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "UTR": {
+     "status": "unverified"
+    },
+    "unique taxpayer reference": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "uk-011",
+   "country": "UK",
+   "kind": "scheme",
+   "term": "Construction Industry Scheme",
+   "phrases": [
+    "construction industry scheme",
+    "CIS"
+   ],
+   "case_sensitive": true,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "construction industry scheme": {
+     "status": "unverified"
+    },
+    "CIS": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "uk-012",
+   "country": "UK",
+   "kind": "rule",
+   "term": "IR35 off-payroll working rules",
+   "phrases": [
+    "ir35"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "ir35": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "uk-013",
+   "country": "UK",
+   "kind": "charge",
+   "term": "High Income Child Benefit Charge",
+   "phrases": [
+    "high income child benefit charge",
+    "HICBC"
+   ],
+   "case_sensitive": true,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "high income child benefit charge": {
+     "status": "unverified"
+    },
+    "HICBC": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "uk-014",
+   "country": "UK",
+   "kind": "allowance",
+   "term": "Annual Investment Allowance",
+   "phrases": [
+    "annual investment allowance"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "verified",
+   "phrase_verification": {
+    "annual investment allowance": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/capital-allowances/annual-investment-allowance",
+     "verified_at": "2026-10-30T18:43:35.916466+00:00",
+     "content_sha256": "93f17f17519c2c05d267e48e88ab400a75642d8fdd941df5b2b24cad4ffba2dc",
+     "quote": "Claim capital allowances: Annual investment allowance - GOV.UK Cookies on GOV.UK We use some essential cookies to make this website work. We’d "
+    }
+   }
+  },
+  {
+   "id": "uk-015",
+   "country": "UK",
+   "kind": "allowance",
+   "term": "Marriage Allowance",
+   "phrases": [
+    "marriage allowance"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "marriage allowance": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "uk-016",
+   "country": "UK",
+   "kind": "tax",
+   "term": "Stamp Duty Land Tax",
+   "phrases": [
+    "stamp duty land tax",
+    "SDLT"
+   ],
+   "case_sensitive": true,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "verified",
+   "phrase_verification": {
+    "stamp duty land tax": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/stamp-duty-land-tax",
+     "verified_at": "2026-10-30T18:43:28.340058+00:00",
+     "content_sha256": "eca792f1adc218e0146b5913797fa984c942936649297520eb37275459a11049",
+     "quote": "Stamp Duty Land Tax: Overview - GOV.UK Cookies on GOV.UK We use some essential cookies to make this website w"
+    },
+    "SDLT": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/stamp-duty-land-tax",
+     "verified_at": "2026-10-30T18:43:28.340058+00:00",
+     "content_sha256": "eca792f1adc218e0146b5913797fa984c942936649297520eb37275459a11049",
+     "quote": "and exemptions Refunds of Stamp Duty Land Tax Overview You must pay Stamp Duty Land Tax ( SDLT ) if you buy a property or land over a certain price in England and Northern Ireland. The"
+    }
+   }
+  },
+  {
+   "id": "uk-017",
+   "country": "UK",
+   "kind": "tax",
+   "term": "Land and Buildings Transaction Tax (Scotland)",
+   "phrases": [
+    "land and buildings transaction tax",
+    "LBTT"
+   ],
+   "case_sensitive": true,
+   "authority": "Revenue Scotland",
+   "basis": "revenue.scot",
+   "verification": "verified",
+   "phrase_verification": {
+    "land and buildings transaction tax": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/stamp-duty-land-tax",
+     "verified_at": "2026-10-30T18:43:28.340058+00:00",
+     "content_sha256": "eca792f1adc218e0146b5913797fa984c942936649297520eb37275459a11049",
+     "quote": " and Northern Ireland. The tax is different if the property or land is in: Scotland - pay Land and Buildings Transaction Tax Wales - pay Land Transaction Tax if the sale was completed on or after 1 April 2018 You p"
+    },
+    "LBTT": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "uk-018",
+   "country": "UK",
+   "kind": "tax",
+   "term": "Land Transaction Tax (Wales)",
+   "phrases": [
+    "land transaction tax"
+   ],
+   "case_sensitive": false,
+   "authority": "Welsh Revenue Authority",
+   "basis": "gov.wales",
+   "verification": "verified",
+   "phrase_verification": {
+    "land transaction tax": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/stamp-duty-land-tax",
+     "verified_at": "2026-10-30T18:43:28.340058+00:00",
+     "content_sha256": "eca792f1adc218e0146b5913797fa984c942936649297520eb37275459a11049",
+     "quote": "the property or land is in: Scotland - pay Land and Buildings Transaction Tax Wales - pay Land Transaction Tax if the sale was completed on or after 1 April 2018 You pay the tax when you: buy a freeho"
+    }
+   }
+  },
+  {
+   "id": "uk-019",
+   "country": "UK",
+   "kind": "relief",
+   "term": "Business Asset Disposal Relief",
+   "phrases": [
+    "business asset disposal relief"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "verified",
+   "phrase_verification": {
+    "business asset disposal relief": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/browse/tax/capital-gains",
+     "verified_at": "2026-10-30T18:43:39.176427+00:00",
+     "content_sha256": "29f7eb22d44ced9870d54f740bffebd9e5523b59125c4e3fba3edd66db3fb8fc",
+     "quote": "y and property when you divorce or separate For businesses Capital Gains Tax for business Business Asset Disposal Relief Business Asset Rollover Relief Gift Hold-Over Relief Incorporation Relief Shares and inve"
+    }
+   }
+  },
+  {
+   "id": "uk-020",
+   "country": "UK",
+   "kind": "scheme",
+   "term": "Gift Aid",
+   "phrases": [
+    "gift aid"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "gift aid": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "uk-021",
+   "country": "UK",
+   "kind": "scheme",
+   "term": "Enterprise Investment Scheme / Seed EIS",
+   "phrases": [
+    "enterprise investment scheme",
+    "SEIS"
+   ],
+   "case_sensitive": true,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "enterprise investment scheme": {
+     "status": "unverified"
+    },
+    "SEIS": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "uk-022",
+   "country": "UK",
+   "kind": "scheme",
+   "term": "VAT Flat Rate Scheme",
+   "phrases": [
+    "flat rate scheme"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "verified",
+   "phrase_verification": {
+    "flat rate scheme": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/browse/tax/vat",
+     "verified_at": "2026-10-30T18:43:24.262496+00:00",
+     "content_sha256": "c9bec2a51e086356502825b10eee5fe602775b3fbbe5ac3f6b9db9a54c7dbfd6",
+     "quote": "ferent ways to report and pay VAT Annual Accounting Scheme VAT Cash Accounting Scheme VAT Flat Rate Scheme VAT margin schemes VAT retail schemes Exporting goods and services Exports, sending goods"
+    }
+   }
+  },
+  {
+   "id": "uk-023",
+   "country": "UK",
+   "kind": "scheme",
+   "term": "Making Tax Digital",
+   "phrases": [
+    "making tax digital"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "gov.uk (HMRC forms and guidance)",
+   "verification": "verified",
+   "phrase_verification": {
+    "making tax digital": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/browse/tax/vat",
+     "verified_at": "2026-10-30T18:43:24.262496+00:00",
+     "content_sha256": "c9bec2a51e086356502825b10eee5fe602775b3fbbe5ac3f6b9db9a54c7dbfd6",
+     "quote": " and support HMRC email updates, videos and webinars for VAT HMRC videos and webinars for Making Tax Digital for Income Tax VAT visits and inspections Is this page useful? Maybe Yes this page is use"
+    }
+   }
+  },
+  {
+   "id": "us-024",
+   "country": "US",
+   "kind": "return",
+   "term": "Form 1040 individual income tax return",
+   "phrases": [
+    "form 1040",
+    "1040-sr",
+    "1040-nr",
+    "form 1040-sr",
+    "form 1040-nr"
+   ],
+   "case_sensitive": false,
+   "authority": "IRS",
+   "basis": "irs.gov (Forms & Instructions)",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 1040": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": "e Credits Standard Deduction Retirement Plans Forms Overview POPULAR FORMS & INSTRUCTIONS Form 1040 Individual Income Tax Return Form 1040 Instructions Instructions for Form 1040 Form W-9 R"
+    },
+    "1040-sr": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": "Schedule 3 PDF Tax Table from Instructions for Form 1040 PDF Schedules for Form 1040 Form 1040-SR PDF Form W-4 Employee's Withholding Certificate Complete Form W-4 so that your employer c"
+    },
+    "1040-nr": {
+     "status": "unverified"
+    },
+    "form 1040-sr": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": "1040 Schedule 3 PDF Tax Table from Instructions for Form 1040 PDF Schedules for Form 1040 Form 1040-SR PDF Form W-4 Employee's Withholding Certificate Complete Form W-4 so that your employer c"
+    },
+    "form 1040-nr": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "us-025",
+   "country": "US",
+   "kind": "return",
+   "term": "Form 1120 / 1120-S corporation returns",
+   "phrases": [
+    "form 1120",
+    "form 1120-s",
+    "1120-s"
+   ],
+   "case_sensitive": false,
+   "authority": "IRS",
+   "basis": "irs.gov (Forms & Instructions)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "form 1120": {
+     "status": "unverified"
+    },
+    "form 1120-s": {
+     "status": "unverified"
+    },
+    "1120-s": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "us-026",
+   "country": "US",
+   "kind": "return",
+   "term": "Form 1065 partnership return",
+   "phrases": [
+    "form 1065"
+   ],
+   "case_sensitive": false,
+   "authority": "IRS",
+   "basis": "irs.gov (Forms & Instructions)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "form 1065": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "us-027",
+   "country": "US",
+   "kind": "return",
+   "term": "Form 941 / 940 employer returns",
+   "phrases": [
+    "form 941",
+    "form 940"
+   ],
+   "case_sensitive": false,
+   "authority": "IRS",
+   "basis": "irs.gov (Forms & Instructions)",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 941": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": "m 4506-T Request for Transcript of Tax Return Form W-4 Employee's Withholding Certificate Form 941 Employer's Quarterly Federal Tax Return Form W-2 Wage and Tax Statement Form 9465 Install"
+    },
+    "form 940": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+     "verified_at": "2026-10-30T18:37:57.506448+00:00",
+     "content_sha256": "5ac57fceef136e7f4173b76eed9e3d56fdcf96919c816ddad8fb1a8e93079a0a",
+     "quote": "file certain employment tax forms. For more information see e-file employment tax forms . Form 940, Employer's Annual Federal Unemployment Tax Return Schedule A (Form 940), Multi-State Emp"
+    }
+   }
+  },
+  {
+   "id": "us-028",
+   "country": "US",
+   "kind": "form",
+   "term": "Forms W-2, W-4, W-9, W-8BEN",
+   "phrases": [
+    "w-2",
+    "w-4",
+    "w-9",
+    "w-8ben",
+    "w-8ben-e"
+   ],
+   "case_sensitive": false,
+   "authority": "IRS",
+   "basis": "irs.gov (Forms & Instructions)",
+   "verification": "verified",
+   "phrase_verification": {
+    "w-2": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": " Employee's Withholding Certificate Form 941 Employer's Quarterly Federal Tax Return Form W-2 Wage and Tax Statement Form 9465 Installment Agreement Request POPULAR FOR TAX PROS Form "
+    },
+    "w-4": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": "tion Number (TIN) and Certification Form 4506-T Request for Transcript of Tax Return Form W-4 Employee's Withholding Certificate Form 941 Employer's Quarterly Federal Tax Return Form "
+    },
+    "w-9": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": " 1040 Individual Income Tax Return Form 1040 Instructions Instructions for Form 1040 Form W-9 Request for Taxpayer Identification Number (TIN) and Certification Form 4506-T Request fo"
+    },
+    "w-8ben": {
+     "status": "unverified"
+    },
+    "w-8ben-e": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "us-029",
+   "country": "US",
+   "kind": "form",
+   "term": "Form 1099 series",
+   "phrases": [
+    "1099",
+    "1099-nec",
+    "1099-misc",
+    "1099-k",
+    "1099-int",
+    "1099-div"
+   ],
+   "case_sensitive": false,
+   "authority": "IRS",
+   "basis": "irs.gov (Forms & Instructions)",
+   "verification": "verified",
+   "phrase_verification": {
+    "1099": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+     "verified_at": "2026-10-30T18:37:57.506448+00:00",
+     "content_sha256": "5ac57fceef136e7f4173b76eed9e3d56fdcf96919c816ddad8fb1a8e93079a0a",
+     "quote": " Tax Statement Form 1096, Annual Summary and Transmittal of U.S. Information Returns Form 1099-NEC, Nonemployee Compensation Form 1099-MISC, Miscellaneous Income Form 1094-C, Transmitt"
+    },
+    "1099-nec": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+     "verified_at": "2026-10-30T18:37:57.506448+00:00",
+     "content_sha256": "5ac57fceef136e7f4173b76eed9e3d56fdcf96919c816ddad8fb1a8e93079a0a",
+     "quote": " Tax Statement Form 1096, Annual Summary and Transmittal of U.S. Information Returns Form 1099-NEC, Nonemployee Compensation Form 1099-MISC, Miscellaneous Income Form 1094-C, Transmittal o"
+    },
+    "1099-misc": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+     "verified_at": "2026-10-30T18:37:57.506448+00:00",
+     "content_sha256": "5ac57fceef136e7f4173b76eed9e3d56fdcf96919c816ddad8fb1a8e93079a0a",
+     "quote": " and Transmittal of U.S. Information Returns Form 1099-NEC, Nonemployee Compensation Form 1099-MISC, Miscellaneous Income Form 1094-C, Transmittal of Employer-Provided Health Insurance Offe"
+    },
+    "1099-k": {
+     "status": "unverified"
+    },
+    "1099-int": {
+     "status": "unverified"
+    },
+    "1099-div": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "us-030",
+   "country": "US",
+   "kind": "form",
+   "term": "Schedule C / Schedule K-1",
+   "phrases": [
+    "schedule k-1",
+    "k-1"
+   ],
+   "case_sensitive": false,
+   "authority": "IRS",
+   "basis": "irs.gov (Forms & Instructions)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "schedule k-1": {
+     "status": "unverified"
+    },
+    "k-1": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "us-031",
+   "country": "US",
+   "kind": "scheme",
+   "term": "401(k) / Roth IRA / traditional IRA",
+   "phrases": [
+    "401(k)",
+    "401k",
+    "roth ira",
+    "traditional ira"
+   ],
+   "case_sensitive": false,
+   "authority": "IRS",
+   "basis": "irs.gov (Forms & Instructions)",
+   "verification": "verified",
+   "phrase_verification": {
+    "401(k)": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/retirement-plans",
+     "verified_at": "2026-10-30T18:43:43.394131+00:00",
+     "content_sha256": "4df7f5a551e390e6de8a7b532b92e43c94f8cc83df9e60fb06814ba72a732c28",
+     "quote": "nt plans: All retirement plan types Traditional IRAs Roth IRAs SIMPLE IRA plans SEP plans 401(k) plans Life events Manage your retirement savings during a life event: Hardship distributi"
+    },
+    "401k": {
+     "status": "unverified"
+    },
+    "roth ira": {
+     "status": "unverified"
+    },
+    "traditional ira": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "us-032",
+   "country": "US",
+   "kind": "scheme",
+   "term": "Health Savings Account",
+   "phrases": [
+    "health savings account",
+    "HSA"
+   ],
+   "case_sensitive": true,
+   "authority": "IRS",
+   "basis": "irs.gov (Forms & Instructions)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "health savings account": {
+     "status": "unverified"
+    },
+    "HSA": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "us-033",
+   "country": "US",
+   "kind": "tax",
+   "term": "FICA / FUTA / SUTA payroll taxes",
+   "phrases": [
+    "FICA",
+    "FUTA",
+    "SUTA"
+   ],
+   "case_sensitive": true,
+   "authority": "IRS",
+   "basis": "irs.gov (Forms & Instructions)",
+   "verification": "verified",
+   "phrase_verification": {
+    "FICA": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/taxtopics/tc751",
+     "verified_at": "2026-10-30T18:43:48.546996+00:00",
+     "content_sha256": "d2174701f42ad5f49782a2a2dee83ddffa55be6c1cb5637ffebbc4115967999a",
+     "quote": "RS office Tax topics Other languages Taxes under the Federal Insurance Contributions Act (FICA) are composed of the old-age, survivors, and disability insurance taxes, also known as So"
+    },
+    "FUTA": {
+     "status": "unverified"
+    },
+    "SUTA": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "us-034",
+   "country": "US",
+   "kind": "identifier",
+   "term": "EIN / ITIN",
+   "phrases": [
+    "EIN",
+    "ITIN",
+    "employer identification number"
+   ],
+   "case_sensitive": true,
+   "authority": "IRS",
+   "basis": "irs.gov (Forms & Instructions)",
+   "verification": "verified",
+   "phrase_verification": {
+    "EIN": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": " Update your information POPULAR Tax record (transcript) Apply for an Employer ID Number (EIN) Amend return Identity Protection PIN (IP PIN) Pay Overview PAY BY Bank Account (Direct P"
+    },
+    "ITIN": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": "-X Amended Individual Income Tax Return Form 2848 Power of Attorney Form W-7 Apply for an ITIN Circular 230 Regulations Governing Practice before the IRS Report Fraud Overview Tax frau"
+    },
+    "employer identification number": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": "ent you). Form 9465 PDF Related: Instructions for Form 9465 PDF Form SS-4 Application for Employer Identification Number (EIN) Use this form to apply for an employer identification number (EIN). Form SS-4 PDF R"
+    }
+   }
+  },
+  {
+   "id": "us-035",
+   "country": "US",
+   "kind": "relief",
+   "term": "Section 179 expensing / 1031 exchange / QBI deduction",
+   "phrases": [
+    "section 179",
+    "1031 exchange",
+    "qbi deduction",
+    "qualified business income deduction"
+   ],
+   "case_sensitive": false,
+   "authority": "IRS",
+   "basis": "irs.gov (Forms & Instructions)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "section 179": {
+     "status": "unverified"
+    },
+    "1031 exchange": {
+     "status": "unverified"
+    },
+    "qbi deduction": {
+     "status": "unverified"
+    },
+    "qualified business income deduction": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "india-036",
+   "country": "INDIA",
+   "kind": "return",
+   "term": "GST returns GSTR-1/2A/2B/3B/9/9C",
+   "phrases": [
+    "gstr-1",
+    "gstr-2a",
+    "gstr-2b",
+    "gstr-3b",
+    "gstr-9",
+    "gstr-9c",
+    "gstr1",
+    "gstr3b"
+   ],
+   "case_sensitive": false,
+   "authority": "CBIC / GST Network",
+   "basis": "cbic-gst.gov.in, gst.gov.in (GST returns)",
+   "verification": "verified",
+   "phrase_verification": {
+    "gstr-1": {
+     "status": "verified",
+     "verified_url": "https://cbic-gst.gov.in/pdf/01062019-GST-An-Update.pdf",
+     "verified_at": "2026-10-31T02:47:22.079519+00:00",
+     "content_sha256": "00c451fa8af44c79e4463e1e3ba4f58e3cf28bfee95801a0276bfb6883c56773",
+     "quote": "dal officer was extended till 31.01.2019. ▪ Due date for furnishing FORM GSTR-3B and FORM GSTR-1 for the period July, 2017 to February, 2019 / quarters July, 2017 to December, 2018 by su"
+    },
+    "gstr-2a": {
+     "status": "unverified"
+    },
+    "gstr-2b": {
+     "status": "unverified"
+    },
+    "gstr-3b": {
+     "status": "verified",
+     "verified_url": "https://cbic-gst.gov.in/pdf/01062019-GST-An-Update.pdf",
+     "verified_at": "2026-10-31T02:47:22.079519+00:00",
+     "content_sha256": "00c451fa8af44c79e4463e1e3ba4f58e3cf28bfee95801a0276bfb6883c56773",
+     "quote": "jurisdictional nodal officer was extended till 31.01.2019. ▪ Due date for furnishing FORM GSTR-3B and FORM GSTR-1 for the period July, 2017 to February, 2019 / quarters July, 2017 to Dece"
+    },
+    "gstr-9": {
+     "status": "verified",
+     "verified_url": "https://cbic-gst.gov.in/pdf/01062019-GST-An-Update.pdf",
+     "verified_at": "2026-10-31T02:47:22.079519+00:00",
+     "content_sha256": "00c451fa8af44c79e4463e1e3ba4f58e3cf28bfee95801a0276bfb6883c56773",
+     "quote": "file FORM GSTR-1 on a monthly basis. ▪ Due date for furnishing the annual returns in FORM GSTR-9, FORM GSTR-9A and reconciliation statement in FORM GSTR-9C for the Financial Year 2017 – "
+    },
+    "gstr-9c": {
+     "status": "verified",
+     "verified_url": "https://cbic-gst.gov.in/pdf/01062019-GST-An-Update.pdf",
+     "verified_at": "2026-10-31T02:47:22.079519+00:00",
+     "content_sha256": "00c451fa8af44c79e4463e1e3ba4f58e3cf28bfee95801a0276bfb6883c56773",
+     "quote": "hing the annual returns in FORM GSTR-9, FORM GSTR-9A and reconciliation statement in FORM GSTR-9C for the Financial Year 2017 – 2018 has been extended till 30.06.2019. ▪ Late fee shall be"
+    },
+    "gstr1": {
+     "status": "unverified"
+    },
+    "gstr3b": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "india-037",
+   "country": "INDIA",
+   "kind": "facility",
+   "term": "Invoice Furnishing Facility (QRMP)",
+   "phrases": [
+    "invoice furnishing facility",
+    "IFF",
+    "QRMP"
+   ],
+   "case_sensitive": true,
+   "authority": "CBIC / GST Network",
+   "basis": "cbic-gst.gov.in, gst.gov.in (GST returns)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "invoice furnishing facility": {
+     "status": "unverified"
+    },
+    "IFF": {
+     "status": "unverified"
+    },
+    "QRMP": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "india-038",
+   "country": "INDIA",
+   "kind": "return",
+   "term": "CMP-08 composition statement",
+   "phrases": [
+    "cmp-08"
+   ],
+   "case_sensitive": false,
+   "authority": "CBIC / GST Network",
+   "basis": "cbic-gst.gov.in, gst.gov.in (GST returns)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "cmp-08": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "india-039",
+   "country": "INDIA",
+   "kind": "scheme",
+   "term": "GST composition scheme",
+   "phrases": [
+    "composition scheme"
+   ],
+   "case_sensitive": false,
+   "authority": "CBIC / GST Network",
+   "basis": "cbic-gst.gov.in, gst.gov.in (GST returns)",
+   "verification": "verified",
+   "phrase_verification": {
+    "composition scheme": {
+     "status": "verified",
+     "verified_url": "https://cbic-gst.gov.in/pdf/01062019-GST-An-Update.pdf",
+     "verified_at": "2026-10-31T02:47:22.079519+00:00",
+     "content_sha256": "00c451fa8af44c79e4463e1e3ba4f58e3cf28bfee95801a0276bfb6883c56773",
+     "quote": "3.2019. Migration (2/19) 14 ▪ Composition threshold limit increased to be Rs. 1.5 Crore ▪ Composition scheme shall not be available to inter-State suppliers and specified category of manufacturers. "
+    }
+   }
+  },
+  {
+   "id": "india-040",
+   "country": "INDIA",
+   "kind": "document",
+   "term": "e-way bill",
+   "phrases": [
+    "e-way bill",
+    "eway bill"
+   ],
+   "case_sensitive": false,
+   "authority": "CBIC / GST Network",
+   "basis": "cbic-gst.gov.in, gst.gov.in (GST returns)",
+   "verification": "verified",
+   "phrase_verification": {
+    "e-way bill": {
+     "status": "verified",
+     "verified_url": "https://cbic-gst.gov.in/pdf/01062019-GST-An-Update.pdf",
+     "verified_at": "2026-10-31T02:47:22.079519+00:00",
+     "content_sha256": "00c451fa8af44c79e4463e1e3ba4f58e3cf28bfee95801a0276bfb6883c56773",
+     "quote": "lier “Departmental Policing Model” to a “Self-Declaration Model”. ▪ New provisions in the e-way bill system have been introduced such as the auto calculation of distance based on PIN codes f"
+    },
+    "eway bill": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "india-041",
+   "country": "INDIA",
+   "kind": "identifier",
+   "term": "GSTIN / PAN / TAN",
+   "phrases": [
+    "gstin",
+    "PAN",
+    "TAN"
+   ],
+   "case_sensitive": true,
+   "authority": "Income Tax Department",
+   "basis": "incometax.gov.in (forms and Income-tax Act sections)",
+   "verification": "verified",
+   "phrase_verification": {
+    "gstin": {
+     "status": "verified",
+     "verified_url": "https://cbic-gst.gov.in/legalprovisions.html",
+     "verified_at": "2026-10-31T02:47:33.503348+00:00",
+     "content_sha256": "67c19d7bf8e77e11e3e897a33f395eb7936a72fc0d74c75f61ef79d4f4021422",
+     "quote": "tion in FORM GST REG- 21, incorporating the Goods and Services Tax Identification Number (GSTIN) therein, shall be made available on the Common Portal. (2)(a) Every person who has been "
+    },
+    "PAN": {
+     "status": "verified",
+     "verified_url": "https://www.incometaxindia.gov.in/",
+     "verified_at": "2026-10-30T18:39:30.109614+00:00",
+     "content_sha256": "7f2e041a953b7d4e14e34fea8fc98a350225b58e40d9b34e04116b5bf609c343",
+     "quote": "Income Tax India | PAN, ITR, TDS & Tax Services Skip to Main Content Please wait... Income Tax Department Minist"
+    },
+    "TAN": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "rs - 20:00 hrs (Monday to Friday) Tax Information Network - NSDL Queries related to PAN & TAN application for Issuance / Update through NSDL +91-20-27218080 07:00 hrs - 23:00 hrs (All"
+    }
+   }
+  },
+  {
+   "id": "india-042",
+   "country": "INDIA",
+   "kind": "tax",
+   "term": "IGST / CGST / SGST",
+   "phrases": [
+    "igst",
+    "cgst",
+    "sgst"
+   ],
+   "case_sensitive": false,
+   "authority": "CBIC / GST Network",
+   "basis": "cbic-gst.gov.in, gst.gov.in (GST returns)",
+   "verification": "verified",
+   "phrase_verification": {
+    "igst": {
+     "status": "verified",
+     "verified_url": "https://cbic-gst.gov.in/gst-acts.html",
+     "verified_at": "2026-10-31T02:45:35.291772+00:00",
+     "content_sha256": "dc9776891f0589438b4244433b15d8a5922e39458ea6d228148e4aa5c157f5a9",
+     "quote": "EGATE portal. Report Tax Fraud, click here --> GST Acts Home / GST Acts GST Acts CGST Act IGST Act UTGST Act GST (Compensation to States) Act 101st Constitution Amendment Act, 2016 Hom"
+    },
+    "cgst": {
+     "status": "verified",
+     "verified_url": "https://cbic-gst.gov.in/gst-acts.html",
+     "verified_at": "2026-10-31T02:45:35.291772+00:00",
+     "content_sha256": "dc9776891f0589438b4244433b15d8a5922e39458ea6d228148e4aa5c157f5a9",
+     "quote": " under ICEGATE portal. Report Tax Fraud, click here --> GST Acts Home / GST Acts GST Acts CGST Act IGST Act UTGST Act GST (Compensation to States) Act 101st Constitution Amendment Act,"
+    },
+    "sgst": {
+     "status": "verified",
+     "verified_url": "https://cbic-gst.gov.in/pdf/01062019-GST-An-Update.pdf",
+     "verified_at": "2026-10-31T02:47:22.079519+00:00",
+     "content_sha256": "00c451fa8af44c79e4463e1e3ba4f58e3cf28bfee95801a0276bfb6883c56773",
+     "quote": " Hundred and First Amendment) Act was enacted March 2017 GST Council Recommends the CGST, SGST, IGST, UTGST and Compensation Cess Act April 2017 CGST, IGST, UTGST and Compensation Cess"
+    }
+   }
+  },
+  {
+   "id": "india-043",
+   "country": "INDIA",
+   "kind": "code",
+   "term": "HSN / SAC codes",
+   "phrases": [
+    "hsn code",
+    "sac code"
+   ],
+   "case_sensitive": false,
+   "authority": "CBIC / GST Network",
+   "basis": "cbic-gst.gov.in, gst.gov.in (GST returns)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "hsn code": {
+     "status": "unverified"
+    },
+    "sac code": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "india-044",
+   "country": "INDIA",
+   "kind": "return",
+   "term": "ITR forms",
+   "phrases": [
+    "itr-1",
+    "itr-2",
+    "itr-3",
+    "itr-4",
+    "itr-5",
+    "itr-6",
+    "itr-7"
+   ],
+   "case_sensitive": false,
+   "authority": "Income Tax Department",
+   "basis": "incometax.gov.in (forms and Income-tax Act sections)",
+   "verification": "verified",
+   "phrase_verification": {
+    "itr-1": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "s and guidelines please refer to the Income Tax Act, 1961 Forms, Rules and Notifications. ITR-1 (SAHAJ) – Applicable only for Individual This return is applicable for a Resident (other "
+    },
+    "itr-2": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "ome k) has total income exceeding ₹ 50 lakhs (excluding LTCG u/s 112A upto ₹ 1,25,000) 2. ITR-2 - Applicable for Individual (Not eligible for ITR 1) and HUF This return is applicable fo"
+    },
+    "itr-3": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "than Profits and Gains of Business or Profession. Who is not eligible to file ITR-1 ​​ 3. ITR-3- Applicable for Individual and HUF This return is applicable for Individual and Hindu Und"
+    },
+    "itr-4": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": ", Capital Gains or Income from Other Sources. Who is not eligible to file ITR-1, ITR-2 or ITR-4 4. ITR-4 (SUGAM) – Applicable for Individual, HUF and Firm (other than LLP) This return i"
+    },
+    "itr-5": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/non-company/return-applicable",
+     "verified_at": "2026-10-31T02:52:38.654389+00:00",
+     "content_sha256": "122783de9eeb30fa26a305c5e39982feceed746ab798ca20eb40202b9f1e1f76",
+     "quote": "iv) Cantonment Board as defined in Section 3 of the Cantonments Act, 1924 (2 of 1924); 1. ITR-5 This form can be used by a person being a: Firm Limited Liability Partnership (LLP) Assoc"
+    },
+    "itr-6": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/company/return-applicable",
+     "verified_at": "2026-10-31T02:52:35.417230+00:00",
+     "content_sha256": "128c54877fc5e6cb538fabf5fdea9714f4e2b4e07463c2433f40032e91000e38",
+     "quote": "f the dividends (including dividends on preference shares) payable out of such income. 1. ITR-6 Applicable for Companies other than those claiming exemption u/s 11 of Income Tax Act, 19"
+    },
+    "itr-7": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/company/return-applicable",
+     "verified_at": "2026-10-31T02:52:35.417230+00:00",
+     "content_sha256": "128c54877fc5e6cb538fabf5fdea9714f4e2b4e07463c2433f40032e91000e38",
+     "quote": "Indian which is declared by general or special order of the Board, to be Company, etc. 2. ITR-7 Applicable for Persons including Companies who are required to furnish returns u/s 139 (4"
+    }
+   }
+  },
+  {
+   "id": "india-045",
+   "country": "INDIA",
+   "kind": "form",
+   "term": "Form 16 / 16A / 26AS / Annual Information Statement",
+   "phrases": [
+    "form 16",
+    "form 16a",
+    "form 26as",
+    "annual information statement"
+   ],
+   "case_sensitive": false,
+   "authority": "Income Tax Department",
+   "basis": "incometax.gov.in (forms and Income-tax Act sections)",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 16": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "ments or investments for the purpose of calculating Tax to be Deducted at Source (TDS) 2. Form 16 - Certificate of Tax Deducted at Source on Salary (u/s 203 of the Income Tax Act, 1961) P"
+    },
+    "form 16a": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "tions and Tax Deducted at Source for the purpose of Computing Tax Payable / Refundable 3. Form 16A – Certificate u/s 203 of the Income Tax Act, 1961 for TDS on Income other than Salary Pro"
+    },
+    "form 26as": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "Department (It is available on e-Filing Portal: Login > e-File > Income Tax Return > View Form 26AS) Provided by: Income Tax Department (It can be accessed after logging on to Income Tax e-"
+    },
+    "annual information statement": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "ry or specified territory outside India and Foreign Tax Credit claimed 5. Form 26 AS AIS (Annual information Statement) Provided by: Income Tax Department (It is available on e-Filing Portal: Login > e-File >"
+    }
+   }
+  },
+  {
+   "id": "india-046",
+   "country": "INDIA",
+   "kind": "tax",
+   "term": "TDS / TCS",
+   "phrases": [
+    "TDS",
+    "TCS"
+   ],
+   "case_sensitive": true,
+   "authority": "Income Tax Department",
+   "basis": "incometax.gov.in (forms and Income-tax Act sections)",
+   "verification": "verified",
+   "phrase_verification": {
+    "TDS": {
+     "status": "verified",
+     "verified_url": "https://www.incometaxindia.gov.in/",
+     "verified_at": "2026-10-30T18:39:30.109614+00:00",
+     "content_sha256": "7f2e041a953b7d4e14e34fea8fc98a350225b58e40d9b34e04116b5bf609c343",
+     "quote": "Income Tax India | PAN, ITR, TDS & Tax Services Skip to Main Content Please wait... Income Tax Department Ministry of Fina"
+    },
+    "TCS": {
+     "status": "verified",
+     "verified_url": "https://cbic-gst.gov.in/pdf/01062019-GST-An-Update.pdf",
+     "verified_at": "2026-10-31T02:47:22.079519+00:00",
+     "content_sha256": "00c451fa8af44c79e4463e1e3ba4f58e3cf28bfee95801a0276bfb6883c56773",
+     "quote": " GST ITC- 04 for the period July 2017 to March 2019 was extended till 30.06.2019. ITC TDS/TCS (11/19) ▪ TDS/TCS provisions implemented from 01.10.2018. ▪ Further, to provide some more"
+    }
+   }
+  },
+  {
+   "id": "india-047",
+   "country": "INDIA",
+   "kind": "section",
+   "term": "Income-tax Act deduction sections 80C / 80D / 44AD / 44ADA / 194J",
+   "phrases": [
+    "section 80c",
+    "section 80d",
+    "80c",
+    "80d",
+    "44ad",
+    "44ada",
+    "194j",
+    "section 194j"
+   ],
+   "case_sensitive": false,
+   "authority": "Income Tax Department",
+   "basis": "incometax.gov.in (forms and Income-tax Act sections)",
+   "verification": "verified",
+   "phrase_verification": {
+    "section 80c": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "ssessment years. 2.Tax deductions specified under Chapter VIA of the Income Tax Act, 1961 Section 80C, 80CCC, 80CCD (1) Deduction towards payments made to 80C Life Insurance Premium Provident"
+    },
+    "section 80d": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": " a deduction in the computation of total income of the whole of the amount so contributed Section 80D Deduction towards payments made to Health Insurance Premium & Preventive Health check up "
+    },
+    "80c": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "t years. 2.Tax deductions specified under Chapter VIA of the Income Tax Act, 1961 Section 80C, 80CCC, 80CCD (1) Deduction towards payments made to 80C Life Insurance Premium Provident"
+    },
+    "80d": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "tion in the computation of total income of the whole of the amount so contributed Section 80D Deduction towards payments made to Health Insurance Premium & Preventive Health check up "
+    },
+    "44ad": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "g Total Income under Business or Profession which is computed on a presumptive basis (u/s 44AD / 44ADA / 44AE of Income Tax Act,1961) and income from any of the following sources: Sala"
+    },
+    "44ada": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": " Income under Business or Profession which is computed on a presumptive basis (u/s 44AD / 44ADA / 44AE of Income Tax Act,1961) and income from any of the following sources: Salary / Pen"
+    },
+    "194j": {
+     "status": "unverified"
+    },
+    "section 194j": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "india-048",
+   "country": "INDIA",
+   "kind": "scheme",
+   "term": "Advance tax",
+   "phrases": [
+    "advance tax"
+   ],
+   "case_sensitive": false,
+   "authority": "Income Tax Department",
+   "basis": "incometax.gov.in (forms and Income-tax Act sections)",
+   "verification": "verified",
+   "phrase_verification": {
+    "advance tax": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/company/return-applicable",
+     "verified_at": "2026-10-31T02:52:35.417230+00:00",
+     "content_sha256": "128c54877fc5e6cb538fabf5fdea9714f4e2b4e07463c2433f40032e91000e38",
+     "quote": "ormation, Information received from foreign government etc.) Note: Information regarding (Advance Tax/SAT, Details of refund, SFT Transaction, TDS u/s 194 IA,194 IB,194M of Income Tax Act, 19"
+    }
+   }
+  },
+  {
+   "id": "australia-049",
+   "country": "AUSTRALIA",
+   "kind": "return",
+   "term": "Business Activity Statement",
+   "phrases": [
+    "business activity statement",
+    "BAS"
+   ],
+   "case_sensitive": true,
+   "authority": "ATO",
+   "basis": "ato.gov.au (forms, lodgments and schemes)",
+   "verification": "verified",
+   "phrase_verification": {
+    "business activity statement": {
+     "status": "verified",
+     "verified_url": "https://www.ato.gov.au/businesses-and-organisations/preparing-lodging-and-paying/business-activity-statements-bas",
+     "verified_at": "2026-10-30T18:38:10.154817+00:00",
+     "content_sha256": "f5bf6c6cdfe54972f3fd1c6f5ebb5047f7e6039541be4f44904b12a5a95dee82",
+     "quote": "nline. Menu Search Business activity statements (BAS) How to complete, lodge and pay your business activity statement (BAS) or GST or PAYG instalment notice. How to lodge your BAS How to lodge your business "
+    },
+    "BAS": {
+     "status": "verified",
+     "verified_url": "https://www.ato.gov.au/businesses-and-organisations/preparing-lodging-and-paying/business-activity-statements-bas",
+     "verified_at": "2026-10-30T18:38:10.154817+00:00",
+     "content_sha256": "f5bf6c6cdfe54972f3fd1c6f5ebb5047f7e6039541be4f44904b12a5a95dee82",
+     "quote": "Business activity statements (BAS) | Australian Taxation Office ATO Community Legal Database What's New Log in to online se"
+    }
+   }
+  },
+  {
+   "id": "australia-050",
+   "country": "AUSTRALIA",
+   "kind": "return",
+   "term": "Instalment Activity Statement",
+   "phrases": [
+    "instalment activity statement"
+   ],
+   "case_sensitive": false,
+   "authority": "ATO",
+   "basis": "ato.gov.au (forms, lodgments and schemes)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "instalment activity statement": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "australia-051",
+   "country": "AUSTRALIA",
+   "kind": "scheme",
+   "term": "PAYG withholding / PAYG instalments",
+   "phrases": [
+    "PAYG",
+    "pay as you go withholding",
+    "pay as you go instalments"
+   ],
+   "case_sensitive": true,
+   "authority": "ATO",
+   "basis": "ato.gov.au (forms, lodgments and schemes)",
+   "verification": "verified",
+   "phrase_verification": {
+    "PAYG": {
+     "status": "verified",
+     "verified_url": "https://www.ato.gov.au/businesses-and-organisations/preparing-lodging-and-paying/business-activity-statements-bas",
+     "verified_at": "2026-10-30T18:38:10.154817+00:00",
+     "content_sha256": "f5bf6c6cdfe54972f3fd1c6f5ebb5047f7e6039541be4f44904b12a5a95dee82",
+     "quote": "nts (BAS) How to complete, lodge and pay your business activity statement (BAS) or GST or PAYG instalment notice. How to lodge your BAS How to lodge your business activity statements ("
+    },
+    "pay as you go withholding": {
+     "status": "unverified"
+    },
+    "pay as you go instalments": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "australia-052",
+   "country": "AUSTRALIA",
+   "kind": "identifier",
+   "term": "Tax File Number / ABN",
+   "phrases": [
+    "tax file number",
+    "TFN",
+    "ABN",
+    "australian business number"
+   ],
+   "case_sensitive": true,
+   "authority": "ATO",
+   "basis": "ato.gov.au (forms, lodgments and schemes)",
+   "verification": "verified",
+   "phrase_verification": {
+    "tax file number": {
+     "status": "verified",
+     "verified_url": "https://www.ato.gov.au/forms-and-instructions",
+     "verified_at": "2026-10-30T18:39:39.384309+00:00",
+     "content_sha256": "b40daf76db3e736a3445084ea7e39994ffc0a4de868784460c024b8fac6b8ead",
+     "quote": "d instructions listed below or use search and then refine your results using the filters. Tax file number (TFN) application for individuals Tax file number declaration How to complete the paper f"
+    },
+    "TFN": {
+     "status": "verified",
+     "verified_url": "https://www.ato.gov.au/forms-and-instructions",
+     "verified_at": "2026-10-30T18:39:39.384309+00:00",
+     "content_sha256": "b40daf76db3e736a3445084ea7e39994ffc0a4de868784460c024b8fac6b8ead",
+     "quote": "sted below or use search and then refine your results using the filters. Tax file number (TFN) application for individuals Tax file number declaration How to complete the paper form |"
+    },
+    "ABN": {
+     "status": "unverified"
+    },
+    "australian business number": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "australia-053",
+   "country": "AUSTRALIA",
+   "kind": "scheme",
+   "term": "Single Touch Payroll",
+   "phrases": [
+    "single touch payroll",
+    "STP"
+   ],
+   "case_sensitive": true,
+   "authority": "ATO",
+   "basis": "ato.gov.au (forms, lodgments and schemes)",
+   "verification": "verified",
+   "phrase_verification": {
+    "single touch payroll": {
+     "status": "verified",
+     "verified_url": "https://www.ato.gov.au/businesses-and-organisations/hiring-and-paying-your-workers/single-touch-payroll",
+     "verified_at": "2026-10-30T18:38:14.508005+00:00",
+     "content_sha256": "ed085544640edc740e3fb444151c1b0d0d9e5aa6dce3fd0d9c93a60466b41007",
+     "quote": "Single Touch Payroll | Australian Taxation Office ATO Community Legal Database What's New Log in to online ser"
+    },
+    "STP": {
+     "status": "verified",
+     "verified_url": "https://www.ato.gov.au/businesses-and-organisations/hiring-and-paying-your-workers/single-touch-payroll",
+     "verified_at": "2026-10-30T18:38:14.508005+00:00",
+     "content_sha256": "ed085544640edc740e3fb444151c1b0d0d9e5aa6dce3fd0d9c93a60466b41007",
+     "quote": "iew your details and lodge online. Menu Search Single Touch Payroll Single Touch Payroll (STP) employer reporting guidelines – the requirements for reporting using STP-enabled softwar"
+    }
+   }
+  },
+  {
+   "id": "australia-054",
+   "country": "AUSTRALIA",
+   "kind": "return",
+   "term": "Taxable payments annual report",
+   "phrases": [
+    "taxable payments annual report",
+    "TPAR"
+   ],
+   "case_sensitive": true,
+   "authority": "ATO",
+   "basis": "ato.gov.au (forms, lodgments and schemes)",
+   "verification": "verified",
+   "phrase_verification": {
+    "taxable payments annual report": {
+     "status": "verified",
+     "verified_url": "https://www.ato.gov.au/businesses-and-organisations/preparing-lodging-and-paying/reports-and-returns/taxable-payments-annual-report",
+     "verified_at": "2026-10-30T18:45:23.632522+00:00",
+     "content_sha256": "e9f8c04597430c0360156ede1f41485fd16dc86e77e983469e9f97d16cde9179",
+     "quote": "Taxable payments annual report (TPAR) | Australian Taxation Office ATO Community Legal Database What's New Log in to onl"
+    },
+    "TPAR": {
+     "status": "verified",
+     "verified_url": "https://www.ato.gov.au/businesses-and-organisations/preparing-lodging-and-paying/reports-and-returns/taxable-payments-annual-report",
+     "verified_at": "2026-10-30T18:45:23.632522+00:00",
+     "content_sha256": "e9f8c04597430c0360156ede1f41485fd16dc86e77e983469e9f97d16cde9179",
+     "quote": "Taxable payments annual report (TPAR) | Australian Taxation Office ATO Community Legal Database What's New Log in to online se"
+    }
+   }
+  },
+  {
+   "id": "australia-055",
+   "country": "AUSTRALIA",
+   "kind": "scheme",
+   "term": "Superannuation guarantee",
+   "phrases": [
+    "superannuation guarantee",
+    "super guarantee"
+   ],
+   "case_sensitive": false,
+   "authority": "ATO",
+   "basis": "ato.gov.au (forms, lodgments and schemes)",
+   "verification": "verified",
+   "phrase_verification": {
+    "superannuation guarantee": {
+     "status": "unverified"
+    },
+    "super guarantee": {
+     "status": "verified",
+     "verified_url": "https://www.ato.gov.au/businesses-and-organisations/super-for-employers",
+     "verified_at": "2026-10-30T18:43:55.968183+00:00",
+     "content_sha256": "3e264c261236999866dca9fb05d5a87287012f0038b5c0fef6ded51f1ad9b7fd",
+     "quote": "e online. Menu Search Payday Super for employers Understand how much, when and how to pay super guarantee for your employees under Payday Super. About Payday Super How employers calculate, pay an"
+    }
+   }
+  },
+  {
+   "id": "australia-056",
+   "country": "AUSTRALIA",
+   "kind": "charge",
+   "term": "Medicare levy",
+   "phrases": [
+    "medicare levy",
+    "medicare levy surcharge"
+   ],
+   "case_sensitive": false,
+   "authority": "ATO",
+   "basis": "ato.gov.au (forms, lodgments and schemes)",
+   "verification": "verified",
+   "phrase_verification": {
+    "medicare levy": {
+     "status": "verified",
+     "verified_url": "https://www.ato.gov.au/individuals-and-families/medicare-and-private-health-insurance/medicare-levy",
+     "verified_at": "2026-10-30T18:43:59.223350+00:00",
+     "content_sha256": "27253808c82d08a3c17b08aab67fd6e4211450fcd77c616947b9cd59945421c5",
+     "quote": "Medicare levy | Australian Taxation Office ATO Community Legal Database What's New Log in to online ser"
+    },
+    "medicare levy surcharge": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "australia-057",
+   "country": "AUSTRALIA",
+   "kind": "rule",
+   "term": "Division 7A",
+   "phrases": [
+    "division 7a",
+    "div 7a"
+   ],
+   "case_sensitive": false,
+   "authority": "ATO",
+   "basis": "ato.gov.au (forms, lodgments and schemes)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "division 7a": {
+     "status": "unverified"
+    },
+    "div 7a": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "australia-058",
+   "country": "AUSTRALIA",
+   "kind": "rule",
+   "term": "Franking credits",
+   "phrases": [
+    "franking credit",
+    "franking credits"
+   ],
+   "case_sensitive": false,
+   "authority": "ATO",
+   "basis": "ato.gov.au (forms, lodgments and schemes)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "franking credit": {
+     "status": "unverified"
+    },
+    "franking credits": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "australia-059",
+   "country": "AUSTRALIA",
+   "kind": "scheme",
+   "term": "Instant asset write-off",
+   "phrases": [
+    "instant asset write-off",
+    "instant asset write off"
+   ],
+   "case_sensitive": false,
+   "authority": "ATO",
+   "basis": "ato.gov.au (forms, lodgments and schemes)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "instant asset write-off": {
+     "status": "unverified"
+    },
+    "instant asset write off": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "australia-060",
+   "country": "AUSTRALIA",
+   "kind": "term",
+   "term": "GST-free and input-taxed supplies",
+   "phrases": [
+    "gst-free",
+    "input-taxed"
+   ],
+   "case_sensitive": false,
+   "authority": "ATO",
+   "basis": "ato.gov.au (forms, lodgments and schemes)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "gst-free": {
+     "status": "unverified"
+    },
+    "input-taxed": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "canada-061",
+   "country": "CANADA",
+   "kind": "slip",
+   "term": "T4 / T4A / T5 slips",
+   "phrases": [
+    "T4",
+    "T4A",
+    "T5",
+    "T4 slip",
+    "T4A slip"
+   ],
+   "case_sensitive": true,
+   "authority": "CRA",
+   "basis": "canada.ca (CRA forms and publications)",
+   "verification": "verified",
+   "phrase_verification": {
+    "T4": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "Summary of Trust Income Allocations and Designations 2026-09-04 T3YT Yukon Tax 2025-12-08 T4 Statement of Remuneration Paid (slip) 2026-10-09 T400A CANCELLED Notice of Objection - In"
+    },
+    "T4A": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "tement of Old Age Security Pension Paid or Credited to Non-Residents of Canada 2026-09-03 T4A-NR-SUM Summary of Fees, Commissions, or Other Amounts Paid to Non-Residents for Services "
+    },
+    "T5": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "026-09-23 T4RSPSUM T4RSP Summary 2026-09-23 T4SUM Summary of Remuneration Paid 2026-10-09 T5 Statement of Investment Income 2026-10-22 T5001 Application for Tax Shelter Identificatio"
+    },
+    "T4 slip": {
+     "status": "unverified"
+    },
+    "T4A slip": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "canada-062",
+   "country": "CANADA",
+   "kind": "return",
+   "term": "T1 / T2 returns",
+   "phrases": [
+    "T1 return",
+    "T2 return",
+    "T1 general",
+    "T2 corporation"
+   ],
+   "case_sensitive": false,
+   "authority": "CRA",
+   "basis": "canada.ca (CRA forms and publications)",
+   "verification": "verified",
+   "phrase_verification": {
+    "T1 return": {
+     "status": "unverified"
+    },
+    "T2 return": {
+     "status": "unverified"
+    },
+    "T1 general": {
+     "status": "unverified"
+    },
+    "T2 corporation": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "-04 RC342 Request by an Insolvency Practitioner for a Waiver of the Requirement to file a T2 Corporation Income Tax Return under Subsection 220(2.1) of the Income Tax Act 2018-10-02 RC343 Worksh"
+    }
+   }
+  },
+  {
+   "id": "canada-063",
+   "country": "CANADA",
+   "kind": "tax",
+   "term": "HST / QST / PST (provincial)",
+   "phrases": [
+    "HST",
+    "QST",
+    "GST/HST",
+    "harmonized sales tax"
+   ],
+   "case_sensitive": true,
+   "authority": "CRA",
+   "basis": "canada.ca (CRA forms and publications)",
+   "verification": "verified",
+   "phrase_verification": {
+    "HST": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "ution to Treat Certain Taxable Supplies as Having Been Made for Nil Consideration for GST/HST Purposes, QST Purposes, or Both 2025-03-11 T2184 Election to Treat an Excess Dividend as "
+    },
+    "QST": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": " Certain Taxable Supplies as Having Been Made for Nil Consideration for GST/HST Purposes, QST Purposes, or Both 2025-03-11 T2184 Election to Treat an Excess Dividend as a Separate Div"
+    },
+    "GST/HST": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "stitution to Treat Certain Taxable Supplies as Having Been Made for Nil Consideration for GST/HST Purposes, QST Purposes, or Both 2025-03-11 T2184 Election to Treat an Excess Dividend as "
+    },
+    "harmonized sales tax": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "tion for Charities 2020-02-28 GST489 Return for Self-Assessment of the Provincial Part of Harmonized Sales Tax (HST) 2025-05-07 GST494 GST/HST Final Return for Selected Listed Financial Institutions 2"
+    }
+   }
+  },
+  {
+   "id": "canada-064",
+   "country": "CANADA",
+   "kind": "scheme",
+   "term": "RRSP / TFSA / RRIF",
+   "phrases": [
+    "RRSP",
+    "TFSA",
+    "RRIF"
+   ],
+   "case_sensitive": true,
+   "authority": "CRA",
+   "basis": "canada.ca (CRA forms and publications)",
+   "verification": "verified",
+   "phrase_verification": {
+    "RRSP": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "ums Under the New Hires Program 1997-10-03 T1-OVPSCH ARCHIVED — Calculating the Amount of RRSP Excess Contributions Made Before 1991 that Are Subject to Tax 2000-03-29 T1033-WS ARCHIVE"
+    },
+    "TFSA": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": " RC199 Voluntary Disclosures Program (VDP) Application 2025-10-01 RC236 Application for a TFSA (Tax-Free Savings Account) Identification Number 2025-01-20 RC240 Designation of an Exemp"
+    },
+    "RRIF": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": " and later taxation years) 2000-05-09 T3-IND ARCHIVED — T3IND Income Tax Return for RRSP, RRIF, or RESP. Make sure you use Form T3-IND for the year 2000 and previous years. Make sure y"
+    }
+   }
+  },
+  {
+   "id": "canada-065",
+   "country": "CANADA",
+   "kind": "contribution",
+   "term": "Canada Pension Plan",
+   "phrases": [
+    "canada pension plan",
+    "CPP"
+   ],
+   "case_sensitive": true,
+   "authority": "CRA",
+   "basis": "canada.ca (CRA forms and publications)",
+   "verification": "verified",
+   "phrase_verification": {
+    "canada pension plan": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "plication for a Refund of Vaping Duty 2026-03-05 CPT173 Certificate of Coverage Under the Canada Pension Plan Pursuant to Articles 6(b), 6(c), 7 and 10 of the Agreement on Social Security Between Can"
+    },
+    "CPP": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "r Gradual Intergenerational Business Transfer 2026-04-27 RC579 Additional Information for CPP/QPP Validation and Verification Programs – For employees 2024-07-29 B285 Tobacco Informat"
+    }
+   }
+  },
+  {
+   "id": "canada-066",
+   "country": "CANADA",
+   "kind": "scheme",
+   "term": "SR&ED tax credit",
+   "phrases": [
+    "sr&ed",
+    "scientific research and experimental development"
+   ],
+   "case_sensitive": false,
+   "authority": "CRA",
+   "basis": "canada.ca (CRA forms and publications)",
+   "verification": "verified",
+   "phrase_verification": {
+    "sr&ed": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "ndebtedness to a Non-Resident Trust 2017-10-30 T1145 Agreement to Allocate Assistance for SR&ED Between Persons Not Dealing at Arm's Length 2026-05-15 T1146 Agreement to Transfer Qualif"
+    },
+    "scientific research and experimental development": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": " a Selected Listed Financial Institution 2026-04-27 RC4613 ARCHIVED — Election to Use the Scientific Research and Experimental Development Proxy to Report the Recapture of Input Tax Credits 2011-02-15 RC4614 GST/HST Attribution "
+    }
+   }
+  },
+  {
+   "id": "canada-067",
+   "country": "CANADA",
+   "kind": "scheme",
+   "term": "GST/HST quick method",
+   "phrases": [
+    "quick method"
+   ],
+   "case_sensitive": false,
+   "authority": "CRA",
+   "basis": "canada.ca (CRA forms and publications)",
+   "verification": "verified",
+   "phrase_verification": {
+    "quick method": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "GST382 ARCHIVED — Public Service Bodies' Notice of Revocation of Election for the Special Quick Method of Accounting 1996-05-28 NR4A-RCA ARCHIVED — Statement of Amounts Paid to Non-Residents o"
+    }
+   }
+  },
+  {
+   "id": "singapore-068",
+   "country": "SINGAPORE",
+   "kind": "contribution",
+   "term": "Central Provident Fund",
+   "phrases": [
+    "central provident fund",
+    "CPF"
+   ],
+   "case_sensitive": true,
+   "authority": "IRAS / CPF Board / ACRA",
+   "basis": "iras.gov.sg, cpf.gov.sg, acra.gov.sg",
+   "verification": "verified",
+   "phrase_verification": {
+    "central provident fund": {
+     "status": "verified",
+     "verified_url": "https://www.cpf.gov.sg/employer",
+     "verified_at": "2026-10-30T18:38:25.461464+00:00",
+     "content_sha256": "d7d2857b03c10083133d314bb6968aea39ed37a78f3a6aef0ea01b012217ebf5",
+     "quote": "Central Provident Fund Board (CPFB) Scheduled maintenance: CPF digital services are unavailable on 1 Nov 2026, f"
+    },
+    "CPF": {
+     "status": "verified",
+     "verified_url": "https://www.cpf.gov.sg/employer",
+     "verified_at": "2026-10-30T18:38:25.461464+00:00",
+     "content_sha256": "d7d2857b03c10083133d314bb6968aea39ed37a78f3a6aef0ea01b012217ebf5",
+     "quote": "Central Provident Fund Board (CPFB) Scheduled maintenance: CPF digital services are unavailable on 1 Nov 2026, from 12am to 8am. We apologise for the in"
+    }
+   }
+  },
+  {
+   "id": "singapore-069",
+   "country": "SINGAPORE",
+   "kind": "form",
+   "term": "IR8A / IR21",
+   "phrases": [
+    "IR8A",
+    "IR21"
+   ],
+   "case_sensitive": true,
+   "authority": "IRAS / CPF Board / ACRA",
+   "basis": "iras.gov.sg, cpf.gov.sg, acra.gov.sg",
+   "verification": "verified",
+   "phrase_verification": {
+    "IR8A": {
+     "status": "verified",
+     "verified_url": "https://www.iras.gov.sg/taxes/individual-income-tax/employers/auto-inclusion-scheme-(ais)-for-employment-income",
+     "verified_at": "2026-10-30T18:39:42.870327+00:00",
+     "content_sha256": "471a270f8ad9bf6d00856713ade965ed628d649718a2a6231cbe44cf1466d732",
+     "quote": "S) Non-Residents Employers Go to next level Employers Employers Filing Employee Earnings (IR8A, Appendix 8A, Appendix 8B, IR8S) Information to share with employees Auto Inclusion Schem"
+    },
+    "IR21": {
+     "status": "verified",
+     "verified_url": "https://www.iras.gov.sg/taxes/individual-income-tax/employers/auto-inclusion-scheme-(ais)-for-employment-income",
+     "verified_at": "2026-10-30T18:39:42.870327+00:00",
+     "content_sha256": "471a270f8ad9bf6d00856713ade965ed628d649718a2a6231cbe44cf1466d732",
+     "quote": "Treatment Retrenchment Exercise in the Company Tax Clearance for Foreign & SPR Employees (IR21) Digital Services My Situation Go to next level My Situation My Situation I have retired "
+    }
+   }
+  },
+  {
+   "id": "singapore-070",
+   "country": "SINGAPORE",
+   "kind": "return",
+   "term": "Form C-S / C-S (Lite) / ECI",
+   "phrases": [
+    "form c-s",
+    "c-s (lite)",
+    "estimated chargeable income",
+    "ECI"
+   ],
+   "case_sensitive": true,
+   "authority": "IRAS / CPF Board / ACRA",
+   "basis": "iras.gov.sg, cpf.gov.sg, acra.gov.sg",
+   "verification": "verified",
+   "phrase_verification": {
+    "form c-s": {
+     "status": "verified",
+     "verified_url": "https://www.iras.gov.sg/taxes/individual-income-tax/employers/auto-inclusion-scheme-(ais)-for-employment-income",
+     "verified_at": "2026-10-30T18:39:42.870327+00:00",
+     "content_sha256": "471a270f8ad9bf6d00856713ade965ed628d649718a2a6231cbe44cf1466d732",
+     "quote": "deos/ Webinars/ Seminars on Corporate Income Tax Estimated Chargeable Income (ECI) Filing Form C-S/ Form C-S (Lite)/ Form C Filing Go to next level Form C-S/ Form C-S (Lite)/ Form C Filing"
+    },
+    "c-s (lite)": {
+     "status": "verified",
+     "verified_url": "https://www.iras.gov.sg/taxes/individual-income-tax/employers/auto-inclusion-scheme-(ais)-for-employment-income",
+     "verified_at": "2026-10-30T18:39:42.870327+00:00",
+     "content_sha256": "471a270f8ad9bf6d00856713ade965ed628d649718a2a6231cbe44cf1466d732",
+     "quote": " Seminars on Corporate Income Tax Estimated Chargeable Income (ECI) Filing Form C-S/ Form C-S (Lite)/ Form C Filing Go to next level Form C-S/ Form C-S (Lite)/ Form C Filing Form C-S/ Form C"
+    },
+    "estimated chargeable income": {
+     "status": "verified",
+     "verified_url": "https://www.iras.gov.sg/taxes/individual-income-tax/employers/auto-inclusion-scheme-(ais)-for-employment-income",
+     "verified_at": "2026-10-30T18:39:42.870327+00:00",
+     "content_sha256": "471a270f8ad9bf6d00856713ade965ed628d649718a2a6231cbe44cf1466d732",
+     "quote": "pdating Company Particulars e-Learning Videos/ Webinars/ Seminars on Corporate Income Tax Estimated Chargeable Income (ECI) Filing Form C-S/ Form C-S (Lite)/ Form C Filing Go to next level Form C-S/ Form C-S"
+    },
+    "ECI": {
+     "status": "verified",
+     "verified_url": "https://www.iras.gov.sg/taxes/individual-income-tax/employers/auto-inclusion-scheme-(ais)-for-employment-income",
+     "verified_at": "2026-10-30T18:39:42.870327+00:00",
+     "content_sha256": "471a270f8ad9bf6d00856713ade965ed628d649718a2a6231cbe44cf1466d732",
+     "quote": "-Learning Videos/ Webinars/ Seminars on Corporate Income Tax Estimated Chargeable Income (ECI) Filing Form C-S/ Form C-S (Lite)/ Form C Filing Go to next level Form C-S/ Form C-S (Lit"
+    }
+   }
+  },
+  {
+   "id": "singapore-071",
+   "country": "SINGAPORE",
+   "kind": "return",
+   "term": "GST F5 return",
+   "phrases": [
+    "gst f5",
+    "f5 return"
+   ],
+   "case_sensitive": false,
+   "authority": "IRAS / CPF Board / ACRA",
+   "basis": "iras.gov.sg, cpf.gov.sg, acra.gov.sg",
+   "verification": "unverified",
+   "phrase_verification": {
+    "gst f5": {
+     "status": "unverified"
+    },
+    "f5 return": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "singapore-072",
+   "country": "SINGAPORE",
+   "kind": "scheme",
+   "term": "Supplementary Retirement Scheme",
+   "phrases": [
+    "supplementary retirement scheme"
+   ],
+   "case_sensitive": false,
+   "authority": "IRAS / CPF Board / ACRA",
+   "basis": "iras.gov.sg, cpf.gov.sg, acra.gov.sg",
+   "verification": "verified",
+   "phrase_verification": {
+    "supplementary retirement scheme": {
+     "status": "verified",
+     "verified_url": "https://www.iras.gov.sg/taxes/individual-income-tax/employers/auto-inclusion-scheme-(ais)-for-employment-income",
+     "verified_at": "2026-10-30T18:39:42.870327+00:00",
+     "content_sha256": "471a270f8ad9bf6d00856713ade965ed628d649718a2a6231cbe44cf1466d732",
+     "quote": "on-resident public entertainer Tax refund for resident public entertainer Withdrawal from Supplementary Retirement Scheme (SRS) Account (Foreigners & PRs) Go to next level Withdrawal from Supplementary Retiremen"
+    }
+   }
+  },
+  {
+   "id": "singapore-073",
+   "country": "SINGAPORE",
+   "kind": "identifier",
+   "term": "Unique Entity Number",
+   "phrases": [
+    "unique entity number",
+    "UEN"
+   ],
+   "case_sensitive": true,
+   "authority": "IRAS / CPF Board / ACRA",
+   "basis": "iras.gov.sg, cpf.gov.sg, acra.gov.sg",
+   "verification": "unverified",
+   "phrase_verification": {
+    "unique entity number": {
+     "status": "unverified"
+    },
+    "UEN": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "singapore-074",
+   "country": "SINGAPORE",
+   "kind": "scheme",
+   "term": "Start-up tax exemption",
+   "phrases": [
+    "start-up tax exemption"
+   ],
+   "case_sensitive": false,
+   "authority": "IRAS / CPF Board / ACRA",
+   "basis": "iras.gov.sg, cpf.gov.sg, acra.gov.sg",
+   "verification": "unverified",
+   "phrase_verification": {
+    "start-up tax exemption": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "new_zealand-075",
+   "country": "NEW_ZEALAND",
+   "kind": "return",
+   "term": "IR3 / IR4 returns and IR forms",
+   "phrases": [
+    "IR3",
+    "IR4",
+    "IR330",
+    "IR348",
+    "IR526"
+   ],
+   "case_sensitive": true,
+   "authority": "Inland Revenue (NZ)",
+   "basis": "ird.govt.nz (forms and guides)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "IR3": {
+     "status": "unverified"
+    },
+    "IR4": {
+     "status": "unverified"
+    },
+    "IR330": {
+     "status": "unverified"
+    },
+    "IR348": {
+     "status": "unverified"
+    },
+    "IR526": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "new_zealand-076",
+   "country": "NEW_ZEALAND",
+   "kind": "scheme",
+   "term": "KiwiSaver",
+   "phrases": [
+    "kiwisaver"
+   ],
+   "case_sensitive": false,
+   "authority": "Inland Revenue (NZ)",
+   "basis": "ird.govt.nz (forms and guides)",
+   "verification": "verified",
+   "phrase_verification": {
+    "kiwisaver": {
+     "status": "verified",
+     "verified_url": "https://www.ird.govt.nz/roles/employers",
+     "verified_at": "2026-10-30T18:39:47.038313+00:00",
+     "content_sha256": "00e2f38496bf0d5808e3048cdf6046018adfde1055db9b1a8099e1ce3e9009ab",
+     "quote": "eive salary, wages or schedular payments. You may also need to make other deductions like KiwiSaver, student loans and child support. Setting up Register as an employer Ongoing Deductions f"
+    }
+   }
+  },
+  {
+   "id": "new_zealand-077",
+   "country": "NEW_ZEALAND",
+   "kind": "levy",
+   "term": "ACC levy",
+   "phrases": [
+    "acc levy",
+    "acc levies"
+   ],
+   "case_sensitive": false,
+   "authority": "ACC",
+   "basis": "acc.co.nz",
+   "verification": "unverified",
+   "phrase_verification": {
+    "acc levy": {
+     "status": "unverified"
+    },
+    "acc levies": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "new_zealand-078",
+   "country": "NEW_ZEALAND",
+   "kind": "tax",
+   "term": "Resident withholding tax / PIE",
+   "phrases": [
+    "portfolio investment entity"
+   ],
+   "case_sensitive": false,
+   "authority": "Inland Revenue (NZ)",
+   "basis": "ird.govt.nz (forms and guides)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "portfolio investment entity": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "ireland-079",
+   "country": "IRELAND",
+   "kind": "return",
+   "term": "Form 11 / Form 12 / CT1",
+   "phrases": [
+    "form 11",
+    "form 12",
+    "CT1"
+   ],
+   "case_sensitive": true,
+   "authority": "Revenue (Ireland)",
+   "basis": "revenue.ie (forms and taxes)",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 11": {
+     "status": "verified",
+     "verified_url": "https://www.revenue.ie/en/self-assessment-and-self-employment/filing-your-tax-return/index.aspx",
+     "verified_at": "2026-10-30T18:44:06.217419+00:00",
+     "content_sha256": "bcf0322e5210d0464483cf034712b00a9113efebe4ba009acb7ffddbf6eeaab3",
+     "quote": "ibutions Share options Overview The Pay and File deadline for the 2025 Income Tax Return (Form 11) is Saturday 31 October 2026. There is an extension if you pay and file on the Revenue On"
+    },
+    "form 12": {
+     "status": "unverified"
+    },
+    "CT1": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "ireland-080",
+   "country": "IRELAND",
+   "kind": "tax",
+   "term": "Relevant contracts tax",
+   "phrases": [
+    "relevant contracts tax",
+    "RCT",
+    "eRCT"
+   ],
+   "case_sensitive": true,
+   "authority": "Revenue (Ireland)",
+   "basis": "revenue.ie (forms and taxes)",
+   "verification": "verified",
+   "phrase_verification": {
+    "relevant contracts tax": {
+     "status": "verified",
+     "verified_url": "https://www.revenue.ie/en/self-assessment-and-self-employment/index.aspx",
+     "verified_at": "2026-10-30T18:38:34.063274+00:00",
+     "content_sha256": "bbf6b89c8a6a2e3f869a253fd566297dc18b72343099dbdaa344999bcb1bf581",
+     "quote": "and file your tax returns. Popular topics Guide to self-assessment Filing your tax return Relevant Contracts Tax (RCT) A guide to self-assessment Filing your tax return Professional Services Withholding"
+    },
+    "RCT": {
+     "status": "verified",
+     "verified_url": "https://www.revenue.ie/en/self-assessment-and-self-employment/index.aspx",
+     "verified_at": "2026-10-30T18:38:34.063274+00:00",
+     "content_sha256": "bbf6b89c8a6a2e3f869a253fd566297dc18b72343099dbdaa344999bcb1bf581",
+     "quote": "s. Popular topics Guide to self-assessment Filing your tax return Relevant Contracts Tax (RCT) A guide to self-assessment Filing your tax return Professional Services Withholding Tax "
+    },
+    "eRCT": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "ireland-081",
+   "country": "IRELAND",
+   "kind": "contribution",
+   "term": "PRSI / USC",
+   "phrases": [
+    "PRSI",
+    "USC",
+    "universal social charge"
+   ],
+   "case_sensitive": true,
+   "authority": "Revenue (Ireland)",
+   "basis": "revenue.ie (forms and taxes)",
+   "verification": "verified",
+   "phrase_verification": {
+    "PRSI": {
+     "status": "unverified"
+    },
+    "USC": {
+     "status": "verified",
+     "verified_url": "https://www.revenue.ie/en/jobs-and-pensions/usc/index.aspx",
+     "verified_at": "2026-10-30T18:39:50.620530+00:00",
+     "content_sha256": "0a8631916cf05e92124d62b8cd5d9037c3d26d435c21c4e4b3c7ddf87898c3f9",
+     "quote": "Universal Social Charge (USC) Gaeilge Your choices on cookies This website uses cookies that are necessary to make the"
+    },
+    "universal social charge": {
+     "status": "verified",
+     "verified_url": "https://www.revenue.ie/en/jobs-and-pensions/usc/index.aspx",
+     "verified_at": "2026-10-30T18:39:50.620530+00:00",
+     "content_sha256": "0a8631916cf05e92124d62b8cd5d9037c3d26d435c21c4e4b3c7ddf87898c3f9",
+     "quote": "Universal Social Charge (USC) Gaeilge Your choices on cookies This website uses cookies that are necessary to mak"
+    }
+   }
+  },
+  {
+   "id": "ireland-082",
+   "country": "IRELAND",
+   "kind": "tax",
+   "term": "Local Property Tax",
+   "phrases": [
+    "local property tax",
+    "LPT"
+   ],
+   "case_sensitive": true,
+   "authority": "Revenue (Ireland)",
+   "basis": "revenue.ie (forms and taxes)",
+   "verification": "verified",
+   "phrase_verification": {
+    "local property tax": {
+     "status": "unverified"
+    },
+    "LPT": {
+     "status": "verified",
+     "verified_url": "https://www.revenue.ie/en/self-assessment-and-self-employment/index.aspx",
+     "verified_at": "2026-10-30T18:38:34.063274+00:00",
+     "content_sha256": "bbf6b89c8a6a2e3f869a253fd566297dc18b72343099dbdaa344999bcb1bf581",
+     "quote": "n of the site is currently only available in English Gaeilge Sign in to myAccount | ROS | LPT online Sign in to myAccount or ROS or LPT online | | --> Gaeilge Search Back to homepage "
+    }
+   }
+  },
+  {
+   "id": "ireland-083",
+   "country": "IRELAND",
+   "kind": "system",
+   "term": "Revenue Online Service",
+   "phrases": [
+    "revenue online service",
+    "ROS"
+   ],
+   "case_sensitive": true,
+   "authority": "Revenue (Ireland)",
+   "basis": "revenue.ie (forms and taxes)",
+   "verification": "verified",
+   "phrase_verification": {
+    "revenue online service": {
+     "status": "verified",
+     "verified_url": "https://www.revenue.ie/en/self-assessment-and-self-employment/filing-your-tax-return/index.aspx",
+     "verified_at": "2026-10-30T18:44:06.217419+00:00",
+     "content_sha256": "bcf0322e5210d0464483cf034712b00a9113efebe4ba009acb7ffddbf6eeaab3",
+     "quote": "n (Form 11) is Saturday 31 October 2026. There is an extension if you pay and file on the Revenue Online Service (ROS) . The deadline for paying and filing on ROS for the 2025 Income Tax Return (Form 11"
+    },
+    "ROS": {
+     "status": "verified",
+     "verified_url": "https://www.revenue.ie/en/self-assessment-and-self-employment/index.aspx",
+     "verified_at": "2026-10-30T18:38:34.063274+00:00",
+     "content_sha256": "bbf6b89c8a6a2e3f869a253fd566297dc18b72343099dbdaa344999bcb1bf581",
+     "quote": "section of the site is currently only available in English Gaeilge Sign in to myAccount | ROS | LPT online Sign in to myAccount or ROS or LPT online | | --> Gaeilge Search Back to hom"
+    }
+   }
+  },
+  {
+   "id": "ireland-084",
+   "country": "IRELAND",
+   "kind": "identifier",
+   "term": "PPSN",
+   "phrases": [
+    "PPSN",
+    "pps number"
+   ],
+   "case_sensitive": true,
+   "authority": "Revenue (Ireland)",
+   "basis": "revenue.ie (forms and taxes)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "PPSN": {
+     "status": "unverified"
+    },
+    "pps number": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "uae-085",
+   "country": "UAE",
+   "kind": "system",
+   "term": "EmaraTax",
+   "phrases": [
+    "emaratax"
+   ],
+   "case_sensitive": false,
+   "authority": "Federal Tax Authority (UAE)",
+   "basis": "tax.gov.ae, mof.gov.ae",
+   "verification": "verified",
+   "phrase_verification": {
+    "emaratax": {
+     "status": "verified",
+     "verified_url": "https://tax.gov.ae/en/default.aspx",
+     "verified_at": "2026-10-30T18:39:59.092451+00:00",
+     "content_sha256": "732d0a73d0d21b7285f2b659952cde997b2a69412af72fb0d761afb1219abb9c",
+     "quote": "elledby=\"ServicesMenus\"> Column 0 Customer Service Registration Refunds Optional services EmaraTax Column 1 Services with partners Open Data show Submenu for \"Open Data\" div]:w-72 [&>div]:"
+    }
+   }
+  },
+  {
+   "id": "uae-086",
+   "country": "UAE",
+   "kind": "term",
+   "term": "Qualifying Free Zone Person",
+   "phrases": [
+    "qualifying free zone person"
+   ],
+   "case_sensitive": false,
+   "authority": "Federal Tax Authority (UAE)",
+   "basis": "tax.gov.ae, mof.gov.ae",
+   "verification": "unverified",
+   "phrase_verification": {
+    "qualifying free zone person": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "saudi_arabia-087",
+   "country": "SAUDI_ARABIA",
+   "kind": "system",
+   "term": "FATOORA e-invoicing",
+   "phrases": [
+    "fatoora",
+    "fatoorah"
+   ],
+   "case_sensitive": false,
+   "authority": "ZATCA",
+   "basis": "zatca.gov.sa",
+   "verification": "verified",
+   "phrase_verification": {
+    "fatoora": {
+     "status": "unverified"
+    },
+    "fatoorah": {
+     "status": "verified",
+     "verified_url": "https://zatca.gov.sa/en/E-Invoicing/Pages/default.aspx",
+     "verified_at": "2026-10-30T18:40:04.351465+00:00",
+     "content_sha256": "39d2982d57fc4143466d718d3e1d7299ad0db7a353036432f12a774652bd79ee",
+     "quote": "ases Laws & Regulations Educational Library FAQs Preparing Your Business The E-Invoicing (Fatoorah) implementation in the Kingdom. The Zakat, Tax and Customs Authority has launched the E-I"
+    }
+   }
+  },
+  {
+   "id": "saudi_arabia-088",
+   "country": "SAUDI_ARABIA",
+   "kind": "tax",
+   "term": "Zakat (ZATCA)",
+   "phrases": [
+    "zakat"
+   ],
+   "case_sensitive": false,
+   "authority": "ZATCA",
+   "basis": "zatca.gov.sa",
+   "verification": "verified",
+   "phrase_verification": {
+    "zakat": {
+     "status": "verified",
+     "verified_url": "https://zatca.gov.sa/en/E-Invoicing/Pages/default.aspx",
+     "verified_at": "2026-10-30T18:40:04.351465+00:00",
+     "content_sha256": "39d2982d57fc4143466d718d3e1d7299ad0db7a353036432f12a774652bd79ee",
+     "quote": " Voice Commands Font Size Greyscale Mode Search Login Search Search Search AI Suggestions Zakat Customs VAT Tax Declaration Real Estate Transactions ZATCA Home E-Invoicing E-Invoicing W"
+    }
+   }
+  },
+  {
+   "id": "malaysia-089",
+   "country": "MALAYSIA",
+   "kind": "tax",
+   "term": "Sales and Service Tax",
+   "phrases": [
+    "sales and service tax",
+    "SST"
+   ],
+   "case_sensitive": true,
+   "authority": "LHDN / RMCD (Malaysia)",
+   "basis": "hasil.gov.my, mysst.customs.gov.my",
+   "verification": "verified",
+   "phrase_verification": {
+    "sales and service tax": {
+     "status": "verified",
+     "verified_url": "https://mysst.customs.gov.my/",
+     "verified_at": "2026-10-30T18:39:54.671046+00:00",
+     "content_sha256": "eb320f0dd41181e5d2ca5f705c32714c6eac47b96d8114ad7be07d1273d7ed75",
+     "quote": "EPARTMENT Home About SST Close About SST Open About SST Understanding SST Overview of how Sales and Service Tax is implemented in Malaysia. Background Explanation of Service Tax and Sales Tax, includin"
+    },
+    "SST": {
+     "status": "verified",
+     "verified_url": "https://mysst.customs.gov.my/",
+     "verified_at": "2026-10-30T18:39:54.671046+00:00",
+     "content_sha256": "eb320f0dd41181e5d2ca5f705c32714c6eac47b96d8114ad7be07d1273d7ed75",
+     "quote": " Status MyPMK Retrieve Saved Request Login OFFICIAL WEBSITE MALAYSIA SALES & SERVICE TAX (SST) ROYAL MALAYSIAN CUSTOMS DEPARTMENT Home About SST Close About SST Open About SST Underst"
+    }
+   }
+  },
+  {
+   "id": "malaysia-090",
+   "country": "MALAYSIA",
+   "kind": "form",
+   "term": "Form BE / e-Filing (LHDN)",
+   "phrases": [
+    "form be"
+   ],
+   "case_sensitive": false,
+   "authority": "LHDN / RMCD (Malaysia)",
+   "basis": "hasil.gov.my, mysst.customs.gov.my",
+   "verification": "unverified",
+   "phrase_verification": {
+    "form be": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "malaysia-091",
+   "country": "MALAYSIA",
+   "kind": "system",
+   "term": "MyInvois e-invoicing",
+   "phrases": [
+    "myinvois"
+   ],
+   "case_sensitive": false,
+   "authority": "LHDN / RMCD (Malaysia)",
+   "basis": "hasil.gov.my, mysst.customs.gov.my",
+   "verification": "unverified",
+   "phrase_verification": {
+    "myinvois": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "malaysia-092",
+   "country": "MALAYSIA",
+   "kind": "contribution",
+   "term": "SOCSO / KWSP",
+   "phrases": [
+    "SOCSO",
+    "KWSP",
+    "PERKESO"
+   ],
+   "case_sensitive": true,
+   "authority": "LHDN / RMCD (Malaysia)",
+   "basis": "hasil.gov.my, mysst.customs.gov.my",
+   "verification": "unverified",
+   "phrase_verification": {
+    "SOCSO": {
+     "status": "unverified"
+    },
+    "KWSP": {
+     "status": "unverified"
+    },
+    "PERKESO": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "malaysia-093",
+   "country": "MALAYSIA",
+   "kind": "scheme",
+   "term": "Monthly tax deduction (PCB)",
+   "phrases": [
+    "potongan cukai bulanan",
+    "PCB"
+   ],
+   "case_sensitive": true,
+   "authority": "LHDN / RMCD (Malaysia)",
+   "basis": "hasil.gov.my, mysst.customs.gov.my",
+   "verification": "unverified",
+   "phrase_verification": {
+    "potongan cukai bulanan": {
+     "status": "unverified"
+    },
+    "PCB": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "south_africa-094",
+   "country": "SOUTH_AFRICA",
+   "kind": "form",
+   "term": "IRP5 / IRP6 / IT12 / ITR14",
+   "phrases": [
+    "IRP5",
+    "IRP6",
+    "IT12",
+    "ITR14"
+   ],
+   "case_sensitive": true,
+   "authority": "SARS",
+   "basis": "sars.gov.za (forms and returns)",
+   "verification": "verified",
+   "phrase_verification": {
+    "IRP5": {
+     "status": "verified",
+     "verified_url": "https://www.sars.gov.za/types-of-tax/pay-as-you-earn/",
+     "verified_at": "2026-10-30T18:38:38.045102+00:00",
+     "content_sha256": "83c9c04c6b02f4de3c3ea62cbfb6af27d7efe66f1fd1f2f095c719f8015fbb3c",
+     "quote": "hing your previously submitted EMP201 returns. Where these values differ from the interim IRP5/IT3(a) certificates generated, employers must amend the prepopulated figures to the corre"
+    },
+    "IRP6": {
+     "status": "unverified"
+    },
+    "IT12": {
+     "status": "unverified"
+    },
+    "ITR14": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "south_africa-095",
+   "country": "SOUTH_AFRICA",
+   "kind": "return",
+   "term": "EMP201 / EMP501 / VAT201",
+   "phrases": [
+    "EMP201",
+    "EMP501",
+    "VAT201"
+   ],
+   "case_sensitive": true,
+   "authority": "SARS",
+   "basis": "sars.gov.za (forms and returns)",
+   "verification": "verified",
+   "phrase_verification": {
+    "EMP201": {
+     "status": "verified",
+     "verified_url": "https://www.sars.gov.za/types-of-tax/pay-as-you-earn/",
+     "verified_at": "2026-10-30T18:38:38.045102+00:00",
+     "content_sha256": "83c9c04c6b02f4de3c3ea62cbfb6af27d7efe66f1fd1f2f095c719f8015fbb3c",
+     "quote": "New source codes have been added; Changes to field types and validations; Enhancements to EMP201 Return; Enhancements to EMP501 Reconciliation; Revised declaration function; New rules fo"
+    },
+    "EMP501": {
+     "status": "verified",
+     "verified_url": "https://www.sars.gov.za/types-of-tax/pay-as-you-earn/",
+     "verified_at": "2026-10-30T18:38:38.045102+00:00",
+     "content_sha256": "83c9c04c6b02f4de3c3ea62cbfb6af27d7efe66f1fd1f2f095c719f8015fbb3c",
+     "quote": "concile their declarations for the period 1 March 2026 to 31 August 2026 and submit their EMP501 declarations through eFiling or e@syFile™ Employer. Watch our short step-by-step video on"
+    },
+    "VAT201": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "south_africa-096",
+   "country": "SOUTH_AFRICA",
+   "kind": "contribution",
+   "term": "UIF / Skills Development Levy",
+   "phrases": [
+    "UIF"
+   ],
+   "case_sensitive": true,
+   "authority": "SARS",
+   "basis": "sars.gov.za (forms and returns)",
+   "verification": "verified",
+   "phrase_verification": {
+    "UIF": {
+     "status": "verified",
+     "verified_url": "https://www.sars.gov.za/types-of-tax/pay-as-you-earn/",
+     "verified_at": "2026-10-30T18:38:38.045102+00:00",
+     "content_sha256": "83c9c04c6b02f4de3c3ea62cbfb6af27d7efe66f1fd1f2f095c719f8015fbb3c",
+     "quote": " submit a correct and complete reconciliation, your EMP501 must reflect: Reconciled PAYE, UIF and SDL Values: Matching your previously submitted EMP201 returns. Where these values dif"
+    }
+   }
+  },
+  {
+   "id": "south_africa-097",
+   "country": "SOUTH_AFRICA",
+   "kind": "system",
+   "term": "SARS eFiling",
+   "phrases": [
+    "sars efiling"
+   ],
+   "case_sensitive": false,
+   "authority": "SARS",
+   "basis": "sars.gov.za (forms and returns)",
+   "verification": "verified",
+   "phrase_verification": {
+    "sars efiling": {
+     "status": "verified",
+     "verified_url": "https://www.sars.gov.za/types-of-tax/pay-as-you-earn/",
+     "verified_at": "2026-10-30T18:38:38.045102+00:00",
+     "content_sha256": "83c9c04c6b02f4de3c3ea62cbfb6af27d7efe66f1fd1f2f095c719f8015fbb3c",
+     "quote": "rs and can be used regardless of the number of employee tax certificates being submitted. SARS eFiling – Employers can submit through eFiling, subject to a maximum of 50 IRP5/IT3(a) certificat"
+    }
+   }
+  },
+  {
+   "id": "germany-098",
+   "country": "GERMANY",
+   "kind": "scheme",
+   "term": "Kleinunternehmerregelung",
+   "phrases": [
+    "kleinunternehmer",
+    "kleinunternehmerregelung"
+   ],
+   "case_sensitive": false,
+   "authority": "BMF / Finanzamt (Germany)",
+   "basis": "bundesfinanzministerium.de, elster.de",
+   "verification": "unverified",
+   "phrase_verification": {
+    "kleinunternehmer": {
+     "status": "unverified"
+    },
+    "kleinunternehmerregelung": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "germany-099",
+   "country": "GERMANY",
+   "kind": "tax",
+   "term": "Umsatzsteuer / Gewerbesteuer / Einkommensteuer / Körperschaftsteuer / Solidaritätszuschlag",
+   "phrases": [
+    "umsatzsteuer",
+    "gewerbesteuer",
+    "einkommensteuer",
+    "körperschaftsteuer",
+    "solidaritätszuschlag"
+   ],
+   "case_sensitive": false,
+   "authority": "BMF / Finanzamt (Germany)",
+   "basis": "bundesfinanzministerium.de, elster.de",
+   "verification": "verified",
+   "phrase_verification": {
+    "umsatzsteuer": {
+     "status": "unverified"
+    },
+    "gewerbesteuer": {
+     "status": "unverified"
+    },
+    "einkommensteuer": {
+     "status": "verified",
+     "verified_url": "https://www.elster.de/eportal/start",
+     "verified_at": "2026-10-30T18:44:13.916597+00:00",
+     "content_sha256": "cce41bf62ce07933d4436c224c61757ead0e370798ee8b91f1aa4151baf5958d",
+     "quote": "ie \"Eine Mitteilung der Bundesbehörde\" und versprechen einen Anspruch auf Rückzahlung der Einkommensteuer. Wir warnen ausdrücklich davor, auf diese Betrugs-E-Mails zu reagieren bzw. Links in den "
+    },
+    "körperschaftsteuer": {
+     "status": "unverified"
+    },
+    "solidaritätszuschlag": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "germany-100",
+   "country": "GERMANY",
+   "kind": "system",
+   "term": "ELSTER",
+   "phrases": [
+    "ELSTER"
+   ],
+   "case_sensitive": true,
+   "authority": "BMF / Finanzamt (Germany)",
+   "basis": "bundesfinanzministerium.de, elster.de",
+   "verification": "verified",
+   "phrase_verification": {
+    "ELSTER": {
+     "status": "verified",
+     "verified_url": "https://www.elster.de/eportal/start",
+     "verified_at": "2026-10-30T18:44:13.916597+00:00",
+     "content_sha256": "cce41bf62ce07933d4436c224c61757ead0e370798ee8b91f1aa4151baf5958d",
+     "quote": "ELSTER - Startseite Zur Hauptnavigation (ALT + 1) Zum Inhaltsbereich (ALT + 2) Zum Fußbereich (A"
+    }
+   }
+  },
+  {
+   "id": "france-101",
+   "country": "FRANCE",
+   "kind": "scheme",
+   "term": "Micro-entrepreneur regime",
+   "phrases": [
+    "micro-entrepreneur",
+    "auto-entrepreneur"
+   ],
+   "case_sensitive": false,
+   "authority": "DGFiP / URSSAF (France)",
+   "basis": "impots.gouv.fr, urssaf.fr",
+   "verification": "unverified",
+   "phrase_verification": {
+    "micro-entrepreneur": {
+     "status": "unverified"
+    },
+    "auto-entrepreneur": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "france-102",
+   "country": "FRANCE",
+   "kind": "authority",
+   "term": "URSSAF",
+   "phrases": [
+    "URSSAF"
+   ],
+   "case_sensitive": true,
+   "authority": "DGFiP / URSSAF (France)",
+   "basis": "impots.gouv.fr, urssaf.fr",
+   "verification": "unverified",
+   "phrase_verification": {
+    "URSSAF": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "france-103",
+   "country": "FRANCE",
+   "kind": "tax",
+   "term": "Cotisation foncière des entreprises",
+   "phrases": [
+    "cotisation foncière des entreprises"
+   ],
+   "case_sensitive": false,
+   "authority": "DGFiP / URSSAF (France)",
+   "basis": "impots.gouv.fr, urssaf.fr",
+   "verification": "unverified",
+   "phrase_verification": {
+    "cotisation foncière des entreprises": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "jersey-104",
+   "country": "JERSEY",
+   "kind": "scheme",
+   "term": "Income Tax Instalment Scheme",
+   "phrases": [
+    "income tax instalment scheme",
+    "ITIS"
+   ],
+   "case_sensitive": true,
+   "authority": "Revenue Jersey",
+   "basis": "gov.je",
+   "verification": "unverified",
+   "phrase_verification": {
+    "income tax instalment scheme": {
+     "status": "unverified"
+    },
+    "ITIS": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "eu-105",
+   "country": "EU",
+   "kind": "scheme",
+   "term": "One Stop Shop / Import One Stop Shop / VIES",
+   "phrases": [
+    "one stop shop",
+    "OSS",
+    "IOSS",
+    "VIES"
+   ],
+   "case_sensitive": true,
+   "authority": "European Commission",
+   "basis": "taxation-customs.ec.europa.eu (VAT e-commerce, VIES)",
+   "verification": "verified",
+   "phrase_verification": {
+    "one stop shop": {
+     "status": "verified",
+     "verified_url": "https://vat-one-stop-shop.ec.europa.eu/index_en",
+     "verified_at": "2026-10-30T18:40:10.460967+00:00",
+     "content_sha256": "ba6c6b9e6e8a7680d94a3233a5b3d7bee528ab93a82e3eae34cafcf925ecf95e",
+     "quote": "VAT One Stop Shop - VAT e-Commerce - One Stop Shop - European Commission Skip to main content en Select you"
+    },
+    "OSS": {
+     "status": "verified",
+     "verified_url": "https://vat-one-stop-shop.ec.europa.eu/index_en",
+     "verified_at": "2026-10-30T18:40:10.460967+00:00",
+     "content_sha256": "ba6c6b9e6e8a7680d94a3233a5b3d7bee528ab93a82e3eae34cafcf925ecf95e",
+     "quote": "revious items Next items Home News & Reports EU legislation The One Stop Shop Register to OSS Declare and pay in OSS Record Keeping and Audits in OSS Leaving OSS See all VAT rates Gui"
+    },
+    "IOSS": {
+     "status": "verified",
+     "verified_url": "https://vat-one-stop-shop.ec.europa.eu/index_en",
+     "verified_at": "2026-10-30T18:40:10.460967+00:00",
+     "content_sha256": "ba6c6b9e6e8a7680d94a3233a5b3d7bee528ab93a82e3eae34cafcf925ecf95e",
+     "quote": "implifications measures have been introduced to collect the VAT The Import One Stop Shop (IOSS) has been created to simplify the declaration and payment of VAT for distance sales of lo"
+    },
+    "VIES": {
+     "status": "unverified"
+    }
+   }
+  },
+  {
+   "id": "new-uk-001",
+   "country": "UK",
+   "kind": "form",
+   "term": "SA200",
+   "phrases": [
+    "SA200"
+   ],
+   "case_sensitive": true,
+   "authority": "HMRC",
+   "basis": "https://www.gov.uk/self-assessment-tax-return-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "SA200": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/self-assessment-tax-return-forms",
+     "verified_at": "2026-10-30T18:39:26.786886+00:00",
+     "content_sha256": "f2f440d3493c4382ab54b83450be5cf38662c39245e1d513154c71f8aac91964",
+     "quote": "om a professional , such as an accountant contact HMRC Only fill in the short tax return (SA200) if HMRC sends it to you. You cannot download it, but you can read the guidance notes . E"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     17
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-uk-002",
+   "country": "UK",
+   "kind": "form",
+   "term": "SA102",
+   "phrases": [
+    "SA102"
+   ],
+   "case_sensitive": true,
+   "authority": "HMRC",
+   "basis": "https://www.gov.uk/self-assessment-tax-return-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "SA102": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/self-assessment-tax-return-forms",
+     "verified_at": "2026-10-30T18:39:26.786886+00:00",
+     "content_sha256": "f2f440d3493c4382ab54b83450be5cf38662c39245e1d513154c71f8aac91964",
+     "quote": "es’, if you’re telling HMRC about these types of income: employees or company directors - SA102 supplementary pages self-employment - SA103S supplementary pages or SA103F supplementary "
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     17
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-uk-003",
+   "country": "UK",
+   "kind": "form",
+   "term": "SA104S",
+   "phrases": [
+    "SA104S"
+   ],
+   "case_sensitive": true,
+   "authority": "HMRC",
+   "basis": "https://www.gov.uk/self-assessment-tax-return-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "SA104S": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/self-assessment-tax-return-forms",
+     "verified_at": "2026-10-30T18:39:26.786886+00:00",
+     "content_sha256": "f2f440d3493c4382ab54b83450be5cf38662c39245e1d513154c71f8aac91964",
+     "quote": "oyment - SA103S supplementary pages or SA103F supplementary pages business partnerships - SA104S supplementary pages or SA104F supplementary pages UK property income - SA105 supplementar"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     17
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-uk-004",
+   "country": "UK",
+   "kind": "form",
+   "term": "SA104F",
+   "phrases": [
+    "SA104F"
+   ],
+   "case_sensitive": true,
+   "authority": "HMRC",
+   "basis": "https://www.gov.uk/self-assessment-tax-return-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "SA104F": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/self-assessment-tax-return-forms",
+     "verified_at": "2026-10-30T18:39:26.786886+00:00",
+     "content_sha256": "f2f440d3493c4382ab54b83450be5cf38662c39245e1d513154c71f8aac91964",
+     "quote": "pages or SA103F supplementary pages business partnerships - SA104S supplementary pages or SA104F supplementary pages UK property income - SA105 supplementary pages foreign income or gain"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     17
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-uk-005",
+   "country": "UK",
+   "kind": "form",
+   "term": "SA105",
+   "phrases": [
+    "SA105"
+   ],
+   "case_sensitive": true,
+   "authority": "HMRC",
+   "basis": "https://www.gov.uk/self-assessment-tax-return-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "SA105": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/self-assessment-tax-return-forms",
+     "verified_at": "2026-10-30T18:39:26.786886+00:00",
+     "content_sha256": "f2f440d3493c4382ab54b83450be5cf38662c39245e1d513154c71f8aac91964",
+     "quote": "tnerships - SA104S supplementary pages or SA104F supplementary pages UK property income - SA105 supplementary pages foreign income or gains - SA106 supplementary pages capital gains - S"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     17
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-uk-006",
+   "country": "UK",
+   "kind": "form",
+   "term": "SA106",
+   "phrases": [
+    "SA106"
+   ],
+   "case_sensitive": true,
+   "authority": "HMRC",
+   "basis": "https://www.gov.uk/self-assessment-tax-return-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "SA106": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/self-assessment-tax-return-forms",
+     "verified_at": "2026-10-30T18:39:26.786886+00:00",
+     "content_sha256": "f2f440d3493c4382ab54b83450be5cf38662c39245e1d513154c71f8aac91964",
+     "quote": "plementary pages UK property income - SA105 supplementary pages foreign income or gains - SA106 supplementary pages capital gains - SA108 supplementary pages non-UK residents or dual re"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     17
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-uk-007",
+   "country": "UK",
+   "kind": "form",
+   "term": "SA108",
+   "phrases": [
+    "SA108"
+   ],
+   "case_sensitive": true,
+   "authority": "HMRC",
+   "basis": "https://www.gov.uk/self-assessment-tax-return-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "SA108": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/self-assessment-tax-return-forms",
+     "verified_at": "2026-10-30T18:39:26.786886+00:00",
+     "content_sha256": "f2f440d3493c4382ab54b83450be5cf38662c39245e1d513154c71f8aac91964",
+     "quote": "5 supplementary pages foreign income or gains - SA106 supplementary pages capital gains - SA108 supplementary pages non-UK residents or dual residents - SA109 supplementary pages Check "
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     17
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-uk-008",
+   "country": "UK",
+   "kind": "form",
+   "term": "SA109",
+   "phrases": [
+    "SA109"
+   ],
+   "case_sensitive": true,
+   "authority": "HMRC",
+   "basis": "https://www.gov.uk/self-assessment-tax-return-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "SA109": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/self-assessment-tax-return-forms",
+     "verified_at": "2026-10-30T18:39:26.786886+00:00",
+     "content_sha256": "f2f440d3493c4382ab54b83450be5cf38662c39245e1d513154c71f8aac91964",
+     "quote": "tary pages capital gains - SA108 supplementary pages non-UK residents or dual residents - SA109 supplementary pages Check the supplementary pages in the guidance on completing your Self"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     17
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-uk-009",
+   "country": "UK",
+   "kind": "form",
+   "term": "SA700",
+   "phrases": [
+    "SA700"
+   ],
+   "case_sensitive": true,
+   "authority": "HMRC",
+   "basis": "https://www.gov.uk/self-assessment-tax-return-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "SA700": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/self-assessment-tax-return-forms",
+     "verified_at": "2026-10-30T18:39:26.786886+00:00",
+     "content_sha256": "f2f440d3493c4382ab54b83450be5cf38662c39245e1d513154c71f8aac91964",
+     "quote": "r if you’re a trustee. Type of tax return Forms and guidance notes Non-resident companies SA700 form Partnership SA800 form , including supplementary pages Trust and estate SA900 form ,"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     17
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-uk-010",
+   "country": "UK",
+   "kind": "form",
+   "term": "SA800",
+   "phrases": [
+    "SA800"
+   ],
+   "case_sensitive": true,
+   "authority": "HMRC",
+   "basis": "https://www.gov.uk/self-assessment-tax-return-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "SA800": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/self-assessment-tax-return-forms",
+     "verified_at": "2026-10-30T18:39:26.786886+00:00",
+     "content_sha256": "f2f440d3493c4382ab54b83450be5cf38662c39245e1d513154c71f8aac91964",
+     "quote": "Type of tax return Forms and guidance notes Non-resident companies SA700 form Partnership SA800 form , including supplementary pages Trust and estate SA900 form , including supplementar"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     17
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-uk-011",
+   "country": "UK",
+   "kind": "form",
+   "term": "SA900",
+   "phrases": [
+    "SA900"
+   ],
+   "case_sensitive": true,
+   "authority": "HMRC",
+   "basis": "https://www.gov.uk/self-assessment-tax-return-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "SA900": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/self-assessment-tax-return-forms",
+     "verified_at": "2026-10-30T18:39:26.786886+00:00",
+     "content_sha256": "f2f440d3493c4382ab54b83450be5cf38662c39245e1d513154c71f8aac91964",
+     "quote": "panies SA700 form Partnership SA800 form , including supplementary pages Trust and estate SA900 form , including supplementary pages Trustees of registered pension schemes SA970 form If"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     17
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-uk-012",
+   "country": "UK",
+   "kind": "form",
+   "term": "SA970",
+   "phrases": [
+    "SA970"
+   ],
+   "case_sensitive": true,
+   "authority": "HMRC",
+   "basis": "https://www.gov.uk/self-assessment-tax-return-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "SA970": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/self-assessment-tax-return-forms",
+     "verified_at": "2026-10-30T18:39:26.786886+00:00",
+     "content_sha256": "f2f440d3493c4382ab54b83450be5cf38662c39245e1d513154c71f8aac91964",
+     "quote": " estate SA900 form , including supplementary pages Trustees of registered pension schemes SA970 form If you need help you can: get advice from a professional , such as an accountant con"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     17
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-us-001",
+   "country": "US",
+   "kind": "form",
+   "term": "Form 4506-T",
+   "phrases": [
+    "form 4506-t",
+    "4506-T"
+   ],
+   "case_sensitive": true,
+   "authority": "IRS",
+   "basis": "https://www.irs.gov/forms-instructions",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 4506-t": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": "for Form 1040 Form W-9 Request for Taxpayer Identification Number (TIN) and Certification Form 4506-T Request for Transcript of Tax Return Form W-4 Employee's Withholding Certificate Form 941"
+    },
+    "4506-T": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": "for Form 1040 Form W-9 Request for Taxpayer Identification Number (TIN) and Certification Form 4506-T Request for Transcript of Tax Return Form W-4 Employee's Withholding Certificate Form 941"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     4,
+     5,
+     6,
+     34,
+     35
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-us-002",
+   "country": "US",
+   "kind": "form",
+   "term": "Form 9465",
+   "phrases": [
+    "form 9465"
+   ],
+   "case_sensitive": true,
+   "authority": "IRS",
+   "basis": "https://www.irs.gov/forms-instructions",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 9465": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": "tificate Form 941 Employer's Quarterly Federal Tax Return Form W-2 Wage and Tax Statement Form 9465 Installment Agreement Request POPULAR FOR TAX PROS Form 1040-X Amended Individual Income "
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     4,
+     5,
+     6,
+     34,
+     35
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-us-003",
+   "country": "US",
+   "kind": "form",
+   "term": "Form 2848",
+   "phrases": [
+    "form 2848"
+   ],
+   "case_sensitive": true,
+   "authority": "IRS",
+   "basis": "https://www.irs.gov/forms-instructions",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 2848": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": "t Agreement Request POPULAR FOR TAX PROS Form 1040-X Amended Individual Income Tax Return Form 2848 Power of Attorney Form W-7 Apply for an ITIN Circular 230 Regulations Governing Practice "
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     4,
+     5,
+     6,
+     34,
+     35
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-us-004",
+   "country": "US",
+   "kind": "form",
+   "term": "Form W-7",
+   "phrases": [
+    "form w-7",
+    "W-7"
+   ],
+   "case_sensitive": true,
+   "authority": "IRS",
+   "basis": "https://www.irs.gov/forms-instructions",
+   "verification": "verified",
+   "phrase_verification": {
+    "form w-7": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": "FOR TAX PROS Form 1040-X Amended Individual Income Tax Return Form 2848 Power of Attorney Form W-7 Apply for an ITIN Circular 230 Regulations Governing Practice before the IRS Report Fraud"
+    },
+    "W-7": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": "FOR TAX PROS Form 1040-X Amended Individual Income Tax Return Form 2848 Power of Attorney Form W-7 Apply for an ITIN Circular 230 Regulations Governing Practice before the IRS Report Fraud"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     4,
+     5,
+     6,
+     34,
+     35
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-us-005",
+   "country": "US",
+   "kind": "form",
+   "term": "Form SS-4",
+   "phrases": [
+    "form ss-4",
+    "SS-4"
+   ],
+   "case_sensitive": true,
+   "authority": "IRS",
+   "basis": "https://www.irs.gov/forms-instructions",
+   "verification": "verified",
+   "phrase_verification": {
+    "form ss-4": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": "eturn (or on a notice we sent you). Form 9465 PDF Related: Instructions for Form 9465 PDF Form SS-4 Application for Employer Identification Number (EIN) Use this form to apply for an employ"
+    },
+    "SS-4": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/forms-instructions",
+     "verified_at": "2026-10-30T18:37:51.983636+00:00",
+     "content_sha256": "bcfed1744e31954dded76d76982f8be621249986f57e1b7c443ca778cc12fae5",
+     "quote": "eturn (or on a notice we sent you). Form 9465 PDF Related: Instructions for Form 9465 PDF Form SS-4 Application for Employer Identification Number (EIN) Use this form to apply for an employ"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     4,
+     5
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-us-006",
+   "country": "US",
+   "kind": "form",
+   "term": "Form 8959",
+   "phrases": [
+    "form 8959"
+   ],
+   "case_sensitive": true,
+   "authority": "IRS",
+   "basis": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 8959": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+     "verified_at": "2026-10-30T18:37:57.506448+00:00",
+     "content_sha256": "5ac57fceef136e7f4173b76eed9e3d56fdcf96919c816ddad8fb1a8e93079a0a",
+     "quote": "on Unreported Tip Income Form 8919, Uncollected Social Security and Medicare Tax on Wages Form 8959, Additional Medicare Tax Form 3800, General Business Credit Form 6765, Credit for Increas"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     5,
+     35
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-us-007",
+   "country": "US",
+   "kind": "form",
+   "term": "Form 8974",
+   "phrases": [
+    "form 8974"
+   ],
+   "case_sensitive": true,
+   "authority": "IRS",
+   "basis": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 8974": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+     "verified_at": "2026-10-30T18:37:57.506448+00:00",
+     "content_sha256": "5ac57fceef136e7f4173b76eed9e3d56fdcf96919c816ddad8fb1a8e93079a0a",
+     "quote": "r Consolidations Schedule R (Form 941), Allocation Schedule for Aggregate Form 941 Filers Form 8974, Qualified Small Business Payroll Tax Credit for Increasing Research Activities Form 943,"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     5
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-us-008",
+   "country": "US",
+   "kind": "form",
+   "term": "Form 943",
+   "phrases": [
+    "form 943"
+   ],
+   "case_sensitive": true,
+   "authority": "IRS",
+   "basis": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 943": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+     "verified_at": "2026-10-30T18:37:57.506448+00:00",
+     "content_sha256": "5ac57fceef136e7f4173b76eed9e3d56fdcf96919c816ddad8fb1a8e93079a0a",
+     "quote": "Form 8974, Qualified Small Business Payroll Tax Credit for Increasing Research Activities Form 943, Employer's Annual Tax Return for Agricultural Employees Form 944, Employer’s Annual Fede"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     5
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-us-009",
+   "country": "US",
+   "kind": "form",
+   "term": "Form 944",
+   "phrases": [
+    "form 944"
+   ],
+   "case_sensitive": true,
+   "authority": "IRS",
+   "basis": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 944": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+     "verified_at": "2026-10-30T18:37:57.506448+00:00",
+     "content_sha256": "5ac57fceef136e7f4173b76eed9e3d56fdcf96919c816ddad8fb1a8e93079a0a",
+     "quote": "ing Research Activities Form 943, Employer's Annual Tax Return for Agricultural Employees Form 944, Employer’s Annual Federal Tax Return Form 945, Annual Return of Withheld Federal Income "
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     5
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-us-010",
+   "country": "US",
+   "kind": "form",
+   "term": "Form 945",
+   "phrases": [
+    "form 945"
+   ],
+   "case_sensitive": true,
+   "authority": "IRS",
+   "basis": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 945": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+     "verified_at": "2026-10-30T18:37:57.506448+00:00",
+     "content_sha256": "5ac57fceef136e7f4173b76eed9e3d56fdcf96919c816ddad8fb1a8e93079a0a",
+     "quote": "nual Tax Return for Agricultural Employees Form 944, Employer’s Annual Federal Tax Return Form 945, Annual Return of Withheld Federal Income Tax Form CT-1, Employer's Annual Railroad Retir"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     5
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-us-011",
+   "country": "US",
+   "kind": "form",
+   "term": "Form 8027",
+   "phrases": [
+    "form 8027"
+   ],
+   "case_sensitive": true,
+   "authority": "IRS",
+   "basis": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 8027": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+     "verified_at": "2026-10-30T18:37:57.506448+00:00",
+     "content_sha256": "5ac57fceef136e7f4173b76eed9e3d56fdcf96919c816ddad8fb1a8e93079a0a",
+     "quote": "eturn or Claim for Refund PDF Form CT-2, Employer's Annual Railroad Retirement Tax Return Form 8027, Employer's Annual Information Return of Tip Income and Allocated Tips Certain forms, ins"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     5
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-us-012",
+   "country": "US",
+   "kind": "form",
+   "term": "Form 943-X",
+   "phrases": [
+    "form 943-x",
+    "943-X"
+   ],
+   "case_sensitive": true,
+   "authority": "IRS",
+   "basis": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 943-x": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+     "verified_at": "2026-10-30T18:37:57.506448+00:00",
+     "content_sha256": "5ac57fceef136e7f4173b76eed9e3d56fdcf96919c816ddad8fb1a8e93079a0a",
+     "quote": "orm 940. Form 941-X, Adjusted Employer’s QUARTERLY Federal Tax Return or Claim for Refund Form 943-X, Adjusted Employer’s Annual Federal Tax Return for Agricultural Employees or Claim for Re"
+    },
+    "943-X": {
+     "status": "verified",
+     "verified_url": "https://www.irs.gov/businesses/small-businesses-self-employed/employment-tax-forms",
+     "verified_at": "2026-10-30T18:37:57.506448+00:00",
+     "content_sha256": "5ac57fceef136e7f4173b76eed9e3d56fdcf96919c816ddad8fb1a8e93079a0a",
+     "quote": "orm 940. Form 941-X, Adjusted Employer’s QUARTERLY Federal Tax Return or Claim for Refund Form 943-X, Adjusted Employer’s Annual Federal Tax Return for Agricultural Employees or Claim for Re"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     5
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-canada-001",
+   "country": "CANADA",
+   "kind": "form",
+   "term": "TD1",
+   "phrases": [
+    "TD1"
+   ],
+   "case_sensitive": true,
+   "authority": "CRA",
+   "basis": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+   "verification": "verified",
+   "phrase_verification": {
+    "TD1": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "T936 Calculation of Cumulative Net Investment Loss (CNIL) to December 31, 2025 2026-01-20 TD1-IN Determination of Exemption of an Indian's Employment Income 2026-10-02 TD1X Statement "
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     10,
+     11
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-canada-002",
+   "country": "CANADA",
+   "kind": "form",
+   "term": "T216",
+   "phrases": [
+    "T216"
+   ],
+   "case_sensitive": true,
+   "authority": "CRA",
+   "basis": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/payroll.html",
+   "verification": "verified",
+   "phrase_verification": {
+    "T216": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/payroll.html",
+     "verified_at": "2026-10-30T18:38:22.075474+00:00",
+     "content_sha256": "a71fdc55e44eb227beb8dbe4cac92cc4e10300c6d45a339c13eb79938b05f878",
+     "quote": "emittance voucher PD7R - Remittance voucher for Payment on Filing (PoF) Source Deductions T216 - Accelerated remitter notification and questionnaire Features Scam prevention and the CR"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     11
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-canada-003",
+   "country": "CANADA",
+   "kind": "form",
+   "term": "T1",
+   "phrases": [
+    "T1"
+   ],
+   "case_sensitive": true,
+   "authority": "CRA",
+   "basis": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+   "verification": "verified",
+   "phrase_verification": {
+    "T1": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "gency (CRA) CRA Forms and publications CRA forms listed by number You may be looking for: T1 income tax package (forms and schedules) Alternate formats The CRA offers a variety of fo"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     10
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-canada-004",
+   "country": "CANADA",
+   "kind": "form",
+   "term": "RC7524",
+   "phrases": [
+    "RC7524"
+   ],
+   "case_sensitive": true,
+   "authority": "CRA",
+   "basis": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+   "verification": "verified",
+   "phrase_verification": {
+    "RC7524": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "a form’s number or title in the Filter items field. Section Menu Number Title Last update RC7524-NB GST524 New Brunswick Rebate Schedule 2025-10-27 RC7524-NS GST524 Nova Scotia Rebate Sc"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     10
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-canada-005",
+   "country": "CANADA",
+   "kind": "form",
+   "term": "GST524",
+   "phrases": [
+    "GST524"
+   ],
+   "case_sensitive": true,
+   "authority": "CRA",
+   "basis": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+   "verification": "verified",
+   "phrase_verification": {
+    "GST524": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "umber or title in the Filter items field. Section Menu Number Title Last update RC7524-NB GST524 New Brunswick Rebate Schedule 2025-10-27 RC7524-NS GST524 Nova Scotia Rebate Schedule 202"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     10
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-canada-006",
+   "country": "CANADA",
+   "kind": "form",
+   "term": "T1436",
+   "phrases": [
+    "T1436"
+   ],
+   "case_sensitive": true,
+   "authority": "CRA",
+   "basis": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+   "verification": "verified",
+   "phrase_verification": {
+    "T1436": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "bate Schedule 2025-10-27 RC7524-PE GST524 Prince Edward Island Rebate Schedule 2025-10-27 T1436 Capital Gains Worksheet 2026-03-04 T2066 Election for Immediate or Gradual Intergeneratio"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     10
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-canada-007",
+   "country": "CANADA",
+   "kind": "form",
+   "term": "T2066",
+   "phrases": [
+    "T2066"
+   ],
+   "case_sensitive": true,
+   "authority": "CRA",
+   "basis": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+   "verification": "verified",
+   "phrase_verification": {
+    "T2066": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": " Prince Edward Island Rebate Schedule 2025-10-27 T1436 Capital Gains Worksheet 2026-03-04 T2066 Election for Immediate or Gradual Intergenerational Business Transfer 2026-04-27 RC579 Ad"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     10
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-canada-008",
+   "country": "CANADA",
+   "kind": "form",
+   "term": "RC579",
+   "phrases": [
+    "RC579"
+   ],
+   "case_sensitive": true,
+   "authority": "CRA",
+   "basis": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+   "verification": "verified",
+   "phrase_verification": {
+    "RC579": {
+     "status": "verified",
+     "verified_url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+     "verified_at": "2026-10-30T18:38:17.891518+00:00",
+     "content_sha256": "0c3d6cc8d30154e90a9cda31d2d61b6b9fcf71e8456ce73c1bc21c527db1a2db",
+     "quote": "04 T2066 Election for Immediate or Gradual Intergenerational Business Transfer 2026-04-27 RC579 Additional Information for CPP/QPP Validation and Verification Programs – For employees 2"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     10
+    ],
+    "taxpayer_group_page": false
+   }
+  },
+  {
+   "id": "new-singapore-001",
+   "country": "SINGAPORE",
+   "kind": "form",
+   "term": "Appendix 8A",
+   "phrases": [
+    "Appendix 8A"
+   ],
+   "case_sensitive": true,
+   "authority": "IRAS / CPF Board / ACRA",
+   "basis": "https://www.iras.gov.sg/taxes/individual-income-tax/employers/auto-inclusion-scheme-(ais)-for-employment-income",
+   "verification": "verified",
+   "phrase_verification": {
+    "Appendix 8A": {
+     "status": "verified",
+     "verified_url": "https://www.iras.gov.sg/taxes/individual-income-tax/employers/auto-inclusion-scheme-(ais)-for-employment-income",
+     "verified_at": "2026-10-30T18:39:42.870327+00:00",
+     "content_sha256": "471a270f8ad9bf6d00856713ade965ed628d649718a2a6231cbe44cf1466d732",
+     "quote": "-Residents Employers Go to next level Employers Employers Filing Employee Earnings (IR8A, Appendix 8A, Appendix 8B, IR8S) Information to share with employees Auto Inclusion Scheme (AIS) for E"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     21
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-singapore-002",
+   "country": "SINGAPORE",
+   "kind": "form",
+   "term": "Appendix 8B",
+   "phrases": [
+    "Appendix 8B"
+   ],
+   "case_sensitive": true,
+   "authority": "IRAS / CPF Board / ACRA",
+   "basis": "https://www.iras.gov.sg/taxes/individual-income-tax/employers/auto-inclusion-scheme-(ais)-for-employment-income",
+   "verification": "verified",
+   "phrase_verification": {
+    "Appendix 8B": {
+     "status": "verified",
+     "verified_url": "https://www.iras.gov.sg/taxes/individual-income-tax/employers/auto-inclusion-scheme-(ais)-for-employment-income",
+     "verified_at": "2026-10-30T18:39:42.870327+00:00",
+     "content_sha256": "471a270f8ad9bf6d00856713ade965ed628d649718a2a6231cbe44cf1466d732",
+     "quote": "ployers Go to next level Employers Employers Filing Employee Earnings (IR8A, Appendix 8A, Appendix 8B, IR8S) Information to share with employees Auto Inclusion Scheme (AIS) for Employment Inc"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     21
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-singapore-003",
+   "country": "SINGAPORE",
+   "kind": "form",
+   "term": "IR8S",
+   "phrases": [
+    "IR8S"
+   ],
+   "case_sensitive": true,
+   "authority": "IRAS / CPF Board / ACRA",
+   "basis": "https://www.iras.gov.sg/taxes/individual-income-tax/employers/auto-inclusion-scheme-(ais)-for-employment-income",
+   "verification": "verified",
+   "phrase_verification": {
+    "IR8S": {
+     "status": "verified",
+     "verified_url": "https://www.iras.gov.sg/taxes/individual-income-tax/employers/auto-inclusion-scheme-(ais)-for-employment-income",
+     "verified_at": "2026-10-30T18:39:42.870327+00:00",
+     "content_sha256": "471a270f8ad9bf6d00856713ade965ed628d649718a2a6231cbe44cf1466d732",
+     "quote": " next level Employers Employers Filing Employee Earnings (IR8A, Appendix 8A, Appendix 8B, IR8S) Information to share with employees Auto Inclusion Scheme (AIS) for Employment Income Un"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     21
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-singapore-004",
+   "country": "SINGAPORE",
+   "kind": "form",
+   "term": "GST F7",
+   "phrases": [
+    "GST F7"
+   ],
+   "case_sensitive": true,
+   "authority": "IRAS / CPF Board / ACRA",
+   "basis": "https://www.iras.gov.sg/taxes/individual-income-tax/employers/auto-inclusion-scheme-(ais)-for-employment-income",
+   "verification": "verified",
+   "phrase_verification": {
+    "GST F7": {
+     "status": "verified",
+     "verified_url": "https://www.iras.gov.sg/taxes/individual-income-tax/employers/auto-inclusion-scheme-(ais)-for-employment-income",
+     "verified_at": "2026-10-30T18:39:42.870327+00:00",
+     "content_sha256": "471a270f8ad9bf6d00856713ade965ed628d649718a2a6231cbe44cf1466d732",
+     "quote": " GST e-Filing Process Completing GST returns Correcting Errors Made in GST Return (Filing GST F7) Due Dates and Requests for Extension Late filing or non-filing of GST Returns (F5/F8) Ch"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     21
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-ireland-001",
+   "country": "IRELAND",
+   "kind": "form",
+   "term": "Form 11S",
+   "phrases": [
+    "form 11s",
+    "11S"
+   ],
+   "case_sensitive": true,
+   "authority": "Revenue (Ireland)",
+   "basis": "https://www.revenue.ie/en/self-assessment-and-self-employment/filing-your-tax-return/index.aspx",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 11s": {
+     "status": "verified",
+     "verified_url": "https://www.revenue.ie/en/self-assessment-and-self-employment/filing-your-tax-return/index.aspx",
+     "verified_at": "2026-10-30T18:44:06.217419+00:00",
+     "content_sha256": "bcf0322e5210d0464483cf034712b00a9113efebe4ba009acb7ffddbf6eeaab3",
+     "quote": "163KB) 2022 (PDF, 163KB) 2021 (PDF, 122KB) Hide older version Older versions of this file Form 11S Form 11S - Income Tax Return and self-assessment for the year 2025 2024 (PDF, 683KB) 2023"
+    },
+    "11S": {
+     "status": "verified",
+     "verified_url": "https://www.revenue.ie/en/self-assessment-and-self-employment/filing-your-tax-return/index.aspx",
+     "verified_at": "2026-10-30T18:44:06.217419+00:00",
+     "content_sha256": "bcf0322e5210d0464483cf034712b00a9113efebe4ba009acb7ffddbf6eeaab3",
+     "quote": "163KB) 2022 (PDF, 163KB) 2021 (PDF, 122KB) Hide older version Older versions of this file Form 11S Form 11S - Income Tax Return and self-assessment for the year 2025 2024 (PDF, 683KB) 2023"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     40
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-south_africa-001",
+   "country": "SOUTH_AFRICA",
+   "kind": "form",
+   "term": "IT3",
+   "phrases": [
+    "IT3"
+   ],
+   "case_sensitive": true,
+   "authority": "SARS",
+   "basis": "https://www.sars.gov.za/types-of-tax/pay-as-you-earn/",
+   "verification": "verified",
+   "phrase_verification": {
+    "IT3": {
+     "status": "verified",
+     "verified_url": "https://www.sars.gov.za/types-of-tax/pay-as-you-earn/",
+     "verified_at": "2026-10-30T18:38:38.045102+00:00",
+     "content_sha256": "83c9c04c6b02f4de3c3ea62cbfb6af27d7efe66f1fd1f2f095c719f8015fbb3c",
+     "quote": "rce code 4118 – The sum of the ETI amounts calculated; Source code 4150 – Reason code for IT3(a) certificate; Source code 4588 – The total amount repaid by the employee in the tax yea"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     15
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-south_africa-002",
+   "country": "SOUTH_AFRICA",
+   "kind": "form",
+   "term": "EMP601",
+   "phrases": [
+    "EMP601"
+   ],
+   "case_sensitive": true,
+   "authority": "SARS",
+   "basis": "https://www.sars.gov.za/types-of-tax/pay-as-you-earn/",
+   "verification": "verified",
+   "phrase_verification": {
+    "EMP601": {
+     "status": "verified",
+     "verified_url": "https://www.sars.gov.za/types-of-tax/pay-as-you-earn/",
+     "verified_at": "2026-10-30T18:38:38.045102+00:00",
+     "content_sha256": "83c9c04c6b02f4de3c3ea62cbfb6af27d7efe66f1fd1f2f095c719f8015fbb3c",
+     "quote": "ion added to the Reconciliation Status Dashboard Action tab to allow users to generate an EMP601. New tab System Info added to Utilities menu. For more information, see the e@syFile FAQs"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     15
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-south_africa-003",
+   "country": "SOUTH_AFRICA",
+   "kind": "form",
+   "term": "ITR12",
+   "phrases": [
+    "ITR12"
+   ],
+   "case_sensitive": true,
+   "authority": "SARS",
+   "basis": "https://www.sars.gov.za/types-of-tax/pay-as-you-earn/",
+   "verification": "verified",
+   "phrase_verification": {
+    "ITR12": {
+     "status": "verified",
+     "verified_url": "https://www.sars.gov.za/types-of-tax/pay-as-you-earn/",
+     "verified_at": "2026-10-30T18:38:38.045102+00:00",
+     "content_sha256": "83c9c04c6b02f4de3c3ea62cbfb6af27d7efe66f1fd1f2f095c719f8015fbb3c",
+     "quote": "put into: Employee tax assessments Auto Assessments and Pre‑populated Income Tax Returns (ITR12). Failure to submit accurate information on time may result in: Incorrect employee tax as"
+    }
+   },
+   "selection": {
+    "rule": "authority code pattern on its own pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     15
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-india-001",
+   "country": "INDIA",
+   "kind": "form",
+   "term": "Form 67",
+   "phrases": [
+    "form 67"
+   ],
+   "case_sensitive": true,
+   "authority": "CBIC / GST Network",
+   "basis": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 67": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": " TDS, Nature of Payments and the TDS Payments deposited with the Income Tax Department 4. Form 67- Statement of Income from a country or specified territory outside India and Foreign Tax "
+    }
+   },
+   "selection": {
+    "rule": "India code pattern on India authority pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     1010,
+     1011
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-india-002",
+   "country": "INDIA",
+   "kind": "form",
+   "term": "Form 15G",
+   "phrases": [
+    "form 15g",
+    "15G"
+   ],
+   "case_sensitive": true,
+   "authority": "CBIC / GST Network",
+   "basis": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 15g": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "leted proceedings, GST Information, Information received from foreign government etc.) 6. Form 15G - Declaration by resident taxpayer (not being a Company or Firm) claiming certain receipt"
+    },
+    "15G": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "leted proceedings, GST Information, Information received from foreign government etc.) 6. Form 15G - Declaration by resident taxpayer (not being a Company or Firm) claiming certain receipt"
+    }
+   },
+   "selection": {
+    "rule": "India code pattern on India authority pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     1010,
+     1013
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-india-003",
+   "country": "INDIA",
+   "kind": "form",
+   "term": "Form 15H",
+   "phrases": [
+    "form 15h",
+    "15H"
+   ],
+   "case_sensitive": true,
+   "authority": "CBIC / GST Network",
+   "basis": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 15h": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "erest Income, if the income is below basic exemption limit Estimated Income for the FY 7. Form 15H - Declaration to be made by a resident individual (who is 60 years age or more) claiming "
+    },
+    "15H": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "erest Income, if the income is below basic exemption limit Estimated Income for the FY 7. Form 15H - Declaration to be made by a resident individual (who is 60 years age or more) claiming "
+    }
+   },
+   "selection": {
+    "rule": "India code pattern on India authority pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     1010,
+     1013
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-india-004",
+   "country": "INDIA",
+   "kind": "form",
+   "term": "Form 10-IEA",
+   "phrases": [
+    "form-10-iea",
+    "10-IEA"
+   ],
+   "case_sensitive": true,
+   "authority": "CBIC / GST Network",
+   "basis": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+   "verification": "verified",
+   "phrase_verification": {
+    "10-IEA": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "if assessee wants to opt out of default tax regime, (New Tax regime),they have to furnish Form-10-IEA on or before the due date u/s 139(1) of the Income Tax Act,1961 for furnishing the return"
+    },
+    "form-10-iea": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": "if assessee wants to opt out of default tax regime, (New Tax regime),they have to furnish Form-10-IEA on or before the due date u/s 139(1) of the Income Tax Act,1961 for furnishing the return"
+    }
+   },
+   "selection": {
+    "rule": "India code pattern on India authority pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     1010,
+     1013
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-india-005",
+   "country": "INDIA",
+   "kind": "form",
+   "term": "Form 10BA",
+   "phrases": [
+    "form 10ba",
+    "10BA"
+   ],
+   "case_sensitive": true,
+   "authority": "CBIC / GST Network",
+   "basis": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 10ba": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": " 115A or 115D) Note: For claiming deduction u/s 80GG, it is mandatory to file mandatorily Form 10BA and enter the acknowledgement number of Form 10BA in Schedule 80GG while filing the retur"
+    },
+    "10BA": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "verified_at": "2026-10-31T02:52:18.606942+00:00",
+     "content_sha256": "4639ee07522b885c5301366c44c4b55f636985d59d0ba190d02e9249085e076c",
+     "quote": " 115A or 115D) Note: For claiming deduction u/s 80GG, it is mandatory to file mandatorily Form 10BA and enter the acknowledgement number of Form 10BA in Schedule 80GG while filing the retur"
+    }
+   },
+   "selection": {
+    "rule": "India code pattern on India authority pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     1010,
+     1013
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-india-006",
+   "country": "INDIA",
+   "kind": "form",
+   "term": "Form 3CA",
+   "phrases": [
+    "form 3ca",
+    "3CA"
+   ],
+   "case_sensitive": true,
+   "authority": "CBIC / GST Network",
+   "basis": "https://www.incometax.gov.in/iec/foportal/help/company/return-applicable",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 3ca": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/company/return-applicable",
+     "verified_at": "2026-10-31T02:52:35.417230+00:00",
+     "content_sha256": "128c54877fc5e6cb538fabf5fdea9714f4e2b4e07463c2433f40032e91000e38",
+     "quote": "ome Tax Act, 1961: TDS defaults) which were available in 26AS are now available in AIS 2. Form 3CA-3CD Provided by Details provided in the form Taxpayers require mandatory audit under any "
+    },
+    "3CA": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/company/return-applicable",
+     "verified_at": "2026-10-31T02:52:35.417230+00:00",
+     "content_sha256": "128c54877fc5e6cb538fabf5fdea9714f4e2b4e07463c2433f40032e91000e38",
+     "quote": "ome Tax Act, 1961: TDS defaults) which were available in 26AS are now available in AIS 2. Form 3CA-3CD Provided by Details provided in the form Taxpayers require mandatory audit under any "
+    }
+   },
+   "selection": {
+    "rule": "India code pattern on India authority pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     1011,
+     1012
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-india-007",
+   "country": "INDIA",
+   "kind": "form",
+   "term": "Form 3CEB",
+   "phrases": [
+    "form 3ceb",
+    "3CEB"
+   ],
+   "case_sensitive": true,
+   "authority": "CBIC / GST Network",
+   "basis": "https://www.incometax.gov.in/iec/foportal/help/company/return-applicable",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 3ceb": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/company/return-applicable",
+     "verified_at": "2026-10-31T02:52:35.417230+00:00",
+     "content_sha256": "128c54877fc5e6cb538fabf5fdea9714f4e2b4e07463c2433f40032e91000e38",
+     "quote": "of Particulars required to be furnished under Section 44AB of the Income Tax Act, 1961 3. Form 3CEB Submitted by Details provided in the form Taxpayers who enter an international transactio"
+    },
+    "3CEB": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/company/return-applicable",
+     "verified_at": "2026-10-31T02:52:35.417230+00:00",
+     "content_sha256": "128c54877fc5e6cb538fabf5fdea9714f4e2b4e07463c2433f40032e91000e38",
+     "quote": "of Particulars required to be furnished under Section 44AB of the Income Tax Act, 1961 3. Form 3CEB Submitted by Details provided in the form Taxpayers who enter an international transactio"
+    }
+   },
+   "selection": {
+    "rule": "India code pattern on India authority pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     1011,
+     1013
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-india-008",
+   "country": "INDIA",
+   "kind": "form",
+   "term": "Form 3CB",
+   "phrases": [
+    "form 3cb",
+    "3CB"
+   ],
+   "case_sensitive": true,
+   "authority": "CBIC / GST Network",
+   "basis": "https://www.incometax.gov.in/iec/foportal/help/non-company/return-applicable",
+   "verification": "verified",
+   "phrase_verification": {
+    "form 3cb": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/non-company/return-applicable",
+     "verified_at": "2026-10-31T02:52:38.654389+00:00",
+     "content_sha256": "122783de9eeb30fa26a305c5e39982feceed746ab798ca20eb40202b9f1e1f76",
+     "quote": "Statement of Particulars required to be furnished u/s 44AB of the Income Tax Act, 1961 3. Form 3CB-3CD Submitted by Details provided in the form Taxpayer who is required to get his account"
+    },
+    "3CB": {
+     "status": "verified",
+     "verified_url": "https://www.incometax.gov.in/iec/foportal/help/non-company/return-applicable",
+     "verified_at": "2026-10-31T02:52:38.654389+00:00",
+     "content_sha256": "122783de9eeb30fa26a305c5e39982feceed746ab798ca20eb40202b9f1e1f76",
+     "quote": "Statement of Particulars required to be furnished u/s 44AB of the Income Tax Act, 1961 3. Form 3CB-3CD Submitted by Details provided in the form Taxpayer who is required to get his account"
+    }
+   },
+   "selection": {
+    "rule": "India code pattern on India authority pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     1012,
+     1013
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-india-009",
+   "country": "INDIA",
+   "kind": "form",
+   "term": "GST REG-26",
+   "phrases": [
+    "gst reg-26"
+   ],
+   "case_sensitive": true,
+   "authority": "CBIC / GST Network",
+   "basis": "https://cbic-gst.gov.in/pdf/01062019-GST-An-Update.pdf",
+   "verification": "verified",
+   "phrase_verification": {
+    "gst reg-26": {
+     "status": "verified",
+     "verified_url": "https://cbic-gst.gov.in/pdf/01062019-GST-An-Update.pdf",
+     "verified_at": "2026-10-31T02:47:22.079519+00:00",
+     "content_sha256": "00c451fa8af44c79e4463e1e3ba4f58e3cf28bfee95801a0276bfb6883c56773",
+     "quote": "igration process permitted. Due date for the taxpayers who did not file the complete FORM GST REG-26 but received only a Provisional ID (PID) till 31.12.2017 for furnishing the requisite det"
+    }
+   },
+   "selection": {
+    "rule": "India code pattern on India authority pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     1003
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "new-india-010",
+   "country": "INDIA",
+   "kind": "form",
+   "term": "GSTR-9A",
+   "phrases": [
+    "GSTR-9A"
+   ],
+   "case_sensitive": true,
+   "authority": "CBIC / GST Network",
+   "basis": "https://cbic-gst.gov.in/pdf/01062019-GST-An-Update.pdf",
+   "verification": "verified",
+   "phrase_verification": {
+    "GSTR-9A": {
+     "status": "verified",
+     "verified_url": "https://cbic-gst.gov.in/pdf/01062019-GST-An-Update.pdf",
+     "verified_at": "2026-10-31T02:47:22.079519+00:00",
+     "content_sha256": "00c451fa8af44c79e4463e1e3ba4f58e3cf28bfee95801a0276bfb6883c56773",
+     "quote": "R-1 on a monthly basis. ▪ Due date for furnishing the annual returns in FORM GSTR-9, FORM GSTR-9A and reconciliation statement in FORM GSTR-9C for the Financial Year 2017 – 2018 has been "
+    }
+   },
+   "selection": {
+    "rule": "India code pattern on India authority pages; taxpayer-group page first, then page count, then first appearance",
+    "pages": [
+     1003
+    ],
+    "taxpayer_group_page": true
+   }
+  },
+  {
+   "id": "uk-cash-accounting",
+   "country": "UK",
+   "kind": "scheme",
+   "term": "VAT Cash Accounting Scheme",
+   "phrases": [
+    "cash accounting scheme"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "HMRC official page (read 3 Nov 2026)",
+   "verification": "verified",
+   "phrase_verification": {
+    "cash accounting scheme": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/vat-cash-accounting-scheme",
+     "verified_at": "2026-11-03T14:02:43.128078+00:00",
+     "content_sha256": "69413835a3deb2a4e1e0731c8c9bf46f30e80f20a2742de5be2721e4aa1034cf",
+     "quote": "okies Reject additional cookies View cookies Hide cookie message Skip to main content VAT Cash Accounting Scheme Skip contents Overview Usually, the amount of VAT you pay HM Revenue and Customs ( HMRC ) is the difference b"
+    }
+   }
+  },
+  {
+   "id": "uk-annual-accounting",
+   "country": "UK",
+   "kind": "scheme",
+   "term": "VAT Annual Accounting Scheme",
+   "phrases": [
+    "annual accounting scheme"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "HMRC official page (read 3 Nov 2026)",
+   "verification": "verified",
+   "phrase_verification": {
+    "annual accounting scheme": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/vat-annual-accounting-scheme",
+     "verified_at": "2026-11-03T14:02:44.103380+00:00",
+     "content_sha256": "f8ad49d7fc4c02f20cbb2ee5c31352d2fd9b3319a3a7be64a61b87996f46d06d",
+     "quote": "okies Reject additional cookies View cookies Hide cookie message Skip to main content VAT Annual Accounting Scheme Skip contents Overview Usually, VAT -registered businesses submit their VAT Returns and payments to HM Revenu"
+    }
+   }
+  },
+  {
+   "id": "uk-vat-penalty-points",
+   "country": "UK",
+   "kind": "rule",
+   "term": "VAT late submission penalty points",
+   "phrases": [
+    "penalty points"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "HMRC official page (read 3 Nov 2026)",
+   "verification": "verified",
+   "phrase_verification": {
+    "penalty points": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/guidance/penalty-points-and-penalties-if-you-submit-your-vat-return-late",
+     "verified_at": "2026-11-03T14:02:45.170278+00:00",
+     "content_sha256": "1304ed79366acd1c48cff8d038e63c0384fbb2ecf255c2e63be5ca7b8df86590",
+     "quote": " Reject additional cookies View cookies Hide cookie message Skip to main content Guidance Penalty points and penalties if you submit your VAT Return late From 1 January 2023, you’ll get penalty points if you submit"
+    }
+   }
+  },
+  {
+   "id": "uk-limited-cost-business",
+   "country": "UK",
+   "kind": "rule",
+   "term": "Flat Rate Scheme limited cost business",
+   "phrases": [
+    "limited cost business"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "HMRC official page (read 3 Nov 2026)",
+   "verification": "verified",
+   "phrase_verification": {
+    "limited cost business": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/vat-flat-rate-scheme/how-much-you-pay",
+     "verified_at": "2026-11-03T14:02:46.183764+00:00",
+     "content_sha256": "d4845100581c1e12b6289b8fda87d224f65742acbb7910167327ee9510436428",
+     "quote": " as a VAT -registered business. If you spend a small amount on goods You’re classed as a ‘limited cost business’ if your goods cost less than either: 2% of your turnover £1,000 a year (if your costs are more than 2%) This"
+    }
+   }
+  },
+  {
+   "id": "uk-construction-reverse-charge",
+   "country": "UK",
+   "kind": "rule",
+   "term": "VAT domestic reverse charge for building and construction",
+   "phrases": [
+    "domestic reverse charge"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "HMRC official page (read 3 Nov 2026)",
+   "verification": "verified",
+   "phrase_verification": {
+    "domestic reverse charge": {
+     "status": "verified",
+     "verified_url": "https://www.gov.uk/guidance/vat-domestic-reverse-charge-for-building-and-construction-services",
+     "verified_at": "2026-11-03T14:02:46.390961+00:00",
+     "content_sha256": "c0024316dcb18d797004a02116f3c7ea473a4ec6d0bc08b4500c44572be3ec6b",
+     "quote": "cookies Hide cookie message Skip to main content Guidance Check when you must use the VAT domestic reverse charge for building and construction services Find out about the reverse charge for supplies of services reported wi"
+    }
+   }
+  },
+  {
+   "id": "in-manipur",
+   "country": "INDIA",
+   "kind": "term",
+   "term": "Manipur (GST special category State)",
+   "phrases": [
+    "manipur"
+   ],
+   "case_sensitive": false,
+   "authority": "CBIC",
+   "basis": "CBIC official page (read 3 Nov 2026)",
+   "verification": "verified",
+   "phrase_verification": {
+    "manipur": {
+     "status": "verified",
+     "verified_url": "https://cbic-gst.gov.in/pdf/01062019-GST-An-Update.pdf",
+     "verified_at": "2026-11-03T14:02:46.797335+00:00",
+     "content_sha256": "516320a27affa4a254c9c355be8596d28409bb7b845ecbc25c1cdd1542e42aef",
+     "quote": "nt of GST for suppliers of services would be Rs. 20 lakhs and Rs. 10 lakhs (for States of Manipur, Mizoram, Nagaland and Tripura). ▪ Threshold limits of aggregate turnover for exemption from registration and"
+    }
+   }
+  },
+  {
+   "id": "uk-limited-cost-trader",
+   "country": "UK",
+   "kind": "rule",
+   "term": "Flat Rate Scheme limited cost trader",
+   "phrases": [
+    "limited cost trader"
+   ],
+   "case_sensitive": false,
+   "authority": "HMRC",
+   "basis": "HMRC VAT Notice 733 (not confirmed on a page read)",
+   "verification": "unverified",
+   "phrase_verification": {
+    "limited cost trader": {
+     "status": "unverified"
+    }
+   }
+  }
+ ],
+ "ambiguous": [
+  {
+   "term": "PAYE",
+   "reason": "UK, Ireland, New Zealand and South Africa all use PAYE"
+  },
+  {
+   "term": "FBT / fringe benefits tax",
+   "reason": "Australia and New Zealand"
+  },
+  {
+   "term": "provisional tax",
+   "reason": "New Zealand and South Africa"
+  },
+  {
+   "term": "National Insurance",
+   "reason": "UK and the Isle of Man"
+  },
+  {
+   "term": "Form C / Form B",
+   "reason": "Singapore and Malaysia"
+  },
+  {
+   "term": "EPF",
+   "reason": "India (EPFO) and Malaysia (KWSP)"
+  },
+  {
+   "term": "TRN",
+   "reason": "UAE, Saudi Arabia and Bahrain tax registration numbers"
+  },
+  {
+   "term": "ISA",
+   "reason": "UK savings account and International Standards on Auditing"
+  },
+  {
+   "term": "IAS",
+   "reason": "Australian instalment activity statement and International Accounting Standards"
+  },
+  {
+   "term": "MTD",
+   "reason": "UK Making Tax Digital and Malaysian monthly tax deduction"
+  },
+  {
+   "term": "SG",
+   "reason": "superannuation guarantee and Singapore"
+  },
+  {
+   "term": "self assessment",
+   "reason": "UK, Ireland and others"
+  },
+  {
+   "term": "GST",
+   "reason": "Australia, New Zealand, Singapore, India, Canada, Malaysia (historic) and others"
+  },
+  {
+   "term": "VAT",
+   "reason": "most countries"
+  },
+  {
+   "term": "TVA",
+   "reason": "France, Belgium, Luxembourg and others"
+  },
+  {
+   "term": "EI",
+   "reason": "Canadian employment insurance; also a common abbreviation"
+  },
+  {
+   "term": "LUT",
+   "reason": "India GST letter of undertaking; generic abbreviation"
+  },
+  {
+   "term": "AMT",
+   "reason": "US alternative minimum tax; generic abbreviation"
+  },
+  {
+   "term": "trade tax",
+   "reason": "German Gewerbesteuer in English; generic phrase"
+  },
+  {
+   "term": "stamp duty",
+   "reason": "UK, Australia, Singapore, India, Ireland and others"
+  },
+  {
+   "term": "withholding tax",
+   "reason": "every country"
+  },
+  {
+   "term": "EIS",
+   "reason": "IRAS lists the Enterprise Innovation Scheme (EIS)",
+   "candidates": [
+    "UK",
+    "SINGAPORE"
+   ],
+   "moved_from": "uk-021"
+  },
+  {
+   "term": "schedule c",
+   "reason": "CRA form 5013-SC Schedule C; Malaysian sales tax Schedule C",
+   "candidates": [
+    "US",
+    "CANADA",
+    "MALAYSIA"
+   ],
+   "moved_from": "us-030"
+  },
+  {
+   "term": "resident withholding tax",
+   "reason": "matches inside CRA 'Non-Resident Withholding Tax'",
+   "candidates": [
+    "NEW_ZEALAND",
+    "CANADA"
+   ],
+   "moved_from": "new_zealand-078"
+  },
+  {
+   "term": "skills development levy",
+   "reason": "CPF Board lists Singapore's Skills Development Levy",
+   "candidates": [
+    "SOUTH_AFRICA",
+    "SINGAPORE"
+   ],
+   "moved_from": "south_africa-096"
+  },
+  {
+   "term": "SDL",
+   "reason": "abbreviation of the cross-country Skills Development Levy",
+   "candidates": [
+    "SOUTH_AFRICA",
+    "SINGAPORE"
+   ],
+   "moved_from": "south_africa-096"
+  }
+ ],
+ "changes": [
+  {
+   "version": "country-terms-2",
+   "date": "2026-10-31",
+   "reason": "live verification of existing phrases; 5 cross-country phrases moved to ambiguous; ZATCA spelling 'fatoorah' added; 40 new entries from authority pages by fixed selection rules and quotas"
+  },
+  {
+   "version": "country-terms-3",
+   "date": "2026-10-31",
+   "reason": "India coverage reads (13 of 15): 30 phrases newly verified; 10 new India entries by the fixed rule and quota; 'Form 10-IEA' stored in the authority's spelling 'form-10-iea' (the quote's literal text) plus '10-IEA'"
+  },
+  {
+   "date": "2026-11-03",
+   "added": [
+    "uk-cash-accounting",
+    "uk-annual-accounting",
+    "uk-vat-penalty-points",
+    "uk-limited-cost-business",
+    "uk-construction-reverse-charge",
+    "in-manipur",
+    "uk-limited-cost-trader"
+   ],
+   "reason": "terms that imply one country, so a clarification does not ask for it",
+   "unverified_note": "limited cost trader: the VAT Notice 733 read (gov.uk/guidance/flat-rate-scheme-for-small-businesses-vat-notice-733) returned no text on 3 Nov 2026; candidate only"
+  }
+ ]
+}

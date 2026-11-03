@@ -1,0 +1,323 @@
+{
+ "version": "task-contract-expectations-1",
+ "notes": "Expected task understanding written from what each request asks, not from what the pipeline does (Stage A, 29 Oct 2026).",
+ "cases": [
+  {
+   "id": "d1-vat-facts-in-background",
+   "group": "defect 1",
+   "history": [],
+   "query": "CloudLedger Ltd – Quarter-End Review\n\nThe Background:\n\nCloudLedger Ltd is a UK software company registered for VAT. For the quarter ended 30 September 2026 it made standard-rated sales of £240,000 and standard-rated purchases of £90,000; all figures exclude VAT and VAT is 20%. On 1 July 2026 it signed a £120,000 contract with a retailer covering a perpetual software licence and 12 months of support. CloudLedger sells the licence on its own for £100,000 and support on its own for £50,000 a year. The licence was delivered on 1 July 2026. Management recognised the full £120,000 as revenue in July. The financial statements are prepared under IFRS.\n\nQuestions to Answer:\n\n• Q1 (VAT): Calculate the VAT payable for the quarter.\n• Q2 (IFRS 15): Allocate the £120,000 transaction price between the licence and the support, and state how much revenue should be recognised by 30 September 2026.\n• Q3 (Correction): Prepare the journal entry to correct management's revenue recognition at 30 September 2026.",
+   "expect": {
+    "message_type": [
+     "case_study"
+    ],
+    "missing_inputs": "none",
+    "deliverables_include": [
+     "amount",
+     "allocation",
+     "journal_entry"
+    ]
+   }
+  },
+  {
+   "id": "d2-rounded-recheck-lease",
+   "group": "defect 2",
+   "history": [],
+   "query": "Harbor Freight Logistics Inc. leases a warehouse under a 4-year lease starting January 1, 2026. Annual payments of $50,000 are due at the end of each year. The company's incremental borrowing rate is 6%. There are no initial direct costs, incentives or residual value guarantees. The lease is classified as an operating lease under ASC 842. The company reports under US GAAP with a December 31 year-end.\n\nTask for the Bot:\n1. Calculate the initial lease liability and right-of-use asset.\n2. Prepare the journal entry at commencement.\n3. Explain how the single lease cost is presented in the income statement for an operating lease.",
+   "expect": {
+    "message_type": [
+     "case_study"
+    ],
+    "missing_inputs": "none",
+    "deliverables_include": [
+     "amount",
+     "journal_entry",
+     "explanation"
+    ],
+    "calculation": "lease"
+   }
+  },
+  {
+   "id": "d3-presentation-not-statements",
+   "group": "defect 3",
+   "history": [],
+   "query": "Harbor Freight Logistics Inc. leases a warehouse under a 4-year lease starting January 1, 2026. Annual payments of $50,000 are due at the end of each year. The company's incremental borrowing rate is 6%. There are no initial direct costs, incentives or residual value guarantees. The lease is classified as an operating lease under ASC 842. The company reports under US GAAP with a December 31 year-end.\n\nTask for the Bot:\n1. Calculate the initial lease liability and right-of-use asset.\n2. Prepare the journal entry at commencement.\n3. Explain how the single lease cost is presented in the income statement for an operating lease.",
+   "expect": {
+    "statements_requested": false
+   }
+  },
+  {
+   "id": "d3-audit-case-not-statements",
+   "group": "defect 3",
+   "history": [],
+   "query": "Brightwater Hotels plc – Audit Planning\n\nBrightwater Hotels plc owns 12 hotels and reports under IFRS. Occupancy fell from 78% to 54% in the year ended 31 December 2026, and the company breached a loan covenant in November 2026. Management's cash flow forecast assumes occupancy will return to 80% within six months. The finance director's bonus is based on reported EBITDA, and the auditor found manual journal entries posted to revenue on 31 December by the finance director.\n\nRequired:\n1. Identify the going concern indicators and explain the auditor's responsibilities under ISA (UK) 570.\n2. Explain the fraud risk factors present and the audit procedures that respond to them under ISA (UK) 240.\n3. Explain what the auditor's report should say if material uncertainty about going concern exists and is adequately disclosed.",
+   "expect": {
+    "statements_requested": false
+   }
+  },
+  {
+   "id": "d4-new-case-after-another",
+   "group": "defect 4",
+   "history": [
+    "Northwind Retail Ltd operates 25 stores in the UK and reports under FRS 102. For the year ended 31 March 2026 it reported revenue of £48 million and a loss before tax of £2.1 million. Its bank loan of £15 million has a covenant requiring net debt to EBITDA of no more than 3.0x; the year-end ratio was 3.4x. The bank has not yet issued a waiver. Two directors resigned in February 2026 and the auditor's report is due on 30 June 2026. Inventory of £6.2 million includes seasonal stock from 2024."
+   ],
+   "query": "Brightwater Hotels plc – Audit Planning\n\nBrightwater Hotels plc owns 12 hotels and reports under IFRS. Occupancy fell from 78% to 54% in the year ended 31 December 2026, and the company breached a loan covenant in November 2026. Management's cash flow forecast assumes occupancy will return to 80% within six months. The finance director's bonus is based on reported EBITDA, and the auditor found manual journal entries posted to revenue on 31 December by the finance director.\n\nRequired:\n1. Identify the going concern indicators and explain the auditor's responsibilities under ISA (UK) 570.\n2. Explain the fraud risk factors present and the audit procedures that respond to them under ISA (UK) 240.\n3. Explain what the auditor's report should say if material uncertainty about going concern exists and is adequately disclosed.",
+   "expect": {
+    "case_id": "current",
+    "facts_out_of_scope": 0,
+    "history_facts_in_scope": 0
+   }
+  },
+  {
+   "id": "d5-vat-journal-required",
+   "group": "defect 5",
+   "history": [],
+   "query": "UK company, VAT at 20%, all standard-rated, figures exclude VAT: sales £100,000, purchases £50,000. Calculate the VAT payable and prepare the journal entry to record the VAT liability.",
+   "expect": {
+    "deliverables_include": [
+     "amount",
+     "journal_entry"
+    ],
+    "missing_inputs": "none"
+   }
+  },
+  {
+   "id": "d5-carrying-amount-required",
+   "group": "defect 5",
+   "history": [],
+   "query": "Equipment cost £40,000 on 1 January 2025, residual value £4,000, useful life 8 years, straight-line. Calculate the annual depreciation and the carrying amount at 31 December 2026.",
+   "expect": {
+    "deliverables_include": [
+     "amount"
+    ],
+    "missing_inputs": "none"
+   }
+  },
+  {
+   "id": "d6-no-journal-or-chart-asked",
+   "group": "defect 6",
+   "history": [],
+   "query": "Explain how IFRS 16 lease payments are presented in the statement of cash flows.",
+   "expect": {
+    "deliverables_exclude": [
+     "journal_entry",
+     "chart",
+     "amount"
+    ],
+    "chart_requested": false
+   }
+  },
+  {
+   "id": "d7-explanation-needs-no-arithmetic-check",
+   "group": "defect 7",
+   "history": [],
+   "query": "Explain the difference between tax avoidance and tax evasion.",
+   "expect": {
+    "validations_exclude": [
+     "numerical_correctness"
+    ],
+    "deliverables_exclude": [
+     "amount",
+     "journal_entry"
+    ]
+   }
+  },
+  {
+   "id": "cs-apex-background",
+   "group": "case study",
+   "history": [],
+   "query": "Apex Motors Ltd. is a mid-sized manufacturing company registered under GST in Telangana. For the financial year ended March 31, 2026, the company reported a turnover of ₹18.5 Crores. During the year, Apex Motors undertook a major capital expansion by importing heavy machinery from Germany worth €1.2 Million and setting up a new production line.\nWhile auditing the financial statements and tax filings, you (the statutory/tax auditor) uncover the following anomalies:\n1. Capitalization vs. Revenue Expenditure: Apex Motors booked ₹45 Lakhs related to trial runs, site preparation, and foreign technician fees as a routine revenue expense in the Profit & Loss statement to lower its net taxable income.\n2. GST Input Tax Credit (ITC) Discrepancy: The company claimed full Input Tax Credit (ITC) of ₹22 Lakhs on a commercial passenger vehicle bought in the company's name for the managing director's personal and official use. Furthermore, reconciliation between GSTR-2B and GSTR-3B revealed an unmatched ITC claim of ₹8.5 Lakhs from a non-compliant/defaulting supplier.\n3. Deferred Tax & Depreciation: For corporate income tax purposes, the company claimed depreciation under the Written Down Value (WDV) method at standard rates, but for internal management reporting (Ind AS compliance), it used the Straight-Line Method (SLM), creating a massive temporary difference. No deferred tax asset/liability was adjusted in Q3 or Q4.\n4. Related Party Transaction / Transfer Pricing: Apex Motors sold finished components to a subsidiary in UAE at a 25% discount compared to its domestic market price, without maintaining a local transfer pricing study or benchmarking analysis.",
+   "expect": {
+    "message_type": [
+     "context",
+     "statement"
+    ],
+    "deliverables_count": 0,
+    "missing_inputs": "none"
+   }
+  },
+  {
+   "id": "cs-apex",
+   "group": "case study",
+   "history": [],
+   "query": "The Manufacturing Expansion & Tax Audit Dilemma\n\n\nThe Background:\n\nApex Motors Ltd. is a mid-sized manufacturing company registered under GST in Telangana. For the financial year ended March 31, 2026, the company reported a turnover of ₹18.5 Crores. During the year, Apex Motors undertook a major capital expansion by importing heavy machinery from Germany worth €1.2 Million and setting up a new production line.\nWhile auditing the financial statements and tax filings, you (the statutory/tax auditor) uncover the following anomalies:\n1. Capitalization vs. Revenue Expenditure: Apex Motors booked ₹45 Lakhs related to trial runs, site preparation, and foreign technician fees as a routine revenue expense in the Profit & Loss statement to lower its net taxable income.\n2. GST Input Tax Credit (ITC) Discrepancy: The company claimed full Input Tax Credit (ITC) of ₹22 Lakhs on a commercial passenger vehicle bought in the company's name for the managing director's personal and official use. Furthermore, reconciliation between GSTR-2B and GSTR-3B revealed an unmatched ITC claim of ₹8.5 Lakhs from a non-compliant/defaulting supplier.\n3. Deferred Tax & Depreciation: For corporate income tax purposes, the company claimed depreciation under the Written Down Value (WDV) method at standard rates, but for internal management reporting (Ind AS compliance), it used the Straight-Line Method (SLM), creating a massive temporary difference. No deferred tax asset/liability was adjusted in Q3 or Q4.\n4. Related Party Transaction / Transfer Pricing: Apex Motors sold finished components to a subsidiary in UAE at a 25% discount compared to its domestic market price, without maintaining a local transfer pricing study or benchmarking analysis.\n\nQuestions to Answer:\n\n• Q1.1 (Tax & Accounting Treatment): Analyze the ₹45 Lakhs booked as revenue expenditure. Under the Income Tax Act, 1961 (and Ind AS/GAAP), how should this be treated? Calculate the impact on net profit and tax liability.\n• Q1.2 (GST Audit): Evaluate the ITC claims. Is the company eligible for ITC on the passenger vehicle and the unmatched GSTR-2B supplier invoice? What are the interest and penalty consequences under the GST law?\n• Q1.3 (Financial Reporting / Deferred Tax): Explain how the divergence between WDV depreciation (Income Tax) and SLM depreciation (Ind AS) creates a temporary difference. Pass the necessary journal entry to account for the deferred tax impact.\n• Q1.4 (Auditor's Duty & Reporting): As the statutory auditor, what observations must you record in the Tax Audit Report (Form 3CD)? Would you qualify your audit report under Section 143(3) of the Companies Act, 2013? Justify your stance.",
+   "expect": {
+    "message_type": [
+     "case_study"
+    ],
+    "parts": 4,
+    "deliverables_include": [
+     "amount",
+     "journal_entry",
+     "report_wording",
+     "explanation"
+    ],
+    "statements_requested": false,
+    "missing_inputs": "none"
+   }
+  },
+  {
+   "id": "cs-zenith",
+   "group": "case study",
+   "history": [],
+   "query": "Working Capital Crunch, Revenue Recognition & Fraud Risk\n\n\nThe Background:\n\nZenith Retail Chains Pvt. Ltd. operates a chain of 40 brick-and-mortar stores across South India and an e-commerce portal. The company has been aggressively raising debt from private equity and commercial banks to fund expansion. In the current financial year, despite reporting a 30% jump in revenue on paper, the company’s bank balance has plummeted, and vendor payments are delayed by over 120 days.\nDuring an interim internal/forensic audit, you discover:\n1. Premature Revenue Recognition (Ind AS 115): Zenith recorded online sales revenue on the date an order was placed by the customer online, rather than when the goods were actually delivered and accepted by the customer. Year-end transit inventory was understated by ₹3.2 Crores.\n2. Fictitious Sales & Credit Notes: To meet quarterly bank covenants, the sales head generated ₹1.8 Crores of fake invoices to dummy distributors in the last week of December, which were subsequently reversed via credit notes in April of the next financial year.\n3. Inventory Obsolescence: Old seasonal stock worth ₹5 Crores is rotting in the central warehouse. Management has refused to write it down or create a provision, claiming it can be liquidated next season at full cost.\n4. Bank Reconciliation & Ratios: The current ratio reported to the bank is 1.3:1, but after adjusting for stale stock, disputed debtors, and unverified bank floats, the real liquid position shows severe cash distress.\n\nQuestions to Answer:\n\n• Q2.1 (Revenue Audit): How does premature recognition violate Ind AS 115? Reconstruct the correct revenue and inventory figures for the fiscal year.\n• Q2.2 (Forensic & Fraud Detection): The ₹1.8 Crores dummy invoice exercise followed by April credit notes is a classic \"channel stuffing\" or cut-off manipulation. What substantive audit procedures (e.g., direct confirmations, cut-off testing, movement registers) would have caught this earlier?\n• Q2.3 (Valuation & Provisioning): Evaluate management’s decision not to provision for obsolete inventory. What is the auditor's responsibility regarding lower-of-cost-or-net-realizable-value (NRV) testing?\n• Q2.4 (Financial Health & Covenants): Calculate the impact of these adjustments on the company’s EBITDA, Current Ratio, and Debt-to-Equity ratio, and explain the legal and contractual fallout if bank covenants are breached.",
+   "expect": {
+    "message_type": [
+     "case_study"
+    ],
+    "parts": 4,
+    "deliverables_include": [
+     "amount",
+     "procedures",
+     "explanation"
+    ],
+    "statements_requested": false,
+    "missing_inputs": "none"
+   }
+  },
+  {
+   "id": "cs-novatech",
+   "group": "case study",
+   "history": [],
+   "query": "Cross-Border Merger, TDS Default, and Assessment Proceedings\n\n\nThe Background:\n\nNovaTech Solutions India Pvt. Ltd., a wholly-owned subsidiary of a US-based parent company, makes annual royalty and software-licensing payments to its parent. In the financial year 2025–26, NovaTech made a lump-sum payment of $500,000 for specialized cloud architecture support without deducting Tax Deducted at Source (TDS), assuming it was covered under business profits rather than Fee for Technical Services (FTS) / Royalty, and relying on a simplified reading of the India-US Double Taxation Avoidance Agreement (DTAA).\nConcurrently, the Assessing Officer (AO) initiates a scrutiny assessment under Section 143(3) and issues a notice under Section 201(1) treating NovaTech as an \"assessee-in-default\" for non-deduction of TDS.\n\nQuestions to Answer:\n\n• Q3.1 (International Taxation / DTAA): Analyze whether the cloud architecture payment qualifies as FTS under Section 9(1)(vii) of the Income Tax Act or under Article 12 of the India-US DTAA. Which provisions prevail?\n• Q3.2 (TDS & Penalties): What are the consequences for NovaTech being deemed an assessee-in-default under Section 201(1) and 201(1A)? Calculate or outline the penal interest implications for delayed/non-deduction of TDS.\n• Q3.3 (Litigation Strategy): If NovaTech wants to contest the AO's order, what is the appellate hierarchy in India (CIT(A) -> ITAT -> High Court -> Supreme Court), and what conditions must be met to stay the demand during the first appeal?",
+   "expect": {
+    "message_type": [
+     "case_study"
+    ],
+    "parts": 3,
+    "deliverables_include": [
+     "explanation",
+     "amount"
+    ],
+    "missing_inputs": "none"
+   }
+  },
+  {
+   "id": "cs-vanguard",
+   "group": "case study",
+   "history": [],
+   "query": "The Distressed Acquisition, Bad Debts, and Shell Company Audit\n\n\nThe Background:\n\nVanguard Infrastructure Ltd. is a publicly-listed construction giant. To rapidly diversify, Vanguard acquired a 100% stake in a failing competitor, Terra-Form Projects Pvt. Ltd., for a nominal value of ₹1. During the statutory audit for the year ended March 31, 2026, you observe several highly complex transactions designed to clean up Terra-Form’s balance sheet and utilize its structural attributes:\n1. Write-off vs. Remission of Liability: Terra-Form had a pending loan of ₹42 Crores from a public sector bank. Under an approved One-Time Settlement (OTS) scheme, the bank waived ₹25 Crores of principal and interest. Terra-Form credited this ₹25 Crores directly to Capital Reserve in the balance sheet, claiming it is a non-taxable capital receipt.\n2. Brought-Forward Losses & Change in Shareholding: Vanguard intends to set off Terra-Form's accumulated business losses of ₹68 Crores against Vanguard’s current-year taxable profits. However, because Vanguard acquired 100% of the shares, the entire ownership structure of Terra-Form changed during the year.\n3. Round-Tripping & Shell Companies: A deep dive into Terra-Form’s trade receivables reveals ₹18 Crores due from three entities registered at identical residential addresses with no active business operations. These entities received loans from a Vanguard subsidiary, which were immediately paid to Terra-Form as \"advances for contracts,\" and subsequently routed back to Vanguard as \"consulting fees.\"\n4. Impairment of Goodwill: Vanguard recognized ₹35 Crores as Goodwill upon acquisition. Despite Terra-Form failing to secure any new government tenders during the fiscal year, Vanguard’s management has refused to pass an impairment charge (Ind AS 36), stating that the \"synergistic brand value\" will materialize by 2029.\n\nQuestions to Answer:\n\n• Q4.1 (Taxation - Remission of Debt): Analyze the taxability of the ₹25 Crores bank loan waiver. Does it constitute income under Section 28(iv) or Section 41(1) of the Income Tax Act? Address how this impacts the book profit for Minimum Alternate Tax (MAT) computations under Section 115JB.\n• Q4.2 (Corporate Law & Tax Losses): Evaluate whether Terra-Form’s accumulated business losses can be carried forward and set off under Section 79 of the Income Tax Act following the 100% change in shareholding. Are there exceptions for distressed or IBC-guided companies?\n• Q4.3 (Forensic Audit & Anti-Money Laundering): The circular routing of ₹18 Crores shows red flags for round-tripping. Reconstruct the audit trail. What are your strict reporting obligations under CARO 2020 (Companies Auditor's Report Order) and Section 143(12) of the Companies Act, 2013 regarding suspected fraud?\n• Q4.4 (Finance & Valuation): Critique management's stance on Ind AS 36 (Impairment of Assets). Outline the exact quantitative auditing procedures you would employ to test the recoverable amount of the Cash Generating Unit (CGU) and Goodwill.",
+   "expect": {
+    "message_type": [
+     "case_study"
+    ],
+    "parts": 4,
+    "deliverables_include": [
+     "procedures",
+     "explanation",
+     "report_wording"
+    ],
+    "statements_requested": false,
+    "missing_inputs": "none"
+   }
+  },
+  {
+   "id": "t1-cloudledger",
+   "group": "scenario",
+   "history": [],
+   "query": "CloudLedger Ltd – Quarter-End Review\n\nThe Background:\n\nCloudLedger Ltd is a UK software company registered for VAT. For the quarter ended 30 September 2026 it made standard-rated sales of £240,000 and standard-rated purchases of £90,000; all figures exclude VAT and VAT is 20%. On 1 July 2026 it signed a £120,000 contract with a retailer covering a perpetual software licence and 12 months of support. CloudLedger sells the licence on its own for £100,000 and support on its own for £50,000 a year. The licence was delivered on 1 July 2026. Management recognised the full £120,000 as revenue in July. The financial statements are prepared under IFRS.\n\nQuestions to Answer:\n\n• Q1 (VAT): Calculate the VAT payable for the quarter.\n• Q2 (IFRS 15): Allocate the £120,000 transaction price between the licence and the support, and state how much revenue should be recognised by 30 September 2026.\n• Q3 (Correction): Prepare the journal entry to correct management's revenue recognition at 30 September 2026.",
+   "expect": {
+    "message_type": [
+     "case_study"
+    ],
+    "parts": 3,
+    "deliverables_include": [
+     "amount",
+     "allocation",
+     "journal_entry"
+    ],
+    "missing_inputs": "none"
+   }
+  },
+  {
+   "id": "t2-harbor",
+   "group": "scenario",
+   "history": [],
+   "query": "Harbor Freight Logistics Inc. leases a warehouse under a 4-year lease starting January 1, 2026. Annual payments of $50,000 are due at the end of each year. The company's incremental borrowing rate is 6%. There are no initial direct costs, incentives or residual value guarantees. The lease is classified as an operating lease under ASC 842. The company reports under US GAAP with a December 31 year-end.\n\nTask for the Bot:\n1. Calculate the initial lease liability and right-of-use asset.\n2. Prepare the journal entry at commencement.\n3. Explain how the single lease cost is presented in the income statement for an operating lease.",
+   "expect": {
+    "message_type": [
+     "case_study"
+    ],
+    "parts": 3,
+    "deliverables_include": [
+     "amount",
+     "journal_entry",
+     "explanation"
+    ],
+    "statements_requested": false,
+    "missing_inputs": "none",
+    "calculation": "lease"
+   }
+  },
+  {
+   "id": "t3-india",
+   "group": "scenario",
+   "history": [],
+   "query": "The GST and TDS Compliance Review\n\nThe Background:\n\nSunrise Components Pvt. Ltd., a manufacturer in Pune, files GST returns and income tax returns in India for FY 2025-26. During the year it bought a 7-seater car for the directors' use and claimed input tax credit of ₹3,20,000 on it. It paid ₹6,00,000 to a chartered accountancy firm for professional services without deducting TDS. It owes ₹9,50,000 to a supplier registered as a micro enterprise under the MSMED Act; the invoice is dated 15 February 2026 and the amount was paid on 30 May 2026.\n\nQuestions to Answer:\n\n• Q1: Is the input tax credit on the car allowed under the CGST Act? Cite the provision.\n• Q2: Which section of the Income Tax Act requires TDS on the professional fees, and what are the consequences of not deducting it?\n• Q3: Can the ₹9,50,000 owed to the micro enterprise be deducted in FY 2025-26? Explain the rule in Section 43B.",
+   "expect": {
+    "message_type": [
+     "case_study"
+    ],
+    "parts": 3,
+    "deliverables_include": [
+     "citation",
+     "explanation"
+    ],
+    "deliverables_exclude": [
+     "journal_entry"
+    ],
+    "missing_inputs": "none"
+   }
+  },
+  {
+   "id": "t4-northwind",
+   "group": "scenario",
+   "history": [],
+   "query": "Northwind Retail Ltd operates 25 stores in the UK and reports under FRS 102. For the year ended 31 March 2026 it reported revenue of £48 million and a loss before tax of £2.1 million. Its bank loan of £15 million has a covenant requiring net debt to EBITDA of no more than 3.0x; the year-end ratio was 3.4x. The bank has not yet issued a waiver. Two directors resigned in February 2026 and the auditor's report is due on 30 June 2026. Inventory of £6.2 million includes seasonal stock from 2024.",
+   "expect": {
+    "message_type": [
+     "context",
+     "statement"
+    ],
+    "deliverables_count": 0,
+    "missing_inputs": "none"
+   }
+  },
+  {
+   "id": "t5-brightwater",
+   "group": "scenario",
+   "history": [],
+   "query": "Brightwater Hotels plc – Audit Planning\n\nBrightwater Hotels plc owns 12 hotels and reports under IFRS. Occupancy fell from 78% to 54% in the year ended 31 December 2026, and the company breached a loan covenant in November 2026. Management's cash flow forecast assumes occupancy will return to 80% within six months. The finance director's bonus is based on reported EBITDA, and the auditor found manual journal entries posted to revenue on 31 December by the finance director.\n\nRequired:\n1. Identify the going concern indicators and explain the auditor's responsibilities under ISA (UK) 570.\n2. Explain the fraud risk factors present and the audit procedures that respond to them under ISA (UK) 240.\n3. Explain what the auditor's report should say if material uncertainty about going concern exists and is adequately disclosed.",
+   "expect": {
+    "message_type": [
+     "case_study"
+    ],
+    "parts": 3,
+    "deliverables_include": [
+     "explanation",
+     "procedures",
+     "report_wording"
+    ],
+    "statements_requested": false,
+    "missing_inputs": "none"
+   }
+  },
+  {
+   "id": "t6-followup-24-months",
+   "group": "scenario",
+   "history": [
+    "CloudLedger Ltd – Quarter-End Review\n\nThe Background:\n\nCloudLedger Ltd is a UK software company registered for VAT. For the quarter ended 30 September 2026 it made standard-rated sales of £240,000 and standard-rated purchases of £90,000; all figures exclude VAT and VAT is 20%. On 1 July 2026 it signed a £120,000 contract with a retailer covering a perpetual software licence and 12 months of support. CloudLedger sells the licence on its own for £100,000 and support on its own for £50,000 a year. The licence was delivered on 1 July 2026. Management recognised the full £120,000 as revenue in July. The financial statements are prepared under IFRS.\n\nQuestions to Answer:\n\n• Q1 (VAT): Calculate the VAT payable for the quarter.\n• Q2 (IFRS 15): Allocate the £120,000 transaction price between the licence and the support, and state how much revenue should be recognised by 30 September 2026.\n• Q3 (Correction): Prepare the journal entry to correct management's revenue recognition at 30 September 2026."
+   ],
+   "query": "Now what if the support contract was for 24 months instead of 12?",
+   "expect": {
+    "message_type": [
+     "request"
+    ],
+    "case_id": "turn-0",
+    "deliverables_include": [
+     "amount"
+    ]
+   }
+  }
+ ]
+}

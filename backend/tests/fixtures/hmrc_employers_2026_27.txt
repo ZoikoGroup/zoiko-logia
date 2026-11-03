@@ -1,0 +1,140 @@
+Cookies on GOV.UK
+We use some essential cookies to make this website work.
+We’d like to set additional cookies to understand how you use GOV.UK, remember your settings and improve government services.
+We also use cookies set by other sites to help us deliver content from their services.
+You have accepted additional cookies. You can change your cookie settings at any time.
+You have rejected additional cookies. You can change your cookie settings at any time.
+Accept additional cookies
+Reject additional cookies
+View cookies
+Hide cookie message
+Skip to main content
+Guidance
+Rates and thresholds for employers 2026 to 2027
+Use these rates and thresholds when you operate your payroll or provide expenses and benefits to your employees.
+Updates to this page
+From:
+HM Revenue & Customs
+Published:
+30 January 2026
+Last updated:
+1 September 2026
+Show all updates
+1 September 2026
+The advisory fuel rates for company cars have been updated.
+5 June 2026
+The mileage allowance payments for employees who use their own car for business journeys have increased from 45 pence to 55 pence per mile for the first 10,000 miles. This rate also applies for National Insurance purposes.
+1 June 2026
+The advisory fuel rates for company cars and the public charger rate for electric cars have been updated.
+7 April 2026
+Information about statutory payments recovery has been added. The statutory pay calculators have also been added.
+1 March 2026
+The advisory fuel rates for company cars and the public charger rate for electric cars have been updated.
+30 January 2026
+Added translation
+Get emails about this page
+Print this page
+Unless otherwise stated, the following figures apply from 6 April 2026 to 5 April 2027.
+PAYE tax and Class 1 National Insurance contributions
+You normally operate PAYE as part of your payroll so HMRC can collect Income Tax and National Insurance from your employees.
+Your payroll software will work out how much tax and National Insurance to deduct from your employees’ pay. If you decide to run payroll yourself, you need to find payroll software to do this.
+Tax thresholds, rates and codes
+The amount of Income Tax you deduct from your employees depends on their tax code and how much of their taxable income is above their Personal Allowance .
+England and Northern Ireland
+The standard employee personal allowance for the 2026 to 2027 tax year is:
+£242 per week
+£1,048 per month
+£12,570 per year
+PAYE tax rate: Basic tax rate; Rate of tax: 20%; Annual earnings the rate applies to (above the PAYE threshold): Up to £37,700
+PAYE tax rate: Higher tax rate; Rate of tax: 40%; Annual earnings the rate applies to (above the PAYE threshold): From £37,701 to £125,140
+PAYE tax rate: Additional tax rate; Rate of tax: 45%; Annual earnings the rate applies to (above the PAYE threshold): Above £125,140
+Scotland
+The standard employee personal allowance for the 2026 to 2027 tax year is:
+£242 per week
+£1,048 per month
+£12,570 per year
+PAYE tax rate: Starter tax rate; Rate of tax: 19%; Annual earnings the rate applies to (above the PAYE threshold): Up to £3,967
+PAYE tax rate: Basic tax rate; Rate of tax: 20%; Annual earnings the rate applies to (above the PAYE threshold): From £3,968 to £16,956
+PAYE tax rate: Intermediate tax rate; Rate of tax: 21%; Annual earnings the rate applies to (above the PAYE threshold): From £16,957 to £31,092
+PAYE tax rate: Higher tax rate; Rate of tax: 42%; Annual earnings the rate applies to (above the PAYE threshold): From £31,093 to £62,430
+PAYE tax rate: Advanced tax rate; Rate of tax: 45%; Annual earnings the rate applies to (above the PAYE threshold): From £62,431 to £125,140
+PAYE tax rate: Top tax rate; Rate of tax: 48%; Annual earnings the rate applies to (above the PAYE threshold): Above £125,140
+Wales
+The standard employee personal allowance for the 2026 to 2027 tax year is:
+£242 per week
+£1,048 per month
+£12,570 per year
+PAYE tax rate: Basic tax rate; Rate of tax: 20%; Annual earnings the rate applies to (above the PAYE threshold): Up to £37,700
+PAYE tax rate: Higher tax rate; Rate of tax: 40%; Annual earnings the rate applies to (above the PAYE threshold): From £37,701 to £125,140
+PAYE tax rate: Additional tax rate; Rate of tax: 45%; Annual earnings the rate applies to (above the PAYE threshold): Above £125,140
+Emergency tax codes
+The emergency tax codes from 6 April 2026 are:
+1257L W1
+1257L M1
+1257L X
+Find out more about emergency tax codes .
+Class 1 National Insurance thresholds
+Class 1 National Insurance thresholds: Lower earnings limit; 2026 to 2027: £129 per week £559 per month £6,708 per year
+Class 1 National Insurance thresholds: Primary threshold; 2026 to 2027: £242 per week £1,048 per month £12,570 per year
+Class 1 National Insurance thresholds: Secondary threshold; 2026 to 2027: £96 per week £417 per month £5,000 per year
+Class 1 National Insurance thresholds: Freeport upper secondary threshold; 2026 to 2027: £481 per week £2,083 per month £25,000 per year
+Class 1 National Insurance thresholds: Investment Zone upper secondary threshold; 2026 to 2027: £481 per week £2,083 per month £25,000 per year
+Class 1 National Insurance thresholds: Upper secondary threshold (under 21); 2026 to 2027: £967 per week £4,189 per month £50,270 per year
+Class 1 National Insurance thresholds: Apprentice upper secondary threshold (apprentice under 25); 2026 to 2027: £967 per week £4,189 per month £50,270 per year
+Class 1 National Insurance thresholds: Veterans upper secondary threshold; 2026 to 2027: £967 per week £4,189 per month £50,270 per year
+Class 1 National Insurance thresholds: Upper earnings limit; 2026 to 2027: £967 per week £4,189 per month £50,270 per year
+Class 1 National Insurance rates
+Employee (primary) contribution rates
+Deduct primary contributions (employee’s National Insurance) from your employees’ pay through PAYE .
+National Insurance category letter: A; Earnings at or above lower earnings limit up to and including primary threshold: 0%; Earnings above primary threshold up to and including upper earnings limit: 8%; Balance of earnings above upper earnings limit: 2%
+National Insurance category letter: B; Earnings at or above lower earnings limit up to and including primary threshold: 0%; Earnings above primary threshold up to and including upper earnings limit: 1.85%; Balance of earnings above upper earnings limit: 2%
+National Insurance category letter: C; Earnings at or above lower earnings limit up to and including primary threshold: nil; Earnings above primary threshold up to and including upper earnings limit: nil; Balance of earnings above upper earnings limit: nil
+National Insurance category letter: D (Investment Zone — deferment); Earnings at or above lower earnings limit up to and including primary threshold: 0%; Earnings above primary threshold up to and including upper earnings limit: 2%; Balance of earnings above upper earnings limit: 2%
+National Insurance category letter: E (Investment Zone — married women and widows reduced rate); Earnings at or above lower earnings limit up to and including primary threshold: 0%; Earnings above primary threshold up to and including upper earnings limit: 1.85%; Balance of earnings above upper earnings limit: 2%
+National Insurance category letter: F (Freeport); Earnings at or above lower earnings limit up to and including primary threshold: 0%; Earnings above primary threshold up to and including upper earnings limit: 8%; Balance of earnings above upper earnings limit: 2%
+National Insurance category letter: H (apprentice under 25); Earnings at or above lower earnings limit up to and including primary threshold: 0%; Earnings above primary threshold up to and including upper earnings limit: 8%; Balance of earnings above upper earnings limit: 2%
+National Insurance category letter: I (Freeport — married women and widows reduced rate); Earnings at or above lower earnings limit up to and including primary threshold: 0%; Earnings above primary threshold up to and including upper earnings limit: 1.85%; Balance of earnings above upper earnings limit: 2%
+National Insurance category letter: J; Earnings at or above lower earnings limit up to and including primary threshold: 0%; Earnings above primary threshold up to and including upper earnings limit: 2%; Balance of earnings above upper earnings limit: 2%
+National Insurance category letter: K (Investment Zone — state pensioner); Earnings at or above lower earnings limit up to and including primary threshold: nil; Earnings above primary threshold up to and including upper earnings limit: nil; Balance of earnings above upper earnings limit: nil
+National Insurance category letter: L (Freeport — deferment); Earnings at or above lower earnings limit up to and including primary threshold: 0%; Earnings above primary threshold up to and including upper earnings limit: 2%; Balance of earnings above upper earnings limit: 2%
+National Insurance category letter: M (under 21); Earnings at or above lower earnings limit up to and including primary threshold: 0%; Earnings above primary threshold up to and including upper earnings limit: 8%; Balance of earnings above upper earnings limit: 2%
+National Insurance category letter: N (Investment Zone); Earnings at or above lower earnings limit up to and including primary threshold: 0%; Earnings above primary threshold up to and including upper earnings limit: 8%; Balance of earnings above upper earnings limit: 2%
+National Insurance category letter: S (Freeport — state pensioner); Earnings at or above lower earnings limit up to and including primary threshold: nil; Earnings above primary threshold up to and including upper earnings limit: nil; Balance of earnings above upper earnings limit: nil
+National Insurance category letter: V (veteran); Earnings at or above lower earnings limit up to and including primary threshold: 0%; Earnings above primary threshold up to and including upper earnings limit: 8%; Balance of earnings above upper earnings limit: 2%
+National Insurance category letter: Z (under 21 — deferment); Earnings at or above lower earnings limit up to and including primary threshold: 0%; Earnings above primary threshold up to and including upper earnings limit: 2%; Balance of earnings above upper earnings limit: 2%
+Employer (secondary) contribution rates
+You pay secondary contributions (employer’s National Insurance) to HMRC as part of your PAYE bill.
+Find out more about running payroll and paying HMRC and how to Pay employers’ PAYE tax and National Insurance .
+National Insurance category letter: A; Earnings above secondary threshold up to and including lower earnings limit: 15%; Earnings above lower earnings limit up to and including Freeport and Investment Zone upper secondary thresholds: 15%; Earnings above Freeport and Investment Zone upper secondary thresholds up to and including upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%; Balance of earnings above upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%
+National Insurance category letter: B; Earnings above secondary threshold up to and including lower earnings limit: 15%; Earnings above lower earnings limit up to and including Freeport and Investment Zone upper secondary thresholds: 15%; Earnings above Freeport and Investment Zone upper secondary thresholds up to and including upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%; Balance of earnings above upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%
+National Insurance category letter: C; Earnings above secondary threshold up to and including lower earnings limit: 15%; Earnings above lower earnings limit up to and including Freeport and Investment Zone upper secondary thresholds: 15%; Earnings above Freeport and Investment Zone upper secondary thresholds up to and including upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%; Balance of earnings above upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%
+National Insurance category letter: D (Investment Zone — deferment); Earnings above secondary threshold up to and including lower earnings limit: 0%; Earnings above lower earnings limit up to and including Freeport and Investment Zone upper secondary thresholds: 0%; Earnings above Freeport and Investment Zone upper secondary thresholds up to and including upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%; Balance of earnings above upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%
+National Insurance category letter: E (Investment Zone — married women and widows reduced rate); Earnings above secondary threshold up to and including lower earnings limit: 0%; Earnings above lower earnings limit up to and including Freeport and Investment Zone upper secondary thresholds: 0%; Earnings above Freeport and Investment Zone upper secondary thresholds up to and including upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%; Balance of earnings above upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%
+National Insurance category letter: F (Freeport); Earnings above secondary threshold up to and including lower earnings limit: 0%; Earnings above lower earnings limit up to and including Freeport and Investment Zone upper secondary thresholds: 0%; Earnings above Freeport and Investment Zone upper secondary thresholds up to and including upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%; Balance of earnings above upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%
+National Insurance category letter: H (apprentice under 25); Earnings above secondary threshold up to and including lower earnings limit: 0%; Earnings above lower earnings limit up to and including Freeport and Investment Zone upper secondary thresholds: 0%; Earnings above Freeport and Investment Zone upper secondary thresholds up to and including upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 0%; Balance of earnings above upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%
+National Insurance category letter: I (Freeport — married women and widows reduced rate); Earnings above secondary threshold up to and including lower earnings limit: 0%; Earnings above lower earnings limit up to and including Freeport and Investment Zone upper secondary thresholds: 0%; Earnings above Freeport and Investment Zone upper secondary thresholds up to and including upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%; Balance of earnings above upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%
+National Insurance category letter: J; Earnings above secondary threshold up to and including lower earnings limit: 15%; Earnings above lower earnings limit up to and including Freeport and Investment Zone upper secondary thresholds: 15%; Earnings above Freeport and Investment Zone upper secondary thresholds up to and including upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%; Balance of earnings above upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%
+National Insurance category letter: K (Investment Zone — state pensioner); Earnings above secondary threshold up to and including lower earnings limit: 0%; Earnings above lower earnings limit up to and including Freeport and Investment Zone upper secondary thresholds: 0%; Earnings above Freeport and Investment Zone upper secondary thresholds up to and including upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%; Balance of earnings above upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%
+National Insurance category letter: L (Freeport — deferment); Earnings above secondary threshold up to and including lower earnings limit: 0%; Earnings above lower earnings limit up to and including Freeport and Investment Zone upper secondary thresholds: 0%; Earnings above Freeport and Investment Zone upper secondary thresholds up to and including upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%; Balance of earnings above upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%
+National Insurance category letter: M (under 21); Earnings above secondary threshold up to and including lower earnings limit: 0%; Earnings above lower earnings limit up to and including Freeport and Investment Zone upper secondary thresholds: 0%; Earnings above Freeport and Investment Zone upper secondary thresholds up to and including upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 0%; Balance of earnings above upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%
+National Insurance category letter: N (Investment Zone); Earnings above secondary threshold up to and including lower earnings limit: 0%; Earnings above lower earnings limit up to and including Freeport and Investment Zone upper secondary thresholds: 0%; Earnings above Freeport and Investment Zone upper secondary thresholds up to and including upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%; Balance of earnings above upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%
+National Insurance category letter: S (Freeport — state pensioner); Earnings above secondary threshold up to and including lower earnings limit: 0%; Earnings above lower earnings limit up to and including Freeport and Investment Zone upper secondary thresholds: 0%; Earnings above Freeport and Investment Zone upper secondary thresholds up to and including upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%; Balance of earnings above upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%
+National Insurance category letter: V (veteran); Earnings above secondary threshold up to and including lower earnings limit: 0%; Earnings above lower earnings limit up to and including Freeport and Investment Zone upper secondary thresholds: 0%; Earnings above Freeport and Investment Zone upper secondary thresholds up to and including upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 0%; Balance of earnings above upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%
+National Insurance category letter: Z (under 21 — deferment); Earnings above secondary threshold up to and including lower earnings limit: 0%; Earnings above lower earnings limit up to and including Freeport and Investment Zone upper secondary thresholds: 0%; Earnings above Freeport and Investment Zone upper secondary thresholds up to and including upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 0%; Balance of earnings above upper earnings limit, upper secondary thresholds for under 21s, apprentices and veterans: 15%
+Director’s contribution rates
+The rates also apply to directors. You can read more information about:
+the methods used for working out National Insurance contributions for company directors
+the rules for paying National Insurance contributions for company directors
+Class 1A National Insurance: expenses and benefits
+You must pay Class 1A National Insurance on work benefits you give to your employees, for example a company mobile phone. You report and pay Class 1A on expenses and benefits at the end of each tax year.
+The National Insurance Class 1A rate on expenses and benefits for 2026 to 2027 is 15%.
+Find out more about expenses and benefits for employers .
+Class 1A National Insurance: termination awards and sporting testimonial payments
+Class 1A National Insurance contributions are due on the amount of termination awards paid to employees which are over £30,000 and on the amount of sporting testimonial payments paid by independent committees which are over £100,000. You report and pay Class 1A on these types of payments during the tax year as part of your payroll.
+The National Insurance Class 1A rate on termination awards and sporting testimonial payments for 2026 to 2027 is 15%.
+Pay employers’ Class 1A National Insurance .
+Class 1B National Insurance: PAYE Settlement Agreements ( PSAs )
+You pay Class 1B National Insurance if you have a PAYE Settlement Agreement . This allows you to make one annual payment to cover all the tax and National Insurance due on small or irregular taxable expenses or benefits for your employees.
+The National Insurance Class 1B rate for 2026 to 2027 is 15%.
+Pay Class 1B National Insurance .
+National Minimum Wage

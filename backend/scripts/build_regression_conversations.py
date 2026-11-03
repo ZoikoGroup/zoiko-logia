@@ -146,6 +146,18 @@ cases += [
  conv("explicit-reply-is-not-acknowledged", "stage 2", ["context", "clarification", "message-types"], [
    t("Calculate the lease liability for payments of £10,000 a year at 5% for 3 years.", outcome="clarification_required"),
    t(VAN, reply_to_clarification=True, message_not_starts="Noted")]),
+ # Task Contract, Stage B: a pasted case of its own after another case is a
+ # new case; the earlier case's facts never reach it (defect class 4).
+ conv("new-case-after-another-case", "29 Oct live test (Stage B)", ["context", "case-scope", "contamination"], [
+   t("Northwind Retail Ltd operates 25 stores in the UK and reports under FRS 102. Its bank loan of £15 million has a "
+     "covenant requiring net debt to EBITDA of no more than 3.0x; the year-end ratio was 3.4x. The bank has not yet "
+     "issued a waiver. The auditor's report is due on 30 June 2026.", outcome="acknowledged"),
+   t("Brightwater Hotels plc – Audit Planning\n\nBrightwater Hotels plc owns 12 hotels and reports under IFRS. Occupancy "
+     "fell from 78% to 54% in the year ended 31 December 2026, and the company breached a loan covenant in November "
+     "2026.\n\nRequired:\n1. Identify the going concern indicators and explain the auditor's responsibilities under "
+     "ISA (UK) 570.", outcome="answered", prompt_not_contains=["Northwind", "£15 million", "waiver"],
+     message_not_starts="The text this refers to")],
+   note="Brightwater's 'the company' was read as pointing back; Northwind's 'no waiver' appeared in its answer."),
  conv("reply-is-not-context", "28 Oct round 4", ["clarification"], [
    t(VAT_NO_TREATMENT, outcome="clarification_required"),
    t("Our turnover is £95,000 for the last 12 months.", message_not_starts="Noted")]),

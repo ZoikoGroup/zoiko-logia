@@ -1,0 +1,279 @@
+{
+ "version": "tax-parameters-1",
+ "built": "2026-11-03",
+ "description": "Statutory rates and thresholds by tax year, each tied to the official page and line it was read from. Calculators select the entry in force for the question's tax year (calculations/statutory.py); a year with no entry is not calculated.",
+ "entries": [
+  {
+   "id": "uk-income-tax-rUK-2025_2026",
+   "country": "UK",
+   "region": "ENGLAND_NI_WALES",
+   "tax": "income_tax",
+   "period": {
+    "label": "2025 to 2026",
+    "from": "2025-04-06",
+    "to": "2026-04-05"
+   },
+   "values": {
+    "personal_allowance": 12570,
+    "taper_from": 100000,
+    "taper_rate": 0.5,
+    "bands": [
+     {
+      "upto": 37700,
+      "rate": 20,
+      "name": "basic"
+     },
+     {
+      "upto": 125140,
+      "rate": 40,
+      "name": "higher"
+     },
+     {
+      "upto": null,
+      "rate": 45,
+      "name": "additional"
+     }
+    ]
+   },
+   "source": [
+    {
+     "url": "https://www.gov.uk/guidance/rates-and-thresholds-for-employers-2025-to-2026",
+     "read_at": "2026-11-03T15:15:37.813895+00:00",
+     "content_sha256": "26863ddef94689b0467fe8ff63206e491c061a7fb3a0f2a582bd31bc2628c583",
+     "quotes": [
+      "£12,570 per year",
+      "PAYE tax rate: Basic tax rate; Rate of tax: 20%; Annual earnings the rate applies to (above the PAYE threshold): Up to £37,700",
+      "PAYE tax rate: Higher tax rate; Rate of tax: 40%; Annual earnings the rate applies to (above the PAYE threshold): From £37,701 to £125,140",
+      "PAYE tax rate: Additional tax rate; Rate of tax: 45%; Annual earnings the rate applies to (above the PAYE threshold): Above £125,140"
+     ]
+    },
+    {
+     "url": "https://www.gov.uk/income-tax-rates",
+     "read_at": "2026-11-03T15:15:38.719983+00:00",
+     "content_sha256": "d606a1257d7c6e98ec3dc3699c064a8bb44c5c46abcfd6278f164f2abbce734c",
+     "quotes": [
+      "Your personal allowance goes down by £1 for every £2 that your adjusted net income is above £100,000"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "uk-ni-employee-2025_2026",
+   "country": "UK",
+   "tax": "ni_employee",
+   "period": {
+    "label": "2025 to 2026",
+    "from": "2025-04-06",
+    "to": "2026-04-05"
+   },
+   "values": {
+    "primary_threshold": 12570,
+    "upper_earnings_limit": 50270,
+    "main_rate": 8,
+    "upper_rate": 2
+   },
+   "source": [
+    {
+     "url": "https://www.gov.uk/guidance/rates-and-thresholds-for-employers-2025-to-2026",
+     "read_at": "2026-11-03T15:15:37.813895+00:00",
+     "content_sha256": "26863ddef94689b0467fe8ff63206e491c061a7fb3a0f2a582bd31bc2628c583",
+     "quotes": [
+      "Class 1 National Insurance thresholds: Primary threshold; 2025 to 2026: £242 per week £1,048 per month £12,570 per year",
+      "Class 1 National Insurance thresholds: Upper earnings limit; 2025 to 2026: £967 per week £4,189 per month £50,270 per year",
+      "National Insurance category letter: A; Earnings at or above lower earnings limit up to and including primary threshold: 0%; Earnings above primary threshold up to and including upper earnings limit: 8%; Balance of earnings above upper earnings limit: 2%"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "uk-ni-employer-2025_2026",
+   "country": "UK",
+   "tax": "ni_employer",
+   "period": {
+    "label": "2025 to 2026",
+    "from": "2025-04-06",
+    "to": "2026-04-05"
+   },
+   "values": {
+    "secondary_threshold": 5000,
+    "rate": 15
+   },
+   "source": [
+    {
+     "url": "https://www.gov.uk/guidance/rates-and-thresholds-for-employers-2025-to-2026",
+     "read_at": "2026-11-03T15:15:37.813895+00:00",
+     "content_sha256": "26863ddef94689b0467fe8ff63206e491c061a7fb3a0f2a582bd31bc2628c583",
+     "quotes": [
+      "Class 1 National Insurance thresholds: Secondary threshold; 2025 to 2026: £96 per week £417 per month £5,000 per year",
+      "National Insurance category letter: A; Earnings above secondary threshold up to and including lower earnings limit: 15%"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "uk-income-tax-rUK-2026_2027",
+   "country": "UK",
+   "region": "ENGLAND_NI_WALES",
+   "tax": "income_tax",
+   "period": {
+    "label": "2026 to 2027",
+    "from": "2026-04-06",
+    "to": "2027-04-05"
+   },
+   "values": {
+    "personal_allowance": 12570,
+    "taper_from": 100000,
+    "taper_rate": 0.5,
+    "bands": [
+     {
+      "upto": 37700,
+      "rate": 20,
+      "name": "basic"
+     },
+     {
+      "upto": 125140,
+      "rate": 40,
+      "name": "higher"
+     },
+     {
+      "upto": null,
+      "rate": 45,
+      "name": "additional"
+     }
+    ]
+   },
+   "source": [
+    {
+     "url": "https://www.gov.uk/guidance/rates-and-thresholds-for-employers-2026-to-2027",
+     "read_at": "2026-11-03T10:20:00+00:00",
+     "content_sha256": "9ec65eeb455efc3fc61d49b293a5385dbf4f3a82df8cb1b0d274f80f825f9f89",
+     "quotes": [
+      "£12,570 per year",
+      "PAYE tax rate: Basic tax rate; Rate of tax: 20%; Annual earnings the rate applies to (above the PAYE threshold): Up to £37,700",
+      "PAYE tax rate: Higher tax rate; Rate of tax: 40%; Annual earnings the rate applies to (above the PAYE threshold): From £37,701 to £125,140",
+      "PAYE tax rate: Additional tax rate; Rate of tax: 45%; Annual earnings the rate applies to (above the PAYE threshold): Above £125,140"
+     ]
+    },
+    {
+     "url": "https://www.gov.uk/income-tax-rates",
+     "read_at": "2026-11-03T15:15:38.719983+00:00",
+     "content_sha256": "d606a1257d7c6e98ec3dc3699c064a8bb44c5c46abcfd6278f164f2abbce734c",
+     "quotes": [
+      "Your personal allowance goes down by £1 for every £2 that your adjusted net income is above £100,000"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "uk-ni-employee-2026_2027",
+   "country": "UK",
+   "tax": "ni_employee",
+   "period": {
+    "label": "2026 to 2027",
+    "from": "2026-04-06",
+    "to": "2027-04-05"
+   },
+   "values": {
+    "primary_threshold": 12570,
+    "upper_earnings_limit": 50270,
+    "main_rate": 8,
+    "upper_rate": 2
+   },
+   "source": [
+    {
+     "url": "https://www.gov.uk/guidance/rates-and-thresholds-for-employers-2026-to-2027",
+     "read_at": "2026-11-03T10:20:00+00:00",
+     "content_sha256": "9ec65eeb455efc3fc61d49b293a5385dbf4f3a82df8cb1b0d274f80f825f9f89",
+     "quotes": [
+      "Class 1 National Insurance thresholds: Primary threshold; 2026 to 2027: £242 per week £1,048 per month £12,570 per year",
+      "Class 1 National Insurance thresholds: Upper earnings limit; 2026 to 2027: £967 per week £4,189 per month £50,270 per year",
+      "National Insurance category letter: A; Earnings at or above lower earnings limit up to and including primary threshold: 0%; Earnings above primary threshold up to and including upper earnings limit: 8%; Balance of earnings above upper earnings limit: 2%"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "uk-ni-employer-2026_2027",
+   "country": "UK",
+   "tax": "ni_employer",
+   "period": {
+    "label": "2026 to 2027",
+    "from": "2026-04-06",
+    "to": "2027-04-05"
+   },
+   "values": {
+    "secondary_threshold": 5000,
+    "rate": 15
+   },
+   "source": [
+    {
+     "url": "https://www.gov.uk/guidance/rates-and-thresholds-for-employers-2026-to-2027",
+     "read_at": "2026-11-03T10:20:00+00:00",
+     "content_sha256": "9ec65eeb455efc3fc61d49b293a5385dbf4f3a82df8cb1b0d274f80f825f9f89",
+     "quotes": [
+      "Class 1 National Insurance thresholds: Secondary threshold; 2026 to 2027: £96 per week £417 per month £5,000 per year",
+      "National Insurance category letter: A; Earnings above secondary threshold up to and including lower earnings limit: 15%"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "in-income-tax-new-regime-ay-2026-27",
+   "country": "INDIA",
+   "tax": "income_tax_new_regime",
+   "period": {
+    "label": "FY 2025-26 (AY 2026-27)",
+    "from": "2025-04-01",
+    "to": "2026-03-31"
+   },
+   "values": {
+    "slabs": [
+     {
+      "upto": 400000,
+      "rate": 0
+     },
+     {
+      "upto": 800000,
+      "rate": 5
+     },
+     {
+      "upto": 1200000,
+      "rate": 10
+     },
+     {
+      "upto": 1600000,
+      "rate": 15
+     },
+     {
+      "upto": 2000000,
+      "rate": 20
+     },
+     {
+      "upto": 2400000,
+      "rate": 25
+     },
+     {
+      "upto": null,
+      "rate": 30
+     }
+    ]
+   },
+   "not_in_source": [
+    "rebate under section 87A",
+    "health and education cess"
+   ],
+   "source": [
+    {
+     "url": "https://www.incometax.gov.in/iec/foportal/help/individual/return-applicable-1",
+     "read_at": "2026-11-03T15:15:39.021729+00:00",
+     "content_sha256": "0d813117ebe6b0b18f360583b7239529ba7578e4fc886b4bf2b14be6fbf0c804",
+     "quotes": [
+      "Tax Slabs for AY 2026-27",
+      "New Tax Regime u/s 115BAC of Income Tax Act,1961 – Income Tax Slab: Up to ₹ 4,00,000; New Tax Regime u/s 115BAC of Income Tax Act,1961 – Income Tax Rate: Nil",
+      "Income Tax Slab: Above ₹ 24,00,000; New Tax Regime u/s 115BAC of Income Tax Act,1961 – Income Tax Rate: ₹ 3,00,000 + 30% above ₹ 24,00,000"
+     ]
+    }
+   ]
+  }
+ ]
+}

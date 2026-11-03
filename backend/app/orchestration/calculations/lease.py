@@ -210,6 +210,22 @@ def _cash_flows(terms, asc_operating) -> str:
             "payments are all operating.")
 
 
+def _lease_framework(text: str) -> str | None:
+    """The lease model for the framework the user named, read with the same
+    framework families as the framework check (framework_scope): IFRS and
+    Ind AS (Ind AS 116 follows IFRS 16) use IFRS 16; US GAAP uses ASC 842.
+    "Kestrel … reports under IFRS" was read as no framework, so the answer
+    carried an IFRS-or-ASC-842 note the framework check then cut, and was
+    marked partial (29 Oct 2026). None when none, or more than one, is named."""
+    from app.orchestration.framework_scope import framework_families
+    families = framework_families(text) - {"UK GAAP"}
+    if families <= {"IFRS", "Ind AS"} and families:
+        return "IFRS 16"
+    if families == {"US GAAP"}:
+        return "ASC 842"
+    return None
+
+
 # ── reading a lease from the user's words ─────────────────────────────────────
 
 _MONEY = r"(?P<sym>[£$€₹])\s?(?P<amount>\d[\d,]*(?:\.\d+)?)"
@@ -258,8 +274,7 @@ def read_lease(text: str) -> tuple[LeaseTerms | None, list[str]]:
         return None, missing
     freq_word = (payment.groupdict().get("freq") or payment.groupdict().get("freq2") or "annual").lower()
     per_year = 4 if "quarter" in freq_word else 12 if "month" in freq_word else 2 if ("semi" in freq_word or "half" in freq_word) else 1
-    framework = "IFRS 16" if re.search(r"\bIFRS\s?16\b", t, re.I) else (
-        "ASC 842" if re.search(r"\bASC\s?842\b|\bUS\s+GAAP\b", t, re.I) else None)
+    framework = _lease_framework(t)
     classification = ("operating" if re.search(r"\boperating\s+lease\b", t, re.I)
                       else "finance" if re.search(r"\bfinance\s+lease\b", t, re.I) else None)
     idc = re.search(rf"\binitial\s+direct\s+costs?\s*(?:of|are|were|:)?\s*{_MONEY}", t, re.I)

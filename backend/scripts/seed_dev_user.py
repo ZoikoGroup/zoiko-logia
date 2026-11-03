@@ -272,4 +272,8 @@ async def seed() -> None:
 
 
 if __name__ == "__main__":
+    # Seeds tenants, users and sources ("Local tax bulletin" reached the shared
+    # production database): refuse unless DATABASE_URL is local or a container.
+    from tests.db_guard import require_isolated_database
+    require_isolated_database()
     asyncio.run(seed())

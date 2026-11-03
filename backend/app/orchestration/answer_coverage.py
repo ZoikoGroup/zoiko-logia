@@ -4,9 +4,11 @@ Run again after pruning: a supported remainder need not be a complete answer.
 This detects omissions, not whether the remaining statements are true.
 """
 import re
+from app.orchestration.case_text import request_part
 
 
 def requested_topic_gaps(question: str, answer: str) -> list[str]:
+    question = request_part(question)  # a case study's questions, not its background (case_text.py)
     gaps = []
     def has(pattern):
         return bool(re.search(pattern, answer, re.I))

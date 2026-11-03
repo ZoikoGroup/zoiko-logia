@@ -31,6 +31,18 @@ _NEEDS_SOURCE = re.compile(
     re.IGNORECASE,
 )
 _FIGURE = re.compile(r"%|[£$€₹¥]|\b\d{3,}\b|\[REF-", re.IGNORECASE)
+# A rule of law is never general knowledge: which of a statute and a treaty
+# prevails, what an appeal or a stay requires, what a taxpayer must do. Filled
+# without a source, "the domestic Act generally prevails unless the DTAA
+# expressly overrides it" contradicted Section 90(2) (the more beneficial
+# applies) and the stay conditions were invented (29 Oct 2026). Such a gap
+# stays a gap; the answer stays "Partially answered" for it.
+_LEGAL_RULE = re.compile(
+    r"\b(?:laws?|legal(?:ly)?|legislat\w*|statut\w*|acts?|sections?|articles?|treat(?:y|ies)|dtaa|convention|"
+    r"regulat\w*|tribunal|court|appeal\w*|appellate|stay|assessing\s+officer|penalt\w*|prosecut\w*|"
+    r"prevails?|overrides?|precedence|supersedes?|must|shall|mandatory|obliged|prohibited|liable)\b",
+    re.IGNORECASE,
+)
 _STANDARD_NAME = re.compile(r"\b(?:IFRS|IAS|IFRIC|SIC|Ind\s?AS|ISA|ASC|FRS)\s?\d{1,4}\b", re.IGNORECASE)
 MAX_GAPS = 6
 LABEL = "General explanation:"
@@ -53,7 +65,7 @@ def explanation_gaps(text: str) -> list[str]:
         sentence = match.group(0).strip(" -*•\t")
         # A standard's name ("IAS 16") is not a figure; what it covers can be explained.
         unnamed = _STANDARD_NAME.sub("", sentence)
-        if sentence and not _NEEDS_SOURCE.search(unnamed) and sentence not in gaps:
+        if sentence and not _NEEDS_SOURCE.search(unnamed) and not _LEGAL_RULE.search(unnamed) and sentence not in gaps:
             gaps.append(sentence)
     return gaps[:MAX_GAPS]
 
@@ -77,7 +89,8 @@ async def fill_explanation_gaps(text: str, question: str, complete: Callable[[st
         if not numbered:
             continue
         index, explanation = int(numbered.group(1)) - 1, numbered.group(2).strip()
-        if 0 <= index < len(gaps) and len(explanation) >= 20 and not _FIGURE.search(explanation):
+        if (0 <= index < len(gaps) and len(explanation) >= 20 and not _FIGURE.search(explanation)
+                and not _LEGAL_RULE.search(explanation)):
             text = _replace_sentence(text, gaps[index], f"{LABEL} {explanation}")
             filled = True
     return text, filled

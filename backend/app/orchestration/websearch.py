@@ -381,13 +381,58 @@ _TAG = re.compile(r"""<(?:[^>"']|"[^"]*"|'[^']*')*>""")
 
 def _html_to_text(markup: str) -> str:
     """Visible text with structure kept: tables become one labelled line per
-    row (see _table_to_text); other blocks become lines."""
+    row (see _table_to_text); other blocks become lines. A page's structured
+    question-and-answer data is added after it (structured_answers)."""
+    structured = structured_answers(markup)
     markup = re.sub(r"(?is)<(script|style|noscript|head|nav|footer|svg)\b.*?</\1>", " ", markup)
     markup = re.sub(r"(?is)<table\b.*?</table\s*>", _table_to_text, markup)
     markup = re.sub(r"(?i)<br\s*/?>|</(?:p|li|h[1-6]|div|section|caption)\s*>", "\n", markup)
     text = html.unescape(_TAG.sub(" ", markup))
-    lines = (_ANY_SPACE.sub(" ", line).strip(" |") for line in text.splitlines())
-    return "\n".join(line for line in lines if line)
+    lines = [_ANY_SPACE.sub(" ", line).strip(" |") for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    visible = " ".join(lines)
+    lines += [line for line in structured if line not in visible]
+    return "\n".join(lines)
+
+
+_JSON_LD = re.compile(r'(?is)<script\b[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script\s*>')
+
+
+def structured_answers(markup: str) -> list[str]:
+    """The question-and-answer entries in a page's JSON-LD (schema.org
+    Question / Answer, as GOV.UK publishes every part of a guide): "You must
+    leave the scheme if your VAT taxable turnover is more than £1.6 million"
+    is in the Cash Accounting Scheme page's data, not its visible overview, so
+    the leaving rule was never read and the joining limit was cited for it
+    (3 Nov 2026). Other structured data (organisation, breadcrumbs) is left."""
+    out: list[str] = []
+
+    def walk(node):
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+        elif isinstance(node, dict):
+            kind = node.get("@type")
+            kinds = set(kind) if isinstance(kind, list) else {kind}
+            if "Question" in kinds:
+                answer = node.get("acceptedAnswer") or {}
+                answers = answer if isinstance(answer, list) else [answer]
+                for item in answers:
+                    body = item.get("text") if isinstance(item, dict) else None
+                    if isinstance(body, str) and body.strip():
+                        heading = node.get("name") if isinstance(node.get("name"), str) else ""
+                        plain = _ANY_SPACE.sub(" ", html.unescape(_TAG.sub(" ", body))).strip()
+                        out.append(f"{heading.strip()}: {plain}" if heading.strip() else plain)
+            for value in node.values():
+                if isinstance(value, (list, dict)):
+                    walk(value)
+
+    for block in _JSON_LD.findall(markup or ""):
+        try:
+            walk(json.loads(block))
+        except (ValueError, TypeError):
+            continue
+    return list(dict.fromkeys(line for line in out if len(line) > 20))
 
 
 _FIGURE = re.compile(r"[₹$£€]\s?\d|\d\s?%|\d{1,3}(?:,\d{2,3})+")
@@ -1041,6 +1086,26 @@ def question_count(query: str) -> int:
     return max(1, len([part for part in parts if len(part.split()) >= 3]))
 
 
+_ITEM_START = re.compile(r"^\s*(?:[-*•]|\d+[.)]|Q\d+(?:\.\d+)*\b)")
+
+
+def task_items(query: str) -> list[str]:
+    """Numbered or bulleted items that each ask for something ("1. Calculate
+    the initial lease liability… 2. Prepare the journal entry… 3. Explain…"),
+    with their continuation lines; [] unless there are two or more. Unlabelled
+    tasks under "Task for the Bot:" were one search and one part (29 Oct 2026).
+    A list of statements (facts, anomalies) is not split."""
+    from app.orchestration.input_requirements import _TASK_ITEM
+    items: list[str] = []
+    for line in (query or "").splitlines():
+        if _ITEM_START.match(line):
+            items.append(line.strip())
+        elif items and line.strip():
+            items[-1] += " " + line.strip()
+    asks = [item for item in items if _TASK_ITEM.match(item) or "?" in item]
+    return asks if len(asks) >= 2 and len(asks) == len(items) else []
+
+
 # A flow's decisions, not questions: "Requisition approved? Yes -> Create
 # purchase order; ... Order approved? No -> Hold order" was counted as nine
 # questions, and the drawing it described was dropped (QA case E04).
@@ -1053,7 +1118,14 @@ def sub_questions(query: str) -> list[str]:
     structured = structured_research_parts(query)
     if structured:
         return structured
-    if is_pasted_material(query) or _DECISION_FLOW.search(query):
+    # A described flowchart is one request (main, QA case E04); checked before
+    # task_items so a bulleted flow with several "?" decisions is not split.
+    if _DECISION_FLOW.search(query):
+        return [query]
+    tasks = task_items(query)
+    if tasks:
+        return tasks[:MAX_SUB_QUESTIONS]
+    if is_pasted_material(query):
         return [query]
     parts = [part.strip() for part in _QUESTION_BOUNDARY.split(query.strip()) if part.strip()]
     parts = [part for part in parts if len(part.split()) >= 3]
@@ -1106,7 +1178,12 @@ async def web_search_each(query: str, jurisdiction: str = "", limit: int = 5) ->
     so every part of the answer has sources of its own."""
     from app.orchestration.research_parts import structured_research_parts, targeted_retry_query
     from app.orchestration.evidence_planning import plan_evidence_search
+    from app.orchestration.case_text import request_part
     original_query = query
+    # A case study is researched by its questions, not its background: one
+    # search per background paragraph ("Zenith recorded online sales revenue
+    # on the date an order was placed…") found no official source (29 Oct 2026).
+    query = request_part(query)
     # Split before shortening: focusing a pasted table on its first/last
     # lines used to erase its middle rows before a search was even planned.
     if not structured_research_parts(query):
@@ -1169,7 +1246,44 @@ async def web_search_each(query: str, jurisdiction: str = "", limit: int = 5) ->
                     # without mutating a cached WebSource shared by requests.
                     merged[index] = dataclasses.replace(previous, snippet="\n\n".join(
                         snippet for snippet in (previous.snippet, source.snippet) if snippet))
-    return merged
+    from app.orchestration.official_evidence import official_pages
+    protected = {url for _, url in official_pages(original_query)} | {_UK_VAT_RULES_URL}
+    return without_ended_tax_years(merged, original_query, protected)
+
+
+# A page titled for a tax year that has ended ("Rates and thresholds for
+# employers 2024 to 2025") answers a question about that year, not about the
+# current one. Among the evidence for "What is the current UK employer
+# National Insurance contribution rate?" it gave 13.8%, and the claim judge
+# rejected the correct 15% as contradicted (3 Nov 2026).
+_TAX_YEAR_SPAN = re.compile(r"\b((?:19|20)\d{2})\s*(?:to|-|–|/)\s*((?:19|20)?\d{2})\b")
+_UK_VAT_RULES_URL = "https://www.gov.uk/register-for-vat"
+
+
+def ended_tax_year(title: str, *, today=None) -> bool:
+    """The title names a tax year whose end year is before this year."""
+    from datetime import date
+    year = (today or date.today()).year
+    for match in _TAX_YEAR_SPAN.finditer(title or ""):
+        start, end = int(match.group(1)), match.group(2)
+        end_year = int(end) if len(end) == 4 else (start // 100) * 100 + int(end)
+        if end_year == start + 1 and end_year < year:
+            return True
+    return False
+
+
+def without_ended_tax_years(sources: list, question: str, protected: set[str] = frozenset(), *, today=None) -> list:
+    """The sources less web pages titled for an ended tax year, when the
+    question names no year of its own and other sources remain. A question
+    about a past year ("in 2023", "2023/24") keeps them; Kriton's fixed
+    official pages are never removed."""
+    if re.search(r"\b(?:19|20)\d{2}\b", question or ""):
+        return sources
+    kept = [s for s in sources if s.url in protected or not ended_tax_year(s.title or "", today=today)]
+    if not kept or len(kept) == len(sources):
+        return sources
+    logger.info("Ended tax-year pages left out: %s", [s.title for s in sources if s not in kept][:5])
+    return kept
 
 
 def evidence_search_queries(query: str) -> list[str]:

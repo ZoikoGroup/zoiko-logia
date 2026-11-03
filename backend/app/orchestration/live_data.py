@@ -98,6 +98,10 @@ class LiveDataResult:
     deterministic_answer: str | None = None
 
 
+async def _no_match() -> None:
+    return None
+
+
 async def fetch_live_data(query: str) -> LiveDataResult:
     """Run the exact-figure connectors concurrently. Never raises — a failing
     connector contributes nothing to either the sources or the evidence.
@@ -107,15 +111,24 @@ async def fetch_live_data(query: str) -> LiveDataResult:
     can run concurrently without one path double-populating evidence for the
     same query. One total deadline bounds the whole fan-out: every connector
     that has not finished within it is cancelled, and everything that did
-    finish is still kept."""
+    finish is still kept.
+
+    A statistics or central-bank connector that cannot answer the question
+    is not called (connector_scope.py): it contributes the same None it
+    returns when its own gate finds no match."""
+    from app.orchestration.connector_scope import applies
+
+    def scoped(name: str, find):
+        return find(query) if applies(name, query) else _no_match()
+
     connectors = (
-        _find_rate(query), _find_fred_series(query), _find_best_series(query),
-        _find_two_series(query), _find_ownership(query), fetch_sec_facts(query),
+        _find_rate(query), scoped("fred", _find_fred_series), scoped("dbnomics", _find_best_series),
+        scoped("dbnomics_pair", _find_two_series), _find_ownership(query), fetch_sec_facts(query),
         fetch_market_sources(query), fetch_legislation(query),
-        _find_fallback_rate(query), _find_bank_rate(query), _find_uk_tax_rate(query),
+        _find_fallback_rate(query), scoped("bank_of_england", _find_bank_rate), scoped("govuk_tax_rate", _find_uk_tax_rate),
         fetch_sec_fulltext(query), fetch_sec_peer_rank(query),
-        _find_policy_rate(query), _find_cash_rate(query), _find_abs_series(query),
-        _find_cso_series(query), _find_treasury_figure(query),
+        scoped("bank_of_canada", _find_policy_rate), scoped("rba", _find_cash_rate), scoped("abs", _find_abs_series),
+        scoped("cso_ireland", _find_cso_series), scoped("us_treasury", _find_treasury_figure),
         _find_oecd_tax_rate(query),
     )
     tasks = [asyncio.ensure_future(connector) for connector in connectors]

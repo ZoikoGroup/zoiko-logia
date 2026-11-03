@@ -1,0 +1,470 @@
+{
+ "version": "country-resolution-3",
+ "built": "2026-10-30",
+ "description": "Deterministic country evidence for the country resolver (design docs/country-resolution-design-2026-10-30.md). names: explicit country names, adjectives and sub-national names (E1/E2). authorities: governed tax authorities and central banks (E3). Registry terms (E4) are in country_terms.json. ambiguous_candidates: shared terms that never resolve alone and give a candidate set (null = too broad to narrow). counterparty_role_nouns: a party defined by its role in a transaction (client, supplier...): the other party when a country qualifies it after a preposition or a transaction verb. counterparty_entity_nouns: a party defined only as an entity (company, business, group...): the other party only after a transaction verb, or as the group/parent an entity belongs to. tax_words: words a country name can qualify ('UK VAT', 'German trade tax', 'taxed in Australia'); a country that qualifies the tax is the tax country and outranks the roles. framework_words: a country name followed by one of these is an accounting/auditing framework, not a country. name_exclusions: non-tax uses of a country word. Not live-verified; review before production use. tax_modifiers: the only words allowed between a qualifying country and its tax word ('German trade tax', 'US FICA social security'), so 'a UK group pay corporate tax' does not qualify.",
+ "names": {
+  "UK": [
+   "uk",
+   "u.k.",
+   "united kingdom",
+   "britain",
+   "great britain",
+   "british",
+   "england",
+   "english",
+   "scotland",
+   "scottish",
+   "wales",
+   "welsh",
+   "northern ireland"
+  ],
+  "US": [
+   "us",
+   "u.s.",
+   "usa",
+   "u.s.a.",
+   "united states",
+   "america",
+   "american",
+   "texas",
+   "california",
+   "new york",
+   "florida",
+   "delaware",
+   "illinois",
+   "nevada"
+  ],
+  "INDIA": [
+   "india",
+   "indian"
+  ],
+  "AUSTRALIA": [
+   "australia",
+   "australian",
+   "new south wales",
+   "victoria",
+   "queensland"
+  ],
+  "CANADA": [
+   "canada",
+   "canadian",
+   "ontario",
+   "quebec",
+   "british columbia",
+   "alberta"
+  ],
+  "SINGAPORE": [
+   "singapore",
+   "singaporean"
+  ],
+  "NEW_ZEALAND": [
+   "new zealand",
+   "nz"
+  ],
+  "IRELAND": [
+   "ireland",
+   "irish"
+  ],
+  "UAE": [
+   "uae",
+   "u.a.e.",
+   "united arab emirates",
+   "emirati",
+   "dubai",
+   "abu dhabi"
+  ],
+  "SAUDI_ARABIA": [
+   "saudi arabia",
+   "saudi",
+   "ksa"
+  ],
+  "MALAYSIA": [
+   "malaysia",
+   "malaysian"
+  ],
+  "SOUTH_AFRICA": [
+   "south africa",
+   "south african"
+  ],
+  "GERMANY": [
+   "germany",
+   "german"
+  ],
+  "FRANCE": [
+   "france",
+   "french"
+  ],
+  "BAHRAIN": [
+   "bahrain",
+   "bahraini"
+  ],
+  "OMAN": [
+   "oman",
+   "omani"
+  ],
+  "QATAR": [
+   "qatar",
+   "qatari"
+  ],
+  "JERSEY": [
+   "jersey"
+  ],
+  "GUERNSEY": [
+   "guernsey"
+  ],
+  "ISLE_OF_MAN": [
+   "isle of man",
+   "manx"
+  ],
+  "EU": [
+   "eu",
+   "european union"
+  ]
+ },
+ "authorities": {
+  "UK": [
+   "hmrc",
+   "hm revenue",
+   "bank of england",
+   "companies house"
+  ],
+  "US": [
+   "irs",
+   "internal revenue service",
+   "federal reserve",
+   "fomc",
+   "ssa"
+  ],
+  "INDIA": [
+   "cbdt",
+   "cbic",
+   "income tax department",
+   "gst council",
+   "rbi",
+   "reserve bank of india",
+   "gstn"
+  ],
+  "AUSTRALIA": [
+   "ato",
+   "australian taxation office",
+   "rba",
+   "reserve bank of australia"
+  ],
+  "CANADA": [
+   "cra",
+   "canada revenue agency",
+   "bank of canada"
+  ],
+  "SINGAPORE": [
+   "iras",
+   "acra",
+   "cpf board",
+   "monetary authority of singapore"
+  ],
+  "NEW_ZEALAND": [
+   "inland revenue department",
+   "reserve bank of new zealand"
+  ],
+  "IRELAND": [
+   "revenue commissioners",
+   "central bank of ireland"
+  ],
+  "UAE": [
+   "federal tax authority"
+  ],
+  "SAUDI_ARABIA": [
+   "zatca"
+  ],
+  "MALAYSIA": [
+   "lhdn",
+   "inland revenue board of malaysia",
+   "royal malaysian customs"
+  ],
+  "SOUTH_AFRICA": [
+   "sars",
+   "south african revenue service"
+  ],
+  "GERMANY": [
+   "bundeszentralamt",
+   "finanzamt"
+  ],
+  "FRANCE": [
+   "dgfip",
+   "urssaf"
+  ],
+  "EU": [
+   "ecb",
+   "european central bank",
+   "european commission"
+  ]
+ },
+ "ambiguous_candidates": {
+  "paye": [
+   "UK",
+   "IRELAND",
+   "NEW_ZEALAND",
+   "SOUTH_AFRICA"
+  ],
+  "fbt": [
+   "AUSTRALIA",
+   "NEW_ZEALAND"
+  ],
+  "fringe benefits tax": [
+   "AUSTRALIA",
+   "NEW_ZEALAND"
+  ],
+  "fringe benefit tax": [
+   "AUSTRALIA",
+   "NEW_ZEALAND"
+  ],
+  "provisional tax": [
+   "NEW_ZEALAND",
+   "SOUTH_AFRICA"
+  ],
+  "national insurance": [
+   "UK",
+   "ISLE_OF_MAN"
+  ],
+  "epf": [
+   "INDIA",
+   "MALAYSIA"
+  ],
+  "trn": [
+   "UAE",
+   "SAUDI_ARABIA",
+   "BAHRAIN"
+  ],
+  "self assessment": [
+   "UK",
+   "IRELAND"
+  ],
+  "self-assessment": [
+   "UK",
+   "IRELAND"
+  ],
+  "gst": [
+   "AUSTRALIA",
+   "NEW_ZEALAND",
+   "SINGAPORE",
+   "INDIA",
+   "CANADA",
+   "MALAYSIA",
+   "JERSEY",
+   "GUERNSEY"
+  ],
+  "vat": null,
+  "stamp duty": null,
+  "withholding tax": null,
+  "federal": [
+   "US",
+   "CANADA",
+   "AUSTRALIA"
+  ]
+ },
+ "name_exclusions": [
+  "indian restaurant",
+  "indian food",
+  "french fries",
+  "french toast",
+  "german language",
+  "english language",
+  "jersey shirt",
+  "football jersey",
+  "new jersey",
+  "american express",
+  "us dollar",
+  "us dollars",
+  "australian dollar",
+  "australian dollars",
+  "canadian dollar",
+  "canadian dollars",
+  "singapore dollar",
+  "singapore dollars",
+  "new zealand dollar",
+  "new zealand dollars",
+  "indian rupee",
+  "indian rupees",
+  "south african rand",
+  "irish pub"
+ ],
+ "counterparty_role_nouns": [
+  "client",
+  "clients",
+  "customer",
+  "customers",
+  "consumer",
+  "consumers",
+  "buyer",
+  "buyers",
+  "vendor",
+  "vendors",
+  "supplier",
+  "suppliers",
+  "contractor",
+  "contractors",
+  "consultant",
+  "consultants",
+  "licensor",
+  "licensors",
+  "developer",
+  "developers",
+  "investor",
+  "investors",
+  "payee",
+  "payees",
+  "landlord",
+  "landlords",
+  "seller",
+  "sellers",
+  "exporter",
+  "exporters",
+  "provider",
+  "providers",
+  "licensee",
+  "licensees"
+ ],
+ "counterparty_entity_nouns": [
+  "company",
+  "companies",
+  "business",
+  "businesses",
+  "firm",
+  "firms",
+  "group",
+  "parent",
+  "employer",
+  "entity",
+  "subsidiary"
+ ],
+ "tax_words": [
+  "vat",
+  "gst",
+  "hst",
+  "gst/hst",
+  "tax",
+  "taxes",
+  "taxed",
+  "taxation",
+  "duty",
+  "duties",
+  "customs",
+  "excise",
+  "national insurance",
+  "nic",
+  "nics",
+  "paye",
+  "tds",
+  "tcs",
+  "withholding",
+  "social security",
+  "levy",
+  "levies",
+  "superannuation",
+  "zakat",
+  "payroll tax",
+  "sales tax",
+  "corporate tax",
+  "corporation tax",
+  "income tax"
+ ],
+ "framework_words": [
+  "gaap",
+  "gaas",
+  "generally accepted accounting principles",
+  "accounting standards",
+  "auditing standards",
+  "financial reporting standards",
+  "accounting standard",
+  "auditing standard"
+ ],
+ "changes": [
+  {
+   "version": "country-resolution-2",
+   "date": "2026-10-30",
+   "reason": "general rules after the offline diagnostic: role vs entity nouns, tax-qualifier precedence, framework names, longest-name matching (no question-specific entries); tax_modifiers allowlist"
+  },
+  {
+   "version": "country-resolution-3",
+   "date": "2026-10-31",
+   "reason": "'federal' added as an ambiguous term (candidates US, CANADA, AUSTRALIA) per policy P2, option F-a; never resolves a country by itself"
+  }
+ ],
+ "tax_modifiers": [
+  "trade",
+  "capital",
+  "gains",
+  "fica",
+  "federal",
+  "state",
+  "provincial",
+  "local",
+  "municipal",
+  "council",
+  "property",
+  "land",
+  "stamp",
+  "inheritance",
+  "estate",
+  "gift",
+  "dividend",
+  "dividends",
+  "employer",
+  "employee",
+  "employment",
+  "payroll",
+  "value",
+  "added",
+  "goods",
+  "and",
+  "services",
+  "digital",
+  "consumption",
+  "fuel",
+  "import",
+  "export",
+  "excise",
+  "environmental",
+  "carbon",
+  "social",
+  "security",
+  "medicare",
+  "income",
+  "corporate",
+  "corporation",
+  "sales",
+  "use",
+  "withholding",
+  "business",
+  "personal",
+  "indirect",
+  "direct",
+  "tourist",
+  "resident",
+  "non-resident",
+  "company",
+  "companies"
+ ],
+ "ambiguous_evidence": {
+  "federal": {
+   "policy": "labelling policy v2, P2 (approved 31 Oct 2026); docs/federal-term-proposal-2026-10-31.md, option F-a",
+   "US": {
+    "status": "evidence",
+    "url": "https://www.irs.gov/taxtopics/tc751",
+    "content_sha256_prefix": "d2174701f42a",
+    "quote": "Electronic Federal Tax Payment System (EFTPS)",
+    "read": "2026-10-31 registry verification (s16#35)"
+   },
+   "CANADA": {
+    "status": "evidence",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/forms.html",
+    "content_sha256_prefix": "0c3d6cc8d301",
+    "quote": "The Proposed Federal Goods and Services Tax Credit",
+    "read": "2026-10-31 registry verification (s16#10)"
+   },
+   "AUSTRALIA": {
+    "status": "policy only",
+    "note": "no 'federal' on the 6 ATO pages read; candidate by policy P2"
+   }
+  }
+ }
+}

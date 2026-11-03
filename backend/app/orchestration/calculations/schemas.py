@@ -40,6 +40,9 @@ class CalculationResult(BaseModel):
     notes: list[str] = Field(default_factory=list)
     # Extra result tables ({"title", "header", "rows"}): a lease schedule.
     tables: list[dict] = Field(default_factory=list)
+    # The tax the user named, when the formula is VAT's ("GST", "HST"): its
+    # labels are shown with that name (3 Nov 2026).
+    tax_label: str | None = None
     # How the figures were rounded, stated with every result (reliability plan
     # phase 2): the engine never rounds mid-way (engine.py).
     rounding: str = ("Exact decimal arithmetic with intermediate values unrounded; amounts and percentages are "
