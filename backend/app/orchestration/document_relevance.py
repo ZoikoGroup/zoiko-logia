@@ -126,6 +126,13 @@ _FISCAL_YEAR = re.compile(r"\b(?:FY\s?)?((?:19|20)\d{2})\b", re.I)
 
 
 def _names_a_year_in_the_files(query: str, sources: list[WebSource]) -> bool:
+    # Quarters too: "Present the Q1-Q4 chart for mobile and a keyboard-only
+    # screen-reader user" dropped the file its quarters came from (QA D06).
+    quarters = {q.upper() for q in re.findall(r"\b[QH][1-4]\b", query or "", re.I)}
+    if quarters:
+        content = " ".join(f"{source.title or ''} {source.snippet or ''}" for source in sources)
+        if any(re.search(rf"\b{quarter}\b", content) for quarter in quarters):
+            return True
     years = set(_FISCAL_YEAR.findall(query or ""))
     if not years:
         return False

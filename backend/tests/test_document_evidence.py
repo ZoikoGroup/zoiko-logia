@@ -189,3 +189,14 @@ def test_d03_a_bridge_caption_names_its_end_result_not_its_last_step():
                              dimensions=["category"], measures=["value"])
     caption = _summarize_series("Revenue to net income", evidence, None)
     assert caption == "Revenue to net income: starts at 10,000 (Revenue) and, after 5 steps, ends at 900."
+
+
+def test_d06_an_accessible_presentation_gets_alt_text_and_the_table_route():
+    # D06's chart narration had no alternative text and no keyboard / screen-reader route.
+    from app.orchestration.service import _grounded_domain_fallback
+    query = "Present the Q1-Q4 chart for mobile and a keyboard-only screen-reader user."
+    text = _grounded_domain_fallback(query, build_document_evidence(query, _f0()))
+    assert "**Alternative text:** a chart of 4 values in order: Q1 2,100, Q2 2,300, Q3 2,500, Q4 3,100." in text
+    assert "screen reader" in text and "nothing is shown by colour alone" in text
+    plain = "Plot F0 2025 quarterly revenue as a bar chart."
+    assert "Alternative text" not in _grounded_domain_fallback(plain, build_document_evidence(plain, _f0()))

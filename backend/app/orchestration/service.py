@@ -206,6 +206,10 @@ _APPROVAL_PROCESS_QUESTION = re.compile(
     r"\b(?:draft|pending|unapproved)\b[^.?!]{0,60}\b(?:becomes?|turns?\s+into|moves?\s+to|gets?)\b[^.?!]{0,40}"
     r"\b(?:approved|posted|final|released)\b"
     r"|\b(?:approval|review|posting|sign[\s-]?off)\s+(?:workflow|process|state|lifecycle|life\s+cycle)\b", re.I)
+# How a chart is to be presented, not what it plots (QA D06).
+_ACCESSIBLE_PRESENTATION = re.compile(
+    r"\b(?:screen[\s-]?readers?|keyboard[\s-]?only|keyboard\s+users?|accessib\w*|alt(?:ernative)?[\s-]?text|"
+    r"for\s+mobile)\b", re.I)
 # A row label that names a period: quarters, halves, months, years.
 _PERIOD_DIMENSION = re.compile(
     r"^\s*(?:Q[1-4]|H[12]|FY\s?\d{2,4}|(?:19|20)\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*)"
@@ -553,6 +557,21 @@ def _series_ref(citations, evidence: EvidenceModel) -> str | None:
     return None
 
 
+def _accessible_note(query: str, rows) -> str:
+    """For "Present the Q1-Q4 chart for mobile and a keyboard-only
+    screen-reader user" (QA D06): the alternative text and how to reach the
+    same figures without the picture, which the chart's narration replaced."""
+    if not _ACCESSIBLE_PRESENTATION.search(query or ""):
+        return ""
+    values = ", ".join(f"{item.dimension} {item.value:,.0f}" for item in rows)
+    return (
+        f"\n\n**Alternative text:** a chart of {len(rows)} values in order: {values}.\n\n"
+        "**Accessible access:** the same figures are in the table under the chart (\"View as table\"), which can "
+        "be reached with the keyboard and read by a screen reader; each value is labelled in text, so nothing is "
+        "shown by colour alone, and the chart and table resize for a phone screen."
+    )
+
+
 def _grounded_domain_fallback(query: str, evidence: EvidenceModel, series_ref: str | None = None) -> str | None:
     """Correct a model-only false off-domain decision when deterministic,
     governed evidence proves the request is finance/accounting-related.
@@ -675,13 +694,14 @@ def _grounded_domain_fallback(query: str, evidence: EvidenceModel, series_ref: s
             return (
                 f"{len(rows)} periods were read from the document for {subject}: {rows[0].dimension} "
                 f"{rows[0].value:,.0f}; {steps}.{total_note} The visualization shows the same values as read."
+                + _accessible_note(query, rows)
             )
         return (
             f"{len(rows)} figures were read from the document for {subject}. "
             f"The largest is {largest.dimension} at {largest.value:,.0f} and the "
             f"smallest is {smallest.dimension} at {smallest.value:,.0f}.{total_note} "
             "These are separate line items, not a series over time, and the "
-            "visualization shows the same values as read."
+            "visualization shows the same values as read." + _accessible_note(query, rows)
         )
 
     # Naming ANY chart rendering this pipeline supports ("box plot", "step
@@ -3791,6 +3811,15 @@ async def ask_kriton(
                 "\n\nGrowth of an amount is a percentage (revenue up 25%). The difference between two percentages "
                 "is in percentage points (a margin from 37.50% to 38.00% is +0.50 percentage points, not +0.5% "
                 "growth). Use each term only for its own case."
+            )
+        if _ACCESSIBLE_PRESENTATION.search(request.query):
+            # QA D06 read "for mobile and a keyboard-only screen-reader user" as
+            # two data series and asked for "Q1-Q4 values for each user group".
+            grounded_input += (
+                "\n\nThe mobile, keyboard-only and screen-reader parts say how to present the chart, not what to "
+                "plot: plot the same figures, then give them as an accessible table, a short text summary of the "
+                "trend, and a one-sentence alternative-text description; say that no information is shown by "
+                "colour alone and that the table can be read with a keyboard and a screen reader."
             )
         if _DIAGRAM_SYMBOL_QUESTION.search(request.query):
             # QA E06 "In an unlabeled process sketch, does a diamond mean

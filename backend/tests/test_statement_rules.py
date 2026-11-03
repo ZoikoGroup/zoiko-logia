@@ -324,6 +324,16 @@ async def test_c06_a_price_from_memory_is_declined_with_the_way_to_get_it(pipeli
     assert not service._PRICE_FROM_MEMORY.search("What was Apple's closing price on 27 October 2026?")
 
 
+async def test_d06_an_accessible_presentation_is_not_read_as_data_groups(pipeline):
+    # D06 asked for "Q1-Q4 values for each user group".
+    await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                             request=AskKritonRequest(query="Present the Q1-Q4 chart for mobile and a keyboard-only "
+                                                            "screen-reader user."))
+    prompt = str(pipeline.await_args)
+    assert "say how to present the chart, not what to plot" in prompt and "alternative-text" in prompt
+    assert not service._ACCESSIBLE_PRESENTATION.search("Plot quarterly revenue as a bar chart.")
+
+
 def test_b03_a_calculator_call_written_into_a_table_cell_is_removed():
     # "exact calculation({ "expression": "700 + 500", "label": ... })`" stood in the reconciliation table.
     from app.orchestration.verification_service import normalize_citations

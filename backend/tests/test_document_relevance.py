@@ -67,6 +67,10 @@ def test_a_follow_up_naming_a_year_of_the_file_uses_it():
                                  "Cost of goods sold\t5000\t6200")
     assert about("Compare FY2024 and FY2025 gross margins in percentage points.", [workbook])
     assert not about("What was the UK VAT threshold in 2019?", [workbook])     # a year the file does not hold
+    # QA D06: the quarters the chart came from.
+    quarters = WebSource(title="F0_NB-FIN-v1.xlsx — 'Quarterly revenue'!1:5", url="", source_id="f0",
+                         snippet="Quarter\tFY2025 revenue\nQ1\t2100\nQ2\t2300\nQ3\t2500\nQ4\t3100")
+    assert about("Present the Q1-Q4 chart for mobile and a keyboard-only screen-reader user.", [quarters])
 
 
 STATEMENT = WebSource(title="NB-STATEMENTS_RELEASED.pdf — Page 1", url="",
