@@ -124,3 +124,17 @@ async def test_a_statement_request_uses_the_engine_figures_not_the_chat_calculat
     plain = await service._verified_document_figures_context(
         db, "What is the total revenue?", ["d1"], [chunk], SimpleNamespace(retrieval_mode="full_document"), "t", "u")
     assert "Financial Statements engine" not in plain and fs_engine_chat.current_statement.get() is None
+
+
+def test_the_alternative_statement_is_computed_line_by_line():
+    # Retest of 4 Nov: the model's own alternative table said operating expenses 573,000.
+    s = build("northbridge.csv", NORTHBRIDGE)
+    a = s.alternative
+    assert a["operating_expenses"] == Decimal("574000") and a["other_operating_income"] == Decimal("12000")
+    assert a["operating_profit"] == Decimal("233500") and a["finance_income"] == 0
+    assert a["finance_costs"] == Decimal("17100") and a["net_finance"] == Decimal("-17100")
+    assert (a["profit_before_tax"], a["profit_for_the_year"]) == (Decimal("216400"), Decimal("154400"))
+    block = facts_block(s)
+    assert ("other operating income 12,000; operating expenses 574,000; operating profit 233,500; finance income 0; "
+            "finance costs 17,100; net finance -17,100") in block
+    assert "copy these; do not recompute" in block

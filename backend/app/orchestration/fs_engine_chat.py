@@ -48,6 +48,9 @@ class Choice:
     shown: str
     alternative: str
     operating_effect: Decimal        # change in operating profit under the alternative
+    shown_line: str = ""
+    alternative_line: str = ""
+    balance: Decimal = ZERO
 
 
 @dataclass
@@ -61,6 +64,10 @@ class ChatStatement:
     lines: dict[str, list[tuple[str, Decimal]]] = field(default_factory=dict)
     figures: dict[str, Decimal] = field(default_factory=dict)
     choices: list[Choice] = field(default_factory=list)
+    # Every subtotal with each open choice on its other line. The model wrote
+    # the alternative table itself and gave operating expenses 573,000 for
+    # 574,000 (retest of 4 Nov 2026): it is computed here instead.
+    alternative: dict[str, Decimal] = field(default_factory=dict)
     cost_of_sales_candidates: list[tuple[str, Decimal]] = field(default_factory=list)
     unmapped: list[tuple[str, Decimal]] = field(default_factory=list)
     findings: list[str] = field(default_factory=list)
@@ -131,7 +138,8 @@ def build(filename: str, content: bytes) -> ChatStatement | None:
             # Moving a cost out of operating expenses raises operating profit;
             # moving income into other operating income raises it too.
             statement.choices.append(Choice(name, abs(balance), fs_mapping.LINES[line][0],
-                                            fs_mapping.LINES[alternative][0], abs(balance)))
+                                            fs_mapping.LINES[alternative][0], abs(balance),
+                                            shown_line=line, alternative_line=alternative, balance=balance))
         if line.startswith("pl.") and re.search(r"\bpayable\b", name, re.I):
             # SA-T07: "Interest payable" with a debit balance in the expense
             # codes reads as an expense, but the caption also names a liability.
@@ -139,14 +147,28 @@ def build(filename: str, content: bytes) -> ChatStatement | None:
                 f"{name} ({_fmt(balance)}) is presented as {fs_mapping.LINES[line][0].lower()}; its caption also "
                 "describes a liability. Confirm from the ledger that it is the period's expense and not an accrual.")
     statement.lines = placed
+    statement.figures = _figures(placed)
+    if statement.choices:
+        moved = {line: list(entries) for line, entries in placed.items()}
+        for choice in statement.choices:
+            moved[choice.shown_line] = [e for e in moved[choice.shown_line] if e[0] != choice.account]
+            moved.setdefault(choice.alternative_line, []).append((choice.account, choice.balance))
+        statement.alternative = _figures(moved)
+    statement.dividends = [(n, b) for n, b in placed.get("eq.distributions", [])]
+    if placed.get("bs.tax_payable"):
+        statement.tax_payable = -sum((b for _, b in placed["bs.tax_payable"]), ZERO)
+    return statement
 
+
+def _figures(placed: dict[str, list[tuple[str, Decimal]]]) -> dict[str, Decimal]:
+    """Every subtotal of the draft statements from accounts placed on lines."""
     def credit(line: str) -> Decimal:
         return -sum((b for _, b in placed.get(line, [])), ZERO)
 
     def debit(line: str) -> Decimal:
         return sum((b for _, b in placed.get(line, [])), ZERO)
 
-    f = statement.figures
+    f: dict[str, Decimal] = {}
     f["revenue"] = credit("pl.revenue")
     f["cost_of_sales"] = debit("pl.cost_of_sales")
     f["gross_profit"] = f["revenue"] - f["cost_of_sales"]
@@ -165,10 +187,7 @@ def build(filename: str, content: bytes) -> ChatStatement | None:
     f["equity_before_profit"] = sum((credit(line) for line in ("eq.share_capital", "eq.retained_earnings",
                                                                "eq.distributions")), ZERO)
     f["equity_including_profit"] = f["equity_before_profit"] + f["profit_for_the_year"]
-    statement.dividends = [(n, b) for n, b in placed.get("eq.distributions", [])]
-    if placed.get("bs.tax_payable"):
-        statement.tax_payable = credit("bs.tax_payable")
-    return statement
+    return f
 
 
 def _pct(part: Decimal, whole: Decimal) -> str:
@@ -204,12 +223,21 @@ def facts_block(s: ChatStatement) -> str:
                    f"{_pct(f['operating_profit'], f['revenue'])}; net {_pct(f['profit_for_the_year'], f['revenue'])}; "
                    f"effective tax rate {_pct(f['tax'], f['profit_before_tax'])} (does not validate the tax charge).")
     if s.choices:
-        moved = sum((c.operating_effect for c in s.choices), ZERO)
+        a = s.alternative
         out.append("Classification review pending (operating profit depends on it): " + "; ".join(
             f"{c.account} {_fmt(c.amount)} shown as {c.shown.lower()}, could be {c.alternative.lower()}"
             for c in s.choices)
-            + f". Under the alternative, operating profit is {_fmt(f['operating_profit'] + moved)} (a difference of "
-              f"{_fmt(moved)}); profit before tax is unchanged. State both.")
+            + f". Under the alternative, operating profit is {_fmt(a['operating_profit'])} (a difference of "
+              f"{_fmt(a['operating_profit'] - f['operating_profit'])}); profit before tax is unchanged. State both.")
+        out.append(
+            "Alternative classification, every line in statement order (copy these; do not recompute): revenue "
+            f"{_fmt(a['revenue'])}; cost of sales {_fmt(a['cost_of_sales'])}; gross profit {_fmt(a['gross_profit'])}; "
+            f"other operating income {_fmt(a['other_operating_income'])}; operating expenses "
+            f"{_fmt(a['operating_expenses'])}; operating profit {_fmt(a['operating_profit'])}; finance income "
+            f"{_fmt(a['finance_income'])}; finance costs {_fmt(a['finance_costs'])}; net finance "
+            f"{_fmt(a['net_finance'])}; profit before tax {_fmt(a['profit_before_tax'])}; tax {_fmt(a['tax'])}; "
+            f"profit for the year {_fmt(a['profit_for_the_year'])}. Other operating income sits above operating "
+            "profit. Prefer a short comparison of the lines that change over a second full statement.")
     if s.cost_of_sales_candidates:
         total = sum((abs(b) for _, b in s.cost_of_sales_candidates), ZERO)
         out.append("Shown in operating expenses but could be cost of sales: " + ", ".join(
@@ -244,11 +272,12 @@ def statement_notes(s: ChatStatement) -> list[str]:
     notes = [f"Source checked by the Financial Statements engine: {s.filename} (SHA-256 {s.sha256[:12]}…), "
              f"{s.accounts} accounts; trial balance debits {_fmt(s.total_debits)}, credits {_fmt(s.total_credits)}."]
     if s.choices:
-        moved = sum((c.operating_effect for c in s.choices), ZERO)
+        alternative = s.alternative["operating_profit"]
         notes.append("Classification review pending: " + ", ".join(f"{c.account} ({_fmt(c.amount)})" for c in s.choices)
                      + f" can be operating or finance items. Operating profit is {_fmt(f['operating_profit'])} as shown, "
-                       f"{_fmt(f['operating_profit'] + moved)} under the alternative (difference {_fmt(moved)}); profit "
-                       "before tax is unchanged (CLASSIFICATION_REVIEW).")
+                       f"{_fmt(alternative)} under the alternative (difference "
+                       f"{_fmt(alternative - f['operating_profit'])}); profit before tax is unchanged "
+                       "(CLASSIFICATION_REVIEW).")
     if s.unmapped or s.residual:
         notes.append(f"Reconciliation unresolved: net assets {_fmt(f['net_assets'])} against equity including profit "
                      f"{_fmt(f['equity_including_profit'])}, a residual of {_fmt(s.residual)}"
