@@ -181,9 +181,15 @@ def chart_requested(question: str) -> bool:
 
 
 # A reply that asks the user for missing input rather than answering.
+# "supply", "send", "upload", "type out", "attach" ask for input as much as
+# "provide": "Could you please supply a clearer copy?" about an unreadable
+# receipt was released as an answer and labelled Partial, while "Could you
+# provide a clearer copy?" was a clarification (4 Nov 2026 manual tests).
+_INPUT_VERBS = (r"(?:provide|share|specify|tell me|let me know|confirm|clarify|supply|send|upload|re-?upload|attach|"
+                r"type(?: out)?|give me|enter)")
 _ASKS_FOR_INPUT = re.compile(
-    r"\b(?:could|can|would) you (?:please )?(?:provide|share|specify|tell me|let me know|confirm|clarify)|"
-    r"\bplease (?:provide|share|specify|tell me|let me know|confirm|clarify)|"
+    r"\b(?:could|can|would) you (?:please )?" + _INPUT_VERBS + "|"
+    r"\bplease " + _INPUT_VERBS + "|"
     r"\blet me know (?:the|which|what|your|how)|\bwhich (?:currency|country|countries|amount|company|"
     r"year|period|indicator|metric)\b[^.?]*\?|\bwhat (?:is|was) (?:your|the) (?:amount|salary|figure)\b|"
     r"\b(?:once|when|if) you (?:provide|share|give|tell|specify|let me know)|"
