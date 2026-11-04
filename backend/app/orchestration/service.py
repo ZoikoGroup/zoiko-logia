@@ -4269,8 +4269,8 @@ async def ask_kriton(
     if statement_request:
         grounded_input += STATEMENT_RULES
     if document_sources:
-        from app.orchestration.statement_rules import DOCUMENT_AMOUNTS_RULE
-        grounded_input += DOCUMENT_AMOUNTS_RULE
+        from app.orchestration.statement_rules import document_amounts_rule, source_currency
+        grounded_input += document_amounts_rule(source_currency(document_sources))
     # The method, not the answer, for calculations whose arithmetic was right
     # and method wrong in the 23 Oct 2026 review (accounting_methods.py).
     from app.orchestration.accounting_methods import accounting_method_guidance
@@ -5787,9 +5787,14 @@ async def ask_kriton(
         limitations.append(jurisdiction_note)
     if document_sources and not evidence_gap_only and not is_offdomain_refusal and (final_text or "").strip():
         # Any answer from an uploaded document gives its amounts as the
-        # document states them, without "£" (statement_rules).
-        from app.orchestration.statement_rules import without_currency_symbols
-        final_text = without_currency_symbols(final_text)
+        # document states them, without "£", the currency only as the file
+        # states it, and no dangling "for the year ended" (statement_rules).
+        from app.orchestration.statement_rules import (
+            source_currency, without_currency_symbols, without_dangling_period,
+        )
+        final_text, currency_notes = without_currency_symbols(final_text, source_currency(document_sources))
+        final_text = without_dangling_period(final_text)
+        limitations.extend(note for note in currency_notes if note not in limitations)
     if statement_request and not evidence_gap_only and not is_offdomain_refusal and (final_text or "").strip():
         # A statement answer is an unreviewed draft: no compliance, audit,
         # approval or filing claim, and its open items are named.
@@ -5799,6 +5804,13 @@ async def ask_kriton(
             [document_figures_block, *(getattr(s, "snippet", "") or "" for s in document_sources)]))
         if removed_claims:
             statement_notes.append(removed_claims_note(removed_claims))
+        from app.orchestration import fs_engine_chat
+        engine_statement = fs_engine_chat.current_statement.get()
+        if engine_statement is not None:
+            # Shown whatever the model wrote: the source check, the open
+            # classification with both operating profits, and an unresolved
+            # reconciliation beside the result (review C01, C04, SA-C01).
+            statement_notes[:0] = fs_engine_chat.statement_notes(engine_statement)
         limitations[:0] = [note for note in statement_notes if note not in limitations]
     if (not evidence_gap_only and not is_offdomain_refusal and not uses_user_supplied_structure
             and rag_citations and not re.search(r"\[REF-\d+\]", final_text or "")):
@@ -6035,10 +6047,14 @@ async def ask_kriton(
     ):
         try:
             export_narrative = final_text + _export_record(answer.limitations, answer.citations or rag_citations)
+            # An exported answer is not a management report (F03 export).
+            from app.orchestration.document_pipeline import previous_answer_to_export
+            export_title = ("Kriton Answer" if previous_answer_to_export(request.query, whole_conversation)
+                            else "Kriton Management Report")
             for format_name in document_plan.formats or (document_plan.output_format,):
                 artifact = await create_generated_artifact(
                     db,
-                    title="Kriton Management Report",
+                    title=export_title,
                     narrative=export_narrative,
                     analysis=document_analysis,
                     format_name=format_name,
@@ -6210,6 +6226,8 @@ async def _verified_document_figures_context(
     of computing them in its head and gate G4 can confirm them. Always over
     the COMPLETE documents: a targeted retrieval holds only the relevant
     chunks, and a "total" over part of a sheet would be wrong. Fails soft."""
+    from app.orchestration import fs_engine_chat
+    fs_engine_chat.current_statement.set(None)
     if not document_ids:
         return ""
     from app.orchestration.document_figures import verified_document_figures
@@ -6222,7 +6240,26 @@ async def _verified_document_figures_context(
                 sources = await retrieve_document_sources(
                     db, query=query, document_ids=document_ids, tenant_id=tenant_id, user_id=user_id, full_document=True,
                 )
-        return verified_document_figures(sources, query)
+        engine_block = ""
+        from app.orchestration.statement_rules import is_statement_request
+        if fs_engine_chat.enabled() and is_statement_request(query):
+            # A statement from an uploaded trial balance comes from the
+            # Financial Statements engine, not from the chat's own
+            # calculation (review ZL-FSR-COR-20261103 C01–C05).
+            from app.domains.kriton_workspace.documents import stored_spreadsheets
+            async with db.begin_nested():
+                files = await stored_spreadsheets(db, document_ids=list(document_ids), tenant_id=tenant_id,
+                                                  user_id=user_id)
+            for filename, content in files:
+                statement = await asyncio.to_thread(fs_engine_chat.build, filename, content)
+                if statement is not None:
+                    fs_engine_chat.current_statement.set(statement)
+                    engine_block = fs_engine_chat.facts_block(statement)
+                    # The other files keep the general figures; this one's
+                    # come from the engine only, so there is one set of numbers.
+                    sources = [s for s in sources if not (s.title or "").startswith(filename)]
+                    break
+        return engine_block + (verified_document_figures(sources, query) if sources else "")
     except Exception:  # noqa: BLE001 - extra figures must never fail the answer
         logger.exception("Could not compute verified document figures")
         return ""

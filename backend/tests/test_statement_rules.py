@@ -506,17 +506,54 @@ def test_statement_amounts_carry_no_currency_symbol():
     # "Income accounts (£1,862,000) – Expense accounts (£1,707,600) = £154,400" beside a GBP table.
     from app.orchestration.statement_rules import without_currency_symbols
     assert (without_currency_symbols("Income statement (GBP)\nIncome accounts (£1,862,000) – Expense accounts "
-                                     "(£1,707,600) = £154,400.")
-            == "Income statement (GBP)\nIncome accounts (1,862,000) – Expense accounts (1,707,600) = 154,400.")
-    assert without_currency_symbols("Dividends paid ($ 40,000) in USD.") == "Dividends paid (40,000) in USD."
-    assert without_currency_symbols("Currency: GBP (£)") == "Currency: GBP (£)"   # not an amount
-    # Any document answer: the currency stays known.
-    assert without_currency_symbols("Rent was £96,000.") == "Rent was 96,000.\n\nAmounts are in GBP."
+                                     "(£1,707,600) = £154,400.", "GBP")
+            == ("Income statement (GBP)\nIncome accounts (1,862,000) – Expense accounts (1,707,600) = 154,400.", []))
+    assert without_currency_symbols("Currency: GBP (£)", "GBP") == ("Currency: GBP (£)", [])   # not an amount
+    # The file states GBP and the answer does not: named from the file.
+    assert without_currency_symbols("Rent was £96,000.", "GBP") == ("Rent was 96,000.\n\nAmounts are in GBP.", [])
     mixed = "Invoice £100 was paid as $127."
-    assert without_currency_symbols(mixed) == mixed                             # two currencies: kept
-    assert without_currency_symbols("Revenue was $10,000.") == "Revenue was $10,000."   # which dollar?
+    assert without_currency_symbols(mixed, "GBP") == (mixed, [])               # two currencies: kept
 
 
-def test_every_document_answer_is_asked_for_full_amounts():
-    from app.orchestration.statement_rules import DOCUMENT_AMOUNTS_RULE
-    assert "576,900, not £576.9 k" in DOCUMENT_AMOUNTS_RULE and "no currency symbol" in DOCUMENT_AMOUNTS_RULE
+def test_a_currency_the_file_does_not_state_is_never_supplied():
+    # SA-T10: the suspense CSV named no currency; the answer said "functional currency of the entity (GBP)".
+    from app.orchestration.statement_rules import (
+        CURRENCY_UNCONFIRMED_NOTE, source_currency, without_currency_symbols,
+    )
+    def doc(title, text):
+        return WebSource(title=title, url="", snippet=text, provider="uploaded_document")
+    csv = doc("kriton-test-trial-balance.csv — 'kriton-test-trial-balance'!1:18",
+              "account_code,account_name,debit,credit\n4000,Revenue,,4182000.00\n7000,Corporation tax charge,196750.00,")
+    northbridge = doc("01_Trial_Balance.xlsx — 'Trial Balance'!1:40", "Northbridge Trading Ltd\nCurrency: GBP\n4000\tRevenue")
+    assert source_currency([csv]) is None
+    assert source_currency([northbridge, doc("01_Trial_Balance.xlsx — 'Trial Balance'!41:60", "6900\tBank charges")]) == "GBP"
+    assert source_currency([doc("a.pdf — p.1", "Amounts in USD and EUR")]) is None
+    assert source_currency([doc("a.pdf — p.1", "Total $10,000")]) is None
+    # 4 Nov retest: a USD statement PDF beside the currency-less CSV made the CSV "full USD values".
+    pdf = doc("NB-STATEMENTS_RELEASED.pdf — Page 1", "FY2025 and prior-year comparatives; values USD thousands")
+    assert source_currency([pdf]) == "USD" and source_currency([pdf, csv]) is None
+    text, notes = without_currency_symbols("All amounts are in the functional currency of the entity (GBP).", None)
+    assert notes == [CURRENCY_UNCONFIRMED_NOTE] and "Amounts are in" not in text
+    text, notes = without_currency_symbols("Profit for the year £590,250.", None)
+    assert text == "Profit for the year 590,250." and notes == [CURRENCY_UNCONFIRMED_NOTE]
+    assert without_currency_symbols("Profit for the year 590,250.", None) == ("Profit for the year 590,250.", [])
+
+
+def test_a_period_heading_without_a_date_says_the_period_is_not_confirmed():
+    # "Income Statement – for the year ended" with no date (handoff C05, screenshot 10).
+    from app.orchestration.statement_rules import without_dangling_period
+    assert without_dangling_period("Income Statement – for the year ended\n\n| Revenue |") == \
+        "Income Statement – reporting period not confirmed\n\n| Revenue |"
+    assert without_dangling_period("(for the period ended [as per trial balance])") == "(reporting period not confirmed)"
+    # Retest of 4 Nov: "reporting period not confirmed …" kept the model's ellipsis.
+    assert without_dangling_period("Income Statement (Draft)\nfor the year ended …\n") == \
+        "Income Statement (Draft)\nreporting period not confirmed\n"
+    assert without_dangling_period("for the year ended ___.") == "reporting period not confirmed."
+    for dated in ("for the year ended 31 March 2026", "For the year ended March 31, 2026", "for the year ended 2026-03-31"):
+        assert without_dangling_period(dated) == dated
+
+
+def test_every_document_answer_is_asked_for_full_amounts_and_the_file_currency_only():
+    from app.orchestration.statement_rules import document_amounts_rule
+    assert "576,900, not £576.9 k" in document_amounts_rule("GBP") and "The documents state GBP" in document_amounts_rule("GBP")
+    assert "never carry one document's currency to another or infer one from wording" in document_amounts_rule(None)

@@ -231,28 +231,71 @@ _CURRENCY_SYMBOL = re.compile(r"([£$€₹])\s?(?=\d)")
 _SYMBOL_CODE = {"£": "GBP", "€": "EUR", "₹": "INR"}
 _CURRENCY_CODE = re.compile(r"\b(?:GBP|USD|EUR|INR|AUD|CAD|NZD|SGD|HKD|JPY|CHF)\b")
 
-# Asked of every answer drawn from an uploaded document, not only statements.
-DOCUMENT_AMOUNTS_RULE = (
-    "\n- Write every amount from the documents in full, as the documents state it (576,900, not £576.9 k or "
-    "£0.58 m), with no currency symbol; name the currency once.\n")
+CURRENCY_UNCONFIRMED_NOTE = ("Currency not confirmed: the attached files do not all state the currency named in this "
+                              "answer; check it against each file (CURRENCY_UNCONFIRMED).")
 
 
-def without_currency_symbols(text: str) -> str:
-    """Amounts as the document states them: "Income accounts (£1,862,000) –
-    Expense accounts (£1,707,600) = £154,400" beside a table of plain GBP
-    figures; the rule asked the model not to, and it kept the £. Dropping a
-    symbol never changes an amount, but the currency must stay known: mixed
-    symbols are kept, a currency the answer never names is stated, and a bare
-    "$" (US, Australian, Canadian…) is kept when no code says which."""
-    symbols = {match.group(1) for match in _CURRENCY_SYMBOL.finditer(text)}
-    if len(symbols) != 1:
-        return text
-    symbol = symbols.pop()
-    named = _CURRENCY_CODE.search(text)
-    if not named and symbol not in _SYMBOL_CODE:
-        return text
+def _file_currency(text: str) -> set[str]:
+    codes = set(_CURRENCY_CODE.findall(text or ""))
+    return codes | {_SYMBOL_CODE[s] for s in re.findall(r"[£€₹]", text or "")}
+
+
+def source_currency(sources) -> str | None:
+    """The one currency every uploaded file states, by code or by £/€/₹;
+    None when a file states none, files differ, or only a "$" that could be
+    any dollar. The suspense trial balance named no currency and the answer
+    said "functional currency of the entity (GBP)" (Supplement A, SA-T10);
+    beside a USD statement PDF it was called "full USD values". Checked per
+    file: sources are WebSource chunks titled "<file> — <section>"."""
+    texts: dict[str, list[str]] = {}
+    for source in sources or []:
+        file = (getattr(source, "title", "") or "").split(" — ")[0]
+        texts.setdefault(file, []).append(getattr(source, "snippet", "") or "")
+    per_file = [_file_currency("\n".join(chunks)) for chunks in texts.values()]
+    if not per_file or any(len(codes) != 1 for codes in per_file) or len(set().union(*per_file)) != 1:
+        return None
+    return per_file[0].pop()
+
+
+def document_amounts_rule(currency: str | None) -> str:
+    """Asked of every answer drawn from an uploaded document, not only statements."""
+    rule = ("\n- Write every amount from the documents in full, as the documents state it (576,900, not £576.9 k "
+            "or £0.58 m), with no currency symbol.")
+    if currency:
+        return rule + f" The documents state {currency}: name it once.\n"
+    return rule + (" Not every document states one currency: give a currency only for a document that states it, "
+                   "and say the currency is not stated for any other; never carry one document's currency to "
+                   "another or infer one from wording such as \"corporation tax\" or \"Ltd\".\n")
+
+
+def without_currency_symbols(text: str, currency: str | None) -> tuple[str, list[str]]:
+    """Amounts as the document states them, and the currency only as the
+    file states it. "Income accounts (£1,862,000) … = £154,400" stood beside
+    a GBP table; a "(GBP)" stood on a file that named no currency. Dropping a
+    symbol never changes an amount. Mixed symbols are kept; a currency the
+    file states is named if the answer omits it; a currency the file does not
+    state is flagged as unconfirmed, never supplied."""
+    if len({match.group(1) for match in _CURRENCY_SYMBOL.finditer(text)}) > 1:
+        return text, []
     stripped = _CURRENCY_SYMBOL.sub("", text)
-    return stripped if named else f"{stripped.rstrip()}\n\nAmounts are in {_SYMBOL_CODE[symbol]}."
+    if currency:
+        named = currency in stripped
+        return (stripped if named else f"{stripped.rstrip()}\n\nAmounts are in {currency}."), []
+    return stripped, ([CURRENCY_UNCONFIRMED_NOTE] if _CURRENCY_CODE.search(stripped) or stripped != text else [])
+
+
+# "Income Statement – for the year ended" with no date (Supplement A; handoff
+# C05): the heading names a period end the file does not give.
+_DANGLING_PERIOD = re.compile(
+    r"\bfor\s+the\s+(?:financial\s+)?(?:year|period)\s+ended\b"
+    r"(?!\s*(?:\d|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b))"
+    # The placeholder after it goes too: "[as per trial balance]", "…", "___".
+    r"(?:\s*\[[^\]\n]*\]|\s*(?:…|\.{2,}|_{2,}))?", re.I)
+
+
+def without_dangling_period(text: str) -> str:
+    """A period heading with no date says so instead of ending mid-phrase."""
+    return _DANGLING_PERIOD.sub("reporting period not confirmed", text)
 
 
 def removed_claims_note(removed: list[str]) -> str:

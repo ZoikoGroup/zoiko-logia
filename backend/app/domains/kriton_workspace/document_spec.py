@@ -55,6 +55,9 @@ class DocumentSpec(BaseModel):
 
 
 _TABLE_SEPARATOR = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
+_REF_MARKER = re.compile(r"\s*\[\s*REF[\s\-‐-―]?\d+(?:\s*,\s*(?:REF[\s\-‐-―]?)?\d+)*\s*\]", re.I)
+_RULE_LINE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
+_NUMBERED_ITEM = re.compile(r"^\d{1,2}[.)]\s")
 
 
 def _cells(line: str) -> list[str]:
@@ -116,7 +119,10 @@ def build_document_spec(
     title: str, narrative: str, analysis: dict, request_text: str = ""
 ) -> DocumentSpec:
     """Parse grounded Markdown once, then enrich it with verified visuals."""
-    lines = narrative.splitlines()
+    # The answer view hides "[REF-2]" and draws "---" as a rule; the Word
+    # export printed both as text (F03 export, 4 Nov 2026).
+    narrative = _REF_MARKER.sub("", narrative)
+    lines = [line for line in narrative.splitlines() if not _RULE_LINE.match(line)]
     blocks: list[DocumentBlock] = []
     paragraph: list[str] = []
     bullets: list[str] = []
@@ -160,6 +166,10 @@ def build_document_spec(
             if paragraph:
                 flush_text()
             bullets.append(stripped[2:].strip())
+        elif _NUMBERED_ITEM.match(stripped):
+            # "1. …" and "2. …" were joined into one paragraph.
+            flush_text()
+            paragraph.append(stripped)
         else:
             if bullets:
                 flush_text()
