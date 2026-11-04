@@ -274,7 +274,9 @@ def without_currency_symbols(text: str, currency: str | None) -> tuple[str, list
 # C05): the heading names a period end the file does not give.
 _DANGLING_PERIOD = re.compile(
     r"\bfor\s+the\s+(?:financial\s+)?(?:year|period)\s+ended\b"
-    r"(?!\s*(?:\d|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b))(?:\s*\[[^\]\n]*\])?", re.I)
+    r"(?!\s*(?:\d|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b))"
+    # The placeholder after it goes too: "[as per trial balance]", "…", "___".
+    r"(?:\s*\[[^\]\n]*\]|\s*(?:…|\.{2,}|_{2,}))?", re.I)
 
 
 def without_dangling_period(text: str) -> str:

@@ -537,6 +537,10 @@ def test_a_period_heading_without_a_date_says_the_period_is_not_confirmed():
     assert without_dangling_period("Income Statement – for the year ended\n\n| Revenue |") == \
         "Income Statement – reporting period not confirmed\n\n| Revenue |"
     assert without_dangling_period("(for the period ended [as per trial balance])") == "(reporting period not confirmed)"
+    # Retest of 4 Nov: "reporting period not confirmed …" kept the model's ellipsis.
+    assert without_dangling_period("Income Statement (Draft)\nfor the year ended …\n") == \
+        "Income Statement (Draft)\nreporting period not confirmed\n"
+    assert without_dangling_period("for the year ended ___.") == "reporting period not confirmed."
     for dated in ("for the year ended 31 March 2026", "For the year ended March 31, 2026", "for the year ended 2026-03-31"):
         assert without_dangling_period(dated) == dated
 
