@@ -1,0 +1,5404 @@
+{
+ "version": "registry-s7",
+ "built": "2026-10-30",
+ "description": "Global Source Registry. S3 built it from the sources Kriton uses today; S4b (3 Nov 2026) added subject terms, entry subjects, and the fixed pages' selection rules and titles moved from official_evidence.official_pages (read only when KRITON_REGISTRY_RETRIEVAL is on; registry_shadow reads it when KRITON_REGISTRY_SHADOW is on). Each entry: country, topics, subjects, fact types, period, publisher, URL/host/domains, how it is selected, excerpt anchor and review date. Library entries carry a source class and fact types from their titles; test fixtures and tool descriptors are marked and do not count for coverage.",
+ "entries": [
+  {
+   "id": "page:iras-current-gst-rates",
+   "kind": "fixed_page",
+   "countries": [
+    "SINGAPORE"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rate"
+   ],
+   "period": {
+    "kind": "current"
+   },
+   "publisher": "IRAS",
+   "url": "https://www.iras.gov.sg/taxes/goods-services-tax-(gst)/basics-of-gst/current-gst-rates",
+   "selection_today": "VAT/GST/SST named + Singapore",
+   "excerpt_anchor": null,
+   "module": "official_evidence.official_pages",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "title": "IRAS: Current GST rates",
+   "subjects": [
+    "vat",
+    "gst",
+    "sst"
+   ],
+   "selection": {
+    "all": [
+     "\\b(?:vat|gst|sst)\\b"
+    ]
+   }
+  },
+  {
+   "id": "page:uae-ministry-of-finance-vat",
+   "kind": "fixed_page",
+   "countries": [
+    "UAE"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rate",
+    "rule"
+   ],
+   "period": {
+    "kind": "current"
+   },
+   "publisher": "UAE Ministry of Finance",
+   "url": "https://mof.gov.ae/en/public-finance/tax/value-added-tax-vat/",
+   "selection_today": "VAT/GST named + UAE",
+   "excerpt_anchor": null,
+   "module": "official_evidence.official_pages",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "title": "UAE Ministry of Finance: VAT",
+   "subjects": [
+    "vat",
+    "gst",
+    "sst"
+   ],
+   "selection": {
+    "all": [
+     "\\b(?:vat|gst|sst)\\b"
+    ]
+   }
+  },
+  {
+   "id": "page:royal-malaysian-customs-sst",
+   "kind": "fixed_page",
+   "countries": [
+    "MALAYSIA"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rate",
+    "rule"
+   ],
+   "period": {
+    "kind": "current"
+   },
+   "publisher": "Royal Malaysian Customs",
+   "url": "https://mysst.customs.gov.my/faq-sales-tax/",
+   "selection_today": "VAT/GST/SST named + Malaysia",
+   "excerpt_anchor": "repeal | SST comes into effect",
+   "module": "official_evidence.official_pages",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "title": "Royal Malaysian Customs: SST",
+   "subjects": [
+    "vat",
+    "gst",
+    "sst"
+   ],
+   "selection": {
+    "all": [
+     "\\b(?:vat|gst|sst)\\b"
+    ]
+   }
+  },
+  {
+   "id": "page:hmrc-corporation-tax-profit-thresholds",
+   "kind": "fixed_page",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "threshold",
+    "rate"
+   ],
+   "period": {
+    "kind": "current"
+   },
+   "publisher": "HMRC",
+   "url": "https://www.gov.uk/corporation-tax-rates",
+   "selection_today": "UK + corporation tax",
+   "excerpt_anchor": null,
+   "module": "official_evidence.official_pages",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "title": "HMRC: Corporation Tax profit thresholds",
+   "subjects": [
+    "corporation_tax"
+   ],
+   "selection": {
+    "all": [
+     "\\bcorporation tax\\b"
+    ]
+   }
+  },
+  {
+   "id": "page:hmrc-corporation-tax-rates",
+   "kind": "fixed_page",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rate"
+   ],
+   "period": {
+    "kind": "current"
+   },
+   "publisher": "HMRC",
+   "url": "https://www.gov.uk/government/publications/rates-and-allowances-corporation-tax/rates-and-allowances-corporation-tax",
+   "selection_today": "UK + corporation tax",
+   "excerpt_anchor": null,
+   "module": "official_evidence.official_pages",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "title": "HMRC: Corporation Tax rates",
+   "subjects": [
+    "corporation_tax"
+   ],
+   "selection": {
+    "all": [
+     "\\bcorporation tax\\b"
+    ]
+   }
+  },
+  {
+   "id": "page:hmrc-income-tax-rates-and-allowances",
+   "kind": "fixed_page",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold"
+   ],
+   "period": {
+    "kind": "current"
+   },
+   "publisher": "HMRC",
+   "url": "https://www.gov.uk/income-tax-rates",
+   "selection_today": "UK + personal allowance",
+   "excerpt_anchor": null,
+   "module": "official_evidence.official_pages",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "title": "HMRC: Income Tax rates and allowances",
+   "subjects": [
+    "income_tax"
+   ],
+   "selection": {
+    "all": [
+     "\\bpersonal allowance\\b"
+    ]
+   }
+  },
+  {
+   "id": "page:hmrc-interest-rates-for-late-and-early-payments",
+   "kind": "fixed_page",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rate"
+   ],
+   "period": {
+    "kind": "current"
+   },
+   "publisher": "HMRC",
+   "url": "https://www.gov.uk/government/publications/rates-and-allowances-hmrc-interest-rates-for-late-and-early-payments/rates-and-allowances-hmrc-interest-rates",
+   "selection_today": "UK + late/unpaid/overdue/repayment interest + UK tax",
+   "excerpt_anchor": null,
+   "module": "official_evidence.official_pages",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "title": "HMRC: Interest rates for late and early payments",
+   "subjects": [
+    "tax_interest"
+   ],
+   "selection": {
+    "all": [
+     "\\b(?:late[- ]payment|repayment|overdue|under-?paid|under-?payment|unpaid|over-?paid)\\b[^.?!]{0,60}\\binterest\\b|\\binterest\\b[^.?!]{0,60}\\b(?:late|overdue|under-?paid|under-?payment|unpaid|over-?paid|repay\\w*)\\b",
+     "\\b(?:hmrc|vat|paye|corporation\\s+tax|self\\s+assessment|income\\s+tax|national\\s+insurance)\\b"
+    ]
+   }
+  },
+  {
+   "id": "page:cbic-gst-registration-thresholds-2019-update",
+   "kind": "fixed_page",
+   "countries": [
+    "INDIA"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "threshold"
+   ],
+   "period": {
+    "kind": "current"
+   },
+   "publisher": "CBIC",
+   "url": "https://cbic-gst.gov.in/pdf/01062019-GST-An-Update.pdf",
+   "selection_today": "GST + India + registration/threshold",
+   "excerpt_anchor": "Threshold limit of aggregate turnover for exemption",
+   "module": "official_evidence.official_pages",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "title": "CBIC: GST registration thresholds, 2019 update",
+   "subjects": [
+    "gst"
+   ],
+   "selection": {
+    "all": [
+     "\\b(?:vat|gst|sst)\\b",
+     "\\b(?:registration|register|threshold)\\b"
+    ],
+    "place_terms": [
+     "\\b(?:bangalore|bengaluru|karnataka)\\b"
+    ]
+   }
+  },
+  {
+   "id": "page:india-code-cgst-registration-provisions",
+   "kind": "fixed_page",
+   "countries": [
+    "INDIA"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "threshold"
+   ],
+   "period": {
+    "kind": "current"
+   },
+   "publisher": "India Code (Ministry of Law)",
+   "url": "https://www.indiacode.nic.in/indiacode/bitstream/123456789/15689/1/A2017-12.pdf",
+   "selection_today": "GST + India + registration + 'compulsory'",
+   "excerpt_anchor": "23. Persons not liable for registration",
+   "module": "official_evidence.official_pages",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "title": "India Code: CGST registration provisions",
+   "subjects": [
+    "gst"
+   ],
+   "selection": {
+    "all": [
+     "\\b(?:vat|gst|sst)\\b",
+     "\\b(?:registration|register|threshold)\\b",
+     "compulsory"
+    ],
+    "place_terms": [
+     "\\b(?:bangalore|bengaluru|karnataka)\\b"
+    ]
+   }
+  },
+  {
+   "id": "page:gst-council-registration-and-notification-exemptions",
+   "kind": "fixed_page",
+   "countries": [
+    "INDIA"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule"
+   ],
+   "period": {
+    "kind": "current"
+   },
+   "publisher": "GST Council",
+   "url": "https://gstcouncil.gov.in/sites/default/files/e-version-gst-flyers/Registration_under_GST_Law_new.pdf",
+   "selection_today": "GST + India + registration + 'compulsory'",
+   "excerpt_anchor": "GST law enlists certain categories",
+   "module": "official_evidence.official_pages",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "title": "GST Council: Registration and notification exemptions",
+   "subjects": [
+    "gst"
+   ],
+   "selection": {
+    "all": [
+     "\\b(?:vat|gst|sst)\\b",
+     "\\b(?:registration|register|threshold)\\b",
+     "compulsory"
+    ],
+    "place_terms": [
+     "\\b(?:bangalore|bengaluru|karnataka)\\b"
+    ]
+   }
+  },
+  {
+   "id": "page:cbic-igst-act-export-definition-and-zero-rating",
+   "kind": "fixed_page",
+   "countries": [
+    "INDIA"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule"
+   ],
+   "period": {
+    "kind": "current"
+   },
+   "publisher": "CBIC",
+   "url": "https://cbic-gst.gov.in/hindi/IGST-bill-e.html",
+   "selection_today": "GST + India + export/foreign/overseas client",
+   "excerpt_anchor": "(6) export of services | 16. Zero rated supply",
+   "module": "official_evidence.official_pages",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "title": "CBIC: IGST Act export definition and zero-rating",
+   "subjects": [
+    "gst"
+   ],
+   "selection": {
+    "all": [
+     "\\b(?:vat|gst|sst)\\b",
+     "\\b(?:export|exports|us client|foreign|overseas)\\b"
+    ],
+    "place_terms": [
+     "\\b(?:bangalore|bengaluru|karnataka)\\b"
+    ]
+   }
+  },
+  {
+   "id": "page:gst-council-igst-amendment-act-2018",
+   "kind": "fixed_page",
+   "countries": [
+    "INDIA"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule"
+   ],
+   "period": {
+    "kind": "current"
+   },
+   "publisher": "GST Council",
+   "url": "https://gstcouncil.gov.in/sites/default/files/2024-03/annexure-5-igst-amendment-act_2018_1.pdf",
+   "selection_today": "GST + India + export/foreign/overseas client",
+   "excerpt_anchor": null,
+   "module": "official_evidence.official_pages",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "title": "GST Council: IGST Amendment Act 2018",
+   "subjects": [
+    "gst"
+   ],
+   "selection": {
+    "all": [
+     "\\b(?:vat|gst|sst)\\b",
+     "\\b(?:export|exports|us client|foreign|overseas)\\b"
+    ],
+    "place_terms": [
+     "\\b(?:bangalore|bengaluru|karnataka)\\b"
+    ]
+   }
+  },
+  {
+   "id": "page:cbic-export-of-services-sectoral-guidance",
+   "kind": "fixed_page",
+   "countries": [
+    "INDIA"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule"
+   ],
+   "period": {
+    "kind": "current"
+   },
+   "publisher": "CBIC",
+   "url": "https://cbic-gst.gov.in/sectoral-faq.html",
+   "selection_today": "GST + India + export/foreign/overseas client",
+   "excerpt_anchor": "rows on export of services / LUT / zero-rating",
+   "module": "official_evidence.official_pages",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "title": "CBIC: Export-of-services sectoral guidance",
+   "subjects": [
+    "gst"
+   ],
+   "selection": {
+    "all": [
+     "\\b(?:vat|gst|sst)\\b",
+     "\\b(?:export|exports|us client|foreign|overseas)\\b"
+    ],
+    "place_terms": [
+     "\\b(?:bangalore|bengaluru|karnataka)\\b"
+    ]
+   }
+  },
+  {
+   "id": "page:hmrc-register-for-vat",
+   "kind": "fixed_page",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "threshold",
+    "rule",
+    "deadline"
+   ],
+   "period": {
+    "kind": "current"
+   },
+   "publisher": "HMRC",
+   "url": "https://www.gov.uk/register-for-vat",
+   "selection_today": "UK + VAT + threshold/register/registration",
+   "excerpt_anchor": "You must register if either",
+   "module": "websearch._uk_vat_rules_source",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "title": "HMRC: When to register for VAT",
+   "subjects": [
+    "vat"
+   ]
+  },
+  {
+   "id": "page:hmrc-rates-and-thresholds-for-employers-2025-26",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "payroll",
+    "tax"
+   ],
+   "subjects": [
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold"
+   ],
+   "period": {
+    "kind": "current",
+    "effective_from": "2025-04-06",
+    "effective_to": "2026-04-05"
+   },
+   "publisher": "HMRC (GOV.UK)",
+   "title": "HMRC: Rates and thresholds for employers 2025 to 2026",
+   "url": "https://www.gov.uk/guidance/rates-and-thresholds-for-employers-2025-to-2026",
+   "selection": {
+    "all": [
+     "\\bnational\\s+insurance\\b|\\bnics?\\b"
+    ]
+   },
+   "review_by": "2027-04-05",
+   "verified": {
+    "read_at": "2026-11-03T15:15:37.813895+00:00",
+    "sha256_16": "26863ddef94689b0",
+    "quote": "Class 1 National Insurance thresholds: Secondary threshold; 2025 to 2026: £96 per week £417 per month £5,000 per year"
+   },
+   "kind": "fixed_page",
+   "status": "in_use",
+   "origin": "registry",
+   "excerpt_anchor": "Employer \\(secondary\\) contribution rates",
+   "selection_today": "registry only (KRITON_REGISTRY_RETRIEVAL)",
+   "module": "source_registry.registry_pages"
+  },
+  {
+   "id": "page:hmrc-rates-and-thresholds-for-employers-2026-27",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "payroll",
+    "tax"
+   ],
+   "subjects": [
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold"
+   ],
+   "period": {
+    "kind": "current",
+    "effective_from": "2026-04-06",
+    "effective_to": "2027-04-05"
+   },
+   "publisher": "HMRC (GOV.UK)",
+   "title": "HMRC: Rates and thresholds for employers 2026 to 2027",
+   "url": "https://www.gov.uk/guidance/rates-and-thresholds-for-employers-2026-to-2027",
+   "selection": {
+    "all": [
+     "\\bnational\\s+insurance\\b|\\bnics?\\b"
+    ]
+   },
+   "review_by": "2027-03-31",
+   "verified": {
+    "read_at": "2026-11-03T09:51:25Z",
+    "sha256_16": "9ec65eeb455efc3f",
+    "quote": "Earnings above secondary threshold up to and including lower earnings limit: 15%"
+   },
+   "kind": "fixed_page",
+   "status": "in_use",
+   "origin": "registry",
+   "excerpt_anchor": "Employer \\(secondary\\) contribution rates",
+   "selection_today": "registry only (KRITON_REGISTRY_RETRIEVAL)",
+   "module": "source_registry.registry_pages"
+  },
+  {
+   "id": "page:cra-gst-hst-rates-by-province",
+   "countries": [
+    "CANADA"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "subjects": [
+    "gst",
+    "sales_tax"
+   ],
+   "fact_types": [
+    "rate"
+   ],
+   "period": {
+    "kind": "current"
+   },
+   "publisher": "Canada Revenue Agency",
+   "title": "CRA: GST/HST calculator (and rates)",
+   "url": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-which-rate/calculator.html",
+   "selection": {
+    "all": [
+     "\\b(?:gst|hst|pst|qst|sales\\s+tax)\\b"
+    ]
+   },
+   "review_by": "2027-01-31",
+   "verified": {
+    "read_at": "2026-11-03T09:53Z",
+    "sha256_16": "1b31491341d02e5e",
+    "quote": "Province: Alberta; GST and HST: 5%; PST: 0% … Province: Ontario; GST and HST: 13%"
+   },
+   "kind": "fixed_page",
+   "status": "in_use",
+   "origin": "registry",
+   "excerpt_anchor": null,
+   "selection_today": "registry only (KRITON_REGISTRY_RETRIEVAL)",
+   "module": "source_registry.registry_pages"
+  },
+  {
+   "id": "page:sars-value-added-tax",
+   "countries": [
+    "SOUTH_AFRICA"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "subjects": [
+    "vat"
+   ],
+   "fact_types": [
+    "rate",
+    "rule"
+   ],
+   "period": {
+    "kind": "current"
+   },
+   "publisher": "South African Revenue Service",
+   "title": "SARS: Value-Added Tax",
+   "url": "https://www.sars.gov.za/types-of-tax/value-added-tax/",
+   "selection": {
+    "all": [
+     "\\bvat\\b|\\bvalue[- ]added\\s+tax\\b"
+    ]
+   },
+   "review_by": "2027-01-31",
+   "verified": {
+    "read_at": "2026-11-03T09:51:28Z",
+    "sha256_16": "e65b32e8bc51b8fd",
+    "quote": "proposes to maintain the Value-Added Tax (VAT) rate at 15% from 1 May 2025"
+   },
+   "kind": "fixed_page",
+   "status": "in_use",
+   "origin": "registry",
+   "excerpt_anchor": null,
+   "selection_today": "registry only (KRITON_REGISTRY_RETRIEVAL)",
+   "module": "source_registry.registry_pages"
+  },
+  {
+   "id": "page:de-ustg-section-12-rates",
+   "countries": [
+    "GERMANY"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "subjects": [
+    "vat"
+   ],
+   "fact_types": [
+    "rate",
+    "rule"
+   ],
+   "period": {
+    "kind": "current"
+   },
+   "publisher": "Bundesministerium der Justiz (gesetze-im-internet.de)",
+   "title": "UStG § 12: Steuersätze (German VAT rates, statute)",
+   "url": "https://www.gesetze-im-internet.de/ustg_1980/__12.html",
+   "selection": {
+    "all": [
+     "\\bvat\\b|\\bvalue[- ]added\\s+tax\\b|\\bumsatzsteuer\\b|\\bmehrwertsteuer\\b|\\bmwst\\b"
+    ]
+   },
+   "review_by": "2027-01-31",
+   "verified": {
+    "read_at": "2026-11-03T09:51:28Z",
+    "sha256_16": "37e26375df1dd601",
+    "quote": "Die Steuer beträgt für jeden steuerpflichtigen Umsatz 19 Prozent der Bemessungsgrundlage"
+   },
+   "kind": "fixed_page",
+   "status": "in_use",
+   "origin": "registry",
+   "excerpt_anchor": "\\(1\\)\\s*Die Steuer beträgt",
+   "selection_today": "registry only (KRITON_REGISTRY_RETRIEVAL)",
+   "module": "source_registry.registry_pages"
+  },
+  {
+   "id": "connector:find_rate",
+   "kind": "connector",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "economy",
+    "markets"
+   ],
+   "fact_types": [
+    "fx_rate"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "ECB reference rates (Frankfurter)",
+   "host": "api.frankfurter.dev",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data._find_rate",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "subjects": [
+    "fx"
+   ]
+  },
+  {
+   "id": "connector:find_fallback_rate",
+   "kind": "connector",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "economy",
+    "markets"
+   ],
+   "fact_types": [
+    "fx_rate"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "Market FX fallback",
+   "host": "exchange-rate API",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data._find_fallback_rate",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "subjects": [
+    "fx"
+   ]
+  },
+  {
+   "id": "connector:find_bank_rate",
+   "kind": "connector",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax",
+    "economy"
+   ],
+   "fact_types": [
+    "rate"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "Bank of England",
+   "host": "bankofengland.co.uk",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data._find_bank_rate",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "subjects": [
+    "bank_rate"
+   ]
+  },
+  {
+   "id": "connector:find_policy_rate",
+   "kind": "connector",
+   "countries": [
+    "CANADA"
+   ],
+   "topics": [
+    "tax",
+    "economy"
+   ],
+   "fact_types": [
+    "rate"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "Bank of Canada",
+   "host": "bankofcanada.ca",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data._find_policy_rate",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "subjects": [
+    "policy_rate"
+   ]
+  },
+  {
+   "id": "connector:find_cash_rate",
+   "kind": "connector",
+   "countries": [
+    "AUSTRALIA"
+   ],
+   "topics": [
+    "tax",
+    "economy"
+   ],
+   "fact_types": [
+    "rate"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "Reserve Bank of Australia",
+   "host": "rba.gov.au",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data._find_cash_rate",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "subjects": [
+    "cash_rate"
+   ]
+  },
+  {
+   "id": "connector:find_uk_tax_rate",
+   "kind": "connector",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "markets"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "GOV.UK search (HMRC rates)",
+   "host": "gov.uk/api/search.json",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data._find_uk_tax_rate",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "connector:find_oecd_tax_rate",
+   "kind": "connector",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "tax",
+    "economy"
+   ],
+   "fact_types": [
+    "rate"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "OECD tax rates",
+   "host": "oecd / db.nomics.world",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data._find_oecd_tax_rate",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "subjects": [
+    "corporation_tax",
+    "income_tax",
+    "vat",
+    "gst"
+   ],
+   "authority_level": "secondary"
+  },
+  {
+   "id": "connector:fetch_legislation",
+   "kind": "connector",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "markets"
+   ],
+   "fact_types": [
+    "rule"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "legislation.gov.uk",
+   "host": "legislation.gov.uk",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data.fetch_legislation",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "connector:find_fred_series",
+   "kind": "connector",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "economy"
+   ],
+   "fact_types": [
+    "statistic"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "FRED (St Louis Fed)",
+   "host": "fred.stlouisfed.org",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data._find_fred_series",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "connector:find_treasury_figure",
+   "kind": "connector",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "economy"
+   ],
+   "fact_types": [
+    "statistic"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "US Treasury",
+   "host": "treasury.gov",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data._find_treasury_figure",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "connector:find_best_series",
+   "kind": "connector",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "economy"
+   ],
+   "fact_types": [
+    "statistic"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "DBnomics (single series)",
+   "host": "db.nomics.world",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data._find_best_series",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "connector:find_two_series",
+   "kind": "connector",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "economy"
+   ],
+   "fact_types": [
+    "statistic"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "DBnomics (two series)",
+   "host": "db.nomics.world",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data._find_two_series",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "connector:find_abs_series",
+   "kind": "connector",
+   "countries": [
+    "AUSTRALIA"
+   ],
+   "topics": [
+    "economy"
+   ],
+   "fact_types": [
+    "statistic"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "Australian Bureau of Statistics",
+   "host": "abs.gov.au",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data._find_abs_series",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "connector:find_cso_series",
+   "kind": "connector",
+   "countries": [
+    "IRELAND"
+   ],
+   "topics": [
+    "economy"
+   ],
+   "fact_types": [
+    "statistic"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "CSO Ireland",
+   "host": "cso.ie",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data._find_cso_series",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "connector:find_ownership",
+   "kind": "connector",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "markets"
+   ],
+   "fact_types": [
+    "company_data"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "Companies House",
+   "host": "companieshouse.gov.uk",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data._find_ownership",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "connector:fetch_sec_facts",
+   "kind": "connector",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "markets"
+   ],
+   "fact_types": [
+    "company_data"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "SEC EDGAR facts",
+   "host": "sec.gov",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data.fetch_sec_facts",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "connector:fetch_sec_fulltext",
+   "kind": "connector",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "markets"
+   ],
+   "fact_types": [
+    "company_data"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "SEC EDGAR full text",
+   "host": "sec.gov",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data.fetch_sec_fulltext",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "connector:fetch_sec_peer_rank",
+   "kind": "connector",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "markets"
+   ],
+   "fact_types": [
+    "company_data"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "SEC EDGAR peers",
+   "host": "sec.gov",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data.fetch_sec_peer_rank",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "connector:fetch_market_sources",
+   "kind": "connector",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "markets"
+   ],
+   "fact_types": [
+    "market_data"
+   ],
+   "period": {
+    "kind": "live"
+   },
+   "publisher": "Market data providers",
+   "host": "market data APIs",
+   "selection_today": "connector's own gate + connector_scope.applies",
+   "module": "live_data.fetch_market_sources",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:australia",
+   "kind": "search_scope",
+   "countries": [
+    "AUSTRALIA"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "abs.gov.au",
+    "ato.gov.au",
+    "db.nomics.world",
+    "ethicsboard.org",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "legislation.gov.au",
+    "oecd.org",
+    "rba.gov.au",
+    "worldbank.org"
+   ],
+   "government_domains": [
+    "abs.gov.au",
+    "ato.gov.au",
+    "legislation.gov.au",
+    "rba.gov.au"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:bahrain",
+   "kind": "search_scope",
+   "countries": [
+    "BAHRAIN"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "bahrainbourse.com",
+    "cbb.gov.bh",
+    "db.nomics.world",
+    "ethicsboard.org",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "nbr.gov.bh",
+    "oecd.org",
+    "worldbank.org"
+   ],
+   "government_domains": [
+    "cbb.gov.bh",
+    "nbr.gov.bh"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:canada",
+   "kind": "search_scope",
+   "countries": [
+    "CANADA"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "bankofcanada.ca",
+    "canada.ca",
+    "db.nomics.world",
+    "ethicsboard.org",
+    "iaasb.org",
+    "iasb.org",
+    "ic.gc.ca",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "oecd.org",
+    "statcan.gc.ca",
+    "worldbank.org"
+   ],
+   "government_domains": [
+    "bankofcanada.ca",
+    "ic.gc.ca",
+    "statcan.gc.ca"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:eu",
+   "kind": "search_scope",
+   "countries": [
+    "EU"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "accountancyeurope.eu",
+    "db.nomics.world",
+    "eba.europa.eu",
+    "ec.europa.eu",
+    "ecb.europa.eu",
+    "eea.europa.eu",
+    "efrag.org",
+    "efta.int",
+    "eib.org",
+    "eiopa.europa.eu",
+    "esm.europa.eu",
+    "esma.europa.eu",
+    "esrb.europa.eu",
+    "ethicsboard.org",
+    "europa.eu",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "oecd.org",
+    "ted.europa.eu",
+    "worldbank.org"
+   ],
+   "government_domains": [
+    "eba.europa.eu",
+    "ec.europa.eu",
+    "ecb.europa.eu",
+    "eea.europa.eu",
+    "eiopa.europa.eu",
+    "esm.europa.eu",
+    "esma.europa.eu",
+    "esrb.europa.eu",
+    "europa.eu",
+    "ted.europa.eu"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:france",
+   "kind": "search_scope",
+   "countries": [
+    "FRANCE"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "banque-france.fr",
+    "db.nomics.world",
+    "economie.gouv.fr",
+    "ethicsboard.org",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "impots.gouv.fr",
+    "insee.fr",
+    "iosco.org",
+    "oecd.org",
+    "service-public.gouv.fr",
+    "worldbank.org"
+   ],
+   "government_domains": [
+    "economie.gouv.fr",
+    "impots.gouv.fr",
+    "service-public.gouv.fr"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:germany",
+   "kind": "search_scope",
+   "countries": [
+    "GERMANY"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "bundesbank.de",
+    "bundesfinanzministerium.de",
+    "db.nomics.world",
+    "destatis.de",
+    "ethicsboard.org",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "oecd.org",
+    "worldbank.org"
+   ],
+   "government_domains": [
+    "bundesfinanzministerium.de"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:guernsey",
+   "kind": "search_scope",
+   "countries": [
+    "GUERNSEY"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "db.nomics.world",
+    "ethicsboard.org",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "oecd.org",
+    "worldbank.org"
+   ],
+   "government_domains": [],
+   "has_own_authority": false,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:india",
+   "kind": "search_scope",
+   "countries": [
+    "INDIA"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "bseindia.com",
+    "cag.gov.in",
+    "cbic-gst.gov.in",
+    "cbic.gov.in",
+    "data.gov.in",
+    "db.nomics.world",
+    "epfindia.gov.in",
+    "esic.gov.in",
+    "ethicsboard.org",
+    "gst.gov.in",
+    "gstcouncil.gov.in",
+    "iaasb.org",
+    "iasb.org",
+    "icai.org",
+    "icmai.in",
+    "icsi.edu",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "incometax.gov.in",
+    "incometaxindia.gov.in",
+    "indiabudget.gov.in",
+    "indiacode.nic.in",
+    "iosco.org",
+    "labour.gov.in",
+    "mca.gov.in",
+    "mospi.gov.in",
+    "nseindia.com",
+    "oecd.org",
+    "rbi.org.in",
+    "sebi.gov.in",
+    "worldbank.org"
+   ],
+   "government_domains": [
+    "cag.gov.in",
+    "cbic-gst.gov.in",
+    "cbic.gov.in",
+    "data.gov.in",
+    "epfindia.gov.in",
+    "esic.gov.in",
+    "gst.gov.in",
+    "gstcouncil.gov.in",
+    "incometax.gov.in",
+    "incometaxindia.gov.in",
+    "indiabudget.gov.in",
+    "indiacode.nic.in",
+    "labour.gov.in",
+    "mca.gov.in",
+    "mospi.gov.in",
+    "sebi.gov.in"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:ireland",
+   "kind": "search_scope",
+   "countries": [
+    "IRELAND"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "centralbank.ie",
+    "cso.ie",
+    "db.nomics.world",
+    "enterprise.gov.ie",
+    "ethicsboard.org",
+    "gov.ie",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "ntma.ie",
+    "oecd.org",
+    "propertypriceregister.ie",
+    "revenue.ie",
+    "seai.ie",
+    "worldbank.org"
+   ],
+   "government_domains": [
+    "centralbank.ie",
+    "enterprise.gov.ie",
+    "gov.ie",
+    "revenue.ie"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:isle_of_man",
+   "kind": "search_scope",
+   "countries": [
+    "ISLE_OF_MAN"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "db.nomics.world",
+    "ethicsboard.org",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "oecd.org",
+    "worldbank.org"
+   ],
+   "government_domains": [],
+   "has_own_authority": false,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:jersey",
+   "kind": "search_scope",
+   "countries": [
+    "JERSEY"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "db.nomics.world",
+    "ethicsboard.org",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "oecd.org",
+    "worldbank.org"
+   ],
+   "government_domains": [],
+   "has_own_authority": false,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:malaysia",
+   "kind": "search_scope",
+   "countries": [
+    "MALAYSIA"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "customs.gov.my",
+    "db.nomics.world",
+    "ethicsboard.org",
+    "hasil.gov.my",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "oecd.org",
+    "worldbank.org"
+   ],
+   "government_domains": [
+    "customs.gov.my",
+    "hasil.gov.my"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:new_zealand",
+   "kind": "search_scope",
+   "countries": [
+    "NEW_ZEALAND"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "db.nomics.world",
+    "ethicsboard.org",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "ird.govt.nz",
+    "nzx.com",
+    "oecd.org",
+    "rbnz.govt.nz",
+    "stats.govt.nz",
+    "worldbank.org"
+   ],
+   "government_domains": [
+    "ird.govt.nz",
+    "rbnz.govt.nz",
+    "stats.govt.nz"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:oman",
+   "kind": "search_scope",
+   "countries": [
+    "OMAN"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "cbo.gov.om",
+    "db.nomics.world",
+    "ethicsboard.org",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "msx.om",
+    "oecd.org",
+    "taxoman.gov.om",
+    "worldbank.org"
+   ],
+   "government_domains": [
+    "cbo.gov.om",
+    "taxoman.gov.om"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:qatar",
+   "kind": "search_scope",
+   "countries": [
+    "QATAR"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "db.nomics.world",
+    "ethicsboard.org",
+    "gta.gov.qa",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "npc.qa",
+    "oecd.org",
+    "qcb.gov.qa",
+    "qe.com.qa",
+    "worldbank.org"
+   ],
+   "government_domains": [
+    "gta.gov.qa",
+    "qcb.gov.qa"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:saudi_arabia",
+   "kind": "search_scope",
+   "countries": [
+    "SAUDI_ARABIA"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "db.nomics.world",
+    "ethicsboard.org",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "mof.gov.sa",
+    "oecd.org",
+    "sama.gov.sa",
+    "saudiexchange.sa",
+    "stats.gov.sa",
+    "worldbank.org",
+    "zatca.gov.sa"
+   ],
+   "government_domains": [
+    "mof.gov.sa",
+    "sama.gov.sa",
+    "stats.gov.sa",
+    "zatca.gov.sa"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:singapore",
+   "kind": "search_scope",
+   "countries": [
+    "SINGAPORE"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "acra.gov.sg",
+    "data.gov.sg",
+    "db.nomics.world",
+    "ethicsboard.org",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "iras.gov.sg",
+    "mas.gov.sg",
+    "mof.gov.sg",
+    "oecd.org",
+    "sgx.com",
+    "singstat.gov.sg",
+    "worldbank.org"
+   ],
+   "government_domains": [
+    "acra.gov.sg",
+    "data.gov.sg",
+    "iras.gov.sg",
+    "mas.gov.sg",
+    "mof.gov.sg",
+    "singstat.gov.sg"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:south_africa",
+   "kind": "search_scope",
+   "countries": [
+    "SOUTH_AFRICA"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "db.nomics.world",
+    "ethicsboard.org",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "jse.co.za",
+    "oecd.org",
+    "resbank.co.za",
+    "sars.gov.za",
+    "statssa.gov.za",
+    "worldbank.org"
+   ],
+   "government_domains": [
+    "sars.gov.za",
+    "statssa.gov.za"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:uae",
+   "kind": "search_scope",
+   "countries": [
+    "UAE"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "centralbank.ae",
+    "db.nomics.world",
+    "dfm.ae",
+    "ethicsboard.org",
+    "fcsc.gov.ae",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "mof.gov.ae",
+    "mohre.gov.ae",
+    "oecd.org",
+    "sca.gov.ae",
+    "tax.gov.ae",
+    "worldbank.org"
+   ],
+   "government_domains": [
+    "centralbank.ae",
+    "fcsc.gov.ae",
+    "mof.gov.ae",
+    "mohre.gov.ae",
+    "sca.gov.ae",
+    "tax.gov.ae"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:uk",
+   "kind": "search_scope",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "accaglobal.com",
+    "att.org.uk",
+    "bankofengland.co.uk",
+    "cimaglobal.com",
+    "cipp.org.uk",
+    "data.gov.uk",
+    "db.nomics.world",
+    "dmo.gov.uk",
+    "ethicsboard.org",
+    "fca.org.uk",
+    "find-and-update.company-information.service.gov.uk",
+    "frc.org.uk",
+    "gov.uk",
+    "hmrc.gov.uk",
+    "iaasb.org",
+    "iasb.org",
+    "icaew.com",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "legislation.gov.uk",
+    "londonstockexchange.com",
+    "obr.uk",
+    "oecd.org",
+    "ons.gov.uk",
+    "ppf.co.uk",
+    "tax.org.uk",
+    "thepensionsregulator.gov.uk",
+    "trade.gov.uk",
+    "use-land-property-data.service.gov.uk",
+    "worldbank.org"
+   ],
+   "government_domains": [
+    "bankofengland.co.uk",
+    "data.gov.uk",
+    "dmo.gov.uk",
+    "find-and-update.company-information.service.gov.uk",
+    "gov.uk",
+    "hmrc.gov.uk",
+    "legislation.gov.uk",
+    "ons.gov.uk",
+    "thepensionsregulator.gov.uk",
+    "trade.gov.uk",
+    "use-land-property-data.service.gov.uk"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "search:us",
+   "kind": "search_scope",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax",
+    "accounting",
+    "audit",
+    "economy",
+    "payroll"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "deadline",
+    "rule"
+   ],
+   "period": {
+    "kind": "as_published"
+   },
+   "domains": [
+    "aicpa.org",
+    "bea.gov",
+    "bls.gov",
+    "cbo.gov",
+    "census.gov",
+    "db.nomics.world",
+    "dol.gov",
+    "eia.gov",
+    "ethicsboard.org",
+    "fasb.org",
+    "federalreserve.gov",
+    "fhfa.gov",
+    "finra.org",
+    "fiscaldata.treasury.gov",
+    "gao.gov",
+    "huduser.gov",
+    "iaasb.org",
+    "iasb.org",
+    "ifac.org",
+    "ifrs.org",
+    "ilo.org",
+    "imf.org",
+    "iosco.org",
+    "irs.gov",
+    "journalofaccountancy.com",
+    "law.cornell.edu",
+    "nasba.org",
+    "oecd.org",
+    "pcaobus.org",
+    "sec.gov",
+    "ssa.gov",
+    "stlouisfed.org",
+    "trade.gov",
+    "treasury.gov",
+    "usaspending.gov",
+    "worldbank.org"
+   ],
+   "government_domains": [
+    "bea.gov",
+    "bls.gov",
+    "cbo.gov",
+    "census.gov",
+    "dol.gov",
+    "eia.gov",
+    "federalreserve.gov",
+    "fhfa.gov",
+    "fiscaldata.treasury.gov",
+    "gao.gov",
+    "huduser.gov",
+    "irs.gov",
+    "sec.gov",
+    "ssa.gov",
+    "trade.gov",
+    "treasury.gov",
+    "usaspending.gov"
+   ],
+   "has_own_authority": true,
+   "selection_today": "web search restricted to these domains (site: filter), narrowed by topic",
+   "module": "source_taxonomy.allowed_domains",
+   "status": "in_use",
+   "review_by": "2027-01-31"
+  },
+  {
+   "id": "library:22f11a07-be3c-4548-8e3e-1f2790872be0",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold"
+   ],
+   "source_class": "open_source_parameters",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "PolicyEngine-US Parameters — California State Income Tax (Rates, AGI, AMT, Deductions, Credits)",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:src-vies-vat-validation",
+   "kind": "library",
+   "countries": [
+    "EU"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [],
+   "source_class": "validation_tool",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "EU VIES — VAT Validation",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:b5b5463a-2148-4787-a257-cfb681546cdd",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [
+    "standard"
+   ],
+   "source_class": "standard",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "AICPA practice aid",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-kriton-user-provided-data",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "user_input",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Data supplied by the user in the current request",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-kriton-dbnomics-live",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [
+    "statistic"
+   ],
+   "source_class": "statistics",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "DBnomics — Official Economic Statistics Aggregator",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:dcea5197-906c-4b62-b71b-8968d44571a7",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "accounting"
+   ],
+   "fact_types": [
+    "standard"
+   ],
+   "source_class": "standard",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "FASB ASC",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-federal-register-lookup",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [
+    "rule"
+   ],
+   "source_class": "legislation_lookup",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Federal Register — Document Lookup",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-fred-interest-rates",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [
+    "rate"
+   ],
+   "source_class": "statistics",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Federal Reserve Economic Data (FRED) — Interest Rates",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-kriton-frankfurter-live",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "markets"
+   ],
+   "fact_types": [
+    "fx_rate"
+   ],
+   "source_class": "statistics",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Frankfurter — ECB Live Exchange Rates",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-kriton-datacommons-live",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [
+    "statistic"
+   ],
+   "source_class": "statistics",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Google Data Commons — Validated Global Statistics Fallback",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-kriton-accounting-fundamentals",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "accounting"
+   ],
+   "fact_types": [
+    "explanation"
+   ],
+   "source_class": "internal_education",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Kriton Accounting Fundamentals — Cash and Accrual Basis",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-kriton-bank-reconciliation-procedure",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [
+    "explanation"
+   ],
+   "source_class": "internal_education",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Kriton Bank Reconciliation Educational Procedure",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-kriton-month-end-close-procedure",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [
+    "explanation"
+   ],
+   "source_class": "internal_education",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Kriton Month-End Financial Close Educational Procedure",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:0479a955-e464-45d3-983f-d6e494c7746a",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [],
+   "source_class": "test_fixture",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Local tax bulletin",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-kriton-websearch-live",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "search_tool",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "SearXNG — Live Web Search (Authoritative Domain Allowlist)",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:77a65bfd-4920-47cc-bfbe-70be3d4df3a0",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "test_fixture",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Shared Standard Doc",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-29 07:33:37.621830+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:786318f6-9cd2-4e25-a851-ee7ee62841c0",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "test_fixture",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Shared Standard Doc",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-23 09:46:30.845609+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:05a68e61-b4c9-48a7-83d4-2ccf142ff474",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "test_fixture",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Shared Viewer's Own Doc",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-29 07:33:39.042587+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:6d5744c4-5a23-4775-8451-45f9f6bf5028",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "test_fixture",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Shared Viewer's Own Doc",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-23 09:46:32.420496+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:65439e1f-8543-4497-a6e1-9d5811066188",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "test_fixture",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Tenant A Only Doc",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:3207f848-cbea-482b-8de2-c927717df974",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "test_fixture",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Tenant A Only Doc",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:20c4d317-2d12-4cea-8ea3-2269fee9197d",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "test_fixture",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Tenant A Only Doc",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-28 04:57:19.383086+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:54916ed0-2de3-4242-a14b-ab866cae2d44",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "test_fixture",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Tenant A Only Doc",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-29 11:11:32.851443+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:71f0d323-6753-461d-b988-3fe22d615dc9",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "test_fixture",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Tenant B Only Doc",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:e5b17db2-4283-4da7-aa78-c57923df4964",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "test_fixture",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Tenant B Only Doc",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-28 04:57:21.074381+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:5ff3705b-307f-4278-b036-a5ae893687f3",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "test_fixture",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Tenant B Only Doc",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:408c7f20-1111-4d1a-bdab-72bb5fc16d9b",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "test_fixture",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Tenant B Only Doc",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-29 11:11:34.530671+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:29e1b36b-1513-422f-8dab-62698f7796f2",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "test_fixture",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Test Source 87cea84c",
+   "authority_level": "secondary",
+   "versions": 0,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": null,
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-un-uk-sanctions-screening",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "validation_tool",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "UN + UK Consolidated Sanctions Screening",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-bea-nipa-gdp",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "economy"
+   ],
+   "fact_types": [
+    "statistic"
+   ],
+   "source_class": "statistics",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "US Bureau of Economic Analysis — NIPA GDP (Table 1.1.5)",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-bea-nipa-docs",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "documentation",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "US Bureau of Economic Analysis — NIPA Methodology Documentation",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-bls-cpi-docs",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "economy"
+   ],
+   "fact_types": [],
+   "source_class": "documentation",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "US Bureau of Labor Statistics — CPI Methodology Documentation",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-bls-cpi-inflation",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "economy"
+   ],
+   "fact_types": [
+    "statistic"
+   ],
+   "source_class": "statistics",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "US Bureau of Labor Statistics — CPI-U (Inflation)",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-census-acs-docs",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "documentation",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "US Census Bureau — American Community Survey Documentation",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-census-acs-income-poverty",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [
+    "statistic"
+   ],
+   "source_class": "statistics",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "US Census Bureau — Income & Poverty by State (ACS)",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-treasury-fiscal-data-exchange-rates",
+   "kind": "library",
+   "countries": [
+    "GLOBAL"
+   ],
+   "topics": [
+    "markets"
+   ],
+   "fact_types": [
+    "fx_rate"
+   ],
+   "source_class": "statistics",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "US Treasury Fiscal Data — Rates of Exchange",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:d3194981-252c-4add-b076-2ec1ec9dd1f8",
+   "kind": "library",
+   "countries": [
+    "INDIA"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rate",
+    "rule"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2025-09-22",
+    "effective_to": null
+   },
+   "publisher": "GST Council Secretariat",
+   "title": "FAQs on GST rate changes (GST Council, September 2025)",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 75,
+   "last_retrieved": "2026-10-03 06:27:01.345101+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:7398a4e0-1b7e-43e6-ae5b-f930363fb305",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "payroll",
+    "tax"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold"
+   ],
+   "source_class": "open_source_parameters",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "PolicyEngine-US Parameters — New York State Income Tax (Rates, AGI, Deductions, Credits, Payroll)",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:src-bank-of-england-bank-rate",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [
+    "rate"
+   ],
+   "source_class": "statistics",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Bank of England — Bank Rate",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-ons-cpih-inflation",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "economy"
+   ],
+   "fact_types": [
+    "statistic"
+   ],
+   "source_class": "statistics",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "ONS — CPIH (UK Inflation)",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-ons-monthly-gdp",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "economy"
+   ],
+   "fact_types": [
+    "statistic"
+   ],
+   "source_class": "statistics",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "ONS — Monthly GDP Index (UK)",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:0d840127-45e7-4575-8eb1-6be125ff1a7e",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [
+    "rule"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2026-03-17",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "Authorise an agent for taxes that use the digital handshake",
+   "authority_level": "primary",
+   "versions": 3,
+   "approved_versions": 3,
+   "passages": 15,
+   "last_retrieved": "2026-10-02 09:33:51.343922+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:ead0f7ce-381c-4a25-a5ba-b3a8302cd53f",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2024-10-30",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "Charge, reclaim and record VAT",
+   "authority_level": "primary",
+   "versions": 3,
+   "approved_versions": 3,
+   "passages": 135,
+   "last_retrieved": "2026-10-02 09:33:55.779676+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:06cc1087-cc2a-4aac-bb7c-027918aff2dc",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2020-09-24",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "Check when you must use the VAT domestic reverse charge for building and construction services",
+   "authority_level": "primary",
+   "versions": 3,
+   "approved_versions": 3,
+   "passages": 18,
+   "last_retrieved": "2026-10-02 09:35:58.644265+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:50bee823-4fd4-4002-a45a-bd142ffbd3df",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "deadline"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2024-09-30",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "Claim a VAT refund as an organisation not registered for VAT",
+   "authority_level": "primary",
+   "versions": 3,
+   "approved_versions": 3,
+   "passages": 18,
+   "last_retrieved": "2026-10-02 09:36:35.554835+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:8203f381-2d2d-4f70-b07d-bb78baaa368d",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rate",
+    "rule"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2026-09-08",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "Fuel and power (VAT Notice 701/19)",
+   "authority_level": "primary",
+   "versions": 2,
+   "approved_versions": 2,
+   "passages": 136,
+   "last_retrieved": "2026-10-02 09:32:24.815291+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:154bf4fc-08e7-4d36-bc02-3d8e87a50800",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "rate",
+    "deadline"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2025-07-10",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "How late payment penalties work if you pay VAT late",
+   "authority_level": "primary",
+   "versions": 3,
+   "approved_versions": 3,
+   "passages": 60,
+   "last_retrieved": "2026-10-02 09:37:41.738331+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:df4b929b-d210-4959-9ca3-17c8c9030298",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2024-10-24",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "How VAT works",
+   "authority_level": "primary",
+   "versions": 3,
+   "approved_versions": 3,
+   "passages": 33,
+   "last_retrieved": "2026-10-02 09:32:01.829439+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:5d73f1fe-a390-4e2a-b45e-b9cf3b03049e",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "deadline"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2023-03-30",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "Making Tax Digital for VAT as an agent: step by step",
+   "authority_level": "primary",
+   "versions": 3,
+   "approved_versions": 3,
+   "passages": 9,
+   "last_retrieved": "2026-10-02 09:33:47.290919+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:1b732471-3b20-4fde-9a8a-ff7c7568aa73",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "rate",
+    "deadline"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2023-03-01",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "Penalty points and penalties if you submit your VAT Return late",
+   "authority_level": "primary",
+   "versions": 3,
+   "approved_versions": 3,
+   "passages": 36,
+   "last_retrieved": "2026-10-02 09:37:35.473599+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:b36d63a9-9a9f-4ef1-a78a-606f6e16f053",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "deadline"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2026-10-01",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "Refunds of UK VAT for non-UK businesses (VAT Notice 723A)",
+   "authority_level": "primary",
+   "versions": 3,
+   "approved_versions": 3,
+   "passages": 96,
+   "last_retrieved": "2026-10-02 09:36:23.041949+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:0a1924f8-7aa0-4265-97b8-89a20d38b689",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "threshold",
+    "rule",
+    "deadline"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2024-10-10",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "Register for VAT",
+   "authority_level": "primary",
+   "versions": 3,
+   "approved_versions": 3,
+   "passages": 159,
+   "last_retrieved": "2026-10-02 09:36:03.468824+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:01146e59-7a88-47b5-9dd5-adf7e8453a81",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "deadline",
+    "rule",
+    "rate"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2024-11-26",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "Sending a VAT Return",
+   "authority_level": "primary",
+   "versions": 3,
+   "approved_versions": 3,
+   "passages": 93,
+   "last_retrieved": "2026-10-02 09:33:06.614660+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:00a00aaf-28e5-4afb-a355-c4df1748a235",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "threshold",
+    "rule",
+    "deadline"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2015-02-24",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "VAT Annual Accounting Scheme",
+   "authority_level": "primary",
+   "versions": 3,
+   "approved_versions": 3,
+   "passages": 42,
+   "last_retrieved": "2026-10-02 09:35:51.924174+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:66488d04-0045-431d-bdb1-13dc2d4daeef",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "threshold",
+    "rule",
+    "deadline"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2018-02-08",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "VAT Cash Accounting Scheme",
+   "authority_level": "primary",
+   "versions": 3,
+   "approved_versions": 3,
+   "passages": 15,
+   "last_retrieved": "2026-10-02 09:35:46.570908+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:1fe914df-ac6d-4524-95d6-575516336bf8",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2024-09-18",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "VAT domestic reverse charge technical guide",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 68,
+   "last_retrieved": "2026-10-06 10:42:27.168860+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:3aaef82b-403b-4970-a07c-e2c49dbd7325",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "threshold",
+    "rate",
+    "rule"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2024-11-11",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "VAT Flat Rate Scheme",
+   "authority_level": "primary",
+   "versions": 2,
+   "approved_versions": 2,
+   "passages": 44,
+   "last_retrieved": "2026-10-02 09:35:32.306157+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:862d464f-361d-4939-8cca-870c8b067ca2",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "threshold",
+    "rate",
+    "rule"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2024-11-11",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "VAT Flat Rate Scheme ",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 22,
+   "last_retrieved": "2026-10-01 12:18:33.386874+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:ffe47b56-a3a9-494f-90eb-4c65a7fe7725",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "rate",
+    "threshold",
+    "deadline"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2026-06-25",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "VAT guide (VAT Notice 700)",
+   "authority_level": "primary",
+   "versions": 3,
+   "approved_versions": 3,
+   "passages": 900,
+   "last_retrieved": "2026-10-02 09:30:21.202818+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:1f851e1d-31a5-4742-a6ca-721c7176d3ab",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "deadline"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2022-04-01",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "VAT Notice 700/22: Making Tax Digital for VAT",
+   "authority_level": "primary",
+   "versions": 3,
+   "approved_versions": 3,
+   "passages": 192,
+   "last_retrieved": "2026-10-02 09:33:18.348304+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:b9d6e5af-cd70-42e6-acd5-7de17685f921",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rate"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2014-12-12",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "VAT rates",
+   "authority_level": "primary",
+   "versions": 3,
+   "approved_versions": 3,
+   "passages": 6,
+   "last_retrieved": "2026-10-02 09:32:06.644847+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:3903fe62-98f2-454f-ad10-fb1bab552a83",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rate",
+    "rule"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2026-07-10",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "VAT rates on different goods and services",
+   "authority_level": "primary",
+   "versions": 3,
+   "approved_versions": 3,
+   "passages": 99,
+   "last_retrieved": "2026-10-02 09:32:11.483191+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:3c814122-b0d9-446a-8a7d-102f0f970b84",
+   "kind": "library",
+   "countries": [
+    "UK"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rate",
+    "rule"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2024-03-13",
+    "effective_to": null
+   },
+   "publisher": "HM Revenue & Customs",
+   "title": "Women's sanitary products (VAT Notice 701/18)",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 18,
+   "last_retrieved": "2026-10-03 09:09:49.852375+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:src-congress-gov-bill-lookup",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [
+    "rule"
+   ],
+   "source_class": "legislation_lookup",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Congress.gov — Bill Lookup",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-ecfr-docs",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "documentation",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "eCFR — API Documentation",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-ecfr-title26",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [
+    "rule"
+   ],
+   "source_class": "regulation",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "eCFR — Title 26 (Internal Revenue, Current)",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-govinfo-cfr-title26",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [
+    "rule"
+   ],
+   "source_class": "regulation",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "GovInfo — 26 CFR (Internal Revenue Regulations)",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-govinfo-docs",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "documentation",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "GovInfo — API Documentation",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-irs-business-tax-review-2026",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "deadline",
+    "rate",
+    "threshold",
+    "rule"
+   ],
+   "source_class": "reviewed_synthesis",
+   "period": {
+    "kind": "versioned",
+    "effective_from": "2026-07-29",
+    "effective_to": "2026-12-31"
+   },
+   "publisher": "",
+   "title": "IRS Business Filing & Employment Tax Review — Reviewed 2026",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:794fcb89-251a-48f7-b168-9185218f6b66",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "threshold"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Child and Dependent Care Credit (CDCC)",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:b7af5b6d-18f7-472f-8e4a-f0e3326eba4c",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "threshold"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Child Tax Credit / Credit for Other Dependents (CTC/ODC)",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:4834c784-484a-41e8-a35f-90d82ba535f3",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "threshold"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Credit for the Elderly or the Disabled",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:e26cbd25-f33d-4b0e-99d9-f452ba099f5a",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "threshold"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Earned Income Tax Credit (EITC)",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:15ec5e84-305e-4c3d-9ce3-4ac9ee6a3526",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "threshold"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Family, Household, and Dependent Status",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:e181ed98-05de-43d9-a7fc-feabbf1eba61",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "threshold"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Filer Identity and Status",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:1b971348-489b-4e37-8a02-2a197d81eb91",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "threshold"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Filing Status Determination",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:29e79146-ec75-4f2b-9c81-44152113dc5d",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "threshold"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Form 1099-R (Retirement Distributions)",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:03593a42-8e7f-4473-8168-fd6e4ad65400",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "payroll",
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "threshold"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Form W-2 Wage Reporting",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:b6dadf93-8de8-467e-8922-b8212ed63ce3",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "threshold"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Health Savings Accounts (HSA / Form 8889)",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:a78161ef-914e-4370-b788-8597b78f9ace",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "threshold"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Income Sources and Classification",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:caa12130-8832-4908-bdf0-8a723dce6818",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "threshold"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Interest Income",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:611aadff-860f-4605-8589-acd61d6fbf42",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "threshold"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Premium Tax Credit (PTC / Form 8962)",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:730a13fd-2fbe-41b5-8a4f-86ee04fc8d31",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "threshold"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Saver's Credit",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:f66de600-f789-4791-b4b7-80e2385d800a",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "rule"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Social Security Income Taxation",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:043da3f0-5977-4485-aa00-cb4aa92d5193",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "threshold",
+    "rate",
+    "deadline"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Standard Deduction",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:4003977c-d1f1-4453-9350-41e88e08e008",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "threshold"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Student Loan Interest Deduction",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:5a137246-9e12-4f2d-92cb-33beb6c5ac99",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold",
+    "rule"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Tax Calculation and Exemptions",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:c8439a9b-0820-4525-878b-da14b2cee5b9",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "threshold",
+    "rate",
+    "deadline"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Tax Year Constants and Key Dates",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:b0ad324e-eef0-4c8a-a1be-4f391204f734",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "economy",
+    "tax"
+   ],
+   "fact_types": [
+    "rule",
+    "threshold"
+   ],
+   "source_class": "official_guidance",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "IRS Direct File Fact Dictionary — Unemployment Compensation",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:src-formula-registry-calculation-engine",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "audit",
+    "tax"
+   ],
+   "fact_types": [],
+   "source_class": "calculation_tool",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Named Formula Registry — Governed Accounting/Finance/Tax/Audit Calculation Engine",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-payroll-tax-api-rate-lookup",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [
+    "rate"
+   ],
+   "source_class": "commercial_data",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "PayrollTax API — Rate Lookup",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-policyengine-us-calculation-engine",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [],
+   "source_class": "calculation_tool",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "PolicyEngine-US — Live Household Tax Calculation Engine",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:750ec634-4e2a-4200-b4ee-f1fda01b0401",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold"
+   ],
+   "source_class": "open_source_parameters",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "PolicyEngine-US Parameters — Federal Tax Credits (CTC, CDCC, PTC, EITC, Elderly/Disabled, Education, Energy, Clean Vehicle)",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:d5416b9c-5e0a-4b42-aec9-0c2356bd3a3d",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "tax"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold"
+   ],
+   "source_class": "open_source_parameters",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "PolicyEngine-US Parameters — IRS Deductions (Standard, Itemized, QBI, Auto Loan Interest)",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:8c439838-4df4-41be-b6ce-94d8166c4358",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [
+    "rate",
+    "threshold"
+   ],
+   "source_class": "open_source_parameters",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "PolicyEngine-US Parameters — Social Security (PIA, AIME, Retirement Age, SSI, Earnings Test)",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 1,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "in_use",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": true
+  },
+  {
+   "id": "library:src-regulations-gov-docket-lookup",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [
+    "rule"
+   ],
+   "source_class": "legislation_lookup",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Regulations.gov — Docket Lookup",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-expression-evaluator-calculation-engine",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "calculation_tool",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Sandboxed Expression Evaluator — Live Arithmetic Calculation Engine",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-sec-edgar-company-facts",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [
+    "company_data"
+   ],
+   "source_class": "filings",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "SEC EDGAR — Company Facts",
+   "authority_level": "primary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-serpapi-authority-search",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "search_tool",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "SerpAPI — Approved Professional Authority Search",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  },
+  {
+   "id": "library:src-tavily-authority-search",
+   "kind": "library",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "unclassified"
+   ],
+   "fact_types": [],
+   "source_class": "search_tool",
+   "period": {
+    "kind": "versioned",
+    "effective_from": null,
+    "effective_to": null
+   },
+   "publisher": "",
+   "title": "Tavily — Approved Professional Authority Search",
+   "authority_level": "secondary",
+   "versions": 1,
+   "approved_versions": 0,
+   "passages": 0,
+   "last_retrieved": "2026-09-22 13:10:04.480147+00:00",
+   "selection_today": "governed library search (source bundle)",
+   "module": "build_source_bundle",
+   "status": "no_approved_version",
+   "review_by": "2027-01-31",
+   "counts_for_coverage": false
+  }
+ ],
+ "subject_terms": {
+  "vat": "\\bvat\\b|\\bvalue[- ]added\\s+tax\\b",
+  "gst": "\\bgst\\b|\\bgoods\\s+and\\s+services\\s+tax\\b",
+  "sst": "\\bsst\\b|\\bsales\\s+(?:and|&)\\s+services?\\s+tax\\b",
+  "corporation_tax": "\\bcorporat(?:ion|e)\\s+(?:income\\s+)?tax\\b",
+  "income_tax": "\\bincome\\s+tax\\b|\\bpersonal\\s+allowance\\b|\\btax\\s+bands?\\b",
+  "tax_interest": "\\b(?:late[- ]payment|repayment|overdue|under-?paid|under-?payment|unpaid|over-?paid)\\b[^.?!]{0,60}\\binterest\\b|\\binterest\\b[^.?!]{0,60}\\b(?:late|overdue|under-?paid|under-?payment|unpaid|over-?paid|repay\\w*)\\b",
+  "bank_rate": "\\bbank\\s+rate\\b|\\bbase\\s+rate\\b",
+  "cash_rate": "\\bcash\\s+rate\\b",
+  "policy_rate": "\\bpolicy\\s+(?:interest\\s+)?rate\\b|\\bovernight\\s+rate\\b",
+  "fx": "\\bexchange\\s+rates?\\b|\\bfx\\s+rate\\b|\\breference\\s+rate\\b|\\bconvert\\b",
+  "payroll": "\\bnational\\s+insurance\\b|\\bnics?\\b|\\bsuperannuation\\b|\\bpayroll\\b|\\bpaye\\b|\\bsocial\\s+security\\b|\\bprovident\\s+fund\\b|\\bcpf\\b|\\bepf\\b|\\b(?:national\\s+)?minimum\\s+wage\\b|\\bliving\\s+wage\\b|\\bstatutory\\s+(?:sick|maternity|paternity)\\s+pay\\b|\\bpayroll\\s+tax\\b",
+  "sales_tax": "\\bsales\\s+tax\\b|\\bhst\\b|\\bpst\\b|\\bqst\\b",
+  "customs": "\\bcustoms\\b|\\bimport\\s+dut(?:y|ies)\\b|\\bexport\\s+dut(?:y|ies)\\b|\\btariffs?\\b|\\bexcise\\s+dut(?:y|ies)\\b"
+ }
+}

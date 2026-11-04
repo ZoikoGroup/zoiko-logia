@@ -1,0 +1,779 @@
+{
+ "description": "Task Contract, Stage C-1 (shadow): hand-written retrieval requirements. Each expect entry is one part of the request, in order. needs_official: the answer depends on an official current figure or rule (rate, threshold, deadline, legal or tax rule) that must come from the publisher. fact_type lists the acceptable types. jurisdictions, publisher (a substring of the label, or null for a known gap) and connector are checked only when given. Groups: official (false-negative checks), conceptual_trap and calculation_trap (false-positive checks: they use the trigger words but need nothing looked up), mixed (both in one request). Written from what is correct, not from what the code does. Cases marked holdout were written after the first run and before any change to the rules, and were not used to tune them. holdout2 cases were written after the second review and before the third change.",
+ "cases": [
+  {
+   "id": "uk-vat-threshold",
+   "group": "official",
+   "query": "What is the current UK VAT registration threshold?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "threshold"
+     ],
+     "jurisdictions": [
+      "UK"
+     ],
+     "publisher": "HMRC",
+     "connector": "hmrc_vat_registration"
+    }
+   ],
+   "why": "A current figure HMRC sets; the existing HMRC registration connector serves it."
+  },
+  {
+   "id": "uk-vat-standard-rate",
+   "group": "official",
+   "query": "What is the standard rate of VAT in the UK?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "rate"
+     ],
+     "jurisdictions": [
+      "UK"
+     ],
+     "publisher": "HMRC"
+    }
+   ],
+   "why": "A current statutory rate."
+  },
+  {
+   "id": "uk-corporation-tax-main-rate",
+   "group": "official",
+   "query": "What is the main rate of corporation tax in the UK for 2026?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "rate"
+     ],
+     "jurisdictions": [
+      "UK"
+     ],
+     "publisher": "HMRC"
+    }
+   ],
+   "why": "A current statutory rate, phrased as 'main rate of corporation tax'."
+  },
+  {
+   "id": "uk-self-assessment-deadline",
+   "group": "official",
+   "query": "When is the UK self assessment online filing deadline?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "deadline"
+     ],
+     "jurisdictions": [
+      "UK"
+     ],
+     "publisher": "HMRC"
+    }
+   ],
+   "why": "An official deadline."
+  },
+  {
+   "id": "uk-bank-rate",
+   "group": "official",
+   "query": "What is the current Bank of England base rate?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "rate"
+     ],
+     "jurisdictions": [
+      "UK"
+     ],
+     "publisher": null,
+     "connector": "bank_of_england"
+    }
+   ],
+   "why": "A current published rate; the Bank of England connector exists but the publisher map has no Bank of England label (gap, not added)."
+  },
+  {
+   "id": "uk-late-vat-penalties",
+   "group": "official",
+   "query": "What are the penalties for submitting a VAT return late in the UK?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "rule"
+     ],
+     "jurisdictions": [
+      "UK"
+     ],
+     "publisher": "HMRC"
+    }
+   ],
+   "why": "A legal rule (the penalty regime) that changes over time."
+  },
+  {
+   "id": "sg-gst-rate",
+   "group": "official",
+   "query": "What is the standard GST rate in Singapore?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "rate"
+     ],
+     "jurisdictions": [
+      "SINGAPORE"
+     ],
+     "publisher": null
+    }
+   ],
+   "why": "A current rate; IRAS is not in the publisher map (gap, not added). Must not be attributed to India's CBIC."
+  },
+  {
+   "id": "sg-gst-registration",
+   "group": "official",
+   "query": "When must a Singapore business register for GST?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "rule",
+      "threshold",
+      "deadline"
+     ],
+     "jurisdictions": [
+      "SINGAPORE"
+     ],
+     "publisher": null
+    }
+   ],
+   "why": "A registration rule built on an official turnover threshold."
+  },
+  {
+   "id": "in-gst-renewable-rate",
+   "group": "official",
+   "query": "What is the GST rate on renewable energy devices after the 2025 changes?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "rate"
+     ],
+     "jurisdictions": [
+      "INDIA"
+     ],
+     "publisher": "CBIC"
+    }
+   ],
+   "why": "A current notified rate."
+  },
+  {
+   "id": "in-tds-professional-fees",
+   "group": "official",
+   "query": "Under which section is TDS deducted on professional fees, and at what rate?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "rule",
+      "rate"
+     ],
+     "jurisdictions": [
+      "INDIA"
+     ],
+     "publisher": "Income Tax"
+    }
+   ],
+   "why": "A provision and its rate."
+  },
+  {
+   "id": "in-itc-motor-vehicles",
+   "group": "official",
+   "query": "Is input tax credit allowed on motor vehicles used for employee transport under GST in India?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "rule"
+     ],
+     "jurisdictions": [
+      "INDIA"
+     ],
+     "publisher": "CBIC"
+    }
+   ],
+   "why": "A legal eligibility rule (blocked credits)."
+  },
+  {
+   "id": "in-gstr3b-due-date",
+   "group": "official",
+   "query": "What is the due date for filing GSTR-3B?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "deadline"
+     ],
+     "jurisdictions": [
+      "INDIA"
+     ],
+     "publisher": "CBIC"
+    }
+   ],
+   "why": "An official deadline."
+  },
+  {
+   "id": "au-gst-threshold",
+   "group": "official",
+   "query": "What is the GST registration turnover threshold in Australia?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "threshold"
+     ],
+     "jurisdictions": [
+      "AUSTRALIA"
+     ],
+     "publisher": null
+    }
+   ],
+   "why": "A current threshold; the ATO is not in the publisher map (gap, not added)."
+  },
+  {
+   "id": "us-1099-deadline",
+   "group": "official",
+   "query": "What is the deadline for filing Form 1099-NEC with the IRS?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "deadline"
+     ],
+     "jurisdictions": [
+      "US"
+     ],
+     "publisher": "IRS"
+    }
+   ],
+   "why": "An official deadline."
+  },
+  {
+   "id": "us-standard-deduction",
+   "group": "official",
+   "query": "What is the US federal standard deduction for a single filer in 2026?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "threshold",
+      "rate"
+     ],
+     "jurisdictions": [
+      "US"
+     ],
+     "publisher": "IRS"
+    }
+   ],
+   "why": "A current figure the IRS publishes each year."
+  },
+  {
+   "id": "fx-convert-today",
+   "group": "official",
+   "query": "Convert $25,000 into pounds at today's exchange rate.",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "rate"
+     ],
+     "connector": "exchange_rate"
+    }
+   ],
+   "why": "A current market rate; the user gave no rate."
+  },
+  {
+   "id": "explain-ifrs16-cash-flows",
+   "group": "conceptual_trap",
+   "query": "Explain how lease payments are presented in the statement of cash flows under IFRS 16.",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "standard"
+     ]
+    }
+   ],
+   "why": "Explains a standard; no current figure."
+  },
+  {
+   "id": "explain-avoidance-evasion",
+   "group": "conceptual_trap",
+   "query": "Explain the difference between tax avoidance and tax evasion.",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "explanation"
+     ]
+    }
+   ],
+   "why": "Conceptual."
+  },
+  {
+   "id": "explain-how-vat-works",
+   "group": "conceptual_trap",
+   "query": "Explain how VAT works as a tax on consumption.",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "explanation"
+     ]
+    }
+   ],
+   "why": "Conceptual, though it names VAT."
+  },
+  {
+   "id": "explain-why-thresholds",
+   "group": "conceptual_trap",
+   "query": "Why do tax authorities set VAT registration thresholds?",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "explanation"
+     ]
+    }
+   ],
+   "why": "Asks why thresholds exist, not what the threshold is."
+  },
+  {
+   "id": "explain-standard-vs-zero-rate",
+   "group": "conceptual_trap",
+   "query": "Explain the difference between standard-rated and zero-rated supplies for VAT.",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "explanation"
+     ]
+    }
+   ],
+   "why": "A conceptual distinction; no current rate is asked for."
+  },
+  {
+   "id": "explain-deferred-tax",
+   "group": "conceptual_trap",
+   "query": "What is deferred tax and why does it arise?",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "explanation",
+      "standard"
+     ]
+    }
+   ],
+   "why": "Conceptual."
+  },
+  {
+   "id": "explain-ifrs15-steps",
+   "group": "conceptual_trap",
+   "query": "Explain the five steps of revenue recognition under IFRS 15.",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "standard"
+     ]
+    }
+   ],
+   "why": "Explains a standard."
+  },
+  {
+   "id": "explain-going-concern",
+   "group": "conceptual_trap",
+   "query": "What going concern indicators does an auditor consider?",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "explanation",
+      "standard"
+     ]
+    }
+   ],
+   "why": "Conceptual (ISA 570); no current figure."
+  },
+  {
+   "id": "explain-what-a-deadline-means",
+   "group": "conceptual_trap",
+   "query": "Why is it important for a business to keep track of its tax filing deadlines?",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "explanation"
+     ]
+    }
+   ],
+   "why": "Names deadlines but asks for no date."
+  },
+  {
+   "id": "calc-uk-vat-rate-given",
+   "group": "calculation_trap",
+   "query": "Calculate the VAT payable: UK company, sales £100,000, purchases £50,000, VAT 20%, figures exclude VAT, all standard-rated.",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "calculation"
+     ]
+    }
+   ],
+   "why": "Arithmetic on given figures with the rate given."
+  },
+  {
+   "id": "calc-india-gst-rate-given",
+   "group": "calculation_trap",
+   "query": "An Indian supplier sold goods worth ₹2,00,000 with GST at 18%. Calculate the GST amount.",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "calculation"
+     ]
+    }
+   ],
+   "why": "Rate given."
+  },
+  {
+   "id": "calc-sg-gst-rate-given",
+   "group": "calculation_trap",
+   "query": "A Singapore company invoiced services of S$10,000 plus GST at 9%. Calculate the GST to charge.",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "calculation"
+     ]
+    }
+   ],
+   "why": "Rate given."
+  },
+  {
+   "id": "calc-lease-liability",
+   "group": "calculation_trap",
+   "query": "Kestrel Logistics Ltd reports under IFRS. On 1 January 2026 it leased a depot for 5 years. Annual payments of £24,000 are paid at the end of each year, and the interest rate implicit in the lease is 7%. Calculate the initial lease liability.",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "calculation"
+     ]
+    }
+   ],
+   "why": "All inputs given, including the rate."
+  },
+  {
+   "id": "calc-depreciation",
+   "group": "calculation_trap",
+   "query": "Calculate straight-line depreciation on a machine costing £50,000 with a 5-year life and no residual value.",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "calculation"
+     ]
+    }
+   ],
+   "why": "Arithmetic on given figures."
+  },
+  {
+   "id": "calc-loan-journal",
+   "group": "calculation_trap",
+   "query": "Prepare the journal entry to record a bank loan of $10,000 received in cash.",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "calculation"
+     ]
+    }
+   ],
+   "why": "An entry on given figures; 'bank' is not a bank rate."
+  },
+  {
+   "id": "calc-interest-rate-given",
+   "group": "calculation_trap",
+   "query": "A loan of £40,000 carries interest at 6% a year. Calculate the interest for the first year.",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "calculation"
+     ]
+    }
+   ],
+   "why": "The rate is given; nothing to look up."
+  },
+  {
+   "id": "mixed-threshold-and-explain",
+   "group": "mixed",
+   "query": "A UK sole trader asks two things. 1. What is the current VAT registration threshold? 2. Explain why voluntary registration might help a small business.",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "threshold"
+     ],
+     "jurisdictions": [
+      "UK"
+     ],
+     "publisher": "HMRC",
+     "connector": "hmrc_vat_registration"
+    },
+    {
+     "needs_official": false,
+     "fact_type": [
+      "explanation"
+     ]
+    }
+   ],
+   "why": "Only the first part needs an official figure."
+  },
+  {
+   "id": "mixed-calc-and-rate",
+   "group": "mixed",
+   "query": "Questions to Answer: 1. Calculate the depreciation on equipment costing £30,000 over 3 years with no residual value. 2. What is the current UK corporation tax rate?",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "calculation"
+     ]
+    },
+    {
+     "needs_official": true,
+     "fact_type": [
+      "rate"
+     ],
+     "jurisdictions": [
+      "UK"
+     ],
+     "publisher": "HMRC"
+    }
+   ],
+   "why": "Only the second part needs an official figure."
+  },
+  {
+   "id": "holdout-uk-employer-nic-rate",
+   "group": "official",
+   "holdout": true,
+   "query": "What is the current rate of employer national insurance contributions in the UK?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "rate"
+     ],
+     "jurisdictions": [
+      "UK"
+     ],
+     "publisher": "HMRC"
+    }
+   ],
+   "why": "A current statutory rate."
+  },
+  {
+   "id": "holdout-uk-pre-registration-time-limit",
+   "group": "official",
+   "holdout": true,
+   "query": "What is the time limit for reclaiming VAT on goods bought before VAT registration in the UK?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "rule",
+      "deadline"
+     ],
+     "jurisdictions": [
+      "UK"
+     ],
+     "publisher": "HMRC"
+    }
+   ],
+   "why": "A statutory time limit."
+  },
+  {
+   "id": "holdout-in-composition-limit",
+   "group": "official",
+   "holdout": true,
+   "query": "What is the annual turnover limit for the GST composition scheme in India?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "threshold"
+     ],
+     "jurisdictions": [
+      "INDIA"
+     ],
+     "publisher": "CBIC"
+    }
+   ],
+   "why": "A current threshold."
+  },
+  {
+   "id": "holdout-why-voluntary-registration",
+   "group": "conceptual_trap",
+   "holdout": true,
+   "query": "Why might a company choose to register for VAT voluntarily?",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "explanation"
+     ]
+    }
+   ],
+   "why": "Conceptual reasons, no figure or rule."
+  },
+  {
+   "id": "holdout-calc-tax-charge-rate-given",
+   "group": "calculation_trap",
+   "holdout": true,
+   "query": "A company's taxable profit is £200,000 and the tax rate is 25%. Calculate the tax charge.",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "calculation"
+     ]
+    }
+   ],
+   "why": "Rate given."
+  },
+  {
+   "id": "holdout-explain-extension-penalties",
+   "group": "conceptual_trap",
+   "holdout": true,
+   "query": "Explain in general terms how filing late can lead to penalties and interest for a business.",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "explanation"
+     ]
+    }
+   ],
+   "why": "A general explanation; no jurisdiction, figure or provision asked for."
+  },
+  {
+   "id": "holdout2-vat-consumption-or-profit",
+   "group": "conceptual_trap",
+   "holdout": true,
+   "query": "Is VAT a tax on consumption or on profits?",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "explanation"
+     ]
+    }
+   ],
+   "why": "Conceptual, though phrased as a yes/no question about VAT."
+  },
+  {
+   "id": "holdout2-what-is-input-tax",
+   "group": "conceptual_trap",
+   "holdout": true,
+   "query": "Can you explain what input tax is?",
+   "expect": [
+    {
+     "needs_official": false,
+     "fact_type": [
+      "explanation"
+     ]
+    }
+   ],
+   "why": "Conceptual definition."
+  },
+  {
+   "id": "holdout2-vat-record-keeping",
+   "group": "official",
+   "holdout": true,
+   "query": "Does a UK business need to keep VAT records for six years?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "rule"
+     ],
+     "jurisdictions": [
+      "UK"
+     ],
+     "publisher": "HMRC"
+    }
+   ],
+   "why": "A statutory record-keeping rule."
+  },
+  {
+   "id": "holdout2-postage-exempt",
+   "group": "official",
+   "holdout": true,
+   "query": "Are postage stamps exempt from VAT in the UK?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "rule",
+      "rate"
+     ],
+     "jurisdictions": [
+      "UK"
+     ],
+     "publisher": "HMRC"
+    }
+   ],
+   "why": "A legal VAT liability."
+  },
+  {
+   "id": "holdout2-fx-latest-rate",
+   "group": "official",
+   "holdout": true,
+   "query": "How much is $8,000 in euros at the latest rate?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "rate"
+     ],
+     "connector": "exchange_rate"
+    }
+   ],
+   "why": "A current market rate, not given."
+  },
+  {
+   "id": "holdout2-in-section-80c-limit",
+   "group": "official",
+   "holdout": true,
+   "query": "What is the maximum deduction allowed under Section 80C in India?",
+   "expect": [
+    {
+     "needs_official": true,
+     "fact_type": [
+      "threshold",
+      "rule"
+     ],
+     "jurisdictions": [
+      "INDIA"
+     ],
+     "publisher": "Income Tax"
+    }
+   ],
+   "why": "A statutory limit."
+  }
+ ]
+}

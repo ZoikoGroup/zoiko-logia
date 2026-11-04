@@ -53,7 +53,12 @@ def context_facts(text: str) -> ContextFacts:
         target = found.framework if _FRAMEWORKS.fullmatch(match.group(0)) else found.jurisdiction
         if match.group(0) not in target:
             target.append(match.group(0))
+    # The period ends at its date: "year ended 31 March 2026", not "year
+    # ended 31 March 2026 it reported reve" (30 characters, 29 Oct 2026).
     period = re.search(r"\b(?:(?:financial\s+|accounting\s+|tax\s+)?(?:year|period|quarter)s?\s+end(?:ing|ed)?\s+"
+                       r"(?:\d{1,2}(?:st|nd|rd|th)?\s+[A-Z][a-z]+,?\s+\d{4}|[A-Z][a-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}"
+                       r"|[A-Z][a-z]+\s+\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4}|\d{4}))"
+                       r"|\b(?:(?:financial\s+|accounting\s+|tax\s+)?(?:year|period|quarter)s?\s+end(?:ing|ed)?\s+"
                        r"[^,.;:\n]{3,30}|FY\s?\d{2,4})", text or "", re.I)
     if period or _PERIOD.search(text or ""):
         found.period.append((period.group(0) if period else _PERIOD.search(text).group(0)).strip())

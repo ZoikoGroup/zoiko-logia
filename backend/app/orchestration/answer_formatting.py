@@ -222,7 +222,9 @@ def missing_visual_message(query: str) -> str:
     return 'The requested chart could not be built from verified numeric data. See the table and source limitations for the available figures.'
 
 
-_FRAC = re.compile(r"\\[dt]?frac\{([^{}]*)\}\{([^{}]*)\}")
+# A space may sit between the two parts: "\\frac{200,000 × r} {1-(1+r)^-300}"
+# was shown raw in a loan answer (3 Nov 2026).
+_FRAC = re.compile(r"\\[dt]?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}")
 _LATEX_SYMBOLS = (
     ("\\left", ""), ("\\right", ""),
     ("{,}", ","), ("\\times", "×"), ("\\cdot", "×"), ("\\div", "÷"), ("\\%", "%"),
@@ -270,8 +272,12 @@ def latex_to_plain(text: str) -> str:
         if line.strip().startswith("```"):
             in_fence = not in_fence
         if not in_fence:
-            # Before fractions: "\frac{468{,}000}{5{,}200{,}000}" has braces inside.
+            # Before fractions: "\frac{468{,}000}{5{,}200{,}000}" has braces inside,
+            # and so has "\frac{P × r}{1-(1+r)^{-300}}" (3 Nov 2026).
             line = line.replace("{,}", ",")
+            # Not a brace's label ("\overbrace{…}^{leverage}"), which follows "}".
+            line = re.sub(r"(?<!\})\^\{([^{}]*)\}", r"^\1", line)
+            line = re.sub(r"(?<!\})_\{([^{}]*)\}", r"_\1", line)
             for _ in range(3):  # nested: \underbrace{\frac{\text{A}}{B}}_{\text{C}}
                 line = _WRAPPER.sub(r"\1", line)
                 line = _FRAC.sub(r"(\1) ÷ (\2)", line)
@@ -280,9 +286,12 @@ def latex_to_plain(text: str) -> str:
             # command goes, its content stays.
             line = re.sub(r"\\(?:under|over)brace\{", "", line)
             line = _ENVIRONMENT.sub("", line)
-            # An aligned row: "&=" is "=", "\\" a line break (in a table row, a
-            # semicolon). Other "&" stay ("R&D", "Profit & Loss").
-            line = re.sub(r"\s*&\s*=", " =", line)
+            # A line break with spacing ("\\\\[4pt]") is a line break: "[4pt]"
+            # was left in the text (3 Nov 2026).
+            line = re.sub(r"\\{1,2}\s*\[\s*-?\d+(?:\.\d+)?\s*(?:pt|em|ex|mm|cm|in)\s*\]", r"\\\\", line)
+            # An aligned row: "&=" is "=", "&\\approx" is "≈", "\\" a line break
+            # (in a table row, a semicolon). Other "&" stay ("R&D", "Profit & Loss").
+            line = re.sub(r"\s*&\s*(?==|\\approx|\\leq?|\\geq?|<|>|≈)", " ", line)
             line = re.sub(r"\s*\\\\\s*$", "", line)
             if "\\\\" in line:
                 line = re.sub(r"\s*\\\\\s*", "; " if line.lstrip().startswith("|") else "\n", line)

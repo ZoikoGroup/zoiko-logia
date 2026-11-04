@@ -1,0 +1,244 @@
+{
+ "description": "Read-only verification of the priority gold figures, 30 Oct 2026: 32 plain page reads in two rounds (22 + 10) (no model, no search) plus one read-only query of the governed library. Gold expected values are NOT changed and NOT approved; this records what the authoritative source states. status: verified (the page states the value, for the period given), partly_verified (some of the values, or for a different period), unresolved (not stated on the page read, page unavailable, or no specific page known).",
+ "reads": 32,
+ "results": [
+  {
+   "id": "uk-vat-std-rate",
+   "expected": "20%",
+   "status": "verified",
+   "source_states": "The standard VAT rate is 20%",
+   "source": "HMRC, VAT rates, https://www.gov.uk/vat-rates",
+   "period": "current at 30 Oct 2026 (effective date not on the page)"
+  },
+  {
+   "id": "uk-vat-threshold",
+   "expected": "£90,000",
+   "status": "verified",
+   "source_states": "You must register if ... your total taxable turnover for the last 12 months goes over £90,000 (the VAT threshold) ... or ... over £90,000 in the next 30 days",
+   "source": "HMRC, Register for VAT, https://www.gov.uk/register-for-vat",
+   "period": "current at 30 Oct 2026 (effective date not on the page)"
+  },
+  {
+   "id": "uk-vat-threshold-2022",
+   "expected": "£85,000",
+   "status": "unresolved",
+   "source_states": "Notice 700/1 landing page lists updates (e.g. thresholds for 1 April 2026 to 31 March 2027 added 5 Aug 2026) but not the historical values",
+   "source": "HMRC, VAT Notice 700/1 supplement (not read)",
+   "period": "-",
+   "next": "read the VAT Notice 700/1 supplement (thresholds table)",
+   "round_2": "second round: the VAT Notice 700/1 supplement address returned 404"
+  },
+  {
+   "id": "uk-vat-dereg",
+   "expected": "£88,000",
+   "status": "unresolved",
+   "source_states": "the candidate URL redirected to Register for VAT, which does not state the deregistration threshold",
+   "source": "HMRC (page not found)",
+   "period": "-",
+   "next": "read the VAT Notice 700/1 supplement or 'Cancel your VAT registration'"
+  },
+  {
+   "id": "uk-frs-join",
+   "expected": "£150,000",
+   "status": "verified",
+   "source_states": "You may be able to join the scheme if your VAT turnover is £150,000 or less (excluding VAT)",
+   "source": "HMRC, VAT Flat Rate Scheme, https://www.gov.uk/vat-flat-rate-scheme",
+   "period": "current at 30 Oct 2026"
+  },
+  {
+   "id": "uk-frs-leave",
+   "expected": "above £230,000",
+   "status": "unresolved",
+   "source_states": "not on the scheme's first page",
+   "source": "HMRC, VAT Flat Rate Scheme (leave page not read)",
+   "period": "-",
+   "next": "read the scheme's 'Leaving the scheme' page",
+   "round_2": "second round: the 'leave the scheme' address redirected to the scheme's first page"
+  },
+  {
+   "id": "uk-cash-acc-join",
+   "expected": "£1.35 million",
+   "status": "verified",
+   "source_states": "To join the scheme your VAT taxable turnover must be £1.35 million or less",
+   "source": "HMRC, VAT Cash Accounting Scheme, https://www.gov.uk/vat-cash-accounting-scheme",
+   "period": "current at 30 Oct 2026"
+  },
+  {
+   "id": "uk-cash-acc-leave",
+   "expected": "above £1.6 million",
+   "status": "unresolved",
+   "source_states": "not on the scheme's first page",
+   "source": "HMRC (leave page not read)",
+   "period": "-",
+   "round_2": "second round: the 'leave the scheme' address redirected to the scheme's first page"
+  },
+  {
+   "id": "uk-ct-main / uk-ct-small",
+   "expected": "25% / 19%",
+   "status": "verified",
+   "source_states": "The Corporation Tax rate for company profits is 25% ... profit of £50,000 or less, you'll pay the 'small profits rate', which is 19%; Marginal Relief between £50,000 and £250,000",
+   "source": "HMRC, Corporation Tax rates, https://www.gov.uk/corporation-tax-rates",
+   "period": "current at 30 Oct 2026 (from 1 April 2023 not stated on the page)"
+  },
+  {
+   "id": "uk-personal-allowance",
+   "expected": "£12,570",
+   "status": "verified",
+   "source_states": "The current tax year is from 6 April 2026 to 5 April 2027 ... The standard Personal Allowance is £12,570",
+   "source": "HMRC, Income Tax rates and Personal Allowances, https://www.gov.uk/income-tax-rates",
+   "period": "tax year 2026-27; how long the freeze lasts: unresolved"
+  },
+  {
+   "id": "uk-employer-nic",
+   "expected": "15%",
+   "status": "verified",
+   "source_states": "figures apply from 6 April 2026 to 5 April 2027 ... category A ... 15% (and 15% for 6 April 2025 to 5 April 2026)",
+   "source": "HMRC, Rates and thresholds for employers 2025 to 2026 and 2026 to 2027",
+   "period": "tax years 2025-26 and 2026-27",
+   "round": 2
+  },
+  {
+   "id": "uk-late-interest",
+   "expected": "base rate + 4%",
+   "status": "verified",
+   "source_states": "late payment interest set at base rate plus 4% from 6 April 2025 (was plus 2.5% on or before 5 April 2025)",
+   "source": "HMRC, HMRC interest rates for late and early payments",
+   "period": "from 6 April 2025"
+  },
+  {
+   "id": "uk-sa-deadline",
+   "expected": "31 January",
+   "status": "verified",
+   "source_states": "You must still pay the tax you owe by 11:59pm on 31 January 2027",
+   "source": "HMRC, Self Assessment tax returns: deadlines",
+   "period": "2025-26 returns (deadline 31 January 2027)"
+  },
+  {
+   "id": "in-gst-reg-goods / services",
+   "expected": "₹40 lakh / ₹20 lakh",
+   "status": "verified",
+   "source_states": "Threshold limits ... for the suppliers of goods would be Rs. 40 lakhs and Rs. 20 lakhs (in [listed] States); ... for suppliers of services ... Rs. 20 lakhs and Rs. 10 lakhs (Manipur, Mizoram, Nagaland and Tripura)",
+   "source": "CBIC, GST - An Update (01.06.2019), https://cbic-gst.gov.in/pdf/01062019-GST-An-Update.pdf",
+   "period": "as decided in 2019; still current in 2026: not confirmed by this document"
+  },
+  {
+   "id": "in-composition",
+   "expected": "₹1.5 crore",
+   "status": "verified",
+   "source_states": "Composition threshold limit increased to be Rs. 1.5 Crore",
+   "source": "CBIC, GST - An Update (01.06.2019)",
+   "period": "from 2019; still current in 2026: not confirmed by this document"
+  },
+  {
+   "id": "in-gst-hotel",
+   "expected": "5% without input tax credit",
+   "status": "verified",
+   "source_states": "hotel accommodation services, where the value of supply is up to Rs. 7500 per unit per day ... will attract GST rate of 5% without ITC (FAQ 71)",
+   "source": "GST Council, FAQs on GST rate changes (September 2025), governed library version 2025-09-22 (APPROVED)",
+   "period": "from 22 September 2025"
+  },
+  {
+   "id": "in-gst-56th",
+   "expected": "22 September 2025",
+   "status": "verified",
+   "source_states": "changes in GST rates on services and goods other than cigarettes, chewing tobacco products ... will be effective from 22nd September, 2025",
+   "source": "GST Council, FAQs on GST rate changes (September 2025), governed library",
+   "period": "22 September 2025; tobacco products excepted"
+  },
+  {
+   "id": "in-80c",
+   "expected": "₹1.5 lakh",
+   "status": "unresolved",
+   "source_states": "no specific official page known; not read",
+   "source": "Income Tax Department",
+   "period": "-",
+   "next": "identify the official page (and the Income-tax Act 2025 successor provision)"
+  },
+  {
+   "id": "sg-gst-rate",
+   "expected": "9%",
+   "status": "verified",
+   "source_states": "The current GST rate in Singapore is 9%",
+   "source": "IRAS, Current GST rates",
+   "period": "current at 30 Oct 2026 (the page links to the 2024 rate change)"
+  },
+  {
+   "id": "sg-gst-threshold",
+   "expected": "S$1 million",
+   "status": "verified",
+   "source_states": "You must register for GST if your taxable turnover is: under the retrospective view, more than $1 million at the end of the calendar year, or under the prospective view, expected to be more than $1 million in the next 12 months",
+   "source": "IRAS, Do I need to register for GST",
+   "period": "current at 30 Oct 2026",
+   "round": 2
+  },
+  {
+   "id": "sg-cit",
+   "expected": "17%",
+   "status": "unresolved",
+   "source_states": "the corporate income tax landing page does not state the rate",
+   "source": "IRAS (sub-page not read)",
+   "period": "-",
+   "round_2": "second round: the IRAS corporate tax rate page returned 404"
+  },
+  {
+   "id": "au-gst-threshold",
+   "expected": "A$75,000 (A$150,000 non-profits)",
+   "status": "verified",
+   "source_states": "You must register for GST ... GST turnover ... of $75,000 or more ... non-profit organisation ... $150,000 per year or more ... when you provide taxi or limousine travel",
+   "source": "ATO, Registering for GST",
+   "period": "current at 30 Oct 2026"
+  },
+  {
+   "id": "au-gst-rate",
+   "expected": "10%",
+   "status": "unresolved",
+   "source_states": "not stated on the registering page",
+   "source": "ATO (rate page not read)",
+   "period": "-",
+   "round_2": "second round: the ATO GST overview page does not state the rate in its text"
+  },
+  {
+   "id": "au-super",
+   "expected": "12%",
+   "status": "verified",
+   "source_states": "1 July 2025 - 30 June 2026: general super guarantee 12.00%; 1 July 2026 - 30 June 2027: 12.00%",
+   "source": "ATO, Super guarantee (key superannuation rates and thresholds)",
+   "period": "from 1 July 2025",
+   "round": 2
+  },
+  {
+   "id": "us-1099-deadline",
+   "expected": "January 31",
+   "status": "verified",
+   "source_states": "Section 6071(c) requires you to file Form 1099-NEC on or before January 31",
+   "source": "IRS, Instructions for Forms 1099-MISC and 1099-NEC",
+   "period": "current instructions at 30 Oct 2026"
+  },
+  {
+   "id": "us-cit",
+   "expected": "21%",
+   "status": "verified",
+   "source_states": "The amount of the tax imposed by subsection (a) shall be 21 percent of taxable income",
+   "source": "26 U.S.C. §11(b), US Code 2023 edition, U.S. Government Publishing Office (govinfo.gov)",
+   "period": "current text of §11 (2023 edition)",
+   "round": 2
+  },
+  {
+   "id": "uae-vat-rate / uae-vat-mandatory",
+   "expected": "5% / AED 375,000",
+   "status": "verified",
+   "source_states": "VAT was introduced across the UAE on 1st January 2018 at a standard rate of 5% ... mandatory registration threshold of AED 375,000",
+   "source": "UAE Ministry of Finance, Value Added Tax",
+   "period": "from 1 January 2018"
+  },
+  {
+   "id": "uae-ct-rate / uae-ct-threshold",
+   "expected": "9% / AED 375,000",
+   "status": "unresolved",
+   "source_states": "the corporate tax page describes the law (issued 9 Dec 2022; returns within 9 months) but its text does not state the rate or threshold",
+   "source": "UAE Ministry of Finance, Corporate Tax in the UAE",
+   "period": "-",
+   "round_2": "second round: the FTA corporate tax page text does not state the rate or threshold"
+  }
+ ]
+}

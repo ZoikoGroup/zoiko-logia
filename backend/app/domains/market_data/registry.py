@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import re
+from app.orchestration.case_text import request_part
 from typing import Optional
 
 from app.orchestration.number_words import SPELLED_NUMBER_PATTERN, find_first_spelled_number
@@ -178,6 +179,7 @@ def detect_intent(query: str) -> Optional[str]:
     NAMED: "what is an index" stays educational, "what is the S&P 500" does
     not.
     """
+    query = request_part(query)  # a case study's questions, not its background (case_text.py)
     for intent, pattern in _INTENT_PATTERNS:
         if intent == INTENT_INDEX and pattern.search(query):
             return INTENT_INDEX

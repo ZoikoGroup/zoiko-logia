@@ -1064,6 +1064,37 @@
    ]
   },
   {
+   "id": "new-case-after-another-case",
+   "source": "29 Oct live test (Stage B)",
+   "tags": [
+    "context",
+    "case-scope",
+    "contamination"
+   ],
+   "mode": "offline",
+   "note": "Brightwater's 'the company' was read as pointing back; Northwind's 'no waiver' appeared in its answer.",
+   "turns": [
+    {
+     "user": "Northwind Retail Ltd operates 25 stores in the UK and reports under FRS 102. Its bank loan of £15 million has a covenant requiring net debt to EBITDA of no more than 3.0x; the year-end ratio was 3.4x. The bank has not yet issued a waiver. The auditor's report is due on 30 June 2026.",
+     "expect": {
+      "outcome": "acknowledged"
+     }
+    },
+    {
+     "user": "Brightwater Hotels plc – Audit Planning\n\nBrightwater Hotels plc owns 12 hotels and reports under IFRS. Occupancy fell from 78% to 54% in the year ended 31 December 2026, and the company breached a loan covenant in November 2026.\n\nRequired:\n1. Identify the going concern indicators and explain the auditor's responsibilities under ISA (UK) 570.",
+     "expect": {
+      "outcome": "answered",
+      "prompt_not_contains": [
+       "Northwind",
+       "£15 million",
+       "waiver"
+      ],
+      "message_not_starts": "The text this refers to"
+     }
+    }
+   ]
+  },
+  {
    "id": "reply-is-not-context",
    "source": "28 Oct round 4",
    "tags": [

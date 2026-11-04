@@ -20,6 +20,17 @@ from app.orchestration.number_words import SPELLED_NUMBER_PATTERN, spelled_numbe
 _NUMBER_TEXT = r"-?\d(?:[\d,]*\d)?(?:\.\d+)?"
 _CURRENCY_SYMBOLS = {"£": "GBP", "$": "USD", "€": "EUR", "₹": "INR"}
 _CURRENCY_CODES = ("GBP", "USD", "EUR", "INR", "AED")
+# Supplied-rate tax: an allowance, deduction or relief taken off first, and
+# the direct taxes that are not added to the amount ("total including tax").
+_ALLOWANCE_WORD = re.compile(r"\b(?:allowance|deduction|exemption|relief|tax[- ]free\s+amount)\b", re.I)
+_ALLOWANCE_AMOUNTS = (
+    # Every figure written before the word, so a second one ("and a £1,000
+    # deduction") is counted, not ignored.
+    re.compile(r"([₹£$€])?\s*(\d[\d,]*(?:\.\d+)?)\s+(?:personal\s+|tax[- ]free\s+|standard\s+)?"
+               r"(?:allowance|deduction|exemption|relief)\b", re.I),
+    re.compile(r"\b(?:allowance|deduction|exemption|relief)\s+(?:of|is|=|:)\s*([₹£$€])?\s*(\d[\d,]*(?:\.\d+)?)", re.I),
+)
+_DIRECT_TAX = re.compile(r"\b(?:income|corporation|corporate|capital\s+gains|withholding|payroll|profits?)\s+tax\b|\btds\b", re.I)
 _CALCULATION_HINT = re.compile(
     r"\b(calculate|compute|work out|determine|what is|find)\b"
     # A terse direct question about a break-even figure ("…variable cost £15
@@ -527,6 +538,16 @@ def _treatment_after(query: str, amount: Decimal) -> bool | None:
     return None
 
 
+_SOLE_AMOUNT = re.compile(rf"(?P<prefix>\b(?:S|A|NZ|C|CA|US|HK))?(?P<symbol>[£$€₹])\s?(?P<number>{_NUMBER_TEXT})")
+# "S$10,000" is Singapore dollars, not "$10,000.00" (3 Nov 2026).
+_DOLLAR_PREFIX = {"S": "SGD", "A": "AUD", "NZ": "NZD", "C": "CAD", "CA": "CAD", "US": "USD", "HK": "HKD"}
+# A conversion or a live rate is part of the request: the VAT on the amount
+# alone is not its answer ("Convert it to pounds at the latest rate and tell
+# me the UK VAT" was answered with VAT on the euro amount, 3 Nov 2026).
+_NEEDS_LIVE_RATE = re.compile(r"\bconvert\w*\b|\bexchange\s+rate\b|\b(?:latest|today'?s|current|spot)\s+rate\b"
+                              r"|\bin(?:to)?\s+(?:pounds|dollars|euros|rupees|sterling)\b", re.I)
+
+
 def vat_amounts(query: str) -> CalculationResult | None:
     """VAT once the country, one rate and the VAT treatment are all stated
     (input_requirements.missing_vat_inputs asks for whichever is missing).
@@ -587,7 +608,23 @@ def vat_amounts(query: str) -> CalculationResult | None:
         return None
     rate = rate_out
     single = (sales if sales and not purchases else purchases if purchases and not sales
-              else None if sales else _find_value(q, ("vat on", "gst on", "vat of", "gst of", "vat in", "receives", "customer receipts", "on", "in")))
+              else None if sales else _find_value(q, ("vat on", "gst on", "vat of", "gst of", "vat in", "receives", "customer receipts",
+                                                      # "The invoice is ₹50,000 and GST is 18%", as a reply to a
+                                                      # clarification often states it (3 Nov 2026).
+                                                      "invoice is", "invoice of", "invoice for", "invoice amount", "invoiced",
+                                                      "amount is", "amount of", "on", "in")))
+    # Reverse VAT ("… and the net amount") keeps its own calculator below.
+    if (not (sales or purchases or single) and not re.search(r"\breverse\b|\bnet\s+amount\b|\bgross\s+(?:total|amount)\b", q, re.I)
+            and not _NEEDS_LIVE_RATE.search(q)):
+        # One amount and nothing else to tax: "₹50,000, GST 18%" in a reply
+        # to "Calculate the GST on my invoice" (3 Nov 2026). Two or more stay
+        # unread: which one is taxed is not stated.
+        amounts = list(_SOLE_AMOUNT.finditer(q))
+        if len(amounts) == 1:
+            prefix = amounts[0].group("prefix")
+            currency = (_DOLLAR_PREFIX.get(prefix.upper()) if prefix and amounts[0].group("symbol") == "$"
+                        else _CURRENCY_SYMBOLS.get(amounts[0].group("symbol")))
+            single = (_decimal(amounts[0].group("number")), currency)
     if not (sales and purchases) and not single:
         return None
     currency = next((found[1] for found in (sales, purchases, single) if found and found[1]), None)
@@ -714,6 +751,16 @@ def vat_amounts(query: str) -> CalculationResult | None:
         notes.append(_NO_COUNTRY_NOTE)
     result = _success_with_notes(["vat_from_inclusive" if inclusive else "vat_on_net"], outputs, steps, notes)
     result.inputs = [_supplied('amount',amount,currency),_supplied('vat_rate',rate,kind='percentage')]
+    named = re.search(r"\b(GST|HST|SST)\b", q, re.I)
+    if named and not re.search(r"\bvat\b", q, re.I):
+        # The steps and notes themselves, so every reader of the result (the
+        # answer text, its stated assumptions) says the same tax: the note was
+        # shown twice, once "GST" and once "VAT" (3 Nov 2026).
+        label = named.group(1).upper()
+        relabel = lambda text: re.sub(r"\bVAT\b", label, text)  # noqa: E731
+        result.tax_label = label
+        result.steps = [relabel(step) for step in result.steps]
+        result.notes = [relabel(note) for note in result.notes]
     return result
 
 
@@ -814,6 +861,67 @@ def supplied_loan_payment(query):
         [f'Profit decreases by {_money(interest[0],currency)}; cash decreases by {_money(payment[0],currency)}; loan liability decreases by {_money(principal[0],currency)}.',
          'Principal repayment is not an expense. Interest treatment is the supplied exercise assumption; no tax or current-law conclusion is made. This entry has not been posted.'])
     result.inputs = inputs
+    return result
+
+
+_LOAN_REPAYMENT = re.compile(
+    r"\b(?:loan|mortgage|borrowing)\b[^.?!]{0,60}\b(?:repayments?|instal?ments?|payments?|emi)\b"
+    r"|\b(?:repayments?|instal?ments?|emi)\b[^.?!]{0,40}\b(?:loan|mortgage)\b|\bemi\b", re.I)
+_LOAN_PRINCIPAL = re.compile(r"(?P<symbol>[£$€₹])\s?(?P<amount>\d(?:[\d,]*\d)?(?:\.\d+)?)\s*(?P<scale>k|m|million)?\b", re.I)
+_LOAN_RATE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*%")
+_LOAN_TERM = re.compile(r"\b(\d+(?:\.\d+)?)\s*(years?|yrs?|months?|mths?)\b", re.I)
+_MONTHLY = re.compile(r"\b(?:monthly|per\s+month|a\s+month|each\s+month|every\s+month|emi)\b", re.I)
+_ANNUAL = re.compile(r"\b(?:annual(?:ly)?|yearly|per\s+(?:year|annum)|a\s+year|each\s+year)\b(?![^.?!]{0,12}\b(?:rate|interest)\b)", re.I)
+
+
+def loan_repayment(query: str) -> CalculationResult | None:
+    """A level repayment (annuity) on an amortising loan: payment =
+    P × i ÷ (1 − (1 + i)^−n), with the annual rate divided by the number of
+    payments a year. None when the amount, rate or term is not given (the
+    request's own requirements then ask for them); the payment frequency is
+    asked for, never assumed (3 Nov 2026)."""
+    if not _LOAN_REPAYMENT.search(query or "") or re.search(r"\binterest is an expense\b", query, re.I):
+        return None
+    # Several numbered questions are the batch calculator's (batches.py), which
+    # keeps each question's figures to itself.
+    if asks_several_questions(query) or len(_LOAN_PRINCIPAL.findall(query)) > 1:
+        return None
+    principal_match, rate_match, term_match = _LOAN_PRINCIPAL.search(query), _LOAN_RATE.search(query), _LOAN_TERM.search(query)
+    if not (principal_match and rate_match and term_match):
+        return None
+    scale = {"k": Decimal(1000), "m": Decimal(1_000_000), "million": Decimal(1_000_000)}.get((principal_match.group("scale") or "").lower(), Decimal(1))
+    principal = _decimal(principal_match.group("amount")) * scale
+    currency = _CURRENCY_SYMBOLS.get(principal_match.group("symbol"))
+    annual_rate = _decimal(rate_match.group(1))
+    term_value, unit = _decimal(term_match.group(1)), term_match.group(2).lower()
+    inputs = [CalculationInput(name="principal", value=principal, display_value=_money(principal, currency), kind="money",
+                               currency=currency),
+              CalculationInput(name="annual_interest_rate", value=annual_rate, display_value=_percent(annual_rate), kind="percentage"),
+              CalculationInput(name="term", value=term_value, display_value=f"{term_value:f} {unit}",
+                               kind="years" if unit.startswith(("year", "yr")) else "number")]
+    monthly, annual = bool(_MONTHLY.search(query)) or unit.startswith(("month", "mth")), bool(_ANNUAL.search(query))
+    if monthly == annual:
+        return _clarify("loan_repayment", inputs, ["repayment frequency (monthly or annual)"])
+    per_year = 12 if monthly else 1
+    count = term_value if unit.startswith(("month", "mth")) else term_value * per_year
+    if principal <= 0 or annual_rate < 0 or count <= 0 or count != count.to_integral_value():
+        return _clarify("loan_repayment", inputs, ["a positive loan amount, a non-negative rate and a whole number of payments"])
+    n = int(count)
+    i = annual_rate / 100 / per_year
+    payment = principal / n if i == 0 else principal * i / (1 - (1 + i) ** -n)
+    total = payment * n
+    outputs = [CalculationOutput(name="monthly_repayment" if monthly else "annual_repayment", value=payment,
+                                 display_value=_money(payment, currency), kind="money"),
+               CalculationOutput(name="number_of_payments", value=Decimal(n), display_value=str(n), kind="number"),
+               CalculationOutput(name="total_repaid", value=total, display_value=_money(total, currency), kind="money"),
+               CalculationOutput(name="total_interest", value=total - principal, display_value=_money(total - principal, currency), kind="money")]
+    period = "month" if monthly else "year"
+    shown_i = (i * 100).quantize(Decimal("0.000001")).normalize()
+    steps = [f"Rate per {period} = {annual_rate:f}% ÷ {per_year} = {shown_i:f}%",
+             f"Repayment = {_money(principal, currency)} × {shown_i:f}% ÷ (1 − (1 + {shown_i:f}%)^−{n}) = {_money(payment, currency)}"]
+    result = _success(["loan_repayment"], inputs, outputs, steps)
+    result.notes = [*(result.notes or []), "Level repayments on an amortising loan, with the annual rate divided by the "
+                    f"number of payments a year; fees, rate changes and interest-only periods are not modelled."]
     return result
 
 
@@ -1282,7 +1390,18 @@ def calculate_from_query(query: str) -> CalculationResult:
     if (result.status == "clarification_required" and result.error_code == "MISSING_INPUT"
             and result.formula_ids and _supplied_as_value(query or "", result.formula_ids[0])):
         return CalculationResult()
+    # A question about the method, with no figures ("How is straight-line
+    # depreciation calculated?"), asks for an explanation, not for inputs.
+    if (result.status == "clarification_required" and result.error_code == "MISSING_INPUT"
+            and _METHOD_QUESTION.search(query or "") and not re.search(r"\d", query or "")):
+        return CalculationResult()
     return result
+
+
+_METHOD_QUESTION = re.compile(
+    r"^\s*(?:how\s+(?:is|are|do|does|should|would|can|could)\s+(?:i\s+|we\s+|you\s+|one\s+)?[^?]{0,80}"
+    r"\b(?:calculated|computed|worked\s+out|measured|determined|calculate|compute|work\s+out|measure|determine)\b"
+    r"|explain\s+how\b|what\s+is\s+the\s+(?:formula|method)\b)", re.I)
 
 
 def _calculate_from_query(query: str) -> CalculationResult:
@@ -1303,6 +1422,18 @@ def _calculate_from_query(query: str) -> CalculationResult:
     loan = supplied_loan_payment(q)
     if loan is not None:
         return loan
+    repayment = loan_repayment(q)
+    if repayment is not None:
+        return repayment
+    # Statutory pay and income tax from verified, effective-dated parameters,
+    # EPS, and NPV / IRR / payback from a stated cash-flow list (3 Nov 2026).
+    if not asks_several_questions(q):
+        from .investment import earnings_per_share, investment_appraisal
+        from .statutory import statutory_calculation
+        for formula in (statutory_calculation, earnings_per_share, investment_appraisal):
+            found = formula(q)
+            if found is not None:
+                return found
     for formula in (present_value, stated_rate_conversion):
         found = formula(q)
         if found is not None:
@@ -1493,6 +1624,22 @@ def _calculate_from_query(query: str) -> CalculationResult:
             return CalculationResult(matched=True,status="clarification_required",error_code="INVALID_PERCENTAGE",message="Tax rates cannot be negative; discounts must be between 0% and 100%. Please confirm the intended rates.")
         if len(discounts)>1 or (discounts and len(amount_matches)>1):
             return CalculationResult(matched=True,status="clarification_required",error_code="AMBIGUOUS_INPUTS",message="Please specify the discount and tax rate for each amount.")
+        # A stated allowance comes off before the rate: "income tax on £30,000
+        # at 20% after a £12,570 allowance" was 20% of £30,000 = £6,000, not
+        # 20% of £17,430 = £3,486 (3 Nov 2026). An allowance named without
+        # one figure for one amount and rate is left to the model.
+        allowance = None
+        if _ALLOWANCE_WORD.search(q):
+            found = [m for pattern in _ALLOWANCE_AMOUNTS for m in pattern.finditer(q)]
+            if len(found) != 1 or len(amount_matches) != 1 or len(tax_rates) != 1 or discounts:
+                return CalculationResult()
+            allowance_currency = _CURRENCY_SYMBOLS.get(found[0].group(1) or "")
+            amount_currency = _CURRENCY_SYMBOLS.get(amount_matches[0].group(1) or "")
+            if allowance_currency and amount_currency and allowance_currency != amount_currency:
+                return CalculationResult()
+            allowance = _decimal(found[0].group(2))
+        # Income, corporation and other direct taxes are not added to the amount.
+        direct_tax = bool(_DIRECT_TAX.search(q))
         pairs = []
         if len(amount_matches) == 1:
             pairs = [(amount_matches[0],value) for _,value in tax_rates]
@@ -1516,13 +1663,18 @@ def _calculate_from_query(query: str) -> CalculationResult:
                 amount *= 1-discounts[0]/100
                 outputs.append(CalculationOutput(name="discounted_amount",value=amount,display_value=_money(amount,currency),kind="money"))
                 steps.append(f"Discounted amount = {original:f} × (1 − {discounts[0]:f} ÷ 100) = {amount:f}")
+            if allowance is not None:
+                taxable = max(amount - allowance, Decimal(0))
+                steps.append(f"Taxable amount = {amount:f} − {allowance:f} allowance = {taxable:f}")
+                outputs.append(CalculationOutput(name="taxable_amount",value=taxable,display_value=_money(taxable,currency),kind="money"))
+                amount = taxable
             tax = amount*rate/100
             if len(pairs)>1:
                 outputs.append(CalculationOutput(name=prefix+"tax_rate",value=rate,display_value=_percent(rate),kind="percentage"))
-            outputs.extend([
-                CalculationOutput(name=prefix+"tax",value=tax,display_value=_money(tax,currency),kind="money"),
-                CalculationOutput(name=prefix+"total_including_tax",value=amount+tax,display_value=_money(amount+tax,currency),kind="money"),
-            ])
+            outputs.append(CalculationOutput(name=prefix+"tax",value=tax,display_value=_money(tax,currency),kind="money"))
+            if not direct_tax and allowance is None:
+                outputs.append(CalculationOutput(name=prefix+"total_including_tax",value=amount+tax,
+                                                 display_value=_money(amount+tax,currency),kind="money"))
             steps.append(f"Tax at {rate:f}% = {amount:f} × {rate:f} ÷ 100 = {tax:f}")
         return _success(["supplied_tax"], [], outputs, steps)
 
@@ -1824,6 +1976,13 @@ def _label(name: str) -> str:
 
 
 def calculation_markdown(result: CalculationResult) -> str:
+    text = _calculation_markdown(result)
+    if result.tax_label and result.tax_label != "VAT":
+        text = re.sub(r"\bVAT\b", result.tax_label, text)
+    return text
+
+
+def _calculation_markdown(result: CalculationResult) -> str:
     if result.status in {"undefined", "clarification_required"}:
         lines = [result.message]
         if result.formula_ids:

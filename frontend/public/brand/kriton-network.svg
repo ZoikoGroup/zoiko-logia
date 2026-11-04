@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" preserveAspectRatio="none">
+<g fill="none" stroke="#63b9ec" stroke-opacity=".22" stroke-width=".7">
+<path d="M80 126 L160 343" vector-effect="non-scaling-stroke"/>
+<path d="M80 126 L380 231" vector-effect="non-scaling-stroke"/>
+<path d="M160 343 L240 504" vector-effect="non-scaling-stroke"/>
+<path d="M160 343 L380 231" vector-effect="non-scaling-stroke"/>
+<path d="M240 504 L530 616" vector-effect="non-scaling-stroke"/>
+<path d="M380 231 L670 84" vector-effect="non-scaling-stroke"/>
+<path d="M380 231 L790 406" vector-effect="non-scaling-stroke"/>
+<path d="M670 84 L920 189" vector-effect="non-scaling-stroke"/>
+<path d="M790 406 L920 189" vector-effect="non-scaling-stroke"/>
+<path d="M790 406 L880 602" vector-effect="non-scaling-stroke"/>
+<path d="M530 616 L880 602" vector-effect="non-scaling-stroke"/>
+</g><g fill="#81c9f0">
+<circle cx="80" cy="126" r="1.8"/>
+<circle cx="240" cy="504" r="1.8"/>
+<circle cx="380" cy="231" r="1.8"/>
+<circle cx="530" cy="616" r="1.8"/>
+<circle cx="670" cy="84" r="1.8"/>
+<circle cx="790" cy="406" r="1.8"/>
+<circle cx="920" cy="189" r="1.8"/>
+<circle cx="160" cy="343" r="1.8"/>
+<circle cx="880" cy="602" r="1.8"/>
+</g></svg>

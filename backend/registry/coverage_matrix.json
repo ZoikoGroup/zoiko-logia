@@ -1,0 +1,233 @@
+{
+ "tiers": "fixed_page > connector > library > search_only > none (best that exists today)",
+ "matrix": [
+  {
+   "country": "AUSTRALIA",
+   "rate": "connector",
+   "threshold": "search_only",
+   "deadline": "search_only",
+   "rule": "search_only",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 21,
+   "gold_parts_with_direct_source": "0/21"
+  },
+  {
+   "country": "BAHRAIN",
+   "rate": "search_only",
+   "threshold": "search_only",
+   "deadline": "search_only",
+   "rule": "search_only",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 1,
+   "gold_parts_with_direct_source": "0/1"
+  },
+  {
+   "country": "CANADA",
+   "rate": "connector",
+   "threshold": "search_only",
+   "deadline": "search_only",
+   "rule": "search_only",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 3,
+   "gold_parts_with_direct_source": "0/3"
+  },
+  {
+   "country": "EU",
+   "rate": "search_only",
+   "threshold": "search_only",
+   "deadline": "search_only",
+   "rule": "search_only",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 2,
+   "gold_parts_with_direct_source": "1/2"
+  },
+  {
+   "country": "FRANCE",
+   "rate": "search_only",
+   "threshold": "search_only",
+   "deadline": "search_only",
+   "rule": "search_only",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 1,
+   "gold_parts_with_direct_source": "0/1"
+  },
+  {
+   "country": "GERMANY",
+   "rate": "search_only",
+   "threshold": "search_only",
+   "deadline": "search_only",
+   "rule": "search_only",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 1,
+   "gold_parts_with_direct_source": "0/1"
+  },
+  {
+   "country": "GUERNSEY",
+   "rate": "none",
+   "threshold": "none",
+   "deadline": "none",
+   "rule": "none",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 0,
+   "gold_parts_with_direct_source": "-"
+  },
+  {
+   "country": "INDIA",
+   "rate": "library",
+   "threshold": "fixed_page",
+   "deadline": "search_only",
+   "rule": "fixed_page",
+   "library_sources_with_approved_version": 1,
+   "gold_official_parts": 43,
+   "gold_parts_with_direct_source": "7/43"
+  },
+  {
+   "country": "IRELAND",
+   "rate": "search_only",
+   "threshold": "search_only",
+   "deadline": "search_only",
+   "rule": "search_only",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 2,
+   "gold_parts_with_direct_source": "0/2"
+  },
+  {
+   "country": "ISLE_OF_MAN",
+   "rate": "none",
+   "threshold": "none",
+   "deadline": "none",
+   "rule": "none",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 1,
+   "gold_parts_with_direct_source": "0/1"
+  },
+  {
+   "country": "JERSEY",
+   "rate": "none",
+   "threshold": "none",
+   "deadline": "none",
+   "rule": "none",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 0,
+   "gold_parts_with_direct_source": "-"
+  },
+  {
+   "country": "MALAYSIA",
+   "rate": "fixed_page",
+   "threshold": "search_only",
+   "deadline": "search_only",
+   "rule": "fixed_page",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 1,
+   "gold_parts_with_direct_source": "0/1"
+  },
+  {
+   "country": "NEW_ZEALAND",
+   "rate": "search_only",
+   "threshold": "search_only",
+   "deadline": "search_only",
+   "rule": "search_only",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 4,
+   "gold_parts_with_direct_source": "0/4"
+  },
+  {
+   "country": "OMAN",
+   "rate": "search_only",
+   "threshold": "search_only",
+   "deadline": "search_only",
+   "rule": "search_only",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 1,
+   "gold_parts_with_direct_source": "0/1"
+  },
+  {
+   "country": "QATAR",
+   "rate": "search_only",
+   "threshold": "search_only",
+   "deadline": "search_only",
+   "rule": "search_only",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 1,
+   "gold_parts_with_direct_source": "0/1"
+  },
+  {
+   "country": "SAUDI_ARABIA",
+   "rate": "search_only",
+   "threshold": "search_only",
+   "deadline": "search_only",
+   "rule": "search_only",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 2,
+   "gold_parts_with_direct_source": "1/2"
+  },
+  {
+   "country": "SINGAPORE",
+   "rate": "fixed_page",
+   "threshold": "search_only",
+   "deadline": "search_only",
+   "rule": "search_only",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 21,
+   "gold_parts_with_direct_source": "15/21"
+  },
+  {
+   "country": "SOUTH_AFRICA",
+   "rate": "search_only",
+   "threshold": "search_only",
+   "deadline": "search_only",
+   "rule": "search_only",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 1,
+   "gold_parts_with_direct_source": "0/1"
+  },
+  {
+   "country": "UAE",
+   "rate": "fixed_page",
+   "threshold": "search_only",
+   "deadline": "search_only",
+   "rule": "fixed_page",
+   "library_sources_with_approved_version": 0,
+   "gold_official_parts": 16,
+   "gold_parts_with_direct_source": "10/16"
+  },
+  {
+   "country": "UK",
+   "rate": "fixed_page",
+   "threshold": "fixed_page",
+   "deadline": "fixed_page",
+   "rule": "fixed_page",
+   "library_sources_with_approved_version": 22,
+   "gold_official_parts": 59,
+   "gold_parts_with_direct_source": "15/59"
+  },
+  {
+   "country": "US",
+   "rate": "library",
+   "threshold": "library",
+   "deadline": "library",
+   "rule": "library",
+   "library_sources_with_approved_version": 25,
+   "gold_official_parts": 20,
+   "gold_parts_with_direct_source": "0/20"
+  }
+ ],
+ "library_source_classes": {
+  "open_source_parameters": 5,
+  "validation_tool": 2,
+  "standard": 2,
+  "user_input": 1,
+  "statistics": 11,
+  "legislation_lookup": 3,
+  "internal_education": 3,
+  "test_fixture": 14,
+  "search_tool": 3,
+  "documentation": 5,
+  "official_guidance": 43,
+  "regulation": 2,
+  "reviewed_synthesis": 1,
+  "calculation_tool": 3,
+  "commercial_data": 1,
+  "filings": 1
+ }
+}

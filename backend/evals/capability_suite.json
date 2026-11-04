@@ -1,0 +1,1284 @@
+{
+ "version": "capability-suite-1",
+ "built": "2026-11-03",
+ "description": "Writes evals/capability_suite.json: the representative capability suite\nacross tax, audit, finance, payroll and markets (3 Nov 2026).\n\nEach case is a conversation of one or more turns. A turn's expectation:\n  outcome:        \"ask\" (a clarification) or \"answer\" (no clarification)\n  ask_contains:   text the clarification must contain\n  answer_contains:text a deterministic answer must contain (offline-checkable)\n  answer_excludes:text it must not contain\n  contract:       Task Contract classification (needs_official, fact, countries)\n  live:           what only the live application can show (figure, authority);\n                  recorded, never graded offline.\nExpectations were written before the improvements they measure.",
+ "cases": [
+  {
+   "id": "tax-vat-threshold-no-country",
+   "domain": "tax",
+   "category": "jurisdiction",
+   "turns": [
+    {
+     "query": "What is the VAT registration threshold?",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "Which country"
+     }
+    },
+    {
+     "query": "UK",
+     "expect": {
+      "outcome": "answer",
+      "live": {
+       "figure": "£90,000",
+       "authority": "gov.uk/register-for-vat"
+      }
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-cit-rate-no-country",
+   "domain": "tax",
+   "category": "jurisdiction",
+   "turns": [
+    {
+     "query": "What is the corporate income tax rate?",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "Which country"
+     }
+    },
+    {
+     "query": "Singapore.",
+     "expect": {
+      "outcome": "answer",
+      "live": {
+       "figure": "17%",
+       "authority": "iras.gov.sg"
+      }
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-uk-vat-threshold",
+   "domain": "tax",
+   "category": "retrieval",
+   "turns": [
+    {
+     "query": "What is the UK VAT registration threshold?",
+     "expect": {
+      "outcome": "answer",
+      "contract": {
+       "needs_official": true,
+       "fact": "threshold",
+       "countries": [
+        "UK"
+       ]
+      },
+      "live": {
+       "figure": "£90,000",
+       "authority": "gov.uk"
+      }
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-vat-on-net",
+   "domain": "tax",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "Calculate VAT at 20% on £1,000 excluding VAT.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "£200.00"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-reverse-vat",
+   "domain": "tax",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "An invoice total of £12,000 includes VAT at 20%. Calculate reverse VAT and the net amount.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "£10,000.00"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-gst-invoice-dialogue",
+   "domain": "tax",
+   "category": "multi_turn",
+   "turns": [
+    {
+     "query": "Calculate the GST on my invoice.",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "amount"
+     }
+    },
+    {
+     "query": "₹50,000, GST 18%",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "excluding GST"
+     }
+    },
+    {
+     "query": "excluding GST",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "GST amount | ₹9,000.00",
+      "answer_excludes": "VAT"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-income-tax-allowance",
+   "domain": "tax",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "Calculate income tax on £30,000 at 20% after a £12,570 allowance.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "£3,486.00",
+      "answer_excludes": "Total including tax"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-corporation-tax-direct",
+   "domain": "tax",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "Calculate corporation tax on £100,000 at 25%.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "£25,000.00",
+      "answer_excludes": "Total including tax"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-historical-year",
+   "domain": "tax",
+   "category": "temporal",
+   "turns": [
+    {
+     "query": "What was the UK VAT registration threshold in 2015?",
+     "expect": {
+      "outcome": "answer",
+      "contract": {
+       "needs_official": true,
+       "fact": "threshold",
+       "countries": [
+        "UK"
+       ],
+       "period": "year"
+      },
+      "live": {
+       "figure": "£82,000",
+       "authority": "gov.uk"
+      }
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-au-gst-rate",
+   "domain": "tax",
+   "category": "retrieval",
+   "turns": [
+    {
+     "query": "What is the GST rate in Australia?",
+     "expect": {
+      "outcome": "answer",
+      "contract": {
+       "needs_official": true,
+       "fact": "rate",
+       "countries": [
+        "AUSTRALIA"
+       ]
+      },
+      "live": {
+       "figure": "10%",
+       "authority": "ato.gov.au"
+      }
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-de-vat-rate",
+   "domain": "tax",
+   "category": "retrieval",
+   "turns": [
+    {
+     "query": "What is the standard VAT rate in Germany?",
+     "expect": {
+      "outcome": "answer",
+      "contract": {
+       "needs_official": true,
+       "fact": "rate",
+       "countries": [
+        "GERMANY"
+       ]
+      },
+      "live": {
+       "figure": "19%",
+       "authority": "gesetze-im-internet.de"
+      }
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-gst-rate-how-much",
+   "domain": "tax",
+   "category": "ambiguity",
+   "turns": [
+    {
+     "query": "How much GST is charged on gold jewellery in India?",
+     "expect": {
+      "outcome": "answer"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-vat-no-country-rule",
+   "domain": "tax",
+   "category": "jurisdiction",
+   "turns": [
+    {
+     "query": "Is VAT charged on children's car seats?",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "Which country"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-concept-vat-gst",
+   "domain": "tax",
+   "category": "ambiguity",
+   "turns": [
+    {
+     "query": "What is the difference between VAT and GST as tax systems?",
+     "expect": {
+      "outcome": "answer"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-iras-penalty",
+   "domain": "tax",
+   "category": "jurisdiction",
+   "turns": [
+    {
+     "query": "What penalty does IRAS impose for late GST filing?",
+     "expect": {
+      "outcome": "answer",
+      "contract": {
+       "needs_official": true,
+       "countries": [
+        "SINGAPORE"
+       ]
+      }
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-gstr3b-due",
+   "domain": "tax",
+   "category": "jurisdiction",
+   "turns": [
+    {
+     "query": "When is the GSTR-3B due?",
+     "expect": {
+      "outcome": "answer",
+      "contract": {
+       "needs_official": true,
+       "fact": "deadline",
+       "countries": [
+        "INDIA"
+       ]
+      }
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-cgst-sgst",
+   "domain": "tax",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "Calculate CGST and SGST on an intra-state sale of ₹40,000 at 12%",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "₹2,400.00"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-uk-scheme-term",
+   "domain": "tax",
+   "category": "jurisdiction",
+   "turns": [
+    {
+     "query": "When must a business leave the VAT Cash Accounting Scheme?",
+     "expect": {
+      "outcome": "answer",
+      "live": {
+       "figure": "£1.6 million",
+       "authority": "gov.uk/vat-cash-accounting-scheme"
+      }
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-manipur",
+   "domain": "tax",
+   "category": "jurisdiction",
+   "turns": [
+    {
+     "query": "What is the GST registration threshold for service providers in Manipur?",
+     "expect": {
+      "outcome": "answer",
+      "live": {
+       "figure": "Rs 10 lakh",
+       "authority": "cbic-gst.gov.in"
+      }
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "pay-uk-employer-ni",
+   "domain": "payroll",
+   "category": "retrieval",
+   "turns": [
+    {
+     "query": "What is the current UK employer National Insurance contribution rate?",
+     "expect": {
+      "outcome": "answer",
+      "contract": {
+       "needs_official": true,
+       "fact": "rate",
+       "countries": [
+        "UK"
+       ]
+      },
+      "live": {
+       "figure": "15%",
+       "authority": "gov.uk rates and thresholds for employers"
+      }
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "pay-min-wage-no-country",
+   "domain": "payroll",
+   "category": "jurisdiction",
+   "turns": [
+    {
+     "query": "What is the minimum wage?",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "Which country"
+     }
+    },
+    {
+     "query": "Australia.",
+     "expect": {
+      "outcome": "answer",
+      "live": {
+       "authority": "fairwork.gov.au"
+      }
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "pay-uk-min-wage",
+   "domain": "payroll",
+   "category": "retrieval",
+   "turns": [
+    {
+     "query": "What is the UK minimum wage?",
+     "expect": {
+      "outcome": "answer"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "pay-deadlines-no-country",
+   "domain": "payroll",
+   "category": "jurisdiction",
+   "turns": [
+    {
+     "query": "What are the payroll filing deadlines?",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "Which country"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "pay-au-super",
+   "domain": "payroll",
+   "category": "retrieval",
+   "turns": [
+    {
+     "query": "What is the superannuation guarantee rate in Australia?",
+     "expect": {
+      "outcome": "answer",
+      "contract": {
+       "needs_official": true,
+       "fact": "rate",
+       "countries": [
+        "AUSTRALIA"
+       ]
+      }
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "pay-take-home-missing",
+   "domain": "payroll",
+   "category": "clarification",
+   "turns": [
+    {
+     "query": "Calculate take-home pay for my employee.",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "salary"
+     }
+    },
+    {
+     "query": "Gross salary £40,000 a year in the UK.",
+     "expect": {
+      "outcome": "answer"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "pay-employer-ni-on-salary",
+   "domain": "payroll",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "Calculate the employer National Insurance on a UK salary of £40,000 for 2026 to 2027.",
+     "expect": {
+      "outcome": "answer",
+      "live": {
+       "figure": "£5,250.00",
+       "authority": "gov.uk"
+      }
+     }
+    }
+   ],
+   "note": "(£40,000 − £5,000) × 15%; needs the official rate and threshold"
+  },
+  {
+   "id": "aud-materiality-judgement",
+   "domain": "audit",
+   "category": "multi_turn",
+   "turns": [
+    {
+     "query": "Is this misstatement material?",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "materiality level"
+     }
+    },
+    {
+     "query": "The misstatement is £40,000 and overall materiality is £100,000.",
+     "expect": {
+      "outcome": "answer"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "aud-materiality-missing",
+   "domain": "audit",
+   "category": "clarification",
+   "turns": [
+    {
+     "query": "Calculate overall materiality for our audit.",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "benchmark"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "aud-materiality-complete",
+   "domain": "audit",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "Calculate overall materiality at 5% of profit before tax of £2,000,000.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "£100,000.00"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "aud-materiality-concept",
+   "domain": "audit",
+   "category": "ambiguity",
+   "turns": [
+    {
+     "query": "What is the difference between overall and performance materiality?",
+     "expect": {
+      "outcome": "answer"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "aud-isa320",
+   "domain": "audit",
+   "category": "retrieval",
+   "turns": [
+    {
+     "query": "Under ISA 320, how is materiality determined?",
+     "expect": {
+      "outcome": "answer",
+      "contract": {
+       "needs_official": false
+      }
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "aud-sample-size-missing",
+   "domain": "audit",
+   "category": "clarification",
+   "turns": [
+    {
+     "query": "What sample size do I need for my test of controls?",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "population"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "aud-going-concern",
+   "domain": "audit",
+   "category": "retrieval",
+   "turns": [
+    {
+     "query": "Explain the going concern assumption.",
+     "expect": {
+      "outcome": "answer"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-depreciation-dialogue",
+   "domain": "finance",
+   "category": "multi_turn",
+   "turns": [
+    {
+     "query": "Calculate straight-line depreciation on a machine costing £50,000.",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "useful life"
+     }
+    },
+    {
+     "query": "Residual value £5,000 and a useful life of 9 years.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "£5,000.00"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-depreciation-complete",
+   "domain": "finance",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "Calculate straight-line depreciation: cost £40,000, residual value £4,000, useful life 8 years.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "£4,500.00"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-lease-missing-rate",
+   "domain": "finance",
+   "category": "clarification",
+   "turns": [
+    {
+     "query": "Calculate the lease liability for annual payments of £10,000 over 5 years.",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "discount rate"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-lease-complete",
+   "domain": "finance",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "Calculate the lease liability: annual payments of £10,000 in arrears, discount rate 5%, lease term 5 years.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "£43,294.77"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-loan-dialogue",
+   "domain": "finance",
+   "category": "multi_turn",
+   "turns": [
+    {
+     "query": "Calculate the monthly loan repayment.",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "loan amount"
+     }
+    },
+    {
+     "query": "£200,000 at 5% over 25 years.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "£1,169.18"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-loan-frequency",
+   "domain": "finance",
+   "category": "clarification",
+   "turns": [
+    {
+     "query": "Calculate the loan repayment on £200,000 at 5% over 25 years.",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "monthly or annual"
+     }
+    },
+    {
+     "query": "Monthly.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "£1,169.18"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-npv-missing",
+   "domain": "finance",
+   "category": "clarification",
+   "turns": [
+    {
+     "query": "What is the NPV of this project?",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "cash flows"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-gross-margin-missing",
+   "domain": "finance",
+   "category": "clarification",
+   "turns": [
+    {
+     "query": "What is the gross margin?",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "revenue"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-gross-margin",
+   "domain": "finance",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "Revenue is £100,000 and cost of sales is £60,000. Calculate the gross margin.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "40.00%"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-method-question",
+   "domain": "finance",
+   "category": "ambiguity",
+   "turns": [
+    {
+     "query": "How is straight-line depreciation calculated?",
+     "expect": {
+      "outcome": "answer"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-journal-dialogue",
+   "domain": "finance",
+   "category": "multi_turn",
+   "turns": [
+    {
+     "query": "Record the journal entry for the sale.",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "transaction details"
+     }
+    },
+    {
+     "query": "A credit sale of £5,000 plus VAT at 20% on 1 March.",
+     "expect": {
+      "outcome": "answer"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-current-ratio",
+   "domain": "finance",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "Current assets are £420,000 and current liabilities are £210,000. Calculate the current ratio.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "2.00"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-ifrs16-explain",
+   "domain": "finance",
+   "category": "retrieval",
+   "turns": [
+    {
+     "query": "Explain IFRS 16 lease accounting for lessees.",
+     "expect": {
+      "outcome": "answer"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-emi-batch",
+   "domain": "finance",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "Loan ₹40,00,000 at 8.75% for 15 years. What is the EMI, and how much total interest will I pay?",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "39,977.95"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "mkt-share-price-no-company",
+   "domain": "markets",
+   "category": "clarification",
+   "turns": [
+    {
+     "query": "What is the share price?",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "company"
+     }
+    },
+    {
+     "query": "Apple.",
+     "expect": {
+      "outcome": "answer"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "mkt-share-price-named",
+   "domain": "markets",
+   "category": "retrieval",
+   "turns": [
+    {
+     "query": "What is Apple's share price?",
+     "expect": {
+      "outcome": "answer"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "mkt-pe-no-company",
+   "domain": "markets",
+   "category": "clarification",
+   "turns": [
+    {
+     "query": "What is the P/E ratio of this stock?",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "company"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "mkt-fx-today",
+   "domain": "markets",
+   "category": "retrieval",
+   "turns": [
+    {
+     "query": "Convert £10,000 to euros at today's exchange rate.",
+     "expect": {
+      "outcome": "answer",
+      "contract": {
+       "needs_official": true,
+       "fact": "rate"
+      }
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "mkt-fx-no-source-currency",
+   "domain": "markets",
+   "category": "clarification",
+   "turns": [
+    {
+     "query": "Convert 5,000 to euros.",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "currency"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "mkt-boe-rate",
+   "domain": "markets",
+   "category": "retrieval",
+   "turns": [
+    {
+     "query": "What is the current Bank of England base rate?",
+     "expect": {
+      "outcome": "answer",
+      "contract": {
+       "needs_official": true,
+       "fact": "rate"
+      }
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "mkt-trade-duty-no-country",
+   "domain": "markets",
+   "category": "jurisdiction",
+   "turns": [
+    {
+     "query": "What import duty applies to laptops?",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "Which country"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "mkt-fx-two-currencies",
+   "domain": "markets",
+   "category": "ambiguity",
+   "turns": [
+    {
+     "query": "How many rupees is one US dollar worth today?",
+     "expect": {
+      "outcome": "answer"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "mkt-conversion-and-vat",
+   "domain": "markets",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "Our UK company invoiced a German client €40,000. Convert it to pounds at the latest rate and tell me the UK VAT at 20%.",
+     "expect": {
+      "outcome": "answer",
+      "answer_excludes": "VAT amount | €8,000.00"
+     }
+    }
+   ],
+   "note": "the conversion needs a live rate: VAT on the euro amount alone is not the answer"
+  },
+  {
+   "id": "tax-sgd-gst",
+   "domain": "tax",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "A Singapore company invoiced services of S$10,000 plus GST at 9%. Calculate the GST to charge.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "SGD 900.00"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "pay-uk-take-home",
+   "domain": "payroll",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "What is the take-home pay on a salary of £40,000?",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "£32,319.60"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "pay-uk-employer-ni-2025-26",
+   "domain": "payroll",
+   "category": "temporal",
+   "turns": [
+    {
+     "query": "Calculate the employer National Insurance on a salary of £40,000 for 2025 to 2026.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "£5,250.00"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "pay-uk-ni-unverified-year",
+   "domain": "payroll",
+   "category": "temporal",
+   "turns": [
+    {
+     "query": "Calculate the employee National Insurance on £40,000 for 2023 to 2024.",
+     "expect": {
+      "outcome": "answer",
+      "answer_excludes": "£2,194.40"
+     }
+    }
+   ],
+   "note": "no verified 2023-24 parameters: not calculated with another year's rates"
+  },
+  {
+   "id": "tax-in-new-regime",
+   "domain": "tax",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "Calculate income tax on ₹15,00,000 under the new regime for FY 2025-26.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "₹105,000.00"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "tax-uk-high-income",
+   "domain": "tax",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "Calculate income tax on £150,000 for 2025/26.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "£53,703.00"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-npv-cash-flows",
+   "domain": "finance",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "A project has an initial investment of £100,000 and cash flows of £30,000, £40,000 and £50,000 over three years. Calculate the NPV at 8%.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "£1,762.94"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-irr-payback",
+   "domain": "finance",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "Initial investment £100,000; annual cash inflows £30,000 for 5 years. Calculate the IRR and payback period.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "15.24%"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-npv-rate-missing",
+   "domain": "finance",
+   "category": "clarification",
+   "turns": [
+    {
+     "query": "Calculate the NPV of an initial investment of £100,000 with cash flows of £30,000 and £80,000.",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "discount rate"
+     }
+    },
+    {
+     "query": "10%",
+     "expect": {
+      "outcome": "answer"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "fin-eps",
+   "domain": "finance",
+   "category": "calculation",
+   "turns": [
+    {
+     "query": "Net profit is £1,000,000 and there are 2,000,000 shares. Calculate EPS.",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "£0.50"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "pay-uk-employer-ni-2025-26-rate",
+   "domain": "payroll",
+   "category": "temporal",
+   "turns": [
+    {
+     "query": "What was the UK employer National Insurance rate for 2025 to 2026?",
+     "expect": {
+      "outcome": "answer",
+      "live": {
+       "figure": "15%",
+       "authority": "gov.uk/guidance/rates-and-thresholds-for-employers-2025-to-2026"
+      }
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "ctx-setting-statement",
+   "domain": "tax",
+   "category": "multi_turn",
+   "turns": [
+    {
+     "query": "We are a UK company.",
+     "expect": {
+      "outcome": "answer"
+     }
+    },
+    {
+     "query": "What is the VAT registration threshold?",
+     "expect": {
+      "outcome": "answer"
+     }
+    }
+   ],
+   "note": "the setting statement supplies the country"
+  },
+  {
+   "id": "ctx-unrelated-earlier-country",
+   "domain": "tax",
+   "category": "multi_turn",
+   "turns": [
+    {
+     "query": "What is the current UK employer National Insurance contribution rate?",
+     "expect": {
+      "outcome": "answer"
+     }
+    },
+    {
+     "query": "What is the VAT registration threshold?",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "Which country"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "ctx-new-request-during-clarification",
+   "domain": "finance",
+   "category": "multi_turn",
+   "turns": [
+    {
+     "query": "Calculate the GST on my invoice.",
+     "expect": {
+      "outcome": "ask"
+     }
+    },
+    {
+     "query": "₹50,000, GST 18%",
+     "expect": {
+      "outcome": "ask"
+     }
+    },
+    {
+     "query": "Calculate the monthly loan repayment.",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "loan amount"
+     }
+    },
+    {
+     "query": "£200,000 at 5% over 25 years",
+     "expect": {
+      "outcome": "answer",
+      "answer_contains": "£1,169.18"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": "ctx-reply-adds-nothing",
+   "domain": "tax",
+   "category": "multi_turn",
+   "turns": [
+    {
+     "query": "Calculate the GST on my invoice. ₹50,000, GST 18%",
+     "expect": {
+      "outcome": "ask"
+     }
+    },
+    {
+     "query": "ok",
+     "expect": {
+      "outcome": "ask",
+      "ask_contains": "I still need this"
+     }
+    }
+   ],
+   "note": ""
+  }
+ ]
+}

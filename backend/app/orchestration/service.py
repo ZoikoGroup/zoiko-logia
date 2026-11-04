@@ -977,6 +977,37 @@ def _force_direct_answer() -> bool:
     return os.getenv("FORCE_DIRECT_ANSWER", "").lower() in {"1", "true", "yes"}
 
 
+def _contract_decisions_enabled() -> bool:
+    """Stage F: chart and report-section decisions read from the Task Contract."""
+    return os.getenv("KRITON_CONTRACT_DECISIONS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _contract_finaliser_enabled() -> bool:
+    """Stage F: missing requested outputs mark the answer incomplete."""
+    return os.getenv("KRITON_CONTRACT_FINALISER", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _contract_deliverable_gaps(contract, answer_text: str, *, query_id: str, has_visual: bool) -> list:
+    """The requested outputs the final answer does not contain, as incomplete
+    deliverables (only with KRITON_CONTRACT_FINALISER; otherwise logged and
+    []). Never raises."""
+    try:
+        from app.orchestration.answer_coverage import RequestedDeliverable
+        from app.orchestration.finalisation import deliverable_findings, resolve
+        findings = resolve(deliverable_findings(contract.outputs, answer_text, has_visual=has_visual)).standing
+        logging.getLogger("kriton.task_contract").info(
+            "Task contract query=%s stage=finalised %s", query_id,
+            json.dumps({"outputs": len(contract.outputs), "missing": [f.rule for f in findings],
+                        "applied": _contract_finaliser_enabled()}))
+        if not _contract_finaliser_enabled():
+            return []
+        return [RequestedDeliverable(description=f"requested {f.expression}", status="incomplete", reason=f.evidence)
+                for f in findings]
+    except Exception:  # noqa: BLE001
+        logging.getLogger("kriton.task_contract").warning("contract_finaliser_failed", extra={"query_id": query_id})
+        return []
+
+
 def _query_classifier_shadow_mode_enabled() -> bool:
     """Off by default — see the call site's comment. Enable with
     QUERY_CLASSIFIER_SHADOW_MODE=1 only while actively evaluating
@@ -1740,6 +1771,19 @@ async def ask_kriton(
     # and previous_query is the request being clarified: no inference needed.
     explicit_reply = bool(request.reply_to and (request.previous_query or "").strip())
     if explicit_reply:
+        # The chain restarts at the latest message that is a request of its
+        # own: a client carries every turn since the last answer, so a loan
+        # question asked while a GST question was still open was read as one
+        # request with the GST figures, and its reply was asked about GST
+        # (3 Nov 2026). A message that is itself a new request is no reply.
+        from app.orchestration.clarification_requirements import current_request_chain
+        chain = current_request_chain(request.previous_query, request.query)
+        if chain is None:
+            request = request.model_copy(update={"previous_query": None, "reply_to": None})
+            explicit_reply, clarification_cycle = False, 0
+        elif chain != request.previous_query:
+            request = request.model_copy(update={"previous_query": chain})
+    if explicit_reply:
         clarification_cycle = max(clarification_cycle, 1)
     effective_query = _with_previous_context(
         request.query,
@@ -1750,9 +1794,17 @@ async def ask_kriton(
     # One decision for which earlier turns this message depends on, used by
     # retrieval, planning and composition alike (conversation_resolver.py).
     from app.orchestration.conversation_resolver import resolve_conversation
+    from app.orchestration.task_contract import new_case_resolution, starts_new_case
 
     def resolve_turns(history):
-        return resolve_conversation(request.query, screened_history(history),
+        screened = screened_history(history)
+        # Task Contract, Stage B: a message that sets out a case of its own
+        # starts a new case, and no earlier turn is in its scope. Its "the
+        # company" is its own: a pasted Brightwater case was resolved as a
+        # follow-up of the Northwind case before it (29 Oct 2026).
+        if starts_new_case(request.query, screened):
+            return new_case_resolution(screened)
+        return resolve_conversation(request.query, screened,
                                     legacy_follow_up=_looks_like_contextual_follow_up,
                                     standalone=_standalone_with_figures)
 
@@ -1913,6 +1965,12 @@ async def ask_kriton(
     task_snapshot = None
     prior_calculation = None
     prior_calculation_state = None
+    # The Task Contract once built, for the retrieval record in finish()
+    # (Stage C-2a, shadow); None for the responses returned before it is.
+    contract_built: list = [None]
+    # Which retrieval path the request took, for the same record: the agent
+    # loop or the standard path, and what was pre-fetched before composition.
+    retrieval_trace: dict = {}
 
     async def finish(
         response: AskKritonResponse, *, route: str | None = None, store: bool = True, json_dump: bool = False,
@@ -1924,22 +1982,38 @@ async def ask_kriton(
         from app.orchestration.visualization.router import describe_visualization
         from app.orchestration.schemas import RequestIntegrity
         from app.orchestration.answer_coverage import check_requested_deliverables, report_section_names
-        from app.orchestration.framework_scope import foreign_framework_statements, FRAMEWORK_GAP
+        from app.orchestration.framework_scope import (
+            FRAMEWORK_GAP, FRAMEWORK_PARTIAL_NOTE, FRAMEWORK_REMOVED_NOTE, foreign_framework_statements,
+        )
         if response.outcome == "answered" and response.answer is not None:
             foreign = foreign_framework_statements(request.query, response.answer.text or "", response.answer.citations)
             if foreign:
                 # Final boundary: a warning-only release or late rewrite
                 # cannot restore a rule from the wrong accounting framework.
+                # Reported as findings and resolved (finalisation.py): those
+                # statements go (P3); the whole answer is withdrawn only when
+                # nothing of substance is left, as before.
+                from app.orchestration.finalisation import ValidationFinding, remove_statements, resolve
+                findings = [ValidationFinding(category="accounting_treatment", rule="framework_mismatch",
+                                              action="remove_statement", expression=claim,
+                                              evidence="Statement from another accounting framework") for claim in foreign]
+                kept = remove_statements(response.answer.text or "", resolve(findings).standing, FRAMEWORK_REMOVED_NOTE)
                 removed_statements.append(removal_stage(
-                    "framework_scope", response.answer.text or "", FRAMEWORK_GAP,
+                    "framework_scope", response.answer.text or "", kept or FRAMEWORK_GAP,
                     [(claim, "framework_mismatch", {}) for claim in foreign], response.answer.citations))
-                response.answer = response.answer.model_copy(update={
-                    "text": FRAMEWORK_GAP, "output_text": FRAMEWORK_GAP, "citations": [], "completeness": "none",
-                    "limitations": ["The requested framework was not established by the released evidence. No factual answer was verified."],
-                })
-                response.visualization = None
-                response.secondary_visualizations = []
-                response.chart_offer = None
+                if kept:
+                    response.answer = response.answer.model_copy(update={
+                        "text": kept, "output_text": kept, "completeness": "partial",
+                        "limitations": [*response.answer.limitations, FRAMEWORK_PARTIAL_NOTE],
+                    })
+                else:
+                    response.answer = response.answer.model_copy(update={
+                        "text": FRAMEWORK_GAP, "output_text": FRAMEWORK_GAP, "citations": [], "completeness": "none",
+                        "limitations": ["The requested framework was not established by the released evidence. No factual answer was verified."],
+                    })
+                    response.visualization = None
+                    response.secondary_visualizations = []
+                    response.chart_offer = None
         from app.orchestration.calculations.schemas import CalculationTaskState
         from app.orchestration.calculations.inventory_statement import _inventory_revision
         relation = ('correction' if _inventory_revision(request.query) is not None or re.match(r'^\s*(?:increase|decrease|correct|recalculate)\b', request.query, re.I)
@@ -2005,6 +2079,13 @@ async def ask_kriton(
         if response.answer is not None:
             response.requested_deliverables = check_requested_deliverables(request.query, response.answer.text or '',
                 has_visual=bool(response.visualization or response.secondary_visualizations))
+            # Stage F: every output the Task Contract records is looked for in
+            # the final answer (finalisation.deliverable_findings). Logged
+            # always; added to the deliverables only with KRITON_CONTRACT_FINALISER.
+            if response.outcome == "answered" and contract_built[0] is not None:
+                response.requested_deliverables += _contract_deliverable_gaps(
+                    contract_built[0], response.answer.text or '', query_id=query_id,
+                    has_visual=bool(response.visualization or response.secondary_visualizations))
             missing = [d.description for d in response.requested_deliverables if d.status == 'incomplete']
             if missing:
                 response.answer = response.answer.model_copy(update={'limitations':[*response.answer.limitations,
@@ -2020,7 +2101,8 @@ async def ask_kriton(
                 completeness = response.answer.completeness
             response = response.model_copy(update={"answer": response.answer.model_copy(
                 update={"completeness": completeness})})
-        sections = report_section_names(request.query)
+        sections = (contract_built[0].output_constraints.report_sections
+                    if _contract_decisions_enabled() and contract_built[0] is not None else report_section_names(request.query))
         if len(sections) >= 6 and response.outcome not in {'refused', 'rejected', 'escalated', 'clarification_required', 'acknowledged'}:
             if response.answer is None:
                 response.requested_deliverables = check_requested_deliverables(request.query, '')
@@ -2176,6 +2258,8 @@ async def ask_kriton(
                 db, idempotency_key, tenant_id, request_hash,
                 response.model_dump(mode="json"),
             )
+        from app.orchestration.task_contract import record_retrieved
+        record_retrieved(contract_built[0], response, query_id=query_id, trace=retrieval_trace)
         return contextualize(response)
 
     await audit_context_resolved(
@@ -2350,6 +2434,9 @@ async def ask_kriton(
     resolution = resolve_turns(request.conversation_history)
     standalone_figures = _standalone_with_figures(request.query) and not resolution.follows_up
     whole_conversation = list(request.conversation_history)   # for the prompt's essentials (Stage 5)
+    # A new case's own conversation is empty: no earlier case's facts reach
+    # its calculators (Task Contract, Stage B).
+    case_conversation = [] if "new_case" in resolution.reasons else whole_conversation
     if not explicit_reply and clarification_cycle > 0 and _previous_message_was_acknowledged(whole_conversation):
         # Older clients only: they count Kriton's "Noted — …" acknowledgement
         # as a clarification, though it asked nothing, so the next message is
@@ -2366,6 +2453,29 @@ async def ask_kriton(
     # standard-rated." alone held no VAT question, so the VAT request it
     # answered was never calculated (27 Oct 2026).
     task_query = f"{request.previous_query.strip()}\n{request.query}" if explicit_reply else request.query
+    # Task Contract (task_contract.py; architecture assessment 29 Oct 2026).
+    # Stage A: recorded. Stage C: whether a VAT amount and whether financial
+    # statements are requested are read from it; when it cannot be built
+    # (None) those decisions fall back to the previous checks.
+    from app.orchestration import task_contract
+    shadow_contract = task_contract.shadow_build(
+        request.query, task_query=task_query, history=screened_history(whole_conversation),
+        resolution=resolution, explicit_reply=explicit_reply, selected_jurisdiction=request.jurisdiction)
+    task_contract.record(shadow_contract, query_id=query_id, stage="understood")
+    contract_built[0] = shadow_contract
+    # E3 (off unless KRITON_CLASSIFIER_SHADOW): the model-first classifier runs
+    # in the background and is logged beside the contract; nothing waits for it.
+    from app.orchestration import classifier_shadow
+    classifier_shadow.start(shadow_contract, task_query, query_id, selected=request.jurisdiction)
+    # S4 (off unless KRITON_REGISTRY_SHADOW): the registry's source selection
+    # for each official part, logged beside today's; nothing reads it.
+    from app.orchestration import registry_shadow
+    registry_shadow.record(shadow_contract, query_id=query_id)
+    # Stage F (KRITON_CONTRACT_DECISIONS): whether a chart is asked for is read
+    # from the contract, which reads the request part only; background wording
+    # ("last year's chart showed …") is not a request.
+    asks_for_chart = (shadow_contract.output_constraints.chart_requested
+                      if _contract_decisions_enabled() and shadow_contract is not None else chart_requested(request.query))
     if resolution.follows_up and not resolution.legacy_follow_up:
         scenario = resolution.scenario_text()
         if scenario and scenario not in effective_query:
@@ -2421,8 +2531,11 @@ async def ask_kriton(
     )
     # An attached file may state the rate and treatment; it is read on the
     # evidence path, which must state its assumptions, rather than asked for.
+    # The VAT inputs only for a VAT amount the contract records as requested:
+    # a rate or rule asked about is not one (Stage C, defect class 1).
+    vat_amount_asked = shadow_contract is None or shadow_contract.output_constraints.vat_amount_requested
     missing_input_message = (missing_tax_inputs(task_query)
-                             or (None if request.document_ids
+                             or (None if request.document_ids or not vat_amount_asked
                                  else missing_vat_inputs(task_query, request.conversation_history))
                              or missing_vat_country(task_query)
                              # A pasted text with "comment on the above" is a request, checked
@@ -2534,6 +2647,41 @@ async def ask_kriton(
         if not attachment_ids:
             missing_input_message = ("I don't have the attached file for this question — no document reached me with "
                                      "it. Please attach it again (or paste the figures) and I'll extract them.")
+    if not missing_input_message and not request.document_ids and not has_chat_documents and clarification_cycle < 2:
+        # What the request needs, from what it is (clarification_requirements.py):
+        # an official figure with no country, a calculation without its
+        # inputs, a "this project" with nothing behind it. A calculator that
+        # recognises the task asks for its own inputs further on.
+        from app.orchestration.calculations.engine import calculate_from_query as calculation_for_requirements
+        from app.orchestration.clarification_requirements import clarification as required_clarification
+        try:
+            calculator_matched = calculation_for_requirements(task_query).matched
+        except Exception:  # noqa: BLE001
+            calculator_matched = False
+        # This case's turns only: the resolver's relevant turns plus earlier
+        # setting statements ("We are a UK company."). "UK" in an unrelated
+        # earlier question (UK employer NI) answered a later "What is the VAT
+        # registration threshold?" for the UK without asking (3 Nov 2026).
+        if shadow_contract is not None and shadow_contract.case.new_case:
+            case_history, input_history = [], []
+        else:
+            from app.orchestration.conversation import with_essential_context as essential_context
+            screened = screened_history(whole_conversation)
+            input_history = [screened[i] for i in resolution.relevant_turns if i < len(screened)]
+            case_history = essential_context(task_query, screened, input_history)
+        missing_input_message = required_clarification(
+            shadow_contract, task_query=task_query, history=case_history, input_history=input_history,
+            selected_jurisdiction=request.jurisdiction, calculator_matched=calculator_matched)
+        if missing_input_message:
+            logging.getLogger("kriton.requests").info("Clarification required query=%s %s", query_id, missing_input_message)
+    if missing_input_message and not context_actions and explicit_reply:
+        # The same question again: the reply did not answer it ("ok", the same
+        # figures again). Said so, rather than repeated word for word. The
+        # client replays answers, not Kriton's questions, so this is judged
+        # from the reply itself.
+        from app.orchestration.clarification_requirements import reply_adds_nothing
+        if reply_adds_nothing(request.query, request.previous_query or ""):
+            missing_input_message = "I still need this before I can continue. " + missing_input_message
     if missing_input_message:
         await audit_clarification_returned(
             db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
@@ -2661,10 +2809,15 @@ async def ask_kriton(
         or reconciliation_followup(task_query, screened_history(request.conversation_history)) \
         or statement_followup(task_query, screened_history(request.conversation_history)) \
         or change_followup(task_query, screened_history(request.conversation_history)) \
-        or _lease_calculation(task_query, resolution, whole_conversation, request.conversation_history) \
+        or _lease_calculation(task_query, resolution, case_conversation, request.conversation_history) \
         or calculate_from_query(expense_followup_query(
             task_query, screened_history(request.conversation_history),
         ))
+    try:   # Task Contract, Stage A: recorded only, never read back.
+        task_contract.record(shadow_contract.with_calculation(calculation_result) if shadow_contract else None,
+                             query_id=query_id, stage="calculated")
+    except Exception:  # noqa: BLE001
+        logging.getLogger("kriton.task_contract").warning("task_contract_calculation_failed")
     task_snapshot =conversation_memory.snapshot_for(task_query, request.conversation_history, calculation_result, query_id)
     await conversation_memory.save_snapshot(
         db, tenant_id=tenant_id, user_id=actor_id, conversation_id=conversation_id, query_id=query_id,
@@ -2719,6 +2872,16 @@ async def ask_kriton(
             and re.search(r'\b(?:discrepancy|reconcile|reconciliation)\b', request.query, re.I)
             and not re.search(r'\b(?:retrieve|latest|why|pricing|strategy|benchmark|tax rate|exchange rate|IFRS|IAS)\b', request.query, re.I)):
         supported_explanation = True
+    # A journal entry the Task Contract records as requested, which the
+    # calculator's own output does not contain: "Record the journal entry for
+    # the sale … £5,000 plus VAT at 20%" got the VAT figures alone (3 Nov 2026).
+    # The verified figures go into the prompt and the entry is composed there.
+    calculator_text = " ".join([*calculation_result.notes, *calculation_result.steps,
+                                *(item.name for item in calculation_result.outputs)]).lower()
+    journal_not_calculated = (shadow_contract is not None and "journal_entry" in shadow_contract.deliverable_kinds()
+                              and not re.search(r"\b(?:debit|credit|dr|cr)\b", calculator_text))
+    if calculation_result.status == "success" and journal_not_calculated and not supported_explanation:
+        calculation_needs_evidence = True
     if calculation_result.status == "success" and uncalculated_part(request.query) and not supported_explanation:
         # "Calculate the gross margin, and tell me the ONS average for UK
         # cafés": the calculator answered the margin and the second part was
@@ -2871,9 +3034,11 @@ async def ask_kriton(
     from app.orchestration.evidence_planning import plan_evidence_search, create_prepared_search_task
     research_plan = None
     if research_only and needs_web and agent_mode and execution_plan.mode == "agent":
+        from app.orchestration.case_text import request_part
         from app.orchestration.websearch import evidence_search_queries
+        # A case study's questions, not its background paragraphs (case_text.py).
         research_plan = await metrics.run("retrieval.research_plan", plan_evidence_search(
-            effective_query, evidence_search_queries(effective_query)))
+            effective_query, evidence_search_queries(request_part(effective_query))))
     # A validated research plan needs one bounded evidence fetch followed by
     # composition. Tool iteration adds no capability to a source-only task.
     multi_part_research = research_only and (len(sub_questions(request.query)) > 1
@@ -2904,6 +3069,15 @@ async def ask_kriton(
         )
         if needs_web and not run_agent_loop else None
     )
+    # Agent mode (Task Contract, Stage C-2b): the existing fixed official
+    # pages for the parts the contract says need an official figure or rule,
+    # read up front as the standard path reads them, instead of only when the
+    # model's own search happens to select them (official_prefetch.py).
+    if web_search_task is None and needs_web and run_agent_loop:
+        from app.orchestration.official_prefetch import official_prefetch, official_prefetch_plan
+        if any(official_prefetch_plan(shadow_contract)):
+            web_search_task = asyncio.create_task(asyncio.wait_for(
+                metrics.run("retrieval.official_prefetch", official_prefetch(shadow_contract)), timeout=25.0))
     # Live exact-figure sources (currency via Frankfurter, economic stats via
     # DBnomics). Self-gating + fail-soft: returns [] unless the question is
     # actually about an exchange rate or a statistic. Runs concurrently with the
@@ -2922,6 +3096,14 @@ async def ask_kriton(
     # later "UK inflation" turn onto India's series.
     # In agent mode the model fetches exactly the figures it needs through
     # registered tools during composition, so nothing is pre-fetched here.
+    # Also when the contract records a UK rate HMRC sets relative to Bank Rate
+    # (late-payment interest): the agent has no Bank of England tool. Bank Rate
+    # is then an input to the answer, not its subject (see below).
+    from app.orchestration.official_prefetch import bank_rate_prefetch
+    bank_rate_input_only = bool(
+        needs_web and run_agent_loop and bank_rate_prefetch(shadow_contract)
+        and not (_dated_fx_question(request.query) or _official_rate_question(request.query)
+                 or detect_explicit_visual_request(request.query)))
     live_data_task = (
         asyncio.create_task(
             asyncio.wait_for(
@@ -2930,8 +3112,12 @@ async def ask_kriton(
             )
         )
         if needs_web and (not run_agent_loop or _dated_fx_question(request.query)
-                          or _official_rate_question(request.query)) else None
+                          or _official_rate_question(request.query) or bank_rate_prefetch(shadow_contract)) else None
     )
+    retrieval_trace.update(path="agent" if run_agent_loop else "standard",
+                           web_search=needs_web and not run_agent_loop,
+                           official_prefetch=bool(run_agent_loop and web_search_task is not None),
+                           live_data=live_data_task is not None)
     # These are speculative child tasks. Tie their lifetime to this request so
     # an early refusal, client disconnect, or end-to-end timeout cannot leave
     # provider calls running after the parent orchestration has finished.
@@ -3475,6 +3661,12 @@ async def ask_kriton(
         live_result: LiveDataResult = await live_data_task if live_data_task is not None else LiveDataResult()
     except Exception:
         live_result = LiveDataResult()
+    # Bank Rate fetched only as an input to an HMRC rate keeps its source (the
+    # latest value and the date it last changed) but not its series: the dated
+    # series made "What interest rate does HMRC charge on late VAT payments?" a
+    # Bank Rate narration in place of HMRC's rule (30 Oct 2026).
+    if bank_rate_input_only:
+        live_result = LiveDataResult(sources=live_result.sources)
 
     # Elliptical follow-up fallback: "show the SAME data as a horizontal bar
     # chart" names no subject of its own, so request.query alone (correctly
@@ -4028,7 +4220,11 @@ async def ask_kriton(
     grounded_input += document_figures_block
     # Financial statements are drafts until reviewed (statement_rules.py).
     from app.orchestration.statement_rules import INSTRUCTIONS as STATEMENT_RULES, is_statement_request
-    statement_request = is_statement_request(request.query)
+    # Read part by part from the contract: "Explain how the lease cost is
+    # presented in the income statement" is not a request for statements
+    # (Stage C, defect class 3). Without a contract, the previous check.
+    statement_request = (shadow_contract.output_constraints.statements_requested if shadow_contract is not None
+                         else is_statement_request(request.query))
     if statement_request:
         grounded_input += STATEMENT_RULES
     if document_sources:
@@ -4055,7 +4251,7 @@ async def ask_kriton(
             context_system = KRITON_COMPOSITION_SYSTEM_PROMPT
             if run_agent_loop:
                 names = set(execution_plan.tools) | {'calculate'}
-                if chart_requested(request.query):
+                if asks_for_chart:
                     names.add('render_chart')
                 context_tools = [tool for tool in model_gateway_service.tool_registry().function_schemas(permissions_for_role(role))
                                  if tool['function']['name'] in names]
@@ -4186,7 +4382,7 @@ async def ask_kriton(
                     model=None,
                     on_tool_start=on_tool_start,
                     on_tool_done=on_tool_done,
-                    chart_requested=chart_requested(request.query),
+                    chart_requested=asks_for_chart,
                     latest_fx_required=latest_fx_requested(request.query),
                     max_seconds=agent_time_budget(time.monotonic() - start_time, deadline_seconds),
                     extra_steps=deliverable_step_allowance(request.query),
@@ -4217,7 +4413,7 @@ async def ask_kriton(
                     and not governed_passages and not document_sources and not self_contained_calculation,
                     # Pure calculations cannot need external lookup schemas.
                     # Keep the complete registry and per-call policy enforcement.
-                    available_tools=(("calculate", "render_chart") if chart_requested(request.query) else ("calculate",))
+                    available_tools=(("calculate", "render_chart") if asks_for_chart else ("calculate",))
                     if calculation_tools_only else None,
                 ),
             )
@@ -4688,8 +4884,13 @@ async def ask_kriton(
     # are the [REF-N] citations the reader gets, but they are not registered in
     # the governed SourceBundle. Without it, every answer grounded purely in
     # live sources fails the grounding check and degrades to HUMAN_REVIEW.
+    # What the calculator verified: an arithmetic re-check of the model's
+    # written working does not disprove these (finalisation.py, P1, Stage D).
+    from app.orchestration.finalisation import verified_values_from
+    verified_numbers = verified_values_from(calculation_result,
+                                            agent_outcome.calculation_receipts if agent_outcome else ())
     calculation_failures = metrics.run_sync(
-        "calculation.validate", lambda: validate_answer_calculations(composed_text)
+        "calculation.validate", lambda: validate_answer_calculations(composed_text, verified_numbers)
     )
     # Arithmetic the model got wrong is corrected before validation rather than
     # sending the whole answer to review: "4,07,600 * 180 = 733680000" (one
@@ -4714,7 +4915,7 @@ async def ask_kriton(
             corrected = ""
         if corrected and corrected.strip() and _MODEL_PROVIDER_FAILURE not in corrected:
             composed_text = corrected
-            calculation_failures = validate_answer_calculations(composed_text)
+            calculation_failures = validate_answer_calculations(composed_text, verified_numbers)
     # A calculation on the question's own figures ("revenue ₹50,00,000,
     # expenses ₹38,50,000 — net margin?") has nothing to cite, so failing it
     # for lacking sources escalated every such question. It is exempt from
@@ -4790,7 +4991,7 @@ async def ask_kriton(
                                for block in re.findall(r"```chart\n.*?```", rewritten, re.S))
             if revalidated and revalidated.passed and keeps_answer and no_new_chart:
                 composed_text, validation = rewritten, revalidated
-                calculation_failures = validate_answer_calculations(composed_text)
+                calculation_failures = validate_answer_calculations(composed_text, verified_numbers)
     if calculation_failures:
         if validation is None:
             from app.orchestration.schemas import ValidationResult
@@ -4963,7 +5164,7 @@ async def ask_kriton(
                         and not registration_comparison_gaps(request.query, corrected)
                         and not uk_vat_answer_gaps(request.query, corrected)
                         and not tax_rate_comparison_gaps(request.query, corrected)
-                        and not validate_answer_calculations(corrected)
+                        and not validate_answer_calculations(corrected, verified_numbers)
                         and (corrected_validation is None or corrected_validation.passed)):
                     composed_text, release_check, validation = corrected, corrected_check, corrected_validation
             if gst_answer_gaps(request.query, composed_text):
@@ -5058,7 +5259,7 @@ async def ask_kriton(
                 invalid_chart = any(block.strip() not in verified_charts for block in re.findall(r"```chart\n.*?```", repaired, re.S))
                 repaired_validation = validate(repaired)
                 if (not repaired_gaps and not invalid_chart and release_claims(repaired)
-                        and not validate_answer_calculations(repaired)
+                        and not validate_answer_calculations(repaired, verified_numbers)
                         and (repaired_validation is None or repaired_validation.passed)):
                     repaired_check = await metrics.run("verification.coverage_repaired", verify_for_release(
                         repaired, question=request.query, evidence=release_evidence, requires_authority=requires_authority,
@@ -5161,6 +5362,21 @@ async def ask_kriton(
             # cited source does not support it.
             composed_text = strip_citations_from(composed_text, release_check.general_explanations)
             general_background_kept = True
+        if not release_check.passed:
+            # Which statements release verification rejected, and why: the
+            # answer receipt keeps only the final text, so "The sources
+            # provided do not establish an answer" could not be traced to the
+            # statement that failed (UK employer NI, 3 Nov 2026). Log only.
+            try:
+                logging.getLogger("kriton.requests").info("Release verification failed query=%s %s", query_id, json.dumps({
+                    "failures": [str(item)[:300] for item in release_check.failures[:8]],
+                    "rejected": [{"claim": str(claim)[:300], "reason": reason} for claim, reason in zip(
+                        release_check.rejected_claims[:8],
+                        [*release_check.rejected_reasons, *[""] * len(release_check.rejected_claims)])],
+                    "prunable": release_check.prunable, "citations": len(rag_citations),
+                }, ensure_ascii=False))
+            except Exception:  # noqa: BLE001
+                logger.warning("release_failure_log_failed")
         release_decision = decide_release_failure(
             composed_text, release_check, risk_level=risk_level,
             validation_passed=validation is None or validation.passed,
@@ -5511,6 +5727,14 @@ async def ask_kriton(
             limitations.append(issue)
     if general_background_kept and not evidence_gap_only:
         limitations.append(GENERAL_BACKGROUND_NOTE)
+    if unresolved_requested_parts and not evidence_gap_only:
+        # Judged on the final text: a part answered later as a labelled
+        # general explanation is answered (it carries that label's own note).
+        # "Going concern indicators" was given and still listed as unanswered
+        # (29 Oct 2026).
+        from app.orchestration.finalisation import answered_as_general_explanation
+        unresolved_requested_parts = [part for part in unresolved_requested_parts
+                                      if not answered_as_general_explanation(part, final_text)]
     if unresolved_requested_parts and not evidence_gap_only:
         limitations.append("Incomplete answer: requested parts remain unanswered: " + "; ".join(unresolved_requested_parts) + ".")
     if agent_outcome is not None and agent_outcome.incomplete_reason:

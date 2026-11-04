@@ -1,5 +1,6 @@
 """Deterministic missing-input guards and bounded user-figure follow-ups."""
 import re
+from app.orchestration.case_text import request_part
 from decimal import Decimal
 from app.orchestration.calculation_service import _number_for_label, _REVENUE_LABEL
 
@@ -49,6 +50,7 @@ def expense_followup_query(query: str, history) -> str:
 
 
 def missing_tax_inputs(query: str) -> str | None:
+    query = request_part(query)  # a case study's questions, not its background (case_text.py)
     if (re.search(r'\bincome tax\b',query,re.I)
             and re.search(r'\b(?:how much|owe|should I pay|missing information)\b',query,re.I)
             and not re.search(r'\d+(?:\.\d+)?\s*%',query)):
@@ -103,8 +105,12 @@ _EXPLICIT_SHARED_RATE = re.compile(
 
 def _rate_per_item(query: str) -> bool:
     from app.orchestration.calculations.engine import item_rate
-    return (item_rate(query, ("sales", "turnover", "outputs")) is not None
-            and item_rate(query, ("purchases", "purchase", "inputs")) is not None)
+    return ((item_rate(query, ("sales", "turnover", "outputs")) is not None
+             and item_rate(query, ("purchases", "purchase", "inputs")) is not None)
+            # "standard-rated sales of £240,000 and standard-rated purchases of
+            # £90,000" states the rate of each as clearly as "all standard-rated".
+            or bool(re.search(r"\bstandard[- ]rated\s+(?:sales|supplies|outputs|turnover)\b", query, re.I)
+                    and re.search(r"\bstandard[- ]rated\s+(?:purchases?|inputs|costs)\b", query, re.I)))
 
 
 def _country_stated(question: str, earlier: str) -> bool:
@@ -135,6 +141,7 @@ def missing_vat_country(query: str) -> str | None:
     """A VAT or GST rate or rule asked about in another country's currency,
     with no country named: "What VAT rate applies to my €5,000 sale?" was
     answered with UK rates. Asked, not assumed."""
+    query = request_part(query)  # a case study's questions, not its background (case_text.py)
     from app.orchestration.source_taxonomy import detect_jurisdictions
     q = query or ""
     if not (_VAT_RATE_OR_RULE.search(q) and _FOREIGN_AMOUNT.search(q)) or detect_jurisdictions(q):
@@ -150,11 +157,22 @@ def missing_vat_inputs(query: str, history=None) -> str | None:
     The country, rate and treatment may have been stated in an earlier user
     turn ("UK business, everything at 20%"); those are read too, never asked
     again. Only what the user stated: nothing is assumed."""
-    q = re.sub(r'\b(?:ignore|disregard)\s+(?:VAT|GST)\b', '', query or '', flags=re.I)
+    # Whether a VAT amount is asked for comes from a case study's questions;
+    # the facts it needs (country, rate, treatment, sales and purchases) from
+    # the whole text. Read from the questions alone, "VAT is 20%… figures
+    # exclude VAT" in the background was missed and asked for (29 Oct 2026).
+    facts = re.sub(r'\b(?:ignore|disregard)\s+(?:VAT|GST)\b', '', query or '', flags=re.I)
+    q = re.sub(r'\b(?:ignore|disregard)\s+(?:VAT|GST)\b', '', request_part(query) or '', flags=re.I)
     earlier = " ".join(getattr(m, "content", "") or "" for m in list(history or [])[-6:]
                        if getattr(m, "role", "user") == "user")
-    context = f"{earlier} {q}"
-    if not (_VAT.search(q) and _VAT_AMOUNT_QUESTION.search(q) and re.search(r"\d", q)) or _VAT_LOOKUP_ONLY.search(q):
+    context = f"{earlier} {facts}"
+    # The VAT amount is asked for in one sentence ("Calculate VAT payable",
+    # "How much VAT do I owe?"). "registered under GST" in one sentence and
+    # "deferred tax asset/liability" in another asked a VAT question of an
+    # audit case that requested no VAT figure (29 Oct 2026).
+    asks_vat_amount = any(_VAT.search(sentence) and _VAT_AMOUNT_QUESTION.search(sentence)
+                          for sentence in re.split(r"(?<=[.?!])\s+|\n+", q))
+    if not (asks_vat_amount and re.search(r"\d", q)) or _VAT_LOOKUP_ONLY.search(q):
         return None
     if re.search(r"[-−–]\s*\d+(?:\.\d+)?\s*%", q):
         return None  # an impossible rate is rejected first by the calculator (INVALID_PERCENTAGE)
@@ -166,24 +184,30 @@ def missing_vat_inputs(query: str, history=None) -> str | None:
         return None
     from app.orchestration.source_taxonomy import detect_jurisdictions
     has_rate = bool(re.search(r"\d+(?:\.\d+)?\s*%", context))
-    sales_and_purchases = bool(re.search(r"\b(?:sales|turnover|output)\b", q, re.I)
-                               and re.search(r"\b(?:purchases?|costs?|expenses|input)\b", q, re.I))
+    sales_and_purchases = bool(re.search(r"\b(?:sales|turnover|output)\b", facts, re.I)
+                               and re.search(r"\b(?:purchases?|costs?|expenses|input)\b", facts, re.I))
     missing = []
-    if not _country_stated(q, earlier):
+    if not _country_stated(facts, earlier):
         missing.append("which country the business is VAT-registered in")
     if not has_rate:
         missing.append("the VAT rate or rates that apply (standard, reduced, zero-rated or exempt)")
-    elif sales_and_purchases and not _SAME_RATE.search(context) and not _EXPLICIT_SHARED_RATE.search(context) and not _rate_per_item(q):
+    elif sales_and_purchases and not _SAME_RATE.search(context) and not _EXPLICIT_SHARED_RATE.search(context) and not _rate_per_item(facts):
         missing.append("whether all the sales and purchases are at that rate, or some are zero-rated, exempt or outside VAT")
     if not _TREATMENT.search(context):
-        missing.append("whether the amounts include VAT or exclude VAT")
+        missing.append("whether the amounts include VAT or exclude VAT (reply, for example, \"excluding VAT\" or \"including VAT\")")
     if not missing:
         return None
     items = "; ".join(f"({index}) {item}" for index, item in enumerate(missing, start=1))
     goal = ("output VAT on sales, input VAT on purchases and the amount payable"
             if sales_and_purchases else "the VAT amount and the total")
-    return (f"To work out the VAT I need: {items}. With those I can calculate {goal} — "
+    text = (f"To work out the VAT I need: {items}. With those I can calculate {goal} — "
             "I won't assume a rate or whether the figures include VAT.")
+    # The tax the user named: "Calculate the GST on my invoice" was asked
+    # "To work out the VAT I need …" (3 Nov 2026).
+    named = re.search(r"\b(GST|HST|SST)\b", context, re.I)
+    if named and not re.search(r"\bvat\b", context, re.I):
+        text = re.sub(r"\bVAT\b", named.group(1).upper(), text)
+    return text
 
 
 _ATTACHED_REFERENCE = re.compile(
@@ -204,6 +228,7 @@ def needs_invoice_attachment(query: str) -> bool:
 
 def gst_answer_gaps(query: str, answer: str) -> list[str]:
     """Detect obvious omissions; a statement of unchanged rates is not a value."""
+    query = request_part(query)  # a case study's questions, not its background (case_text.py)
     from app.orchestration.source_taxonomy import detect_jurisdictions
     if not ('INDIA' in detect_jurisdictions(query) and re.search(r"\bgst\b", query, re.I)):
         return []
@@ -237,6 +262,7 @@ def gst_answer_gaps(query: str, answer: str) -> list[str]:
 
 
 def registration_comparison_gaps(query: str, answer: str) -> list[str]:
+    query = request_part(query)  # a case study's questions, not its background (case_text.py)
     if not re.search(r"\bregistration\b", query, re.I):
         return []
     markets = [("Australia", r"australia"), ("Singapore", r"singapore"), ("United Kingdom", r"uk|united kingdom")]
@@ -254,6 +280,7 @@ def uk_vat_rules_requested(query: str) -> bool:
 
 
 def tax_rate_comparison_gaps(query: str, answer: str) -> list[str]:
+    query = request_part(query)  # a case study's questions, not its background (case_text.py)
     from app.orchestration.source_taxonomy import detect_jurisdictions
     if not re.search(r'\b(?:vat|gst)\b', query, re.I) or not re.search(r'\brates?\b', query, re.I):
         return []
@@ -277,6 +304,7 @@ def uk_vat_answer_gaps(query: str, answer: str) -> list[str]:
     No threshold value is hardcoded: current amounts must come from sources.
     Apply only when registration rules were requested, not a bare historical rate.
     """
+    query = request_part(query)  # a case study's questions, not its background (case_text.py)
     if not uk_vat_rules_requested(query):
         return []
     checks = [
@@ -360,8 +388,26 @@ def statement_not_question(query: str) -> str | None:
     framing = "\n".join(line for line in text.splitlines() if not _pasted_item(line))
     # "When addressing an audit, leaders should…" opens a clause, not a question.
     framing = _SUBORDINATE_OPENING.sub("", framing.strip(), count=1)
+    # Figures or first-person context are the user's own facts in a short
+    # message ("My revenue is ₹500,000."). A pasted case background is long:
+    # its amounts are no request, and with no question in it Kriton asks what
+    # to do rather than guessing (a VAT question, 29 Oct 2026).
+    own_facts = (_FIRST_PERSON.search(text) or _AMOUNT.search(text)) and len(words) < _CASE_BACKGROUND_WORDS
+    # A case's tasks are its request even as numbered items: "Task for the
+    # Bot: 1. Classify each event … 2. Calculate …" (case_text.py).
+    tasks = request_part(text) != text or _TASK_ITEM.search(text)
     if (_QUESTION_START.search(framing) or _REQUEST_WORD.search(framing)
-            or _FIRST_PERSON.search(text) or _AMOUNT.search(text)
-            or not _STATEMENT_VERB.search(text)):
+            or own_facts or tasks or not _STATEMENT_VERB.search(text)):
         return None
     return STATEMENT_CLARIFICATION
+
+
+_CASE_BACKGROUND_WORDS = 150
+# A numbered or bulleted item that asks for something ("2. Calculate the
+# cumulative adjustments", "• Q1.1 (Tax): Analyze …"), not one that states a
+# fact ("1. Capitalization vs. Revenue Expenditure: Apex Motors booked …").
+_TASK_ITEM = re.compile(
+    r"(?im)^[ \t]*(?:[-*•]|\d+[.)]|Q\d+(?:\.\d+)*)[ \t]*(?:\([^)\n]*\)[ \t]*:?[ \t]*)?"
+    r"(?:calculate|compute|classify|specify|explain|analy[sz]e|evaluate|assess|prepare|pass|identify|determine|"
+    r"discuss|describe|critique|outline|reconstruct|show|list|compare|recommend|draft|record|justify)\b"
+)
