@@ -48,7 +48,10 @@ def pipeline(monkeypatch):
     return SimpleNamespace(review_case=review_case)
 
 
-async def test_a_failed_check_shows_the_answer_with_a_warning_and_still_notifies_a_reviewer(pipeline):
+async def test_a_failed_check_shows_the_answer_with_a_warning_and_still_notifies_a_reviewer(pipeline, monkeypatch):
+    # The release path, not input requirements: with no figures this question
+    # is now asked about first (tests/test_clarification_requirements.py).
+    monkeypatch.setenv("KRITON_CONTRACT_CLARIFICATION", "false")
     response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
                                         request=AskKritonRequest(query="Prepare the journal entry for this year's depreciation."))
     assert response.outcome != "escalated"

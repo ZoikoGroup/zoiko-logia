@@ -1,6 +1,7 @@
 """Seed the dev database with the demo tenant/user and reference/sample data."""
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -18,8 +19,23 @@ from app.domains.source_library.models import Source, SourceVersion
 from app.domains.support_incident.models import SecurityIncident, SupportTicket
 
 DEMO_EMAIL = "dashboard@zoikologia.com"
-DEMO_PASSWORD = "Password234@"
+REVIEWER_EMAIL = "source.reviewer@zoikologia.com"
 DEMO_TENANT_NAME = "ZoikoLogia Demo Tenant"
+
+
+def seed_passwords() -> tuple[str, str]:
+    """The demo and reviewer passwords, from the environment only. They were
+    committed here as one shared password, so anyone who read the code could
+    sign in as either account, and the seeded reviewer could approve what the
+    demo account submitted (25 Oct 2026). EVAL_PASSWORD is the name the
+    evaluation runner signs in with; the reviewer's must differ from it."""
+    demo, reviewer = os.getenv("EVAL_PASSWORD", ""), os.getenv("SEED_REVIEWER_PASSWORD", "")
+    if not demo or not reviewer:
+        raise RuntimeError("Set EVAL_PASSWORD and SEED_REVIEWER_PASSWORD to seed the demo and reviewer accounts.")
+    if demo == reviewer:
+        raise RuntimeError("EVAL_PASSWORD and SEED_REVIEWER_PASSWORD must differ: one known password must not "
+                           "unlock both the submitting and the approving account.")
+    return demo, reviewer
 
 # Same 6 roles previously hardcoded in frontend/lib/governance-data.ts's ROLES export.
 ROLES = [
@@ -104,11 +120,12 @@ async def seed_demo_user(db) -> User:
             "requires creating it via the Supabase Admin API."
         )
 
+    demo_password, reviewer_password = seed_passwords()
     tenant = Tenant(name=DEMO_TENANT_NAME)
     db.add(tenant)
     await db.flush()
 
-    admin_auth_user = _get_or_create_auth_user(DEMO_EMAIL, DEMO_PASSWORD)
+    admin_auth_user = _get_or_create_auth_user(DEMO_EMAIL, demo_password)
     user = User(
         id=admin_auth_user["id"],
         tenant_id=tenant.id,
@@ -123,11 +140,11 @@ async def seed_demo_user(db) -> User:
 
     # Second account required by scripts/ingest_reference_sources.py's maker-checker
     # flow: the submitting admin (above) cannot approve its own source versions.
-    reviewer_auth_user = _get_or_create_auth_user("source.reviewer@zoikologia.com", DEMO_PASSWORD)
+    reviewer_auth_user = _get_or_create_auth_user(REVIEWER_EMAIL, reviewer_password)
     db.add(User(
         id=reviewer_auth_user["id"],
         tenant_id=tenant.id,
-        email="source.reviewer@zoikologia.com",
+        email=REVIEWER_EMAIL,
         first_name="Source",
         last_name="Reviewer",
         full_name="Source Reviewer",
@@ -139,7 +156,7 @@ async def seed_demo_user(db) -> User:
     await db.refresh(user)
     supabase_admin.update_app_metadata(admin_auth_user["id"], user.tenant_id, user.role)
     supabase_admin.update_app_metadata(reviewer_auth_user["id"], user.tenant_id, "Admin")
-    print(f"Seeded tenant '{tenant.name}', user '{user.email}', and reviewer 'source.reviewer@zoikologia.com'.")
+    print(f"Seeded tenant '{tenant.name}', user '{user.email}', and reviewer '{REVIEWER_EMAIL}'.")
     return user
 
 
@@ -272,4 +289,8 @@ async def seed() -> None:
 
 
 if __name__ == "__main__":
+    # Seeds tenants, users and sources ("Local tax bulletin" reached the shared
+    # production database): refuse unless DATABASE_URL is local or a container.
+    from tests.db_guard import require_isolated_database
+    require_isolated_database()
     asyncio.run(seed())

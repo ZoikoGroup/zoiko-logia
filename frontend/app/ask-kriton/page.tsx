@@ -1,5 +1,7 @@
 "use client";
 
+import "./kriton-reference.css";
+
 import { memo, useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
 import {
@@ -113,6 +115,18 @@ function genId(prefix: string): string {
 
 function timestamp(): number {
   return Date.now();
+}
+
+function ZoikoGlyph({ className = "h-9 w-9" }: { className?: string }) {
+  return (
+    <div className={`${className} relative shrink-0 overflow-hidden rounded-xl bg-[#16799A] shadow-[0_18px_44px_rgba(0,0,0,0.28)]`}>
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_24%_18%,rgba(255,255,255,0.32),transparent_34%)]" />
+      <div className="absolute left-[25%] top-[26%] h-[48%] w-[50%] rounded-sm border-[3px] border-white" />
+      <div className="absolute bottom-[31%] left-[36%] h-[26%] w-[8%] bg-[#F3C437]" />
+      <div className="absolute bottom-[31%] left-[48%] h-[26%] w-[8%] bg-[#F3C437]" />
+      <div className="absolute bottom-[31%] left-[60%] h-[26%] w-[8%] bg-[#F3C437]" />
+    </div>
+  );
 }
 
 /**
@@ -792,6 +806,7 @@ export default function AskKritonPage() {
     if (typeof window === "undefined") return null;
     return chatIdFromUrl(window.location.search, loadConversations());
   });
+  const [focusMode, setFocusMode] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [sidebarPanel, setSidebarPanel] = useState<"chats" | "projects" | "sources" | null>(null);
   const [chatSearch, setChatSearch] = useState("");
@@ -1111,21 +1126,27 @@ export default function AskKritonPage() {
   };
 
   return (
-    <main className="kriton-page-background relative h-dvh min-h-0 w-full min-w-0 overflow-hidden text-ink">
+    <main data-focus={focusMode ? "on" : "off"} data-design="kriton-orbital-20261102" data-conversation={hasConversation ? "active" : "empty"} className="kriton-reference kriton-page-background relative h-dvh min-h-0 w-full min-w-0 overflow-hidden text-ink">
       <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-soft" />
-      <div className="relative z-10 grid h-full min-h-0 w-full min-w-0 grid-cols-1 md:grid-cols-[252px_minmax(0,1fr)]">
-        <DesktopSidebar {...sidebarProps} showMenu />
-        <MobileDrawer {...sidebarProps} showMenu open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} />
+      <div className={`relative z-10 grid h-full min-h-0 w-full min-w-0 grid-cols-1 ${focusMode ? "" : "md:grid-cols-[252px_minmax(0,1fr)]"}`}>
+        {!focusMode && <DesktopSidebar {...sidebarProps} showMenu />}
+        {!focusMode && <MobileDrawer {...sidebarProps} showMenu open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} />}
 
         <section className="relative flex min-h-0 min-w-0 flex-col">
-          <header className="relative z-10 flex h-14 shrink-0 items-center justify-between border-b border-line bg-white px-4 md:hidden">
+          <button
+            type="button"
+            aria-pressed={focusMode}
+            onClick={() => { setFocusMode((current) => !current); setMobileMenuOpen(false); setSidebarPanel(null); }}
+            className="kriton-focus-toggle absolute right-4 top-3 z-30 rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-medium text-muted transition hover:text-ink"
+          >
+            {focusMode ? "Exit focus" : "Focus mode"}
+          </button>
+          <header className="relative z-10 flex h-14 shrink-0 items-center justify-between border-b border-line bg-panel/80 px-4 md:hidden">
             <div className="flex items-center gap-2">
-              {/* The ZoikoLogia logo, as in the admin sidebar. */}
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src="/brand/zoikologia-logo.png" alt="ZoikoLogia" width={393} height={69} className="h-auto w-[130px]" />
-              <span className="font-bold text-[#0B1533]">Kriton</span>
+              <ZoikoGlyph className="h-8 w-8 rounded-lg" />
+              <span className="font-bold text-ink">Kriton</span>
             </div>
-            <button onClick={() => setMobileMenuOpen(true)} aria-label="Open recent chats" className="text-[#5A6278]">
+            <button onClick={() => setMobileMenuOpen(true)} aria-label="Open recent chats" className="text-muted">
               <History size={19} />
             </button>
           </header>
@@ -1291,23 +1312,23 @@ export default function AskKritonPage() {
 
 
           <div ref={scrollRef} onScroll={onConversationScroll} role="region" aria-label="Conversation history" tabIndex={0} className="relative z-10 min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain px-4">
-            <div className={`mx-auto min-h-full min-w-0 w-full max-w-5xl pb-16 pt-6 md:pb-24 md:pt-8 ${hasConversation ? "" : "flex flex-col items-center justify-center"}`}>
+            <div className={`mx-auto min-h-full min-w-0 w-full max-w-5xl pb-16 pt-6 md:pb-24 md:pt-8 ${hasConversation ? "" : "kriton-dashboard-stage flex flex-col items-center"}`}>
               {!hasConversation ? (
-                <div className="flex w-full max-w-3xl flex-col items-center text-center">
-                  <div className="w-full">
-                    <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-line bg-panel px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-brand shadow-sm">
+                <div className="kriton-welcome flex w-full max-w-3xl flex-col items-center text-center">
+                  <div className="kriton-welcome-intro w-full">
+                    <div className="kriton-welcome-badge mb-4 inline-flex items-center gap-2 rounded-full border border-line bg-panel px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-brand shadow-sm">
                       <Sparkles size={14} />
                       Ask Kriton
                     </div>
                     <h1 className="text-balance text-4xl font-bold tracking-normal text-ink md:text-5xl">
-                      Get a governed answer from your sources.
+                      Get a governed answer<br /><span className="kriton-title-accent">from your sources.</span>
                     </h1>
                     <p className="mx-auto mt-4 max-w-2xl text-sm leading-6 text-muted">
-                      Ask accounting, audit, and policy questions with source checks, risk routing, and audit history kept in the flow.
+                      Ask accounting, tax, audit, and finance questions with source checks, risk routing, and audit history.
                     </p>
                   </div>
 
-                  <div className="mt-8 w-full">
+                  <div className="kriton-welcome-input w-full">
                     <Composer
                       variant="hero"
                       query={query}
@@ -1325,7 +1346,7 @@ export default function AskKritonPage() {
                     />
                   </div>
 
-                  <div className="mt-5 grid w-full grid-cols-2 gap-2 md:grid-cols-5">
+                  <div className="kriton-quick-modes mt-5 grid w-full grid-cols-2 gap-2 md:grid-cols-5">
                     {QUICK_MODES.map(({ label, icon: ModeIcon, prompt }) => (
                       <button
                         key={label}

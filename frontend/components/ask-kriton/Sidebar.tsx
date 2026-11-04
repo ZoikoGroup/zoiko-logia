@@ -18,12 +18,11 @@ import {
 } from "lucide-react";
 import type { Conversation } from "@/lib/ask-kriton-storage";
 
-/** The ZoikoLogia logo on a white strip, as in the admin and Super Admin
- * sidebars (components/layout/Sidebar.tsx). */
-function ZoikoLogo({ width = 170 }: { width?: number }) {
+function KritonBrand() {
   return (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img src="/brand/zoikologia-logo.png" alt="ZoikoLogia" width={393} height={69} style={{ width }} className="h-auto max-w-full" />
+    <span aria-label="ZoikoLogia" className="inline-flex min-w-0 items-baseline py-1 text-[27px] font-bold leading-9 tracking-[-0.055em]">
+      <span className="text-[#edf3f7]">Zoiko</span><span className="text-[#f28c28]">Logia</span>
+    </span>
   );
 }
 
@@ -230,14 +229,13 @@ type KritonNavigationProps = {
 export function DesktopSidebar(props: RecentsListProps & KritonNavigationProps) {
   return (
     <aside className="kriton-sidebar-background hidden min-h-0 border-r border-line md:flex md:flex-col">
-      <div className="flex h-[68px] shrink-0 items-center justify-between gap-2 bg-white px-4">
-        <Link href="/" aria-label="ZoikoLogia home"><ZoikoLogo /></Link>
+      <div className="flex items-center justify-between px-5 py-5">
+        <KritonBrand />
         <button type="button" onClick={props.onOpenChats} aria-label="Search chats" title="Search chats"
-          className="rounded-lg p-1.5 text-[#5A6278] hover:bg-black/5 hover:text-[#0B1533]">
+          className="rounded-lg p-1.5 text-muted hover:bg-soft hover:text-ink">
           <Search size={17} />
         </button>
       </div>
-      <div className="px-5 pb-2 pt-4 text-lg font-bold tracking-normal text-ink">Kriton</div>
 
       <nav className="space-y-1 px-3">
         <NavRow icon={Plus} label="New chat" onClick={props.onNewChat} />
@@ -268,13 +266,12 @@ export function MobileDrawer(props: RecentsListProps & KritonNavigationProps & {
     <div className="fixed inset-0 z-40 md:hidden" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40" onClick={props.onClose} />
       <div className="kriton-sidebar-background relative flex h-full w-[86%] max-w-xs flex-col border-r border-line shadow-2xl">
-        <div className="flex h-[64px] shrink-0 items-center justify-between gap-2 bg-white px-4">
-          <ZoikoLogo width={160} />
-          <button onClick={props.onClose} aria-label="Close menu" className="rounded-lg p-1.5 text-[#5A6278] hover:bg-black/5">
+        <div className="flex items-center justify-between px-5 py-5">
+          <KritonBrand />
+          <button onClick={props.onClose} aria-label="Close menu" className="rounded-lg p-1.5 text-muted hover:bg-soft">
             <X size={18} />
           </button>
         </div>
-        <div className="px-5 pb-2 pt-4 text-base font-bold text-ink">Kriton</div>
         <nav className="space-y-1 px-3">
           <NavRow icon={Plus} label="New chat" onClick={() => { props.onNewChat(); props.onClose(); }} />
           <NavRow icon={MessageSquare} label="Chats" onClick={() => { props.onOpenChats(); props.onClose(); }} />

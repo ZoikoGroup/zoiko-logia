@@ -109,9 +109,35 @@ async def _verify_answer_claims(
                                     "confirmations": 2 if confirm.ran else 1} for claim in removable)
                 return claim_verification.remove_claims(corrected, removable), _CLAIM_REMOVED_NOTE
         return corrected, None
-    if verdict.mostly_unconfirmed and needs_lookup(question):
+    if (verdict.mostly_unconfirmed and needs_lookup(question)
+            and _mostly_unconfirmed_outside_question(claims, verdict, question, answer)):
         return answer, _CLAIMS_UNCONFIRMED_NOTE
     return answer, None
+
+
+def _mostly_unconfirmed_outside_question(claims: list[str], verdict, question: str, answer: str = "") -> bool:
+    """Half or more of the statements that bring in figures from outside the
+    question are absent from the sources. A statement whose figures are the
+    user's own or are calculated from them ("Output VAT = £240,000 × 20% =
+    £48,000") is not in any source and was never meant to be: counted, it
+    marked a complete VAT and IFRS 15 answer "may be out of date" and
+    "Partially answered" (29 Oct 2026). Contradicted statements are judged
+    as before; this only decides the unconfirmed-figures note."""
+    from app.orchestration.figure_reconciliation import material_figures, unreconciled_figures
+    unconfirmed = {index for index in verdict.rejected_ids if index not in verdict.contradicted_ids}
+    if verdict.not_in_evidence and not unconfirmed:
+        return True   # the verdict does not say which ones: judged as before
+    # Judged across the whole answer, as the figure check does: "Revenue =
+    # £72,000 + £18,000 = £90,000" builds on the allocation worked out the
+    # line before, and alone it looked like an outside figure (29 Oct 2026).
+    unsupported = set(unreconciled_figures(answer or "\n".join(claims), question, "", stated=question))
+
+    def own(claim: str) -> bool:
+        shown = [figure for figure, _ in material_figures(claim)]
+        return bool(shown) and not unsupported.intersection(shown)
+    outside = [index for index, claim in enumerate(claims, start=1) if not own(claim)]
+    absent = [index for index in outside if index in unconfirmed]
+    return len(outside) >= 2 and 2 * len(absent) >= len(outside)
 
 # Placeholders ("[REF-none]" beside "the sources do not state this") cite
 # nothing and are dropped like an invented number.
@@ -1542,12 +1568,43 @@ class EvidenceFinding:
     message: str
 
 
-EVIDENCE_FINDING_CODES = ("figure_not_in_cited_source", "jurisdiction_mismatch", "outside_effective_period",
-                          "withdrawn_source", "conflicting_sources", "no_authoritative_source")
+EVIDENCE_FINDING_CODES = ("figure_not_in_cited_source", "figure_for_other_rule", "jurisdiction_mismatch",
+                          "outside_effective_period", "withdrawn_source", "conflicting_sources", "no_authoritative_source")
 # The cited evidence does not bear the statement out: the answer is not
 # presented as fully source-grounded, and a reviewer should check it.
-UNSUPPORTED_FINDING_CODES = {"figure_not_in_cited_source", "jurisdiction_mismatch", "outside_effective_period",
-                             "withdrawn_source", "conflicting_sources"}
+UNSUPPORTED_FINDING_CODES = {"figure_not_in_cited_source", "figure_for_other_rule", "jurisdiction_mismatch",
+                             "outside_effective_period", "withdrawn_source", "conflicting_sources"}
+
+# Rules that come in opposed pairs. A figure the cited source states only for
+# the other one ("To join the scheme your turnover must be £1.35 million or
+# less", cited for when a business must leave) is in the source but does not
+# support the statement (3 Nov 2026).
+_OPPOSED_RULES = (
+    ("joining", r"\bjoin(?:s|ing|ed)?\b|\benter(?:s|ing)?\b", "leaving", r"\bleav(?:e|es|ing)\b|\bexit(?:s|ing)?\b|\bwithdraw\w*"),
+    ("registration", r"(?<!de)(?<!de-)\bregist(?:er|ers|ered|ering|ration)\b", "deregistration", r"\bde-?regist\w*"),
+    ("employers", r"\bemployers?'?\b|\bsecondary\b", "employees", r"\bemployees?'?\b|\bprimary\b"),
+    ("input tax", r"\binput\b", "output tax", r"\boutput\b"),
+    ("a minimum", r"\bminimum\b", "a maximum", r"\bmaximum\b"),
+    ("the upper limit", r"\bupper\b", "the lower limit", r"\blower\b"),
+)
+
+
+def _figure_for_other_rule(statement: str, shown: str, cited: str) -> tuple[str, str] | None:
+    """(the statement's rule, the other one) when every sentence of the cited
+    text that states the figure is about the other rule of a pair."""
+    digits = re.sub(r"[^\d.]", "", shown).strip(".")
+    if not digits:
+        return None
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+|\n", cited or "") if digits in re.sub(r"[^\d.]", "", s.replace(",", "")) or
+                 digits in s.replace(",", "")]
+    if not sentences:
+        return None
+    for name_a, rule_a, name_b, rule_b in _OPPOSED_RULES:
+        for mine, theirs, mine_name, their_name in ((rule_a, rule_b, name_a, name_b), (rule_b, rule_a, name_b, name_a)):
+            if (re.search(mine, statement, re.I) and not re.search(theirs, statement, re.I)
+                    and all(re.search(theirs, s, re.I) and not re.search(mine, s, re.I) for s in sentences)):
+                return mine_name, their_name
+    return None
 # Every finding asks for review; a web or professional-body source is a
 # question of authority for the rule's jurisdiction, not proof the statement
 # is wrong, so it is a source-authority review that leaves the status alone.
@@ -1698,6 +1755,10 @@ def evidence_findings(answer: str, *, question: str, evidence_by_ref: dict[str, 
                     f"{shown.strip()} is not stated in the source cited for it"
                     + (" (another retrieved source states it)" if elsewhere else ""))
                 continue
+            other_rule = _figure_for_other_rule(original, shown, cited_text)
+            if other_rule:
+                add("figure_for_other_rule", original, refs,
+                    f"{shown.strip()} is stated in the cited source for {other_rule[1]}, not for {other_rule[0]}")
             disagreeing = [ref for ref in refs if not _states(evidence_by_ref[ref], shown, amount, tolerance)
                            and _source_disagrees(evidence_by_ref[ref], key, shown, amount, tolerance)]
             if disagreeing:

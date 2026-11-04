@@ -22,6 +22,7 @@ document it waits for.
 from __future__ import annotations
 
 import re
+from app.orchestration.case_text import request_part
 
 _STATEMENT_REQUEST = re.compile(
     r"\b(?:income\s+statements?|profit\s+(?:and|&)\s+loss|p\s*&\s*l|statements?\s+of\s+(?:financial\s+position|"
@@ -138,6 +139,7 @@ _NOT_PREPARING = re.compile(
 
 
 def is_statement_request(query: str) -> bool:
+    query = request_part(query)  # a case study's questions, not its background (case_text.py)
     return bool(_STATEMENT_REQUEST.search(query or "")) and not _NOT_PREPARING.search(query or "")
 
 

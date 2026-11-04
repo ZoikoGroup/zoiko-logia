@@ -44,13 +44,48 @@ def keep_document_citations(cited: list, available: list) -> list:
     return kept
 
 
+# The country a publisher label serves, where it serves one. The labels match
+# on terms several countries share ("GST", "VAT"): "What is the standard GST
+# rate in Singapore?" was pointed to India's CBIC (29 Oct 2026).
+_LABEL_COUNTRY = (("Indian", "INDIA"), ("UK tax", "UK"), ("US federal", "US"), ("US GAAP", "US"), ("Ind AS", "INDIA"))
+
+
+def label_country(label: str) -> str | None:
+    return next((key for marker, key in _LABEL_COUNTRY if marker in label), None)
+
+
+def _authority_for(key: str, text: str) -> str | None:
+    """The named country's authorities, from the domains retrieval already
+    trusts for it (source_taxonomy); no source is added."""
+    from app.orchestration.source_taxonomy import allowed_domains, detect_topics
+    # The question's topics, not its wording: the wording of a question that
+    # names several countries added each one's domains to the others.
+    domains = [domain for domain in sorted(allowed_domains(key, detect_topics(text), "")) if domain != "oecd.org"]
+    # Government domains first (irs.gov before law.cornell.edu).
+    government = [domain for domain in domains if re.search(r"(?:^|\.)(?:gov|gouv|gc|europa)\.|\.gov$", domain)]
+    domains = government or domains
+    if not domains:
+        return None
+    name = {"UK": "the UK", "US": "the US", "UAE": "the UAE"}.get(key, key.replace("_", " ").title())
+    return f"the authorities for {name} ({', '.join(domains[:3])})"
+
+
 def official_sources_note(query: str) -> str:
+    from app.orchestration.source_taxonomy import detect_jurisdictions
     text = query or ""
+    named = detect_jurisdictions(text, infer_from_tax_terms=False)
     tax_audit = bool(_TAX_AUDIT.search(text))
     matches = (["OECD (oecd.org) for transfer pricing and international tax, and the relevant local tax authority for domestic audit procedures"]
                if tax_audit else [])
-    matches.extend(label for pattern, label in _OFFICIAL if pattern.search(text)
-                   and not (tax_audit and label.startswith("IAASB") and not _FINANCIAL_AUDIT.search(text)))
+    labels = [label for pattern, label in _OFFICIAL if pattern.search(text)
+              and not (tax_audit and label.startswith("IAASB") and not _FINANCIAL_AUDIT.search(text))]
+    # Another country's authority is no suggestion for a named one; it is
+    # replaced by the named country's own (nothing changes otherwise).
+    wrong_country = [label for label in labels if named and label_country(label) and label_country(label) not in named]
+    matches.extend(label for label in labels if label not in wrong_country)
+    if wrong_country:
+        served = {label_country(label) for label in matches}
+        matches.extend(authority for key in named if key not in served and (authority := _authority_for(key, text)))
     suggestions = list(dict.fromkeys(matches))[:MAX_SUGGESTIONS] or [_DEFAULT]
     return ("No source was cited for this answer. Official sources to check (suggestions, not evidence): "
             + "; ".join(suggestions) + ".")

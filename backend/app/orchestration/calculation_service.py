@@ -11,6 +11,7 @@ import uuid
 from dataclasses import dataclass
 from decimal import Decimal, DivisionByZero, InvalidOperation
 
+from app.orchestration.finalisation import ValidationFinding
 from app.orchestration.schemas import CalculationWidget, ChartPoint, WidgetInput
 from app.domains.calculations.schemas import (
     CalculationResult, LiveObservation, NumericInput, VerifiedChartSeries, VerifiedChartSpec,
@@ -829,12 +830,14 @@ def shows_arithmetic(answer_text: str) -> bool:
                for match in _EQUATION.finditer(normalized))
 
 
-def validate_answer_calculations(answer_text: str) -> list[str]:
-    """Return failures only for simple equations we can verify with certainty."""
+def arithmetic_findings(answer_text: str) -> list[ValidationFinding]:
+    """Findings only for simple equations we can verify with certainty, and
+    for journals that do not balance. Reported, not acted on: the caller
+    resolves them (finalisation.resolve)."""
     # "10{,}000 \times 1.1025 = 10{,}025" was unreadable here, and a wrong
     # compound-interest result ($10,025 for $11,025) was released.
     answer_text = plain_arithmetic(answer_text)
-    failures: list[str] = []
+    findings: list[ValidationFinding] = []
     normalized = _normalise_arithmetic(answer_text.replace("\\times", "*").replace("\\div", "/"))
     for match in _EQUATION.finditer(normalized):
         expression = match.group("expression").strip()
@@ -880,14 +883,59 @@ def validate_answer_calculations(answer_text: str) -> list[str]:
             candidates = [expected]
         # Judge the precision displayed, not the size of the amount. A
         # relative tolerance allowed a 53-rupee error on a million-rupee sum.
-        tolerance = Decimal(5).scaleb(stated.as_tuple().exponent - 1)
+        # Widened only by the rounding the step's own intermediates carry
+        # (P2, finalisation.py): "50,000 × 3.465106 = 173,255.280635" is
+        # within what a six-place factor allows; it was judged wrong.
+        tolerance = max(Decimal(5).scaleb(stated.as_tuple().exponent - 1), _intermediate_rounding(expression))
         if all(abs(candidate - stated) > tolerance
                for candidate in candidates):
-            failures.append(
-                f"Calculation mismatch: {expression} equals {_format_decimal(expected)}, "
-                f"not {_format_decimal(stated)}."
-            )
-    return failures + _journal_balance_failures(answer_text)
+            findings.append(ValidationFinding(
+                category="numerical_correctness", rule="arithmetic_mismatch", action="remove_statement",
+                stated=stated, expected=expected, expression=expression, tolerance=tolerance,
+                evidence=(f"Calculation mismatch: {expression} equals {_format_decimal(expected)}, "
+                          f"not {_format_decimal(stated)}."),
+            ))
+    findings += [ValidationFinding(category="numerical_correctness", rule="journal_unbalanced", action="flag",
+                                   evidence=failure) for failure in _journal_balance_failures(answer_text)]
+    return findings
+
+
+# A displayed intermediate rounded to four or more places (a discount factor
+# "3.465106", "0.792094"): the rounding it carries can move the result.
+# Rates and amounts written to three places or fewer ("0.06", "0.2",
+# "1,250.50") are taken as exact, so their arithmetic stays strict.
+_ROUNDED_INTERMEDIATE = re.compile(r"(?<![\d.,])\d[\d,]*\.(\d{4,})(?![\d])")
+
+
+def _intermediate_rounding(expression: str) -> Decimal:
+    """How far the step's result can move from the rounding of its displayed
+    intermediates: each shifted by half its last place, the effects summed.
+    0 when it has none (or the step cannot be re-evaluated)."""
+    try:
+        base = _evaluate(expression)
+    except (SyntaxError, ValueError, InvalidOperation, ZeroDivisionError):
+        return Decimal(0)
+    total = Decimal(0)
+    for literal in _ROUNDED_INTERMEDIATE.finditer(expression):
+        value = Decimal(literal.group(0).replace(",", ""))
+        half = Decimal(5).scaleb(-len(literal.group(1)) - 1)
+        shift = Decimal(0)
+        for moved in (value + half, value - half):
+            text = expression[:literal.start()] + format(moved, "f") + expression[literal.end():]
+            try:
+                shift = max(shift, abs(_evaluate(text) - base))
+            except (SyntaxError, ValueError, InvalidOperation, ZeroDivisionError):
+                return Decimal(0)
+        total += shift
+    return total
+
+
+def validate_answer_calculations(answer_text: str, verified_values=()) -> list[str]:
+    """The arithmetic failures that stand once the findings are resolved
+    (finalisation.resolve): the same text as before for every caller, less
+    any re-check of a figure the calculator verified (P1)."""
+    from app.orchestration.finalisation import resolve
+    return resolve(arithmetic_findings(answer_text), verified_values=verified_values).failure_texts()
 
 
 def build_observation_chart(observations: list[LiveObservation]) -> VerifiedChartSpec | None:

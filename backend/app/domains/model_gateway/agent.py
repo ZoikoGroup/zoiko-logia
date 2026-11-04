@@ -460,6 +460,17 @@ def unverified_chart_values(raw_arguments: str | None, evidence: str) -> list[fl
     return [value for value in _chart_values(spec) if not is_known(float(value), known)]
 
 
+def _tool_verified_values(executed) -> list[str]:
+    """The numbers the calculate tool returned in this run: verified values
+    an arithmetic re-check of the written working does not disprove."""
+    import re as _re
+    values: list[str] = []
+    for (name, _), result in (executed or {}).items():
+        if name == "calculate" and getattr(result, "ok", False):
+            values += [number.replace(",", "") for number in _re.findall(r"-?\d[\d,]*(?:\.\d+)?", result.content or "")]
+    return values
+
+
 def _final_text(content: str | None, outcome: AgentOutcome, *, evidence: str = "") -> str:
     """The answer text, with every chart in outcome.artifacts.
 
@@ -914,7 +925,8 @@ async def _run_agent_loop(
                 outcome,
                 evidence=evidence_text(),
             )
-        failures = validate_answer_calculations(text)
+        # The calculate tool's own results are verified (finalisation.py, P1).
+        failures = validate_answer_calculations(text, _tool_verified_values(executed))
         if failures:
             # Do not publish an incorrect equality after an unsuccessful repair,
             # but remove only the statements it is in: one wrong line replaced
@@ -922,7 +934,7 @@ async def _run_agent_loop(
             # conversion cycle with bare calculator steps (23 Oct 2026).
             from app.orchestration.review_release import remove_disproved_figures
             cleaned, notes = remove_disproved_figures(text, failures)
-            remaining = validate_answer_calculations(cleaned) if cleaned else []
+            remaining = validate_answer_calculations(cleaned, _tool_verified_values(executed)) if cleaned else []
             outcome.validation = {"failed_lines": failures[:20], "remaining_after_removal": remaining[:20],
                                   "fallback": "removed_statements" if cleaned and notes and not remaining
                                   else "verified_working",
@@ -1230,7 +1242,7 @@ async def _run_agent_loop(
                 )})
                 continue
             outcome.stop_reason = "final_answer"
-            failures = validate_answer_calculations(message.content or "")
+            failures = validate_answer_calculations(message.content or "", _tool_verified_values(executed))
             if failures and not reminded_working and step < limits.max_steps:
                 reminded_working = True
                 messages.append({"role": "assistant", "content": message.content})

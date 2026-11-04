@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 960" fill="none">
+<style>@media (prefers-reduced-motion: reduce) { .traveller { display: none; } }</style>
+<g transform="rotate(-20 730 460)"><path d="M 20 460 a 710 250 0 1 0 1420 0 a 710 250 0 1 0 -1420 0" stroke="#258ad3" stroke-opacity=".15" stroke-width=".8"/>
+<g class="traveller"><circle r="8" fill="#43b7ff" fill-opacity=".10"/><circle r="2.5" fill="#83d6ff"/><animateMotion dur="18s" begin="0.0s" repeatCount="indefinite" path="M 20 460 a 710 250 0 1 0 1420 0 a 710 250 0 1 0 -1420 0"/></g>
+<g class="traveller"><circle r="8" fill="#43b7ff" fill-opacity=".10"/><circle r="2.5" fill="#83d6ff"/><animateMotion dur="18s" begin="-9.0s" repeatCount="indefinite" path="M 20 460 a 710 250 0 1 0 1420 0 a 710 250 0 1 0 -1420 0"/></g>
+</g>
+<g transform="rotate(22 737 487)"><path d="M 87 487 a 650 320 0 1 0 1300 0 a 650 320 0 1 0 -1300 0" stroke="#258ad3" stroke-opacity=".15" stroke-width=".8"/>
+<g class="traveller"><circle r="8" fill="#43b7ff" fill-opacity=".10"/><circle r="2.5" fill="#83d6ff"/><animateMotion dur="23s" begin="0.0s" repeatCount="indefinite" path="M 87 487 a 650 320 0 1 0 1300 0 a 650 320 0 1 0 -1300 0"/></g>
+<g class="traveller"><circle r="8" fill="#43b7ff" fill-opacity=".10"/><circle r="2.5" fill="#83d6ff"/><animateMotion dur="23s" begin="-11.5s" repeatCount="indefinite" path="M 87 487 a 650 320 0 1 0 1300 0 a 650 320 0 1 0 -1300 0"/></g>
+</g>
+<g transform="rotate(37 750 490)"><path d="M 220 490 a 530 210 0 1 0 1060 0 a 530 210 0 1 0 -1060 0" stroke="#258ad3" stroke-opacity=".15" stroke-width=".8"/>
+<g class="traveller"><circle r="8" fill="#43b7ff" fill-opacity=".10"/><circle r="2.5" fill="#83d6ff"/><animateMotion dur="15s" begin="0.0s" repeatCount="indefinite" path="M 220 490 a 530 210 0 1 0 1060 0 a 530 210 0 1 0 -1060 0"/></g>
+<g class="traveller"><circle r="8" fill="#43b7ff" fill-opacity=".10"/><circle r="2.5" fill="#83d6ff"/><animateMotion dur="15s" begin="-7.5s" repeatCount="indefinite" path="M 220 490 a 530 210 0 1 0 1060 0 a 530 210 0 1 0 -1060 0"/></g>
+</g>
+</svg>

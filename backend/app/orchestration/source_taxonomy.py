@@ -73,6 +73,10 @@ _TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "impairment", "goodwill", "lease", "consolidation", "financial statement",
         "double entry", "bookkeeping", "retained earnings", "working capital",
         "fixed asset", "inventory valuation", "closing entries",
+        # Deferred tax is IAS 12 / ASC 740 accounting, not tax law: with only
+        # the tax topic, "What is deferred tax and why does it arise?" was
+        # searched on oecd.org alone and answered with Pillar Two (30 Oct 2026).
+        "deferred tax", "temporary difference", "tax base", "income tax expense",
     ),
     AUDIT: (
         "audit", "auditor", "auditing", "isa", "assurance", "internal control",

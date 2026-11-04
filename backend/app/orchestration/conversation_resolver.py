@@ -45,13 +45,20 @@ _REQUEST_VERB = (
 )
 _COMPUTE_VERB = (r"calculate|compute|determine|prepare|record|journali[sz]e|work\s+out|estimate|reconcile|"
                  r"quantify|measure|allocate|recogni[sz]e|draft|construct")
+# Requests that open a sentence but are not in _REQUEST_VERB, which is also
+# searched anywhere in a message ("chart of accounts"). "Convert £10,000 to
+# euros at today's exchange rate." read as facts with nothing asked, and the
+# next question ("What is the current UK Bank Rate?") was taken as its
+# question, with its facts (30 Oct 2026).
+_REQUEST_START = (r"convert|draw|plot|chart(?!\s+of\b)|graph(?!\s+of\b)|diagram|visuali[sz]e|pass\s+(?:the\s+|a\s+)?(?:journal|entr)|"
+                  r"(?:pie|donut|doughnut|bar|column|line|area|scatter|stacked\s+bar|waterfall)\s+(?:chart|graph)\s+of")
 # A sentence that asks: a question mark, a leading request verb or question
 # word, or a request verb straight after an introductory phrase
 # ("Using the indirect method, compute …").
 _ASK_START = re.compile(
     rf"^\W*(?:[a-z ]{{0,30}}question\s*:\s*)?(?:please\s+|kindly\s+|now\s+|also\s+|and\s+|then\s+)?"
-    rf"(?:{_REQUEST_VERB}|what|how|why|which|when|where|who|whether|is|are|does|do|did|can|could|should|would|will|"
-    rf"has|have)\b",
+    rf"(?:{_REQUEST_VERB}|{_REQUEST_START}|what|how|why|which|when|where|who|whether|is|are|does|do|did|can|could|"
+    rf"should|would|will|has|have)\b",
     re.I,
 )
 _ASK_AFTER_COMMA = re.compile(rf",\s*(?:please\s+)?(?:{_REQUEST_VERB})\b", re.I)

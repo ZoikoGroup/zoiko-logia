@@ -11,7 +11,22 @@ import re
 from datetime import datetime, timezone
 
 
+_HMRC_INTEREST = re.compile(
+    r"\b(?:late[- ]payment|repayment|overdue|under-?paid|under-?payment|unpaid|over-?paid)\b[^.?!]{0,60}\binterest\b"
+    r"|\binterest\b[^.?!]{0,60}\b(?:late|overdue|under-?paid|under-?payment|unpaid|over-?paid|repay\w*)\b", re.I)
+_UK_TAX = re.compile(r"\b(?:hmrc|vat|paye|corporation\s+tax|self\s+assessment|income\s+tax|national\s+insurance)\b", re.I)
+
+
 def official_pages(question: str) -> list[tuple[str, str]]:
+    # S4b: with KRITON_REGISTRY_RETRIEVAL on, the same pages are selected from
+    # the Global Source Registry's data (source_registry.registry_pages).
+    from app.orchestration.source_registry import registry_pages, retrieval_enabled
+    if retrieval_enabled():
+        return registry_pages(question)
+    return coded_pages(question)
+
+
+def coded_pages(question: str) -> list[tuple[str, str]]:
     from app.orchestration.source_taxonomy import detect_jurisdictions
     markets = set(detect_jurisdictions(question))
     pages = []
@@ -27,6 +42,14 @@ def official_pages(question: str) -> list[tuple[str, str]]:
         pages.append(('HMRC: Corporation Tax rates', 'https://www.gov.uk/government/publications/rates-and-allowances-corporation-tax/rates-and-allowances-corporation-tax'))
     if 'UK' in markets and re.search(r'\bpersonal allowance\b', question, re.I):
         pages.append(('HMRC: Income Tax rates and allowances', 'https://www.gov.uk/income-tax-rates'))
+    # HMRC's interest rates for late and early payments (approved 30 Oct 2026).
+    # The governed VAT Return guidance gives no rate for periods from 1 January
+    # 2023 ("Read more about late payment interest"), so "What interest rate
+    # does HMRC charge on late VAT payments?" applied the pre-2023 7.75% to
+    # every period and verification rightly removed it.
+    if 'UK' in markets and _HMRC_INTEREST.search(question) and _UK_TAX.search(question):
+        pages.append(('HMRC: Interest rates for late and early payments',
+                      'https://www.gov.uk/government/publications/rates-and-allowances-hmrc-interest-rates-for-late-and-early-payments/rates-and-allowances-hmrc-interest-rates'))
     if indirect_tax and ('INDIA' in markets or re.search(r'\b(?:bangalore|bengaluru|karnataka)\b', question, re.I)):
         if re.search(r'\b(?:registration|register|threshold)\b', question, re.I):
             pages.append(('CBIC: GST registration thresholds, 2019 update', 'https://cbic-gst.gov.in/pdf/01062019-GST-An-Update.pdf'))
@@ -113,7 +136,20 @@ async def official_sources(question: str):
                 focus = question
                 if 'mysst.customs.gov.my' in url:
                     focus = 'GST repealed SST comes into effect September sales service tax'
-                excerpt = text[:4500] if url.endswith('/IGST-bill-e.html') or url.endswith('/A2017-12.pdf') else _relevant_excerpt(text, focus, limit=4500)
+                # A registry entry's excerpt_anchor starts the passage at the
+                # page's own heading: the HMRC employers page's rows say
+                # "secondary threshold … 15%" and only its "Employer
+                # (secondary) contribution rates" heading says whose rate it
+                # is; § 12 UStG shares no word with an English question.
+                from app.orchestration.source_registry import excerpt_anchor
+                anchor = excerpt_anchor(url)
+                anchored = re.search(anchor, text, re.I) if anchor else None
+                if anchored:
+                    excerpt = text[anchored.start():anchored.start() + 4500]
+                elif url.endswith('/IGST-bill-e.html') or url.endswith('/A2017-12.pdf'):
+                    excerpt = text[:4500]
+                else:
+                    excerpt = _relevant_excerpt(text, focus, limit=4500)
                 if len(excerpt) < 80:
                     return None
                 return WebSource(title=title, url=url, snippet=excerpt, provider=title.split(':')[0],

@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" fill="none">
+<!-- Decorative working-paper motifs, not financial data or verification status. -->
+<style>@media (prefers-reduced-motion: reduce) { .motion { display: none; } }</style>
+<defs>
+  <linearGradient id="trail"><stop stop-color="#83b5bd" stop-opacity="0"/><stop offset=".5" stop-color="#83b5bd" stop-opacity=".24"/><stop offset="1" stop-color="#83b5bd" stop-opacity="0"/></linearGradient>
+  <linearGradient id="pulse"><stop stop-color="#99d5db" stop-opacity="0"/><stop offset=".5" stop-color="#99d5db" stop-opacity=".65"/><stop offset="1" stop-color="#99d5db" stop-opacity="0"/></linearGradient>
+</defs>
+<!-- Ledger: ruled rows and aligned debit/credit columns. -->
+<g stroke="#88aeb7" stroke-opacity=".15" stroke-width=".8">
+  <rect x="38" y="240" width="160" height="184" rx="10"/>
+  <path d="M38 275h160M38 305h160M38 335h160M38 365h160M38 395h160M120 275v149M160 275v149"/>
+  <path d="M54 257h44M54 290h42M132 290h16M170 290h16M54 320h32M132 320h16M170 350h16M54 350h40M54 380h28M132 380h16M132 410h16M170 410h16"/>
+</g>
+<!-- Tax working paper: document outline and calculation rows. -->
+<g stroke="#88aeb7" stroke-opacity=".15" stroke-width=".8">
+  <path d="M1030 134h92l26 26v154a9 9 0 0 1-9 9h-109a9 9 0 0 1-9-9V143a9 9 0 0 1 9-9Z"/>
+  <path d="M1122 134v26h26M1039 182h78M1039 197h50M1039 224h90M1039 248h90M1039 272h90M1094 215v69M1105 236h16M1105 260h16M1039 297h90"/>
+</g>
+<!-- Audit evidence: linked source sheets, with an open central reading area. -->
+<g stroke="#88aeb7" stroke-opacity=".14" stroke-width=".8">
+  <rect x="944" y="592" width="94" height="116" rx="8"/>
+  <path d="M958 612h66M958 626h48M958 650h66M958 664h54M958 678h60M1052 610h18a8 8 0 0 1 8 8v100a8 8 0 0 1-8 8h-78"/>
+  <rect x="116" y="642" width="82" height="56" rx="8"/>
+  <path d="M130 658h54M130 670h37M130 682h46"/>
+</g>
+<g stroke="url(#trail)" stroke-width="1">
+  <path d="M198 332h44q18 0 18 18v220q0 18 18 18h130"/>
+  <path d="M1021 235h-46q-18 0-18 18v170q0 18-18 18h-65"/>
+  <path d="M944 650H810q-18 0-18 18v132"/>
+</g>
+<g class="motion"><rect x="-25" y="-.8" width="50" height="1.6" rx=".8" fill="url(#pulse)"/><animateMotion dur="16s" repeatCount="indefinite" rotate="auto" path="M198 332h44q18 0 18 18v220q0 18 18 18h130"/></g>
+<g class="motion"><rect x="-25" y="-.8" width="50" height="1.6" rx=".8" fill="url(#pulse)"/><animateMotion dur="19s" repeatCount="indefinite" rotate="auto" path="M1021 235h-46q-18 0-18 18v170q0 18-18 18h-65"/></g>
+</svg>

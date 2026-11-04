@@ -28,6 +28,19 @@ def _isolate_external_services(monkeypatch):
     # real Tavily key would otherwise send test searches to the paid API.
     # Tests that exercise Tavily set a fake key and stub the HTTP client.
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    # Nor may a developer's KRITON_TASK_CONTRACT_SHADOW send test requests to
+    # the live logs/task-contract-shadow.jsonl (30 Oct 2026); the test of that
+    # file enables it against a temporary path.
+    monkeypatch.delenv("KRITON_TASK_CONTRACT_SHADOW", raising=False)
+    # The E3 classifier shadow makes a model call per request; tests that cover
+    # it enable it themselves with the model stubbed.
+    monkeypatch.delenv("KRITON_CLASSIFIER_SHADOW", raising=False)
+    monkeypatch.delenv("KRITON_COUNTRY_OVERRIDE", raising=False)
+    monkeypatch.delenv("KRITON_COUNTRY_RESOLUTION", raising=False)
+    # Registry and Stage F switches: tests that cover them enable them.
+    for name in ("KRITON_REGISTRY_SHADOW", "KRITON_REGISTRY_RETRIEVAL", "KRITON_CONTRACT_DECISIONS",
+                 "KRITON_CONTRACT_FINALISER"):
+        monkeypatch.delenv(name, raising=False)
     # Retrieval tests run keyword-only: never download or load the local
     # embedding model in a test run.
     monkeypatch.setenv("EMBEDDING_PROVIDER", "none")
