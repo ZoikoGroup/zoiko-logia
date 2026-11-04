@@ -344,6 +344,30 @@ async def create_document_upload(
     return document
 
 
+async def _stored_content(document: Document) -> bytes:
+    if document.storage_provider == "supabase":
+        return await download_object(document.storage_bucket or "", document.storage_object_path or document.storage_path)
+    storage_path = (_STORAGE_ROOT.parents[1] / document.storage_path).resolve()
+    if not storage_path.is_relative_to(_STORAGE_ROOT.resolve()):
+        raise ValueError("Document storage path escapes the configured root")
+    return await asyncio.to_thread(storage_path.read_bytes)
+
+
+async def stored_spreadsheets(db: AsyncSession, *, document_ids: list[str], tenant_id: str,
+                              user_id: str) -> list[tuple[str, bytes]]:
+    """The original bytes of the caller's ready CSV/XLSX uploads, for the
+    Financial Statements engine (which hashes and parses the source itself).
+    The same ownership filters as retrieval: tenant, user, ready, unexpired."""
+    if not document_ids:
+        return []
+    rows = (await db.execute(select(Document).where(
+        Document.id.in_(document_ids), Document.tenant_id == tenant_id, Document.user_id == user_id,
+        Document.status == "READY", Document.expires_at > datetime.now(timezone.utc),
+    ))).scalars().all()
+    return [(row.filename, await _stored_content(row)) for row in rows
+            if row.filename.lower().endswith((".csv", ".xlsx"))]
+
+
 async def process_document(db: AsyncSession, document: Document) -> int:
     """Extract and index one stored document; safe to retry after failure."""
     document.status = "PROCESSING"
@@ -351,15 +375,7 @@ async def process_document(db: AsyncSession, document: Document) -> int:
     await db.execute(delete(DocumentChunk).where(DocumentChunk.document_id == document.id))
     await db.commit()
     try:
-        if document.storage_provider == "supabase":
-            content = await download_object(
-                document.storage_bucket or "", document.storage_object_path or document.storage_path
-            )
-        else:
-            storage_path = (_STORAGE_ROOT.parents[1] / document.storage_path).resolve()
-            if not storage_path.is_relative_to(_STORAGE_ROOT.resolve()):
-                raise ValueError("Document storage path escapes the configured root")
-            content = await asyncio.to_thread(storage_path.read_bytes)
+        content = await _stored_content(document)
         blocks = await asyncio.to_thread(extract_document, document.filename, content)
         if not blocks:
             raise ValueError("No readable text or cells were found in the document")

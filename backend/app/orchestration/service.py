@@ -5539,6 +5539,13 @@ async def ask_kriton(
             [document_figures_block, *(getattr(s, "snippet", "") or "" for s in document_sources)]))
         if removed_claims:
             statement_notes.append(removed_claims_note(removed_claims))
+        from app.orchestration import fs_engine_chat
+        engine_statement = fs_engine_chat.current_statement.get()
+        if engine_statement is not None:
+            # Shown whatever the model wrote: the source check, the open
+            # classification with both operating profits, and an unresolved
+            # reconciliation beside the result (review C01, C04, SA-C01).
+            statement_notes[:0] = fs_engine_chat.statement_notes(engine_statement)
         limitations[:0] = [note for note in statement_notes if note not in limitations]
     if (not evidence_gap_only and not is_offdomain_refusal and not uses_user_supplied_structure
             and rag_citations and not re.search(r"\[REF-\d+\]", final_text or "")):
@@ -5954,6 +5961,8 @@ async def _verified_document_figures_context(
     of computing them in its head and gate G4 can confirm them. Always over
     the COMPLETE documents: a targeted retrieval holds only the relevant
     chunks, and a "total" over part of a sheet would be wrong. Fails soft."""
+    from app.orchestration import fs_engine_chat
+    fs_engine_chat.current_statement.set(None)
     if not document_ids:
         return ""
     from app.orchestration.document_figures import verified_document_figures
@@ -5966,7 +5975,26 @@ async def _verified_document_figures_context(
                 sources = await retrieve_document_sources(
                     db, query=query, document_ids=document_ids, tenant_id=tenant_id, user_id=user_id, full_document=True,
                 )
-        return verified_document_figures(sources, query)
+        engine_block = ""
+        from app.orchestration.statement_rules import is_statement_request
+        if fs_engine_chat.enabled() and is_statement_request(query):
+            # A statement from an uploaded trial balance comes from the
+            # Financial Statements engine, not from the chat's own
+            # calculation (review ZL-FSR-COR-20261103 C01–C05).
+            from app.domains.kriton_workspace.documents import stored_spreadsheets
+            async with db.begin_nested():
+                files = await stored_spreadsheets(db, document_ids=list(document_ids), tenant_id=tenant_id,
+                                                  user_id=user_id)
+            for filename, content in files:
+                statement = await asyncio.to_thread(fs_engine_chat.build, filename, content)
+                if statement is not None:
+                    fs_engine_chat.current_statement.set(statement)
+                    engine_block = fs_engine_chat.facts_block(statement)
+                    # The other files keep the general figures; this one's
+                    # come from the engine only, so there is one set of numbers.
+                    sources = [s for s in sources if not (s.title or "").startswith(filename)]
+                    break
+        return engine_block + (verified_document_figures(sources, query) if sources else "")
     except Exception:  # noqa: BLE001 - extra figures must never fail the answer
         logger.exception("Could not compute verified document figures")
         return ""
