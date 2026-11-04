@@ -196,6 +196,44 @@ def _hash_query(query: str) -> str:
 _OCR_READING_NOTES = ("[Blurred image:", "[Low-resolution scan:", "[Low-confidence reading:",
                       "[Check these figures before using them:", "[Chart:", "[Chart read by position:",
                       "is a scan that was not read:")
+# Notes that withhold a document's content (kriton_workspace/ocr.py): an
+# answer about such a document has nothing in it to cite.
+_WITHHELD_READING_NOTES = ("[Blurred image:", "[Low-resolution scan:", "[Low-confidence reading:")
+_ANSWER_FIGURE = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?")
+
+
+def _figures(text: str) -> set[str]:
+    """The figures a text states, without thousands separators; single digits
+    (step numbers, list ordinals) are not claims."""
+    found = set()
+    for figure in _ANSWER_FIGURE.findall(text or ""):
+        figure = figure.replace(",", "").rstrip(".")
+        if len(figure.replace(".", "")) >= 2:
+            found.add(figure)
+    return found
+
+
+def _answer_bound_to_sources(text: str, citations, source_texts: dict[str, str]) -> bool:
+    """Whether a released answer is tied to the sources it was given.
+
+    A [REF-n] marker or a source's URL in the text binds it. Without either,
+    the answer still counts as bound when every figure it states appears in
+    the cited sources' own text (QA H02/09: "Hardware: 1,800", the attached
+    chart's value, was marked "Partial — sources not linked"), or when it
+    states no figure and every cited source is a document whose content is
+    withheld as unreadable: "I can't read this image" has no claim to cite
+    (4 Nov 2026 manual tests). An answer stating figures the sources do not
+    hold, or claims from a readable source with no marker, stays unbound."""
+    text = text or ""
+    if any(f"[{c.ref_id}]" in text or bool(c.url and c.url in text) for c in citations):
+        return True
+    cited = [source_texts.get(c.source_id) or c.evidence_preview or "" for c in citations]
+    figures = _figures(text)
+    if figures:
+        return figures <= _figures("\n".join(cited))
+    return bool(cited) and all(any(note in body for note in _WITHHELD_READING_NOTES) for body in cited)
+
+
 _SAME_DATA_REFERENCE = re.compile(
     r"\b(?:same|previous|above|that)\s+(?:data|series|figures?|values?|chart|graph|table)\b|"
     r"\b(?:show|render|display|plot)\s+(?:it|them)\s+as\b|"
@@ -1976,6 +2014,9 @@ async def ask_kriton(
     # Which retrieval path the request took, for the same record: the agent
     # loop or the standard path, and what was pre-fetched before composition.
     retrieval_trace: dict = {}
+    # Each retrieved source's own text by source id, for the final check that
+    # an answer's figures come from its sources (_answer_bound_to_sources).
+    source_texts: dict[str, str] = {}
 
     async def finish(
         response: AskKritonResponse, *, route: str | None = None, store: bool = True, json_dump: bool = False,
@@ -2135,9 +2176,8 @@ async def ask_kriton(
             # (build_document_generation_prompt: citations are attached
             # separately), so every export was marked "Partial — retrieved
             # sources were not linked" (QA F03 export, L04).
-            bound_sources = bool(response.artifacts or response.artifact_error) or any(
-                f'[{citation.ref_id}]' in released_text or bool(citation.url and citation.url in released_text)
-                for citation in response.answer.citations)
+            bound_sources = bool(response.artifacts or response.artifact_error) or _answer_bound_to_sources(
+                released_text, response.answer.citations, source_texts)
             if response.answer.citations and not bound_sources and response.answer.completeness == 'complete':
                 response.answer = response.answer.model_copy(update={
                     'completeness': 'partial', 'limitations': [*response.answer.limitations,
@@ -3180,6 +3220,7 @@ async def ask_kriton(
         elif relevant:
             document_sources = [s for s in document_sources if s.source_id in relevant]
             resolved_document_ids = [d for d in resolved_document_ids if d in relevant]
+    source_texts.update({s.source_id or s.url: s.snippet or "" for s in document_sources})
     # A diagram asked of an attached file is drawn from the file's own steps
     # and names (illustrative_diagram.document_query), never from general
     # practice; when the file describes none, the answer says so.
@@ -3795,6 +3836,7 @@ async def ask_kriton(
         evidence_sources = document_sources + web_sources
     else:  # DOCUMENTS_THEN_WEB
         evidence_sources = document_sources or web_sources
+    source_texts.update({s.source_id or s.url: s.snippet or "" for s in evidence_sources})
     rag_citations: list[SourceCitation] = [
         SourceCitation(
             ref_id=f"REF-{i + 1}",
@@ -4694,6 +4736,7 @@ async def ask_kriton(
             )
             for i, s in enumerate(agent_outcome.sources)
         ]
+        source_texts.update({s.url: s.snippet or "" for s in agent_outcome.sources})
         if agent_outcome.artifacts:
             composed_text = composed_text.rstrip() + "\n\n" + "\n\n".join(agent_outcome.artifacts)
 
