@@ -122,11 +122,18 @@ export function suppliedAnswerLabel(answer: AskKritonResponse["answer"]): string
 // not (24 Oct 2026). A fully verified answer keeps its label; any other says
 // what was verified.
 export function verifiedLabel(label: string, verification?: VerificationBreakdown | null): string {
-  if (!verification || !label.startsWith("Answered") || verification.overall === "fully_verified") return label;
+  if (!verification || !label.startsWith("Answered")) return label;
   if (verification.arithmetic === "mismatch") return "Answered — a figure differs from the calculation";
+  // Component states decide; an aggregate that contradicts them is not
+  // trusted (Phase 1, 25 Oct 2026).
+  if (label === "Answered — source grounded" && verification.sources !== "verified" && verification.sources !== "partial") return "Answered — sources not verified";
+  if (label === "Answered — calculated and verified" && verification.arithmetic !== "verified") return "Answered — calculation not verified";
+  const treatmentOpen = !!verification.treatment && verification.treatment !== "not_applicable";
+  if (verification.overall === "fully_verified" && !treatmentOpen && verification.assumptions !== "stated"
+      && !["partial", "unsupported"].includes(verification.sources)
+      && (verification.arithmetic === "verified" || verification.sources === "verified")) return label;
   // Correct sums under an unverified treatment must not read as a verified
   // answer; a cited treatment is not a verified one either.
-  const treatmentOpen = !!verification.treatment && verification.treatment !== "not_applicable";
   if (treatmentOpen && verification.arithmetic === "verified") {
     return "Answered — arithmetic verified; accounting treatment not verified";
   }
@@ -151,11 +158,39 @@ const PART_TEXT = {
 export function verificationSummary(verification?: VerificationBreakdown | null): string | null {
   if (!verification) return null;
   const parts: string[] = [];
-  if (verification.arithmetic !== "not_applicable") parts.push(`Arithmetic: ${PART_TEXT.arithmetic[verification.arithmetic]}`);
-  if (verification.sources !== "not_applicable") parts.push(`Sources: ${PART_TEXT.sources[verification.sources]}`);
-  if (verification.assumptions !== "not_applicable") parts.push(`Assumptions: ${PART_TEXT.assumptions[verification.assumptions]}`);
+  if (verification.arithmetic !== "not_applicable") parts.push(`Arithmetic: ${PART_TEXT.arithmetic[verification.arithmetic] ?? "not verified"}`);
+  if (verification.sources !== "not_applicable") parts.push(`Sources: ${PART_TEXT.sources[verification.sources] ?? "not verified"}`);
+  if (verification.assumptions !== "not_applicable") parts.push(`Assumptions: ${PART_TEXT.assumptions[verification.assumptions] ?? "not verified"}`);
   if (verification.treatment && verification.treatment !== "not_applicable") {
-    parts.push(`Accounting treatment: ${PART_TEXT.treatment[verification.treatment]}`);
+    parts.push(`Accounting treatment: ${PART_TEXT.treatment[verification.treatment] ?? "not verified"}`);
   }
   return parts.length ? parts.join(" · ") : null;
+}
+
+/** Reject contradictory public evidence claims without rewriting the response. */
+export function responseConsistencyIssue(result: Pick<AskKritonResponse, "outcome" | "answer"> & Partial<Pick<AskKritonResponse, "safety">>): string | null {
+  if (result.safety?.policy_state === "blocked" && ["answered", "limited_response"].includes(result.outcome)) return "Blocked response claims delivery";
+  const answer = result.answer;
+  if (!answer) return null;
+  if (answer.completeness != null && !["complete", "partial", "none"].includes(answer.completeness)) return "Unknown completeness";
+  const v = answer.verification;
+  if (v != null) {
+    if (typeof v !== "object" || Array.isArray(v)) return "Malformed verification";
+    if (!["verified", "mismatch", "not_applicable"].includes(v.arithmetic)
+      || !["verified", "partial", "unsupported", "not_applicable"].includes(v.sources)
+      || !["confirmed", "stated", "not_applicable"].includes(v.assumptions)
+      || !["fully_verified", "partially_verified", "not_verified"].includes(v.overall)) return "Unknown verification status";
+    if (v.overall === "fully_verified" && (v.arithmetic === "mismatch"
+      || ["partial", "unsupported"].includes(v.sources) || v.assumptions === "stated"
+      || ["partial", "none"].includes(answer.completeness ?? "")
+      || (v.arithmetic !== "verified" && v.sources !== "verified"))) return "Contradictory verification";
+  }
+  const refs = new Set(answer.citations.map((citation) => citation.ref_id));
+  if (refs.size !== answer.citations.length) return "Ambiguous citation identity";
+  for (const bracket of answer.text.matchAll(/\[REF-[^\]]+\]/gi)) {
+    for (const number of bracket[0].matchAll(/\d+/g)) {
+      if (!refs.has(`REF-${number[0]}`)) return "Unbound citation";
+    }
+  }
+  return null;
 }

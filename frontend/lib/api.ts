@@ -1,3 +1,4 @@
+import { responseConsistencyIssue } from "@/lib/answer-state";
 import { fetchWithSession } from "@/lib/auth-fetch";
 import { supabase } from "@/lib/supabase";
 import { getCurrentAccessToken } from "@/lib/session-token";
@@ -2134,6 +2135,39 @@ export async function downloadKritonArtifact(token: string, artifact: GeneratedA
   URL.revokeObjectURL(url);
 }
 
+function unreadableKritonResponse(): ApiError {
+  return new ApiError(502, "Kriton's response could not be read. Please try again. Keep the request ID if you need support.");
+}
+
+function checkedKritonResponse(value: unknown): AskKritonResponse {
+  const object = (item: unknown): item is Record<string, unknown> =>
+    !!item && typeof item === "object" && !Array.isArray(item);
+  const string = (item: unknown): item is string => typeof item === "string";
+  if (!object(value)) throw unreadableKritonResponse();
+  const outcomes: OutcomeType[] = ["answered", "unavailable", "refused", "clarification_required", "escalated", "limited_response", "rejected"];
+  const routes: RouteType[] = ["LLM", "CALCULATION", "REFUSAL", "CLARIFICATION", "HUMAN_REVIEW", "REFERRAL", "SECURITY_INCIDENT", "REJECTED"];
+  if (!string(value.query_id) || !value.query_id.trim() || !string(value.correlation_id)
+      || !outcomes.includes(value.outcome as OutcomeType) || !routes.includes(value.route as RouteType)
+      || !object(value.safety) || !["ZERO", "LOW", "MEDIUM", "HIGH", "RESTRICTED"].includes(value.safety.risk_level as string)
+      || !["allowed", "blocked", "needs_more_context"].includes(value.safety.policy_state as string)
+      || typeof value.safety.disclaimer_required !== "boolean"
+      || !Array.isArray(value.artifacts) || !value.artifacts.every((item) => object(item)
+        && [item.id, item.filename, item.mime_type, item.download_url].every(string))
+      || !object(value.audit_reference) || !string(value.audit_reference.audit_chain_id)) throw unreadableKritonResponse();
+  // Validate the public fields read directly by the UI; never infer success,
+  // change verification, discard a citation or manufacture an audit identity.
+  if (value.answer !== null && (!object(value.answer) || !string(value.answer.text)
+      || !Array.isArray(value.answer.limitations) || !value.answer.limitations.every(string)
+      || !Array.isArray(value.answer.citations) || !value.answer.citations.every((item) => object(item)
+        && [item.ref_id, item.source_id, item.title].every(string)
+        && (item.url === null || string(item.url))))) throw unreadableKritonResponse();
+  if (value.next_action !== null && (!object(value.next_action)
+      || !string(value.next_action.type) || !string(value.next_action.message))) throw unreadableKritonResponse();
+  const response = value as unknown as AskKritonResponse;
+  if (responseConsistencyIssue(response)) throw unreadableKritonResponse();
+  return response;
+}
+
 export async function askKriton(
   token: string,
   payload: AskKritonRequest,
@@ -2150,9 +2184,18 @@ export async function askKriton(
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
-    return res.json();
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch (error) {
+      if (error && typeof error === "object" && "name" in error && error.name === "SyntaxError") {
+        throw unreadableKritonResponse();
+      }
+      throw error;
+    }
+    return checkedKritonResponse(body);
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
+    if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
       throw new ApiError(408, "Kriton did not finish within two minutes. Please try again.");
     }
     if (error instanceof TypeError) {
@@ -2188,6 +2231,7 @@ export async function askKritonStream(
     window.clearTimeout(timeout);
     timeout = window.setTimeout(() => controller.abort(), 120_000);
   };
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
     const res = await authedFetch("/orchestration/ask/stream", token, {
       method: "POST",
@@ -2197,7 +2241,7 @@ export async function askKritonStream(
     });
     if (!res.body) throw new ApiError(502, "Kriton returned an empty response stream.");
 
-    const reader = res.body.getReader();
+    reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     while (true) {
@@ -2206,22 +2250,39 @@ export async function askKritonStream(
       buffer += decoder.decode(value, { stream: !done });
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
+      // EOF is also a frame boundary; proxies may omit the final newline.
+      if (done && buffer.trim()) {
+        lines.push(buffer);
+        buffer = "";
+      }
       for (const line of lines) {
         if (!line.trim()) continue;
-        const event = JSON.parse(line) as
-          | { type: "progress"; stage: string; message: string }
-          | { type: "heartbeat" }
-          | { type: "result"; data: AskKritonResponse }
-          | { type: "error"; status: number; message: string };
-        if (event.type === "progress") onProgress(event);
-        if (event.type === "result") return event.data;
-        if (event.type === "error") throw new ApiError(event.status, event.message);
+        let event: Record<string, unknown>;
+        const unreadable = unreadableKritonResponse;
+        try {
+          const parsed: unknown = JSON.parse(line);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw unreadable();
+          event = parsed as Record<string, unknown>;
+        } catch {
+          throw unreadable();
+        }
+        if (event.type === "progress") {
+          if (typeof event.stage !== "string" || typeof event.message !== "string") throw unreadable();
+          onProgress({ stage: event.stage, message: event.message });
+        }
+        if (event.type === "result") {
+          return checkedKritonResponse(event.data);
+        }
+        if (event.type === "error") {
+          if (typeof event.status !== "number" || event.status < 400 || event.status > 599) throw unreadable();
+          throw new ApiError(event.status, event.message);
+        }
       }
       if (done) break;
     }
     throw new ApiError(502, "Kriton's response stream ended before completion.");
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
+    if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
       throw new ApiError(408, "Kriton's response connection timed out. Please try again.");
     }
     if (error instanceof TypeError) {
@@ -2230,6 +2291,15 @@ export async function askKritonStream(
     throw error;
   } finally {
     window.clearTimeout(timeout);
+    if (reader) {
+      // Releasing a terminal/error stream must not leave the connection locked.
+      void reader.cancel().catch(() => {
+        console.warn("Kriton stream cleanup failed.", {
+          event: "kriton_stream_cleanup_failed", request_id: idempotencyKey ?? null,
+        });
+      });
+      reader.releaseLock();
+    }
   }
 }
 

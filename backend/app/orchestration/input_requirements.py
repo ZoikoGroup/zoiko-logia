@@ -90,9 +90,12 @@ _VAT_AMOUNT_QUESTION = re.compile(
     re.I,
 )
 _VAT_LOOKUP_ONLY = re.compile(r"\b(?:register|registration|threshold|deadline|records?|reclaim period)\b", re.I)
+# Inclusion/exclusion must describe the tax, not incidental costs such as
+# "including delivery". Those words alone do not establish the tax basis.
 _TREATMENT = re.compile(
-    r"\b(?:incl(?:ud(?:e|es|ed|ing)|usive|\.)?|excl(?:ud(?:e|es|ed|ing)|usive|\.)?|net of|gross of|plus vat|plus gst|"
-    r"before (?:vat|gst)|after (?:vat|gst)|vat[- ]inclusive|vat[- ]exclusive|ex[- ]vat|inc[- ]vat)\b",
+    r"\b(?:(?:incl(?:ud(?:e|es|ed|ing)|usive|\.)?|excl(?:ud(?:e|es|ed|ing)|usive|\.)?)"
+    r"\s+(?:of\s+)?(?:vat|gst)|(?:net of|gross of|plus|before|after)\s+(?:vat|gst)|"
+    r"(?:vat|gst)[- ](?:inclusive|exclusive)|(?:ex|inc)[- ](?:vat|gst))\b",
     re.I,
 )
 _SINGLE_COUNTRY_CURRENCY = re.compile(r"£|₹|\b(?:gbp|hmrc|sterling|inr|rupees?|aed|dirhams?|sar|riyals?)\b", re.I)
@@ -142,6 +145,42 @@ def missing_vat_country(query: str) -> str | None:
     with no country named: "What VAT rate applies to my €5,000 sale?" was
     answered with UK rates. Asked, not assumed."""
     query = request_part(query)  # a case study's questions, not its background (case_text.py)
+    from app.orchestration.source_taxonomy import detect_jurisdictions
+    q = query or ""
+    if not (_VAT_RATE_OR_RULE.search(q) and _FOREIGN_AMOUNT.search(q)) or detect_jurisdictions(q):
+        return None
+    return ("Which country is the business VAT- or GST-registered in? Rates and rules differ by country, and the "
+            "amount you gave is not in pounds, so I won't assume the UK.")
+
+
+def _country_stated(question: str, earlier: str) -> bool:
+    """The country is stated in this question, or in an earlier turn when this
+    question does not move to another country's currency: a "UK business" two
+    messages back carried over to "supplies for €6,000" (24 Oct 2026)."""
+    from app.orchestration.source_taxonomy import currency_contradicts, detect_jurisdictions
+    if detect_jurisdictions(question, infer_from_tax_terms=False) or _SINGLE_COUNTRY_CURRENCY.search(question):
+        return True
+    before = detect_jurisdictions(earlier, infer_from_tax_terms=False) or (
+        ["UK"] if re.search(r"£|\b(?:gbp|hmrc|sterling)\b", earlier, re.I) else [])
+    return bool(before) and not any(currency_contradicts(key, question) for key in before)
+
+
+# The rule word must be about VAT or GST itself ("VAT rate", "register for
+# VAT"), and the foreign currency an amount: "Compare the GBP/USD reference
+# rate … and cite the VAT rules" asks about an exchange rate.
+_VAT_RATE_OR_RULE = re.compile(
+    r"\b(?:vat|gst)\s+(?:rates?|threshold|registration|exempt\w*)\b"
+    r"|\b(?:rates?|threshold)\s+(?:of|for)\s+(?:vat|gst)\b"
+    r"|\b(?:register|registration|reclaim\w*)\s+(?:for\s+)?(?:the\s+)?(?:vat|gst)\b", re.I)
+_FOREIGN_AMOUNT = re.compile(
+    r"[€$¥]\s?\d|\b\d[\d,.]*\s?(?:eur|euros?|usd|dollars?|aud|cad|sgd|aed|chf|jpy)\b"
+    r"|\b(?:eur|usd|aud|cad|sgd|aed|chf|jpy)\s?\d", re.I)
+
+
+def missing_vat_country(query: str) -> str | None:
+    """A VAT or GST rate or rule asked about in another country's currency,
+    with no country named: "What VAT rate applies to my €5,000 sale?" was
+    answered with UK rates. Asked, not assumed."""
     from app.orchestration.source_taxonomy import detect_jurisdictions
     q = query or ""
     if not (_VAT_RATE_OR_RULE.search(q) and _FOREIGN_AMOUNT.search(q)) or detect_jurisdictions(q):

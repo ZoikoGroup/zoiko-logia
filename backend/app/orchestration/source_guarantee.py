@@ -70,10 +70,17 @@ def _authority_for(key: str, text: str) -> str | None:
     return f"the authorities for {name} ({', '.join(domains[:3])})"
 
 
-def official_sources_note(query: str) -> str:
+def official_sources_note(query: str, *, jurisdiction: str = "") -> str:
     from app.orchestration.source_taxonomy import detect_jurisdictions
     text = query or ""
     named = detect_jurisdictions(text, infer_from_tax_terms=False)
+    # An explicit request scope (not "Any") decides the country; a scope
+    # that is unknown or conflicts with the question permits no national
+    # suggestion (Phase 1, 25 Oct 2026).
+    if jurisdiction.strip().casefold() not in {"", "any", "all", "*"}:
+        requested = detect_jurisdictions(jurisdiction, infer_from_tax_terms=False)
+        named = (list(requested) if requested and not (set(named) - set(requested))
+                 else ["UNRESOLVED_SCOPE"])
     tax_audit = bool(_TAX_AUDIT.search(text))
     matches = (["OECD (oecd.org) for transfer pricing and international tax, and the relevant local tax authority for domestic audit procedures"]
                if tax_audit else [])

@@ -1,0 +1,50 @@
+Phase 1 C1–C7 implementation review — 25 October 2026
+
+Implementation is confined to the isolated reliability worktree. Production remains NO-GO. No production connection, document-status correction, real-content ingestion, deployment, commit, push, or copying into the main folder occurred. Existing uncommitted work was preserved.
+
+| Control | Implemented behavior |
+| --- | --- |
+| C1 | Both ingestion entry points share a PROPOSED-only writer. No approver, approval or supersession mutation; publication/update dates are provenance and version labels, never effective dates. Existing approved versions are preserved and proposals are deduplicated. |
+| C2 | Existing authenticated source-management endpoint and RBAC remain mandatory. Verified request sign-in subject plus enabled individual identity attestation are required. Seed/shared/service identities and API keys are rejected. Canonical person IDs enforce independence across login aliases. No identities are auto-enrolled. Approval audit records submitter, reviewer, canonical identities, verified auth subject/method/assurance, predecessor and decision. |
+| C3 | Per-source PostgreSQL row locks serialize competing approvals. Effective ranges and historical overlaps, including expired versions, are validated before mutation. The explicitly selected predecessor must have a documented non-overlapping end. Approval, supersession timestamp/link, immutable approval receipt and audit event commit together; any write failure rolls them all back. The relationship endpoint cannot supersede. Audit writers share the existing tenant advisory lock and read a fresh chain head. |
+| C4 | Nullable reporting-period start/end fields on versions and passages, and a separate superseded-at timestamp on versions. Publication, retrieval, effective and reporting dates remain distinct. Source form/API ranges and passage ranges are validated. The reversible migration does not backfill dates, approvals or statuses and never rewrites audit history. |
+| C5 | Original question periods and task-context bounds reach initial, tool and figure-repair retrieval. Explicit historical periods select historically applicable superseded/expired versions. Documented rule transitions split a reporting period into labelled evidence segments; full governed retrieval/licensing/persistence/replay is tested. Missing applicability, gaps, conflicting versions and ambiguous financial-year calendars trigger clarification. Historical tax questions without dated evidence cannot fall through to current rules. Archived approved content remains immutable. |
+| C6 | Explicit countries are searched separately under active restrictions. Each country's evidence and citations carry jurisdiction labels; dated segments carry period labels. Single-country restrictions cannot be lifted by a tool's Any/all/* argument, and conflicting scopes clarify. Ambiguous frameworks clarify. Existing Any/all/* filter behavior and tests are included. Version IDs, rather than source IDs alone, govern historical licensing, replay and exposure. |
+| C7 | PROPOSED/UNDER_REVIEW and self-approved legacy records are excluded from answer evidence without changing stored statuses. Dashboard reviewed counts require immutable independent approval receipts, never a REVIEWED label. An offline-only correction planner is prepared with no apply mode; its 22-record ordering/no-mutation tests use synthetic fixtures only. |
+
+Verification results
+
+| Check | Actual result | Evidence |
+| --- | --- | --- |
+| Full backend, TZ=UTC | 4,843 passed; 82 skipped; 22 xfailed; 133 warnings; exit 0 | [Log](/private/tmp/zoiko-phase1-evidence/backend-delivery-0.log) |
+| Full backend, TZ=Asia/Kolkata | 4,843 passed; 82 skipped; 22 xfailed; 133 warnings; exit 0 | [Log](/private/tmp/zoiko-phase1-evidence/backend-delivery-1.log) |
+| Final focused controls, real endpoint, ingestion and tool tests; PostgreSQL enabled | 66 passed; exit 0 | [Named acceptance tests](/private/tmp/zoiko-phase1-evidence/acceptance-delivery.log) |
+| Frontend tests | 51 files, 239 tests passed; exit 0 | [Log](/private/tmp/zoiko-phase1-evidence/frontend-tests.log) |
+| TypeScript | tsc --noEmit --incremental false; exit 0 | [Log](/private/tmp/zoiko-phase1-evidence/typescript.log) |
+| Frontend lint | npm run lint; exit 0 | [Log](/private/tmp/zoiko-phase1-evidence/frontend-lint.log) |
+| Existing 309-question routing benchmark | 309 signatures; 0 changes, additions or removals against routing_any reference | [Comparison](/private/tmp/zoiko-phase1-evidence/routing-comparison.json) |
+| Offline release gate | FAIL, exit 1, 91 blockers; thresholds and accepted baseline unchanged | [Log](/private/tmp/zoiko-phase1-evidence/offline-release-gate-delivery.log), [report](/private/tmp/zoiko-phase1-evidence/offline-release-gate.json) |
+| Real Alembic CLI and full-schema snapshot/restore | Upgrade, downgrade and re-upgrade PASS on a disposable prior baseline; restored status and audit bytes/hashes unchanged | [Log](/private/tmp/zoiko-phase1-evidence/migration-cli.log), [procedure](/private/tmp/zoiko-phase1-evidence/rollback-procedure.md) |
+| Diff review | Affected approval, retrieval, licence, persistence, replay, normal-tool and figure-repair paths reviewed; whitespace check clean | [Incremental diff](/private/tmp/zoiko-phase1-evidence/implementation-final.patch), [changed files](/private/tmp/zoiko-phase1-evidence/changed-files.txt) |
+
+The full suites skip opt-in live/integration cases; PostgreSQL acceptance is run separately against a newly initialized disposable local cluster. Offline release evaluation uses synthetic external identity/model/network boundaries, not real provider credentials or a populated production knowledge base. It is not a live answer-accuracy evaluation. The gate reports regression 48/80, UK VAT 0/32, UK VAT holdout 0/20, India GST 0/15, accounting 6/20, and one unevaluated gold-dataset load. These failures are retained, not relabelled as passes. Independent evaluation and accountant-approved ground truth remain outstanding.
+
+Demonstrations and rollback
+
+The acceptance tests demonstrate that two differently named logins mapped to the same person cannot approve one another; seed/shared/service/API-key identities fail; an unauthenticated HTTP approval fails; and reviewed dashboard counts stay zero without an independent receipt. Tests cover missing/inverted effective dates, overlapping active and expired historical ranges, passage-specific reporting bounds, pending evidence and self-approved legacy evidence without changing its status.
+
+Historical retrieval demonstrates 2024 rules, current rules and a 2024-04-01 to 2025-03-31 financial year split at 2025-01-01. The old version is labelled 2024-04-01–2024-12-31 and its successor 2025-01-01–2025-03-31 through licensing, immutable bundle persistence and prompt replay. Missing effective dates and conflicting versions clarify rather than choose the newest. Multi-country tests preserve UK/India separation and reject a contradictory filter.
+
+The PostgreSQL concurrency test submits two competing approvals: exactly one succeeds and the other receives 409. A real flushed PostgreSQL transaction is then failed before commit; no partial approval, predecessor supersession, receipt or audit event remains. A successful retry produces the next linked audit event. Audit payload and chain hashes are recomputed and checked.
+
+The tested full-schema rollback reconstructs prior revision a6t7u8v9w0x1 in a disposable database, installs synthetic original status/audit history, takes a custom-format snapshot, runs real Alembic upgrade/downgrade/re-upgrade, and restores the snapshot into a second disposable database. It compares original audit IDs, payload bytes, payload hashes, chain hashes and source status at each step. The new migration only adds nullable metadata and empty review tables; it does not reinterpret existing records. Downgrade removes the new metadata/receipt tables, so export them first. Target-environment rollback/readiness has not been certified. Never overwrite a database with a pre-review snapshot after new audit events; preserve later history and use separately authorized compensating transitions.
+
+22-document procedure and remaining risks
+
+[Prepared dry-run report](/private/tmp/zoiko-phase1-evidence/dry-run-22-documents.json). No local inventory containing the actual 22 version IDs and verified usage counts was available. No production inventory query or correction was run. The actual count and six highest-use documents are therefore unverified; no names or rankings were invented. The planner is prepared and tested with synthetic records; the actual 22-document procedure has not been executed.
+
+Before any status switch, obtain the actual inventory and usage ranking, name an individually authenticated independent reviewer, verify the canonical-person attestations, agree the review schedule with the six highest-use documents first, validate the target snapshot/restore and confirm the review window. Reviewer, schedule and ready window are currently unset. Existing document statuses remain unchanged.
+
+Identity attestations require trusted out-of-band enrollment and person deduplication; a free-text username or a newly created login is insufficient. The migration enrolls nobody. The period parser supports explicit ISO dates/calendar years and supplied reporting bounds; ambiguous financial-year labels require clarification. Country matching uses the existing supported alias catalogue, rather than a universal country-name recognizer; unsupported country spellings require explicit scope and independent evaluation. At most 32 dated segments are processed; broader/complex applicability is referred for clarification. The target environment's schema, identity enrollment, real source content, licences, usage counts and accountant-approved expected answers have not been evaluated by these isolated tests.
+
+Production remains NO-GO. No migration outside isolated test databases, document-status transition, copying to main, commit, push or deployment is authorized by this evidence package.

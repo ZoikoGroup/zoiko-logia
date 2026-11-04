@@ -2083,7 +2083,10 @@ async def ask_kriton(
             response.answer = response.answer.model_copy(update={'completeness': 'partial'})
         if response.answer is not None:
             response.requested_deliverables = check_requested_deliverables(request.query, response.answer.text or '',
-                has_visual=bool(response.visualization or response.secondary_visualizations))
+                has_visual=bool(response.visualization or response.secondary_visualizations),
+                # The requested credit-sale journal is checked against the
+                # verified calculation (Phase 1 targeted remediation, 25 Oct 2026).
+                calculation=authoritative_calculation[0] if authoritative_calculation else None)
             # Stage F: every output the Task Contract records is looked for in
             # the final answer (finalisation.deliverable_findings). Logged
             # always; added to the deliverables only with KRITON_CONTRACT_FINALISER.
@@ -2093,6 +2096,9 @@ async def ask_kriton(
                     has_visual=bool(response.visualization or response.secondary_visualizations))
             missing = [d.description for d in response.requested_deliverables if d.status == 'incomplete']
             if missing:
+                if 'Credit-sale journal entry' in missing:
+                    response.next_action = NextAction(type='journal_review_required',
+                        message='The requested credit-sale journal entry has not been fully provided and validated.')
                 response.answer = response.answer.model_copy(update={'limitations':[*response.answer.limitations,
                     'Incomplete answer: ' + '; '.join(missing) + '.']})
                 if response.visualization is None:
@@ -3211,10 +3217,13 @@ async def ask_kriton(
                 # A pasted document is searched by its title and the
                 # standards it names, not by its full text.
                 query=search_focus(request.query),
+                requested_query=request.query,
                 jurisdiction=request.jurisdiction,
                 tenant_id=tenant_id,
                 framework=(effective_context.framework or "") if effective_context else "",
                 effective_date=effective_context.period_end if effective_context else None,
+                period_start=effective_context.period_start if effective_context else None,
+                period_end=effective_context.period_end if effective_context else None,
                 engagement_id=effective_context.engagement_id if effective_context else None,
             ),
         )
@@ -3297,6 +3306,20 @@ async def ask_kriton(
         )
         logger.exception("Governed source retrieval failed; continuing without a source bundle")
         source_bundle = None
+
+    if source_bundle and source_bundle.clarification_required:
+        await audit_clarification_returned(
+            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+            audit_chain_id=audit_chain_id, actor_id=actor_id, clarification_cycle=clarification_cycle,
+        )
+        return await finish(AskKritonResponse(
+            query_id=query_id, correlation_id=correlation_id,
+            outcome="clarification_required", route=ROUTE_CLARIFICATION,
+            safety=SafetyState(risk_level="LOW", policy_state="needs_more_context"),
+            confidence_state=CONF_INSUFFICIENT, source_bundle=source_bundle,
+            next_action=NextAction(type="ask_clarifying_question", message=source_bundle.clarification_required),
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        ))
 
     # ── Step 5: Classify risk (after bundle_builder.py, ZL-ENG-03 §5.6) +
     # resolve route from versioned policy matrix (§8) ────────────────────────
@@ -3764,21 +3787,21 @@ async def ask_kriton(
         )
         if source_bundle else []
     )
-    source_by_id = {source.id: source for source in source_bundle.sources} if source_bundle else {}
+    source_by_id = {source.version_id: source for source in source_bundle.sources} if source_bundle else {}
     selection_by_passage = {
         passage.passage_id: passage for passage in source_bundle.passages
     } if source_bundle else {}
     governed_citations: list[SourceCitation] = []
     for passage_id, locator, content in governed_passages:
         selection = selection_by_passage[passage_id]
-        source = source_by_id[selection.source_id]
-        display_state = source_bundle.source_display_states.get(source.id, "internal_reasoning_only")
+        source = source_by_id[selection.source_version_id]
+        display_state = source_bundle.source_display_states.get(source.version_id, source_bundle.source_display_states.get(source.id, "internal_reasoning_only"))
         if display_state == "internal_reasoning_only":
             continue
         governed_citations.append(SourceCitation(
             ref_id="",
             source_id=passage_id,
-            title=f"{source.title} — {locator}",
+            title=f"[{source.evidence_jurisdiction or source.jurisdiction_scope}; {source.evidence_period_start} to {source.evidence_period_end}] {source.title} — {locator}",
             evidence_preview=content[:240].strip() if display_state == "show" else None,
             provider="Governed source register",
             url=source.source_url,
@@ -3950,6 +3973,8 @@ async def ask_kriton(
                 "\n\n=== Governed registered evidence ===\n"
                 "Use these approved passages for material professional claims, citing their exact [REF-N] IDs. "
                 "Never cite INTERNAL-GOV text or present it as displayable evidence. "
+                "Keep each jurisdiction separately labelled in the answer and cite only that jurisdiction’s evidence for its rules. "
+                "Never transfer a rate, threshold or rule between countries. "
                 "If they conflict or do not support the requested conclusion, say so.\n"
                 f"{authority_context}"
             )
@@ -4397,6 +4422,9 @@ async def ask_kriton(
             jurisdiction=request.jurisdiction or conversation_jurisdiction(request.query, request.conversation_history),
             framework=(effective_context.framework or "") if effective_context else "",
             effective_date=effective_context.period_end if effective_context else None,
+            period_start=effective_context.period_start if effective_context else None,
+            period_end=effective_context.period_end if effective_context else None,
+            requested_query=request.query,
             engagement_id=effective_context.engagement_id if effective_context else None,
         )
         retrieval_token = bind_context(retrieval_context)
@@ -5361,6 +5389,9 @@ async def ask_kriton(
                                                                                     request.conversation_history),
                     framework=(effective_context.framework or "") if effective_context else "",
                     effective_date=effective_context.period_end if effective_context else None,
+                    period_start=effective_context.period_start if effective_context else None,
+                    period_end=effective_context.period_end if effective_context else None,
+                    requested_query=request.query,
                     engagement_id=effective_context.engagement_id if effective_context else None,
                 ), repair_seconds))
             if repair_evidence:
@@ -5880,7 +5911,7 @@ async def ask_kriton(
             and not uses_user_supplied_structure and (final_text or "").strip()):
         # Which official publishers to check when nothing was cited — named,
         # never presented as citations (source_guarantee.py).
-        limitations.append(official_sources_note(request.query))
+        limitations.append(official_sources_note(request.query, jurisdiction=request.jurisdiction or ""))
     # Rewrites after the first normalisation can reintroduce LaTeX, which the
     # answer view shows raw ("\\(40{,}000 \\times 0.06 = 2{,}400\\)").
     from app.orchestration.answer_formatting import latex_to_plain

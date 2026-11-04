@@ -86,3 +86,22 @@ describe("arithmetic is not reported as verifying the accounting treatment", () 
     expect(verifiedLabel("Not answered — insufficient evidence", withheld)).toBe("Not answered — insufficient evidence");
   });
 });
+
+// Phase 1 (25 Oct 2026): component states decide the label.
+describe("verification labels follow their components", () => {
+it("component failures override an inconsistent fully-verified aggregate", () => {
+  expect(verifiedLabel("Answered — calculated and verified", v({ arithmetic: "mismatch", sources: "unsupported" })))
+    .toBe("Answered — a figure differs from the calculation");
+});
+
+it("unsupported citations do not produce a source-grounded label", () => {
+  expect(verifiedLabel("Answered — source grounded", v({ sources: "unsupported", overall: "not_verified" })))
+    .toBe("Answered — sources not verified");
+});
+
+it("unknown status values cannot produce undefined verification copy", () => {
+  const unknown = { arithmetic: "unknown", sources: "unknown", assumptions: "stated", overall: "fully_verified" } as unknown as VerificationBreakdown;
+  expect(verifiedLabel("Answered — calculated and verified", unknown)).not.toBe("Answered — calculated and verified");
+  expect(verificationSummary(unknown)).not.toContain("undefined");
+});
+});

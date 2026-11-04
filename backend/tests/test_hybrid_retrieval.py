@@ -1,4 +1,5 @@
 import hashlib
+from datetime import date
 import os
 import sys
 
@@ -43,7 +44,7 @@ async def _source(
     version = SourceVersion(
         tenant_id=tenant_id, source_id=source.id, version_label="2026",
         status="ACTIVE", content_hash=hashlib.sha256(title.encode()).hexdigest(),
-        submitted_by="maker", approved_by="checker",
+        submitted_by="maker", approved_by="checker", effective_from=date(2020,1,1),
     )
     db.add(version)
     await db.flush()
@@ -137,7 +138,8 @@ async def test_bundle_is_persisted_and_replay_hash_is_verified(retrieval_db):
 
     assert manifest.manifest["index_version"] == "source-passages-lexical-v1"
     assert any(entry.passage_id == passage.id and entry.disposition == "selected" for entry in entries)
-    assert replay == [(passage.id, "paragraph 1", passage.content)]
+    assert replay[0][:2] == (passage.id,"paragraph 1")
+    assert "[Jurisdiction: GB]" in replay[0][2] and replay[0][2].endswith(passage.content)
 
 
 async def test_conflicting_selected_versions_are_explicit(retrieval_db):
@@ -172,7 +174,7 @@ async def test_library_with_unrecorded_rights_is_insufficient_not_restricted(ret
     await _source(retrieval_db, title="Exchange rates", text="Treasury rates.", rights=False)
 
     bundle = await build_source_bundle(
-        retrieval_db, query="India unemployment rate", jurisdiction="GB",
+        retrieval_db, query="UK unemployment rate", jurisdiction="GB",
         framework="IFRS", tenant_id="tenant-a",
     )
     assert bundle.eligible_source_count == 0
@@ -198,7 +200,7 @@ async def test_explicitly_denied_unrelated_source_does_not_restrict(retrieval_db
         text="Revenue commentary.", retrieval=False,
     )
     bundle = await build_source_bundle(
-        retrieval_db, query="India unemployment rate", jurisdiction="GB",
+        retrieval_db, query="UK unemployment rate", jurisdiction="GB",
         framework="IFRS", tenant_id="tenant-a",
     )
     assert bundle.confidence_state == "insufficient"

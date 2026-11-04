@@ -45,7 +45,7 @@ import {
   type WorkspaceDocument,
   type Engagement,
 } from "@/lib/api";
-import { stateForError, stateForResult, suppliedAnswerLabel, verificationSummary, verifiedLabel, visibleAnswerLimitations } from "@/lib/answer-state";
+import { responseConsistencyIssue, stateForError, stateForResult, suppliedAnswerLabel, verificationSummary, verifiedLabel, visibleAnswerLimitations } from "@/lib/answer-state";
 import {
   answerBodyOnly,
   downloadTextFile,
@@ -538,7 +538,8 @@ const ConversationTurn = memo(function ConversationTurn({
   const citationCount = result?.answer?.citations.length ?? 0;
   // A provider/composition failure travels the refusal route, but it is not a
   // policy decision — saying "policy blocked" sent users looking for a rule.
-  const baseRouteLabel = outcome === "acknowledged"
+  const responseIssue = result ? responseConsistencyIssue(result) : null;
+  const baseRouteLabel = responseIssue ? "Not answered — response needs review" : outcome === "acknowledged"
     ? "Noted — kept for this conversation"
     : result?.next_action?.type === "report_incomplete"
     ? "Not answered — report incomplete"
@@ -582,7 +583,7 @@ const ConversationTurn = memo(function ConversationTurn({
       : ROUTE_LABELS[route ?? ""] ?? route;
   const routeLabel = baseRouteLabel ? verifiedLabel(baseRouteLabel, result?.answer?.verification) : baseRouteLabel;
   // A withheld answer has nothing verified to report (25 Oct 2026).
-  const verificationLine = baseRouteLabel?.startsWith("Not answered")
+  const verificationLine = responseIssue || baseRouteLabel?.startsWith("Not answered")
     ? null : verificationSummary(result?.answer?.verification);
   // The backend reports "answered" for these too; the badge must not say
   // "Answered" next to a line that says the answer was not (fully) given.
@@ -691,7 +692,7 @@ const ConversationTurn = memo(function ConversationTurn({
             )}
 
             <div className="kriton-animate-answer-reveal">
-              {result.answer ? (
+              {responseIssue ? (<p>This response could not be validated. Please request a new answer.</p>) : result.answer ? (
                 <>
                   <AnswerRenderer
                     text={result.answer.text}
@@ -733,13 +734,13 @@ const ConversationTurn = memo(function ConversationTurn({
                 </p>
               ) : null}
 
-              {result.next_action && (
+              {!responseIssue && result.next_action && (
                 <div className="mt-4 text-base leading-7 text-ink">
                   <AnswerRenderer text={result.next_action.message} />
                 </div>
               )}
 
-              {result.answer && (
+              {!responseIssue && result.answer && (
                 <ResponseActions
                   question={submittedQuery}
                   result={result}
@@ -747,7 +748,7 @@ const ConversationTurn = memo(function ConversationTurn({
                 />
               )}
 
-              {result.chart_offer && (
+              {!responseIssue && result.chart_offer && (
                 <ChartOfferPrompt
                   offer={result.chart_offer}
                   onAccept={onFollowUp ? (question) => onFollowUp(question, submittedQuery) : undefined}
@@ -755,7 +756,7 @@ const ConversationTurn = memo(function ConversationTurn({
               )}
 
               <ExploreFurther
-                questions={followUps}
+                questions={responseIssue ? [] : followUps}
                 onFollowUp={onFollowUp ? (question) => onFollowUp(question, submittedQuery) : undefined}
               />
             </div>

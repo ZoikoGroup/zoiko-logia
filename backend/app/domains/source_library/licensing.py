@@ -6,6 +6,8 @@ rights are denials with stable reason codes.
 """
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
@@ -19,7 +21,7 @@ SOURCE_OPERATIONS = frozenset({
     "ingestion", "indexing", "retrieval", "model_transmission", "display",
     "summary", "export", "retention", "training",
 })
-USABLE_VERSION_STATUSES = frozenset({"APPROVED", "ACTIVE"})
+USABLE_VERSION_STATUSES = frozenset({"APPROVED", "ACTIVE", "SUPERSEDED", "EXPIRED"})
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,8 @@ class SourceUseContext:
     jurisdiction: str = ""
     framework: str = ""
     effective_date: date | None = None
+    period_start: date | None = None
+    period_end: date | None = None
     # The engagement the request runs under (ZL-ENG-AGT-01 §06.2). A right
     # whose terms_reference is "engagement:<id>" is usable only inside that
     # engagement; requests outside any engagement cannot use it.
@@ -45,7 +49,17 @@ class SourceUseDecision:
 
 
 def _normalise_scope(value: str) -> str:
-    return value.strip().casefold()
+    key = value.strip().casefold()
+    return {"uk": "united kingdom", "gb": "united kingdom", "britain": "united kingdom",
+            "in": "india", "uae": "united arab emirates", "ae": "united arab emirates",
+            "us": "united states", "usa": "united states"}.get(key, key)
+
+
+# "Any", "all" and "*" ask for no jurisdiction filter, as an empty value does:
+# "Any" was read as a jurisdiction of that name and excluded all 65 in-force
+# sources (reproduced 25 Oct 2026; the composer sends "" for its "Any" option,
+# but the knowledge-base tool's jurisdiction is the model's free text).
+_NO_JURISDICTION_FILTER = {"any", "all", "*"}
 
 
 # "Any", "all" and "*" ask for no jurisdiction filter, as an empty value does:
@@ -60,6 +74,21 @@ def _scope_matches(configured: str, requested: str) -> bool:
         return True
     values = {_normalise_scope(item) for item in configured.split(",") if item.strip()}
     return not values or "global" in values or _normalise_scope(requested) in values
+
+
+def source_review_enforced() -> bool:
+    """Phase 1 rollout switch (KRITON_SOURCE_REVIEW_ENFORCEMENT, off unless set).
+
+    On, a self-approved version (approver == submitter) and, for a dated
+    request, a version with no effective_from are not used as evidence (C4,
+    C7). Off, both are used as before. The switch exists because existing
+    library sources were approved by their own importer (scripts/
+    ingest_govuk.py did so until Phase 1) and retrieval always dates its
+    request: switched on before an independent reviewer has re-approved them,
+    nearly every library source would leave the answers (impact assessment,
+    4 Nov 2026). Period coverage, reporting periods and historical versions
+    apply either way."""
+    return os.getenv("KRITON_SOURCE_REVIEW_ENFORCEMENT", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _aware(value: datetime) -> datetime:
@@ -83,6 +112,10 @@ def _decide(
         return SourceUseDecision(False, "SOURCE_VERSION_NOT_FOUND")
     if source.is_tenant_private and source.tenant_id != context.tenant_id:
         return SourceUseDecision(False, "TENANT_PRIVATE_BOUNDARY")
+    enforced = source_review_enforced()
+    if (enforced and getattr(version, "approved_by", None) is not None
+            and getattr(version, "approved_by", None) == getattr(version, "submitted_by", None)):
+        return SourceUseDecision(False, "INDEPENDENT_REVIEW_REQUIRED")
     if version.revoked_at is not None:
         return SourceUseDecision(False, "SOURCE_REVOKED")
     if version.superseded_by_version_id is not None:
@@ -94,7 +127,24 @@ def _decide(
         return SourceUseDecision(False, "JURISDICTION_MISMATCH")
     if not _scope_matches(source.framework_scope, context.framework):
         return SourceUseDecision(False, "FRAMEWORK_MISMATCH")
+    if version.status == "SUPERSEDED" and not version.superseded_by_version_id:
+        return SourceUseDecision(False, "SUPERSESSION_APPLICABILITY_UNKNOWN")
+    if version.status in {"SUPERSEDED", "EXPIRED"} and context.effective_date is None:
+        return SourceUseDecision(False, "HISTORICAL_PERIOD_REQUIRED")
     if context.effective_date is not None:
+        if version.effective_from is None and enforced:
+            return SourceUseDecision(False, "APPLICABILITY_UNKNOWN")
+        start = context.period_start or context.effective_date
+        end = context.period_end or context.effective_date
+        if start > end:
+            return SourceUseDecision(False, "INVALID_REQUESTED_PERIOD")
+        if ((version.effective_from and version.effective_from > start)
+                or (version.effective_to and version.effective_to < end)):
+            return SourceUseDecision(False, "PERIOD_NOT_COVERED")
+        rstart = getattr(version, "reporting_period_start", None)
+        rend = getattr(version, "reporting_period_end", None)
+        if (rstart and start < rstart) or (rend and end > rend):
+            return SourceUseDecision(False, "REPORTING_PERIOD_MISMATCH")
         if version.effective_from and context.effective_date < version.effective_from:
             return SourceUseDecision(False, "NOT_YET_EFFECTIVE")
         if version.effective_to and context.effective_date > version.effective_to:
@@ -154,7 +204,7 @@ async def can_use_many_operations(
         select(SourceVersion, Source, superseding.effective_from)
         .join(Source, Source.id == SourceVersion.source_id)
         .outerjoin(superseding, superseding.id == SourceVersion.superseded_by_version_id)
-        .where(SourceVersion.id.in_(ids))
+        .where(SourceVersion.id.in_(ids)).execution_options(populate_existing=True)
     )).all()
     versions = {version.id: (version, source) for version, source, _ in fetched}
     superseding_dates = {version.id: start for version, _, start in fetched}
@@ -195,7 +245,7 @@ async def can_use_many(
         select(SourceVersion, Source, superseding.effective_from)
         .join(Source, Source.id == SourceVersion.source_id)
         .outerjoin(superseding, superseding.id == SourceVersion.superseded_by_version_id)
-        .where(SourceVersion.id.in_(ids))
+        .where(SourceVersion.id.in_(ids)).execution_options(populate_existing=True)
     )
     fetched = rows.all()
     versions = {version.id: (version, source) for version, source, _ in fetched}

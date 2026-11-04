@@ -192,7 +192,7 @@ def validate_answer_or_raise(
     # restricted-licence source's title may appear in the answer text.
     exposed: list[str] = []
     for source in source_bundle.sources:
-        state = source_bundle.source_display_states.get(source.id)
+        state = source_bundle.source_display_states.get(source.version_id, source_bundle.source_display_states.get(source.id))
         if state == "internal_reasoning_only" and source.title and source.title in answer_text:
             exposed.append(source.id)
     if exposed:

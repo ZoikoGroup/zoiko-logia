@@ -236,7 +236,11 @@ def _line_totals(facts: str) -> list[float]:
     waterfall ("Opening 50,000; sales +80,000; salaries −45,000 …")."""
     totals: list[float] = []
     lines = _readable(facts).replace("−", "-").splitlines()
-    groups = [[float(token.replace(",", "")) for token in _NUMBER.findall(line)] for line in lines]
+    groups = []
+    for line in lines:
+        money = _money_values(line)
+        # A date, employee count or rate is not an amount to add to cash.
+        groups.append(money or [float(token.replace(",", "")) for token in _NUMBER.findall(line)])
     # A bulleted list is one list too: "- Salaries: £165,000 / - Rent: £48,000 …"
     # (operating expenses £314,000), one amount to an item.
     block: list[float] = []
@@ -292,15 +296,17 @@ def _statements(text: str) -> list[str]:
     return pieces
 
 
-def _fact_groups(facts: str) -> list[list[float]]:
+def _fact_groups(facts: str) -> list[tuple[list[float], list[float] | None]]:
     """The user's amounts stated together: line by line ("Original price
-    £20,000. Revised price £22,260."), at most eight to a line."""
+    £20,000. Revised price £22,260."), at most eight to a line, plus the
+    money-only operands allowed for additive operations when money is named."""
     groups = []
     for line in _readable(facts).splitlines():
         amounts = list(dict.fromkeys(_amount(shown, value) for shown, value in material_figures(line)))
         amounts += [value for value in _plain_numbers(line) if value not in amounts]
         if 2 <= len(amounts) <= 8:
-            groups.append(amounts)
+            money = _money_values(line)
+            groups.append((amounts, money or None))
     return groups
 
 
@@ -455,7 +461,8 @@ def _share_of_like_quantities(value: float, tolerance: float, statement: str, fa
     return False
 
 
-def _one_step_from(value: float, tolerance: float, local: list[float], base: list[float]) -> bool:
+def _one_step_from(value: float, tolerance: float, local: list[float], base: list[float],
+                   additive: list[float] | None = None) -> bool:
     """One operation on a figure the statement itself shows and a verified
     figure: the formula's operand is on the page. "Gross margin 41.56%" beside
     £505,000 (505,000 ÷ 1,215,000); a "+1.56 pp" table cell beside 41.56% and
@@ -464,7 +471,9 @@ def _one_step_from(value: float, tolerance: float, local: list[float], base: lis
     for a in local:
         for b in list(dict.fromkeys(base + local)):
             # "| Senior debt | $7,000,000 | 7% | $490,000 |": an amount at a rate.
-            candidates = [a + b, a - b, b - a, a * b, a * b / 100]
+            candidates = [a * b, a * b / 100]
+            if additive is None or (a in additive and b in additive):
+                candidates += [a + b, a - b, b - a]
             if b:
                 candidates += [a / b, a / b * 100, (a - b) / b * 100]
             if a:
@@ -475,6 +484,33 @@ def _one_step_from(value: float, tolerance: float, local: list[float], base: lis
 
 
 _MONEY = re.compile(r"[£$€₹¥]|\b(?:USD|GBP|EUR|INR|AUD|CAD|JPY|SGD|AED)\b")
+_MONEY_SUFFIX = re.compile(
+    r"(?<![\w.,])(?P<number>-?\d{1,3}(?:,\d{2,3})+(?:\.\d+)?|-?\d+(?:\.\d+)?)"
+    r"(?:\s*(?P<unit>million|billion|trillion|lakhs?|crores?|bn|mn|k|m))?"
+    r"\s+(?:USD|GBP|EUR|INR|AUD|CAD|JPY|SGD|AED|Rs\.?)\b", re.I)
+
+
+def _money_values(text: str) -> list[float]:
+    """Money operands in source order, including '50,000 USD'. Preserve the
+    original answer text/figure spelling; only classify the facts' operands."""
+    line = _comma_grouped(text)
+    items = []
+    numbered_spans = set()
+    for match in _FIGURE.finditer(line):
+        if match.group("currency"):
+            shown = match.group(0).strip()
+            value = float(match.group("number").replace(",", ""))
+            items.append((match.start(), _amount(shown, value)))
+            numbered_spans.add(match.span("number"))
+    for match in _MONEY_SUFFIX.finditer(line):
+        if match.span("number") in numbered_spans:
+            continue  # 'USD 50,000 USD' still names one amount.
+        value = float(match.group("number").replace(",", ""))
+        unit = (match.group("unit") or "").lower()
+        items.append((match.start(), value * _UNIT_SCALE.get(unit, 1)))
+    return [value for _, value in sorted(items)]
+
+
 # An opening and a closing balance are of similar size; within 2× keeps a
 # line's prices, units and costs from being averaged with one another.
 _AVERAGE_MIN_RATIO = 0.5
@@ -588,6 +624,53 @@ def _change_between(value: float, tolerance: float, verified: list[float]) -> bo
     return False
 
 
+# Reconcile the explicit duration-share claim against named durations, not
+# an unrelated borrowing rate or calculator constant. This is arithmetic,
+# never a lease-classification threshold or accounting-treatment decision.
+_LEASE_SHARE = re.compile(
+    r"\b(?:lease\s+term|term\s+of\s+(?:(?:the|this)\s+)?lease)"
+    r"\s+(?:is|equals|represents|constitutes|amounts\s+to)\s+"
+    r"(?:(?P<approx>approximately|about|around|roughly|nearly|approx\.?)\s+)?"
+    r"(?P<shown>\d+(?:\.\d+)?\s*%)\s+of\s+(?:(?:the|its)\s+)?"
+    r"(?:economic|useful)\s+life\b", re.I)
+_DURATION = r"(?P<number>\d+(?:\.\d+)?)\s*[- ]?\s*(?P<unit>years?|months?)"
+
+
+def _lease_share_supported(piece: str, shown: str, facts: str) -> bool | None:
+    claim = _LEASE_SHARE.search(piece)
+    if not claim or claim.group("shown") != shown:
+        return None
+    if (float(shown.rstrip("% ")) in reference_percentages(piece)
+            and re.search(r"\b(?:if|when|that)\s+(?:the\s+)?$", piece[:claim.start()], re.I)):
+        return None  # A stated reference condition is not this lease's ratio.
+    def durations(patterns):
+        found = set()
+        for pattern in patterns:
+            for match in re.finditer(pattern, _readable(facts), re.I):
+                value = float(match.group("number"))
+                found.add(value / 12 if match.group("unit").lower().startswith("month") else value)
+        return found
+    terms = durations((
+        _DURATION + r"(?:\s+[a-z]+){0,3}\s+lease\b",
+        r"\blease\s+term\s*(?:(?:is|of)\s+)?[:=]?\s*" + _DURATION,
+    ))
+    lives = durations((
+        r"\b(?:economic|useful)\s+life\s*(?:(?:is|of)\s+)?[:=]?\s*" + _DURATION,
+        _DURATION + r"\s+(?:economic|useful)\s+life\b",
+    ))
+    if len(terms) != 1 or len(lives) != 1 or next(iter(lives)) <= 0:
+        return None  # No uniquely established operands; do not fabricate them.
+    written = claim.group("shown").rstrip("% ")
+    places = len(written.split(".")[1]) if "." in written else 0
+    expected = next(iter(terms)) / next(iter(lives)) * 100
+    tolerance = 0.5 * 10 ** -places
+    if claim.group("approx"):
+        # Reuse the existing bounded approximation policy; do not reject
+        # valid rounded descriptions just because they say "approximately".
+        tolerance = max(tolerance, _approximate_tolerance(piece, shown, float(written), float(written)) or 0)
+    return abs(float(written) - expected) <= tolerance + 1e-9
+
+
 def unreconciled_figures(text: str, evidence: str, calculations: str = "", stated: str | None = None) -> list[str]:
     """Material figures in `text` that no verified value supports. The made-up
     amounts of a labelled illustrative example are not claims (derived_output.py).
@@ -634,6 +717,7 @@ def unreconciled_figures(text: str, evidence: str, calculations: str = "", state
     miscalculated: set[int] = set()
     row_items: set[int] = set()
     column_runs = _column_runs(body)
+    context_mismatches: list[str] = []
     for piece in _statements(body):
         figures = material_figures(piece)
         amounts = [_amount(shown, value) for shown, value in figures]
@@ -642,6 +726,13 @@ def unreconciled_figures(text: str, evidence: str, calculations: str = "", state
                       if verdict == "holds"]
         for index, (shown, value) in enumerate(figures):
             amount, tolerance = amounts[index], _scaled_tolerance(shown, value)
+            share = _lease_share_supported(piece, shown, facts) if _is_percentage(shown) else None
+            if share is not None:
+                if share:
+                    accepted.append(amount)
+                else:
+                    context_mismatches.append(shown)
+                continue
             approximate = _approximate_tolerance(piece, shown, value, amount)
             if approximate is not None and approximate > tolerance:
                 # Judged last, against the figures it can be a rounding of.
@@ -693,10 +784,10 @@ def unreconciled_figures(text: str, evidence: str, calculations: str = "", state
     # £1,100,000, cost of goods sold was £660,000" (£440,000), "sales
     # £1,000,000 and profit £120,000" (a 12.0% margin). Any two of a dozen
     # amounts on different lines matched 26% of fabricated figures.
-    for group in _fact_groups(facts):
+    for group, additive in _fact_groups(facts):
         still = []
         for item in pending:
-            if id(item) not in bound and _one_step_from(item[1], item[3], group, group):
+            if id(item) not in bound and _one_step_from(item[1], item[3], group, group, additive=additive):
                 accepted.append(item[1])
             else:
                 still.append(item)
@@ -859,7 +950,7 @@ def unreconciled_figures(text: str, evidence: str, calculations: str = "", state
     pending = [item for item in pending if id(item) not in miscalculated
                and (id(item) in bound or not rounds_same_thing(item[0], item[1]))]
     coarse = [shown for shown, amount in coarse if not rounds_same_thing(shown, amount)]
-    return list(dict.fromkeys(coarse + rough + [item[0] for item in pending]))
+    return list(dict.fromkeys(context_mismatches + coarse + rough + [item[0] for item in pending]))
 
 
 _STOP = frozenset("the and was were is are for from with this that than over into its their our your by of to in on at "

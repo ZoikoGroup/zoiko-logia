@@ -26,6 +26,7 @@ import re
 from urllib.parse import urlsplit
 
 from app.orchestration.source_catalogue import catalogue_domains
+from app.orchestration.country_scope import AUSTRIA_ALIASES
 
 # ── Topics ──────────────────────────────────────────────────────────────────
 # Deliberately seven. The eighteen-odd categories people name in conversation
@@ -282,6 +283,7 @@ _JURISDICTION_ALIASES: dict[str, tuple[str, ...]] = {
     "SINGAPORE": ("singapore",),
     "MALAYSIA": ("malaysia", "malaysian"),
     "AUSTRALIA": ("australia", "australian"),
+    "AUSTRIA": AUSTRIA_ALIASES,
     "NEW_ZEALAND": ("new zealand",),
     "CANADA": ("canada", "canadian"),
     "IRELAND": ("republic of ireland", "ireland", "irish"),

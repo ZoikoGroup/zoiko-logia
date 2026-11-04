@@ -9,7 +9,7 @@ import asyncio
 import os
 import re
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone, timedelta
 
 from sqlalchemy import bindparam, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +18,7 @@ from app.domains.source_library.embeddings import embed_query, vector_literal
 from app.orchestration.passage_cache import passage_cache
 
 from app.domains.source_library.licensing import SourceUseContext, can_use_many, can_use_many_operations
-from app.domains.source_library.models import Source, SourceRelationship, SourceVersion
+from app.domains.source_library.models import Source, SourceRelationship, SourceVersion, SourcePassage
 from app.orchestration.dbnomics import countries_in_query
 from app.orchestration.procedures import is_other_procedure
 from app.orchestration.ranking import bm25, rerank, diversify
@@ -73,7 +73,7 @@ _SEMANTIC_CANDIDATES = 40
 _LEXICAL_ONLY_MIN = 0.5
 _PER_VERSION_CAP = 3
 # Sources with these statuses are eligible for retrieval
-_ELIGIBLE_STATUSES = {"ACTIVE", "APPROVED"}
+_ELIGIBLE_STATUSES = {"ACTIVE", "APPROVED", "SUPERSEDED", "EXPIRED"}
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_-]+", re.I)
 _STOP_WORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
@@ -130,6 +130,9 @@ def infer_jurisdiction(query: str) -> str:
     UK VAT question is never answered from Indian GST guidance (or the
     reverse) because the two read alike."""
     named = set(countries_in_query(query))
+    from app.orchestration.source_taxonomy import detect_jurisdictions
+    if "AUSTRIA" in detect_jurisdictions(query, infer_from_tax_terms=False):
+        named.add("Austria")
     if _UK_CUES.search(query):
         named.add("United Kingdom")
     if _INDIA_CUES.search(query):
@@ -239,7 +242,7 @@ async def _candidate_versions(
             or_(Source.is_tenant_private.is_(False), Source.tenant_id == tenant_id),
             *([Source.category == category] if category else []),
         )
-        .order_by(Source.id, SourceVersion.created_at.desc())
+        .order_by(Source.id, SourceVersion.created_at.desc()).execution_options(populate_existing=True)
     )
     # Keep versions until applicability is checked. Taking the newest here
     # would hide a historical version needed for an explicit as-of date.
@@ -247,7 +250,7 @@ async def _candidate_versions(
 
 
 
-async def build_source_bundle(
+async def _build_single_bundle(
     db: AsyncSession,
     *,
     query: str,
@@ -255,6 +258,8 @@ async def build_source_bundle(
     tenant_id: str,
     framework: str = "",
     effective_date: date | None = None,
+    period_start: date | None = None,
+    period_end: date | None = None,
     top_k: int = 8,
     _all_categories: bool = False,
     engagement_id: str | None = None,
@@ -270,7 +275,8 @@ async def build_source_bundle(
     names no VAT and was routed away from the VAT guidance)."""
     context = SourceUseContext(
         tenant_id=tenant_id, jurisdiction=jurisdiction or infer_jurisdiction(query),
-        framework=framework, effective_date=effective_date or date.today(),
+        framework=framework, effective_date=effective_date or datetime.now(timezone.utc).date(),
+        period_start=period_start, period_end=period_end,
         engagement_id=engagement_id,
     )
 
@@ -292,11 +298,19 @@ async def build_source_bundle(
     # text is read (ZL-ENG-AGT-01 §06.2): the first refusal is the reason.
     both = await can_use_many_operations(db, candidate_ids, context, ("retrieval", "model_transmission"))
     decisions, transmission = both["retrieval"], both["model_transmission"]
+    # Conflicting legacy versions must not be arbitrarily resolved by newest.
+    applicable_by_source = {}
+    for source, version in candidates:
+        if decisions[version.id].allowed and transmission[version.id].allowed:
+            applicable_by_source.setdefault(source.id, []).append(version.id)
+    conflicts = {vid for ids in applicable_by_source.values() if len(ids) > 1 for vid in ids}
     selected_source_ids: set[str] = set()
     for source, version in candidates:
         decision = decisions[version.id]
         if decision.allowed and not transmission[version.id].allowed:
             decision = transmission[version.id]
+        if decision.allowed and version.id in conflicts:
+            decision = type(decision)(False, "CONFLICTING_APPLICABILITY")
         if decision.allowed:
             if source.id not in selected_source_ids:
                 eligible_rows.append((source, version))
@@ -319,6 +333,15 @@ async def build_source_bundle(
     # when a fresh manifest (read under this request's RLS) shows it unchanged.
     passages = await passage_cache.load(db, tenant_id=tenant_id, version_ids=version_ids)
 
+    # Passage-specific reporting applicability is checked on uncached metadata.
+    metadata = (await db.execute(select(SourcePassage.id, SourcePassage.reporting_period_start,
+                                        SourcePassage.reporting_period_end).where(
+        SourcePassage.source_version_id.in_(version_ids)))).all() if version_ids else []
+    bounds = {pid: (start, end) for pid, start, end in metadata}
+    start, end = period_start or context.effective_date, period_end or context.effective_date
+    passages = [p for p in passages if
+                not ((bounds[p.id][0] and start < bounds[p.id][0])
+                     or (bounds[p.id][1] and end > bounds[p.id][1]))]
     version_to_source = {version.id: source for source, version in eligible_rows}
     # Evidence about a different procedure on the same tax (a VAT refund
     # passage for a VAT-return question) is filtered, not out-ranked: keyword
@@ -337,6 +360,7 @@ async def build_source_bundle(
     plan = build_retrieval_plan(
         jurisdiction=context.jurisdiction, framework=framework, top_k=top_k, semantic=bool(semantic),
     )
+    plan = plan.model_copy(update={"requires_current_sources": context.effective_date >= datetime.now(timezone.utc).date()})
     # Reciprocal-rank fusion. A passage with no keyword overlap qualifies only
     # when it is semantically close. Unselected passages are not recorded as
     # exclusions: one row per non-matching passage per question would grow
@@ -376,9 +400,9 @@ async def build_source_bundle(
     )
     ranked = diversify(ordered, top_k=plan.top_k, per_version_cap=_PER_VERSION_CAP)
     if not ranked and not _all_categories:
-        return await build_source_bundle(
+        return await _build_single_bundle(
             db, query=query, jurisdiction=jurisdiction, tenant_id=tenant_id, framework=framework,
-            effective_date=effective_date, top_k=top_k, _all_categories=True, engagement_id=engagement_id,
+            effective_date=effective_date, period_start=period_start, period_end=period_end, top_k=top_k, _all_categories=True, engagement_id=engagement_id,
         )
 
     selected_passages = [
@@ -410,7 +434,9 @@ async def build_source_bundle(
             category=source.category, jurisdiction_scope=source.jurisdiction_scope,
             version_label=version.version_label, status=version.status,
             source_url=version.source_url, authority_level=source.authority_level,
-            publisher=source.publisher, effective_from=version.effective_from, effective_to=version.effective_to,
+            publisher=source.publisher, evidence_jurisdiction=context.jurisdiction,
+            evidence_period_start=period_start or context.effective_date,
+            evidence_period_end=period_end or context.effective_date, effective_from=version.effective_from, effective_to=version.effective_to,
         )
         for source, version in eligible_rows if version.id in selected_version_ids
     ]
@@ -461,9 +487,14 @@ async def build_source_bundle(
             for item in excluded
         ],
         jurisdiction=context.jurisdiction,
+        reporting_period_start=period_start, reporting_period_end=period_end,
+        clarification_required=("Conflicting source versions require independent review." if conflicts else
+            "Applicability cannot be established for the requested period; supply dated authoritative evidence."
+            if not selected_passages and (any(e.reason_code in {"APPLICABILITY_UNKNOWN", "PERIOD_NOT_COVERED", "REPORTING_PERIOD_MISMATCH"} for e in excluded)
+                or (period_start is not None and (infer_category(query) == "tax" or re.search(r"\b(?:ifrs|ias|gaap)\b",query,re.I)))) else ""),
         as_of=context.effective_date,
         authority_level=authority_level,
-        freshness_state="current" if selected_passages else "unknown",
+        freshness_state=("historical" if context.effective_date < datetime.now(timezone.utc).date() else "current") if selected_passages else "unknown",
         licence_state="permitted" if selected_passages else "unknown",
         confidence_state=confidence,
         index_version=plan.index_version,
@@ -472,3 +503,139 @@ async def build_source_bundle(
         excluded_evidence=excluded,
         conflict_version_ids=sorted(conflict_version_ids),
     )
+
+
+def _empty_bundle(message: str, jurisdiction: str = "") -> SourceBundle:
+    return SourceBundle(source_bundle_id=f"sb-{uuid.uuid4().hex[:12]}", jurisdiction=jurisdiction,
+                        clarification_required=message, confidence_state=CONF_INSUFFICIENT)
+
+
+def explicit_jurisdictions(query: str) -> list[str]:
+    from app.orchestration.dbnomics import _COUNTRY_ALIASES, _CASE_SENSITIVE_ALIASES
+    names = list(dict.fromkeys(countries_in_query(query)))
+    # Macro connectors intentionally support fewer countries than governed
+    # source retrieval. Preserve explicit Austria scope even in native forms.
+    from app.orchestration.source_taxonomy import detect_jurisdictions
+    if "AUSTRIA" in detect_jurisdictions(query, infer_from_tax_terms=False) and "Austria" not in names:
+        names.append("Austria")
+    aliases = {**_COUNTRY_ALIASES, "dubai": "united arab emirates", "abu dhabi": "united arab emirates"}
+    for alias, canonical in aliases.items():
+        if alias in {"states", "kingdom"}:
+            continue
+        flags = 0 if alias in _CASE_SENSITIVE_ALIASES else re.I
+        token = alias.upper() if alias in _CASE_SENSITIVE_ALIASES else alias
+        if re.search(r"\b" + re.escape(token) + r"\b", query, flags):
+            name = canonical.title().replace(" Of ", " of ")
+            if name not in names:
+                names.append(name)
+    return names
+
+
+async def build_source_bundle(db: AsyncSession, *, query: str, jurisdiction: str,
+                              tenant_id: str, framework: str = "", effective_date=None,
+                              period_start=None, period_end=None, top_k=8,
+                              _all_categories=False, engagement_id=None, requested_query=None) -> SourceBundle:
+    from app.orchestration.applicability import requested_period, requires_rule_applicability, macroeconomic_only
+    from app.domains.source_library.licensing import _scope_matches
+    from app.orchestration.calculation_service import is_self_contained_calculation, needs_lookup
+    period_query = requested_query or query
+    needs_rules = requires_rule_applicability(period_query)
+    macro_only = macroeconomic_only(period_query)
+    # Supplied arithmetic is not a request to establish historical tax law.
+    period = requested_period("" if macro_only or (is_self_contained_calculation(period_query) and not needs_lookup(period_query))
+                              else period_query, period_start, period_end or effective_date)
+    if period.clarification:
+        return _empty_bundle(period.clarification, jurisdiction)
+    frameworks = set(re.findall(r"\b(?:ifrs|us gaap|uk gaap)\b", period_query, re.I))
+    if len({value.casefold() for value in frameworks}) > 1:
+        return _empty_bundle("Specify the accounting framework and jurisdiction for each part of the comparison.",jurisdiction)
+    named = explicit_jurisdictions(period_query)
+    unrestricted = jurisdiction.strip().casefold() in {"", "any", "all", "*"}
+    if named and not unrestricted and any(not _scope_matches(jurisdiction, name) for name in named):
+        return _empty_bundle("Named countries conflict with the jurisdiction filter; clarify scope.", jurisdiction)
+    if len(named) > 1:
+        bundles = []
+        for country in named:
+            bundles.append(await _build_period_bundle(
+                db, query=query, jurisdiction=country, tenant_id=tenant_id, framework=framework,
+                effective_date=period.end, period_start=period.start, period_end=period.end,
+                top_k=top_k, _all_categories=_all_categories, engagement_id=engagement_id))
+        missing = [country for country, bundle in zip(named, bundles)
+                   if not bundle.passages or bundle.clarification_required
+                   or not any(s.jurisdiction_scope.strip().casefold() not in {"", "global"} for s in bundle.sources)]
+        if missing and needs_rules:
+            return _empty_bundle("Cannot establish applicable evidence for: " + ", ".join(missing), " / ".join(named))
+        return _merge_bundles(bundles, " / ".join(named), period.start, period.end)
+    selected = jurisdiction if not unrestricted else (named[0] if named else infer_jurisdiction(query))
+    if needs_rules and infer_category(query) == "tax" and not named and unrestricted and not (_UK_CUES.search(query) or _INDIA_CUES.search(query)):
+        return _empty_bundle("Specify the tax jurisdiction; VAT/GST rules differ by country.")
+    if framework and re.search(r"\b(?:ifrs|uk gaap|us gaap)\b", query, re.I) and framework.casefold() not in query.casefold():
+        return _empty_bundle("Clarify the requested accounting framework.", selected)
+    bundle = await _build_period_bundle(
+        db, query=query, jurisdiction=selected, tenant_id=tenant_id, framework=framework,
+        effective_date=period.end, period_start=period.start, period_end=period.end,
+        top_k=top_k, _all_categories=_all_categories, engagement_id=engagement_id)
+    if not needs_rules and bundle.clarification_required.startswith("Applicability cannot be established"):
+        # No denied passage is restored: this only lets general guidance or
+        # separately grounded macro data proceed without asserting local law.
+        bundle = bundle.model_copy(update={"clarification_required": ""})
+    return bundle
+
+
+def _merge_bundles(bundles, jurisdiction, start, end):
+    sources = {}
+    passages = {}
+    for bundle in bundles:
+        for source in bundle.sources:
+            key=(source.version_id, source.evidence_jurisdiction)
+            if key in sources:
+                old=sources[key]
+                source=source.model_copy(update={
+                    "evidence_period_start": min(old.evidence_period_start,source.evidence_period_start),
+                    "evidence_period_end": max(old.evidence_period_end,source.evidence_period_end)})
+            sources[key]=source
+        for passage in bundle.passages:
+            passages.setdefault(passage.passage_id, passage)
+    return SourceBundle(
+        source_bundle_id=f"sb-{uuid.uuid4().hex[:12]}", jurisdiction=jurisdiction,
+        sources=list(sources.values()),
+        passages=[p.model_copy(update={"rank": i}) for i,p in enumerate(passages.values(),1)],
+        eligible_source_count=len(sources), excluded_source_count=sum(b.excluded_source_count for b in bundles),
+        excluded_evidence=[e for b in bundles for e in b.excluded_evidence],
+        confidence_state=CONF_LIMITED if passages else CONF_INSUFFICIENT, as_of=end, freshness_state="historical" if end and end < datetime.now(timezone.utc).date() else "current",
+        reporting_period_start=start, reporting_period_end=end)
+
+
+async def _build_period_bundle(db, *, query, jurisdiction, tenant_id, framework="", effective_date=None,
+                               period_start=None, period_end=None, top_k=8, _all_categories=False, engagement_id=None):
+    """Split an explicit period at documented rule changes; never invent coverage."""
+    from app.domains.source_library.licensing import _scope_matches
+    kwargs=dict(query=query,jurisdiction=jurisdiction,tenant_id=tenant_id,framework=framework,
+                effective_date=effective_date,period_start=period_start,period_end=period_end,
+                top_k=top_k,_all_categories=_all_categories,engagement_id=engagement_id)
+    if not period_start or not period_end or period_start == period_end:
+        return await _build_single_bundle(db,**kwargs)
+    boundaries={period_start,period_end + timedelta(days=1)}
+    metadata=await _candidate_versions(db,tenant_id=tenant_id)
+    for source,version in metadata:
+        if not (_scope_matches(source.jurisdiction_scope,jurisdiction) and _scope_matches(source.framework_scope,framework)):
+            continue
+        for start,end in ((version.effective_from,version.effective_to),
+                          (version.reporting_period_start,version.reporting_period_end)):
+            if start and period_start < start <= period_end:
+                boundaries.add(start)
+            if end and period_start <= end < period_end:
+                boundaries.add(end+timedelta(days=1))
+    points=sorted(boundaries)
+    if len(points) > 33:
+        return _empty_bundle("Narrow the reporting period; too many applicability transitions require review.",jurisdiction)
+    if len(points) == 2:
+        return await _build_single_bundle(db,**kwargs)
+    bundles=[]
+    for start,after in zip(points,points[1:]):
+        end=after-timedelta(days=1)
+        bundle=await _build_single_bundle(db,**{**kwargs,"effective_date":end,"period_start":start,"period_end":end})
+        if not bundle.passages or bundle.clarification_required:
+            return _empty_bundle(f"Cannot establish applicability for {start} to {end}; provide dated evidence or clarify the period.",jurisdiction)
+        bundles.append(bundle)
+    return _merge_bundles(bundles,jurisdiction,period_start,period_end)

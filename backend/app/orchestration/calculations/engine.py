@@ -467,8 +467,13 @@ def _parse_change(text: str) -> tuple[str, Decimal, Decimal] | None:
 
 
 _VAT_WORD = re.compile(r"\b(?:vat|gst)\b", re.I)
-_INCLUSIVE = re.compile(r"\b(?:incl(?:ud(?:e|es|ed|ing)|usive|\.)?|gross of|after (?:vat|gst)|vat[- ]inclusive|inc[- ]vat)\b", re.I)
-_EXCLUSIVE = re.compile(r"\b(?:excl(?:ud(?:e|es|ed|ing)|usive|\.)?|net of|plus (?:vat|gst)|before (?:vat|gst)|vat[- ]exclusive|ex[- ]vat)\b", re.I)
+# Incidental inclusion/exclusion (for example delivery) is not tax basis.
+_INCLUSIVE = re.compile(
+    r"\b(?:incl(?:ud(?:e|es|ed|ing)|usive|\.)?\s+(?:of\s+)?(?:vat|gst)|"
+    r"(?:gross of|after)\s+(?:vat|gst)|(?:vat|gst)[- ]inclusive|inc[- ](?:vat|gst))\b", re.I)
+_EXCLUSIVE = re.compile(
+    r"\b(?:excl(?:ud(?:e|es|ed|ing)|usive|\.)?\s+(?:of\s+)?(?:vat|gst)|"
+    r"(?:net of|plus|before)\s+(?:vat|gst)|(?:vat|gst)[- ]exclusive|ex[- ](?:vat|gst))\b", re.I)
 
 
 def item_rate(query: str, aliases: tuple[str, ...]) -> Decimal | None:

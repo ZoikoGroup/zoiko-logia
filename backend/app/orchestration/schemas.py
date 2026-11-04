@@ -303,6 +303,9 @@ class SourceSummary(BaseModel):
     source_url: Optional[str] = None
     authority_level: str = "secondary"
     publisher: str = ""
+    evidence_jurisdiction: str = ""
+    evidence_period_start: Optional[date] = None
+    evidence_period_end: Optional[date] = None
     effective_from: Optional[date] = None
     effective_to: Optional[date] = None
 
@@ -334,6 +337,9 @@ class SourceBundle(BaseModel):
     excluded_evidence: List[ExcludedEvidence] = Field(default_factory=list)
     conflict_version_ids: List[str] = Field(default_factory=list)
     as_of: Optional[date] = None
+    clarification_required: str = ""
+    reporting_period_start: Optional[date] = None
+    reporting_period_end: Optional[date] = None
     manifest_version: Literal["1.0"] = "1.0"
 
 
