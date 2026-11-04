@@ -94,11 +94,13 @@ async def upload_attachment(
             user_id=current_user.id,
         )
     if document.status == "FAILED":
-        from app.domains.kriton_workspace.ocr import SERVER_FAULTS
+        from app.domains.kriton_workspace.ocr import SERVER_FAULTS, public_error
+        code, message = public_error(document.processing_error)
+        if code is None:
+            raise HTTPException(status_code=422, detail=f"The document could not be processed: {message}")
         # OCR missing or not starting is this server's fault (503), not the file's (422).
-        server_fault = any((document.processing_error or "").startswith(f"[{code}]") for code in SERVER_FAULTS)
-        raise HTTPException(status_code=503 if server_fault else 422,
-                            detail=f"The document could not be processed: {document.processing_error}")
+        raise HTTPException(status_code=503 if code in SERVER_FAULTS else 422, detail=message,
+                            headers={"X-Kriton-Error-Code": code})
 
     await record_event_async(
         db,

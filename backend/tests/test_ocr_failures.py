@@ -152,8 +152,13 @@ async def test_ingestion_records_the_code_and_the_route_maps_it_to_503_or_422(mi
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
         missing_ocr = await client.post("/kriton-workspace/attachments", files={"file": ("chart.png", _png())})
         blank = await client.post("/kriton-workspace/attachments", files={"file": ("blank.png", _png())})
-    assert missing_ocr.status_code == 503 and "OCR_MISSING_DEPENDENCY" in missing_ocr.json()["detail"]
-    assert blank.status_code == 422 and "OCR_NO_TEXT_FOUND" in blank.json()["detail"]
+    # The user reads plain words; the code travels in a header for tools and logs.
+    assert missing_ocr.status_code == 503 and missing_ocr.headers["X-Kriton-Error-Code"] == "OCR_MISSING_DEPENDENCY"
+    assert missing_ocr.json()["detail"] == ocr.USER_MESSAGES[ocr.OCR_MISSING_DEPENDENCY]
+    assert blank.status_code == 422 and blank.headers["X-Kriton-Error-Code"] == "OCR_NO_TEXT_FOUND"
+    assert blank.json()["detail"] == "We couldn't find any readable text in this image. Please upload a clearer " \
+                                     "image or the original document."
+    assert "[" not in blank.json()["detail"]
 
 
 async def test_process_document_stores_the_ocr_code_first(missing, monkeypatch, tmp_path):
@@ -236,3 +241,23 @@ async def test_the_image_text_reaches_the_model(pipeline, monkeypatch, no_engine
     sent = "\n".join(prompts)
     assert prompts, "the question never reached the model"
     assert all(fact in sent for fact in facts), [fact for fact in facts if fact not in sent]
+
+
+
+@pytest.mark.parametrize("stored, code, shown", [
+    ("[IMAGE_UNREADABLE] The file could not be opened as a PNG or JPEG image", "IMAGE_UNREADABLE",
+     "This file couldn't be opened as an image. It may be damaged or in another format."),
+    ("[OCR_INITIALIZATION_FAILED] OCR is installed on this server but could not start (OSError)",
+     "OCR_INITIALIZATION_FAILED", ocr.USER_MESSAGES[ocr.OCR_INITIALIZATION_FAILED]),
+    ("No readable text or cells were found in the document", None,
+     "No readable text or cells were found in the document"),
+    (None, None, None),
+])
+def test_a_stored_error_is_shown_in_plain_words_and_keeps_its_code(stored, code, shown):
+    from datetime import datetime, timezone
+
+    from app.domains.kriton_workspace.schemas import DocumentPublic
+    assert ocr.public_error(stored) == (code, shown)
+    public = DocumentPublic(id="d", filename="x.png", mime_type="image/png", status="FAILED",
+                            processing_error=stored, created_at=datetime.now(timezone.utc))
+    assert public.processing_error == shown

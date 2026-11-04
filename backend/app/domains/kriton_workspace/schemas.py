@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class SavedAnswerCreateRequest(BaseModel):
@@ -58,3 +58,10 @@ class DocumentPublic(BaseModel):
     expires_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+    @field_validator("processing_error")
+    @classmethod
+    def _plain_message(cls, value: str | None) -> str | None:
+        # The stored error keeps its OCR code; the user sees the plain message.
+        from app.domains.kriton_workspace.ocr import public_error
+        return public_error(value)[1]

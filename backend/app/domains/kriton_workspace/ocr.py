@@ -47,6 +47,30 @@ OCR_INITIALIZATION_FAILED = "OCR_INITIALIZATION_FAILED"
 IMAGE_UNREADABLE = "IMAGE_UNREADABLE"
 OCR_NO_TEXT_FOUND = "OCR_NO_TEXT_FOUND"
 SERVER_FAULTS = frozenset({OCR_MISSING_DEPENDENCY, OCR_INITIALIZATION_FAILED})
+# What a user is told. The code stays in the stored error, the logs and the
+# X-Kriton-Error-Code header; "[OCR_NO_TEXT_FOUND] OCR read the image…" was
+# shown to users as it stood (4 Nov 2026 manual test).
+USER_MESSAGES = {
+    OCR_MISSING_DEPENDENCY: "Image reading isn't available on this server right now. Please try again later or "
+                            "contact support.",
+    OCR_INITIALIZATION_FAILED: "Image reading isn't available on this server right now. Please try again later or "
+                               "contact support.",
+    IMAGE_UNREADABLE: "This file couldn't be opened as an image. It may be damaged or in another format.",
+    OCR_NO_TEXT_FOUND: "We couldn't find any readable text in this image. Please upload a clearer image or the "
+                       "original document.",
+}
+_CODED_ERROR = re.compile(r"^\[([A-Z_]+)\]\s*")
+
+
+def public_error(stored: str | None) -> tuple[str | None, str | None]:
+    """(code, message for the user) from a stored processing error: an OCR
+    error's plain message without its code; any other error as it is."""
+    if not stored:
+        return None, stored
+    match = _CODED_ERROR.match(stored)
+    if not match or match.group(1) not in USER_MESSAGES:
+        return None, stored
+    return match.group(1), USER_MESSAGES[match.group(1)]
 
 
 class OCRError(RuntimeError):
@@ -231,6 +255,11 @@ def chart_note(boxes: list[tuple[list, str, float]]) -> str:
         total = sum(amounts)
         note += f"; the printed values add up to {total:,}" if "," in "".join(values.values()) else \
             f"; the printed values add up to {total}"
+        # Chart 01's answer called this sum a total printed "bottom-right of
+        # the chart" (4 Nov 2026 manual test); it is worked out here.
+        printed_total = any(re.search(r"\btotal\b", item["text"], re.I) for item in items)
+        note += (" (worked out from the values; compare it with the total the chart prints)" if printed_total
+                 else " (worked out from the values; the chart prints no total)")
     missing = [label["text"] for label in labels if label["text"] not in values]
     if missing:
         note += f"; no value is printed for {', '.join(missing)}"
@@ -256,6 +285,8 @@ def ocr_image(image) -> str:
     result, _ = _get_engine()(numpy.asarray(image))
     text = page_text(result or [])
     notes = reading_notes(result or [], text) if text else ""
+    for part in doubtful_text(result or []):
+        text = text.replace(part, "[unreadable text]")
     return f"{notes}\n{text}" if notes else text
 
 
@@ -290,16 +321,35 @@ def reading_notes(boxes: list[tuple[list, str, float]], text: str) -> str:
                      "do not state them as exact.]")
     # A one- or two-character box ("1" in a Qty column) reads with lower
     # confidence whatever its quality; only longer text is judged.
+    doubtful = doubtful_text(boxes)
+    if doubtful:
+        # The garbled text is not quoted: the Hindi receipt's answer repeated
+        # "可 TqIf 5,000" and the 5,000 in it (4 Nov 2026 manual test).
+        if _unsupported_script(boxes):
+            # Chinese characters inside a Latin word: another script read as
+            # the nearest one. The answer had blamed "handwriting".
+            cause = ("appears to be in a script this reader does not support (for example Devanagari, Arabic or "
+                     "Tamil); it is not a question of image quality")
+        else:
+            cause = "could not be read reliably (handwriting, decoration or poor print)"
+        notes.append(f"[Low-confidence reading: some of the text in this image {cause}, and is shown as "
+                     "[unreadable text]. Do not guess what it says; ask the user for the text or a clearer copy.]")
+    return "\n".join(notes)
+
+
+def _unsupported_script(boxes: list[tuple[list, str, float]]) -> bool:
+    return any(_CJK.search(t or "") and _LATIN_WORD.search(t or "") for _, t, score in boxes
+               if float(score) >= MIN_CONFIDENCE)
+
+
+def doubtful_text(boxes: list[tuple[list, str, float]]) -> list[str]:
+    """Boxes read with low confidence, or mixing Chinese characters into a
+    Latin word (a script the reader does not know, read as the nearest one)."""
     doubtful = [t.strip() for _, t, score in boxes
                 if len((t or "").strip()) >= 3 and MIN_CONFIDENCE <= float(score) < LOW_CONFIDENCE]
     doubtful += [t.strip() for _, t, score in boxes if (t or "").strip() and float(score) >= LOW_CONFIDENCE
                  and _CJK.search(t) and _LATIN_WORD.search(t)]
-    if doubtful:
-        quoted = "; ".join(f'"{t}"' for t in doubtful[:6])
-        notes.append(f"[Low-confidence reading: {quoted} may be misread (handwriting, decoration, or a script this "
-                     "reader does not support, such as Devanagari). Do not rely on these parts; ask the user for "
-                     "the text or a clearer copy.]")
-    return "\n".join(notes)
+    return doubtful
 
 
 def page_text(boxes: list[tuple[list, str, float]]) -> str:
@@ -321,9 +371,9 @@ def page_text(boxes: list[tuple[list, str, float]]) -> str:
 # stated it as the exact amount owed (QA case H03).
 MIN_SCAN_PIXELS = 600
 LOW_RESOLUTION_NOTE = ("[Low-resolution scan: the page image is only {width} x {height} pixels, so the text below "
-                       "was read unreliably and its digits are shown as ?. Do not state or guess any amount, date or "
-                       "reference from this page; say it cannot be read reliably and ask for a clearer copy or the "
-                       "original file.]")
+                       "was read unreliably and every figure in it is withheld as [unreadable]. Do not state or guess "
+                       "any amount, date or reference from this page; say it cannot be read reliably and ask for a "
+                       "clearer copy or the original file.]")
 
 
 def _page_image_size(content: bytes, page_index: int) -> tuple[int, int] | None:
@@ -345,9 +395,15 @@ def _page_image_size(content: bytes, page_index: int) -> tuple[int, int] | None:
 # rotated and JPEG-compressed text measured 0.71 or more; digits were
 # misread from about 0.10; the H03 scanned invoice measured 0.09.
 MIN_SHARPNESS = 0.15
-BLURRED_NOTE = ("[Blurred image: the text below was read unreliably (sharpness {sharpness:.2f}) and its digits are "
-                "shown as ?. Do not state or guess any amount, date or reference from it; say it cannot be read "
-                "reliably and ask for a clearer copy or the original file.]")
+BLURRED_NOTE = ("[Blurred image: the text below was read unreliably (sharpness {sharpness:.2f}) and every figure in "
+                "it is withheld as [unreadable]. Do not state or guess any amount, date or reference from it; say it "
+                "cannot be read reliably and ask for a clearer copy or the original file.]")
+
+
+def _withhold_figures(text: str) -> str:
+    """Each word holding a digit becomes [unreadable]: "$?.???.??" placeholders
+    were quoted in answers (4 Nov 2026 manual test), [unreadable] says it."""
+    return re.sub(r"\S*\d\S*", "[unreadable]", text)
 
 
 def image_sharpness(image) -> float | None:
@@ -382,14 +438,14 @@ def _page_image_sharpness(content: bytes, page_index: int) -> float | None:
 
 
 def _mark_low_resolution(text: str, size: tuple[int, int] | None, sharpness: float | None = None) -> str:
+    # With every figure withheld, a note about which figures to check says nothing.
+    kept = "\n".join(line for line in text.splitlines() if not line.startswith("[Check these figures"))
     if size and max(size) < MIN_SCAN_PIXELS:
-        # The digits are hidden, not only qualified: "cannot be confirmed:
+        # The figures are withheld, not only qualified: "cannot be confirmed:
         # 83,777.77" still put a wrong figure in front of the user.
-        return LOW_RESOLUTION_NOTE.format(width=size[0], height=size[1]) + "\n" + re.sub(r"\d", "?", text)
+        return LOW_RESOLUTION_NOTE.format(width=size[0], height=size[1]) + "\n" + _withhold_figures(kept)
     if sharpness is not None and sharpness < MIN_SHARPNESS:
-        # With every digit hidden, a note about which figures to check says nothing.
-        kept = "\n".join(line for line in text.splitlines() if not line.startswith("[Check these figures"))
-        return BLURRED_NOTE.format(sharpness=sharpness) + "\n" + re.sub(r"\d", "?", kept)
+        return BLURRED_NOTE.format(sharpness=sharpness) + "\n" + _withhold_figures(kept)
     return text
 
 
