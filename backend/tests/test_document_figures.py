@@ -285,9 +285,14 @@ def test_a_small_uploaded_image_is_marked_unreliable_like_a_small_scan():
     ImageDraw.Draw(image).text((10, 40), "Amount due: $1,777.77", fill="black")
     upload = io.BytesIO()
     image.save(upload, "PNG")
-    blocks = extract_document("invoice.png", upload.getvalue())
-    assert blocks == [] or (blocks[0].text.startswith("[Low-resolution scan: the page image is only 180 x 104 pixels")
-                            and not re.search(r"\d", blocks[0].text.split("]", 1)[1]))
+    from app.domains.kriton_workspace.ocr import OCR_NO_TEXT_FOUND, OCRError
+    try:
+        blocks = extract_document("invoice.png", upload.getvalue())
+    except OCRError as exc:                 # nothing legible: said, not an empty result
+        assert exc.code == OCR_NO_TEXT_FOUND
+        return
+    assert blocks[0].text.startswith("[Low-resolution scan: the page image is only 180 x 104 pixels")
+    assert not re.search(r"\d", blocks[0].text.split("]", 1)[1])
 
 
 def test_h03_a_low_resolution_scan_is_marked_unreliable():
@@ -309,18 +314,22 @@ def test_h03_a_low_resolution_scan_is_marked_unreliable():
     assert not re.search(r"\d", page.text.split("]", 1)[1])
 
 
-def test_ocr_unavailable_leaves_scanned_pages_empty_without_failing(monkeypatch):
+def test_ocr_unavailable_fails_a_scanned_pdf_with_the_reason(monkeypatch):
+    # It used to return no pages, so the upload failed as "No readable text or
+    # cells were found", exactly as an unreadable scan would (4 Nov 2026).
+    import sys
+
     from PIL import Image
 
     from app.domains.kriton_workspace import ocr
 
-    def unavailable():
-        raise ImportError("libGL.so.1: cannot open shared object file")
-
-    monkeypatch.setattr(ocr, "_get_engine", unavailable)
+    monkeypatch.setattr(ocr, "_engine", None)
+    monkeypatch.setitem(sys.modules, "rapidocr_onnxruntime", None)       # import fails, as when not installed
     scan = io.BytesIO()
     Image.new("RGB", (200, 200), "white").save(scan, "PDF")
-    assert extract_document("scan.pdf", scan.getvalue()) == []
+    with pytest.raises(ocr.OCRError) as exc:
+        extract_document("scan.pdf", scan.getvalue())
+    assert exc.value.code == ocr.OCR_MISSING_DEPENDENCY and exc.value.server_fault
 
 
 async def test_the_hook_reads_the_complete_documents_for_a_targeted_question(monkeypatch):

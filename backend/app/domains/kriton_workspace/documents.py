@@ -68,12 +68,21 @@ def _chunk_block(block: ExtractedBlock) -> list[ExtractedBlock]:
 def _extract_pdf(content: bytes) -> list[ExtractedBlock]:
     from pypdf import PdfReader
 
-    from app.domains.kriton_workspace.ocr import needs_ocr, ocr_pdf_pages
+    from app.domains.kriton_workspace.ocr import OCRError, needs_ocr, ocr_pdf_pages
 
     reader = PdfReader(io.BytesIO(content))
     texts = [page.extract_text() or "" for page in reader.pages]
     # Scanned pages have no text layer; read them with OCR instead.
-    scanned = ocr_pdf_pages(content, [i for i, text in enumerate(texts) if needs_ocr(text)]) if any(map(needs_ocr, texts)) else {}
+    to_read = [i for i, text in enumerate(texts) if needs_ocr(text)]
+    try:
+        scanned = ocr_pdf_pages(content, to_read) if to_read else {}
+    except OCRError as exc:
+        # A wholly scanned PDF cannot be read at all: say why. A mixed one
+        # keeps its text pages, and each scanned page says it was not read
+        # instead of passing for a blank page.
+        if len(to_read) == len(texts):
+            raise
+        scanned = {i: f"[Page {i + 1} is a scan that was not read: {exc}]" for i in to_read}
     return [
         ExtractedBlock(scanned.get(index - 1, text), f"Page {index}",
                        {"page": index, "ocr": True} if index - 1 in scanned else {"page": index})
@@ -278,8 +287,8 @@ def _extract_pptx(content: bytes) -> list[ExtractedBlock]:
 def _extract_image(content: bytes) -> list[ExtractedBlock]:
     from app.domains.kriton_workspace.ocr import ocr_image_bytes
 
-    text = ocr_image_bytes(content)
-    return [ExtractedBlock(text, "Image", {"image": True, "ocr": True})] if text else []
+    text = ocr_image_bytes(content)      # OCRError rather than "" when nothing can be read
+    return [ExtractedBlock(text, "Image", {"image": True, "ocr": True})]
 
 
 def extract_document(filename: str, content: bytes) -> list[ExtractedBlock]:
@@ -376,8 +385,11 @@ async def process_document(db: AsyncSession, document: Document) -> int:
         ])
         document.status = "READY"
     except Exception as exc:
+        from app.domains.kriton_workspace.ocr import OCRError
         document.status = "FAILED"
-        document.processing_error = str(exc)[:1000]
+        # The OCR code leads the message, so the upload route and any reader
+        # can tell a server without OCR from an unreadable file.
+        document.processing_error = ((f"[{exc.code}] " if isinstance(exc, OCRError) else "") + str(exc))[:1000]
         document.expires_at = failed_upload_expiry()
     await db.commit()
     await db.refresh(document)

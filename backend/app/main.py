@@ -1156,6 +1156,13 @@ def create_app() -> FastAPI:
         # Tavily's own state: a used-up plan (HTTP 432) shows here, not only in logs.
         return {**agent_mode_status(), "web_search_tavily": tavily_status()}
 
+    @app.get("/health/ocr", tags=["Health"])
+    async def health_ocr() -> dict:
+        """READY, or why images and scanned pages cannot be read on this server
+        (OCR_MISSING_DEPENDENCY / OCR_INITIALIZATION_FAILED). Starts the engine."""
+        from app.domains.kriton_workspace.ocr import ocr_status
+        return await asyncio.to_thread(ocr_status)
+
     @app.get("/health/live", tags=["Health"])
     async def health_live() -> dict[str, str]:
         return {"status": "alive"}
