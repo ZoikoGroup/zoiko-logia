@@ -55,7 +55,18 @@ def test_low_confidence_and_mixed_script_text_is_named():
              box("Rogue 可 word", 10, 110, score=0.95)]
     notes = ocr.reading_notes(boxes, "")
     assert notes.startswith("[Low-confidence reading:")
-    assert '"可 TqIf 5,000"' in notes and '"Rogue 可 word"' in notes and "Invoice total" not in notes
+    # The garbled text is not quoted: an answer repeated it, and the 5,000 in it.
+    assert "TqIf" not in notes and "5,000" not in notes and "可" not in notes
+    assert ocr.doubtful_text(boxes) == ["可 TqIf 5,000", "Rogue 可 word"]
+    # Chinese inside Latin words is another script, not image quality: the
+    # Hindi receipt's answer blamed "handwriting".
+    assert "appears to be in a script this reader does not support" in notes and "handwriting" not in notes
+
+
+def test_low_confidence_latin_text_is_put_down_to_print_quality():
+    notes = ocr.reading_notes([box("Recieved wiht thanks", 10, 10, score=0.7)], "")
+    assert "could not be read reliably (handwriting, decoration or poor print)" in notes
+    assert "script" not in notes
 
 
 def test_short_boxes_and_chinese_with_digits_are_not_doubted():
@@ -71,7 +82,15 @@ def test_values_are_paired_with_word_labels_by_position():
              box("Software", 160, 540), box("Hardware", 490, 540), box("Services", 820, 540)]
     note = ocr.chart_note(boxes)
     assert "Software 4,200; Hardware 1,800; Services 3,100" in note
-    assert "add up to 9,100" in note
+    assert "add up to 9,100 (worked out from the values; the chart prints no total)" in note
+
+
+def test_a_printed_total_is_kept_apart_from_the_worked_out_sum():
+    # Chart 01's answer called the worked-out sum a total printed on the chart.
+    boxes = [box("Total: 11,000", 700, 40), box("2,100", 200, 300), box("3,100", 400, 200),
+             box("Q1", 200, 540), box("Q2", 400, 540)]
+    assert "add up to 5,200 (worked out from the values; compare it with the total the chart prints)" in \
+        ocr.chart_note(boxes)
 
 
 def test_word_labels_without_a_value_each_are_not_read_as_a_chart():
@@ -104,8 +123,10 @@ def test_a_blurred_reading_hides_its_digits_and_says_why():
     text = '[Check these figures before using them: "3.618.47" is not a valid number]\nAmount due: S3.618.47'
     marked = ocr._mark_low_resolution(text, (1200, 600), sharpness=0.09)
     assert marked.startswith("[Blurred image: the text below was read unreliably (sharpness 0.09)")
-    body = marked.split("]", 1)[1]
+    body = marked.split("\n", 1)[1]
     assert "Check these figures" not in body and not any(ch.isdigit() for ch in body)
+    # Withheld as a word, not "S?.???.??" placeholders an answer can quote.
+    assert body.strip() == "Amount due: [unreadable]" and "?" not in body
     assert ocr._mark_low_resolution("Amount 5", (1200, 600), sharpness=0.9) == "Amount 5"
 
 
@@ -199,3 +220,51 @@ async def test_an_image_reading_note_brings_the_plain_words_instruction(pipeline
     assert ("do not quote them, their measurements" in sent) is instructed
     if instructed:
         assert "not as the answer, an example, a template or a guess" in sent
+
+
+
+async def _prompt_for(pipeline, monkeypatch, question, snippet):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.domains.model_gateway.agent import AgentOutcome
+    from app.orchestration import service
+    from app.orchestration.schemas import AskKritonRequest
+    from app.orchestration.websearch import WebSource
+
+    sources = [WebSource(title="doc.png — Image", url="", snippet=snippet, provider="uploaded_document",
+                         freshness="uploaded", source_id="doc-1")] if snippet else []
+    monkeypatch.setattr(service, "retrieve_document_sources", AsyncMock(return_value=sources))
+    prompts = []
+
+    async def model(prompt, *args, **kwargs):
+        prompts.append(str(prompt))
+        return AgentOutcome(text="Recorded.")
+    pipeline.agent.side_effect = model
+    await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                             request=AskKritonRequest(query=question, document_ids=["doc-1"] if snippet else []))
+    return "\n".join(prompts)
+
+
+async def test_an_attached_approval_flow_is_described_as_drawn(pipeline, monkeypatch):
+    # The E06 diagram's answer added a return to draft, an immutable audit trail
+    # and a posting step, "reflecting the complete path shown in the diagram".
+    sent = await _prompt_for(pipeline, monkeypatch, "Describe this approval process step by step.",
+                             "Purchase order  Goods received  Supplier invoice  3-way match?  yes  Authorized payment")
+    assert "Describe only the steps, decisions and outcomes the document itself shows" in sent
+    assert "Not shown in the document (general practice)" in sent
+    assert "returns to draft for correction" not in sent
+    # The 07 retest added a return from the hold to payment that is not drawn.
+    assert "say the document does not show what happens next" in sent
+
+
+async def test_without_a_document_the_approval_process_rule_still_asks_for_the_full_path(pipeline, monkeypatch):
+    sent = await _prompt_for(pipeline, monkeypatch,
+                             "Show how a draft journal entry becomes an approved posted journal entry.", "")
+    assert "returns to draft for correction" in sent
+
+
+async def test_a_document_that_does_not_hold_the_answer_is_not_relabelled(pipeline, monkeypatch):
+    sent = await _prompt_for(pipeline, monkeypatch, "What exact amount is owed?",
+                             "FY2025 revenue by quarter  Q1 2,100  Q2 2,300  Q3 2,500  Q4 3,100")
+    assert "do not relabel its figures as the thing asked" in sent
+    assert "do not say anything was requested unless the user asked for it" in sent

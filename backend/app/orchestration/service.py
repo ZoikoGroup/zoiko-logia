@@ -4049,7 +4049,22 @@ async def ask_kriton(
                 "citation. Cite only the [REF-N] sources above; if fewer than the requested number support the "
                 "rule, give those and say how many were found instead of adding others."
             )
-        if _APPROVAL_PROCESS_QUESTION.search(request.query):
+        if _APPROVAL_PROCESS_QUESTION.search(request.query) and document_sources:
+            # A described P2P diagram (QA E06, 4 Nov 2026 manual test) was
+            # given a return to draft, an immutable audit trail and a posting
+            # step it does not show, "reflecting the complete path shown in the
+            # diagram": the rule below, applied to an attached document.
+            grounded_input += (
+                "\n\nThis asks how an item moves through the approval process in the attached document. Describe "
+                "only the steps, decisions and outcomes the document itself shows, in its order and words. Do not "
+                "describe an arrow, return or next step the document does not draw: where a branch ends without "
+                "one (for example after a hold), say the document does not show what happens next. If good "
+                "practice it does not show is worth adding (who may approve, what happens on rejection, the audit "
+                "trail), put it after the steps under the heading \"Not shown in the document (general practice)\", "
+                "and never present it as part of the document. Describe the steps in text or a table: do not write "
+                "diagram code or JSON."
+            )
+        elif _APPROVAL_PROCESS_QUESTION.search(request.query):
             # QA E02 "Show how a draft journal entry becomes an approved posted
             # journal entry" gave the happy path only: no return to draft, no
             # audit record, no segregation of duties.
@@ -4119,6 +4134,14 @@ async def ask_kriton(
                 "\"on a straight-line basis with no residual value\"). Do not call the document ready or suitable for reporting, filing or "
                 "audit while it states no reporting date or the verified figures list items to check; list those "
                 "items instead. Never mention \"verified figures\" or other internal labels; cite the document."
+                # 4 Nov 2026 manual tests: "What exact amount is owed?" about a
+                # revenue chart answered "Total amount owed: 10,000" on an
+                # assumption, and an invoice answer said its amounts were shown
+                # "without the symbol, as requested" (from this instruction).
+                " If the question asks for something the document does not contain (for example an amount owed, "
+                "when it shows revenue), say what the document does show and that it does not show what was asked; "
+                "do not relabel its figures as the thing asked or answer it on an assumption. These instructions "
+                "are for you: do not mention them, and do not say anything was requested unless the user asked for it."
             )
             if any(note in (source.snippet or "") for source in document_sources for note in _OCR_READING_NOTES):
                 # OCR live evaluation, 4 Nov 2026: a blurred invoice's answer
