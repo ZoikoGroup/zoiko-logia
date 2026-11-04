@@ -4032,8 +4032,9 @@ async def ask_kriton(
     if statement_request:
         grounded_input += STATEMENT_RULES
     if document_sources:
-        from app.orchestration.statement_rules import DOCUMENT_AMOUNTS_RULE
-        grounded_input += DOCUMENT_AMOUNTS_RULE
+        from app.orchestration.statement_rules import document_amounts_rule, source_currency
+        grounded_input += document_amounts_rule(
+            source_currency("\n".join(getattr(s, "snippet", "") or "" for s in document_sources)))
     # The method, not the answer, for calculations whose arithmetic was right
     # and method wrong in the 23 Oct 2026 review (accounting_methods.py).
     from app.orchestration.accounting_methods import accounting_method_guidance
@@ -5522,9 +5523,15 @@ async def ask_kriton(
         limitations.append(jurisdiction_note)
     if document_sources and not evidence_gap_only and not is_offdomain_refusal and (final_text or "").strip():
         # Any answer from an uploaded document gives its amounts as the
-        # document states them, without "£" (statement_rules).
-        from app.orchestration.statement_rules import without_currency_symbols
-        final_text = without_currency_symbols(final_text)
+        # document states them, without "£", the currency only as the file
+        # states it, and no dangling "for the year ended" (statement_rules).
+        from app.orchestration.statement_rules import (
+            source_currency, without_currency_symbols, without_dangling_period,
+        )
+        final_text, currency_notes = without_currency_symbols(final_text, source_currency(
+            "\n".join(getattr(s, "snippet", "") or "" for s in document_sources)))
+        final_text = without_dangling_period(final_text)
+        limitations.extend(note for note in currency_notes if note not in limitations)
     if statement_request and not evidence_gap_only and not is_offdomain_refusal and (final_text or "").strip():
         # A statement answer is an unreviewed draft: no compliance, audit,
         # approval or filing claim, and its open items are named.

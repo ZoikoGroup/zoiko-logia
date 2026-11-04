@@ -229,28 +229,57 @@ _CURRENCY_SYMBOL = re.compile(r"([£$€₹])\s?(?=\d)")
 _SYMBOL_CODE = {"£": "GBP", "€": "EUR", "₹": "INR"}
 _CURRENCY_CODE = re.compile(r"\b(?:GBP|USD|EUR|INR|AUD|CAD|NZD|SGD|HKD|JPY|CHF)\b")
 
-# Asked of every answer drawn from an uploaded document, not only statements.
-DOCUMENT_AMOUNTS_RULE = (
-    "\n- Write every amount from the documents in full, as the documents state it (576,900, not £576.9 k or "
-    "£0.58 m), with no currency symbol; name the currency once.\n")
+CURRENCY_UNCONFIRMED_NOTE = ("Currency not stated in the file: the currency named in this answer is not confirmed by "
+                              "the source (CURRENCY_UNCONFIRMED).")
 
 
-def without_currency_symbols(text: str) -> str:
-    """Amounts as the document states them: "Income accounts (£1,862,000) –
-    Expense accounts (£1,707,600) = £154,400" beside a table of plain GBP
-    figures; the rule asked the model not to, and it kept the £. Dropping a
-    symbol never changes an amount, but the currency must stay known: mixed
-    symbols are kept, a currency the answer never names is stated, and a bare
-    "$" (US, Australian, Canadian…) is kept when no code says which."""
-    symbols = {match.group(1) for match in _CURRENCY_SYMBOL.finditer(text)}
-    if len(symbols) != 1:
-        return text
-    symbol = symbols.pop()
-    named = _CURRENCY_CODE.search(text)
-    if not named and symbol not in _SYMBOL_CODE:
-        return text
+def source_currency(sources_text: str) -> str | None:
+    """The one currency the uploaded files state, by code or by £/€/₹; None
+    when they state none, several, or only a "$" that could be any dollar.
+    The suspense trial balance named no currency and the answer said
+    "functional currency of the entity (GBP)" (Supplement A, SA-T10)."""
+    codes = set(_CURRENCY_CODE.findall(sources_text or ""))
+    codes |= {_SYMBOL_CODE[s] for s in re.findall(r"[£€₹]", sources_text or "")}
+    return codes.pop() if len(codes) == 1 else None
+
+
+def document_amounts_rule(currency: str | None) -> str:
+    """Asked of every answer drawn from an uploaded document, not only statements."""
+    rule = ("\n- Write every amount from the documents in full, as the documents state it (576,900, not £576.9 k "
+            "or £0.58 m), with no currency symbol.")
+    if currency:
+        return rule + f" The documents state {currency}: name it once.\n"
+    return rule + (" The documents state no currency: say once that the currency is not stated in the file, and "
+                   "name no currency code or symbol; never infer one from wording such as \"corporation tax\" or "
+                   "\"Ltd\".\n")
+
+
+def without_currency_symbols(text: str, currency: str | None) -> tuple[str, list[str]]:
+    """Amounts as the document states them, and the currency only as the
+    file states it. "Income accounts (£1,862,000) … = £154,400" stood beside
+    a GBP table; a "(GBP)" stood on a file that named no currency. Dropping a
+    symbol never changes an amount. Mixed symbols are kept; a currency the
+    file states is named if the answer omits it; a currency the file does not
+    state is flagged as unconfirmed, never supplied."""
+    if len({match.group(1) for match in _CURRENCY_SYMBOL.finditer(text)}) > 1:
+        return text, []
     stripped = _CURRENCY_SYMBOL.sub("", text)
-    return stripped if named else f"{stripped.rstrip()}\n\nAmounts are in {_SYMBOL_CODE[symbol]}."
+    if currency:
+        named = currency in stripped
+        return (stripped if named else f"{stripped.rstrip()}\n\nAmounts are in {currency}."), []
+    return stripped, ([CURRENCY_UNCONFIRMED_NOTE] if _CURRENCY_CODE.search(stripped) or stripped != text else [])
+
+
+# "Income Statement – for the year ended" with no date (Supplement A; handoff
+# C05): the heading names a period end the file does not give.
+_DANGLING_PERIOD = re.compile(
+    r"\bfor\s+the\s+(?:financial\s+)?(?:year|period)\s+ended\b"
+    r"(?!\s*(?:\d|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b))(?:\s*\[[^\]\n]*\])?", re.I)
+
+
+def without_dangling_period(text: str) -> str:
+    """A period heading with no date says so instead of ending mid-phrase."""
+    return _DANGLING_PERIOD.sub("reporting period not confirmed", text)
 
 
 def removed_claims_note(removed: list[str]) -> str:
