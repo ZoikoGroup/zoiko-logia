@@ -1,0 +1,4 @@
+document_type,document_id,line,item,quantity,unit_price_usd,amount_usd,status
+PURCHASE_ORDER,PO-NB-1001,1,Analytics licence,10,100,1000,APPROVED
+GOODS_RECEIPT,GR-NB-1001,1,Analytics licence,9,100,900,RECEIVED
+SUPPLIER_INVOICE,INV-SUP-7781,1,Analytics licence,10,100,1000,AWAITING_MATCH

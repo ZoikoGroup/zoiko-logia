@@ -1,0 +1,26 @@
+{
+ "fixture_id": "F5",
+ "status": "DRAFT_UNRATIFIED",
+ "release_evidence": false,
+ "signature": "NOT_RUN",
+ "source": {
+  "file": "external:ZoikoLogia_Document_01_Multimodal_Chatbot_Test_Question_Bank.docx",
+  "sha256": "defc1479135b13e713cde2ecb34173c95df33f9782e313d3036af4a66b0437e0",
+  "section": "\u00a73, \u00a73.1"
+ },
+ "specification": "NB-SCAN-LOWRES.pdf: scanned invoice with deliberately unclear amount.",
+ "derivations": [
+  "An image-only PDF (no text layer, no footer) of a synthetic invoice, downsampled and blurred; the amount's digits are partly unreadable by construction ('4,1?8.?5'), so no exact amount exists to recover."
+ ],
+ "files": [
+  {
+   "name": "NB-SCAN-LOWRES.pdf",
+   "sha256": "b7afd40c25dff82c083341df9bce41d1f0baf511e0dfab3e6d40a42911db4f9c",
+   "bytes": 50329,
+   "uploadable": true,
+   "used_by": [
+    "H03"
+   ]
+  }
+ ]
+}

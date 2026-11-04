@@ -263,3 +263,95 @@ async def act_on_release(release_id: str, body: ReleaseAction, db: AsyncSession 
     except (ValueError, LookupError) as exc:
         raise _refused(exc) from exc
     return {"id": r.id, "ref": r.ref, "status": r.status}
+
+
+# ── WF-01 platform release governance (authority, gap ownership, verdict) ──
+# Platform-scoped (decision D3): require_governance adds membership of the
+# governance tenant to the permission. Writes take an Idempotency-Key.
+
+from app.domains.admin_governance import authority, gap_ownership, release_verdict  # noqa: E402
+from app.domains.admin_governance.governance_access import idempotency_key, require_governance  # noqa: E402
+from app.domains.identity.permissions import (  # noqa: E402
+    AUTHORITY_PROPOSE, AUTHORITY_RATIFY, GOVERNANCE_READ, RELEASE_VERIFY,
+)
+
+
+@router.get("/admin/authority/documents")
+async def get_authority_documents(db: AsyncSession = Depends(get_db),
+                                  user: User = Depends(require_governance(GOVERNANCE_READ))) -> dict:
+    return {"summary": await authority.summary(db), "documents": await authority.list_documents(db)}
+
+
+@router.get("/admin/authority/resolve")
+async def resolve_authority_reference(reference: str, family: str | None = None, db: AsyncSession = Depends(get_db),
+                                      user: User = Depends(require_governance(GOVERNANCE_READ))) -> dict:
+    return await authority.resolve(db, reference, family)
+
+
+@router.post("/admin/authority/import")
+async def import_authority_register(db: AsyncSession = Depends(get_db),
+                                    user: User = Depends(require_governance(AUTHORITY_PROPOSE)),
+                                    key: str = Depends(idempotency_key)) -> dict:
+    return await authority.import_register(db)
+
+
+class AuthorityProposalBody(BaseModel):
+    legacy_id: str = Field(min_length=1, max_length=100)
+    mapping: dict[str, str]
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/admin/authority/proposals", status_code=201)
+async def propose_authority_resolution(body: AuthorityProposalBody, db: AsyncSession = Depends(get_db),
+                                       user: User = Depends(require_governance(AUTHORITY_PROPOSE)),
+                                       key: str = Depends(idempotency_key)) -> dict:
+    return await authority.propose(db, user, legacy_id=body.legacy_id, mapping=body.mapping, reason=body.reason, key=key)
+
+
+class AuthorityDecisionBody(BaseModel):
+    decision: Literal["RATIFY", "REJECT"]
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/admin/authority/proposals/{proposal_id}/decision")
+async def decide_authority_proposal(proposal_id: str, body: AuthorityDecisionBody, db: AsyncSession = Depends(get_db),
+                                    user: User = Depends(require_governance(AUTHORITY_RATIFY)),
+                                    key: str = Depends(idempotency_key)) -> dict:
+    return await authority.ratify(db, user, proposal_id=proposal_id, decision=body.decision, reason=body.reason, key=key)
+
+
+@router.get("/admin/gap-ownership")
+async def get_gap_ownership(db: AsyncSession = Depends(get_db),
+                            user: User = Depends(require_governance(GOVERNANCE_READ))) -> dict:
+    return {"proposed": gap_ownership.proposed(), "current": await gap_ownership.current(db)}
+
+
+@router.post("/admin/gap-ownership/adoptions", status_code=201)
+async def adopt_gap_ownership(db: AsyncSession = Depends(get_db),
+                              user: User = Depends(require_governance(AUTHORITY_PROPOSE)),
+                              key: str = Depends(idempotency_key)) -> dict:
+    return await gap_ownership.adopt(db, user, key)
+
+
+class GapRatificationBody(BaseModel):
+    content_sha256: str = Field(min_length=64, max_length=64)
+
+
+@router.post("/admin/gap-ownership/adoptions/{adoption_id}/ratification", status_code=201)
+async def ratify_gap_ownership(adoption_id: str, body: GapRatificationBody, db: AsyncSession = Depends(get_db),
+                               user: User = Depends(require_governance(AUTHORITY_RATIFY)),
+                               key: str = Depends(idempotency_key)) -> dict:
+    return await gap_ownership.ratify(db, user, adoption_id=adoption_id, content_sha256=body.content_sha256, key=key)
+
+
+@router.get("/admin/release-verdict")
+async def get_release_verdict(db: AsyncSession = Depends(get_db),
+                              user: User = Depends(require_governance(GOVERNANCE_READ))) -> dict:
+    return await release_verdict.compute(db)
+
+
+@router.post("/admin/release-verdicts", status_code=201)
+async def record_release_verdict(db: AsyncSession = Depends(get_db),
+                                 user: User = Depends(require_governance(RELEASE_VERIFY)),
+                                 key: str = Depends(idempotency_key)) -> dict:
+    return await release_verdict.record(db, user, key)

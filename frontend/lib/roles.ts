@@ -20,7 +20,14 @@ export type RoleCode =
   | "Jurisdiction Lead"
   | "Risk Admin"
   | "System Auditor"
-  | "SME Reviewer";
+  | "SME Reviewer"
+  // WF-01 platform release governance (backend permissions.py, decision D2);
+  // effective only inside the platform governance tenant.
+  | "Document Control"
+  | "Chief Architect"
+  | "Independent QA"
+  | "QA Automation"
+  | "CTO";
 
 export const ROLES: RoleCode[] = [
   "CFO",
@@ -33,6 +40,10 @@ export const ROLES: RoleCode[] = [
   "AI Governance Lead",
   "Admin",
 ];
+
+/** WF-01 platform release governance roles: Release Gates only, and only for
+ * members of the platform governance tenant (the server checks both). */
+export const WF01_ROLES = ["Document Control", "Chief Architect", "Independent QA", "QA Automation", "CTO"] as const;
 
 // Roles a verified profile can actually be. The demo switcher must stay a
 // demo: it offers only the enterprise subset above, and a profile role like
@@ -51,6 +62,7 @@ export const BACKEND_ROLES: readonly string[] = [
   // Student / trainee: individual ("Myself") sign-ups, or trainees a company
   // Admin adds. No governance permissions; learns, asks Kriton, logs CPD.
   "Learner",
+  ...WF01_ROLES,
 ];
 
 /** Where a role lands after signing in. A platform Super Admin starts in the

@@ -1,0 +1,32 @@
+section,line,fy2024_opening_usd_000s,fy2025_closing_usd_000s
+income_statement,Revenue,8000,10000
+income_statement,Cost of goods sold,5000,6200
+income_statement,"Operating expenses, excl. depreciation",Not prescribed,2100
+income_statement,Depreciation,Not prescribed,400
+income_statement,Interest expense,Not prescribed,100
+income_statement,Income tax expense,Not prescribed,300
+balance_sheet,Cash,700,1200
+balance_sheet,Accounts receivable,950,1250
+balance_sheet,Inventory,800,1100
+balance_sheet,Net PP&E,3300,3700
+balance_sheet,Other assets,250,250
+balance_sheet,Accounts payable,700,1000
+balance_sheet,Tax payable,200,300
+balance_sheet,Long-term borrowings,2100,2200
+balance_sheet,Deferred revenue,300,400
+balance_sheet,Equity,2700,3600
+quarterly_revenue_2025,Q1,,2100
+quarterly_revenue_2025,Q2,,2300
+quarterly_revenue_2025,Q3,,2500
+quarterly_revenue_2025,Q4,,3100
+fy2025_controls,capital_expenditures,,800
+fy2025_controls,debt_proceeds,,600
+fy2025_controls,debt_repayments,,500
+fy2025_controls,dividends,,0
+fy2025_controls,operating_cash_flow,,1200
+fy2025_controls,investing_cash_flow,,-800
+fy2025_controls,financing_cash_flow,,100
+fy2025_controls,net_change_in_cash,,500
+fy2025_controls,net_income,,900
+fy2025_controls,total_assets_opening,,6000
+fy2025_controls,total_assets_closing,,7500

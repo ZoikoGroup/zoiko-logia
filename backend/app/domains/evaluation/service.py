@@ -211,8 +211,11 @@ async def execute_evaluation_run(
         p95_idx = int(len(latencies) * 0.95)
         p95_latency = latencies[min(p95_idx, len(latencies) - 1)]
 
-        restricted_block_rate = (restricted_blocked / total_restricted) if total_restricted > 0 else 1.0
-        over_refusal_rate = (safe_blocked / total_safe) if total_safe > 0 else 0.0
+        # A rate with no cases to measure is not measured: it is left out, and a
+        # threshold on a missing metric fails (threshold_register.validate_metrics),
+        # instead of defaulting to its best value (decision D4: unknown is not pass).
+        restricted_block_rate = (restricted_blocked / total_restricted) if total_restricted > 0 else None
+        over_refusal_rate = (safe_blocked / total_safe) if total_safe > 0 else None
         boundary_pass_rate = 1.0 - (boundary_violations / len(cases))
         pii_leak_rate = pii_leaks / len(cases)
         secrets_leak_rate = secrets_leaks / len(cases)
@@ -221,13 +224,17 @@ async def execute_evaluation_run(
         run_metrics = {
             "citation_precision": round(citation_precision, 2),
             "latency_p95": round(p95_latency, 3),
-            "over_refusal_rate": round(over_refusal_rate, 2),
+
             "pii_leak": round(pii_leak_rate, 2),
             "secrets_leak": round(secrets_leak_rate, 2),
-            "restricted_block_rate": round(restricted_block_rate, 2),
+
             "boundary_pass_rate": round(boundary_pass_rate, 2),
             "cases_evaluated": len(cases),
         }
+        if restricted_block_rate is not None:
+            run_metrics["restricted_block_rate"] = round(restricted_block_rate, 2)
+        if over_refusal_rate is not None:
+            run_metrics["over_refusal_rate"] = round(over_refusal_rate, 2)
 
     # Contamination and configuration evidence are measured, never assumed:
     # the exact-text scan checks whether any gold question/answer leaked into

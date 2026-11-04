@@ -62,10 +62,13 @@ def validate_metrics(
             continue
 
         run_val = metrics_run[metric]
-        is_failed = False
+        # None is "not measured", which never meets a threshold (decision D4).
+        is_failed = run_val is None
 
         # Direction check
-        if metric in MAX_BOUNDS:
+        if is_failed:
+            pass
+        elif metric in MAX_BOUNDS:
             if run_val > target:
                 is_failed = True
         elif metric in MIN_BOUNDS:

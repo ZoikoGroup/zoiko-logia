@@ -11,12 +11,18 @@ import {
   ProgressRow, humanize, inputClass, useMutation, utcDate,
 } from "@/components/operations/ui";
 import { History } from "@/components/operations/registry";
+import { ReleaseGovernancePanel } from "@/components/governance/ReleaseGovernancePanel";
+import { WF01_ROLES } from "@/lib/roles";
 import {
   actOnRelease, createRelease, getAssignees, getReleaseRegister, setReleaseGate,
   type Assignee, type GateStatus, type ReleaseCandidate, type ReleaseRegister, type ReleaseStatus,
 } from "@/lib/api";
 
 const EDITORS = new Set(["Admin", "Governance Ops Lead", "Risk Admin"]);
+// WF-01 platform release governance roles (backend identity/permissions.py).
+// The panel is offered to them only; the server still checks the role and
+// membership of the governance tenant on every request.
+const GOVERNANCE_ROLES: ReadonlySet<string> = new Set(WF01_ROLES);
 const STATUS: Record<ReleaseStatus, { label: string; tone: "ok" | "warn" | "bad" | "info" | "neutral" }> = {
   validating: { label: "Validating", tone: "info" }, on_hold: { label: "On hold", tone: "bad" },
   approval_queue: { label: "Approval queue", tone: "warn" }, approved: { label: "Approved", tone: "ok" },
@@ -25,6 +31,21 @@ const STATUS: Record<ReleaseStatus, { label: string; tone: "ok" | "warn" | "bad"
 type TabKey = "all" | "on_hold" | "validating" | "approval_queue" | "deployed";
 
 export default function ReleaseGatesPage() {
+  const { profile } = useAuth();
+  // A governance role reads platform release governance only: the tenant
+  // release register needs a tenant release role it does not hold.
+  if (GOVERNANCE_ROLES.has(profile?.role ?? "")) {
+    return (
+      <main className="flex-1 space-y-4 overflow-y-auto p-4">
+        <Breadcrumb section="Administration" page="Release Gates" detail="Platform release governance" />
+        <ReleaseGovernancePanel />
+      </main>
+    );
+  }
+  return <TenantReleaseGates />;
+}
+
+function TenantReleaseGates() {
   const { profile } = useAuth();
   const canEdit = EDITORS.has(profile?.role ?? "");
   const { data, error, loading, signedOut, reload } = useLiveData(

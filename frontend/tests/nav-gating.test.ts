@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { NAV_SECTIONS, canAccessPath, isVisible, navHref } from "@/lib/nav";
-import { BACKEND_ROLES, signInHomeFor, type RoleCode } from "@/lib/roles";
+import { BACKEND_ROLES, WF01_ROLES, signInHomeFor, type RoleCode } from "@/lib/roles";
 
 // The sidebar filters sections before items, so an item a role may open is
 // unreachable unless its section admits that role too. This is how the SME
@@ -57,5 +57,21 @@ describe("sign-in landing page", () => {
     expect(signInHomeFor({ role: "Admin" })).toBe("/");
     expect(signInHomeFor({ role: "Learner" })).toBe("/learning-practice");
     expect(signInHomeFor({ role: "Admin", platform_role: "super_admin" })).toBe("/super-admin");
+  });
+});
+
+describe("WF-01 governance roles", () => {
+  it("can open Release Gates and nothing administrative besides it", () => {
+    for (const role of WF01_ROLES) {
+      expect(canAccessPath("/release-gates", role), role).toBe(true);
+      for (const path of ["/users-teams", "/service-accounts", "/tenant-settings", "/roles-permissions"]) {
+        expect(canAccessPath(path, role), `${role} ${path}`).toBe(false);
+      }
+    }
+  });
+
+  it("adds no sidebar destination", () => {
+    // 38 items, as committed before WF-01 (51ceda5): governance lives inside Release Gates.
+    expect(NAV_SECTIONS.flatMap((s) => s.items).length).toBe(38);
   });
 });

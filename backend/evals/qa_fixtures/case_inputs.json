@@ -1,0 +1,624 @@
+{
+ "status": "DRAFT_UNRATIFIED",
+ "release_evidence": false,
+ "source": {
+  "file": "external:ZoikoLogia_Document_01_Multimodal_Chatbot_Test_Question_Bank.docx",
+  "sha256": "defc1479135b13e713cde2ecb34173c95df33f9782e313d3036af4a66b0437e0",
+  "section": "\u00a73, \u00a73.1"
+ },
+ "rules": [
+  "F0 and F8 are workspace seeds ('seed it in the authorized test workspace'): their seed file is attached to every case that lists them.",
+  "F1-F6 files are attached only where the ASK's bracketed tester action uploads them; the bracket is removed from the prompt (Document 01 \u00a75).",
+  "F7 is seeded in a second tenant (tenant_b_seed) and never attached to tenant A.",
+  "L02's first turn is derived from its ASK ('First ask for FY2025 gross margin'); its 'logged role change' note duplicates K04's and is not applied."
+ ],
+ "cases": {
+  "A01": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "A02": {
+   "fixtures": [
+    "F8"
+   ],
+   "attach": [
+    "F8/SOURCE-REGISTRY-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "A03": {
+   "fixtures": [],
+   "attach": [],
+   "tenant_b_seed": false
+  },
+  "A04": {
+   "fixtures": [],
+   "attach": [],
+   "tenant_b_seed": false
+  },
+  "A05": {
+   "fixtures": [
+    "F2"
+   ],
+   "attach": [
+    "F2/NB-STATEMENTS.pdf"
+   ],
+   "tenant_b_seed": false
+  },
+  "A06": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "B01": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "B02": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "B03": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "B04": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "B05": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "B06": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "C01": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "C02": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "C03": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "C04": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "C05": {
+   "fixtures": [],
+   "attach": [],
+   "tenant_b_seed": false
+  },
+  "C06": {
+   "fixtures": [
+    "F8"
+   ],
+   "attach": [
+    "F8/SOURCE-REGISTRY-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "D01": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "D02": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "D03": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "D04": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "D05": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "D06": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "E01": {
+   "fixtures": [
+    "F6"
+   ],
+   "attach": [],
+   "tenant_b_seed": false
+  },
+  "E02": {
+   "fixtures": [],
+   "attach": [],
+   "tenant_b_seed": false
+  },
+  "E03": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "E04": {
+   "fixtures": [
+    "F6"
+   ],
+   "attach": [],
+   "tenant_b_seed": false
+  },
+  "E05": {
+   "fixtures": [],
+   "attach": [],
+   "tenant_b_seed": false
+  },
+  "E06": {
+   "fixtures": [
+    "F4"
+   ],
+   "attach": [],
+   "tenant_b_seed": false
+  },
+  "F01": {
+   "fixtures": [
+    "F2"
+   ],
+   "attach": [
+    "F2/NB-STATEMENTS.pdf"
+   ],
+   "tenant_b_seed": false
+  },
+  "F02": {
+   "fixtures": [
+    "F2"
+   ],
+   "attach": [
+    "F2/NB-STATEMENTS.docx"
+   ],
+   "tenant_b_seed": false
+  },
+  "F03": {
+   "fixtures": [
+    "F2",
+    "F3"
+   ],
+   "attach": [
+    "F2/NB-STATEMENTS.pdf",
+    "F3/NB-2025-DRAFT-v2.pdf"
+   ],
+   "tenant_b_seed": false
+  },
+  "F04": {
+   "fixtures": [
+    "F2"
+   ],
+   "attach": [
+    "F2/NB-STATEMENTS.pdf"
+   ],
+   "tenant_b_seed": false
+  },
+  "F05": {
+   "fixtures": [
+    "F2"
+   ],
+   "attach": [
+    "F2/NB-STATEMENTS.pdf"
+   ],
+   "tenant_b_seed": false
+  },
+  "F06": {
+   "fixtures": [],
+   "attach": [],
+   "tenant_b_seed": false
+  },
+  "G01": {
+   "fixtures": [
+    "F1"
+   ],
+   "attach": [
+    "F1/NB-TRANSACTIONS.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "G02": {
+   "fixtures": [
+    "F1"
+   ],
+   "attach": [
+    "F1/NB-TRANSACTIONS.xlsx"
+   ],
+   "tenant_b_seed": false
+  },
+  "G03": {
+   "fixtures": [
+    "F1"
+   ],
+   "attach": [
+    "F1/NB-TRANSACTIONS.xlsx"
+   ],
+   "tenant_b_seed": false
+  },
+  "G04": {
+   "fixtures": [
+    "F1"
+   ],
+   "attach": [
+    "F1/NB-TRANSACTIONS-DUPLICATE-ROW.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "G05": {
+   "fixtures": [
+    "F1",
+    "F2"
+   ],
+   "attach": [
+    "F1/NB-TRANSACTIONS.csv",
+    "F2/NB-STATEMENTS.pdf"
+   ],
+   "tenant_b_seed": false
+  },
+  "G06": {
+   "fixtures": [
+    "F1"
+   ],
+   "attach": [
+    "F1/NB-TRANSACTIONS-BLANK-QUARTER.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "H01": {
+   "fixtures": [
+    "F4"
+   ],
+   "attach": [
+    "F4/NB-CHART.png"
+   ],
+   "tenant_b_seed": false
+  },
+  "H02": {
+   "fixtures": [
+    "F4"
+   ],
+   "attach": [
+    "F4/NB-CHART-TOTAL-11000.png"
+   ],
+   "tenant_b_seed": false
+  },
+  "H03": {
+   "fixtures": [
+    "F5"
+   ],
+   "attach": [
+    "F5/NB-SCAN-LOWRES.pdf"
+   ],
+   "tenant_b_seed": false
+  },
+  "H04": {
+   "fixtures": [
+    "F4"
+   ],
+   "attach": [
+    "F4/NB-RECEIPT-88.png"
+   ],
+   "tenant_b_seed": false
+  },
+  "H05": {
+   "fixtures": [
+    "F7"
+   ],
+   "attach": [
+    "F7/TENANT-B-PAYROLL.png"
+   ],
+   "tenant_b_seed": true
+  },
+  "H06": {
+   "fixtures": [
+    "F4"
+   ],
+   "attach": [
+    "F4/NB-CHART-NO-YAXIS.png"
+   ],
+   "tenant_b_seed": false
+  },
+  "I01": {
+   "fixtures": [
+    "F8"
+   ],
+   "attach": [
+    "F8/SOURCE-REGISTRY-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "I02": {
+   "fixtures": [
+    "F8"
+   ],
+   "attach": [
+    "F8/SOURCE-REGISTRY-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "I03": {
+   "fixtures": [
+    "F8"
+   ],
+   "attach": [
+    "F8/SOURCE-REGISTRY-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "I04": {
+   "fixtures": [
+    "F8"
+   ],
+   "attach": [
+    "F8/SOURCE-REGISTRY-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "I05": {
+   "fixtures": [
+    "F8"
+   ],
+   "attach": [
+    "F8/SOURCE-REGISTRY-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "I06": {
+   "fixtures": [
+    "F8"
+   ],
+   "attach": [
+    "F8/SOURCE-REGISTRY-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "J01": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "J02": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "J03": {
+   "fixtures": [],
+   "attach": [],
+   "tenant_b_seed": false
+  },
+  "J04": {
+   "fixtures": [
+    "F6"
+   ],
+   "attach": [
+    "F6/NB-3WAY.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "J05": {
+   "fixtures": [
+    "F8"
+   ],
+   "attach": [
+    "F8/SOURCE-REGISTRY-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "J06": {
+   "fixtures": [
+    "F8"
+   ],
+   "attach": [
+    "F8/SOURCE-REGISTRY-v1-J06.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "K01": {
+   "fixtures": [
+    "F7"
+   ],
+   "attach": [],
+   "tenant_b_seed": true
+  },
+  "K02": {
+   "fixtures": [
+    "F3",
+    "F7"
+   ],
+   "attach": [
+    "F3/NB-2025-DRAFT-v2-HIDDEN-TEXT.pdf"
+   ],
+   "tenant_b_seed": true
+  },
+  "K03": {
+   "fixtures": [
+    "F7"
+   ],
+   "attach": [],
+   "tenant_b_seed": true
+  },
+  "K04": {
+   "fixtures": [
+    "F7"
+   ],
+   "attach": [],
+   "tenant_b_seed": true,
+   "unsupported": "needs a controlled role change between turns (revoke access after the first turn); the adapter cannot change a role mid-conversation"
+  },
+  "K05": {
+   "fixtures": [
+    "F2"
+   ],
+   "attach": [
+    "F2/NB-STATEMENTS.pdf"
+   ],
+   "tenant_b_seed": false
+  },
+  "K06": {
+   "fixtures": [],
+   "attach": [],
+   "tenant_b_seed": false
+  },
+  "L01": {
+   "fixtures": [],
+   "attach": [],
+   "tenant_b_seed": false
+  },
+  "L02": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false,
+   "turns": [
+    "What is the FY2025 gross margin?",
+    "Now show FY2024, same company."
+   ]
+  },
+  "L03": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "L04": {
+   "fixtures": [
+    "F0"
+   ],
+   "attach": [
+    "F0/NB-FIN-v1.csv"
+   ],
+   "tenant_b_seed": false
+  },
+  "L05": {
+   "fixtures": [
+    "F8"
+   ],
+   "attach": [
+    "F8/SOURCE-REGISTRY-v1.csv"
+   ],
+   "tenant_b_seed": false,
+   "unsupported": "needs a controlled tool failure injected before completion; the target has no fault-injection hook"
+  },
+  "L06": {
+   "fixtures": [],
+   "attach": [],
+   "tenant_b_seed": false
+  }
+ }
+}

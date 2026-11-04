@@ -1,0 +1,69 @@
+{
+ "registry": "SOURCE-REGISTRY-v1",
+ "synthetic": true,
+ "cards": [
+  {
+   "card_id": "SRC-REC-2025",
+   "version": "1",
+   "title": "Synthetic revenue recognition guidance",
+   "effective_from": "2025-01-01",
+   "effective_to": "2025-12-31",
+   "authority": "AUTHORIZED",
+   "licence": "LICENSED",
+   "permission": "READ",
+   "section": "4.2",
+   "text": "Recognise revenue when control of the promised service transfers to the customer (synthetic test rule)."
+  },
+  {
+   "card_id": "SRC-REC-2026",
+   "version": "2",
+   "title": "Synthetic revenue recognition guidance (revised)",
+   "effective_from": "2026-01-01",
+   "effective_to": "",
+   "authority": "AUTHORIZED",
+   "licence": "LICENSED",
+   "permission": "READ",
+   "section": "4.2",
+   "supersedes": "SRC-REC-2025 v1",
+   "text": "From 1 January 2026, multi-element contracts must also allocate price by relative stand-alone selling price (synthetic test rule). Not retroactive."
+  },
+  {
+   "card_id": "SRC-PREMIUM-STD",
+   "version": "1",
+   "title": "Premium standard (licensed text not held)",
+   "effective_from": "2025-01-01",
+   "effective_to": "",
+   "authority": "AUTHORIZED",
+   "licence": "PROHIBITED_UNLICENSED",
+   "permission": "NONE",
+   "section": "",
+   "text": "[text withheld: no licence]"
+  },
+  {
+   "card_id": "SRC-POL-A",
+   "version": "3",
+   "title": "Entity capitalisation policy",
+   "effective_from": "2025-01-01",
+   "effective_to": "",
+   "authority": "AUTHORIZED",
+   "licence": "LICENSED",
+   "permission": "READ",
+   "section": "2.1",
+   "entity": "Northbridge Analytics Inc.",
+   "text": "Capitalise equipment above USD 5,000 (synthetic test rule)."
+  },
+  {
+   "card_id": "SRC-POL-B",
+   "version": "1",
+   "title": "Group finance memo",
+   "effective_from": "2025-03-01",
+   "effective_to": "",
+   "authority": "AUTHORIZED",
+   "licence": "LICENSED",
+   "permission": "READ",
+   "section": "1",
+   "entity": "Northbridge group",
+   "text": "Capitalise equipment above USD 2,500 (synthetic test rule)."
+  }
+ ]
+}
