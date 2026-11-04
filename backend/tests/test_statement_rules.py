@@ -520,10 +520,18 @@ def test_a_currency_the_file_does_not_state_is_never_supplied():
     from app.orchestration.statement_rules import (
         CURRENCY_UNCONFIRMED_NOTE, source_currency, without_currency_symbols,
     )
-    csv = "account_code,account_name,debit,credit\n4000,Revenue,,4182000.00\n7000,Corporation tax charge,196750.00,"
-    assert source_currency(csv) is None
-    assert source_currency("Northbridge Trading Ltd\nCurrency: GBP\n4000\tRevenue") == "GBP"
-    assert source_currency("Amounts in USD and EUR") is None and source_currency("Total $10,000") is None
+    def doc(title, text):
+        return WebSource(title=title, url="", snippet=text, provider="uploaded_document")
+    csv = doc("kriton-test-trial-balance.csv — 'kriton-test-trial-balance'!1:18",
+              "account_code,account_name,debit,credit\n4000,Revenue,,4182000.00\n7000,Corporation tax charge,196750.00,")
+    northbridge = doc("01_Trial_Balance.xlsx — 'Trial Balance'!1:40", "Northbridge Trading Ltd\nCurrency: GBP\n4000\tRevenue")
+    assert source_currency([csv]) is None
+    assert source_currency([northbridge, doc("01_Trial_Balance.xlsx — 'Trial Balance'!41:60", "6900\tBank charges")]) == "GBP"
+    assert source_currency([doc("a.pdf — p.1", "Amounts in USD and EUR")]) is None
+    assert source_currency([doc("a.pdf — p.1", "Total $10,000")]) is None
+    # 4 Nov retest: a USD statement PDF beside the currency-less CSV made the CSV "full USD values".
+    pdf = doc("NB-STATEMENTS_RELEASED.pdf — Page 1", "FY2025 and prior-year comparatives; values USD thousands")
+    assert source_currency([pdf]) == "USD" and source_currency([pdf, csv]) is None
     text, notes = without_currency_symbols("All amounts are in the functional currency of the entity (GBP).", None)
     assert notes == [CURRENCY_UNCONFIRMED_NOTE] and "Amounts are in" not in text
     text, notes = without_currency_symbols("Profit for the year £590,250.", None)
@@ -548,4 +556,4 @@ def test_a_period_heading_without_a_date_says_the_period_is_not_confirmed():
 def test_every_document_answer_is_asked_for_full_amounts_and_the_file_currency_only():
     from app.orchestration.statement_rules import document_amounts_rule
     assert "576,900, not £576.9 k" in document_amounts_rule("GBP") and "The documents state GBP" in document_amounts_rule("GBP")
-    assert "never infer one from wording" in document_amounts_rule(None)
+    assert "never carry one document's currency to another or infer one from wording" in document_amounts_rule(None)

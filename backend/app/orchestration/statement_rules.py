@@ -229,18 +229,30 @@ _CURRENCY_SYMBOL = re.compile(r"([£$€₹])\s?(?=\d)")
 _SYMBOL_CODE = {"£": "GBP", "€": "EUR", "₹": "INR"}
 _CURRENCY_CODE = re.compile(r"\b(?:GBP|USD|EUR|INR|AUD|CAD|NZD|SGD|HKD|JPY|CHF)\b")
 
-CURRENCY_UNCONFIRMED_NOTE = ("Currency not stated in the file: the currency named in this answer is not confirmed by "
-                              "the source (CURRENCY_UNCONFIRMED).")
+CURRENCY_UNCONFIRMED_NOTE = ("Currency not confirmed: the attached files do not all state the currency named in this "
+                              "answer; check it against each file (CURRENCY_UNCONFIRMED).")
 
 
-def source_currency(sources_text: str) -> str | None:
-    """The one currency the uploaded files state, by code or by £/€/₹; None
-    when they state none, several, or only a "$" that could be any dollar.
-    The suspense trial balance named no currency and the answer said
-    "functional currency of the entity (GBP)" (Supplement A, SA-T10)."""
-    codes = set(_CURRENCY_CODE.findall(sources_text or ""))
-    codes |= {_SYMBOL_CODE[s] for s in re.findall(r"[£€₹]", sources_text or "")}
-    return codes.pop() if len(codes) == 1 else None
+def _file_currency(text: str) -> set[str]:
+    codes = set(_CURRENCY_CODE.findall(text or ""))
+    return codes | {_SYMBOL_CODE[s] for s in re.findall(r"[£€₹]", text or "")}
+
+
+def source_currency(sources) -> str | None:
+    """The one currency every uploaded file states, by code or by £/€/₹;
+    None when a file states none, files differ, or only a "$" that could be
+    any dollar. The suspense trial balance named no currency and the answer
+    said "functional currency of the entity (GBP)" (Supplement A, SA-T10);
+    beside a USD statement PDF it was called "full USD values". Checked per
+    file: sources are WebSource chunks titled "<file> — <section>"."""
+    texts: dict[str, list[str]] = {}
+    for source in sources or []:
+        file = (getattr(source, "title", "") or "").split(" — ")[0]
+        texts.setdefault(file, []).append(getattr(source, "snippet", "") or "")
+    per_file = [_file_currency("\n".join(chunks)) for chunks in texts.values()]
+    if not per_file or any(len(codes) != 1 for codes in per_file) or len(set().union(*per_file)) != 1:
+        return None
+    return per_file[0].pop()
 
 
 def document_amounts_rule(currency: str | None) -> str:
@@ -249,9 +261,9 @@ def document_amounts_rule(currency: str | None) -> str:
             "or £0.58 m), with no currency symbol.")
     if currency:
         return rule + f" The documents state {currency}: name it once.\n"
-    return rule + (" The documents state no currency: say once that the currency is not stated in the file, and "
-                   "name no currency code or symbol; never infer one from wording such as \"corporation tax\" or "
-                   "\"Ltd\".\n")
+    return rule + (" Not every document states one currency: give a currency only for a document that states it, "
+                   "and say the currency is not stated for any other; never carry one document's currency to "
+                   "another or infer one from wording such as \"corporation tax\" or \"Ltd\".\n")
 
 
 def without_currency_symbols(text: str, currency: str | None) -> tuple[str, list[str]]:

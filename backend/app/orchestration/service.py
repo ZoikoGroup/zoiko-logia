@@ -4033,8 +4033,7 @@ async def ask_kriton(
         grounded_input += STATEMENT_RULES
     if document_sources:
         from app.orchestration.statement_rules import document_amounts_rule, source_currency
-        grounded_input += document_amounts_rule(
-            source_currency("\n".join(getattr(s, "snippet", "") or "" for s in document_sources)))
+        grounded_input += document_amounts_rule(source_currency(document_sources))
     # The method, not the answer, for calculations whose arithmetic was right
     # and method wrong in the 23 Oct 2026 review (accounting_methods.py).
     from app.orchestration.accounting_methods import accounting_method_guidance
@@ -5528,8 +5527,7 @@ async def ask_kriton(
         from app.orchestration.statement_rules import (
             source_currency, without_currency_symbols, without_dangling_period,
         )
-        final_text, currency_notes = without_currency_symbols(final_text, source_currency(
-            "\n".join(getattr(s, "snippet", "") or "" for s in document_sources)))
+        final_text, currency_notes = without_currency_symbols(final_text, source_currency(document_sources))
         final_text = without_dangling_period(final_text)
         limitations.extend(note for note in currency_notes if note not in limitations)
     if statement_request and not evidence_gap_only and not is_offdomain_refusal and (final_text or "").strip():
@@ -5777,10 +5775,14 @@ async def ask_kriton(
     ):
         try:
             export_narrative = final_text + _export_record(answer.limitations, answer.citations or rag_citations)
+            # An exported answer is not a management report (F03 export).
+            from app.orchestration.document_pipeline import previous_answer_to_export
+            export_title = ("Kriton Answer" if previous_answer_to_export(request.query, whole_conversation)
+                            else "Kriton Management Report")
             for format_name in document_plan.formats or (document_plan.output_format,):
                 artifact = await create_generated_artifact(
                     db,
-                    title="Kriton Management Report",
+                    title=export_title,
                     narrative=export_narrative,
                     analysis=document_analysis,
                     format_name=format_name,

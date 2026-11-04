@@ -419,3 +419,14 @@ def test_exporting_this_answer_exports_the_previous_answer_not_a_new_report():
     assert previous_answer_to_export("Save the above as a PDF", history) == "Released FY2025 revenue is 10,000 (p.1)."
     assert previous_answer_to_export("Generate a management report in Word.", history) is None
     assert previous_answer_to_export("Export this answer as a Word document.", []) is None
+
+
+def test_an_exported_answer_has_no_ref_markers_rules_or_joined_numbered_items():
+    # F03 export of 4 Nov: "[REF-2]" and "---" were printed, and "1. …" and "2. …" ran together.
+    from app.domains.kriton_workspace.document_spec import build_document_spec
+    narrative = ("Released revenue is 10,000 [REF-2].\n\n---\n\nThe two documents differ:\n\n"
+                 "1. The released revenue is 10,000.\n2. The trial balance lists 4,182,000.\n\n***\n")
+    spec = build_document_spec("Kriton Answer", narrative, {})
+    texts = [block.text for block in spec.blocks if block.type == "paragraph"]
+    assert texts == ["Released revenue is 10,000.", "The two documents differ:",
+                     "1. The released revenue is 10,000.", "2. The trial balance lists 4,182,000."]
