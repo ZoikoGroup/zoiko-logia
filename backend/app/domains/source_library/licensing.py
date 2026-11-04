@@ -48,8 +48,15 @@ def _normalise_scope(value: str) -> str:
     return value.strip().casefold()
 
 
+# "Any", "all" and "*" ask for no jurisdiction filter, as an empty value does:
+# "Any" was read as a jurisdiction of that name and excluded all 65 in-force
+# sources (reproduced 25 Oct 2026; the composer sends "" for its "Any" option,
+# but the knowledge-base tool's jurisdiction is the model's free text).
+_NO_JURISDICTION_FILTER = {"any", "all", "*"}
+
+
 def _scope_matches(configured: str, requested: str) -> bool:
-    if not requested:
+    if not requested or _normalise_scope(requested) in _NO_JURISDICTION_FILTER:
         return True
     values = {_normalise_scope(item) for item in configured.split(",") if item.strip()}
     return not values or "global" in values or _normalise_scope(requested) in values
