@@ -238,6 +238,12 @@ def facts_block(s: ChatStatement) -> str:
             f"{_fmt(a['net_finance'])}; profit before tax {_fmt(a['profit_before_tax'])}; tax {_fmt(a['tax'])}; "
             f"profit for the year {_fmt(a['profit_for_the_year'])}. Other operating income sits above operating "
             "profit. Prefer a short comparison of the lines that change over a second full statement.")
+        # The account rows too: a second table listed Bank charges under
+        # operating expenses and again in finance costs, beside a 574,000
+        # total that excludes it (retest of 4 Nov 2026).
+        out.append("In the alternative, these accounts move and appear only under their new heading: " + "; ".join(
+            f"{c.account} {_fmt(c.amount)} from {c.shown.lower()} to {c.alternative.lower()}" for c in s.choices)
+            + ". Every other account stays where it is. The rows under each heading must add up to its subtotal.")
     if s.cost_of_sales_candidates:
         total = sum((abs(b) for _, b in s.cost_of_sales_candidates), ZERO)
         out.append("Shown in operating expenses but could be cost of sales: " + ", ".join(

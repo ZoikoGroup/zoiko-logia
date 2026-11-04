@@ -138,3 +138,7 @@ def test_the_alternative_statement_is_computed_line_by_line():
     assert ("other operating income 12,000; operating expenses 574,000; operating profit 233,500; finance income 0; "
             "finance costs 17,100; net finance -17,100") in block
     assert "copy these; do not recompute" in block
+    # A second table listed Bank charges under operating expenses beside a 574,000 total.
+    assert "Bank charges 2,900 from administrative expenses to interest payable and similar expenses" in block
+    assert "Interest received 12,000 from interest receivable and similar income to other operating income" in block
+    assert "The rows under each heading must add up to its subtotal" in block
