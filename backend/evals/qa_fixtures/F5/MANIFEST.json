@@ -10,13 +10,13 @@
  },
  "specification": "NB-SCAN-LOWRES.pdf: scanned invoice with deliberately unclear amount.",
  "derivations": [
-  "An image-only PDF (no text layer) of a synthetic invoice, downsampled and blurred; the amount's digits are partly unreadable by construction ('4,1?8.?5'), so no exact amount exists to recover."
+  "An image-only PDF (no text layer, no footer) of a synthetic invoice, downsampled and blurred; the amount's digits are partly unreadable by construction ('4,1?8.?5'), so no exact amount exists to recover."
  ],
  "files": [
   {
    "name": "NB-SCAN-LOWRES.pdf",
-   "sha256": "d7c6f0df1dac2322c6454ffb2f597cf0ba87cbda5e5e26169475bd7d3cd49525",
-   "bytes": 50399,
+   "sha256": "b7afd40c25dff82c083341df9bce41d1f0baf511e0dfab3e6d40a42911db4f9c",
+   "bytes": 50329,
    "uploadable": true,
    "used_by": [
     "H03"

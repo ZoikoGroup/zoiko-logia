@@ -8,14 +8,14 @@ change only through the service's revision-checked, ratified path, and are
 never deleted.
 
 Revision ID: g2a3b4c5d6e7
-Revises: f1y2z3a4b5c6
+Revises: h3b4c5d6e7f8
 """
 from typing import Sequence, Union
 
 from alembic import op
 
 revision: str = "g2a3b4c5d6e7"
-down_revision: Union[str, Sequence[str], None] = "f1y2z3a4b5c6"
+down_revision: Union[str, Sequence[str], None] = "h3b4c5d6e7f8"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

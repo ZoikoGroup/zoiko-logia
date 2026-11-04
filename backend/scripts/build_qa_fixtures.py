@@ -206,7 +206,7 @@ def flow_diagram() -> bytes:
 
 
 # ── PDFs (reportlab, invariant so a rebuild is byte-identical) ─────────────
-def _pdf(pages: list[list[tuple]], *, title: str, image_pages: dict | None = None) -> bytes:
+def _pdf(pages: list[list[tuple]], *, title: str, image_pages: dict | None = None, footer: bool = True) -> bytes:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.utils import ImageReader
     from reportlab.pdfgen import canvas
@@ -230,8 +230,9 @@ def _pdf(pages: list[list[tuple]], *, title: str, image_pages: dict | None = Non
             c.setFont("Helvetica-Bold" if kind == "h" else "Helvetica", 14 if kind == "h" else 10)
             c.drawString(50, y, text)
             y -= 20 if kind == "h" else 15
-        c.setFont("Helvetica", 8)
-        c.drawString(50, 30, f"{title} · page {number} of {len(pages)}")
+        if footer:
+            c.setFont("Helvetica", 8)
+            c.drawString(50, 30, f"{title} · page {number} of {len(pages)}")
         c.showPage()
     c.save()
     return buffer.getvalue()
@@ -344,10 +345,12 @@ def build_f5() -> dict:
     ImageDraw.Draw(amount).text((5, 5), "4,1?8.?5", fill=60, font=_font(34))
     image.paste(amount.filter(ImageFilter.GaussianBlur(4)), (250, 310))
     scan = image.resize((300, 200)).filter(ImageFilter.GaussianBlur(1.2)).resize((900, 600))
-    return {"files": {"NB-SCAN-LOWRES.pdf": _pdf([[("image", _png(scan))]], title="NB-SCAN-LOWRES")},
-            "derivations": ["An image-only PDF (no text layer) of a synthetic invoice, downsampled and blurred; the "
-                            "amount's digits are partly unreadable by construction ('4,1?8.?5'), so no exact amount "
-                            "exists to recover."]}
+    # No footer: a footer is a text layer, and a page with that much text is
+    # not treated as scanned, so OCR never read the invoice (fixed 4 Nov 2026).
+    return {"files": {"NB-SCAN-LOWRES.pdf": _pdf([[("image", _png(scan))]], title="NB-SCAN-LOWRES", footer=False)},
+            "derivations": ["An image-only PDF (no text layer, no footer) of a synthetic invoice, downsampled and "
+                            "blurred; the amount's digits are partly unreadable by construction ('4,1?8.?5'), so no "
+                            "exact amount exists to recover."]}
 
 
 def build_f6() -> dict:
