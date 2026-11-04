@@ -29,6 +29,10 @@
     },
     "india_gst": {
       "min_pass_rate": 0.85
+    },
+    "accounting": {
+      "notes": "Reviewed accounting cases (evals/accounting_review.json). No minimum until an accountant signs off the expectations; a case that passed at the last accepted release still blocks if it fails.",
+      "min_pass_rate": 0.0
     }
   }
 }

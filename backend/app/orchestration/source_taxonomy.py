@@ -26,6 +26,7 @@ import re
 from urllib.parse import urlsplit
 
 from app.orchestration.source_catalogue import catalogue_domains
+from app.orchestration.country_scope import AUSTRIA_ALIASES
 
 # ── Topics ──────────────────────────────────────────────────────────────────
 # Deliberately seven. The eighteen-odd categories people name in conversation
@@ -267,6 +268,7 @@ _JURISDICTION_ALIASES: dict[str, tuple[str, ...]] = {
     "SINGAPORE": ("singapore",),
     "MALAYSIA": ("malaysia", "malaysian"),
     "AUSTRALIA": ("australia", "australian"),
+    "AUSTRIA": AUSTRIA_ALIASES,
     "NEW_ZEALAND": ("new zealand",),
     "CANADA": ("canada", "canadian"),
     "IRELAND": ("republic of ireland", "ireland", "irish"),
@@ -288,6 +290,24 @@ _JURISDICTION_ALIASES: dict[str, tuple[str, ...]] = {
 # UK and India. A GST question naming no country was searched on the open web
 # and cited Canadian GST/HST pages beside the Indian GST Council FAQ.
 _WEAK_ALIASES: dict[str, tuple[str, ...]] = {"UK": ("corporation tax", "vat"), "INDIA": ("gst",)}
+# A currency the question uses that belongs elsewhere: "What VAT rate applies
+# to my €5,000 sale?" was answered as a UK question (24 Oct 2026). A weak
+# inference stands only when every currency named is its own, or none is.
+_OWN_CURRENCY = {"UK": re.compile(r"£|\b(?:gbp|sterling|pounds?)\b", re.I),
+                 "INDIA": re.compile(r"₹|\b(?:inr|rs\.?|rupees?|lakhs?|crores?)\b", re.I)}
+_ANY_CURRENCY = re.compile(r"[£$€₹¥]|\b(?:gbp|usd|eur|inr|aed|sar|aud|cad|sgd|nzd|jpy|chf|sterling|pounds?|dollars?|"
+                           r"euros?|rupees?|dirhams?|riyals?|rs\.?|lakhs?|crores?)\b", re.I)
+
+
+def _currency_contradicts(key: str, lowered: str) -> bool:
+    named = [m.group(0) for m in _ANY_CURRENCY.finditer(lowered)]
+    return any(not _OWN_CURRENCY[key].fullmatch(currency) for currency in named)
+
+
+def currency_contradicts(jurisdiction: str, text: str) -> bool:
+    """The text uses a currency that is not the jurisdiction's own (€ for the
+    UK). False for a jurisdiction whose currency is not tracked here."""
+    return jurisdiction in _OWN_CURRENCY and _currency_contradicts(jurisdiction, (text or "").lower())
 # Text before an alias that means a different jurisdiction: Northern Ireland
 # is part of the UK, and HMRC guidance mentions it constantly.
 _ALIAS_EXCLUDED_PREFIXES: dict[str, tuple[str, ...]] = {"IRELAND": ("northern ",), "JERSEY": ("new ",)}
@@ -307,6 +327,39 @@ def source_jurisdiction(url: str | None) -> str | None:
             if any(host == domain or host.endswith("." + domain) for domain in domains):
                 return key
     return None
+
+
+# Who may state a rule, not who is worth searching: the trusted domains mix
+# governments and standard-setters with professional bodies and journals.
+# Standard-setters and intergovernmental bodies publish the standards
+# themselves; a government domain publishes the law and the tax authority's
+# guidance on it.
+_STANDARD_SETTERS = (
+    "ifrs.org", "iasb.org", "fasb.org", "frc.org.uk", "iaasb.org", "ethicsboard.org", "pcaobus.org", "sec.gov",
+    "oecd.org", "efrag.org", "europa.eu", "icai.org", "legislation.gov.uk", "law.cornell.edu", "indiacode.nic.in",
+    "canada.ca",
+)
+_GOVERNMENT_HOST = re.compile(r"(?:^|\.)(?:gov|gov\.[a-z]{2}|gc\.ca|nic\.in|europa\.eu)$|(?:^|\.)gov\.uk$")
+# Bodies of the profession: commentary and guidance, not the rule itself.
+_PROFESSIONAL = (
+    "icaew.com", "accaglobal.com", "cimaglobal.com", "tax.org.uk", "att.org.uk", "aicpa.org", "cipp.org.uk",
+    "icsi.edu", "icmai.in", "ifac.org", "accountancyeurope.eu", "journalofaccountancy.com", "nasba.org",
+)
+
+
+def source_authority(url: str | None) -> str:
+    """'official' for a government, legislation or standard-setter source;
+    'professional' for a professional body; 'web' for anything else. A
+    professional body's guidance and a web article explain a rule, they do
+    not make it."""
+    host = _hostname(url or "")
+    if not host:
+        return "web"
+    if _GOVERNMENT_HOST.search(host) or any(host == d or host.endswith("." + d) for d in _STANDARD_SETTERS):
+        return "official"
+    if any(host == d or host.endswith("." + d) for d in _PROFESSIONAL):
+        return "professional"
+    return "web"
 
 
 def jurisdiction_label(key: str) -> str:
@@ -344,7 +397,8 @@ def detect_jurisdictions(query: str, *, infer_from_tax_terms: bool = True) -> li
         if not infer_from_tax_terms:
             return []
         weak = [key for key, aliases in _WEAK_ALIASES.items()
-                if any(re.search(rf"\b{re.escape(alias)}\b", lowered) for alias in aliases)]
+                if any(re.search(rf"\b{re.escape(alias)}\b", lowered) for alias in aliases)
+                and not _currency_contradicts(key, lowered)]
         # Both "VAT" and "GST" with no country stays ambiguous.
         if len(weak) == 1:
             hits.append((0, weak[0]))

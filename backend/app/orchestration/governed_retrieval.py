@@ -36,6 +36,9 @@ class GovernedRetrievalContext:
     jurisdiction: str = ""
     framework: str = ""
     effective_date: date | None = None
+    period_start: date | None = None
+    period_end: date | None = None
+    requested_query: str = ""
     engagement_id: str | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -66,6 +69,9 @@ async def retrieve_governed_evidence(
     jurisdiction: str = "",
     framework: str = "",
     effective_date: date | None = None,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    requested_query: str | None = None,
     top_k: int = 8,
     engagement_id: str | None = None,
 ) -> tuple[SourceBundle, list[tuple[str, str, str]]]:
@@ -73,7 +79,8 @@ async def retrieve_governed_evidence(
     (passage_id, locator, content), in rank order."""
     preliminary = await build_source_bundle(
         db, query=query, jurisdiction=jurisdiction, tenant_id=tenant_id,
-        framework=framework, effective_date=effective_date, top_k=top_k, engagement_id=engagement_id,
+        framework=framework, effective_date=effective_date, period_start=period_start, period_end=period_end,
+        requested_query=requested_query, top_k=top_k, engagement_id=engagement_id,
     )
     licence = await license_gate.check_eligibility(
         db, preliminary.sources, tenant_id=tenant_id, jurisdiction=preliminary.jurisdiction,

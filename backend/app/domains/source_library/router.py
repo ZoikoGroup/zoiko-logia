@@ -86,6 +86,8 @@ async def post_source(
     jurisdiction_scope: str = Form("Global"),
     framework_scope: str = Form(""),
     note: str = Form(""),
+    reporting_period_start: date | None = Form(None),
+    reporting_period_end: date | None = Form(None),
     effective_from: date | None = Form(None),
     effective_to: date | None = Form(None),
     source_url: str | None = Form(None),
@@ -112,25 +114,30 @@ async def post_source(
                 detail=f"File registration requires explicit allow rights for: {', '.join(missing)}",
             )
     file_path = await save_uploaded_file(file, actor.tenant_id) if file is not None else None
-    payload = SourceCreateRequest(
-        category=category,
-        title=title,
-        publisher=publisher,
-        owner=owner,
-        source_class=source_class,
-        jurisdiction_scope=jurisdiction_scope,
-        framework_scope=framework_scope,
-        note=note or (f"Uploaded: {file.filename}" if file is not None else ""),
-        file_path=file_path,
-        effective_from=effective_from,
-        effective_to=effective_to,
-        source_url=source_url,
-        published_at=published_at,
-        original_language=original_language,
-        translation_of_version_id=translation_of_version_id,
-        rights=rights,
-        terms_reference=terms_reference,
-    )
+    try:
+        payload = SourceCreateRequest(
+            category=category,
+            title=title,
+            publisher=publisher,
+            owner=owner,
+            source_class=source_class,
+            jurisdiction_scope=jurisdiction_scope,
+            framework_scope=framework_scope,
+            note=note or (f"Uploaded: {file.filename}" if file is not None else ""),
+            file_path=file_path,
+            reporting_period_start=reporting_period_start,
+            reporting_period_end=reporting_period_end,
+            effective_from=effective_from,
+            effective_to=effective_to,
+            source_url=source_url,
+            published_at=published_at,
+            original_language=original_language,
+            translation_of_version_id=translation_of_version_id,
+            rights=rights,
+            terms_reference=terms_reference,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     source = await create_source(db, actor.id, payload, tenant_id=actor.tenant_id)
     return SourcePublic.model_validate(source)
 
@@ -139,10 +146,11 @@ async def post_source(
 async def post_approve(
     source_id: str,
     version_id: str,
+    predecessor_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(require_permission(SOURCE_MANAGE)),
 ) -> SourcePublic:
-    source = await approve_source_version(db, actor.id, source_id, version_id, tenant_id=actor.tenant_id)
+    source = await approve_source_version(db, actor.id, source_id, version_id, tenant_id=actor.tenant_id, authenticated_actor=actor, predecessor_id=predecessor_id)
     return SourcePublic.model_validate(source)
 
 

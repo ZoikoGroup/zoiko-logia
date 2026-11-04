@@ -9,10 +9,12 @@ from app.orchestration.governed_retrieval import GovernedRetrievalContext, bind_
 
 
 def _bundle(states):
-    sources = [SimpleNamespace(id=f"s{i}", title=f"Notice {i}", source_url=f"https://www.gov.uk/n{i}", effective_from=None)
+    sources = [SimpleNamespace(id=f"s{i}", title=f"Notice {i}", source_url=f"https://www.gov.uk/n{i}", effective_from=None, version_id=f"v{i}",
+                               evidence_jurisdiction="United Kingdom",jurisdiction_scope="United Kingdom",
+                               evidence_period_start=None,evidence_period_end=None)
                for i in range(len(states))]
-    passages = [SimpleNamespace(passage_id=f"p{i}", source_id=f"s{i}") for i in range(len(states))]
-    return SimpleNamespace(sources=sources, passages=passages, confidence_state="sufficient",
+    passages = [SimpleNamespace(passage_id=f"p{i}", source_id=f"s{i}", source_version_id=f"v{i}") for i in range(len(states))]
+    return SimpleNamespace(sources=sources, passages=passages, confidence_state="sufficient", clarification_required="",
                            source_display_states={f"s{i}": state for i, state in enumerate(states)})
 
 
@@ -56,3 +58,19 @@ async def test_no_governed_passage_is_reported_as_a_gap(monkeypatch):
     finally:
         reset_context(token)
     assert not result.ok and result.error_code == "no_data"
+
+
+async def test_tool_cannot_remove_the_active_jurisdiction_filter(monkeypatch):
+    calls={}
+    async def fake_retrieve(db,**kwargs):
+        calls.update(kwargs)
+        return _bundle([]),[]
+    monkeypatch.setattr(governed_retrieval,"retrieve_governed_evidence",fake_retrieve)
+    token=bind_context(GovernedRetrievalContext(db=object(),tenant_id="t",user_id="u",query_id="q",jurisdiction="United Kingdom"))
+    try:
+        await kb_tool._handle(kb_tool.KnowledgeBaseArgs(query="VAT rate",jurisdiction="Any"))
+        assert calls["jurisdiction"] == "United Kingdom"
+        conflict=await kb_tool._handle(kb_tool.KnowledgeBaseArgs(query="VAT rate",jurisdiction="India"))
+        assert conflict.error_code == "clarification_required"
+    finally:
+        reset_context(token)

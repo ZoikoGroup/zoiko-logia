@@ -102,6 +102,9 @@ async def get_current_user(
     if not user.is_active:
         raise credentials_error
     user.auth_aal = claims.aal
+    user.auth_method = "session"
+    user.auth_subject = claims.sub
+    user.auth_verified = True
 
     # Re-scope RLS to the tenant this user actually belongs to.
     #

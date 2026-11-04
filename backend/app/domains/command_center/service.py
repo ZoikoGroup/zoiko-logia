@@ -389,13 +389,19 @@ async def incident_snapshot(db: AsyncSession, tenant_id: str) -> dict:
 async def source_snapshot(db: AsyncSession, tenant_id: str, now: datetime) -> dict:
     visible = _visible_sources(tenant_id)
     in_use = SourceVersion.status.not_in(("WITHDRAWN", "REVOKED"))
+    from app.domains.source_library.models import SourceApproval
+    independent = select(SourceApproval.version_id).where(
+        SourceApproval.version_id == SourceVersion.id,
+        SourceApproval.approver_id == SourceVersion.approved_by,
+        SourceApproval.submitter_person_id != SourceApproval.reviewer_person_id,
+    ).exists()
     counts = (await db.execute(
         select(
             func.count(),
             _count(SourceVersion.status == "PROPOSED"),
             _count(SourceVersion.status.in_(("WITHDRAWN", "REVOKED"))),
-            _count(in_use, SourceVersion.quality_state == "REVIEWED"),
-            _count(in_use, SourceVersion.quality_state != "REVIEWED"),
+            _count(in_use, independent),
+            _count(in_use, ~independent),
             func.max(SourceVersion.created_at),
             select(func.count()).select_from(Source).where(visible, Source.licence_state != "permitted").scalar_subquery(),
         ).select_from(SourceVersion).join(Source, Source.id == SourceVersion.source_id).where(visible)

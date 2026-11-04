@@ -75,7 +75,8 @@ from app.orchestration.audit_events import (
     audit_release_check_degraded, audit_release_check_completed,
     audit_clarification_returned, audit_security_incident_recorded,
     audit_response_finalised, audit_response_returned, audit_answer_statements_removed,
-    audit_answer_figure_provenance,
+    audit_answer_figure_provenance, audit_accounting_review_flagged, audit_evidence_validation_completed,
+    audit_answer_verification_recorded,
     audit_licence_prefilter_completed, audit_licence_denied,
     audit_bundle_built, audit_validation_completed,
     audit_redaction_applied,
@@ -935,6 +936,99 @@ def removal_stage(stage: str, before: str, after: str, removed: list[tuple[str, 
     }
 
 
+_DATA_FRESHNESS = {"realtime", "delayed", "historical", "daily", "monthly", "annual", "current"}
+_REGISTERED_AUTHORITY = {"primary": "official", "secondary": "secondary", "internal": "internal"}
+
+
+def source_provenance(source) -> dict:
+    """Who stands behind a retrieved source and whose law it states, for its
+    citation: an uploaded document, a regulatory filing or legislation, a
+    data connector, or a web page classed by its publisher's domain."""
+    from app.orchestration.source_taxonomy import source_authority, source_jurisdiction
+    if source.provider == "uploaded_document":
+        authority = "document"
+    elif source.freshness in ("filing", "legislation"):
+        authority = "official"
+    elif source.freshness in _DATA_FRESHNESS:
+        authority = "data"
+    elif source.provider == "Governed source register" and not source.url:
+        authority = "internal"
+    else:
+        authority = source_authority(source.url)
+    return {"authority": authority, "jurisdiction": source_jurisdiction(source.url)}
+
+
+def registered_provenance(source) -> dict:
+    """The same for a governed source: as registered, with the dates its
+    version is in force (SourceSummary)."""
+    from app.orchestration.source_taxonomy import detect_jurisdictions
+    scope = detect_jurisdictions(source.jurisdiction_scope or "", infer_from_tax_terms=False)
+    return {"authority": _REGISTERED_AUTHORITY.get(source.authority_level, "secondary"),
+            "jurisdiction": scope[0] if len(scope) == 1 else None,
+            "effective_from": source.effective_from, "effective_to": source.effective_to,
+            "source_version_id": source.version_id or None}
+
+
+def calculation_audit_entry(calculation) -> dict | None:
+    """The canonical calculation as the audit keeps it: its fingerprint, the
+    formulas, and each output's exact value (the user's own figures, no text)."""
+    if calculation is None:
+        return None
+    return {"calculation_id": calculation.fingerprint(), "formula_ids": list(calculation.formula_ids),
+            "outputs": [{"name": o.name, "value": None if o.value is None else str(o.value),
+                         "display_value": o.display_value} for o in calculation.outputs]}
+
+
+def _receipt_values(receipts: list[dict]) -> list[float]:
+    values = []
+    for receipt in receipts or []:
+        for key in ("result", "rounded"):
+            try:
+                values.append(float(str(receipt.get(key, "")).replace(",", "")))
+            except ValueError:
+                continue
+    return values
+
+
+def citation_provenance_entries(citations) -> list[dict]:
+    """Each cited source as the audit keeps it: reference, source and version,
+    authority, jurisdiction, dates in force and publisher host — no text."""
+    from urllib.parse import urlsplit
+    return [{"ref": c.ref_id, "source_id": c.source_id, "source_version_id": c.source_version_id,
+             "authority": c.authority, "jurisdiction": c.jurisdiction,
+             "effective_from": c.effective_from.isoformat() if c.effective_from else None,
+             "effective_to": c.effective_to.isoformat() if c.effective_to else None,
+             "host": urlsplit(c.url).hostname if c.url else None, "provider": c.provider}
+            for c in citations]
+
+
+def evidence_finding_entries(findings) -> list[dict]:
+    """Evidence findings for the audit trail: code, cited references, a hash
+    and a redacted excerpt, never the answer text."""
+    from app.orchestration.redaction import redact_for_external_exposure
+    from app.orchestration.verification_service import REVIEW_FINDING_CODES, UNSUPPORTED_FINDING_CODES
+    entries = []
+    for finding in findings[:_MAX_REMOVED_PER_STAGE]:
+        excerpt = redact_for_external_exposure(re.sub(r"\s*\[REF-\d+\]", "", finding.statement)).redacted_text
+        entries.append({"code": finding.code, "refs": list(finding.refs), "review": finding.code in REVIEW_FINDING_CODES,
+                        "review_type": "evidence" if finding.code in UNSUPPORTED_FINDING_CODES else "source_authority",
+                        "statement_hash": _hash_query(finding.statement),
+                        "excerpt": excerpt[:_EXCERPT_CHARS] + ("…" if len(excerpt) > _EXCERPT_CHARS else "")})
+    return entries
+
+
+def accounting_review_entries(findings) -> list[dict]:
+    """Accounting findings for the audit trail, kept like removed statements:
+    a rule id, a hash and a redacted excerpt, never the answer text."""
+    from app.orchestration.redaction import redact_for_external_exposure
+    entries = []
+    for finding in findings[:_MAX_REMOVED_PER_STAGE]:
+        excerpt = redact_for_external_exposure(re.sub(r"\s*\[REF-\d+\]", "", finding.statement)).redacted_text
+        entries.append({"rule": finding.rule, "statement_hash": _hash_query(finding.statement),
+                        "excerpt": excerpt[:_EXCERPT_CHARS] + ("…" if len(excerpt) > _EXCERPT_CHARS else "")})
+    return entries
+
+
 # The question supplies its own scenario and names the framework to apply.
 # Told only to cite, the model answered "the sources provided do not state
 # this" for VIE, subsequent-event and internal-control scenarios (22 Oct 2026).
@@ -1067,6 +1161,100 @@ def _agent_tool_evidence(agent_outcome, ref_offset: int) -> str:
     return "\n\n=== Tool results (cite by these REF ids) ===\n" + "\n\n".join(
         f"[REF-{start + i + 1}] {source.title}\n{source.snippet}" for i, source in enumerate(agent_outcome.sources)
     )
+
+
+# Risk says how much harm a wrong answer could do, not how much reasoning it
+# takes. 71% of questions in a week were ZERO or LOW risk and went to the
+# small fast model, including "Explain this comparison with a grounded
+# example": it counted £50,000 of VAT-inclusive purchases as the input VAT,
+# added VAT to the company's "tax burden" and debited tax expense on payment
+# (24 Oct 2026). Work that applies rules to figures keeps the full model.
+_REASONING_WORK = re.compile(
+    r"[£$€₹]\s?\d|\d\s?%|\b\d{1,3}(?:,\d{3})+\b|\b\d{5,}\b"
+    r"|\b(?:calculat\w*|comput\w*|work\s+out|how\s+much|journal|entr(?:y|ies)|record(?:ed|ing)?\s+(?:the|this|a|an)\b"
+    r"|reconcil\w*|depreciat\w*|amortis\w*|amortiz\w*|consolidat\w*|accru\w*|defer\w*|impair\w*|ratio|EPS"
+    r"|compar\w*|versus|vs\.?|differences?\s+between|treatment|account\s+for"
+    r"|present\s+value|NPV|IRR|EMI|leases?|workflow|(?:tax|VAT|GST)\s+(?:on|payable|due|liabilit\w*))\b",
+    re.I,
+)
+
+
+def reasoning_signal(question: str) -> str | None:
+    """What in the question needs the full answer model whatever the risk —
+    rules applied to figures, entries, a comparison, a worked example, or a
+    follow-up chip on an earlier answer (" Context: ") — or None."""
+    question = question or ""
+    if " Context: " in question:
+        return "follow-up chip"
+    if is_derived_output_request(question):
+        return "derived output (example, checklist, steps)"
+    match = _REASONING_WORK.search(question)
+    return f"reasoning work ({match.group(0).strip()!r})" if match else None
+
+
+def needs_reasoning(question: str) -> bool:
+    return reasoning_signal(question) is not None
+
+
+def answer_model_route(question: str, *, risk_level: str, fast_available: bool, multi_question: bool = False,
+                       follows_up: bool = False, has_documents: bool = False,
+                       task_type: str = "general_question") -> tuple[str | None, str]:
+    """The answer model override (None: the provider's full model) and why.
+
+    The fast model is a speed choice for a plain low-risk question, nothing
+    more: risk decides safety and policy, never by itself the model. Every
+    entry point — a typed question, an Explore-further chip, a chart offer, a
+    quick mode, a conversation follow-up — reaches this one decision."""
+    if not fast_available:
+        return None, "full model: no fast model for the active provider"
+    if risk_level not in ("ZERO", "LOW"):
+        return None, f"full model: {risk_level} risk"
+    reasons = [reason for reason, applies in (
+        ("several questions", multi_question),
+        ("follow-up on the conversation", follows_up),
+        ("documents attached", has_documents),
+        (f"task type {task_type}", task_type != "general_question"),
+    ) if applies]
+    signal = reasoning_signal(question)
+    if signal:
+        reasons.append(signal)
+    if reasons:
+        return None, "full model: " + "; ".join(reasons)
+    return os.getenv("GROQ_FAST_ANSWER_MODEL", "openai/gpt-oss-20b"), f"fast model: plain {risk_level} risk question"
+
+
+_REPAIR_SEARCHES = 2
+
+
+async def _figure_repair_evidence(text: str, unsupported: list[str], context, seconds: float) -> str:
+    """Governed passages stating figures the answer could not trace, looked up
+    before any is removed. An answer composed without the agent was checked
+    only against the passages retrieved for the question: "what is tax" lost
+    the UK VAT rates of 20% and 5%, which the knowledge base states, as
+    unverified (24 Oct 2026). Each statement is searched as the agent searches
+    it (agent._backfill_queries), within `seconds`."""
+    from app.domains.model_gateway.agent import _backfill_queries
+    from app.domains.model_gateway.tools.kb_tool import KnowledgeBaseArgs, _handle
+    from app.orchestration.governed_retrieval import bind_context, reset_context
+
+    deadline = time.monotonic() + seconds
+    found: list[str] = []
+    token = bind_context(context)
+    try:
+        for query in _backfill_queries(text, unsupported)[:_REPAIR_SEARCHES]:
+            left = deadline - time.monotonic()
+            if left < 3:
+                break
+            try:
+                result = await asyncio.wait_for(_handle(KnowledgeBaseArgs(query=query)), timeout=left)
+            except Exception:
+                logger.warning("figure repair search failed", exc_info=True)
+                continue
+            if result.ok:
+                found.append(result.content)
+    finally:
+        reset_context(token)
+    return "\n\n".join(found)
 
 
 _partial_answer_active: ContextVar[bool] = ContextVar("partial_answer_active", default=False)
@@ -1360,6 +1548,15 @@ async def ask_kriton(
     # What verification removed from the answer, by stage (removal_stage);
     # written as one audit event when the response is finalised.
     removed_statements: list[dict] = []
+    # The full text behind each reference, and the registered versions the
+    # source bundle marks as conflicting, for the evidence checks on what is
+    # released (verification_service.evidence_findings).
+    cited_text_by_ref: dict[str, str] = {}
+    bundle_conflicts: list[str] = []
+    # The deterministic engine's result from the user's own figures, the
+    # authority for the figures it computed (accounting_validation.
+    # calculation_discrepancies).
+    authoritative_calculation: list = []
     # Figures whose statements the release figure gate removed (selective withholding).
     service_removed_figures: list[str] = []
     service_unsupported_balances: list[str] = []
@@ -1407,11 +1604,56 @@ async def ask_kriton(
         preference = response.visualization_intent.user_requested_type
         if response.visualization is not None and preference in {'line','bar','column','pie','donut','waterfall','flowchart'} and detect_explicit_visual_request(request.query):
             response.visualization.user_requested_type = preference
+        # Accounting treatment, checked on what is released whatever path
+        # composed it. A finding is disclosed and audited, never rewritten:
+        # the arithmetic check passing does not make the treatment right.
+        accounting_review = []
+        if response.outcome == 'answered' and response.answer is not None:
+            from app.orchestration.accounting_validation import (
+                accounting_findings, accounting_review_note, calculation_discrepancies, calculation_note,
+            )
+            treatment = accounting_findings(response.answer.text or '')
+            # Figures the engine computed from the user's own figures, as the
+            # answer states them.
+            mismatches = calculation_discrepancies(response.answer.text or '',
+                                                   authoritative_calculation[0] if authoritative_calculation else None)
+            accounting_review = treatment + mismatches
+            notes = [note for note in (accounting_review_note(treatment), calculation_note(mismatches))
+                     if note and note not in response.answer.limitations]
+            if notes:
+                response.answer = response.answer.model_copy(update={
+                    'limitations': [*response.answer.limitations, *notes]})
+        # Evidence, checked the same way: a citation is not proof. Findings
+        # are disclosed and audited with each cited source's provenance.
+        from app.orchestration.verification_service import UNSUPPORTED_FINDING_CODES, evidence_findings, evidence_notes
+        evidence_review = []
+        if response.outcome == 'answered' and response.answer is not None and response.answer.citations:
+            evidence_review = evidence_findings(
+                response.answer.text or '', question=request.query, evidence_by_ref=cited_text_by_ref,
+                citations=response.answer.citations,
+                facts="\n".join([request.query, *(m.content for m in request.conversation_history if m.role == 'user')]),
+                derived=_receipt_values(released_receipts), conflict_version_ids=bundle_conflicts)
+            notes = [note for note in evidence_notes(evidence_review) if note not in response.answer.limitations]
+            if notes:
+                response.answer = response.answer.model_copy(update={
+                    'limitations': [*response.answer.limitations, *notes]})
+        # Set before the status is computed and before the report gate below,
+        # so neither can present it as complete: an answer whose treatment or
+        # evidence needs review is not shown as fully answered and source
+        # grounded, on the page or in the audit. A source-authority review
+        # alone leaves it as it is.
+        if (response.answer is not None and response.answer.completeness != 'none'
+                and (accounting_review or any(f.code in UNSUPPORTED_FINDING_CODES for f in evidence_review))):
+            response.answer = response.answer.model_copy(update={'completeness': 'partial'})
         if response.answer is not None:
             response.requested_deliverables = check_requested_deliverables(request.query, response.answer.text or '',
-                has_visual=bool(response.visualization or response.secondary_visualizations))
+                has_visual=bool(response.visualization or response.secondary_visualizations),
+                calculation=authoritative_calculation[0] if authoritative_calculation else None)
             missing = [d.description for d in response.requested_deliverables if d.status == 'incomplete']
             if missing:
+                if 'Credit-sale journal entry' in missing:
+                    response.next_action = NextAction(type='journal_review_required',
+                        message='The requested credit-sale journal entry has not been fully provided and validated.')
                 response.answer = response.answer.model_copy(update={'limitations':[*response.answer.limitations,
                     'Incomplete answer: ' + '; '.join(missing) + '.']})
                 if response.visualization is None:
@@ -1443,6 +1685,25 @@ async def ask_kriton(
                     response.answer = response.answer.model_copy(update={
                         'text': text, 'output_text': text, 'completeness': 'partial',
                         'limitations': [*response.answer.limitations, message]})
+        # What was verified, part by part, once the status is settled.
+        canonical = authoritative_calculation[0] if authoritative_calculation else None
+        mismatches = [f for f in accounting_review if f.rule == "calculation_mismatch"]
+        if response.answer is not None:
+            from app.orchestration.verification_service import ASSUMPTION_MARKERS, verification_breakdown
+            if canonical is not None and response.outcome == 'answered':
+                # An answer the model wrote around the calculation states its
+                # assumptions too: "£14,000 is payable" assumed all the input
+                # VAT recoverable without saying so (24 Oct 2026).
+                stated = [note for note in canonical.notes if ASSUMPTION_MARKERS.search(note)
+                          and note not in (response.answer.text or '') and note not in response.answer.limitations]
+                if stated:
+                    response.answer = response.answer.model_copy(update={
+                        'limitations': [*response.answer.limitations, *stated]})
+            response.answer = response.answer.model_copy(update={'verification': verification_breakdown(
+                completeness=response.answer.completeness, citations=len(response.answer.citations),
+                limitations=response.answer.limitations, calculation=canonical, receipts=len(released_receipts),
+                mismatches=mismatches, treatment=[f for f in accounting_review if f.rule != "calculation_mismatch"],
+                evidence=evidence_review, computed=response.answer.computed_from_question)})
         if (response.outcome == 'answered' and response.answer is not None and response.visualization is None
                 and not response.secondary_visualizations and '```chart' not in (response.answer.text or '')
                 and not detect_explicit_visual_request(request.query)):
@@ -1492,6 +1753,26 @@ async def ask_kriton(
                 audit_chain_id=audit_chain_id, actor_id=actor_id, stages=removed_statements,
                 completeness=response.answer.completeness if response.answer else None, outcome=response.outcome,
             )
+        if accounting_review:
+            await audit_accounting_review_flagged(
+                db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+                audit_chain_id=audit_chain_id, actor_id=actor_id,
+                findings=accounting_review_entries(accounting_review))
+        if response.answer is not None and response.answer.verification is not None:
+            await audit_answer_verification_recorded(
+                db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+                audit_chain_id=audit_chain_id, actor_id=actor_id,
+                verification=response.answer.verification.model_dump(),
+                calculation=calculation_audit_entry(canonical),
+                mismatches=[{"output": f.output, "stated": f.stated, "expected": f.expected,
+                             "statement_hash": _hash_query(f.statement)} for f in mismatches],
+                answer_hash=_hash_query(response.answer.text or ''))
+        if response.outcome == 'answered' and response.answer is not None and response.answer.citations:
+            await audit_evidence_validation_completed(
+                db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+                audit_chain_id=audit_chain_id, actor_id=actor_id,
+                sources=citation_provenance_entries(response.answer.citations),
+                findings=evidence_finding_entries(evidence_review))
         await _finalise_and_return(
             db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
             audit_chain_id=audit_chain_id, actor_id=actor_id,
@@ -1684,12 +1965,13 @@ async def ask_kriton(
     from app.orchestration.input_requirements import (
         expense_followup_query, missing_tax_inputs, needs_invoice_attachment, gst_answer_gaps, references_attachment,
     )
-    from app.orchestration.input_requirements import missing_vat_inputs, statement_not_question
+    from app.orchestration.input_requirements import missing_vat_country, missing_vat_inputs, statement_not_question
     # An attached file may state the rate and treatment; it is read on the
     # evidence path, which must state its assumptions, rather than asked for.
     missing_input_message = (missing_tax_inputs(request.query)
                              or (None if request.document_ids
                                  else missing_vat_inputs(request.query, request.conversation_history))
+                             or missing_vat_country(request.query)
                              or statement_not_question(request.query))
     if (not missing_input_message and not request.conversation_history and not request.document_ids
             and dangling_reference(request.query)):
@@ -1909,6 +2191,11 @@ async def ask_kriton(
     if ('structured_operating_statement' in calculation_result.formula_ids
             and re.fullmatch(r'Explain which margins change(?: and why)?[.!]?', uncalculated_part(request.query), re.I)):
         supported_explanation = True
+    # The one canonical result for this request, recorded before the
+    # calculation route returns: the answer, the calculation check and the
+    # audit record all refer to it (and to its fingerprint).
+    if calculation_result.status == "success":
+        authoritative_calculation[:] = [calculation_result]
     if ('break_even_units' in calculation_result.formula_ids
             and any(i.name == 'capacity' for i in calculation_result.inputs)
             and re.fullmatch(r'Explain whether that profit target is achievable within capacity[.!]?',uncalculated_part(request.query),re.I)):
@@ -1919,6 +2206,11 @@ async def ask_kriton(
             and re.search(r'\b(?:discrepancy|reconcile|reconciliation)\b', request.query, re.I)
             and not re.search(r'\b(?:retrieve|latest|why|pricing|strategy|benchmark|tax rate|exchange rate|IFRS|IAS)\b', request.query, re.I)):
         supported_explanation = True
+    from app.orchestration.answer_coverage import credit_sale_journal_requested
+    if calculation_result.status == "success" and credit_sale_journal_requested(request.query):
+        # VAT arithmetic is only one component; composition must attempt the
+        # requested entry and final coverage must independently validate it.
+        calculation_needs_evidence = True
     if calculation_result.status == "success" and uncalculated_part(request.query) and not supported_explanation:
         # "Calculate the gross margin, and tell me the ONS average for UK
         # cafés": the calculator answered the margin and the second part was
@@ -2178,10 +2470,13 @@ async def ask_kriton(
                 # A pasted document is searched by its title and the
                 # standards it names, not by its full text.
                 query=search_focus(request.query),
+                requested_query=request.query,
                 jurisdiction=request.jurisdiction,
                 tenant_id=tenant_id,
                 framework=(effective_context.framework or "") if effective_context else "",
                 effective_date=effective_context.period_end if effective_context else None,
+                period_start=effective_context.period_start if effective_context else None,
+                period_end=effective_context.period_end if effective_context else None,
                 engagement_id=effective_context.engagement_id if effective_context else None,
             ),
         )
@@ -2264,6 +2559,20 @@ async def ask_kriton(
         )
         logger.exception("Governed source retrieval failed; continuing without a source bundle")
         source_bundle = None
+
+    if source_bundle and source_bundle.clarification_required:
+        await audit_clarification_returned(
+            db, query_id=query_id, correlation_id=correlation_id, tenant_id=tenant_id,
+            audit_chain_id=audit_chain_id, actor_id=actor_id, clarification_cycle=clarification_cycle,
+        )
+        return await finish(AskKritonResponse(
+            query_id=query_id, correlation_id=correlation_id,
+            outcome="clarification_required", route=ROUTE_CLARIFICATION,
+            safety=SafetyState(risk_level="LOW", policy_state="needs_more_context"),
+            confidence_state=CONF_INSUFFICIENT, source_bundle=source_bundle,
+            next_action=NextAction(type="ask_clarifying_question", message=source_bundle.clarification_required),
+            audit_reference=AuditReference(audit_chain_id=audit_chain_id),
+        ))
 
     # ── Step 5: Classify risk (after bundle_builder.py, ZL-ENG-03 §5.6) +
     # resolve route from versioned policy matrix (§8) ────────────────────────
@@ -2715,25 +3024,26 @@ async def ask_kriton(
         )
         if source_bundle else []
     )
-    source_by_id = {source.id: source for source in source_bundle.sources} if source_bundle else {}
+    source_by_id = {source.version_id: source for source in source_bundle.sources} if source_bundle else {}
     selection_by_passage = {
         passage.passage_id: passage for passage in source_bundle.passages
     } if source_bundle else {}
     governed_citations: list[SourceCitation] = []
     for passage_id, locator, content in governed_passages:
         selection = selection_by_passage[passage_id]
-        source = source_by_id[selection.source_id]
-        display_state = source_bundle.source_display_states.get(source.id, "internal_reasoning_only")
+        source = source_by_id[selection.source_version_id]
+        display_state = source_bundle.source_display_states.get(source.version_id, source_bundle.source_display_states.get(source.id, "internal_reasoning_only"))
         if display_state == "internal_reasoning_only":
             continue
         governed_citations.append(SourceCitation(
             ref_id="",
             source_id=passage_id,
-            title=f"{source.title} — {locator}",
+            title=f"[{source.evidence_jurisdiction or source.jurisdiction_scope}; {source.evidence_period_start} to {source.evidence_period_end}] {source.title} — {locator}",
             evidence_preview=content[:240].strip() if display_state == "show" else None,
             provider="Governed source register",
             url=source.source_url,
             freshness="registered_version",
+            **registered_provenance(source),
         ))
 
     evidence_scope = _evidence_scope(request.source_scope, bool(request.document_ids), bool(document_sources))
@@ -2760,6 +3070,7 @@ async def ask_kriton(
             provider=s.provider,
             fetched_at=s.fetched_at,
             freshness=s.freshness,
+            **source_provenance(s),
         )
         for i, s in enumerate(evidence_sources)
     ]
@@ -2893,6 +3204,8 @@ async def ask_kriton(
                 "\n\n=== Governed registered evidence ===\n"
                 "Use these approved passages for material professional claims, citing their exact [REF-N] IDs. "
                 "Never cite INTERNAL-GOV text or present it as displayable evidence. "
+                "Keep each jurisdiction separately labelled in the answer and cite only that jurisdiction’s evidence for its rules. "
+                "Never transfer a rate, threshold or rule between countries. "
                 "If they conflict or do not support the requested conclusion, say so.\n"
                 f"{authority_context}"
             )
@@ -2929,9 +3242,14 @@ async def ask_kriton(
                 "(for example \"Current ratio = 2,50,000 ÷ 1,00,000 = 2.50\")."
             )
             if is_derived_output_request(request.query):
-                grounded_input += derived_output_instructions()
+                grounded_input += derived_output_instructions(request.query)
         elif professional_application:
             grounded_input += PROFESSIONAL_APPLICATION_INSTRUCTION
+        if not (authority_required and not self_contained_calculation) and is_derived_output_request(request.query):
+            # An example asked for outside strict sourcing ("Explain this with
+            # a grounded example" on "what is tax") needs the same heading, or
+            # its hypothetical figures are checked as claims and removed.
+            grounded_input += derived_output_instructions(request.query)
         if authority_required and not self_contained_calculation:
             from app.orchestration.input_requirements import uk_vat_rules_requested
             if uk_vat_rules_requested(request.query):
@@ -3091,13 +3409,14 @@ async def ask_kriton(
     # Only when Groq is the ACTIVE answering provider — if Gemini is configured
     # it answers instead (and this Groq model id must not be sent to it). Gemini
     # flash is already fast, so ZERO/LOW questions need no separate fast model.
-    answer_model: Optional[str] = None
     gemini_active = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
     # A pasted set of questions needs the full model: the fast one lost the
     # thread on long multi-question prompts (blank output, then truncation).
-    multi_question = len(sub_questions(request.query)) > 1
-    if risk_level in ("ZERO", "LOW") and os.getenv("GROQ_API_KEY") and not gemini_active and not multi_question:
-        answer_model = os.getenv("GROQ_FAST_ANSWER_MODEL", "openai/gpt-oss-20b")
+    answer_model, model_route_reason = answer_model_route(
+        request.query, risk_level=risk_level, fast_available=bool(os.getenv("GROQ_API_KEY")) and not gemini_active,
+        multi_question=len(sub_questions(request.query)) > 1, follows_up=resolution.follows_up,
+        has_documents=has_chat_documents,
+        task_type=effective_context.task_type if effective_context else "general_question")
 
     # ── Agent mode: governed tool-calling loop ─────────────────────────────
     # The model fetches figures through registered tools (permission-checked,
@@ -3146,6 +3465,9 @@ async def ask_kriton(
             jurisdiction=request.jurisdiction or conversation_jurisdiction(request.query, request.conversation_history),
             framework=(effective_context.framework or "") if effective_context else "",
             effective_date=effective_context.period_end if effective_context else None,
+            period_start=effective_context.period_start if effective_context else None,
+            period_end=effective_context.period_end if effective_context else None,
+            requested_query=request.query,
             engagement_id=effective_context.engagement_id if effective_context else None,
         )
         retrieval_token = bind_context(retrieval_context)
@@ -3435,6 +3757,7 @@ async def ask_kriton(
                 provider=s.provider,
                 fetched_at=s.fetched_at,
                 freshness=s.freshness,
+                **source_provenance(s),
             )
             for i, s in enumerate(agent_outcome.sources)
         ]
@@ -3586,6 +3909,11 @@ async def ask_kriton(
         *((f"[REF-{len(rag_citations) - len(agent_outcome.sources) + i + 1}] {source.snippet}" for i, source in enumerate(agent_outcome.sources))
           if agent_outcome else ()),
     ]
+    cited_text_by_ref.update(evidence_by_ref(verification_evidence))
+    if calculation_result.status == "success":
+        authoritative_calculation[:] = [calculation_result]
+    if source_bundle is not None:
+        bundle_conflicts.extend(source_bundle.conflict_version_ids)
     claim_verification_note: str | None = None
     from app.orchestration.answer_formatting import restore_matching_tax_chart
     if (
@@ -3645,6 +3973,10 @@ async def ask_kriton(
         db, query_id=query_id, correlation_id=correlation_id,
         tenant_id=tenant_id, audit_chain_id=audit_chain_id,
         actor_id=actor_id, prompt_id=prompt_id, output_hash=output_hash,
+        # The agent loop always runs the full model (model=None above).
+        model=("gemini" if gemini_active else os.getenv("GROQ_MODEL", "provider default"))
+        if agent_outcome is not None or answer_model is None else answer_model,
+        model_route_reason="full model: agent loop" if agent_outcome is not None else model_route_reason,
     )
     await report("validating", "Validating citations and safety controls")
 
@@ -3785,8 +4117,10 @@ async def ask_kriton(
         # UK), so a source for one jurisdiction cannot substantiate a claim
         # about another (verification_service._jurisdiction_mismatch).
         from app.orchestration.source_taxonomy import source_jurisdiction
+        # A registered source's own jurisdiction scope counts too: governed
+        # passages without a government URL were never checked.
         release_jurisdictions = {citation.ref_id: found for citation in rag_citations
-                                 if (found := source_jurisdiction(citation.url))}
+                                 if (found := citation.jurisdiction or source_jurisdiction(citation.url))}
         # The deterministic calculator's verified inputs and results: a line
         # restating them needs no research source (item 1, mixed requests).
         release_calculated = calculated_figures(
@@ -3949,8 +4283,13 @@ async def ask_kriton(
             from app.orchestration.claim_verification import FIGURES_REMOVED_NOTE
             from app.orchestration.verification_service import is_figure_statement
             only_arithmetic = all(is_figure_statement(claim) for claim in check.rejected_claims)
+            release_facts = "\n".join([
+                request.query, *(m.content for m in request.conversation_history if m.role == "user"),
+                *(f"{r.get('expression')} = {r.get('result')}"
+                  for r in (agent_outcome.calculation_receipts if agent_outcome else []))])
             pruned = prune_rejected_claims(candidate, check.rejected_claims,
-                                           note=FIGURES_REMOVED_NOTE if only_arithmetic else None)
+                                           note=FIGURES_REMOVED_NOTE if only_arithmetic else None,
+                                           facts=release_facts)
             if not pruned or pruned == candidate:
                 break
             check = await metrics.run(
@@ -4035,6 +4374,32 @@ async def ask_kriton(
             # never the prompt's instructions and examples.
             stated=user_facts,
         )
+        # Look the figures up before removing them. The agent loop does this
+        # for its own answers; a simple question never runs it.
+        repair_seconds = min(30.0, (deadline_seconds or get_settings().ASK_KRITON_TIMEOUT_SECONDS)
+                             - (time.monotonic() - start_time) - VERIFICATION_RESERVE_SECONDS)
+        if (unsupported_figures and release_check.passed and agent_outcome is None and repair_seconds >= 5
+                and "search_knowledge_base" in {spec.name for spec in model_gateway_service.tool_registry()
+                                                .allowed(permissions_for_role(role))}):
+            from app.orchestration.governed_retrieval import GovernedRetrievalContext
+            repair_evidence = await metrics.run("verification.figure_repair", _figure_repair_evidence(
+                composed_text, unsupported_figures, GovernedRetrievalContext(
+                    db=db, tenant_id=tenant_id, user_id=actor_id, query_id=query_id,
+                    jurisdiction=request.jurisdiction or conversation_jurisdiction(request.query,
+                                                                                    request.conversation_history),
+                    framework=(effective_context.framework or "") if effective_context else "",
+                    effective_date=effective_context.period_end if effective_context else None,
+                    period_start=effective_context.period_start if effective_context else None,
+                    period_end=effective_context.period_end if effective_context else None,
+                    requested_query=request.query,
+                    engagement_id=effective_context.engagement_id if effective_context else None,
+                ), repair_seconds))
+            if repair_evidence:
+                figure_evidence += "\n\n" + repair_evidence
+                unsupported_figures = unreconciled_figures(
+                    composed_text,
+                    figure_evidence + _agent_tool_evidence(agent_outcome, len(rag_citations)) + calculator_results,
+                    calculator_results, stated=user_facts)
         if unsupported_figures and release_check.passed:
             # Selective withholding: remove the statements and rows that state
             # the figures; the whole answer is replaced only if nothing
@@ -4459,12 +4824,15 @@ async def ask_kriton(
             and not uses_user_supplied_structure and (final_text or "").strip()):
         # Which official publishers to check when nothing was cited — named,
         # never presented as citations (source_guarantee.py).
-        limitations.append(official_sources_note(request.query))
+        limitations.append(official_sources_note(request.query, jurisdiction=request.jurisdiction or ""))
     # Rewrites after the first normalisation can reintroduce LaTeX, which the
     # answer view shows raw ("\\(40{,}000 \\times 0.06 = 2{,}400\\)").
     from app.orchestration.answer_formatting import latex_to_plain
     from app.orchestration.answer_formatting import remove_visual_placeholders
     final_text = remove_visual_placeholders(latex_to_plain(final_text))
+    # A section emptied by any removal, its note later replaced, is dropped.
+    from app.orchestration.claim_verification import drop_empty_headings
+    final_text = drop_empty_headings(final_text)
     # A requested chart type that was not drawn is named, with the reason
     # (chart_substitution.py).
     from app.orchestration.chart_substitution import substitution_note
@@ -4879,6 +5247,7 @@ async def _review_response(db, review, *, query_id, correlation_id, tenant_id, a
             url=source.url or None,
             evidence_preview=(source.snippet[:240].strip() or None) if source.snippet else None,
             provider=source.provider, fetched_at=source.fetched_at, freshness=source.freshness,
+            **source_provenance(source),
         )
         for index, source in enumerate(review.sources, start=1)
     ]

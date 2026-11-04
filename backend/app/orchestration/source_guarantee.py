@@ -40,8 +40,23 @@ def keep_document_citations(cited: list, available: list) -> list:
     return kept
 
 
-def official_sources_note(query: str) -> str:
-    matches = [label for pattern, label in _OFFICIAL if pattern.search(query or "")]
+def official_sources_note(query: str, *, jurisdiction: str = "") -> str:
+    from app.orchestration.source_taxonomy import detect_jurisdictions
+    countries = set(detect_jurisdictions(query, infer_from_tax_terms=False))
+    if jurisdiction.strip().casefold() not in {"", "any", "all", "*"}:
+        requested = set(detect_jurisdictions(jurisdiction, infer_from_tax_terms=False))
+        # Unknown or conflicting explicit scope permits no national guess.
+        countries = (requested if requested and not (countries - requested)
+                     else {"UNRESOLVED_SCOPE"})
+    # A topic keyword is not permission to suggest another country's authority.
+    national = {
+        "CBIC and the GST portal (cbic-gst.gov.in, gst.gov.in) for Indian GST": "INDIA",
+        "Income Tax Department (incometaxindia.gov.in) for Indian income tax": "INDIA",
+        "HMRC (gov.uk/hmrc) for UK tax": "UK",
+        "IRS (irs.gov) for US federal tax": "US",
+    }
+    matches = [label for pattern, label in _OFFICIAL if pattern.search(query or "")
+               and (not countries or label not in national or national[label] in countries)]
     suggestions = list(dict.fromkeys(matches))[:MAX_SUGGESTIONS] or [_DEFAULT]
     return ("No source was cited for this answer. Official sources to check (suggestions, not evidence): "
             + "; ".join(suggestions) + ".")

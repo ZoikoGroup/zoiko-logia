@@ -75,13 +75,15 @@ def report_section_names(question: str) -> list[str]:
     return []
 
 
-def check_requested_deliverables(question, answer, *, has_visual=False):
+def check_requested_deliverables(question, answer, *, has_visual=False, calculation=None):
     """Check explicit report headings and conclusively incomplete structures.
 
     Semantic claims retain the existing evidence and calculation validators.
     This checker does not infer that plausible prose fulfils an arbitrary task.
     """
     checks = []
+    if credit_sale_journal_requested(question):
+        checks.append(validate_credit_sale_journal(answer, calculation))
     normal = lambda text: ' '.join(re.findall(r'[a-z0-9]+', text.lower()))
     names = report_section_names(question)
     if names:
@@ -127,3 +129,76 @@ def check_requested_deliverables(question, answer, *, has_visual=False):
         elif not re.search(r'chart[^.\n]{0,70}(?:need|cannot|could not|not available|not establish|not support)|(?:need|cannot)[^.\n]{0,70}chart', answer, re.I):
             checks.append(RequestedDeliverable(description='Requested visual', status='incomplete', reason='No renderable visual payload was returned.'))
     return checks
+
+
+def credit_sale_journal_requested(question: str) -> bool:
+    return bool(re.search(r"\b(?:credit sale|sale on credit|sold on credit)\b", question, re.I)
+                and re.search(r"\b(?:journal|entries|double[- ]entry|record)\b", question, re.I))
+
+
+def validate_credit_sale_journal(answer: str, calculation=None) -> RequestedDeliverable:
+    """Validate the supplied-rate net-sale exercise, not a legal VAT position.
+
+    Unsupported formats, missing canonical inputs and broader transaction
+    types remain incomplete; a balanced table alone is not accounting proof.
+    """
+    from decimal import Decimal, ROUND_HALF_UP
+    from app.orchestration.accounting_validation import _journal_entries
+    description = "Credit-sale journal entry"
+    def incomplete(reason):
+        return RequestedDeliverable(description=description, status="incomplete", reason=reason)
+    if (calculation is None or calculation.status != "success"
+            or calculation.verification_status != "passed" or "vat_on_net" not in calculation.formula_ids):
+        return incomplete("The requested journal has not been validated against the supplied transaction inputs.")
+    inputs = {item.name: item for item in calculation.inputs}
+    outputs = {item.name: item.value for item in calculation.outputs}
+    if "amount" not in inputs or not {"vat_amount", "total_including_vat"} <= outputs.keys():
+        return incomplete("Canonical net-sale, tax and receivable amounts are unavailable.")
+    expected = {"receivable": outputs["total_including_vat"], "revenue": inputs["amount"].value,
+                "output_tax": outputs["vat_amount"]}
+    money = lambda value: Decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    entries = _journal_entries(answer)
+    # Accept a narrow explicit Dr/Cr line format as well as a journal table.
+    plain = []
+    for line in re.split(r"[;\n]", answer.replace("**", "")):
+        match = re.fullmatch(r"\s*(?:[-*]\s*)?(Dr|Debit|Cr|Credit)\s+([A-Za-z][A-Za-z /()-]*?)"
+                             r"\s+([£$€₹]?\s*\d[\d,]*(?:\.\d+)?)\s*[.]?\s*", line, re.I)
+        if match:
+            from app.orchestration.calculation_service import _amount
+            value = _amount(match[3])
+            debit = match[1].lower() in {"dr", "debit"}
+            plain.append((match[2], value if debit else None, None if debit else value, line))
+    if plain:
+        entries.append(plain)
+    symbols = {"£": "GBP", "$": "USD", "€": "EUR", "₹": "INR"}
+    declared_codes = re.findall(r"\b(?:GBP|USD|EUR|INR|AED)\b", answer, re.I)
+    if any(code.upper() != inputs["amount"].currency for code in declared_codes):
+        return incomplete("The stated journal currency does not match the supplied transaction currency.")
+    valid_entries = 0
+    for entry in entries:
+        if len(entry) != 3:
+            continue
+        found = {}
+        for account, debit, credit, text in entry:
+            if any(symbol in text and code != inputs["amount"].currency for symbol,code in symbols.items()):
+                break
+            if re.fullmatch(r"(?:(?:trade|accounts?) )?(?:receivables?|debtors?)(?: control)?", account.strip(), re.I):
+                role, value, opposite = "receivable", debit, credit
+            elif re.fullmatch(r"output (?:vat|gst|tax)(?: payable)?|(?:vat|gst) (?:payable|control)", account.strip(), re.I):
+                role, value, opposite = "output_tax", credit, debit
+            elif re.fullmatch(r"(?:sales(?: revenue)?|revenue)", account.strip(), re.I):
+                role, value, opposite = "revenue", credit, debit
+            else:
+                break
+            if role in found or value is None or value <= 0 or opposite not in (None, Decimal(0)):
+                break
+            if money(value) != money(expected[role]):
+                break
+            found[role] = money(value)
+        else:
+            if set(found) == set(expected) and found["receivable"] == found["revenue"] + found["output_tax"]:
+                valid_entries += 1
+    if entries and valid_entries == len(entries):
+        return RequestedDeliverable(description=description, status="complete",
+            reason="Debit/credit accounts, amounts, currency and balance match the supplied-rate net-sale calculation; no legal applicability is certified.")
+    return incomplete("Provide and validate the receivable debit, revenue credit and output-tax credit; VAT arithmetic or account names alone do not fulfil the requested journal.")

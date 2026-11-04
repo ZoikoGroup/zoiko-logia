@@ -48,6 +48,7 @@ from app.domains.evaluation.pipeline_metrics import aggregate
 # the general baseline plus the agent cases).
 DATASETS = {
     "regression": None, "uk_vat": "uk_vat", "uk_vat_holdout": "uk_vat_holdout", "india_gst": "india_gst", "gold": "gold",
+    "accounting": "accounting",
 }
 
 

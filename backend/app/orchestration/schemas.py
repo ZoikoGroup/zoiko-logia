@@ -297,6 +297,9 @@ class SourceSummary(BaseModel):
     source_url: Optional[str] = None
     authority_level: str = "secondary"
     publisher: str = ""
+    evidence_jurisdiction: str = ""
+    evidence_period_start: Optional[date] = None
+    evidence_period_end: Optional[date] = None
     effective_from: Optional[date] = None
     effective_to: Optional[date] = None
 
@@ -328,6 +331,9 @@ class SourceBundle(BaseModel):
     excluded_evidence: List[ExcludedEvidence] = Field(default_factory=list)
     conflict_version_ids: List[str] = Field(default_factory=list)
     as_of: Optional[date] = None
+    clarification_required: str = ""
+    reporting_period_start: Optional[date] = None
+    reporting_period_end: Optional[date] = None
     manifest_version: Literal["1.0"] = "1.0"
 
 
@@ -390,6 +396,17 @@ class SourceCitation(BaseModel):
     provider: Optional[str] = None
     fetched_at: Optional[str] = None
     freshness: Optional[str] = None   # realtime | delayed | historical | filing
+    # Who stands behind the source (evidence validation, reliability plan
+    # phase 4): official (government, legislation, standard-setter, or a
+    # governed source registered as primary) | professional | secondary (a
+    # governed source registered as secondary) | internal | web | document |
+    # data. With the jurisdiction and, for a registered source, the dates its
+    # version is in force and the version itself.
+    authority: Optional[str] = None
+    jurisdiction: Optional[str] = None
+    effective_from: Optional[date] = None
+    effective_to: Optional[date] = None
+    source_version_id: Optional[str] = None
 
 
 class WidgetInput(BaseModel):
@@ -424,6 +441,19 @@ class CalculationWidget(BaseModel):
     calculation_id: str
 
 
+class VerificationBreakdown(BaseModel):
+    """What was verified, kept apart: correct arithmetic is not proof that the
+    rules were sourced or that the transaction's assumptions hold, and an
+    answer is "fully verified" only when every part that applies is
+    (reliability brief, 24 Oct 2026). `calculation_id` names the calculation
+    the arithmetic was checked against, as the audit record does."""
+    arithmetic: Literal["verified", "mismatch", "not_applicable"] = "not_applicable"
+    sources: Literal["verified", "partial", "unsupported", "not_applicable"] = "not_applicable"
+    assumptions: Literal["confirmed", "stated", "not_applicable"] = "not_applicable"
+    overall: Literal["fully_verified", "partially_verified", "not_verified"] = "not_verified"
+    calculation_id: Optional[str] = None
+
+
 class ComposedAnswer(BaseModel):
     text: str
     citations: List[SourceCitation] = Field(default_factory=list)
@@ -442,6 +472,8 @@ class ComposedAnswer(BaseModel):
     # audit event, so the page and the audit trail cannot disagree. Additive:
     # `outcome` keeps its meaning for existing consumers.
     completeness: Optional[Literal["complete", "partial", "none"]] = None
+    # Set with completeness in finish(); None for answers stored before it.
+    verification: Optional[VerificationBreakdown] = None
     # Internal fields — kept for model_gateway wiring; never exposed to frontend
     prompt_id: str = "inline"
     prompt_name: str = "Inline RAG Prompt"

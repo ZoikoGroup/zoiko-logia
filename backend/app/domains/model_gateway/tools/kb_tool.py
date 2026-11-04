@@ -41,11 +41,19 @@ async def _handle(args: KnowledgeBaseArgs) -> ToolResult:
     context = current_context()
     if context is None:
         return ToolResult.failure("no_data", "The knowledge base is not available for this request. Do not answer from memory.")
+    from app.domains.source_library.licensing import _scope_matches
+    jurisdiction=args.jurisdiction or context.jurisdiction
+    if context.jurisdiction.strip().casefold() not in {"", "any", "all", "*"}:
+        if args.jurisdiction.strip().casefold() not in {"", "any", "all", "*"} and not _scope_matches(context.jurisdiction,args.jurisdiction):
+            return ToolResult.failure("clarification_required", "The requested country conflicts with the active jurisdiction restriction.")
+        jurisdiction=context.jurisdiction
     async with context.lock:
         try:
             bundle, passages = await retrieve_governed_evidence(
                 context.db, query=args.query, tenant_id=context.tenant_id, query_id=context.query_id,
-                jurisdiction=args.jurisdiction or context.jurisdiction, framework=context.framework,
+                jurisdiction=jurisdiction, framework=context.framework,
+                period_start=context.period_start, period_end=context.period_end,
+                requested_query=context.requested_query or None,
                 effective_date=args.as_of or context.effective_date, top_k=5,
                 engagement_id=context.engagement_id,
             )
@@ -60,18 +68,20 @@ async def _handle(args: KnowledgeBaseArgs) -> ToolResult:
             await restore_request_identity(context.db, tenant_id=context.tenant_id, user_id=context.user_id)
             raise
 
-    sources_by_id = {source.id: source for source in bundle.sources}
+    if bundle.clarification_required:
+        return ToolResult.failure("clarification_required", bundle.clarification_required + " Do not substitute current rules or remove jurisdiction filters.")
+    sources_by_id = {source.version_id: source for source in bundle.sources}
     selection = {passage.passage_id: passage for passage in bundle.passages}
     results: list[WebSource] = []
     lines: list[str] = []
     for passage_id, locator, content in passages:
-        source = sources_by_id[selection[passage_id].source_id]
-        display = bundle.source_display_states.get(source.id, "internal_reasoning_only")
+        source = sources_by_id[selection[passage_id].source_version_id]
+        display = bundle.source_display_states.get(source.version_id, bundle.source_display_states.get(source.id, "internal_reasoning_only"))
         if display == "internal_reasoning_only":
             continue
         effective = f", in force from {source.effective_from}" if source.effective_from else ""
         results.append(WebSource(
-            title=f"{source.title} — {locator}",
+            title=f"[{source.evidence_jurisdiction or source.jurisdiction_scope}; {source.evidence_period_start} to {source.evidence_period_end}] {source.title} — {locator}",
             url=source.source_url or locator,
             snippet=content[:_MAX_PASSAGE_CHARS],
             provider="Governed source register",

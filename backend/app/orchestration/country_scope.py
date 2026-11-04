@@ -162,7 +162,14 @@ _DISPLAY = {
 # (Jordan, Georgia, Chad, Mali, Samoa) are included — "Michael Jordan's revenue"
 # is not a question this product can resolve either, and refusing beats guessing
 # an economy.
+# Shared explicit country names, never an inference from query language.
+AUSTRIA_ALIASES = (
+    "austria", "austrian", "österreich", "österreichisch", "österreichische",
+    "österreichischen", "österreichischer", "österreichischem", "österreichisches", "autriche",
+)
+
 _OTHER_COUNTRIES: tuple[str, ...] = (
+    "|".join(re.escape(alias) for alias in AUSTRIA_ALIASES),
     # Latin America and the Caribbean
     "Mexico|Mexican|Guatemala|Guatemalan|Honduras|Honduran|El Salvador|Nicaragua|"
     "Costa Rica|Costa Rican|Panama|Panamanian|Cuba|Cuban|Haiti|Haitian|Jamaica|Jamaican|"
@@ -185,7 +192,7 @@ _OTHER_COUNTRIES: tuple[str, ...] = (
     "Hong Kong|Macau|Macao|North Korea|Brunei",
     # Europe
     "Eurozone|European Union|EU\\b|euro ?area|eurozone|euro-area|Spain|Spanish|Italy|Italian|"
-    "Netherlands|Dutch|Belgium|Belgian|Portugal|Portuguese|Austria|Austrian|"
+    "Netherlands|Dutch|Belgium|Belgian|Portugal|Portuguese|"
     "Switzerland|Swiss|Sweden|Swedish|Norway|Norwegian|Denmark|Danish|"
     "Finland|Finnish|Iceland|Icelandic|Poland|Polish|Czech|Czechia|Hungary|Hungarian|"
     "Greece|Greek|Turkey|Turkish|Russia|Russian|Ukraine|Ukrainian|Belarus|Belarusian|"

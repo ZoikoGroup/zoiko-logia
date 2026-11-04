@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Optional
 
 from app.domains.calculations.schemas import LiveObservation
 from app.domains.market_data import identity, registry, service

@@ -64,19 +64,16 @@ def test_near_misses_of_verified_figures_are_removed(real, offset):
         assert unreconciled_figures(f"The amount is ${figure:,.2f}.", LEASE, LEASE_CALCULATIONS) != []
 
 
-# ── Known pre-existing gaps (predate 22 Oct 2026; tracked, not in this change) ─
-# strict: when the older rules are fixed these start passing and must be
-# turned into ordinary tests.
+# ── Regressions for previously unsupported numerical claims ───────────────
+# Original rejection assertions retained after fixing the acceptance paths.
 
-@pytest.mark.xfail(strict=True, reason="pre-existing: small whole percentages match other question numbers")
 @pytest.mark.parametrize("percent", [1, 2, 4, 5, 6, 7, 10, 11, 12, 20, 25, 30, 36, 80])
-def test_known_gap_small_whole_percentages_are_accepted_without_support(percent):
+def test_unsupported_lease_term_percentages_are_rejected(percent):
     assert unreconciled_figures(f"The lease term is {percent}% of the economic life.", LEASE, LEASE_CALCULATIONS) != []
 
 
-@pytest.mark.xfail(strict=True, reason="pre-existing: a stated amount plus a small count passes the older rules")
 @pytest.mark.parametrize("figure", [50_001.0, 49_999.0, 50_005.0, 49_995.0, 50_006.0, 49_994.0])
-def test_known_gap_a_stated_amount_plus_a_count_is_accepted(figure):
+def test_counts_do_not_support_nearby_money_amounts(figure):
     assert unreconciled_figures(f"The amount is ${figure:,.2f}.", LEASE, LEASE_CALCULATIONS) != []
 
 

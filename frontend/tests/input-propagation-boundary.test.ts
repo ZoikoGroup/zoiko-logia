@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { splitQuestions } from "@/lib/kriton-conversation";
 import { askKritonStream } from "@/lib/api";
+import { syntheticKritonResponse } from "./fixtures/kriton-response";
 
 // Existing supplied wholesale figures. This is a client-mechanism regression,
 // not a substitute for the missing latest £1.2m statement's original payload.
@@ -16,7 +17,7 @@ describe("financial context at the submission boundary", () => {
 
   it("serializes the complete selected question without dropping its figures", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(
-      JSON.stringify({ type: "result", data: { query_id: "synthetic-boundary", outcome: "answered" } })+"\n",
+      JSON.stringify({ type: "result", data: syntheticKritonResponse({ query_id: "synthetic-boundary" }) })+"\n",
       { status: 200, headers: { "Content-Type": "application/x-ndjson" } },
     ));
     vi.stubGlobal("fetch", fetchMock);

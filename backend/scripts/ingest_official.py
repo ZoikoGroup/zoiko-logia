@@ -7,8 +7,8 @@ governed knowledge base.
 
 Each document is fetched over verified TLS only, split by its own structure
 (numbered questions for an FAQ), and stored exactly as scripts/ingest_govuk.py
-stores GOV.UK pages: an approved, versioned, rights-recorded source whose
-changed content supersedes the old version.
+stores GOV.UK pages: a PROPOSED, versioned, rights-recorded source requiring independent review.
+Changed content never approves or supersedes an existing version.
 
 Covers the India GST corpus and the UAE VAT basics. Each publisher has its
 own rights gate (OfficialDocument.rights_env): a document is written only

@@ -118,7 +118,8 @@ def answer_receipt(result, run: "workflow_state.WorkflowRun") -> dict:
         "citation_ids": [c.ref_id for c in answer.citations] if answer else [],
         "calculation_ids": list(run.calculation_ids),
         "citation_spans": dict(run.citation_spans),
-        "review_required": getattr(result, "outcome", None) == "escalated",
+        "review_required": (getattr(result, "outcome", None) == "escalated"
+                            or getattr(getattr(result, "next_action", None), "type", None) == "journal_review_required"),
         "policy_version": POLICY_VERSION,
         "workflow_final_state": run.state.value,
     }

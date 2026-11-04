@@ -1,6 +1,7 @@
 """Phase 1 governed knowledge base: procedure filtering, category routing and
 hybrid (keyword + semantic) fusion in retrieve.build_source_bundle."""
 import hashlib
+from datetime import date
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -33,7 +34,7 @@ async def _vat_source(db, title: str, passages: list[tuple[str, str, str]]):
     await db.flush()
     version = SourceVersion(
         tenant_id="GLOBAL_CONTROL", source_id=source.id, version_label="2026-10-01", status="APPROVED",
-        content_hash=hashlib.sha256(title.encode()).hexdigest(), submitted_by="ingest", approved_by="ingest",
+        content_hash=hashlib.sha256(title.encode()).hexdigest(), submitted_by="ingest", approved_by="independent-checker", effective_from=date(2020,1,1),
     )
     db.add(version)
     await db.flush()
@@ -80,13 +81,13 @@ async def test_passage_about_another_procedure_is_filtered_not_outranked(kb):
          "Who can submit the claim: the claimant or an agent."),
     ])
     bundle = await build_source_bundle(
-        kb, query="Who can submit a VAT return?", jurisdiction="", tenant_id="tenant-x",
+        kb, query="Who can submit a VAT return?", jurisdiction="United Kingdom", tenant_id="tenant-x",
     )
     selected = [passage.passage_id for passage in bundle.passages]
     assert mtd.id in selected and refund.id not in selected
 
     refund_question = await build_source_bundle(
-        kb, query="Who can submit a VAT refund claim?", jurisdiction="", tenant_id="tenant-x",
+        kb, query="Who can submit a VAT refund claim?", jurisdiction="United Kingdom", tenant_id="tenant-x",
     )
     assert refund.id in [passage.passage_id for passage in refund_question.passages]
 
@@ -95,7 +96,7 @@ async def test_unmatched_passages_are_not_written_as_exclusions(kb):
     # One excluded-evidence row per non-matching passage per question grows
     # with the library; relevance is not a rights decision.
     await _vat_source(kb, "VAT Notice 700", [(f"Section {i}", "general", f"Unrelated topic {i}.") for i in range(50)])
-    bundle = await build_source_bundle(kb, query="VAT registration threshold", jurisdiction="", tenant_id="t")
+    bundle = await build_source_bundle(kb, query="VAT registration threshold", jurisdiction="United Kingdom", tenant_id="t")
     assert not any(item.reason_code == "NO_LEXICAL_MATCH" for item in bundle.excluded_evidence)
 
 
@@ -110,7 +111,7 @@ async def test_semantic_matches_fuse_with_keyword_matches(kb, monkeypatch):
         return {semantic_only.id: 0.81, keyword.id: 0.79, unrelated.id: 0.60}
 
     monkeypatch.setattr(retrieve, "_semantic_scores", fake_semantic)
-    bundle = await build_source_bundle(kb, query="When must I register for VAT?", jurisdiction="", tenant_id="t")
+    bundle = await build_source_bundle(kb, query="When must I register for VAT?", jurisdiction="United Kingdom", tenant_id="t")
     methods = {passage.passage_id: passage.method for passage in bundle.passages}
     assert methods[keyword.id] == "hybrid"
     assert methods[semantic_only.id] == "vector"  # found by meaning alone, above the threshold
@@ -129,7 +130,7 @@ async def test_one_long_document_cannot_fill_every_evidence_slot(kb):
     [vat126] = await _vat_source(kb, "Claim a VAT refund as an organisation not registered for VAT", [
         ("Make a claim", "refund", "Fill in form VAT126 to claim a VAT refund as an organisation not registered for VAT."),
     ])
-    bundle = await build_source_bundle(kb, query="Which form claims a VAT refund?", jurisdiction="", tenant_id="t")
+    bundle = await build_source_bundle(kb, query="Which form claims a VAT refund?", jurisdiction="United Kingdom", tenant_id="t")
     # The other qualifying document gets a slot; the slots nothing else can
     # use then go back to the long notice rather than staying empty.
     assert vat126.id in [passage.passage_id for passage in bundle.passages]
@@ -174,7 +175,7 @@ async def test_a_uk_question_never_gets_passages_from_indian_guidance(kb):
     await kb.flush()
     version = SourceVersion(
         tenant_id="GLOBAL_CONTROL", source_id=india_source.id, version_label="2025-09", status="APPROVED",
-        content_hash="gst", submitted_by="ingest", approved_by="ingest",
+        content_hash="gst", submitted_by="ingest", approved_by="independent-checker", effective_from=date(2020,1,1),
     )
     kb.add(version)
     await kb.flush()
@@ -188,9 +189,9 @@ async def test_a_uk_question_never_gets_passages_from_indian_guidance(kb):
                            decision="allow", rights_version=1, reason_code="IN_GOV_PUBLICATION"))
     await kb.flush()
 
-    uk_bundle = await build_source_bundle(kb, query="What VAT rate applies to hotel accommodation?", jurisdiction="", tenant_id="t")
+    uk_bundle = await build_source_bundle(kb, query="What VAT rate applies to hotel accommodation?", jurisdiction="United Kingdom", tenant_id="t")
     assert [p.passage_id for p in uk_bundle.passages] == [uk.id]
-    india_bundle = await build_source_bundle(kb, query="What GST rate applies to hotel accommodation?", jurisdiction="", tenant_id="t")
+    india_bundle = await build_source_bundle(kb, query="What GST rate applies to hotel accommodation?", jurisdiction="India", tenant_id="t")
     assert [p.passage_id for p in india_bundle.passages] == [gst.id]
 
 
@@ -200,7 +201,7 @@ async def test_capped_slots_go_back_to_the_document_when_nothing_else_qualifies(
     rows = await _vat_source(kb, "VAT Notice 723A", [
         (f"2.{i} Refund claims", "refund:non_uk", f"Non-UK business VAT refund claim, form rules part {i}.") for i in range(6)
     ])
-    bundle = await build_source_bundle(kb, query="Which form claims a VAT refund for a non-UK business?", jurisdiction="", tenant_id="t")
+    bundle = await build_source_bundle(kb, query="Which form claims a VAT refund for a non-UK business?", jurisdiction="United Kingdom", tenant_id="t")
     assert len(bundle.passages) == 6
     assert {p.passage_id for p in bundle.passages} == {r.id for r in rows}
 
@@ -229,7 +230,7 @@ async def test_a_source_that_may_not_be_sent_to_a_model_never_takes_a_result_slo
         SourceRight.source_version_id == blocked_version, SourceRight.operation == "model_transmission",
     ).values(decision="deny", reason_code="LICENCE_NO_AI_USE"))
     await kb.flush()
-    bundle = await build_source_bundle(kb, query="When must I register for VAT?", jurisdiction="", tenant_id="t")
+    bundle = await build_source_bundle(kb, query="When must I register for VAT?", jurisdiction="United Kingdom", tenant_id="t")
     selected = [passage.passage_id for passage in bundle.passages]
     assert usable.id in selected and blocked.id not in selected
     assert any(item.source_version_id == blocked_version for item in bundle.excluded_evidence)
@@ -252,7 +253,7 @@ async def test_conflicting_sources_are_flagged_and_routed_to_human_review(kb):
     kb.add(SourceRelationship(tenant_id="GLOBAL_CONTROL", from_version_id=version_of[first.id],
                               to_version_id=version_of[second.id], relationship_type="conflicts"))
     await kb.flush()
-    bundle = await build_source_bundle(kb, query="When must I register for VAT?", jurisdiction="", tenant_id="t")
+    bundle = await build_source_bundle(kb, query="When must I register for VAT?", jurisdiction="United Kingdom", tenant_id="t")
     assert bundle.confidence_state == CONF_CONFLICTING
     assert set(bundle.conflict_version_ids) == set(version_of.values())
     assert resolve_route("LOW", bundle.confidence_state).route == ROUTE_HUMAN_REVIEW
@@ -278,7 +279,8 @@ async def test_an_undated_version_cannot_be_approved(kb):
     await kb.flush()
     with pytest.raises(HTTPException) as raised:
         await approve_source_version(kb, approver_id="checker", source_id=version.source_id, version_id=version.id)
-    assert raised.value.status_code == 409 and "effective-from" in raised.value.detail
+    assert raised.value.status_code == 403
+    # Authenticated missing-effective-date rejection is covered in test_phase1_source_controls.
 
 
 def select_version_for(passage_id):

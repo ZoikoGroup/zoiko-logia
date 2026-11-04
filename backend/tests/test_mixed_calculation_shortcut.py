@@ -41,4 +41,5 @@ def test_percentage_unit_is_in_calculation_payload_and_markdown():
     result = calculate_from_query(CONTEXT)
     margin = next(item for item in result.outputs if item.name == 'gross_margin')
     assert margin.kind == 'percentage' and margin.display_value == '35.00%'
-    assert '| Gross Margin | 35.00% |' in calculation_markdown(result)
+    # Labels keep sentence case and the tax names' capitals ("VAT amount", 24 Oct 2026).
+    assert '| Gross margin | 35.00% |' in calculation_markdown(result)

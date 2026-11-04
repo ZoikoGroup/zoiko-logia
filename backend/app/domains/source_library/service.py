@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import HTTPException, UploadFile, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,7 @@ from app.domains.kriton_workspace.documents import ExtractedBlock, extract_docum
 from app.domains.source_library.licensing import SOURCE_OPERATIONS, SourceUseContext, can_use
 from app.domains.source_library.models import (
     Source, SourcePassage, SourceRelationship, SourceRight, SourceUsage, SourceVersion,
+    ReviewerIdentity, SourceApproval,
 )
 from app.domains.source_library.relationships import RELATIONSHIP_TYPES
 from app.domains.source_library.schemas import SourceCreateRequest, SourceRightGrantRequest
@@ -245,6 +246,8 @@ async def create_source(
         note=payload.note,
         submitted_by=submitted_by,
         file_path=payload.file_path,
+        reporting_period_start=payload.reporting_period_start,
+        reporting_period_end=payload.reporting_period_end,
         effective_from=payload.effective_from,
         effective_to=payload.effective_to,
         source_url=payload.source_url,
@@ -391,21 +394,54 @@ async def get_jurisdiction_summary(db: AsyncSession, tenant_id: str) -> list[dic
 
 
 async def approve_source_version(
-    db: AsyncSession, approver_id: str, source_id: str, version_id: str, tenant_id: str = "GLOBAL_CONTROL"
+    db: AsyncSession, approver_id: str, source_id: str, version_id: str, tenant_id: str = "GLOBAL_CONTROL",
+    *, authenticated_actor=None, predecessor_id: str | None = None,
 ) -> dict:
+    from app.domains.identity.models import ServiceAccount
+    actor = authenticated_actor
+    if (actor is None or actor.id != approver_id or actor.tenant_id != tenant_id
+            or not actor.is_active or not getattr(actor, "auth_verified", False)
+            or getattr(actor, "auth_method", None) != "session"
+            or getattr(actor, "impersonated_by", None)):
+        raise HTTPException(status_code=403, detail="Individual authenticated reviewer required")
+    from app.domains.identity.permissions import SOURCE_MANAGE, user_has_permission
+    if not user_has_permission(actor, SOURCE_MANAGE):
+        raise HTTPException(status_code=403, detail="Missing source management authorization")
+    reviewer = await db.get(ReviewerIdentity, approver_id)
+    if (reviewer is None or not reviewer.enabled or reviewer.identity_kind != "individual"
+            or not reviewer.verified_by or reviewer.auth_subject != getattr(actor, "auth_subject", None)
+            or await db.get(ServiceAccount, approver_id) is not None):
+        raise HTTPException(status_code=403, detail="Verified individual reviewer identity required")
+    # All approvals for one source serialize even when proposing different versions.
+    source = (await db.execute(select(Source).where(
+        Source.id == source_id, Source.tenant_id == tenant_id,
+    ).with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
     result = await db.execute(
-        select(SourceVersion).where(SourceVersion.id == version_id, SourceVersion.source_id == source_id)
+        select(SourceVersion).where(SourceVersion.id == version_id, SourceVersion.source_id == source_id,
+                                   SourceVersion.tenant_id == tenant_id).with_for_update().execution_options(populate_existing=True)
     )
     version = result.scalar_one_or_none()
     if version is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source version not found")
 
-    if version.submitted_by == approver_id:
+    submitter = await db.get(ReviewerIdentity, version.submitted_by)
+    if (submitter is None or not submitter.person_id or not reviewer.person_id
+            or submitter.person_id == reviewer.person_id or version.submitted_by == approver_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Maker-checker violation: the submitter of a source version cannot approve it.",
         )
 
+    if version.status not in {"PROPOSED", "UNDER_REVIEW"}:
+        raise HTTPException(status_code=409, detail="Only proposed or under-review versions can be approved")
+    for start, end in ((version.effective_from, version.effective_to),
+                       (version.reporting_period_start, version.reporting_period_end)):
+        if (end is not None and start is None) or (start and end and start > end):
+            raise HTTPException(status_code=409, detail="Invalid applicability range")
+    if bool(version.reporting_period_start) != bool(version.reporting_period_end):
+        raise HTTPException(status_code=409, detail="Both reporting-period bounds are required")
     if not version.content_hash:
         raise HTTPException(status_code=409, detail="A version cannot be approved without a content hash")
 
@@ -422,6 +458,13 @@ async def approve_source_version(
     )
     if (passage_result.scalar_one() or 0) == 0:
         raise HTTPException(status_code=409, detail="A version cannot be approved without indexed passages")
+
+    passage_periods = (await db.execute(select(SourcePassage.reporting_period_start,
+                                                SourcePassage.reporting_period_end).where(
+        SourcePassage.source_version_id == version.id))).all()
+    for start, end in passage_periods:
+        if bool(start) != bool(end) or (start and end and start > end):
+            raise HTTPException(status_code=409, detail="Invalid passage reporting period")
 
     required_for_release = ("retrieval", "model_transmission", "display")
     # can_use requires approval itself, so inspect explicit rights here while
@@ -455,33 +498,64 @@ async def approve_source_version(
             detail=f"Approval requires explicit allow rights for: {', '.join(missing)}",
         )
 
-    version.status = "APPROVED"
-    version.quality_state = "APPROVED"
-    version.approved_by = approver_id
-    await db.commit()
+    others = (await db.execute(select(SourceVersion).where(
+        SourceVersion.source_id == source_id, SourceVersion.id != version_id,
+        SourceVersion.status.in_(("APPROVED", "ACTIVE", "SUPERSEDED", "EXPIRED")),
+    ).with_for_update())).scalars().all()
+    # Predecessor must be explicitly selected; an unbounded active version is
+    # never silently truncated merely because another proposal exists.
+    predecessor = next((v for v in others if v.id == predecessor_id), None)
+    if predecessor_id and (predecessor is None or predecessor.superseded_by_version_id):
+        raise HTTPException(status_code=409, detail="Predecessor unavailable")
+    for other in others:
+        if other.effective_from is None:
+            raise HTTPException(status_code=409, detail="Existing version has unknown applicability")
+        if other is predecessor:
+            if other.effective_to is None or other.effective_to >= version.effective_from:
+                raise HTTPException(status_code=409, detail="Predecessor must have an established non-overlapping end")
+        elif ((other.effective_to is None or version.effective_from <= other.effective_to)
+              and (version.effective_to is None or other.effective_from <= version.effective_to)):
+            raise HTTPException(status_code=409, detail="Overlapping approved effective periods")
+    from app.domains.audit_ledger.event_envelope import _build_row
+    from app.domains.audit_ledger.models import AuditEvent
+    try:
+        # Serialize the approval audit chain head in PostgreSQL. No retry may
+        # commit an audit event separately after discarding business changes.
+        if db.get_bind().dialect.name == "postgresql":
+            await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+                             {"key": tenant_id})
+        previous = (await db.execute(select(AuditEvent.chain_hash).where(
+            AuditEvent.tenant_id == tenant_id,
+        ).order_by(AuditEvent.ingested_at.desc()).limit(1))).scalar_one_or_none()
+        version.status = "APPROVED"
+        version.quality_state = "APPROVED"
+        version.approved_by = approver_id
+        if predecessor:
+            predecessor.status = "SUPERSEDED"
+            predecessor.superseded_by_version_id = version.id
+            predecessor.superseded_at = now
+        db.add(SourceApproval(version_id=version.id, approver_id=approver_id,
+                              submitter_person_id=submitter.person_id, reviewer_person_id=reviewer.person_id,
+                              auth_subject=reviewer.auth_subject))
+        db.add(_build_row(
+            event_name="source_version_approved", emitting_service="source_library",
+            subject_type="source", subject_id=source_id, actor_id=approver_id,
+            tenant_id=tenant_id, previous_chain_hash=previous, replay_relevance="REQUIRED",
+            payload={"version_id": version.id, "submitted_by": version.submitted_by,
+                     "approved_by": approver_id, "decision": "APPROVED",
+                     "submitter_person_id": submitter.person_id, "reviewer_person_id": reviewer.person_id,
+                     "auth_subject": reviewer.auth_subject, "auth_method": actor.auth_method,
+                     "auth_aal": actor.auth_aal, "predecessor_id": predecessor_id},
+        ))
+        await db.commit()
+        from app.domains.audit_ledger.event_envelope import _cached_previous_chain_hash
+        _cached_previous_chain_hash.set(None)
+    except Exception:
+        await db.rollback()
+        raise
     await db.refresh(version)
-
-    source_result = await db.execute(select(Source).where(Source.id == source_id))
-    source = source_result.scalar_one()
-
-    await record_event_async(
-        db,
-        event_name="source_version_approved",
-        emitting_service="source_library",
-        subject_type="source",
-        subject_id=source_id,
-        actor_id=approver_id,
-        correlation_id=source_id,
-        tenant_id=tenant_id,
-        classification="INTERNAL",
-        replay_relevance="REQUIRED",
-        payload={
-            "version_id": version_id,
-            "submitted_by": version.submitted_by,
-            "approved_by": approver_id,
-        },
-    )
     return {**source.__dict__, "latest_version": version}
+
 
 
 async def grant_source_right(
@@ -534,6 +608,8 @@ async def add_relationship(
     db: AsyncSession, *, from_version_id: str, to_version_id: str,
     relationship_type: str, tenant_id: str, actor_id: str,
 ) -> SourceRelationship:
+    if relationship_type == "supersedes":
+        raise HTTPException(status_code=409, detail="Supersession requires the approval workflow")
     if relationship_type not in RELATIONSHIP_TYPES:
         raise HTTPException(status_code=422, detail="Unsupported source relationship")
     versions = await db.execute(

@@ -73,6 +73,9 @@ def build_bundle(preliminary: SourceBundle, licence_result: LicenceCheckResult) 
         exclusion_reasons=exclusion_reasons,
         jurisdiction=preliminary.jurisdiction,
         as_of=preliminary.as_of,
+        clarification_required=preliminary.clarification_required,
+        reporting_period_start=preliminary.reporting_period_start,
+        reporting_period_end=preliminary.reporting_period_end,
         authority_level=preliminary.authority_level,
         freshness_state=preliminary.freshness_state,
         licence_state=preliminary.licence_state,
@@ -82,7 +85,7 @@ def build_bundle(preliminary: SourceBundle, licence_result: LicenceCheckResult) 
         retrieval_plan=preliminary.retrieval_plan,
         passages=[
             passage for passage in preliminary.passages
-            if passage.source_id in eligible_source_ids
+            if passage.source_version_id in eligible_version_ids
         ],
         excluded_evidence=[*preliminary.excluded_evidence, *gate_exclusions],
         conflict_version_ids=[
@@ -154,5 +157,7 @@ async def load_bundle_passage_text(db: AsyncSession, bundle: SourceBundle) -> li
                 or passage.content_hash != selection.content_hash
                 or hashlib.sha256(passage.content.encode()).hexdigest() != selection.content_hash):
             raise ValueError(f"Evidence passage integrity check failed: {selection.passage_id}")
-        loaded.append((selection.passage_id, selection.locator, passage.content))
+        source = next((s for s in bundle.sources if s.version_id == selection.source_version_id), None)
+        label = (source.evidence_jurisdiction or source.jurisdiction_scope) if source else "Unknown jurisdiction"
+        loaded.append((selection.passage_id, selection.locator, f"[Jurisdiction: {label}]" + (f" [Applicable period: {source.evidence_period_start} to {source.evidence_period_end}]" if source and source.evidence_period_start else "") + f"\n{passage.content}"))
     return loaded

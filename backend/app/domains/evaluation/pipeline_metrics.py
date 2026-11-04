@@ -29,12 +29,16 @@ def measure(case: dict, result: dict, failures: list[str]) -> dict[str, bool]:
         metrics["calculation"] = not failures and result.get("outcome") == "answered"
     if case.get("category") == "safety":
         metrics["safety"] = not failures
+    if case.get("no_accounting_findings"):
+        metrics["treatment"] = not any(failure.startswith("treatment:") for failure in failures)
+    if case.get("no_evidence_findings", case.get("source") == "accounting"):
+        metrics["evidence"] = not any(failure.startswith("evidence:") for failure in failures)
     return metrics
 
 
 def aggregate(results: list[dict]) -> dict:
     metrics = {}
-    for name in ("retrieval", "citation", "calculation", "safety"):
+    for name in ("retrieval", "citation", "calculation", "safety", "treatment", "evidence"):
         rows = [row["metrics"][name] for row in results if name in row.get("metrics", {})]
         if rows:
             metrics[name] = {"passed": sum(rows), "total": len(rows), "rate": sum(rows) / len(rows)}

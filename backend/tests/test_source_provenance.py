@@ -48,6 +48,7 @@ async def _version(source_db, *, tenant_id="tenant-a", status="ACTIVE"):
         status=status,
         version_label="2026",
         content_hash=uuid.uuid4().hex * 2,
+        effective_from=date(2020,1,1),
         submitted_by="maker",
         approved_by="checker" if status in {"ACTIVE", "APPROVED"} else None,
     )

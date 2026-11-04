@@ -52,6 +52,9 @@ class SourceVersion(Base):
     source_id: Mapped[str] = mapped_column(ForeignKey("sources.id"), nullable=False)
     version_label: Mapped[str] = mapped_column(String, nullable=False, default="v1")
     status: Mapped[str] = mapped_column(String, nullable=False, default="PROPOSED")
+    reporting_period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    reporting_period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     effective_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     display_restriction: Mapped[str] = mapped_column(String, nullable=False, default="FULL")
@@ -118,6 +121,8 @@ class SourcePassage(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     tenant_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     source_version_id: Mapped[str] = mapped_column(ForeignKey("source_versions.id"), nullable=False, index=True)
+    reporting_period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    reporting_period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
     locator: Mapped[str] = mapped_column(String, nullable=False)
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     # The document section the passage sits under ("4.2 Who can submit"),
@@ -195,7 +200,7 @@ def _protect_approved_version_content(_mapper, _connection, target: SourceVersio
     state = inspect(target)
     status_history = state.attrs.status.history
     prior_status = status_history.deleted[0] if status_history.deleted else target.status
-    if prior_status not in {"APPROVED", "ACTIVE"}:
+    if prior_status not in {"APPROVED", "ACTIVE", "SUPERSEDED", "EXPIRED"}:
         return
     changed = [field for field in _IMMUTABLE_VERSION_FIELDS if state.attrs[field].history.has_changes()]
     if changed:
@@ -206,7 +211,7 @@ def _protect_approved_passage(_mapper, connection, target: SourcePassage) -> Non
     version_status = connection.execute(
         select(SourceVersion.status).where(SourceVersion.id == target.source_version_id)
     ).scalar_one_or_none()
-    if version_status in {"APPROVED", "ACTIVE"}:
+    if version_status in {"APPROVED", "ACTIVE", "SUPERSEDED", "EXPIRED"}:
         raise ValueError("Approved source passages are immutable")
 
 
@@ -222,3 +227,32 @@ event.listen(SourceRight, "before_update", _protect_append_only_record)
 event.listen(SourceRight, "before_delete", _protect_append_only_record)
 event.listen(SourceUsage, "before_update", _protect_append_only_record)
 event.listen(SourceUsage, "before_delete", _protect_append_only_record)
+
+
+class ReviewerIdentity(Base):
+    """Out-of-band identity attestation; no self-enrollment API.
+
+    Multiple login aliases for one person MUST share person_id. Seed/shared
+    identities can be registered for submitter attribution but cannot review.
+    """
+    __tablename__ = "source_reviewer_identities"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    person_id: Mapped[str] = mapped_column(String, nullable=False)
+    auth_subject: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    identity_kind: Mapped[str] = mapped_column(String, nullable=False)
+    verified_by: Mapped[str] = mapped_column(String, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class SourceApproval(Base):
+    __tablename__ = "source_approvals"
+    version_id: Mapped[str] = mapped_column(ForeignKey("source_versions.id"), primary_key=True)
+    approver_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    submitter_person_id: Mapped[str] = mapped_column(String, nullable=False)
+    reviewer_person_id: Mapped[str] = mapped_column(String, nullable=False)
+    auth_subject: Mapped[str] = mapped_column(String, nullable=False)
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+
+
+event.listen(SourceApproval, "before_update", _protect_append_only_record)
+event.listen(SourceApproval, "before_delete", _protect_append_only_record)

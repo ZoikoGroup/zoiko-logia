@@ -219,6 +219,10 @@ async def record_event_async(
         cache[tenant_id] = row.chain_hash
         return row
 
+    if not session_is_sqlite(db):
+        await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:tenant_id))"), {"tenant_id": tenant_id})
+        # Other requests may have appended since this task's cached event.
+        _cached_previous_chain_hash.set(None)
     cache = _cached_previous_chain_hash.get()
     if isinstance(cache, dict):
         previous_chain_hash = cache.get(tenant_id)
@@ -298,6 +302,8 @@ async def record_event_async(
 
 
 def record_event_sync(db: Session, *, tenant_id: str = "GLOBAL_CONTROL", **kwargs) -> AuditEvent:
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:tenant_id))"), {"tenant_id": tenant_id})
     previous_chain_hash = (
         db.query(AuditEvent.chain_hash)
         .filter(AuditEvent.tenant_id == tenant_id)

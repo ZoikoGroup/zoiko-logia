@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class SourceCreateRequest(BaseModel):
@@ -22,13 +22,29 @@ class SourceCreateRequest(BaseModel):
     translation_of_version_id: str | None = None
     rights: dict[str, bool] = Field(default_factory=dict)
     terms_reference: str = ""
+    reporting_period_start: date | None = None
+    reporting_period_end: date | None = None
     effective_from: date | None = None
     effective_to: date | None = None
+
+
+    @model_validator(mode="after")
+    def validate_applicability(self):
+        for start, end in ((self.effective_from, self.effective_to),
+                           (self.reporting_period_start, self.reporting_period_end)):
+            if end and (not start or start > end):
+                raise ValueError("Applicability ranges require a start on or before their end")
+        if bool(self.reporting_period_start) != bool(self.reporting_period_end):
+            raise ValueError("Both reporting-period bounds are required")
+        return self
 
 
 class SourceVersionPublic(BaseModel):
     id: str
     version_label: str
+    reporting_period_start: date | None = None
+    reporting_period_end: date | None = None
+    superseded_at: datetime | None = None
     status: str
     effective_from: date | None
     effective_to: date | None
@@ -92,6 +108,8 @@ class SourceRightPublic(SourceRightGrantRequest):
 
 
 class SourcePassagePublic(BaseModel):
+    reporting_period_start: date | None = None
+    reporting_period_end: date | None = None
     id: str
     source_version_id: str
     locator: str

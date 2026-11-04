@@ -247,22 +247,22 @@ def test_austria_is_refused_by_every_supported_connector(phrase):
     assert not country_scope.is_country_scoped(phrase, "AU")
 
 
-# Known remaining gap, recorded rather than silently fixed: _OTHER_COUNTRIES
-# lists Germany/French/Spanish-style English and native forms inconsistently
-# ("Deutschland" and "France"/"French" are present, but Austria has no German or
-# French form). Adding language variants ad hoc would be arbitrary — a Dutch,
-# Italian or Japanese query has the same hole — so this is reported for a
-# decision rather than half-fixed. Asserted so the gap cannot drift unnoticed.
+# These explicit Austria aliases must refuse every country-only connector,
+# just like the English forms. They never establish an Austrian data source.
 @pytest.mark.parametrize("phrase", [
-    "österreichische Inflation",
-    "l'inflation en Autriche",
+    "österreichische Inflation", "l'inflation en Autriche", "Österreich BIP", "österreichischen Wirtschaft",
 ])
-def test_known_gap_non_english_austria_aliases(phrase):
-    if country_scope.names_another_country(phrase):
-        return  # fixed at some point; the guard is no longer needed
-    pytest.xfail(
-        "_OTHER_COUNTRIES has no native-language alias for Austria; "
-        "reported as a remaining gap, not silently patched")
+def test_non_english_austria_aliases_never_default_to_another_country(phrase):
+    assert country_scope.names_another_country(phrase)
+    for country in ("GB", "US", "IE", "CA", "AU", "DE", "FR", "JP", "IN", "CN"):
+        assert not country_scope.is_country_scoped(phrase, country)
+
+
+@pytest.mark.parametrize("phrase,country", [
+    ("Australian GDP growth", "AU"), ("l'inflation au Canada", "CA"),
+])
+def test_austria_aliases_do_not_block_distinct_supported_countries(phrase, country):
+    assert country_scope.is_country_scoped(phrase, country)
 
 
 def test_ambiguous_acronyms_do_not_pin_a_country():

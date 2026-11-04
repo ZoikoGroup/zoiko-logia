@@ -8,11 +8,11 @@
 Reads each page from the GOV.UK Content API (structured, Open Government
 Licence v3.0), splits it by its own section headings, tags each passage with
 the tax procedure it covers, embeds it with the local model
-(app/domains/source_library/embeddings.py) and stores it as an approved,
+(app/domains/source_library/embeddings.py) and stores it as a PROPOSED,
 versioned, rights-recorded source in the shared GLOBAL_CONTROL tenant.
 
 Re-running is safe: a page whose content is unchanged is skipped; a changed
-page becomes a new version that supersedes the old one (approved passages are
+page becomes a new proposal for independent review (approved passages are
 immutable by design, so they are never edited in place).
 """
 from __future__ import annotations
@@ -53,7 +53,7 @@ OPERATIONS = ("ingestion", "indexing", "retrieval", "model_transmission", "displ
 MAX_PASSAGE_CHARS = 1600
 # Bumped whenever splitting or passage text changes. It is part of the
 # version's content hash, so re-running after a change creates a new version
-# superseding the old one (approved passages are never edited in place).
+# for review (approved passages are never edited in place).
 # 2: every passage starts with its document title — "You must leave the
 #    scheme if…" never named the Flat Rate Scheme, so passages from the Cash
 #    and Annual Accounting scheme guides outranked it.
@@ -222,7 +222,7 @@ def ingest(
     document: Document, procedure: str, user_id: str, embedder: LocalBgeEmbedder, publisher: Publisher = HMRC,
 ) -> str:
     if not document.passages:
-        raise ValueError("Cannot approve a document with no passages")
+        raise ValueError("Cannot submit a document with no passages")
     if not document.url.startswith("https://"):
         raise ValueError("Official evidence requires an HTTPS source URL")
     if len({p.locator for p in document.passages}) != len(document.passages):
@@ -246,23 +246,22 @@ def ingest(
             )
             db.add(source)
             db.flush()
-        current = db.execute(
-            select(SourceVersion).where(
-                SourceVersion.source_id == source.id,
-                SourceVersion.status.in_(("APPROVED", "ACTIVE")),
-                SourceVersion.superseded_by_version_id.is_(None),
-            )
-        ).scalar_one_or_none()
-        if current is not None and current.content_hash == document.body_hash:
+        # Deduplicate proposals too. Multiple approved historical versions can
+        # coexist; ingestion must neither choose nor retire any of them.
+        duplicate = db.execute(select(SourceVersion.id).where(
+            SourceVersion.tenant_id == TENANT,
+            SourceVersion.content_hash == document.body_hash,
+        ).limit(1)).scalar_one_or_none()
+        if duplicate is not None:
             db.rollback()
             return "unchanged"
 
         version = SourceVersion(
             tenant_id=TENANT, source_id=source.id, version_label=document.updated.date().isoformat(),
-            status="PROPOSED", effective_from=document.updated.date(), source_url=document.url,
+            status="PROPOSED", effective_from=None, source_url=document.url,
             content_hash=document.body_hash, published_at=document.updated,
             submitted_by=user_id, note=f"Ingested from {publisher.name} on {date.today().isoformat()}.",
-            quality_state="REVIEWED",
+            quality_state="EXTRACTED",
         )
         db.add(version)
         db.flush()
@@ -292,12 +291,11 @@ def ingest(
                 tenant_id=TENANT, source_version_id=version.id, operation=operation, decision="allow",
                 rights_version=1, reason_code=publisher.reason_code, terms_reference=publisher.terms, granted_by=user_id,
             ))
-        version.status = "APPROVED"
-        version.approved_by = user_id
-        if current is not None:
-            current.superseded_by_version_id = version.id
+        # Publication/update time is provenance, not legal applicability.
+        # An individually authenticated independent reviewer must establish
+        # applicability and approve through the governed approval workflow.
         db.commit()
-        return "superseded previous version" if current is not None else "new"
+        return "proposed"
 
 
 def main() -> None:
@@ -305,7 +303,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="fetch and split only; write nothing")
     parser.add_argument("--only", nargs="*", help="ingest only these GOV.UK paths")
     parser.add_argument("--user-email", default="dashboard@zoikologia.com",
-                        help="recorded as submitter/approver of the ingested versions")
+                        help="recorded as submitter of the proposed versions")
     args = parser.parse_args()
 
     documents = [(p, proc) for p, proc in DOCUMENTS if not args.only or p in args.only]

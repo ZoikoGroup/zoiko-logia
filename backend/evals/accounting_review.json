@@ -1,0 +1,210 @@
+{
+  "version": "accounting-review-1",
+  "notes": "Reviewed accounting cases (reliability plan phase 5, 24 Oct 2026). Each case states the expected figures (must_contain), acceptable alternative wordings (must_contain_any / must_contain_groups), what a wrong answer would show (must_not_contain), citation expectations, and, with no_accounting_findings, that the answer must pass the treatment checks of app/orchestration/accounting_validation.py. Every expected figure is recomputed with Decimal arithmetic by tests/test_accounting_eval_set.py. Status 'proposed': the expectations were written by the engineering assistant and need an accountant's sign-off before this set gates a release.",
+  "status": "proposed",
+  "cases": [
+    {
+      "id": "acct-input-vat-inclusive",
+      "category": "calculation",
+      "topic": "input VAT",
+      "question": "A UK VAT-registered business buys supplies for £6,000 including VAT at the standard rate of 20%. How much input VAT can it reclaim?",
+      "outcome": "answered",
+      "conclusion": "The VAT within a VAT-inclusive amount is one-sixth at 20%: £1,000, not 20% of £6,000.",
+      "must_contain": ["1,000"],
+      "must_not_contain": ["1,200"],
+      "no_accounting_findings": true
+    },
+    {
+      "id": "acct-output-vat-exclusive",
+      "category": "calculation",
+      "topic": "output VAT",
+      "question": "A UK business sells goods for £10,000 excluding VAT at the standard rate of 20%. What output VAT does it charge, and what does the customer pay?",
+      "outcome": "answered",
+      "conclusion": "Output VAT £2,000; the customer pays £12,000.",
+      "must_contain": ["2,000", "12,000"],
+      "no_accounting_findings": true
+    },
+    {
+      "id": "acct-vat-inclusive-takings",
+      "category": "calculation",
+      "topic": "tax-inclusive amounts",
+      "question": "A UK shop's takings for the day are £1,440 including VAT at 20%. How much is VAT and how much are net sales?",
+      "outcome": "answered",
+      "conclusion": "VAT £240 (one-sixth); net sales £1,200.",
+      "must_contain": ["240", "1,200"],
+      "must_not_contain": ["288"],
+      "no_accounting_findings": true
+    },
+    {
+      "id": "acct-net-vat-return",
+      "category": "calculation",
+      "topic": "input and output VAT",
+      "question": "In a VAT quarter a UK business has sales of £120,000 excluding VAT and purchases of £60,000 including VAT, all standard-rated at 20%. What VAT does it pay to HMRC?",
+      "outcome": "answered",
+      "conclusion": "Output VAT £24,000; input VAT £10,000 (one-sixth of £60,000); VAT payable £14,000.",
+      "must_contain": ["24,000", "10,000", "14,000"],
+      "no_accounting_findings": true
+    },
+    {
+      "id": "acct-journal-credit-sale-vat",
+      "category": "calculation",
+      "topic": "journal entries",
+      "question": "Record the journal entry for a credit sale of £5,000 plus VAT at 20% by a UK VAT-registered business.",
+      "outcome": "answered",
+      "conclusion": "Dr Trade receivables £6,000; Cr Sales £5,000; Cr Output VAT (VAT payable) £1,000.",
+      "must_contain": ["6,000", "5,000", "1,000"],
+      "must_contain_groups": [["receivable", "debtor"], ["output vat", "vat payable", "vat control"]],
+      "no_accounting_findings": true
+    },
+    {
+      "id": "acct-journal-tax-accrual",
+      "category": "accuracy",
+      "topic": "expense recognition versus payment",
+      "question": "A company's corporation tax charge for the year is £36,000, payable nine months after the year end. Give the journal entries at the year end and on payment.",
+      "outcome": "answered",
+      "conclusion": "Year end: Dr Tax expense, Cr Corporation tax payable £36,000. On payment: Dr Corporation tax payable, Cr Cash £36,000.",
+      "must_contain": ["36,000"],
+      "must_contain_groups": [["tax payable", "tax liability", "current tax liabilit"]],
+      "no_accounting_findings": true
+    },
+    {
+      "id": "acct-expense-accrual",
+      "category": "accuracy",
+      "topic": "expense recognition versus payment",
+      "question": "A company's year ends on 31 December. Its £3,000 electricity bill for December arrives and is paid in January. Record the entries.",
+      "outcome": "answered",
+      "conclusion": "31 Dec: Dr Electricity expense, Cr Accruals £3,000. January: Dr Accruals, Cr Cash £3,000.",
+      "must_contain": ["3,000"],
+      "must_contain_groups": [["accrual", "accrued"]],
+      "no_accounting_findings": true
+    },
+    {
+      "id": "acct-prepayment",
+      "category": "calculation",
+      "topic": "expense recognition versus payment",
+      "question": "On 1 October a company pays £12,000 rent for the next 12 months. Its year ends on 31 December. How much is rent expense for the year, and how much is prepaid at the year end?",
+      "outcome": "answered",
+      "conclusion": "Expense £3,000 (three months); prepayment £9,000.",
+      "must_contain": ["3,000", "9,000"],
+      "no_accounting_findings": true
+    },
+    {
+      "id": "acct-lease-asc842",
+      "category": "calculation",
+      "topic": "lease accounting",
+      "question": "Under US GAAP ASC 842, a lessee has an operating lease with annual payments of $50,000 in arrears for 5 years and a 6% discount rate. What is the initial lease liability and the year-1 lease expense?",
+      "outcome": "answered",
+      "conclusion": "Lease liability $210,618.19 (present value of the payments); a single straight-line lease expense of $50,000 a year.",
+      "must_contain": ["210,618", "50,000"],
+      "must_not_contain": ["54,760"],
+      "no_accounting_findings": true
+    },
+    {
+      "id": "acct-lease-ifrs16",
+      "category": "calculation",
+      "topic": "lease accounting",
+      "question": "Under IFRS 16, a lessee leases equipment with annual payments of $50,000 in arrears for 5 years at a 6% discount rate. What are the year-1 depreciation and interest?",
+      "outcome": "answered",
+      "conclusion": "Right-of-use asset and liability $210,618.19; depreciation $42,123.64; interest $12,637.09; total year-1 expense $54,760.73.",
+      "must_contain": ["42,123", "12,637"],
+      "no_accounting_findings": true
+    },
+    {
+      "id": "acct-ifrs-vs-us-gaap-leases",
+      "category": "accuracy",
+      "topic": "IFRS versus US GAAP",
+      "question": "Compare lessee accounting for leases under IFRS 16 and ASC 842.",
+      "outcome": "answered",
+      "conclusion": "IFRS 16 has a single lessee model (depreciation plus interest; no operating-lease classification for lessees, short-term and low-value exemptions aside); ASC 842 keeps finance and operating leases, with a single straight-line cost for operating leases.",
+      "must_contain_groups": [["single lessee", "single model", "one model", "no operating lease", "does not distinguish", "no longer distinguish"], ["straight-line", "straight line"]],
+      "no_accounting_findings": true
+    },
+    {
+      "id": "acct-present-value",
+      "category": "calculation",
+      "topic": "present values",
+      "question": "What is the present value of £10,000 received in 3 years at a discount rate of 5% a year?",
+      "outcome": "answered",
+      "conclusion": "£10,000 ÷ 1.05³ = £8,638.38.",
+      "must_contain": ["8,638.38"]
+    },
+    {
+      "id": "acct-loan-payment",
+      "category": "calculation",
+      "topic": "present values",
+      "question": "A £200,000 loan at 6% a year is repaid monthly over 25 years. What is the monthly payment?",
+      "outcome": "answered",
+      "conclusion": "£1,288.60 a month.",
+      "must_contain": ["1,288.60"]
+    },
+    {
+      "id": "acct-percentage-increase",
+      "category": "calculation",
+      "topic": "percentages",
+      "question": "Revenue rose from £480,000 to £552,000. What is the percentage increase?",
+      "outcome": "answered",
+      "conclusion": "15%.",
+      "must_contain": ["15"]
+    },
+    {
+      "id": "acct-gross-margin",
+      "category": "calculation",
+      "topic": "percentages",
+      "question": "Sales are £250,000 and cost of sales is £162,500. What are the gross profit and the gross margin?",
+      "outcome": "answered",
+      "conclusion": "Gross profit £87,500; gross margin 35%.",
+      "must_contain": ["87,500", "35"]
+    },
+    {
+      "id": "acct-currency-conversion",
+      "category": "calculation",
+      "topic": "currency conversion",
+      "question": "Convert $2,500 to pounds at an exchange rate of £1 = $1.25.",
+      "outcome": "answered",
+      "conclusion": "£2,000.",
+      "must_contain": ["2,000"],
+      "must_not_contain": ["3,125"]
+    },
+    {
+      "id": "acct-diluted-eps-convertible",
+      "category": "calculation",
+      "topic": "EPS",
+      "question": "Net income is $1,000,000 and 500,000 shares are outstanding all year. Convertible bonds pay $60,000 interest a year, the tax rate is 25%, and they convert into 50,000 shares. What are basic and diluted EPS?",
+      "outcome": "answered",
+      "conclusion": "Basic $2.00; incremental $0.90 per share (dilutive); diluted $1,045,000 ÷ 550,000 = $1.90.",
+      "must_contain": ["2.00", "1.90"],
+      "no_accounting_findings": true
+    },
+    {
+      "id": "acct-tax-needs-jurisdiction",
+      "category": "accuracy",
+      "topic": "jurisdiction and assumptions",
+      "question": "How much tax will I pay on £50,000 of profit?",
+      "conclusion": "No tax treatment without the jurisdiction and the kind of taxpayer: Kriton asks, or states the assumption it makes.",
+      "must_contain_any": ["which country", "jurisdiction", "are you", "sole trader", "company or", "assum"]
+    },
+    {
+      "id": "acct-follow-up-grounded-example",
+      "category": "accuracy",
+      "topic": "follow-up questions",
+      "turns": ["what is tax"],
+      "question": "Explain this comparison with a grounded example. Context: what is tax",
+      "outcome": "answered",
+      "conclusion": "A worked example whose treatment agrees with its explanation: VAT within VAT-inclusive amounts, VAT a liability not a cost, the tax expense recognised against a payable.",
+      "must_contain_groups": [["example"]],
+      "must_not_contain": ["total tax burden"],
+      "no_accounting_findings": true
+    },
+    {
+      "id": "acct-follow-up-worked-example-input-vat",
+      "category": "accuracy",
+      "topic": "follow-up questions",
+      "turns": ["What is input VAT?"],
+      "question": "Show a worked example. Context: What is input VAT?",
+      "outcome": "answered",
+      "conclusion": "Input VAT worked from the right base; a VAT-inclusive amount gives one-sixth at 20%.",
+      "must_contain_groups": [["input vat", "input tax"]],
+      "no_accounting_findings": true
+    }
+  ]
+}

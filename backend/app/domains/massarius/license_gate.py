@@ -112,9 +112,11 @@ async def check_eligibility(
 
         context = SourceUseContext(
             tenant_id=tenant_id,
-            jurisdiction=jurisdiction,
+            jurisdiction=source.evidence_jurisdiction or jurisdiction,
             framework=framework,
-            effective_date=effective_date,
+            effective_date=source.evidence_period_end or effective_date,
+            period_start=source.evidence_period_start,
+            period_end=source.evidence_period_end,
             engagement_id=engagement_id,
         )
         transmission = await can_use(db, source.version_id, context, "model_transmission")
@@ -126,11 +128,16 @@ async def check_eligibility(
         eligible.append(source)
         display = await can_use(db, source.version_id, context, "display")
         if display.allowed:
-            display_states[source.id] = _resolve_display_state(record)
+            display_states[source.version_id] = _resolve_display_state(record)
         else:
             summary = await can_use(db, source.version_id, context, "summary")
-            display_states[source.id] = "summarise" if summary.allowed else "internal_reasoning_only"
+            display_states[source.version_id] = "summarise" if summary.allowed else "internal_reasoning_only"
+        state=display_states[source.version_id]
+        old=display_states.get(source.id,"show")
+        order={"show":0,"summarise":1,"internal_reasoning_only":2}
+        display_states[source.id]=max((old,state),key=lambda value:order[value])
 
+    # Exact-version exposure decisions coexist with conservative legacy source keys.
     return LicenceCheckResult(
         eligible=eligible,
         excluded=excluded,

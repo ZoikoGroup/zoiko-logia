@@ -26,6 +26,7 @@ import asyncio
 import logging
 import hashlib
 import json
+from types import SimpleNamespace
 import re
 import math
 import time
@@ -509,6 +510,23 @@ def _assistant_message(message: Any) -> dict:
     }
 
 
+_KB_TOOL = "search_knowledge_base"
+_BACKFILL_LIMIT = 3
+_MARKUP = re.compile(r"\*\*|__|`|\[REF-\d+\]|^[\s>#*\-•|]+|\|", re.M)
+
+
+def _backfill_queries(text: str, unsupported: list[str]) -> list[str]:
+    """The statements stating unverified figures, as knowledge-base queries:
+    the sentence itself, so the figure's context ("UK VAT standard rate")
+    finds the passage that states it. At most three, each 3–300 characters."""
+    queries = []
+    for statement in statements_with_figures(text, unsupported):
+        query = " ".join(_MARKUP.sub(" ", statement).split())[:300]
+        if len(query) >= 3 and query not in queries:
+            queries.append(query)
+    return queries[:_BACKFILL_LIMIT]
+
+
 # Asked for "the same answer … keeping its structure", the model narrated the
 # revision to the reader: "Updated answer with calculator-verified numbers
 # (structure unchanged)", "(calculation 5)" (23 Oct 2026).
@@ -779,6 +797,7 @@ async def _run_agent_loop(
     reminded_fx = False
     reminded_working = False
     reminded_figures = False
+    backfilled_evidence = False
     reminded_evidence = False
     reminded_planned_search = False
     reminded_planned_calculation = False
@@ -1252,14 +1271,38 @@ async def _run_agent_loop(
                     continue
             unsupported = unreconciled_figures(latex_to_plain(message.content or ""), evidence_text(),
                                                calculations_text(), stated=stated_facts)
+            if unsupported and not backfilled_evidence and _KB_TOOL in registry.names():
+                # Repair before removal. Of 319 statements removed as unverified
+                # in a week, most were never looked for: the search ran once, on
+                # the question, and a VAT rate stated in six knowledge-base
+                # passages was removed from an answer (24 Oct 2026). Each
+                # unverified statement is now searched for first, through the
+                # same authorised, budgeted, audited path as a model's call.
+                backfilled_evidence = True
+                lookups = [SimpleNamespace(function=SimpleNamespace(
+                               name=_KB_TOOL, arguments=json.dumps({"query": query})))
+                           for query in _backfill_queries(latex_to_plain(message.content or ""), unsupported)]
+                if lookups:
+                    await run_step(step, lookups)
+                    unsupported = unreconciled_figures(latex_to_plain(message.content or ""), evidence_text(),
+                                                       calculations_text(), stated=stated_facts)
             if unsupported and not reminded_figures and step < limits.max_steps:
                 reminded_figures = True
+                # The source search is offered too, not only the calculator: the
+                # reminder used to say "calculate or remove", so a rate the
+                # knowledge base states was removed rather than cited.
+                offered = {tool["function"]["name"] for tool in tools}
+                tools += [tool for tool in registry.function_schemas(granted_permissions)
+                          if tool["function"]["name"] in _SEARCH_TOOLS and tool["function"]["name"] not in offered]
                 messages.append({"role": "assistant", "content": message.content})
                 messages.append({"role": "user", "content": (
                     "These figures in your answer do not match any number in the question or the tool "
-                    "results: " + ", ".join(unsupported[:8]) + ". Every figure must come from the data: "
-                    "call calculate for anything you derive, or remove the figure. Then give the final answer."
-                    + FINAL_ANSWER_ONLY
+                    "results: " + ", ".join(unsupported[:8]) + ". Every figure must come from the data. "
+                    "For a rate, threshold, limit or rule, search for the source that states it "
+                    "(search_knowledge_base first) and cite it; for a figure you derive, call calculate; in "
+                    "an illustrative example you may instead state a rate as an assumption ('assume a 20% "
+                    "rate for this illustration'). Remove a figure only when none of these works. Then give "
+                    "the final answer." + FINAL_ANSWER_ONLY
                 )})
                 continue
             hand = ([figure for figure in hand_derived_figures(message.content or "", evidence_text(),
