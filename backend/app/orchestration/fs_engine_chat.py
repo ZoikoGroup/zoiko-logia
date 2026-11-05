@@ -33,6 +33,13 @@ _ACCUMULATED = re.compile(r"accumulated\s+(?:depreciation|amorti[sz]ation)", re.
 
 # The statement built for this request, for the notes added after the answer.
 current_statement: ContextVar["ChatStatement | None"] = ContextVar("kriton_fs_statement", default=None)
+# The file the engine failed on for this request (DC-11): said, never hidden.
+engine_failure: ContextVar[str | None] = ContextVar("kriton_fs_engine_failure", default=None)
+
+
+def failure_note(filename: str) -> str:
+    return (f"The Financial Statements engine did not run for {filename}. Any statement figures shown come from "
+            "the general file reader and were not checked by the engine; they are not verified (ENGINE_FAILED).")
 
 
 def enabled() -> bool:
@@ -68,6 +75,10 @@ class ChatStatement:
     # the alternative table itself and gave operating expenses 573,000 for
     # 574,000 (retest of 4 Nov 2026): it is computed here instead.
     alternative: dict[str, Decimal] = field(default_factory=dict)
+    # Each open choice moved on its own: interest income and bank charges are
+    # separate questions, and the two endpoints hid 230,600 and 221,500
+    # (decision ZL-FSR-DEC-20261104 D-01, DC-02).
+    sensitivities: list[tuple[Choice, dict[str, Decimal]]] = field(default_factory=list)
     cost_of_sales_candidates: list[tuple[str, Decimal]] = field(default_factory=list)
     unmapped: list[tuple[str, Decimal]] = field(default_factory=list)
     findings: list[str] = field(default_factory=list)
@@ -149,15 +160,22 @@ def build(filename: str, content: bytes) -> ChatStatement | None:
     statement.lines = placed
     statement.figures = _figures(placed)
     if statement.choices:
-        moved = {line: list(entries) for line, entries in placed.items()}
-        for choice in statement.choices:
-            moved[choice.shown_line] = [e for e in moved[choice.shown_line] if e[0] != choice.account]
-            moved.setdefault(choice.alternative_line, []).append((choice.account, choice.balance))
-        statement.alternative = _figures(moved)
+        statement.alternative = _figures(_moved(placed, statement.choices))
+        if len(statement.choices) > 1:
+            statement.sensitivities = [(c, _figures(_moved(placed, [c]))) for c in statement.choices]
     statement.dividends = [(n, b) for n, b in placed.get("eq.distributions", [])]
     if placed.get("bs.tax_payable"):
         statement.tax_payable = -sum((b for _, b in placed["bs.tax_payable"]), ZERO)
     return statement
+
+
+def _moved(placed: dict[str, list[tuple[str, Decimal]]], choices: list[Choice]) -> dict[str, list[tuple[str, Decimal]]]:
+    """The placement with these choices on their other line."""
+    moved = {line: list(entries) for line, entries in placed.items()}
+    for choice in choices:
+        moved[choice.shown_line] = [e for e in moved[choice.shown_line] if e[0] != choice.account]
+        moved.setdefault(choice.alternative_line, []).append((choice.account, choice.balance))
+    return moved
 
 
 def _figures(placed: dict[str, list[tuple[str, Decimal]]]) -> dict[str, Decimal]:
@@ -244,6 +262,13 @@ def facts_block(s: ChatStatement) -> str:
         out.append("In the alternative, these accounts move and appear only under their new heading: " + "; ".join(
             f"{c.account} {_fmt(c.amount)} from {c.shown.lower()} to {c.alternative.lower()}" for c in s.choices)
             + ". Every other account stays where it is. The rows under each heading must add up to its subtotal.")
+        if s.sensitivities:
+            out.append("Each choice on its own (sensitivities, not statutory options; copy these): " + "; ".join(
+                f"moving only {c.account} to {c.alternative.lower()}: operating profit {_fmt(x['operating_profit'])}, "
+                f"net finance {_fmt(x['net_finance'])}" for c, x in s.sensitivities)
+                + f". Profit before tax is {_fmt(f['profit_before_tax'])} in every case. Show all "
+                  f"{len(s.sensitivities) + 2} operating profits; no placement is established without evidence of "
+                  "each account's nature.")
     if s.cost_of_sales_candidates:
         total = sum((abs(b) for _, b in s.cost_of_sales_candidates), ZERO)
         out.append("Shown in operating expenses but could be cost of sales: " + ", ".join(
@@ -282,8 +307,9 @@ def statement_notes(s: ChatStatement) -> list[str]:
         notes.append("Classification review pending: " + ", ".join(f"{c.account} ({_fmt(c.amount)})" for c in s.choices)
                      + f" can be operating or finance items. Operating profit is {_fmt(f['operating_profit'])} as shown, "
                        f"{_fmt(alternative)} under the alternative (difference "
-                       f"{_fmt(alternative - f['operating_profit'])}); profit before tax is unchanged "
-                       "(CLASSIFICATION_REVIEW).")
+                       f"{_fmt(alternative - f['operating_profit'])})"
+                     + "".join(f", {_fmt(x['operating_profit'])} with only {c.account} moved" for c, x in s.sensitivities)
+                     + "; profit before tax is unchanged (CLASSIFICATION_REVIEW).")
     if s.unmapped or s.residual:
         notes.append(f"Reconciliation unresolved: net assets {_fmt(f['net_assets'])} against equity including profit "
                      f"{_fmt(f['equity_including_profit'])}, a residual of {_fmt(s.residual)}"

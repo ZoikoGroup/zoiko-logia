@@ -1334,17 +1334,18 @@ def _table_lines(table: Table, include_top_n: bool = True, by_month_group: bool 
 _DEBIT_HEADER = re.compile(r"^\s*(?:debit|dr)\b", re.IGNORECASE)
 _CREDIT_HEADER = re.compile(r"^\s*(?:credit|cr)\b", re.IGNORECASE)
 _NAME_HEADER = re.compile(r"name|account|description|ledger", re.IGNORECASE)
+# Bank charges are placed in operating expenses and interest earned in finance
+# income, but from the account name only: decision ZL-FSR-DEC-20261104 D-04
+# (5 Nov 2026) keeps a name as a candidate, never the final classification.
+# Each is listed as needing evidence, with operating profit on the other line.
+_BANK_CHARGES = re.compile(r"bank\s+(?:charges|fees)", re.I)
+_INTEREST_EARNED = re.compile(r"interest\s+(?:income|received|receivable|earned)|investment\s+income", re.I)
 _TB_RULES: tuple[tuple[str, str, re.Pattern], ...] = (
     ("suspense", "any", re.compile(r"suspense", re.I)),
     ("tax_charge", "debit", re.compile(r"tax\s+(?:charge|expense)|income\s+tax\b(?!.*payable)", re.I)),
-    # Bank charges are an operating (administrative) expense, not a finance
-    # cost: they stood under "Finance costs" where every other assistant and
-    # the usual UK layout put them in operating expenses (Northbridge TB).
-    ("operating_expense", "debit", re.compile(r"bank\s+(?:charges|fees)", re.I)),
+    ("operating_expense", "debit", _BANK_CHARGES),
     ("finance_cost", "debit", re.compile(r"interest|finance\s+(?:cost|charge)", re.I)),
-    # Interest earned is finance income, shown after operating profit; it was
-    # counted inside operating profit (233,500 for 218,600).
-    ("finance_income", "credit", re.compile(r"interest\s+(?:income|received|receivable|earned)|investment\s+income", re.I)),
+    ("finance_income", "credit", _INTEREST_EARNED),
     ("cost_of_sales", "debit", re.compile(r"cost\s+of\s+(?:sales|goods)|purchases|direct\s+costs?", re.I)),
     ("revenue", "credit", re.compile(r"revenue|sales|turnover|fee\s+income", re.I)),
     ("other_income", "credit", re.compile(r"income|gain", re.I)),
@@ -1491,6 +1492,7 @@ def _trial_balance_lines(table: Table, by_month: bool = True) -> list[str]:
         monthly = _ledger_monthly_lines(table, debit, credit, name) if by_month else []
         return _ledger_balance_lines(table, debit, credit, name) + monthly
     groups: dict[str, list[tuple[str, Decimal]]] = defaultdict(list)
+    by_name_only: list[tuple[str, Decimal, re.Pattern]] = []
     unplaced, total_dr, total_cr = [], Decimal("0"), Decimal("0")
     for row in table.rows:
         label = row[name].strip() if name < len(row) else ""
@@ -1506,11 +1508,13 @@ def _trial_balance_lines(table: Table, by_month: bool = True) -> list[str]:
         if contra is not None:
             groups[contra].append((shown, -amount))
             continue
-        group = next((g for g, s, pattern in _TB_RULES if (s in (side, "any")) and pattern.search(label)), None)
-        if group is None:
+        rule = next((r for r in _TB_RULES if (r[1] in (side, "any")) and r[2].search(label)), None)
+        if rule is None:
             unplaced.append(label)
             continue
-        groups[group].append((shown, amount))
+        groups[rule[0]].append((shown, amount))
+        if rule[2] is _BANK_CHARGES or rule[2] is _INTEREST_EARNED:
+            by_name_only.append((shown, amount, rule[2]))
     lines = [f"Trial balance '{table.title}': total debits = {_fmt(round(total_dr, 2))}; total credits = "
              f"{_fmt(round(total_cr, 2))}; difference = {_fmt(round(total_dr - total_cr, 2))}"]
     if unplaced:
@@ -1540,6 +1544,19 @@ def _trial_balance_lines(table: Table, by_month: bool = True) -> list[str]:
                               f"Net finance {'income' if net_finance > 0 else 'costs'} = {_fmt(abs(net_finance))}",
                               f"Profit before tax = {_fmt(before_tax)}",
                               line("tax_charge"), f"Profit for the year = {_fmt(after_tax)}"]))
+    if by_name_only:
+        # Moving either account raises operating profit by its amount;
+        # profit before tax does not change.
+        moves = [(k, v, "operating expenses", "finance costs") if p is _BANK_CHARGES
+                 else (k, v, "finance income", "other operating income") for k, v, p in by_name_only]
+        lines.append("- Classification needs evidence (placed by account name only; not a determination): "
+                     + "; ".join(f"{k} {_fmt(v)} is shown in {shown} but may be {other}"
+                                 for k, v, shown, other in moves)
+                     + ". Operating profit on the other line: "
+                     + "; ".join(f"moving {k} only = {_fmt(round(operating + v, 2))}" for k, v, _, _ in moves)
+                     + (f"; moving all = {_fmt(round(operating + sum(v for _, v, _, _ in moves), 2))}"
+                        if len(moves) > 1 else "")
+                     + f". Profit before tax stays {_fmt(before_tax)}. State these; present neither placement as final.")
     # Checks and notes a reviewer expects beside the statement (Claude's and
     # ChatGPT's answers to the Northbridge TB had them; Kriton's did not).
     income_accounts = round(sum(total(g) for g, s in _PL_GROUPS if s == "credit"), 2)

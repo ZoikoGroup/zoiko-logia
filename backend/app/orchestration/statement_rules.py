@@ -165,6 +165,36 @@ def remove_unsupported_claims(text: str) -> tuple[str, list[str]]:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip(), removed
 
 
+# A statement with an open classification, an unresolved reconciliation or no
+# engine run is not verified, reconciled or final, whatever the answer says:
+# the server's status wins (decision ZL-FSR-DEC-20261104 DC-12).
+_VERIFIED_CLAIM = re.compile(
+    r"\b(?:fully\s+|been\s+)?(?:verified|validated)\b|\b(?:fully\s+|been\s+)?reconcile[sd]?\b|"
+    r"\b(?:balances?|ties?)\s+(?:out|perfectly)\b|\bfinal\s+(?:statements?|figures|accounts|version)\b",
+    re.I,
+)
+
+
+def remove_verification_claims(text: str) -> tuple[str, list[str]]:
+    """The answer without sentences calling the statements verified,
+    reconciled or final; and the sentences removed. Tables are kept."""
+    removed: list[str] = []
+    lines = []
+    for line in (text or "").splitlines():
+        if line.lstrip().startswith("|") or line.lstrip().startswith("```"):
+            lines.append(line)
+            continue
+        kept = []
+        for sentence in re.split(r"(?<=[.!?])\s+", line):
+            if _VERIFIED_CLAIM.search(sentence) and not _NEGATED.search(sentence):
+                removed.append(sentence.strip())
+            else:
+                kept.append(sentence)
+        if kept or not line.strip():
+            lines.append(" ".join(kept))
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip(), removed
+
+
 def _has_comparatives(query: str, source_text: str) -> bool:
     """Two years of figures, or a named prior-year column, in the question or
     the source's header rows."""

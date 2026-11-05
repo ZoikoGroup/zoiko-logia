@@ -37,6 +37,14 @@ def test_a_gap_with_eg_or_etc_is_taken_whole():
     assert explanation_gaps(text) == text.splitlines()
 
 
+def test_a_missing_definition_is_an_explanation_gap():
+    # "What is IFRS?" was answered Partial with no explanation (5 Nov 2026).
+    text = ("The supplied evidence does not contain a definition of International Financial Reporting Standards "
+            "(IFRS) as a set of accounting standards issued by the IASB.")
+    assert explanation_gaps(text) == [text]
+    assert explanation_gaps("The sources do not include the VAT registration threshold.") == []
+
+
 async def test_an_explanation_with_a_figure_or_a_failure_is_discarded():
     text, filled = await fill_explanation_gaps(ANSWER, "q", AsyncMock(return_value="1. Usually 20% a year.\n2. See [REF-1] for details."), FAILURE)
     assert not filled and text == ANSWER

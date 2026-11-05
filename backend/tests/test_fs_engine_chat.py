@@ -126,6 +126,69 @@ async def test_a_statement_request_uses_the_engine_figures_not_the_chat_calculat
     assert "Financial Statements engine" not in plain and fs_engine_chat.current_statement.get() is None
 
 
+def test_dc_01_02_each_choice_on_its_own_gives_the_intermediate_operating_profits():
+    # Decision ZL-FSR-DEC-20261104 D-01: scenarios B and C between A and D.
+    s = build("northbridge.csv", NORTHBRIDGE)
+    alone = {c.account: x for c, x in s.sensitivities}
+    assert (alone["Interest received"]["operating_profit"], alone["Interest received"]["net_finance"]) == \
+        (Decimal("230600"), Decimal("-14200"))                                   # B
+    assert (alone["Bank charges"]["operating_profit"], alone["Bank charges"]["net_finance"]) == \
+        (Decimal("221500"), Decimal("-5100"))                                    # C
+    assert all(x["profit_before_tax"] == Decimal("216400") for x in alone.values())
+    block = facts_block(s)
+    assert "moving only Bank charges to interest payable and similar expenses: operating profit 221,500, net finance -5,100" in block
+    assert "operating profit 230,600, net finance -14,200" in block and "Show all 4 operating profits" in block
+    note = next(n for n in statement_notes(s) if "CLASSIFICATION_REVIEW" in n)
+    assert "221,500 with only Bank charges moved" in note and "230,600 with only Interest received moved" in note
+
+
+async def test_dc_11_an_engine_failure_is_said_not_hidden(monkeypatch):
+    from app.domains.kriton_workspace import documents
+    from app.orchestration import service
+    from app.orchestration.websearch import WebSource
+
+    monkeypatch.setattr(documents, "stored_spreadsheets", AsyncMock(return_value=[("tb.csv", SUSPENSE)]))
+    monkeypatch.setattr(fs_engine_chat, "build", MagicMock(side_effect=RuntimeError("engine down")))
+    db = MagicMock()
+    db.begin_nested.return_value.__aenter__ = AsyncMock()
+    db.begin_nested.return_value.__aexit__ = AsyncMock(return_value=False)
+    chunk = WebSource(title="tb.csv — 'tb'!1:18", url="", snippet=SUSPENSE.decode().replace(",", "\t"),
+                      provider="uploaded_document")
+    block = await service._verified_document_figures_context(
+        db, "Generate the income statement from this trial balance", ["d1"], [chunk],
+        SimpleNamespace(retrieval_mode="full_document"), "t", "u")
+    assert "The Financial Statements engine did not run for tb.csv" in block
+    assert fs_engine_chat.current_statement.get() is None and fs_engine_chat.engine_failure.get() == "tb.csv"
+    assert "ENGINE_FAILED" in fs_engine_chat.failure_note("tb.csv")
+
+
+def test_dc_12_the_statement_checks_are_kept_apart_from_the_sources():
+    from app.orchestration.verification_service import verification_breakdown
+
+    northbridge = verification_breakdown(completeness="complete", citations=2,
+                                         limitations=statement_notes(build("northbridge.csv", NORTHBRIDGE)))
+    assert (northbridge.classification, northbridge.reconciliation) == ("needs_evidence", "not_applicable")
+    assert northbridge.overall != "fully_verified"
+    suspense = verification_breakdown(completeness="complete", citations=2,
+                                      limitations=statement_notes(build("tb.csv", SUSPENSE)))
+    assert suspense.reconciliation == "unresolved"
+    failed = verification_breakdown(completeness="complete", citations=0, limitations=[fs_engine_chat.failure_note("tb.csv")])
+    assert failed.reconciliation == "not_run" and failed.overall == "not_verified"
+    plain = verification_breakdown(completeness="complete", citations=1, limitations=[])
+    assert (plain.classification, plain.reconciliation) == ("not_applicable", "not_applicable")
+
+
+def test_dc_12_an_open_statement_is_not_called_verified_or_reconciled():
+    from app.orchestration.statement_rules import remove_verification_claims
+
+    text = ("Operating profit is 218,600.\nThe statements are fully verified and reconcile to the trial balance. "
+            "Profit before tax is 216,400.\nThe statements do not reconcile until the suspense balance is cleared.\n"
+            "| Line | Amount |\n|---|---|\n| Verified total | 1 |")
+    kept, removed = remove_verification_claims(text)
+    assert removed == ["The statements are fully verified and reconcile to the trial balance."]
+    assert "Profit before tax is 216,400." in kept and "do not reconcile until" in kept and "| Verified total | 1 |" in kept
+
+
 def test_the_alternative_statement_is_computed_line_by_line():
     # Retest of 4 Nov: the model's own alternative table said operating expenses 573,000.
     s = build("northbridge.csv", NORTHBRIDGE)

@@ -16,11 +16,13 @@ import re
 from typing import Awaitable, Callable
 
 _GAP = re.compile(
-    r"\b(?:the\s+)?(?:(?:provided|retrieved|available|cited)\s+)?(?:sources?|evidence)"
-    r"(?:\s+(?:provided|retrieved|available))?\s+(?:do|does|did)\s+not\s+"
+    r"\b(?:the\s+)?(?:(?:provided|retrieved|available|cited|supplied)\s+)?(?:sources?|evidence)"
+    r"(?:\s+(?:provided|retrieved|available|supplied))?\s+(?:do|does|did)\s+not\s+"
     # To the full stop that ends the line, so "e.g., IAS 16" or "etc." inside
-    # the sentence is not taken for its end.
-    r"(?:state|confirm|establish|cover|provide|specify|mention)(?:[^\n]*?\.(?=[ \t]*(?:\n|$))|[^\n]*)",
+    # the sentence is not taken for its end. "The supplied evidence does not
+    # contain a definition of IFRS" was left unfilled (5 Nov 2026).
+    r"(?:state|confirm|establish|cover|provide|specify|mention|contain|include|define|describe|explain)"
+    r"(?:[^\n]*?\.(?=[ \t]*(?:\n|$))|[^\n]*)",
     re.IGNORECASE,
 )
 # Gaps that need a source: a figure, rate, threshold, amount, date or rule reference.

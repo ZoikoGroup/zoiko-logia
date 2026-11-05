@@ -461,6 +461,16 @@ class VerificationBreakdown(BaseModel):
     #     the treatment is wrong.
     #   "issue_found": a defined accounting check (accounting_findings) flagged it.
     treatment: Literal["cited_checks_passed", "not_verified", "issue_found", "not_applicable"] = "not_applicable"
+    # A statement from a trial balance, kept apart from the sources so a
+    # passing citation check never stands for them (decision
+    # ZL-FSR-DEC-20261104 §06, DC-12):
+    #   classification "needs_evidence": an account's line is not established
+    #     and operating profit depends on it.
+    #   reconciliation "unresolved": net assets and equity differ or an account
+    #     is unplaced; "failed": debits and credits differ; "not_run": the
+    #     Financial Statements engine did not run.
+    classification: Literal["needs_evidence", "not_applicable"] = "not_applicable"
+    reconciliation: Literal["unresolved", "failed", "not_run", "not_applicable"] = "not_applicable"
     # "fully_verified" only when the answer makes no treatment claim, since a
     # claim cannot yet be verified. "partially_verified" means some parts were
     # verified and others were not; it is not a finding that anything is wrong.

@@ -906,3 +906,10 @@ def test_northbridge_tb_income_statement_matches_the_usual_uk_layout_and_checks(
     assert "total debits 2,594,700 = total credits 2,594,700" in figures and "difference 0" in figures
     assert "the tax charge equals Corporation tax payable [2300] 62,000" in figures
     assert "Dividends paid [3200] 40,000 are a distribution" in figures
+    # Decision ZL-FSR-DEC-20261104 D-04: both placements come from the name
+    # only, so they are candidates with the other operating profits beside them.
+    assert ("Classification needs evidence (placed by account name only; not a determination): Interest income "
+            "[4100] 12,000 is shown in finance income but may be other operating income; Bank charges [6900] 2,900 "
+            "is shown in operating expenses but may be finance costs") in figures
+    assert ("moving Interest income [4100] only = 520,600; moving Bank charges [6900] only = 511,500; "
+            "moving all = 523,500. Profit before tax stays 506,400") in figures

@@ -1915,6 +1915,9 @@ export type VerificationBreakdown = {
    * evidence-check status, never "treatment verified"; "not_verified" means insufficient evidence, not wrong.
    * Absent on older answers. */
   treatment?: "cited_checks_passed" | "not_verified" | "issue_found" | "not_applicable";
+  /** A trial-balance statement's own checks, kept apart from the sources. Absent on older answers. */
+  classification?: "needs_evidence" | "not_applicable";
+  reconciliation?: "unresolved" | "failed" | "not_run" | "not_applicable";
   overall: "fully_verified" | "partially_verified" | "not_verified";
   calculation_id?: string | null;
 };
