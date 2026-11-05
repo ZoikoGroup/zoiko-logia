@@ -5857,6 +5857,21 @@ async def ask_kriton(
         engine_failed_on = fs_engine_chat.engine_failure.get()
         if engine_failed_on:
             statement_notes.insert(0, fs_engine_chat.failure_note(engine_failed_on))
+        if engine_statement is None:
+            # Without the engine, accounts placed by name only stay open (D-04).
+            by_name = re.search(r"Classification needs evidence \(placed by account name only[^\n]*?\): ([^\n]*?)\. "
+                                r"Operating profit on the other line: ([^\n]*?)\. Profit before tax", document_figures_block or "")
+            if by_name:
+                statement_notes.append(f"Classification review pending: {by_name.group(1)}. Operating profit if moved: "
+                                       f"{by_name.group(2)}; profit before tax is unchanged (CLASSIFICATION_REVIEW).")
+        if any(marker in note for note in statement_notes for marker in (
+                "(CLASSIFICATION_REVIEW)", "(RECONCILIATION_UNRESOLVED)", "(ARITHMETIC_FAIL)", "(ENGINE_FAILED)")):
+            from app.orchestration.statement_rules import remove_verification_claims
+            final_text, overclaims = remove_verification_claims(final_text)
+            if overclaims:
+                statement_notes.append(f"{len(overclaims)} statement{'s' if len(overclaims) != 1 else ''} removed: "
+                                       "the statements cannot be called verified, reconciled or final while a review "
+                                       "item is open.")
         limitations[:0] = [note for note in statement_notes if note not in limitations]
     if (not evidence_gap_only and not is_offdomain_refusal and not uses_user_supplied_structure
             and rag_citations and not re.search(r"\[REF-\d+\]", final_text or "")):

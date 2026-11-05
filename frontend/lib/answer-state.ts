@@ -124,6 +124,11 @@ export function suppliedAnswerLabel(answer: AskKritonResponse["answer"]): string
 export function verifiedLabel(label: string, verification?: VerificationBreakdown | null): string {
   if (!verification || !label.startsWith("Answered") || verification.overall === "fully_verified") return label;
   if (verification.arithmetic === "mismatch") return "Answered — a figure differs from the calculation";
+  // A draft statement with an open classification or reconciliation is not
+  // "source grounded" because its citations check out (DC-12, 5 Nov 2026).
+  if (isOpen(verification.reconciliation) || isOpen(verification.classification)) {
+    return "Answered — draft statements; review items open";
+  }
   // Correct sums under an unverified treatment must not read as a verified
   // answer; a cited treatment is not a verified one either.
   const treatmentOpen = !!verification.treatment && verification.treatment !== "not_applicable";
@@ -145,7 +150,11 @@ const PART_TEXT = {
   sources: { verified: "verified", partial: "partly verified", unsupported: "not source-verified" },
   assumptions: { confirmed: "your figures only", stated: "stated, not confirmed" },
   treatment: { cited_checks_passed: "cited; evidence checks passed", not_verified: "not verified", issue_found: "needs review" },
+  classification: { needs_evidence: "needs evidence" },
+  reconciliation: { unresolved: "unresolved", failed: "debits and credits differ", not_run: "engine did not run" },
 } as const;
+
+const isOpen = (state?: string) => !!state && state !== "not_applicable";
 
 /** One line naming each part that applies: "Arithmetic: verified · Assumptions: stated, not confirmed". */
 export function verificationSummary(verification?: VerificationBreakdown | null): string | null {
@@ -156,6 +165,12 @@ export function verificationSummary(verification?: VerificationBreakdown | null)
   if (verification.assumptions !== "not_applicable") parts.push(`Assumptions: ${PART_TEXT.assumptions[verification.assumptions]}`);
   if (verification.treatment && verification.treatment !== "not_applicable") {
     parts.push(`Accounting treatment: ${PART_TEXT.treatment[verification.treatment]}`);
+  }
+  if (verification.classification && verification.classification !== "not_applicable") {
+    parts.push(`Classification: ${PART_TEXT.classification[verification.classification]}`);
+  }
+  if (verification.reconciliation && verification.reconciliation !== "not_applicable") {
+    parts.push(`Reconciliation: ${PART_TEXT.reconciliation[verification.reconciliation]}`);
   }
   return parts.length ? parts.join(" · ") : null;
 }

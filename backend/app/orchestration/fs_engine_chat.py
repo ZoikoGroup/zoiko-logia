@@ -38,8 +38,8 @@ engine_failure: ContextVar[str | None] = ContextVar("kriton_fs_engine_failure", 
 
 
 def failure_note(filename: str) -> str:
-    return (f"The Financial Statements engine did not run for {filename} (ENGINE_FAILED). Any statement figures "
-            "shown come from the general file reader and were not checked by the engine; they are not verified.")
+    return (f"The Financial Statements engine did not run for {filename}. Any statement figures shown come from "
+            "the general file reader and were not checked by the engine; they are not verified (ENGINE_FAILED).")
 
 
 def enabled() -> bool:

@@ -81,6 +81,17 @@ describe("arithmetic is not reported as verifying the accounting treatment", () 
     expect(verificationSummary(v({ arithmetic: "verified" }))).toBe("Arithmetic: verified");
   });
 
+  // Decision ZL-FSR-DEC-20261104 DC-12: a passing citation check never stands
+  // for an open classification or reconciliation (5 Nov 2026).
+  it("keeps a statement's classification and reconciliation apart from its sources", () => {
+    const draft = v({ sources: "verified", classification: "needs_evidence", reconciliation: "unresolved",
+                      overall: "partially_verified" });
+    expect(verifiedLabel("Answered — source grounded", draft)).toBe("Answered — draft statements; review items open");
+    expect(verificationSummary(draft))
+      .toBe("Sources: verified · Classification: needs evidence · Reconciliation: unresolved");
+    expect(verificationSummary(v({ reconciliation: "not_run" }))).toBe("Reconciliation: engine did not run");
+  });
+
   it("never relabels an unanswered response", () => {
     const withheld = v({ treatment: "not_verified", overall: "not_verified" });
     expect(verifiedLabel("Not answered — insufficient evidence", withheld)).toBe("Not answered — insufficient evidence");

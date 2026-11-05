@@ -162,6 +162,33 @@ async def test_dc_11_an_engine_failure_is_said_not_hidden(monkeypatch):
     assert "ENGINE_FAILED" in fs_engine_chat.failure_note("tb.csv")
 
 
+def test_dc_12_the_statement_checks_are_kept_apart_from_the_sources():
+    from app.orchestration.verification_service import verification_breakdown
+
+    northbridge = verification_breakdown(completeness="complete", citations=2,
+                                         limitations=statement_notes(build("northbridge.csv", NORTHBRIDGE)))
+    assert (northbridge.classification, northbridge.reconciliation) == ("needs_evidence", "not_applicable")
+    assert northbridge.overall != "fully_verified"
+    suspense = verification_breakdown(completeness="complete", citations=2,
+                                      limitations=statement_notes(build("tb.csv", SUSPENSE)))
+    assert suspense.reconciliation == "unresolved"
+    failed = verification_breakdown(completeness="complete", citations=0, limitations=[fs_engine_chat.failure_note("tb.csv")])
+    assert failed.reconciliation == "not_run" and failed.overall == "not_verified"
+    plain = verification_breakdown(completeness="complete", citations=1, limitations=[])
+    assert (plain.classification, plain.reconciliation) == ("not_applicable", "not_applicable")
+
+
+def test_dc_12_an_open_statement_is_not_called_verified_or_reconciled():
+    from app.orchestration.statement_rules import remove_verification_claims
+
+    text = ("Operating profit is 218,600.\nThe statements are fully verified and reconcile to the trial balance. "
+            "Profit before tax is 216,400.\nThe statements do not reconcile until the suspense balance is cleared.\n"
+            "| Line | Amount |\n|---|---|\n| Verified total | 1 |")
+    kept, removed = remove_verification_claims(text)
+    assert removed == ["The statements are fully verified and reconcile to the trial balance."]
+    assert "Profit before tax is 216,400." in kept and "do not reconcile until" in kept and "| Verified total | 1 |" in kept
+
+
 def test_the_alternative_statement_is_computed_line_by_line():
     # Retest of 4 Nov: the model's own alternative table said operating expenses 573,000.
     s = build("northbridge.csv", NORTHBRIDGE)

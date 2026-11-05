@@ -1888,8 +1888,17 @@ def verification_breakdown(*, completeness: str | None, citations: int, limitati
         # withdrawn or conflicting sources; it does not prove the source
         # states the treatment, which is why the reader is told "cited".
         treatment_state = "cited_checks_passed" if cited and sources == "verified" else "not_verified"
+    # A statement's own checks, from the notes it was released with
+    # (fs_engine_chat.statement_notes, document_figures).
+    noted = " ".join(limitations or []) if answered else ""
+    classification = "needs_evidence" if "(CLASSIFICATION_REVIEW)" in noted else "not_applicable"
+    reconciliation = ("failed" if "(ARITHMETIC_FAIL)" in noted else "not_run" if "(ENGINE_FAILED)" in noted
+                      else "unresolved" if "(RECONCILIATION_UNRESOLVED)" in noted else "not_applicable")
+    statement_open = classification != "not_applicable" or reconciliation != "not_applicable"
     if completeness == "none":
         overall = "not_verified"
+    elif statement_open:
+        overall = "partially_verified" if arithmetic == "verified" or sources in ("verified", "partial") else "not_verified"
     elif (completeness == "complete" and arithmetic != "mismatch" and sources in ("verified", "not_applicable")
           and assumptions in ("confirmed", "not_applicable") and not treatment
           and treatment_state == "not_applicable"
@@ -1900,5 +1909,6 @@ def verification_breakdown(*, completeness: str | None, citations: int, limitati
     else:
         overall = "not_verified"
     return VerificationBreakdown(arithmetic=arithmetic, sources=sources, assumptions=assumptions,
-                                 treatment=treatment_state, overall=overall,
+                                 treatment=treatment_state, classification=classification,
+                                 reconciliation=reconciliation, overall=overall,
                                  calculation_id=calculation.fingerprint() if calculation is not None else None)
