@@ -5854,6 +5854,9 @@ async def ask_kriton(
             # classification with both operating profits, and an unresolved
             # reconciliation beside the result (review C01, C04, SA-C01).
             statement_notes[:0] = fs_engine_chat.statement_notes(engine_statement)
+        engine_failed_on = fs_engine_chat.engine_failure.get()
+        if engine_failed_on:
+            statement_notes.insert(0, fs_engine_chat.failure_note(engine_failed_on))
         limitations[:0] = [note for note in statement_notes if note not in limitations]
     if (not evidence_gap_only and not is_offdomain_refusal and not uses_user_supplied_structure
             and rag_citations and not re.search(r"\[REF-\d+\]", final_text or "")):
@@ -6271,6 +6274,7 @@ async def _verified_document_figures_context(
     chunks, and a "total" over part of a sheet would be wrong. Fails soft."""
     from app.orchestration import fs_engine_chat
     fs_engine_chat.current_statement.set(None)
+    fs_engine_chat.engine_failure.set(None)
     if not document_ids:
         return ""
     from app.orchestration.document_figures import verified_document_figures
@@ -6290,11 +6294,23 @@ async def _verified_document_figures_context(
             # Financial Statements engine, not from the chat's own
             # calculation (review ZL-FSR-COR-20261103 C01–C05).
             from app.domains.kriton_workspace.documents import stored_spreadsheets
-            async with db.begin_nested():
-                files = await stored_spreadsheets(db, document_ids=list(document_ids), tenant_id=tenant_id,
-                                                  user_id=user_id)
+            try:
+                async with db.begin_nested():
+                    files = await stored_spreadsheets(db, document_ids=list(document_ids), tenant_id=tenant_id,
+                                                      user_id=user_id)
+            except Exception:  # noqa: BLE001 - reported as ENGINE_FAILED, the general figures still given
+                logger.exception("Could not read the uploaded files for the Financial Statements engine")
+                fs_engine_chat.engine_failure.set("the uploaded files")
+                files = []
             for filename, content in files:
-                statement = await asyncio.to_thread(fs_engine_chat.build, filename, content)
+                try:
+                    statement = await asyncio.to_thread(fs_engine_chat.build, filename, content)
+                except Exception:  # noqa: BLE001 - decision ZL-FSR-DEC-20261104 DC-11
+                    logger.exception("Financial Statements engine failed on %s", filename)
+                    fs_engine_chat.engine_failure.set(filename)
+                    engine_block = (f"\n\nThe Financial Statements engine did not run for {filename}. Say so; "
+                                    "do not call any figure verified.")
+                    continue
                 if statement is not None:
                     fs_engine_chat.current_statement.set(statement)
                     engine_block = fs_engine_chat.facts_block(statement)
