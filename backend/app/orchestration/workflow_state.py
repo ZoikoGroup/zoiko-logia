@@ -74,6 +74,10 @@ class WorkflowRun:
     calculation_ids: list[str] = field(default_factory=list)
     # {ref_id: [{"start", "end", "overlap"}]} — exact supporting text per citation.
     citation_spans: dict = field(default_factory=dict)
+    # Model providers that produced text for this request, and those that
+    # failed first, in order (for the answer receipt).
+    model_providers: list[str] = field(default_factory=list)
+    model_provider_failures: list[str] = field(default_factory=list)
 
     def advance(self, target: WorkflowState) -> None:
         if target == self.state:
@@ -119,6 +123,15 @@ def note_citation_spans(spans: dict) -> None:
     run = current_run.get()
     if run is not None:
         run.citation_spans = spans
+
+
+def note_model_provider(provider: str, *, answered: bool) -> None:
+    run = current_run.get()
+    if run is None or not provider:
+        return
+    seen = run.model_providers if answered else run.model_provider_failures
+    if provider not in seen:
+        seen.append(provider)
 
 
 def observe(event_name: str) -> None:

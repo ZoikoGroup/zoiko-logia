@@ -84,7 +84,10 @@ _POPULATION = re.compile(r"\bpopulation\b[^.?!]{0,40}\d|\b\d[\d,]*\s+(?:items|tr
 _SAMPLING_RISK = re.compile(r"\d+(?:\.\d+)?\s*%|\bconfidence\b|\btolerable\b|\bexpected\s+(?:deviation|error)\b", re.I)
 
 SLOTS: dict[str, tuple[str, Callable[[str], bool]]] = {
-    "company": ("the company (its name or ticker, and the exchange if it trades on more than one)", _names_company),
+    # Or the figures to work it out: "A share costs $150 and EPS is $6. What is
+    # the P/E ratio?" was asked which company (6 Nov 2026).
+    "company": ("the company (its name or ticker, and the exchange if it trades on more than one)",
+                lambda t: _names_company(t) or _money_count(t) >= 2),
     # An amount with its currency, or two currencies named ("How many rupees
     # is one US dollar worth?"): the source is then stated.
     "source_currency": ("the currency of the amount you want to convert (for example £5,000 or 5,000 USD)",

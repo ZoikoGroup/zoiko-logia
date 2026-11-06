@@ -1735,6 +1735,35 @@ def _official_rate_question(query: str) -> bool:
     return bool(_OFFICIAL_RATE_QUESTION.search(query or ""))
 
 
+def _stock_quote_question(query: str) -> bool:
+    """A share-price question. Fetched up front too: in agent mode "Compare
+    the current share prices of Tesla, Nvidia and Amazon" ran 73 s and was
+    answered "no share price data" while the quote provider had all three
+    (6 Nov 2026), and a failed agent loop falls back with nothing fetched."""
+    from app.domains.market_data.registry import INTENT_QUOTE
+    return detect_market_data_intent(query or "") == INTENT_QUOTE
+
+
+# A forecast or advice question about a share price needs reasoning; the quote
+# is its evidence, not its answer ("Will Tesla's share price go up next week?").
+_QUOTE_NEEDS_REASONING = re.compile(
+    r"\b(?:will|would|should|could|predict\w*|forecast\w*|expect\w*|outlook|go(?:ing)?\s+(?:up|down)|"
+    r"why|explain|analy[sz]\w*|recommend\w*|buy|sell|invest\w*|worth\s+it)\b", re.I)
+
+
+_TICKER_ASKED = re.compile(r"\bprice\s+of\s+(?-i:([A-Z][\w&.'-]*))")
+
+
+def _no_listed_security_text(query: str) -> str:
+    """For a share-price question whose company or ticker no market data
+    provider recognised. It was answered with the off-topic message ("I'm
+    designed to answer questions related to Accounting…"), 6 Nov 2026."""
+    named = _TICKER_ASKED.search(query or "")
+    subject = f"“{named.group(1)}”" if named else "the company or ticker you named"
+    return (f"I couldn't find a listed security matching {subject} in the available market data sources. "
+            "Check the ticker or company name and the exchange it trades on, then ask again.")
+
+
 async def _record_calculation_receipts(db, *, receipts: list[dict], query_id: str, correlation_id: str,
                                        tenant_id: str, audit_chain_id: str, actor_id: str) -> None:
     """Save each agent calculation as a calculation run (the immutable
@@ -3189,7 +3218,8 @@ async def ask_kriton(
             )
         )
         if needs_web and (not run_agent_loop or _dated_fx_question(request.query)
-                          or _official_rate_question(request.query) or bank_rate_prefetch(shadow_contract)) else None
+                          or _official_rate_question(request.query) or bank_rate_prefetch(shadow_contract)
+                          or _stock_quote_question(request.query)) else None
     )
     retrieval_trace.update(path="agent" if run_agent_loop else "standard",
                            web_search=needs_web and not run_agent_loop,
@@ -3932,6 +3962,9 @@ async def ask_kriton(
         # turn actually asked, not the previous turn folded in for the LLM.
         explicit_visual_request = detect_explicit_visual_request(request.query)
         deterministic_chart_text = live_result.deterministic_answer
+        if (deterministic_chart_text and _stock_quote_question(request.query)
+                and _QUOTE_NEEDS_REASONING.search(request.query)):
+            deterministic_chart_text = None   # the quote stays in the evidence
         if _is_deterministically_out_of_scope(request.query):
             deterministic_chart_text = _MODEL_DOMAIN_REFUSAL_TEXT
         elif (
@@ -4433,14 +4466,13 @@ async def ask_kriton(
     # advice, comparisons, judgment) keep the full GROQ_MODEL for depth and
     # quality. Only applied when Groq is the active provider (its fast model
     # names). answer_model=None means "use the provider's default model".
-    # Only when Groq is the ACTIVE answering provider — if Gemini is configured
-    # it answers instead (and this Groq model id must not be sent to it). Gemini
-    # flash is already fast, so ZERO/LOW questions need no separate fast model.
-    gemini_active = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+    # Only when Groq answers first — a fallback provider (Gemini) never
+    # receives this Groq model id (the gateway drops it for Gemini).
+    first_provider = model_gateway_service.answering_provider()
     # A pasted set of questions needs the full model: the fast one lost the
     # thread on long multi-question prompts (blank output, then truncation).
     answer_model, model_route_reason = answer_model_route(
-        request.query, risk_level=risk_level, fast_available=bool(os.getenv("GROQ_API_KEY")) and not gemini_active,
+        request.query, risk_level=risk_level, fast_available=bool(os.getenv("GROQ_API_KEY")) and first_provider == "groq",
         multi_question=len(sub_questions(request.query)) > 1, follows_up=resolution.follows_up,
         has_documents=has_chat_documents,
         task_type=effective_context.task_type if effective_context else "general_question")
@@ -4827,6 +4859,10 @@ async def ask_kriton(
         if structured_answer:
             composed_text = structured_answer
             uses_user_supplied_structure = True
+    elif (_MODEL_DOMAIN_REFUSAL in composed_text and _stock_quote_question(request.query)
+          and not live_result.deterministic_answer):
+        # A share price is in scope; the lookup found no such security.
+        composed_text = _no_listed_security_text(request.query)
     elif _MODEL_DOMAIN_REFUSAL in composed_text or _MODEL_PROVIDER_FAILURE in composed_text:
         grounded_fallback = _grounded_domain_fallback(request.query, live_evidence)
         if grounded_fallback:
@@ -5006,7 +5042,7 @@ async def ask_kriton(
         tenant_id=tenant_id, audit_chain_id=audit_chain_id,
         actor_id=actor_id, prompt_id=prompt_id, output_hash=output_hash,
         # The agent loop always runs the full model (model=None above).
-        model=("gemini" if gemini_active else os.getenv("GROQ_MODEL", "provider default"))
+        model=(first_provider if first_provider != "groq" else os.getenv("GROQ_MODEL", "provider default"))
         if agent_outcome is not None or answer_model is None else answer_model,
         model_route_reason="full model: agent loop" if agent_outcome is not None else model_route_reason,
     )

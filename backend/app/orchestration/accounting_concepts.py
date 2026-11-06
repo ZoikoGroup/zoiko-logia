@@ -57,6 +57,13 @@ TOPICS: tuple[Topic, ...] = (
           _terms(r"stock options?|share options?|share-based|stock-based|stock compensation|grant-date fair value|"
                  r"vesting(?: period)?|forfeitures?|employee share|equity-settled"),
           _terms(r"shares?|stock|options?|awards?|vest\w*|grants?"), ("ASC 718",), ("IFRS 2",)),
+    # "IFRS 18 (Revenue from Contracts with Customers)" was left alone because
+    # IFRS 18 had no registered topic (6 Nov 2026); IAS 1 is what it replaced.
+    Topic("presentation and disclosure in financial statements",
+          _terms(r"presentation and disclosure|general presentation|management-defined performance measures?|MPMs?|"
+                 r"operating(?:,| and) investing(?:,| and) financing categor(?:y|ies)|aggregation and disaggregation"),
+          _terms(r"presentation|present\w*|disclos\w*|MPMs?|aggregat\w*|disaggregat\w*"),
+          (), ("IFRS 18",), also=("IAS 1",)),
     Topic("statement of cash flows",
           _terms(r"statements? of cash flows|cash flows? statement|operating activities|indirect method|"
                  r"investing activities|financing activities"), _terms(r"cash"), ("ASC 230",), ("IAS 7",)),

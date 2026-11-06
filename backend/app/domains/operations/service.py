@@ -146,7 +146,9 @@ SERVICES = [
     ("google", "Google Gemini", "Answer fallback, risk classification", "AI models"),
     ("openai", "OpenAI", "Model gateway adapter", "AI models"),
     ("anthropic", "Anthropic", "Model gateway adapter", "AI models"),
-    ("searxng", "Web search", "SearXNG: live web evidence for answers", "Search"),
+    # Tavily is the primary web search, SearXNG its backup (websearch.web_search).
+    ("tavily", "Web search", "Tavily: live web evidence for answers", "Search"),
+    ("searxng", "Web search backup", "SearXNG: used when Tavily is unavailable", "Search"),
     ("kroki", "Diagrams", "Kroki: diagram rendering", "Rendering"),
     ("redis", "Background jobs", "Redis / Celery job queue", "Jobs"),
 ]
@@ -225,6 +227,29 @@ def _provider_check(client: httpx.AsyncClient, key: str):
     return _http_check(client, key, url if api_key else None, headers=headers)
 
 
+_TAVILY_PAUSE_CAUSES = (
+    (r"HTTP 40[13]\b", "Credentials rejected"),
+    (r"HTTP 43[23]\b", "Usage limit reached"),
+    (r"HTTP 429\b", "Rate limited"),
+)
+
+
+async def _tavily_check() -> dict:
+    """No live probe: every Tavily search spends credits. The search path
+    pauses Tavily after a rejected key, an exhausted plan or a rate limit, so
+    a pause is a measured failure; otherwise the key is in use. Only the cause
+    is shown, never the provider's message."""
+    if not _set("TAVILY_API_KEY"):
+        return _result("tavily", "not_configured", detail="Not configured")
+    from app.orchestration.websearch import tavily_status
+    status = tavily_status()
+    if status["paused"]:
+        cause = next((label for pattern, label in _TAVILY_PAUSE_CAUSES if re.match(pattern, status["reason"])),
+                     "Paused after a failed search")
+        return _result("tavily", "down", detail=f"{cause}; searches use the backup")
+    return _result("tavily", "operational", detail="Key set, no rejected search (not probed: probes use credits)")
+
+
 async def dependency_checks(db: AsyncSession) -> list[dict]:
     """Live checks of every dependency, run concurrently with short timeouts.
     The API's own latency is measured separately (telemetry.py)."""
@@ -236,6 +261,7 @@ async def dependency_checks(db: AsyncSession) -> list[dict]:
                         f"{s.SUPABASE_URL.rstrip('/')}/auth/v1/health" if s.SUPABASE_URL else None,
                         headers=supabase_headers),
             *(_provider_check(client, key) for key in ("groq", "google", "openai", "anthropic")),
+            _tavily_check(),
             _http_check(client, "searxng", os.getenv("SEARXNG_URL") if _set("SEARXNG_URL") else None),
             _http_check(client, "kroki", f"{os.getenv('KROKI_URL', '').rstrip('/')}/health" if _set("KROKI_URL") else None),
             _tcp_check("redis", os.getenv("CELERY_BROKER_URL") or os.getenv("REDIS_URL")
@@ -279,4 +305,4 @@ def service_location(key: str) -> str:
         host = urlparse(url).hostname or ""
         return "Local" if host in {"localhost", "127.0.0.1"} or host.endswith(".internal") else (
             "Supabase cloud" if host.endswith(".supabase.co") else host)
-    return "Provider-managed" if key in {"groq", "google", "openai", "anthropic"} else "—"
+    return "Provider-managed" if key in {"groq", "google", "openai", "anthropic", "tavily"} else "—"

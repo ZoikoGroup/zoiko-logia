@@ -394,6 +394,8 @@ def _configured_service_keys() -> set[str]:
         keys.add("supabase_auth")
     if by_name.get("SearXNG"):
         keys.add("searxng")
+    if any(s["name"] == "Tavily" and s["configured"] for s in operations.data_sources()):
+        keys.add("tavily")
     if by_name.get("Kroki"):
         keys.add("kroki")
     if by_name.get("Redis / Celery"):
