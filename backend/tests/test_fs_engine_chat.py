@@ -340,6 +340,59 @@ def test_xs26_12_reordered_rows_give_the_same_statement():
     assert {c.account for c in first.choices} == {c.account for c in second.choices}
 
 
+def test_gap_1_the_status_follows_the_reconciliation():
+    # "Status: Draft — arithmetic reconciled" stood beside "the statements do not reconcile".
+    from app.orchestration.statement_rules import (ENGINE_NOT_RUN_STATUS, RECONCILIATION_OPEN_STATUS, STATUS_NOTE,
+                                                   UNRECONCILED_NOTE, scoped_status)
+
+    suspense = scoped_status([STATUS_NOTE, *statement_notes(build("tb.csv", SUSPENSE))])
+    assert suspense[0] == RECONCILIATION_OPEN_STATUS and STATUS_NOTE not in suspense
+    unbalanced = build("northbridge.csv", NORTHBRIDGE.replace(b"4000,Revenue,,1850000.00", b"4000,Revenue,,1850001.00"))
+    assert scoped_status([STATUS_NOTE, *statement_notes(unbalanced)])[0] == UNRECONCILED_NOTE
+    assert scoped_status([STATUS_NOTE, fs_engine_chat.failure_note("tb.csv")])[0] == ENGINE_NOT_RUN_STATUS
+    northbridge = scoped_status([STATUS_NOTE, *statement_notes(build("northbridge.csv", NORTHBRIDGE))])
+    assert northbridge[0] == STATUS_NOTE                          # balanced, residual 0: the status stands
+
+
+def test_gap_2_an_unbalanced_trial_balance_gets_no_totals():
+    s = build("northbridge.csv", NORTHBRIDGE.replace(b"4000,Revenue,,1850000.00", b"4000,Revenue,,1850001.00"))
+    block, notes = facts_block(s), statement_notes(s)
+    assert "Give no statement totals" in block and "Subtotals:" not in block and "Margins" not in block
+    assert not any("CLASSIFICATION_REVIEW" in n or "RECONCILIATION_UNRESOLVED" in n for n in notes)
+    kept, removed = fs_engine_chat.remove_unsupported_figures("Operating profit is 218,600. Please send a corrected file.", s)
+    assert removed == ["Operating profit is 218,600"] and kept == "Please send a corrected file."
+
+
+def test_gap_3_thousands_and_engine_warnings_are_always_noted():
+    thousands = NORTHBRIDGE.replace(b"account_code,", b"Trial balance, amounts in thousands\naccount_code,", 1)
+    s = build("northbridge.csv", thousands)
+    assert s.units == "thousands"
+    assert any("(UNITS_THOUSANDS)" in n for n in statement_notes(s)) and "Every amount below is in thousands" in facts_block(s)
+    assert "SIGN_ANOMALY" in fs_engine_chat._NOTED_FINDINGS and "MIXED_CURRENCY" in fs_engine_chat._NOTED_FINDINGS
+    assert build("northbridge.csv", NORTHBRIDGE).units == "units"
+
+
+def test_gap_4_each_open_account_names_its_deciding_evidence():
+    s = build("northbridge.csv", NORTHBRIDGE)
+    assert all(c.evidence for c in s.choices)
+    note = next(n for n in statement_notes(s) if "(CLASSIFICATION_REVIEW)" in n)
+    for c in s.choices:
+        assert f"{c.account}: {c.evidence}" in note
+    assert "invoices or cost centres" not in note
+
+
+def test_gap_5_tax_split_and_missing_statements_are_named():
+    from app.orchestration.statement_rules import open_items
+
+    notes = statement_notes(build("northbridge.csv", NORTHBRIDGE))
+    assert any("current and deferred tax" in n and "(TAX_REVIEW)" in n for n in notes)
+    items = open_items("Generate the income statement from this trial balance", "", "")
+    missing = next(n for n in items if "(STATEMENTS_INCOMPLETE)" in n)
+    assert "other comprehensive income" in missing and "cash flow statement" in missing and "none is assumed nil" in missing
+    with_cash = open_items("Prepare the income statement and cash flow statement", "", "")
+    assert "cash flow statement" not in next(n for n in with_cash if "(STATEMENTS_INCOMPLETE)" in n)
+
+
 def test_the_alternative_statement_is_computed_line_by_line():
     # Retest of 4 Nov: the model's own alternative table said operating expenses 573,000.
     s = build("northbridge.csv", NORTHBRIDGE)

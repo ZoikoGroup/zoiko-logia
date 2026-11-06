@@ -42,7 +42,15 @@ _PATTERNS: dict[str, re.Pattern] = {
     # Anchored digit-first/last so a trailing separator (e.g. the space
     # before the next word) is never pulled into the match.
     "card_number": re.compile(r"\b\d(?:[ -]?\d){12,18}\b"),
+    # A pasted credential (QA K06, P0): the value after a key-like name, and
+    # common provider key formats. Only the value is replaced.
+    "secret": re.compile(r"(?<=[=:])[ \t]*[A-Za-z0-9_\-/+]{8,}"
+                         r"|\b(?:sk|gsk|pk|rk)[-_][A-Za-z0-9_-]{16,}\b|\bAKIA[0-9A-Z]{16}\b"),
 }
+# The names whose "=" or ":" value is a secret ("fake_key=DEMO_…", "api key: …").
+_SECRET_NAME = re.compile(
+    r"\b(?:api[\s_-]?key|apikey|secret(?:[\s_-]?key)?|client[\s_-]?secret|access[\s_-]?(?:key|token)|"
+    r"auth[\s_-]?token|bearer|token|password|passwd|private[\s_-]?key|\w*_key)\s*$", re.I)
 
 
 def _luhn_valid(digits: str) -> bool:
@@ -81,14 +89,20 @@ def redact_for_external_exposure(text: str) -> RedactionResult:
     for category, pattern in _PATTERNS.items():
         def _replace(match: re.Match, category: str = category) -> str:
             span = match.group(0)
+            lead = ""
             if category == "card_number":
                 digits = re.sub(r"[ -]", "", span)
                 if not (13 <= len(digits) <= 19) or not _luhn_valid(digits):
                     return span  # not a real card number — leave untouched
+            if category == "secret" and match.string[match.start() - 1:match.start()] in ("=", ":"):
+                # "Total: 12400000" is a figure; only a key-like name's value is a secret.
+                if not _SECRET_NAME.search(match.string[max(0, match.start() - 41):match.start() - 1]):
+                    return span
+                lead, span = re.match(r"([ \t]*)(.*)", span, re.S).groups()
             placeholder = f"[REDACTED_{category.upper()}_{uuid.uuid4().hex[:8]}]"
             redaction_map[placeholder] = span
             categories.add(category)
-            return placeholder
+            return lead + placeholder
 
         redacted = pattern.sub(_replace, redacted)
 

@@ -54,6 +54,12 @@ class DocumentSpec(BaseModel):
         return self
 
 
+# A statement export carries the statement, not a revenue chart beside it
+# (Document 06 PUB-T037; gap analysis of 6 Nov 2026).
+_STATEMENT_EXPORT = re.compile(
+    r"\b(?:income\s+statement|profit\s+and\s+loss|p\s*&\s*l|balance\s+sheet|statement\s+of\s+(?:profit|financial\s+"
+    r"position|comprehensive\s+income|cash\s+flows?|changes\s+in\s+equity)|cash\s+flow\s+statement|trial\s+balance|"
+    r"financial\s+statements?)\b", re.I)
 _TABLE_SEPARATOR = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
 _REF_MARKER = re.compile(r"\s*\[\s*REF[\s\-‐-―]?\d+(?:\s*,\s*(?:REF[\s\-‐-―]?)?\d+)*\s*\]", re.I)
 _RULE_LINE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
@@ -177,8 +183,9 @@ def build_document_spec(
         index += 1
     flush_text()
 
-    product_values = analysis.get("product_revenue") or {}
-    customer_values = analysis.get("customer_revenue") or {}
+    statement_export = bool(_STATEMENT_EXPORT.search(request_text or ""))
+    product_values = {} if statement_export else analysis.get("product_revenue") or {}
+    customer_values = {} if statement_export else analysis.get("customer_revenue") or {}
     if product_values:
         blocks.append(DocumentBlock(
             type="chart", title="Revenue by Product", alt_text="Bar chart of verified product revenue",

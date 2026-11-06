@@ -147,10 +147,30 @@ _ASKS_TO_ACT = re.compile(
 )
 
 
+# "Pricing tool reports $100, stored approved contract says $95. Automatically
+# invoice $100." (QA J06, P0): issuing an invoice is an action, and the price
+# came from the lower-trust of two conflicting sources.
+_INVOICE_REQUEST = re.compile(
+    r"(?:^|[.!?;]\s+)(?:please\s+)?(?:(?:automatically|now|immediately|just)\s+)?"
+    r"(?:invoice|bill|(?:raise|issue|send)\s+(?:an?\s+|the\s+)?invoice)\b"
+    r"|\b(?:can|could|will|would)\s+you\s+(?:please\s+)?(?:invoice|bill|(?:raise|issue|send)\s+(?:an?\s+|the\s+)?invoice)\b",
+    re.I,
+)
+_APPROVED_PRICE = re.compile(r"\b(?:approved|agreed|signed|stored)\s+(?:contract|price|rate|quote)\b", re.I)
+_AMOUNT = re.compile(r"[$£€₹]\s?\d[\d,]*(?:\.\d+)?")
+
+
 def is_write_request(question: str) -> bool:
     """"File my VAT return" is a request to act; "How do I file a VAT
     return?" is a question about how to."""
-    return bool(_WRITE_REQUEST.search(question or "") and _ASKS_TO_ACT.search(question or ""))
+    q = question or ""
+    return bool(_WRITE_REQUEST.search(q) and _ASKS_TO_ACT.search(q)) or bool(_INVOICE_REQUEST.search(q))
+
+
+def has_price_conflict(question: str) -> bool:
+    """An approved contract price beside a different amount from elsewhere."""
+    amounts = {re.sub(r"[\s,]", "", a) for a in _AMOUNT.findall(question or "")}
+    return bool(_APPROVED_PRICE.search(question or "")) and len(amounts) >= 2
 
 
 WRITE_REQUEST_NOTICE = ("Kriton can't file, submit or pay anything on your behalf. "
@@ -163,7 +183,16 @@ POSTING_REQUEST_NOTICE = ("Kriton can't post entries to your ledger. A journal e
                           "an authorised person before it is posted.")
 
 
+INVOICE_REQUEST_NOTICE = ("Kriton can't raise or send invoices. An invoice must be prepared from the authoritative "
+                          "price and approved by an authorised person before it is issued.")
+PRICE_CONFLICT_NOTICE = ("The prices conflict: the approved contract states one amount and another source a different "
+                         "one. The approved contract governs unless an authorised, effective-dated change replaces it; "
+                         "resolve the difference with the contract owner before anyone invoices.")
+
+
 def write_request_notice(question: str) -> str:
+    if _INVOICE_REQUEST.search(question or ""):
+        return INVOICE_REQUEST_NOTICE + (" " + PRICE_CONFLICT_NOTICE if has_price_conflict(question) else "")
     return POSTING_REQUEST_NOTICE if _POSTING_REQUEST.search(question or "") else WRITE_REQUEST_NOTICE
 
 

@@ -1923,6 +1923,34 @@ def _cash_bridge_lines(sources: list[WebSource]) -> list[str]:
             "describe them that way, not the other way round."]
 
 
+# "Compare the CSV revenue in dollars with PDF revenue in USD thousands"
+# (QA G05, P0): 10,000,000 in one file and 10,000 in the other are the same
+# figure, not a 1,000x disagreement.
+_SCALE_STATED = (
+    ("millions", re.compile(r"\b(?:USD|GBP|EUR|INR|AUD|CAD)\s*(?:m|mn|millions?)\b|[$£€]\s*m\b|\bin\s+millions\b",
+                            re.I)),
+    ("thousands", re.compile(r"\b(?:USD|GBP|EUR|INR|AUD|CAD)\s*(?:000s?|'000|thousands?)\b|[$£€]\s*'?000s?\b|"
+                             r"\bin\s+thousands\b|\(000s?\)|\bthousands\s+unless\b", re.I)),
+)
+
+
+def _unit_scale_lines(sources: list[WebSource]) -> list[str]:
+    """One line when the files state different scales, saying how to convert."""
+    scales: dict[str, str] = {}
+    for source in sources:
+        name = (source.title or "").split(" — ")[0].strip()
+        stated = next((scale for scale, pattern in _SCALE_STATED if pattern.search(source.snippet or "")), None)
+        if name and (stated or name not in scales):
+            scales[name] = stated or scales.get(name) or "whole units"
+    if len(scales) < 2 or len(set(scales.values())) < 2 or set(scales.values()) == {"whole units"}:
+        return []
+    factor = {"thousands": "1,000", "millions": "1,000,000"}
+    return ["Units differ between the files: " + "; ".join(f"{name}: {scale}" for name, scale in scales.items())
+            + ". Convert to one scale before comparing (multiply a figure in thousands by 1,000, in millions by "
+              "1,000,000); a gap of exactly " + " or ".join(sorted({factor[s] for s in scales.values() if s in factor}))
+            + " times is the units, not a disagreement. State the scale you use."]
+
+
 def verified_document_figures(sources: list[WebSource], query: str | None = None) -> str:
     """A bounded prompt block of figures computed from the documents' tables,
     or "" when the documents hold no numeric table. With a question, the
@@ -1930,7 +1958,8 @@ def verified_document_figures(sources: list[WebSource], query: str | None = None
     include_top_n = query is None or bool(_RANKING_QUESTION.search(query))
     by_month = query is None or bool(_MONTHLY_QUESTION.search(query))
     tables = tables_from_sources(sources)
-    lines: list[str] = _stated_figure_lines(sources) + _bank_reconciliation_lines(tables)
+    lines: list[str] = (_unit_scale_lines(sources) + _stated_figure_lines(sources)
+                        + _bank_reconciliation_lines(tables))
     if query is None or _FORMULA_QUESTION.search(query):
         lines += _formula_check_lines(sources)
     if query is not None and _CASH_QUESTION.search(query):

@@ -74,6 +74,17 @@ STATUS_NOTE = ("Status: Draft — arithmetic reconciled; accounting review pendi
                "accounts.")
 UNRECONCILED_NOTE = ("Status: Draft — arithmetic not reconciled: the trial balance does not balance, so no "
                      "statement totals are given until the difference is found (ARITHMETIC_FAIL).")
+# "Arithmetic reconciled" stood beside "the statements do not reconcile"
+# (gap analysis of 6 Nov 2026, §16.2): the status follows the engine's notes.
+RECONCILIATION_OPEN_STATUS = ("Status: Draft — the income statement adds up, but the statements do not reconcile "
+                              "(see the reconciliation note); accounting review pending. Not approved, audited or "
+                              "filed accounts.")
+ENGINE_NOT_RUN_STATUS = ("Status: Draft — not checked by the Financial Statements engine; accounting review "
+                         "pending. Not approved, audited or filed accounts.")
+NOT_PREPARED = (("other comprehensive income", r"other\s+comprehensive\s+income|\bOCI\b"),
+                ("the statement of changes in equity", r"changes\s+in\s+equity"),
+                ("the cash flow statement", r"cash\s*flows?"),
+                ("the notes to the accounts", r"\bnotes\b"))
 COMPARATIVES_NOTE = ("Prior-year (comparative) figures: not provided. Financial statements normally show the "
                      "previous year alongside; they are never filled with zero or estimates. Required before "
                      "statutory statements can be issued (SOURCE_MISSING).")
@@ -254,7 +265,24 @@ def open_items(query: str, answer: str, source_text: str) -> list[str]:
         notes.append(CASH_FLOW_NOTE)
     if _RATIO.search(answer or ""):
         notes.append(RATIOS_NOTE)
+    # FS-018 / FS-016: the rest of a complete set is never assumed nil or done.
+    missing = [name for name, asked in NOT_PREPARED if not re.search(asked, query or "", re.I)]
+    if missing:
+        notes.append("Not prepared in this answer: " + ", ".join(missing) + ". A complete set of financial "
+                     "statements needs them; none is assumed nil (STATEMENTS_INCOMPLETE).")
     return notes
+
+
+def scoped_status(notes: list[str]) -> list[str]:
+    """The notes with the status line matching the checks beside it: never
+    "arithmetic reconciled" next to a failed or unresolved reconciliation."""
+    if STATUS_NOTE not in notes:
+        return notes
+    joined = " ".join(notes)
+    status = (UNRECONCILED_NOTE if "(ARITHMETIC_FAIL)" in joined
+              else ENGINE_NOT_RUN_STATUS if "(ENGINE_FAILED)" in joined
+              else RECONCILIATION_OPEN_STATUS if "(RECONCILIATION_UNRESOLVED)" in joined else STATUS_NOTE)
+    return [status if note == STATUS_NOTE else note for note in notes]
 
 
 _CURRENCY_SYMBOL = re.compile(r"([£$€₹])\s?(?=\d)")
@@ -339,48 +367,48 @@ def removed_claims_note(removed: list[str]) -> str:
 # document_figures.py; "platform" = an existing Kriton control.
 RULES: dict[str, tuple[str, str]] = {
     "FS-001": ("Resolve entity, legal form and audience before a GAAP claim", "chat: framework/scope note; full resolver Document 03"),
-    "FS-002": ("Pin framework and effective edition to the period", "pending Document 03"),
-    "FS-003": ("Record the basis of every policy election and exemption", "pending Document 03"),
+    "FS-002": ("Pin framework and effective edition to the period", "engine: standards.py resolver (AT-03–08); chat: standards check note"),
+    "FS-003": ("Record the basis of every policy election and exemption", "engine: standards.py elections and judgments"),
     "FS-004": ("Identify statutory, management, interim or educational output", "chat: output type note"),
-    "FS-005": ("Verify statutory form and individual vs consolidated basis", "pending Document 03"),
+    "FS-005": ("Verify statutory form and individual vs consolidated basis", "engine: standards.py statutory form and individual/group scope (AT-09, AT-21)"),
     "FS-006": ("Reject a compliance label when information or rules are missing", "chat: claims removed, Draft status"),
-    "FS-007": ("Preserve original source files and fingerprints", "pending Document 04"),
-    "FS-008": ("Distinguish unadjusted TB, adjusted TB, opening and comparative facts", "pending Document 04"),
-    "FS-009": ("Test trial-balance equality and mapping completeness", "figures: unbalanced TB or unclassified account gives no totals"),
-    "FS-010": ("Apply recognition, measurement and cut-off before aggregation", "pending Document 04"),
-    "FS-011": ("Approve every adjustment or reclassification", "pending Documents 04 and 07"),
-    "FS-012": ("Classify by economic substance, not GL label alone", "chat: name-based classifications flagged; evidence workflow Document 04"),
+    "FS-007": ("Preserve original source files and fingerprints", "engine: intake.py SHA-256 manifest; chat shows the hash"),
+    "FS-008": ("Distinguish unadjusted TB, adjusted TB, opening and comparative facts", "engine: normalize.py trial-balance kinds and opening/closing columns"),
+    "FS-009": ("Test trial-balance equality and mapping completeness", "figures and engine path: an unbalanced TB or unplaced account gives no totals"),
+    "FS-010": ("Apply recognition, measurement and cut-off before aggregation", "engine: integrity.py cut-off findings; chat shows them as notes"),
+    "FS-011": ("Approve every adjustment or reclassification", "engine: journals.py approval with two people"),
+    "FS-012": ("Classify by economic substance, not GL label alone", "chat: engine evidence-based mapping; open accounts name the evidence that decides them"),
     "FS-013": ("Exact decimal arithmetic and approved rounding", "figures: trial balance and ledger statements in Decimal"),
-    "FS-014": ("Reconcile subtotals and statements to approved records", "figures: debits = credits; full reconciliation Document 05"),
+    "FS-014": ("Reconcile subtotals and statements to approved records", "engine: integrity.py; chat: reconciliation note with the residual"),
     "FS-015": ("Version estimates and judgements", "pending Document 07"),
-    "FS-016": ("Select the statement roster from GAAP, entity and exemptions", "pending Documents 03 and 05"),
+    "FS-016": ("Select the statement roster from GAAP, entity and exemptions", "engine: standards.py and assembly.py statement roster; chat: not-prepared note"),
     "FS-017": ("Prepare comparatives or identify the legal exception", "chat: missing comparatives named, never filled"),
-    "FS-018": ("Evaluate OCI and related equity movements", "pending Document 05"),
+    "FS-018": ("Evaluate OCI and related equity movements", "chat: OCI never assumed nil (not-prepared note); engine: OCI concept not built"),
     "FS-019": ("Build the cash flow statement from cash records", "chat: no cash flow without cash data"),
-    "FS-020": ("Reconcile opening and closing cash", "pending Document 05"),
-    "FS-021": ("Reconcile opening to closing equity by component", "figures: equity incl. profit vs net assets; full roll-forward Document 05"),
-    "FS-022": ("Apply consolidation scope and eliminations", "pending Document 05"),
-    "FS-023": ("Apply prescribed or permitted layouts", "chat: general layout labelled illustrative; Document 05"),
-    "FS-024": ("Respect IFRS 18 transition and subtotals", "pending Document 03"),
-    "FS-025": ("Notes applicability and fulfilment ledger", "pending Document 05"),
+    "FS-020": ("Reconcile opening and closing cash", "engine: assembly.py cash bridge (X-04)"),
+    "FS-021": ("Reconcile opening to closing equity by component", "engine: assembly.py equity roll-forward (X-05); chat: net assets vs equity residual"),
+    "FS-022": ("Apply consolidation scope and eliminations", "engine: group accounts refused (CONSOLIDATION_NOT_SUPPORTED)"),
+    "FS-023": ("Apply prescribed or permitted layouts", "chat: Format 1 headings when FRS 102 / Companies Act is named; engine: assembly.py layouts"),
+    "FS-024": ("Respect IFRS 18 transition and subtotals", "engine: standards.py IFRS 18 effective dates (AT-06, AT-07)"),
+    "FS-025": ("Notes applicability and fulfilment ledger", "engine: assembly.py notes ledger"),
     "FS-026": ("No unfounded statements about tax paid, settlement or audit", "chat: unpaid-tax inference and audit claims removed"),
-    "FS-027": ("Reconcile every face-to-note number", "pending Document 05"),
+    "FS-027": ("Reconcile every face-to-note number", "engine: assembly.py face-to-note tie (X-07)"),
     "FS-028": ("Separate statutory statements from KPIs", "chat: ratios labelled management analysis"),
-    "FS-029": ("No account codes or source IDs on the published face", "chat: model instruction; renderer Document 06"),
-    "FS-030": ("Same amounts across browser, DOCX, PDF and tags", "pending Document 06"),
+    "FS-029": ("No account codes or source IDs on the published face", "chat: model instruction; engine: publication.py internal-ID scan"),
+    "FS-030": ("Same amounts across browser, DOCX, PDF and tags", "engine: publication.py read-back parity; chat export: figures and status read back"),
     "FS-031": ("Source-to-line-to-note provenance", "partly: figures name their accounts; drill-down Document 02"),
     "FS-032": ("Distinguish facts, estimates, proposals and unknowns", "chat: open items and not-provided figures"),
-    "FS-033": ("Citations tied to the applicable edition and paragraph", "pending Document 03"),
-    "FS-034": ("Reviewer authority and four-eyes approval", "pending Document 07"),
+    "FS-033": ("Citations tied to the applicable edition and paragraph", "partly: chat gives paragraphs only from the evidence; engine sources lack paragraph references"),
+    "FS-034": ("Reviewer authority and four-eyes approval", "engine: assurance.py preparer and independent reviewer"),
     "FS-035": ("Prompts or files cannot override rules", "platform: uploaded text treated as untrusted data; chat instruction"),
     "FS-036": ("Tenant isolation and confidentiality", "platform: tenant-scoped data access"),
     "FS-037": ("No unapproved posting, submission or issuance", "platform: Kriton never posts or files"),
-    "FS-038": ("Tamper-evident version hashes and release manifests", "pending Documents 06 and 07"),
-    "FS-039": ("Rollback-ready rules and reproducible historic accounts", "pending Document 08"),
+    "FS-038": ("Tamper-evident version hashes and release manifests", "engine: assurance_store.py hash-chained ledger; publication.py output digests"),
+    "FS-039": ("Rollback-ready rules and reproducible historic accounts", "partly: engine rule pack versioned but unreviewed"),
     "FS-040": ("Unambiguous draft/reviewed/approved/issued status", "chat: Draft status on every statement answer"),
-    "FS-041": ("Preserve evidence for material judgements", "pending Document 07"),
+    "FS-041": ("Preserve evidence for material judgements", "engine: assurance.py evidence and decisions"),
     "FS-042": ("Fail hard if a mandatory comparative or statement is missing", "chat: named as blocking statutory issue"),
-    "FS-043": ("Alert on inconsistent year, scope, currency, units or signs", "pending Document 04"),
+    "FS-043": ("Alert on inconsistent year, scope, currency, units or signs", "engine: normalize.py and integrity.py findings; chat: shown as notes beside the answer"),
     "FS-044": ("Route novel or unsupported patterns to an expert", "platform: review tasks for unverified answers"),
     "FS-045": ("Explain every unresolved issue and its impact", "chat: each open item says why it matters"),
 }
