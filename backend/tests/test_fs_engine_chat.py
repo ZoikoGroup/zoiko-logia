@@ -276,6 +276,70 @@ def test_dc_17_dc_18_another_entity_carries_no_northbridge_figures():
         assert northbridge not in block
 
 
+# The Northbridge answer of the 5 Nov app retest: every figure is the engine's.
+RETEST_ANSWER = """Revenue of 1,850,000 generated a gross profit of 795,500 (gross margin = 43.00%).
+After operating expenses the operating profit is 218,600 (operating margin = 11.82%).
+Finance items reduce profit by 2,200, giving a profit before tax of 216,400.
+After the corporation-tax charge of 62,000 the profit for the year is 154,400 (net margin = 8.35%).
+The effective tax rate implied by the figures is 28.65%.
+Operating expenses\t
+Salaries and wages\t284,000
+Operating expenses subtotal\t576,900
+| Line | Standard | Alternative | Difference |
+| Operating profit | 218,600 | 233,500 | +14,900 |
+Profit before tax stays at 216,400 in every scenario.
+Under the alternative, operating profit is 233,500 and net finance costs are 17,100."""
+
+
+def test_nb26_08_a_narrative_figure_the_engine_did_not_compute_is_removed():
+    s = build("northbridge.csv", NORTHBRIDGE)
+    kept, removed = fs_engine_chat.remove_unsupported_figures(RETEST_ANSWER, s)
+    assert removed == [] and kept == RETEST_ANSWER
+    wrong = "Revenue is 1,850,000. The operating margin is 12.62%. Operating profit is 14,900 higher if both move."
+    kept, removed = fs_engine_chat.remove_unsupported_figures(wrong, s)
+    assert removed == ["operating margin is 12.62%"]            # the alternative's margin stated as the reference
+    assert kept == "Revenue is 1,850,000. Operating profit is 14,900 higher if both move."
+    kept, removed = fs_engine_chat.remove_unsupported_figures("Operating profit is 573,000.", s)
+    assert removed == ["Operating profit is 573,000"] and kept == ""
+
+
+def test_nb26_05_an_account_listed_twice_is_named():
+    lines = NORTHBRIDGE.decode().splitlines()
+    doubled = ("\n".join(lines) + "\n" + next(l for l in lines if "Bank charges" in l) + "\n").encode()
+    notes = statement_notes(build("northbridge.csv", doubled))
+    assert any("(SOURCE_REVIEW)" in n and "appears 2 times" in n for n in notes)
+    assert any("(ARITHMETIC_FAIL)" in n for n in notes)
+
+
+async def test_sa_t05_an_engine_that_times_out_is_not_run(monkeypatch):
+    import time
+    from app.domains.kriton_workspace import documents
+    from app.orchestration import service
+    from app.orchestration.websearch import WebSource
+
+    monkeypatch.setattr(documents, "stored_spreadsheets", AsyncMock(return_value=[("tb.csv", SUSPENSE)]))
+    monkeypatch.setattr(fs_engine_chat, "build", lambda *_: time.sleep(0.5))
+    monkeypatch.setattr(fs_engine_chat, "ENGINE_SECONDS", 0.05)
+    db = MagicMock()
+    db.begin_nested.return_value.__aenter__ = AsyncMock()
+    db.begin_nested.return_value.__aexit__ = AsyncMock(return_value=False)
+    chunk = WebSource(title="tb.csv — 'tb'!1:18", url="", snippet=SUSPENSE.decode().replace(",", "\t"),
+                      provider="uploaded_document")
+    block = await service._verified_document_figures_context(
+        db, "Generate the income statement from this trial balance", ["d1"], [chunk],
+        SimpleNamespace(retrieval_mode="full_document"), "t", "u")
+    assert "timed out on tb.csv" in block and fs_engine_chat.engine_failure.get() == "tb.csv (timed out)"
+    assert "(ENGINE_FAILED)" in fs_engine_chat.failure_note("tb.csv (timed out)")
+
+
+def test_xs26_12_reordered_rows_give_the_same_statement():
+    header, *rows = NORTHBRIDGE.decode().strip().splitlines()
+    shuffled = "\n".join([header, *reversed(rows)]).encode()
+    first, second = build("northbridge.csv", NORTHBRIDGE), build("northbridge.csv", shuffled)
+    assert first.figures == second.figures and first.alternative == second.alternative
+    assert {c.account for c in first.choices} == {c.account for c in second.choices}
+
+
 def test_the_alternative_statement_is_computed_line_by_line():
     # Retest of 4 Nov: the model's own alternative table said operating expenses 573,000.
     s = build("northbridge.csv", NORTHBRIDGE)

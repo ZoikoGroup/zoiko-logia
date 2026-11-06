@@ -25,6 +25,9 @@ from app.domains.financial_statements.normalize import TRIAL_BALANCE
 from app.domains.financial_statements.service import run_intake
 
 ZERO = Decimal("0")
+# A trial balance takes about a second; past this the run is reported as not
+# run, inside the request's own deadline.
+ENGINE_SECONDS = 20
 _OPERATING = {"pl.cost_of_sales", "pl.distribution_costs", "pl.administrative_expenses"}
 _ASSETS = {"bs.ppe", "bs.intangibles", "bs.inventories", "bs.trade_receivables", "bs.cash"}
 _LIABILITIES = {"bs.trade_payables", "bs.tax_payable", "bs.borrowings", "bs.deferred_tax", "bs.provisions"}
@@ -88,8 +91,8 @@ class ChatStatement:
     cost_of_sales_candidates: list[tuple[str, Decimal]] = field(default_factory=list)
     unmapped: list[tuple[str, Decimal]] = field(default_factory=list)
     findings: list[str] = field(default_factory=list)
-    # Hidden sheets or rows and links to other workbooks (DC-06): included or
-    # not refreshed, so shown beside the answer for review.
+    # Hidden sheets or rows and links to other workbooks (DC-06), and an
+    # account listed twice (NB26-05): shown beside the answer for review.
     source_flags: list[str] = field(default_factory=list)
     caption_flags: list[str] = field(default_factory=list)
     dividends: list[tuple[str, Decimal]] = field(default_factory=list)
@@ -145,7 +148,7 @@ def build(filename: str, content: bytes) -> ChatStatement | None:
         total_debits=result.report.total_debits, total_credits=result.report.total_credits,
         findings=[f"{f.code}: {f.message}" for f in result.findings],
         source_flags=list(dict.fromkeys(f.message for f in result.findings
-                                        if f.code in ("HIDDEN_CONTENT", "EXTERNAL_LINKS"))),
+                                        if f.code in ("HIDDEN_CONTENT", "EXTERNAL_LINKS", "DUPLICATE_ACCOUNT"))),
     )
     placed: dict[str, list[tuple[str, Decimal]]] = {}
     for proposal in result.mappings:
@@ -334,3 +337,77 @@ def statement_notes(s: ChatStatement) -> list[str]:
     if s.source_flags:
         notes.append("Source to review before relying on the figures: " + " ".join(s.source_flags) + " (SOURCE_REVIEW)")
     return notes
+
+
+# A narrative figure must be the engine's (review NB26-08): "operating margin
+# 12.62%" beside a 218,600 statement is removed. Only a label followed by its
+# figure is checked ("operating profit is 218,600"), never an account row.
+_AMOUNT_LABELS = {
+    "revenue": ("revenue", "turnover"), "cost_of_sales": ("cost of sales",), "gross_profit": ("gross profit",),
+    "operating_expenses": ("operating expenses",), "operating_profit": ("operating profit",),
+    "net_finance": ("net finance (?:costs?|income|expenses?)", "net finance"),
+    "finance_costs": ("(?<!net )finance costs",), "finance_income": ("(?<!net )finance income",),
+    "profit_before_tax": ("profit before tax(?:ation)?",),
+    "tax": ("tax charge", "tax expense", "income tax expense", "corporation tax charge"),
+    "profit_for_the_year": ("profit for the year", "profit after tax", "net profit"),
+}
+_RATE_LABELS = {"gross margin": ("gross_profit", "revenue"), "operating margin": ("operating_profit", "revenue"),
+                "net margin": ("profit_for_the_year", "revenue"),
+                "effective tax rate": ("tax", "profit_before_tax")}
+_GAP = (r"[\s:=£$€(]*(?:(?:of|is|was|at|to|totals?|totalling|equals?|stands\s+at|would\s+be|becomes|falls\s+to|"
+        r"rises\s+to|GBP|USD|EUR)\b[\s:=£$€(]*)*")
+_NUMBER = r"(-?\d[\d,]*(?:\.\d+)?)"
+# A sentence about another placement may use the alternative's figures.
+_ALTERNATIVE_CUE = re.compile(r"\b(?:alternative\w*|if|would|could|under|moved?|moving|reclassif\w*|scenario|"
+                              r"instead|sensitivit\w*|options?|cases?|otherwise|either)\b", re.I)
+
+
+def _scenarios(s: ChatStatement) -> list[dict[str, Decimal]]:
+    return [s.figures] + ([s.alternative] if s.alternative else []) + [x for _, x in s.sensitivities]
+
+
+def _wrong_figures(sentence: str, s: ChatStatement) -> list[str]:
+    scenarios = _scenarios(s) if _ALTERNATIVE_CUE.search(sentence) else [s.figures]
+    wrong = []
+    for key, labels in _AMOUNT_LABELS.items():
+        allowed = {abs(x[key]).quantize(Decimal("1")) for x in scenarios if key in x}
+        # "operating profit is 14,900 higher": a difference between placements.
+        allowed |= {abs(x[key] - s.figures[key]).quantize(Decimal("1")) for x in _scenarios(s) if key in x}
+        for match in re.finditer(rf"\b(?:{'|'.join(labels)})\b{_GAP}{_NUMBER}(?!\s*%|[\d,.]*\s*%)", sentence, re.I):
+            value = abs(Decimal(match.group(1).replace(",", ""))).quantize(Decimal("1"))
+            if value not in allowed:
+                wrong.append(match.group(0).strip())
+    for label, (part, whole) in _RATE_LABELS.items():
+        allowed = set()
+        for x in scenarios:
+            if x.get(whole):
+                rate = x[part] / x[whole] * 100
+                allowed |= {f"{rate:.{places}f}" for places in (0, 1, 2)}
+        for match in re.finditer(rf"\b{label}\b{_GAP}{_NUMBER}\s*%", sentence, re.I):
+            shown = match.group(1).replace(",", "")
+            places = len(shown.split(".")[1]) if "." in shown else 0
+            if f"{Decimal(shown):.{places}f}" not in allowed:
+                wrong.append(match.group(0).strip())
+    return wrong
+
+
+def remove_unsupported_figures(text: str, s: ChatStatement) -> tuple[str, list[str]]:
+    """The answer without narrative sentences stating a statement figure the
+    engine did not compute; and the figures removed. Tables are kept: their
+    rows are account lines, not labelled claims."""
+    removed: list[str] = []
+    lines = []
+    for line in (text or "").splitlines():
+        if line.lstrip().startswith(("|", "```")) or "\t" in line:
+            lines.append(line)
+            continue
+        kept = []
+        for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z(])", line):
+            wrong = _wrong_figures(sentence, s)
+            if wrong:
+                removed.extend(wrong)
+            else:
+                kept.append(sentence)
+        if kept or not line.strip():
+            lines.append(" ".join(kept))
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip(), removed

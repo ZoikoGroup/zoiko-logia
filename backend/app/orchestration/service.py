@@ -5873,6 +5873,13 @@ async def ask_kriton(
                 statement_notes.append(f"{len(overclaims)} statement{'s' if len(overclaims) != 1 else ''} removed: "
                                        "the statements cannot be called verified, reconciled or final while a review "
                                        "item is open.")
+        if engine_statement is not None:
+            # Every narrative statement figure is the engine's (NB26-08).
+            final_text, wrong_figures = fs_engine_chat.remove_unsupported_figures(final_text, engine_statement)
+            if wrong_figures:
+                statement_notes.append(f"{len(wrong_figures)} figure{'s' if len(wrong_figures) != 1 else ''} removed "
+                                       "from the text because the Financial Statements engine did not compute "
+                                       f"{'it' if len(wrong_figures) == 1 else 'them'}: " + "; ".join(wrong_figures[:3]) + ".")
         limitations[:0] = [note for note in statement_notes if note not in limitations]
     if (not evidence_gap_only and not is_offdomain_refusal and not uses_user_supplied_structure
             and rag_citations and not re.search(r"\[REF-\d+\]", final_text or "")):
@@ -6320,7 +6327,14 @@ async def _verified_document_figures_context(
                 files = []
             for filename, content in files:
                 try:
-                    statement = await asyncio.to_thread(fs_engine_chat.build, filename, content)
+                    statement = await asyncio.wait_for(asyncio.to_thread(fs_engine_chat.build, filename, content),
+                                                       timeout=fs_engine_chat.ENGINE_SECONDS)
+                except TimeoutError:  # SA-T05: a timed-out run is NOT_RUN, never a pass
+                    logger.warning("Financial Statements engine timed out on %s", filename)
+                    fs_engine_chat.engine_failure.set(f"{filename} (timed out)")
+                    engine_block = (f"\n\nThe Financial Statements engine timed out on {filename}. Say so; "
+                                    "do not call any figure verified.")
+                    continue
                 except fs_engine_chat.EngineRejected as rejected:
                     fs_engine_chat.engine_failure.set(f"{filename} (the engine rejected it: {rejected})")
                     engine_block = (f"\n\nThe Financial Statements engine rejected {filename}: {rejected} Say so; "
