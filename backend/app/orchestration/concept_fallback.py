@@ -42,6 +42,17 @@ _PROMPT = (
     "Do not state any figure, percentage, rate, threshold, amount, date, deadline "
     "or section of a law. Do not cite sources and do not write [REF-n] markers.\n\nQuestion: {question}"
 )
+# "What is IFRS?" names a framework, so it needed authoritative evidence and
+# got "Not answered" (5 Nov 2026). Asking what the framework itself is asks
+# for no rule within it; any further words ("IFRS 16", "IFRS treatment of
+# leases") keep the authoritative standard.
+_FRAMEWORK_DEFINITION = re.compile(
+    r"^\s*(?:what\s+(?:is|are)|what's|define|explain|meaning\s+of)\s+(?:the\s+)?"
+    r"(?:IFRS|IFRSs|IAS|IASB|FASB|ISSB|IPSAS|US\s+GAAP|UK\s+GAAP|GAAP|Ind\s+AS|"
+    r"International\s+Financial\s+Reporting\s+Standards?|Generally\s+Accepted\s+Accounting\s+Principles)"
+    r"(?:\s+standards?)?\s*\??\s*$",
+    re.IGNORECASE,
+)
 # A figure the explanation must not contain: a percentage, a currency amount,
 # or a number of three or more digits (a threshold, a section, a year).
 _FIGURE = re.compile(r"%|[£$€₹¥]|\b\d{3,}\b|\[REF-", re.IGNORECASE)
@@ -52,7 +63,8 @@ def is_concept_question(query: str, *, has_documents: bool, uses_live_data: bool
     return (
         bool(text) and len(text) <= 300 and bool(_CONCEPT.search(text)) and not re.search(r"\d", text)
         and not has_documents and not uses_live_data
-        and not requires_authoritative_evidence(text) and not needs_lookup(text)
+        and (bool(_FRAMEWORK_DEFINITION.match(text))
+             or (not requires_authoritative_evidence(text) and not needs_lookup(text)))
     )
 
 

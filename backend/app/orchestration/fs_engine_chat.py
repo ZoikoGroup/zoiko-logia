@@ -20,10 +20,14 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from app.domains.financial_statements import mapping as fs_mapping
+from app.domains.financial_statements import workflow as fs_workflow
 from app.domains.financial_statements.normalize import TRIAL_BALANCE
 from app.domains.financial_statements.service import run_intake
 
 ZERO = Decimal("0")
+# A trial balance takes about a second; past this the run is reported as not
+# run, inside the request's own deadline.
+ENGINE_SECONDS = 20
 _OPERATING = {"pl.cost_of_sales", "pl.distribution_costs", "pl.administrative_expenses"}
 _ASSETS = {"bs.ppe", "bs.intangibles", "bs.inventories", "bs.trade_receivables", "bs.cash"}
 _LIABILITIES = {"bs.trade_payables", "bs.tax_payable", "bs.borrowings", "bs.deferred_tax", "bs.provisions"}
@@ -35,6 +39,11 @@ _ACCUMULATED = re.compile(r"accumulated\s+(?:depreciation|amorti[sz]ation)", re.
 current_statement: ContextVar["ChatStatement | None"] = ContextVar("kriton_fs_statement", default=None)
 # The file the engine failed on for this request (DC-11): said, never hidden.
 engine_failure: ContextVar[str | None] = ContextVar("kriton_fs_engine_failure", default=None)
+
+
+class EngineRejected(Exception):
+    """The engine refused the file (macros, unreadable): said, not replaced by
+    the general reader's figures without a word (DC-06, DC-11)."""
 
 
 def failure_note(filename: str) -> str:
@@ -58,6 +67,18 @@ class Choice:
     shown_line: str = ""
     alternative_line: str = ""
     balance: Decimal = ZERO
+    # What the engine says would decide it (Document 01 §1.3, CLS-01–04),
+    # instead of a generic "invoices or cost centres".
+    evidence: str = ""
+
+
+# Engine findings that are shown beside the answer whatever the model writes
+# (DC-06, NB26-05, FS-043). The others have their own notes: UNBALANCED
+# (ARITHMETIC_FAIL), SUSPENSE_BALANCE (the reconciliation note),
+# COMPARATIVE_MISSING (the comparatives note), UNITS_THOUSANDS (the units note).
+_NOTED_FINDINGS = ("HIDDEN_CONTENT", "EXTERNAL_LINKS", "DUPLICATE_ACCOUNT", "MIXED_CURRENCY", "SIGN_ANOMALY",
+                   "SIGN_UNRESOLVED", "CONTROL_TOTAL_MISMATCH", "CUTOFF_AFTER_PERIOD_END", "MISSING_ACCOUNT_CODE",
+                   "AMBIGUOUS_SCHEMA", "VOUCHER_UNBALANCED")
 
 
 @dataclass
@@ -80,8 +101,16 @@ class ChatStatement:
     # (decision ZL-FSR-DEC-20261104 D-01, DC-02).
     sensitivities: list[tuple[Choice, dict[str, Decimal]]] = field(default_factory=list)
     cost_of_sales_candidates: list[tuple[str, Decimal]] = field(default_factory=list)
+    # Operating accounts whose function (cost of sales, distribution or
+    # administration) the engine could not decide; placed in administration.
+    function_open: list[tuple[str, Decimal]] = field(default_factory=list)
     unmapped: list[tuple[str, Decimal]] = field(default_factory=list)
     findings: list[str] = field(default_factory=list)
+    # The engine findings in _NOTED_FINDINGS: shown beside the answer for review.
+    source_flags: list[str] = field(default_factory=list)
+    # "thousands" when the file's heading says so: a £000 file was presented
+    # as pounds unless the model repeated the finding (FS-043, SD-004).
+    units: str = "units"
     caption_flags: list[str] = field(default_factory=list)
     dividends: list[tuple[str, Decimal]] = field(default_factory=list)
     tax_payable: Decimal | None = None
@@ -126,13 +155,17 @@ def build(filename: str, content: bytes) -> ChatStatement | None:
     """The engine's draft statement for an uploaded trial balance, or None
     when the file is not one the engine reads as a trial balance."""
     result = run_intake(filename, content, "kriton-chat")
-    if result.state == "REJECTED_SOURCE" or result.tb.kind != TRIAL_BALANCE or not result.mappings:
+    if result.state == fs_workflow.REJECTED_SOURCE:
+        raise EngineRejected("; ".join(f.message for f in result.findings) or "the file was rejected")
+    if result.tb.kind != TRIAL_BALANCE or not result.mappings:
         return None
     statement = ChatStatement(
         filename=filename, sha256=result.manifest.to_dict().get("sha256", ""), accounts=len(result.mappings),
         period_end=result.tb.period_end.isoformat() if result.tb.period_end else None,
         total_debits=result.report.total_debits, total_credits=result.report.total_credits,
         findings=[f"{f.code}: {f.message}" for f in result.findings],
+        source_flags=list(dict.fromkeys(f.message for f in result.findings if f.code in _NOTED_FINDINGS)),
+        units=result.tb.units,
     )
     placed: dict[str, list[tuple[str, Decimal]]] = {}
     for proposal in result.mappings:
@@ -145,12 +178,16 @@ def build(filename: str, content: bytes) -> ChatStatement | None:
         if proposal.status == fs_mapping.NEEDS_EVIDENCE and "pl.cost_of_sales" in proposal.candidates \
                 and line.startswith("pl.") and line != "pl.cost_of_sales":
             statement.cost_of_sales_candidates.append((name, balance))
+        if proposal.status == fs_mapping.NEEDS_EVIDENCE and set(proposal.candidates) <= _OPERATING \
+                and line == "pl.administrative_expenses":
+            statement.function_open.append((name, balance))
         if alternative:
             # Moving a cost out of operating expenses raises operating profit;
             # moving income into other operating income raises it too.
             statement.choices.append(Choice(name, abs(balance), fs_mapping.LINES[line][0],
                                             fs_mapping.LINES[alternative][0], abs(balance),
-                                            shown_line=line, alternative_line=alternative, balance=balance))
+                                            shown_line=line, alternative_line=alternative, balance=balance,
+                                            evidence=proposal.evidence_required))
         if line.startswith("pl.") and re.search(r"\bpayable\b", name, re.I):
             # SA-T07: "Interest payable" with a debit balance in the expense
             # codes reads as an expense, but the caption also names a liability.
@@ -212,23 +249,50 @@ def _pct(part: Decimal, whole: Decimal) -> str:
     return "not computable (zero denominator)" if not whole else f"{(part / whole * 100):.2f}%"
 
 
-def facts_block(s: ChatStatement) -> str:
-    """The figures and findings the answer may use, and how to present them."""
+def facts_block(s: ChatStatement, format_1: bool = False) -> str:
+    """The figures and findings the answer may use, and how to present them.
+    With format_1 (FRS 102 / Companies Act named), the face keeps
+    distribution costs and administrative expenses apart (Document 01 FS-023)."""
     f = s.figures
     out = ["\n\n=== Statement figures from the Financial Statements engine (use only these) ===",
            f"Source: {s.filename}; SHA-256 {s.sha256[:16]}…; {s.accounts} accounts. Trial balance: total debits "
            f"{_fmt(s.total_debits)}, total credits {_fmt(s.total_credits)}, difference "
            f"{_fmt(s.total_debits - s.total_credits)}.",
            f"Period end: {s.period_end or 'not stated in the file (head the statement: reporting period not confirmed)'}."]
+    if s.units == "thousands":
+        out.append("Units: the file states its amounts in thousands. Every amount below is in thousands; say so in "
+                   "the heading (for example \"£000\") and never present them as whole currency units.")
+    if not s.balanced:
+        # FS-009 / G5: an unbalanced trial balance stops the statements, as
+        # the general reader already did; the engine path gave every subtotal.
+        out.append(f"The trial balance does not balance: debits exceed credits by "
+                   f"{_fmt(s.total_debits - s.total_credits)}. Give no statement totals, subtotals, margins or "
+                   "alternative classifications: state the difference, list the accounts if asked, and ask for the "
+                   "corrected trial balance.")
+        out.extend("Engine finding: " + finding for finding in s.findings)
+        return "\n".join(out)
     out.append("Income statement, draft classification (account names under each heading; no account codes on "
                "statement lines):")
+    distribution, administrative = (("Distribution costs", "Administrative expenses") if format_1
+                                    else ("Operating expenses", "Operating expenses"))
     for label, line in (("Revenue", "pl.revenue"), ("Cost of sales", "pl.cost_of_sales"),
                         ("Other operating income", "pl.other_income"),
-                        ("Operating expenses", "pl.distribution_costs"), ("Operating expenses", "pl.administrative_expenses"),
+                        (distribution, "pl.distribution_costs"), (administrative, "pl.administrative_expenses"),
                         ("Finance income", "pl.finance_income"), ("Finance costs", "pl.finance_costs"),
                         ("Tax", "pl.tax")):
         for name, balance in s.lines.get(line, []):
             out.append(f"- {label}: {name} {_fmt(abs(balance))}")
+    if format_1:
+        lines = s.lines
+        out.append("Format 1 (FRS 102 / Companies Act): show Distribution costs "
+                   f"{_fmt(sum((b for _, b in lines.get('pl.distribution_costs', [])), ZERO))} and Administrative "
+                   f"expenses {_fmt(sum((b for _, b in lines.get('pl.administrative_expenses', [])), ZERO))} as separate "
+                   "face lines, not one operating expenses line; their total is the operating expenses subtotal below.")
+        if s.function_open:
+            out.append("Placed in administrative expenses because the file does not establish their function: "
+                       + ", ".join(f"{n} {_fmt(abs(b))}" for n, b in s.function_open)
+                       + ". Each could be cost of sales or distribution costs; that would move gross profit or the "
+                         "split between the two lines, not operating profit. Say so beside the statement.")
     out.append(
         f"Subtotals: revenue {_fmt(f['revenue'])}; cost of sales {_fmt(f['cost_of_sales'])}; gross profit "
         f"{_fmt(f['gross_profit'])}; other operating income {_fmt(f['other_operating_income'])}; operating expenses "
@@ -247,6 +311,8 @@ def facts_block(s: ChatStatement) -> str:
             for c in s.choices)
             + f". Under the alternative, operating profit is {_fmt(a['operating_profit'])} (a difference of "
               f"{_fmt(a['operating_profit'] - f['operating_profit'])}); profit before tax is unchanged. State both.")
+        out.append("Evidence that would decide each: " + "; ".join(
+            f"{c.account}: {c.evidence or 'the nature of the transactions'}" for c in s.choices) + ".")
         out.append(
             "Alternative classification, every line in statement order (copy these; do not recompute): revenue "
             f"{_fmt(a['revenue'])}; cost of sales {_fmt(a['cost_of_sales'])}; gross profit {_fmt(a['gross_profit'])}; "
@@ -289,7 +355,8 @@ def facts_block(s: ChatStatement) -> str:
     if f["tax"] and s.tax_payable is not None:
         out.append(f"Tax: charge {_fmt(f['tax'])}; closing tax payable {_fmt(s.tax_payable)}. No opening payable or "
                    "tax payments are in the file, so the tax reconciliation is incomplete; never conclude from equal "
-                   "amounts that no tax was paid.")
+                   "amounts that no tax was paid. The split between current and deferred tax and the reconciliation "
+                   "of the charge to the tax rate are not established.")
     for finding in s.findings:
         out.append("Engine finding: " + finding)
     out.append("Do not say the statements reconcile, are verified or are complete while a residual, an unplaced "
@@ -302,6 +369,16 @@ def statement_notes(s: ChatStatement) -> list[str]:
     f = s.figures
     notes = [f"Source checked by the Financial Statements engine: {s.filename} (SHA-256 {s.sha256[:12]}…), "
              f"{s.accounts} accounts; trial balance debits {_fmt(s.total_debits)}, credits {_fmt(s.total_credits)}."]
+    if s.units == "thousands":
+        notes.append("Amounts are in thousands, as the file states; read every figure as thousands (UNITS_THOUSANDS).")
+    if not s.balanced:
+        # No subtotal, alternative or residual is meaningful until it balances.
+        notes.append(f"The trial balance does not balance: difference {_fmt(s.total_debits - s.total_credits)}. "
+                     "No statement totals are given until the difference is found (ARITHMETIC_FAIL).")
+        if s.source_flags:
+            notes.append("Source to review before relying on the figures: " + " ".join(s.source_flags)
+                         + " (SOURCE_REVIEW)")
+        return notes
     if s.choices:
         alternative = s.alternative["operating_profit"]
         notes.append("Classification review pending: " + ", ".join(f"{c.account} ({_fmt(c.amount)})" for c in s.choices)
@@ -309,13 +386,123 @@ def statement_notes(s: ChatStatement) -> list[str]:
                        f"{_fmt(alternative)} under the alternative (difference "
                        f"{_fmt(alternative - f['operating_profit'])})"
                      + "".join(f", {_fmt(x['operating_profit'])} with only {c.account} moved" for c, x in s.sensitivities)
-                     + "; profit before tax is unchanged (CLASSIFICATION_REVIEW).")
+                     + "; profit before tax is unchanged. Evidence that decides it: "
+                     + "; ".join(f"{c.account}: {c.evidence or 'the nature of the transactions'}" for c in s.choices)
+                     + " (CLASSIFICATION_REVIEW).")
     if s.unmapped or s.residual:
         notes.append(f"Reconciliation unresolved: net assets {_fmt(f['net_assets'])} against equity including profit "
                      f"{_fmt(f['equity_including_profit'])}, a residual of {_fmt(s.residual)}"
                      + (f"; not placed: {', '.join(f'{n} {_fmt(b)}' for n, b in s.unmapped)}" if s.unmapped else "")
                      + ". The statements do not reconcile until it is resolved (RECONCILIATION_UNRESOLVED).")
-    if not s.balanced:
-        notes.append(f"The trial balance does not balance: difference {_fmt(s.total_debits - s.total_credits)} "
-                     "(ARITHMETIC_FAIL).")
+    if f["tax"]:
+        notes.append("Tax: the split between current and deferred tax, and the reconciliation of the charge to the "
+                     "tax rate and to tax paid, are not established by the file; an equal charge and payable is not "
+                     "a reconciliation (TAX_REVIEW).")
+    if s.source_flags:
+        notes.append("Source to review before relying on the figures: " + " ".join(s.source_flags) + " (SOURCE_REVIEW)")
     return notes
+
+
+WORKSPACE_NOTE = ("To decide the open items with their evidence and take the statements through review, open them "
+                  "in the Financial Statements workspace (/financial-statements).")
+_FRAMEWORK_ELECTION = (("FRS102_1A", r"FRS\s*102\s*(?:section\s*)?1A"), ("FRS105", r"FRS\s*105"),
+                       ("FRS101", r"FRS\s*101"), ("FRS102", r"FRS\s*102|UK\s+GAAP"),
+                       ("IFRS_SMES", r"IFRS\s+for\s+SMEs"), ("US_GAAP", r"US\s+GAAP"), ("IFRS", r"\bIFRS\b"))
+
+
+def framework_note(query: str, period_end: str | None) -> str | None:
+    """What the engine's standards resolver says about the framework named in
+    the question, from the facts chat actually has (Document 03; gap analysis
+    of 6 Nov 2026): never a date, size or jurisdiction chat would have to guess."""
+    from datetime import date as _date
+
+    from app.domains.financial_statements import standards
+    election = next((code for code, pattern in _FRAMEWORK_ELECTION if re.search(pattern, query or "", re.I)), None)
+    if election is None:
+        return None
+    statutory = bool(re.search(r"\bstatutory|for\s+filing|companies\s+house\b", query or "", re.I))
+    resolution = standards.resolve(standards.EntityFacts(
+        framework_election=election, period_end=_date.fromisoformat(period_end) if period_end else None,
+        requested_claim="statutory_ready" if statutory else "illustrative"))
+    blockers = ", ".join(code.replace("_", " ").lower() for code in resolution.blockers)
+    return (f"Standards check by the Financial Statements engine for {election.replace('_', ' ')}: statutory claim "
+            + ("permitted" if resolution.permit_statutory_claim else "not permitted")
+            + (f"; open: {blockers}" if blockers else "")
+            + ". It needs the entity's jurisdiction and legal form, the period start and end, size figures and a "
+              "signed framework election (FRAMEWORK_CHECK).")
+
+
+# A narrative figure must be the engine's (review NB26-08): "operating margin
+# 12.62%" beside a 218,600 statement is removed. Only a label followed by its
+# figure is checked ("operating profit is 218,600"), never an account row.
+_AMOUNT_LABELS = {
+    "revenue": ("revenue", "turnover"), "cost_of_sales": ("cost of sales",), "gross_profit": ("gross profit",),
+    "operating_expenses": ("operating expenses",), "operating_profit": ("operating profit",),
+    "net_finance": ("net finance (?:costs?|income|expenses?)", "net finance"),
+    "finance_costs": ("(?<!net )finance costs",), "finance_income": ("(?<!net )finance income",),
+    "profit_before_tax": ("profit before tax(?:ation)?",),
+    "tax": ("tax charge", "tax expense", "income tax expense", "corporation tax charge"),
+    "profit_for_the_year": ("profit for the year", "profit after tax", "net profit"),
+}
+_RATE_LABELS = {"gross margin": ("gross_profit", "revenue"), "operating margin": ("operating_profit", "revenue"),
+                "net margin": ("profit_for_the_year", "revenue"),
+                "effective tax rate": ("tax", "profit_before_tax")}
+_GAP = (r"[\s:=£$€(]*(?:(?:of|is|was|at|to|totals?|totalling|equals?|stands\s+at|would\s+be|becomes|falls\s+to|"
+        r"rises\s+to|GBP|USD|EUR)\b[\s:=£$€(]*)*")
+_NUMBER = r"(-?\d[\d,]*(?:\.\d+)?)"
+# A sentence about another placement may use the alternative's figures.
+_ALTERNATIVE_CUE = re.compile(r"\b(?:alternative\w*|if|would|could|under|moved?|moving|reclassif\w*|scenario|"
+                              r"instead|sensitivit\w*|options?|cases?|otherwise|either)\b", re.I)
+
+
+def _scenarios(s: ChatStatement) -> list[dict[str, Decimal]]:
+    return [s.figures] + ([s.alternative] if s.alternative else []) + [x for _, x in s.sensitivities]
+
+
+def _wrong_figures(sentence: str, s: ChatStatement) -> list[str]:
+    # An unbalanced trial balance has no statement figures at all (FS-009).
+    scenarios = [] if not s.balanced else _scenarios(s) if _ALTERNATIVE_CUE.search(sentence) else [s.figures]
+    wrong = []
+    for key, labels in _AMOUNT_LABELS.items():
+        allowed = {abs(x[key]).quantize(Decimal("1")) for x in scenarios if key in x}
+        # "operating profit is 14,900 higher": a difference between placements.
+        if s.balanced:
+            allowed |= {abs(x[key] - s.figures[key]).quantize(Decimal("1")) for x in _scenarios(s) if key in x}
+        for match in re.finditer(rf"\b(?:{'|'.join(labels)})\b{_GAP}{_NUMBER}(?!\s*%|[\d,.]*\s*%)", sentence, re.I):
+            value = abs(Decimal(match.group(1).replace(",", ""))).quantize(Decimal("1"))
+            if value not in allowed:
+                wrong.append(match.group(0).strip())
+    for label, (part, whole) in _RATE_LABELS.items():
+        allowed = set()
+        for x in scenarios:
+            if x.get(whole):
+                rate = x[part] / x[whole] * 100
+                allowed |= {f"{rate:.{places}f}" for places in (0, 1, 2)}
+        for match in re.finditer(rf"\b{label}\b{_GAP}{_NUMBER}\s*%", sentence, re.I):
+            shown = match.group(1).replace(",", "")
+            places = len(shown.split(".")[1]) if "." in shown else 0
+            if f"{Decimal(shown):.{places}f}" not in allowed:
+                wrong.append(match.group(0).strip())
+    return wrong
+
+
+def remove_unsupported_figures(text: str, s: ChatStatement) -> tuple[str, list[str]]:
+    """The answer without narrative sentences stating a statement figure the
+    engine did not compute; and the figures removed. Tables are kept: their
+    rows are account lines, not labelled claims."""
+    removed: list[str] = []
+    lines = []
+    for line in (text or "").splitlines():
+        if line.lstrip().startswith(("|", "```")) or "\t" in line:
+            lines.append(line)
+            continue
+        kept = []
+        for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z(])", line):
+            wrong = _wrong_figures(sentence, s)
+            if wrong:
+                removed.extend(wrong)
+            else:
+                kept.append(sentence)
+        if kept or not line.strip():
+            lines.append(" ".join(kept))
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip(), removed
