@@ -48,6 +48,18 @@ _STOPWORDS = {
     "it": {"il", "lo", "gli", "qual", "come", "è", "per", "una", "mio", "della", "imposta", "non"},
 }
 _WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
+# A language asked for by name: "En español: ¿Cuál fue el beneficio neto de
+# Northbridge en 2025?" (QA L03) has two Spanish stopwords and passed as
+# undetected, so it took the English path; "answer in Spanish" asks the same.
+# In English the request must be for the reply ("answer in Spanish", "… in
+# Spanish." at the end): "the VAT rate in French Polynesia" asks no language.
+_IN_ENGLISH = (r"\b(?:answer|reply|respond|write|explain|translate|tell\s+me|say)\b[^.?!]{0,40}\bin\s+{0}\b"
+               r"|\bin\s+{0}\s*[.?!]?\s*$")
+_REQUESTED = tuple((code, native + "|" + _IN_ENGLISH.replace("{0}", english)) for code, native, english in (
+    ("es", r"\ben\s+español\b", "spanish"), ("fr", r"\ben\s+français\b", "french"),
+    ("de", r"\bauf\s+deutsch\b", "german"), ("pt", r"\bem\s+português\b", "portuguese"),
+    ("it", r"\bin\s+italiano\b", "italian"), ("hi", r"हिंदी\s+में", "hindi"),
+))
 
 _SCOPE_SENTENCES = {
     "es": "Kriton solo responde preguntas profesionales en inglés por ahora.",
@@ -67,6 +79,9 @@ def detect_language(text: str) -> str | None:
     letters = [ch for ch in text or "" if ch.isalpha()]
     if not letters:
         return None
+    for code, pattern in _REQUESTED:
+        if re.search(pattern, text, re.I):
+            return code
     for code, pattern in _SCRIPTS:
         if len(re.findall(pattern, text)) / len(letters) > 0.3:
             return code
