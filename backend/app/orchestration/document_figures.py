@@ -1202,7 +1202,94 @@ def _two_period_lines(table: Table) -> list[str]:
             continue
         lines.append(f"- {row[0].strip()}: {_fmt(float(a))}, {_fmt(float(b))}, change {_fmt(float(b - a))}, "
                      f"average {_fmt(float((a + b) / 2))}")
-    return lines + _balance_check_lines(table, first, second) if len(lines) > 2 else []
+    if len(lines) <= 2:
+        return []
+    bridge, net_income = _profit_bridge(table, second)
+    return lines + _balance_check_lines(table, first, second) + bridge + _ratio_lines(table, first, second, net_income)
+
+
+# The profit subtotals of such a statement, computed instead of left to the
+# model (QA B01 gross profit 3,800 / 38.00%; B02 EBITDA 1,700 → net income 900).
+def _line_value(table: Table, pattern: str, column: int) -> tuple[str, Decimal] | None:
+    for row in table.rows:
+        if row and re.search(pattern, row[0], re.I) and column < len(row):
+            value = _to_decimal(row[column])
+            if value is not None:
+                return row[0].strip(), value
+    return None
+
+
+def _profit_bridge(table: Table, column: int) -> tuple[list[str], Decimal | None]:
+    revenue = _line_value(table, r"^\s*(?:revenue|sales|turnover)\s*$", column)
+    cost = _line_value(table, r"cost\s+of\s+(?:goods\s+sold|sales)", column)
+    if not revenue or not cost:
+        return [], None
+    gross = revenue[1] - cost[1]
+    steps = [f"gross profit = {revenue[0].lower()} {_fmt(float(revenue[1]))} − {cost[0].lower()} "
+             f"{_fmt(float(cost[1]))} = {_fmt(float(gross))} (gross margin = {_fmt(float(gross))} ÷ "
+             f"{_fmt(float(revenue[1]))} = {_pct(gross, revenue[1])})"]
+    opex = _line_value(table, r"operating\s+expenses?", column)
+    # Anchored: "Operating expenses, excl. depreciation" is not the depreciation line.
+    depreciation = _line_value(table, r"^\s*(?:depreciation|amorti[sz]ation)", column)
+    interest = _line_value(table, r"^\s*(?:interest\s+expense|finance\s+costs?)", column)
+    tax = _line_value(table, r"^\s*(?:income\s+tax|tax\s+expense|tax\s+charge|corporation\s+tax)", column)
+    result = None
+    if opex:
+        if depreciation and re.search(r"excl", opex[0], re.I):
+            ebitda = gross - opex[1]
+            ebit = ebitda - depreciation[1]
+            steps.append(f"EBITDA = {_fmt(float(gross))} − {opex[0].lower()} {_fmt(float(opex[1]))} = {_fmt(float(ebitda))}")
+            steps.append(f"EBIT = {_fmt(float(ebitda))} − {depreciation[0].lower()} {_fmt(float(depreciation[1]))} = "
+                         f"{_fmt(float(ebit))}")
+        else:
+            ebit = gross - opex[1]
+            steps.append(f"operating profit = {_fmt(float(gross))} − {opex[0].lower()} {_fmt(float(opex[1]))} = "
+                         f"{_fmt(float(ebit))}")
+        if interest:
+            pretax = ebit - interest[1]
+            steps.append(f"profit before tax = {_fmt(float(ebit))} − {interest[0].lower()} {_fmt(float(interest[1]))} = "
+                         f"{_fmt(float(pretax))}")
+            if tax:
+                result = pretax - tax[1]
+                steps.append(f"net income = {_fmt(float(pretax))} − {tax[0].lower()} {_fmt(float(tax[1]))} = "
+                             f"{_fmt(float(result))}")
+    return [f"- Income statement subtotals, {table.headers[column]}: " + "; ".join(steps)], result
+
+
+# Liquidity, leverage and return (QA C04): current ratio 3,550 ÷ 1,700 = 2.09x,
+# debt-to-equity 2,200 ÷ 3,600 = 0.61x, ROA 900 ÷ average assets 6,750 = 13.33%.
+_CURRENT_ASSET = re.compile(r"\bcash\b|receivable|inventor|prepa", re.I)
+_CURRENT_LIABILITY = re.compile(r"payable|deferred\s+revenue|accru|short[\s-]term|current\s+portion|overdraft", re.I)
+_DEBT = re.compile(r"borrowing|loan|debt|notes\s+payable|bonds?", re.I)
+
+
+def _ratio_lines(table: Table, first: int, second: int, net_income: Decimal | None) -> list[str]:
+    def rows(pattern: re.Pattern, exclude: re.Pattern | None = None) -> list[tuple[str, Decimal]]:
+        return [(r[0].strip(), v) for r in table.rows if r and pattern.search(r[0]) and second < len(r)
+                and not (exclude and exclude.search(r[0])) and (v := _to_decimal(r[second])) is not None]
+
+    current_assets, current_liabilities = rows(_CURRENT_ASSET), rows(_CURRENT_LIABILITY, _DEBT)
+    debt, equity = rows(_DEBT), _line_value(table, _EQUITY_LINE.pattern, second)
+    parts = []
+    if current_assets and current_liabilities:
+        ca, cl = sum(v for _, v in current_assets), sum(v for _, v in current_liabilities)
+        if cl:
+            parts.append(f"current ratio = current assets {_fmt(float(ca))} ({', '.join(n for n, _ in current_assets)}) ÷ "
+                         f"current liabilities {_fmt(float(cl))} ({', '.join(n for n, _ in current_liabilities)}) = "
+                         f"{ca / cl:.2f}x")
+    if debt and equity and equity[1]:
+        d = sum(v for _, v in debt)
+        parts.append(f"debt-to-equity = {', '.join(n.lower() for n, _ in debt)} {_fmt(float(d))} ÷ equity "
+                     f"{_fmt(float(equity[1]))} = {d / equity[1]:.2f}x")
+    if net_income is not None:
+        assets = [sum((_to_decimal(r[c]) or Decimal("0")) for r in table.rows if r and c < len(r)
+                      and _ASSET_LINE.search(r[0]) and not _LIABILITY_LINE.search(r[0])) for c in (first, second)]
+        if all(assets):
+            average = (assets[0] + assets[1]) / 2
+            parts.append(f"return on average assets = net income {_fmt(float(net_income))} ÷ average total assets "
+                         f"{_fmt(float(average))} (({_fmt(float(assets[0]))} + {_fmt(float(assets[1]))}) ÷ 2) = "
+                         f"{_pct(net_income, average)}")
+    return [f"- Ratios, {table.headers[second]}: " + "; ".join(parts)] if parts else []
 
 
 # The balance sheet within such a statement, totalled per period: "Confirm
@@ -1920,7 +2007,36 @@ def _cash_bridge_lines(sources: list[WebSource]) -> list[str]:
     return [f"- Cash-flow bridge from the stated figures: operating cash flow {_fmt(found['operating cash flow'])} − "
             f"net income {_fmt(found['net income'])} − depreciation add-back {_fmt(found['depreciation'])} = "
             f"{_fmt(rest)}. The remaining reconciling items (the working-capital changes) together {effect}; "
-            "describe them that way, not the other way round."]
+            "describe them that way, not the other way round."] + _cash_change_lines(text, found["operating cash flow"])
+
+
+# "Why did cash increase by 500 although net income was 900?" (QA J02):
+# operating 1,200 + investing −800 + financing 100 = 500.
+_SIGNED = r"[^\n\d(−-]*\n?\s*(\(?[−-]?[\d,]+(?:\.\d+)?\)?)"
+_CASH_FLOWS = {"investing": re.compile(r"\binvesting\s+(?:cash\s+flows?|activities)\b" + _SIGNED, re.I),
+               "financing": re.compile(r"\bfinancing\s+(?:cash\s+flows?|activities)\b" + _SIGNED, re.I),
+               "net change": re.compile(r"\bnet\s+(?:change|increase|decrease)\s+in\s+cash\b" + _SIGNED, re.I)}
+
+
+def _signed(text: str) -> float:
+    negative = text.startswith("(") or text.lstrip("(").startswith(("-", "−"))
+    value = float(text.strip("()").lstrip("-−").replace(",", ""))
+    return -value if negative else value
+
+
+def _cash_change_lines(text: str, operating: float) -> list[str]:
+    flows = {}
+    for name, pattern in _CASH_FLOWS.items():
+        values = {_signed(value) for value in pattern.findall(text)}
+        if len(values) != 1:
+            return []
+        flows[name] = values.pop()
+    total = operating + flows["investing"] + flows["financing"]
+    check = ("agrees with" if total == flows["net change"]
+             else f"differs by {_fmt(total - flows['net change'])} from")
+    return [f"- Change in cash from the stated flows: operating {_fmt(operating)} + investing "
+            f"{_fmt(flows['investing'])} + financing {_fmt(flows['financing'])} = {_fmt(total)}; it {check} the stated "
+            f"net change in cash {_fmt(flows['net change'])}."]
 
 
 # "Compare the CSV revenue in dollars with PDF revenue in USD thousands"
@@ -1934,6 +2050,56 @@ _SCALE_STATED = (
 )
 
 
+# A receipt or invoice read from an image (QA H04): subtotal 80 + tax 8 = 88.
+# Its lines were read as a one-column table: "Total Column 1 = 8".
+# The line's last amount: "VAT (20%) 200.00" is 200, not the rate.
+_RECEIPT_AMOUNT = r"[^\n]*?([\d,]*\d(?:\.\d{1,2})?)[^\d\n%]*$"
+_RECEIPT_PARTS = {"subtotal": re.compile(r"\b(?:sub[\s-]?total|net\s+amount|amount\s+before\s+tax)\b" + _RECEIPT_AMOUNT,
+                                         re.I | re.M),
+                  "tax": re.compile(r"^(?!.*\btotal\b)[^\n]*\b(?:tax|vat|gst|sales\s+tax)\b" + _RECEIPT_AMOUNT,
+                                    re.I | re.M),
+                  "total": re.compile(r"^(?!.*\bsub[\s-]?total\b)[^\n]*\b(?:grand\s+)?total(?:\s+(?:due|payable|"
+                                      r"amount))?\b" + _RECEIPT_AMOUNT, re.I | re.M)}
+
+
+def _receipt_lines(sources: list[WebSource]) -> list[str]:
+    lines = []
+    for source in sources:
+        found = {}
+        for name, pattern in _RECEIPT_PARTS.items():
+            values = {Decimal(v.replace(",", "")) for v in pattern.findall(source.snippet or "")}
+            if len(values) != 1:
+                break
+            found[name] = values.pop()
+        else:
+            computed = found["subtotal"] + found["tax"]
+            name = (source.title or "").split(" — ")[0].strip()
+            lines.append(f"- {name}: subtotal {_fmt(float(found['subtotal']))} + tax {_fmt(float(found['tax']))} = "
+                         f"{_fmt(float(computed))}; stated total {_fmt(float(found['total']))}: "
+                         + ("agrees. The tax is counted once; do not add it again." if computed == found["total"]
+                            else f"differs by {_fmt(float(found['total'] - computed))}; report the difference.")
+                         + " This checks the arithmetic, not the account coding.")
+    return lines
+
+
+_REVENUE_ROW = re.compile(r"^(?!.*deferred)[^\n]*\b(?:revenue|sales|turnover)\b[^\n]*$", re.I | re.M)
+
+
+def _conversion_line(name: str, scale: str, sources: list[WebSource]) -> str:
+    """QA B06: 10,000 in USD thousands is 10,000,000 and 10.0 million."""
+    text = "\n".join(s.snippet or "" for s in sources if (s.title or "").split(" — ")[0].strip() == name)
+    row = _REVENUE_ROW.search(text)
+    numbers = [Decimal(n.replace(",", "")) for n in re.findall(r"\d[\d,]*(?:\.\d+)?", row.group(0))] if row else []
+    numbers = [n for n in numbers if n >= 100 and not (1900 <= n <= 2100)]    # not a year
+    example = ""
+    if numbers:
+        value = numbers[-1]
+        example = (f" For example revenue {_fmt(float(value))} there is {_fmt(float(value * 1000))} in whole units "
+                   f"and {value / 1000:,.1f} million.")
+    return (f"Units: {name} states its amounts in {scale}. Multiply by 1,000 for whole units and divide by 1,000 for "
+            f"millions; never mix the scales.{example}")
+
+
 def _unit_scale_lines(sources: list[WebSource]) -> list[str]:
     """One line when the files state different scales, saying how to convert."""
     scales: dict[str, str] = {}
@@ -1942,10 +2108,11 @@ def _unit_scale_lines(sources: list[WebSource]) -> list[str]:
         stated = next((scale for scale, pattern in _SCALE_STATED if pattern.search(source.snippet or "")), None)
         if name and (stated or name not in scales):
             scales[name] = stated or scales.get(name) or "whole units"
+    lines = [_conversion_line(name, scale, sources) for name, scale in scales.items() if scale == "thousands"]
     if len(scales) < 2 or len(set(scales.values())) < 2 or set(scales.values()) == {"whole units"}:
-        return []
+        return lines
     factor = {"thousands": "1,000", "millions": "1,000,000"}
-    return ["Units differ between the files: " + "; ".join(f"{name}: {scale}" for name, scale in scales.items())
+    return lines + ["Units differ between the files: " + "; ".join(f"{name}: {scale}" for name, scale in scales.items())
             + ". Convert to one scale before comparing (multiply a figure in thousands by 1,000, in millions by "
               "1,000,000); a gap of exactly " + " or ".join(sorted({factor[s] for s in scales.values() if s in factor}))
             + " times is the units, not a disagreement. State the scale you use."]
@@ -1958,7 +2125,7 @@ def verified_document_figures(sources: list[WebSource], query: str | None = None
     include_top_n = query is None or bool(_RANKING_QUESTION.search(query))
     by_month = query is None or bool(_MONTHLY_QUESTION.search(query))
     tables = tables_from_sources(sources)
-    lines: list[str] = (_unit_scale_lines(sources) + _stated_figure_lines(sources)
+    lines: list[str] = (_unit_scale_lines(sources) + _receipt_lines(sources) + _stated_figure_lines(sources)
                         + _bank_reconciliation_lines(tables))
     if query is None or _FORMULA_QUESTION.search(query):
         lines += _formula_check_lines(sources)

@@ -81,6 +81,24 @@ _NOTES: tuple[tuple[object, str], ...] = (
      "An obligation completed later, even a few weeks later such as installation finished at month-end, is "
      "not revenue on the earlier date: cash received for it, and for services still to be performed, is a "
      "contract liability (deferred revenue) until it is satisfied."),
+    # "Explain how paying last month's previously accrued $2,000 electricity
+    # bill affects profit now" (QA A04): the expense was booked when accrued.
+    (_all(r"\b(?:pay|pays|paying|paid|settl\w*)\b", r"\b(?:accrued|accrual|previously\s+(?:recorded|recognised|"
+          r"recognized|booked))\b"),
+     "Paying an expense that was accrued in an earlier period: debit the accrued liability (accruals) and credit "
+     "cash. The expense was recognised when it was accrued, so the payment does not affect profit now and the "
+     "expense is never booked again; only cash and the liability fall. Any difference between the accrual and the "
+     "amount paid is an adjustment to the current period's expense."),
+    # "Draw the data flow from source trial balance to published financial
+    # statements" (QA E03): the controls in order, not a generic pipeline.
+    (_all(r"\btrial\s+balance\b", r"\b(?:published|publication|financial\s+statements)\b",
+          r"\b(?:flow|diagram|draw|map|steps|process)\b"),
+     "From a source trial balance to published financial statements, in this order: source checks (file "
+     "fingerprint, completeness, debits equal credits) → account mapping and approved adjustments → statements "
+     "and notes computed from the mapped balances (not typed in) → reconciliation (subtotals, balance sheet, cash "
+     "and equity tie-outs) → independent review and approval → publication of the approved version. Show that "
+     "each published figure traces back through these steps to its source rows, and that a failed check stops "
+     "the flow until it is resolved."),
 )
 
 
