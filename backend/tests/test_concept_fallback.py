@@ -21,6 +21,17 @@ def test_only_plain_concept_questions_qualify():
     assert not is_concept_question("Prepare a balance sheet", **plain)
 
 
+def test_what_a_framework_is_is_a_concept_question_but_its_rules_are_not():
+    # "what is ifrs" was answered "Not answered — insufficient evidence" (5 Nov 2026).
+    plain = dict(has_documents=False, uses_live_data=False)
+    for question in ("what is ifrs", "What is IFRS?", "what is US GAAP", "Define Ind AS",
+                     "What are International Financial Reporting Standards?"):
+        assert is_concept_question(question, **plain), question
+    for question in ("What does IFRS require for leases?", "Explain the IFRS treatment of revenue",
+                     "What is IFRS 16?", "What is the IFRS rule for inventory?"):
+        assert not is_concept_question(question, **plain), question
+
+
 def test_a_process_question_and_a_referral_after_the_gap_still_get_the_explanation():
     # QA case E02 got only "the sources do not contain this; consult your policies".
     from app.orchestration.verification_service import is_evidence_gap_statement, is_referral, release_claims

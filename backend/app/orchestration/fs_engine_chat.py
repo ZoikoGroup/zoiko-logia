@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from app.domains.financial_statements import mapping as fs_mapping
+from app.domains.financial_statements import workflow as fs_workflow
 from app.domains.financial_statements.normalize import TRIAL_BALANCE
 from app.domains.financial_statements.service import run_intake
 
@@ -35,6 +36,11 @@ _ACCUMULATED = re.compile(r"accumulated\s+(?:depreciation|amorti[sz]ation)", re.
 current_statement: ContextVar["ChatStatement | None"] = ContextVar("kriton_fs_statement", default=None)
 # The file the engine failed on for this request (DC-11): said, never hidden.
 engine_failure: ContextVar[str | None] = ContextVar("kriton_fs_engine_failure", default=None)
+
+
+class EngineRejected(Exception):
+    """The engine refused the file (macros, unreadable): said, not replaced by
+    the general reader's figures without a word (DC-06, DC-11)."""
 
 
 def failure_note(filename: str) -> str:
@@ -82,6 +88,9 @@ class ChatStatement:
     cost_of_sales_candidates: list[tuple[str, Decimal]] = field(default_factory=list)
     unmapped: list[tuple[str, Decimal]] = field(default_factory=list)
     findings: list[str] = field(default_factory=list)
+    # Hidden sheets or rows and links to other workbooks (DC-06): included or
+    # not refreshed, so shown beside the answer for review.
+    source_flags: list[str] = field(default_factory=list)
     caption_flags: list[str] = field(default_factory=list)
     dividends: list[tuple[str, Decimal]] = field(default_factory=list)
     tax_payable: Decimal | None = None
@@ -126,13 +135,17 @@ def build(filename: str, content: bytes) -> ChatStatement | None:
     """The engine's draft statement for an uploaded trial balance, or None
     when the file is not one the engine reads as a trial balance."""
     result = run_intake(filename, content, "kriton-chat")
-    if result.state == "REJECTED_SOURCE" or result.tb.kind != TRIAL_BALANCE or not result.mappings:
+    if result.state == fs_workflow.REJECTED_SOURCE:
+        raise EngineRejected("; ".join(f.message for f in result.findings) or "the file was rejected")
+    if result.tb.kind != TRIAL_BALANCE or not result.mappings:
         return None
     statement = ChatStatement(
         filename=filename, sha256=result.manifest.to_dict().get("sha256", ""), accounts=len(result.mappings),
         period_end=result.tb.period_end.isoformat() if result.tb.period_end else None,
         total_debits=result.report.total_debits, total_credits=result.report.total_credits,
         findings=[f"{f.code}: {f.message}" for f in result.findings],
+        source_flags=list(dict.fromkeys(f.message for f in result.findings
+                                        if f.code in ("HIDDEN_CONTENT", "EXTERNAL_LINKS"))),
     )
     placed: dict[str, list[tuple[str, Decimal]]] = {}
     for proposal in result.mappings:
@@ -318,4 +331,6 @@ def statement_notes(s: ChatStatement) -> list[str]:
     if not s.balanced:
         notes.append(f"The trial balance does not balance: difference {_fmt(s.total_debits - s.total_credits)} "
                      "(ARITHMETIC_FAIL).")
+    if s.source_flags:
+        notes.append("Source to review before relying on the figures: " + " ".join(s.source_flags) + " (SOURCE_REVIEW)")
     return notes

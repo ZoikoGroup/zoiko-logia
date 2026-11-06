@@ -5865,7 +5865,8 @@ async def ask_kriton(
                 statement_notes.append(f"Classification review pending: {by_name.group(1)}. Operating profit if moved: "
                                        f"{by_name.group(2)}; profit before tax is unchanged (CLASSIFICATION_REVIEW).")
         if any(marker in note for note in statement_notes for marker in (
-                "(CLASSIFICATION_REVIEW)", "(RECONCILIATION_UNRESOLVED)", "(ARITHMETIC_FAIL)", "(ENGINE_FAILED)")):
+                "(CLASSIFICATION_REVIEW)", "(RECONCILIATION_UNRESOLVED)", "(ARITHMETIC_FAIL)", "(ENGINE_FAILED)",
+                "(SOURCE_REVIEW)")):
             from app.orchestration.statement_rules import remove_verification_claims
             final_text, overclaims = remove_verification_claims(final_text)
             if overclaims:
@@ -6320,6 +6321,11 @@ async def _verified_document_figures_context(
             for filename, content in files:
                 try:
                     statement = await asyncio.to_thread(fs_engine_chat.build, filename, content)
+                except fs_engine_chat.EngineRejected as rejected:
+                    fs_engine_chat.engine_failure.set(f"{filename} (the engine rejected it: {rejected})")
+                    engine_block = (f"\n\nThe Financial Statements engine rejected {filename}: {rejected} Say so; "
+                                    "do not call any figure verified.")
+                    continue
                 except Exception:  # noqa: BLE001 - decision ZL-FSR-DEC-20261104 DC-11
                     logger.exception("Financial Statements engine failed on %s", filename)
                     fs_engine_chat.engine_failure.set(filename)
