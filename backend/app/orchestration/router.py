@@ -118,6 +118,9 @@ def answer_receipt(result, run: "workflow_state.WorkflowRun") -> dict:
         "citation_ids": [c.ref_id for c in answer.citations] if answer else [],
         "calculation_ids": list(run.calculation_ids),
         "citation_spans": dict(run.citation_spans),
+        # Which AI provider answered, and which failed before it (fallback).
+        "model_providers": list(getattr(run, "model_providers", ())),
+        "model_provider_failures": list(getattr(run, "model_provider_failures", ())),
         "review_required": getattr(result, "outcome", None) == "escalated",
         "policy_version": POLICY_VERSION,
         "workflow_final_state": run.state.value,

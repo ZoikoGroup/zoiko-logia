@@ -25,7 +25,7 @@ STUCK_UPLOAD_MINUTES = 15
 # What depends on what, from how the code calls each service. Drawn as the
 # dependency map; a down leaf marks every node above it as impacted.
 DEPENDENCIES = {
-    "api": ["database", "supabase_auth", "ai_models", "searxng", "kroki", "redis"],
+    "api": ["database", "supabase_auth", "ai_models", "tavily", "searxng", "kroki", "redis"],
     "ai_models": ["groq", "google", "openai", "anthropic"],
 }
 DEPENDENCY_LABELS = {"ai_models": "AI model providers"}

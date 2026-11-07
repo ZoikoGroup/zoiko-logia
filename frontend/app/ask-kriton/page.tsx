@@ -145,15 +145,18 @@ function KritonPanel({
   children: ReactNode;
 }) {
   return (
-    <div className="absolute inset-0 z-30 flex items-start justify-center bg-ink/20 px-4 pt-20 backdrop-blur-sm" onClick={onClose}>
+    <div className="absolute inset-0 z-30 flex items-start justify-center bg-ink/20 px-4 pb-4 pt-20 backdrop-blur-sm" onClick={onClose}>
+      {/* The panel never runs past the page's bottom edge (the page clips it),
+          and its body is the one scroll area: a list scrolling inside it hid
+          its last rows below the body's edge. */}
       <section
         role="dialog"
         aria-modal="true"
         aria-label={title}
         onClick={(event) => event.stopPropagation()}
-        className="w-full max-w-2xl rounded-2xl border border-line bg-panel p-5 shadow-2xl"
+        className="flex max-h-full w-full max-w-2xl flex-col rounded-2xl border border-line bg-panel p-5 shadow-2xl"
       >
-        <div className="flex items-start justify-between gap-4 border-b border-line pb-4">
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-line pb-4">
           <div>
             <h2 className="text-lg font-bold text-ink">{title}</h2>
             <p className="mt-1 text-sm text-muted">{description}</p>
@@ -162,7 +165,7 @@ function KritonPanel({
             <X size={17} />
           </button>
         </div>
-        <div className="max-h-[60vh] overflow-y-auto pt-4">{children}</div>
+        <div data-panel-body className="min-h-0 flex-1 overflow-y-auto overscroll-contain pt-4">{children}</div>
       </section>
     </div>
   );
@@ -806,7 +809,7 @@ export default function AskKritonPage() {
     if (typeof window === "undefined") return null;
     return chatIdFromUrl(window.location.search, loadConversations());
   });
-  const [focusMode, setFocusMode] = useState(true);
+  const [focusMode, setFocusMode] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [sidebarPanel, setSidebarPanel] = useState<"chats" | "projects" | "sources" | null>(null);
   const [chatSearch, setChatSearch] = useState("");
@@ -1180,7 +1183,7 @@ export default function AskKritonPage() {
                   return <p className="text-sm text-muted">No chats match “{chatSearch.trim()}”.</p>;
                 }
                 return (
-                  <div className="max-h-[55vh] space-y-1 overflow-y-auto">
+                  <div className="space-y-1">
                     {matches.map((conversation) => {
                       const hit = needle && !conversation.title.toLowerCase().includes(needle)
                         ? conversation.turns.find((t) => t.submittedQuery.toLowerCase().includes(needle))?.submittedQuery
@@ -1235,7 +1238,7 @@ export default function AskKritonPage() {
                 </form>
               )}
               {projectError && <p className="mb-3 text-sm text-bad">{projectError}</p>}
-              <div className="max-h-[55vh] space-y-3 overflow-y-auto">
+              <div className="space-y-3">
                 {[...engagements.map((e) => ({ id: e.id, name: e.name })), { id: "", name: "No project" }].map((project) => {
                   const chats = sorted.filter((c) => (c.engagementId ?? "") === project.id);
                   const documentCount = new Set(chats.flatMap((c) => c.documentIds ?? [])).size;

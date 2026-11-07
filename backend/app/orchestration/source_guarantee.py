@@ -23,6 +23,12 @@ _OFFICIAL: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(?:irs|1040|1099|w-?2|federal tax|sales tax)\b", re.I), "IRS (irs.gov) for US federal tax"),
     (re.compile(r"\b(?:audit|isa\s?\d*|assurance|auditor)\b", re.I), "IAASB (iaasb.org) for International Standards on Auditing"),
     (re.compile(r"\b(?:companies act|director|annual return|companies house)\b", re.I), "the company registry for your country (e.g. mca.gov.in, gov.uk/companies-house)"),
+    # A share-price question was pointed to the IFRS Foundation and the tax
+    # authority (6 Nov 2026).
+    (re.compile(r"\b(?:(?:share|stock|closing|opening|intraday)\s+prices?|ticker|stock\s+exchange|market\s+cap\w*|"
+                r"nse|bse|nyse|nasdaq|lse|ftse|index\s+level)\b", re.I),
+     "the stock exchange the security is listed on (e.g. nseindia.com, londonstockexchange.com, nasdaq.com) "
+     "or the company's investor-relations page"),
 )
 _DEFAULT = "the IFRS Foundation (ifrs.org) or your country's tax authority and standard setter"
 MAX_SUGGESTIONS = 3
@@ -79,6 +85,13 @@ def official_sources_note(query: str) -> str:
                if tax_audit else [])
     labels = [label for pattern, label in _OFFICIAL if pattern.search(text)
               and not (tax_audit and label.startswith("IAASB") and not _FINANCIAL_AUDIT.search(text))]
+    # A quote asked as "the price of XYZQ123" names no exchange term; the
+    # market-data check that fetched (or failed to fetch) the quote decides
+    # (6 Nov 2026: pointed to the IFRS Foundation).
+    from app.domains.market_data.registry import INTENT_QUOTE, detect_intent
+    exchange = _OFFICIAL[-1][1]
+    if exchange not in labels and detect_intent(text) == INTENT_QUOTE:
+        labels.insert(0, exchange)
     # Another country's authority is no suggestion for a named one; it is
     # replaced by the named country's own (nothing changes otherwise).
     wrong_country = [label for label in labels if named and label_country(label) and label_country(label) not in named]

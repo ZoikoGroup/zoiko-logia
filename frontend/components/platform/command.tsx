@@ -295,7 +295,9 @@ export function Assurance({ data, keys }: { data: PlatformCommand; keys?: RegExp
 export function Reliability({ data }: { data: PlatformCommand }) {
   const h = data.health;
   const availability = data.summary.availabilityPct;
-  const notOk = h.services.filter((svc) => svc.state !== "operational");
+  // Not configured is not an outage: the backend leaves those services out of
+  // the "x / measured" count, so the warning must leave them out too.
+  const notOk = h.services.filter((svc) => svc.state !== "operational" && svc.state !== "not_configured");
   return (
     <Card title="Reliability & Service Impact" meta={h.sampled ? `${h.measured} services measured · objective ${h.objectivePct}%` : "No health samples in the last 15 minutes"}>
       {h.sampled && notOk.length > 0 && (
@@ -310,17 +312,32 @@ export function Reliability({ data }: { data: PlatformCommand }) {
         <StatBox value={h.p95LatencyMs === null ? "—" : `${h.p95LatencyMs} ms`} label="p95 response · 24h" />
         <StatBox value={h.sampled ? `${h.degraded} / ${h.measured}` : "—"} label="Services not operational" />
       </div>
+      {h.sampled && h.counts && (
+        // The three states kept apart, and totals that add up to the list.
+        <p className="mt-2 text-xs text-muted" data-testid="service-counts">
+          {h.counts.total} services: {h.counts.operational} operational · {h.counts.notConfigured} not configured · {h.counts.down} down
+          {h.counts.unchecked ? ` · ${h.counts.unchecked} not checked in the last 15 minutes` : ""}
+        </p>
+      )}
       {h.sampled ? (
         <ul className="mt-2">
           {h.services.map((svc) => {
-            const tone: Tone = svc.state === "operational" ? "ok" : svc.state === "down" ? "bad" : "warn";
+            // Not configured is neither up nor down: grey, not a warning colour.
+            const tone: Tone = svc.state === "operational" ? "ok" : svc.state === "not_configured" ? "neutral"
+              : svc.state === "down" ? "bad" : "warn";
             return (
-              <li key={svc.key} className="flex items-center justify-between gap-2 border-b border-line py-2 text-sm last:border-0">
-                <span className="flex items-center gap-2 font-semibold text-ink">
-                  <span aria-hidden className={`h-2 w-2 rounded-full ${DOT[tone]}`} />{svc.name}
-                  {svc.core && <span className="text-[10px] font-bold uppercase text-muted">core</span>}
-                </span>
-                <span className="text-xs text-muted">{humanize(svc.state)}{svc.latencyMs !== null ? ` · ${svc.latencyMs} ms` : ""}</span>
+              <li key={svc.key} className="border-b border-line py-2 text-sm last:border-0">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-2 font-semibold text-ink">
+                    <span aria-hidden className={`h-2 w-2 rounded-full ${DOT[tone]}`} />{svc.name}
+                    {svc.core && <span className="text-[10px] font-bold uppercase text-muted">core</span>}
+                  </span>
+                  <span className="text-xs text-muted">{humanize(svc.state)}{svc.latencyMs !== null ? ` · ${svc.latencyMs} ms` : ""}</span>
+                </div>
+                {/* The check's own result, so each status carries its evidence. */}
+                {svc.detail && svc.state !== "not_configured" && (
+                  <p className="pl-4 text-[11px] text-muted">{svc.detail}</p>
+                )}
               </li>
             );
           })}
@@ -353,7 +370,7 @@ export function KritonControlPlane({ data }: { data: PlatformCommand }) {
             );
           })}
         </ul>
-      ) : <p className="text-sm text-muted">No evaluation metrics recorded yet.</p>}
+      ) : <p className="text-sm text-muted">{e.reason ? `${e.reason}, so the status is Unknown.` : "No evaluation metrics recorded yet."}</p>}
       <div className="mt-4 space-y-2">
         <div className="rounded-lg border border-line p-3">
           <p className="text-sm font-bold text-ink">Latest evaluation</p>

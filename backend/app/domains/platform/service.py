@@ -66,7 +66,8 @@ async def _health(db: AsyncSession, now: datetime) -> dict:
         & (ServiceHealthSample.checked_at == latest.c.at)))).scalars().all()
     services = [{"key": s.service_key, "name": operations.SERVICE_NAMES.get(s.service_key, s.service_key),
                  "state": s.state, "core": s.service_key in operations.CORE_SERVICES,
-                 "latencyMs": round(s.latency_ms) if s.latency_ms is not None else None, "checkedAt": _iso(s.checked_at)}
+                 "latencyMs": round(s.latency_ms) if s.latency_ms is not None else None, "checkedAt": _iso(s.checked_at),
+                 "detail": s.detail}
                 for s in samples]
     services.sort(key=lambda s: (s["state"] == "operational", not s["core"], s["name"]))
 
@@ -81,7 +82,18 @@ async def _health(db: AsyncSession, now: datetime) -> dict:
                                                      ServiceHealthSample.latency_ms.is_not(None)))).all())
     p95 = latencies[min(len(latencies) - 1, int(0.95 * len(latencies)))] if latencies else None
     measured = [s for s in services if s["state"] != "not_configured"]
+    # Every monitored service lands in exactly one bucket, so the buckets add
+    # up to the list (a service with no check in the window is "unchecked").
+    sampled_keys = {s["key"] for s in services}
+    counts = {
+        "operational": sum(s["state"] == "operational" for s in services),
+        "notConfigured": sum(s["state"] == "not_configured" for s in services),
+        "down": len(measured) - sum(s["state"] == "operational" for s in measured),
+        "unchecked": sum(key not in sampled_keys for key, *_ in operations.SERVICES),
+    }
+    counts["total"] = sum(counts.values())
     return {
+        "counts": counts,
         "services": services,
         "sampled": bool(samples),
         "availabilityPct": round(100 * (ups or 0) / total, 2) if total else None,
@@ -96,7 +108,8 @@ async def _health(db: AsyncSession, now: datetime) -> dict:
 async def _evaluation(db: AsyncSession) -> dict:
     runs = (await db.execute(select(EvaluationRun).order_by(EvaluationRun.created_at.desc()).limit(10))).scalars().all()
     if not runs:
-        return {"state": "unknown", "latest": None, "metrics": [], "recent": {"completed": 0, "failed": 0}}
+        return {"state": "unknown", "latest": None, "metrics": [], "recent": {"completed": 0, "failed": 0},
+                "reason": "No evaluation run is recorded yet"}
     latest = runs[0]
     metrics = [{"name": k, "value": v} for k, v in (latest.metrics_summary or {}).items() if isinstance(v, (int, float))]
     return {"state": "fail" if latest.status == "FAILED" else "pass" if latest.status == "COMPLETED" else "pending",

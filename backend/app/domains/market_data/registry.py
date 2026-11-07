@@ -123,8 +123,12 @@ _INTENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
         INTENT_QUOTE,
         re.compile(
-            r"\b(share price|stock price|current price|latest price|quote|trading at|"
-            r"how much (is|are).*(share|stock)|price of)\b",
+            # Plural and closing/opening forms too: "the share prices of Tesla,
+            # Nvidia and Amazon" and "Microsoft's closing price" fetched nothing
+            # and were answered "no data" or refused as off-topic (6 Nov 2026).
+            r"\b((?:share|stock) prices?|current price|latest price|quotes?|trading at|"
+            r"(?:closing|close|opening|last traded|last trading) prices?|"
+            r"how much (is|are).*(share|stock)|price of\s+(?-i:[A-Z])[\w&.'-]*)\b",
             re.I,
         ),
     ),
@@ -187,7 +191,10 @@ def detect_intent(query: str) -> Optional[str]:
         # "Apple's revenue" is a lookup; "how is revenue recognised" is not.
         # Only bail out when the educational phrasing is not paired with an
         # explicit filings/quote request.
-        if not re.search(r"\b(filing|filings|share price|stock price|quote|market cap)\b", query, re.I):
+        # "What is the price of XYZQ123?" is a lookup, not a definition; "the
+        # price of a bond" (lower case) is not a company.
+        if not re.search(r"\b(filing|filings|(?:share|stock) prices?|quotes?|market cap|"
+                         r"(?:closing|opening) prices?|price of\s+(?-i:[A-Z])[\w&.'-]*)\b", query, re.I):
             return None
     for intent, pattern in _INTENT_PATTERNS:
         if pattern.search(query):

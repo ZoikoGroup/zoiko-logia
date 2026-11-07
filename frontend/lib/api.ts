@@ -2594,13 +2594,17 @@ export type PlatformCommand = {
   decisions: PlatformDecision[];
   controls: { key: string; label: string; state: PlatformControlState; detail: string }[];
   health: {
-    services: { key: string; name: string; state: string; core: boolean; latencyMs: number | null; checkedAt: string | null }[];
+    services: { key: string; name: string; state: string; core: boolean; latencyMs: number | null; checkedAt: string | null; detail?: string }[];
+    /** Every monitored service in exactly one bucket; total is their sum. */
+    counts?: { operational: number; notConfigured: number; down: number; unchecked: number; total: number };
     sampled: boolean; availabilityPct: number | null; objectivePct: number; p95LatencyMs: number | null;
     degraded: number; measured: number; coreDown: string[];
   };
   evaluation: {
     state: PlatformControlState; latest: { id: string; status: string; at: string | null } | null;
     metrics: { name: string; value: number }[]; recent: { completed: number; failed: number };
+    /** Why the state is unknown (no run recorded), when it is. */
+    reason?: string;
   };
   releases: { open: number; held: number; items: { ref: string; name: string; version: string; held: boolean; tenant: string }[] };
   tenants: { total: number; withUsers: number; active30d: number; users: number; withApprovedPlan: number };

@@ -149,9 +149,36 @@ _NOT_PREPARING = re.compile(
 )
 
 
+# A statement named as where a figure goes is not a request to prepare it:
+# "the total inventory value on the December 31, 2026 balance sheet" and "the
+# tax expense reported on the 2026 Income Statement" were given the
+# statement-drafting rules, which pushed four calculation case studies past
+# the composition budget (acceptance_oct22).
+_PLACEMENT = re.compile(r"\b(?:on|in|into|onto|to|from|within|under)\s+(?:the|its|their|this|that)\s+"
+                        r"(?:[\w,.&'-]+\s+){0,4}$", re.I)
+# ...nor is a statement named to describe something else: "the subsidiary's
+# balance sheet translation", "financial statement reporting consequences".
+_DESCRIBES = re.compile(r"\s+(?:translation|reporting|consequences?|impacts?|effects?|disclosures?|presentation|"
+                        r"purposes|lines?|items?|captions?|classification|treatment|recognition)\b", re.I)
+# "on the 2026 income statement and balance sheet": both are placements.
+_JOINED = re.compile(r"\s*(?:,|and|or|&)\s*$", re.I)
+
+
 def is_statement_request(query: str) -> bool:
-    query = request_part(query)  # a case study's questions, not its background (case_text.py)
-    return bool(_STATEMENT_REQUEST.search(query or "")) and not _NOT_PREPARING.search(query or "")
+    query = request_part(query or "")  # a case study's questions, not its background (case_text.py)
+    if _NOT_PREPARING.search(query):
+        return False
+    previous_end, previous_asked = None, False
+    for found in _STATEMENT_REQUEST.finditer(query):
+        if previous_end is not None and _JOINED.fullmatch(query[previous_end:found.start()]):
+            asked = previous_asked
+        else:
+            asked = not _PLACEMENT.search(query[max(0, found.start() - 80):found.start()])
+        asked = asked and not _DESCRIBES.match(query, found.end())
+        if asked:
+            return True
+        previous_end, previous_asked = found.end(), asked
+    return False
 
 
 def remove_unsupported_claims(text: str) -> tuple[str, list[str]]:

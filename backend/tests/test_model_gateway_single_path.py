@@ -86,7 +86,9 @@ def test_the_answer_path_uses_only_approved_providers(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "g")
     monkeypatch.setenv("GROQ_API_KEY", "q")
     monkeypatch.setenv("MODEL_GATEWAY_APPROVED_PROVIDERS", "groq,gemini")
-    assert isinstance(service._select_adapter(), GeminiAdapter)
+    # Groq answers first; Gemini is the fallback (Operations Closure, 4 Nov).
+    assert isinstance(service._select_adapter(), GroqAdapter)
+    assert [type(a) for a in service._configured_adapters()] == [GroqAdapter, GeminiAdapter]
     monkeypatch.setenv("MODEL_GATEWAY_APPROVED_PROVIDERS", "groq")
     assert isinstance(service._select_adapter(), GroqAdapter)
     monkeypatch.setenv("MODEL_GATEWAY_APPROVED_PROVIDERS", "gemini")

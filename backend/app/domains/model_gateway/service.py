@@ -38,29 +38,55 @@ logger = logging.getLogger(__name__)
 _PROVIDER_TIMEOUT_SECONDS = 60
 
 
+_ANSWER_PROVIDERS = ("groq", "gemini", "openai")
+_PROVIDER_KEYS = {"groq": ("GROQ_API_KEY",), "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+                  "openai": ("OPENAI_API_KEY",)}
+
+
+def _answer_order() -> list[str]:
+    """Answering providers in preference order: MODEL_GATEWAY_PRIMARY_PROVIDER
+    (Groq by default) first, the others as fallbacks only. Having a key is not
+    a reason to answer first: a Gemini key used to make Gemini the answering
+    provider and switch the agent loop off."""
+    primary = (get_settings().MODEL_GATEWAY_PRIMARY_PROVIDER or "").strip().lower()
+    head = [primary] if primary in _ANSWER_PROVIDERS else []
+    return head + [name for name in _ANSWER_PROVIDERS if name not in head]
+
+
+def _configured_names() -> list[str]:
+    """Providers this deployment approved (ZL-ENG-AGT-01 §11.5,
+    auxiliary.approved_providers) AND has credentials for, in answer order."""
+    approved = approved_providers()
+    return [name for name in _answer_order()
+            if name in approved and any(os.environ.get(key) for key in _PROVIDER_KEYS[name])]
+
+
+def _adapter(name: str):
+    return {"groq": GroqAdapter, "gemini": GeminiAdapter, "openai": OpenAIAdapter}[name]()
+
+
+def _provider_name(adapter) -> str:
+    return type(adapter).__name__.replace("Adapter", "").lower()
+
+
+def answering_provider() -> str:
+    """The provider that answers first ("mock" when none is configured)."""
+    names = _configured_names()
+    return names[0] if names else "mock"
+
+
 def _select_adapter():
-    """Provider selection: real adapters first (in preference order), mock
-    only as the last resort when no provider API key is configured at all.
+    """Provider selection: the first configured provider in answer order,
+    mock only as the last resort when no provider is configured at all.
     Not yet driven by ModelDefinition.provider per-model routing (§ZL-T0-08
     envisions Application -> Query Orchestrator -> Model Gateway -> Provider
     Adapter -> Approved Model Deployment, selecting per model_definitions
     row) — this is a flat "first configured provider wins" default until a
     real per-model routing decision is wired to run_test_prompt's caller.
-
-    Gemini is preferred for answering when configured (generally higher
-    answer quality than Llama), with Groq as the fallback — see
-    _complete_with_fallback.
+    The others are fallbacks — see _complete_with_fallback.
     """
-    # Only providers this deployment approved may receive data, in preference
-    # order (ZL-ENG-AGT-01 §11.5, auxiliary.approved_providers).
-    approved = approved_providers()
-    if "gemini" in approved and (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
-        return GeminiAdapter()
-    if "groq" in approved and os.environ.get("GROQ_API_KEY"):
-        return GroqAdapter()
-    if "openai" in approved and os.environ.get("OPENAI_API_KEY"):
-        return OpenAIAdapter()
-    return MockProviderAdapter()
+    names = _configured_names()
+    return _adapter(names[0]) if names else MockProviderAdapter()
 
 
 async def _try_complete(adapter, prompt: str, model: str | None) -> str:
@@ -88,17 +114,15 @@ _PROVIDER_FAILURE_MESSAGE = (
 
 def _configured_adapters() -> list:
     """Every real provider this deployment approves AND has credentials for, in
-    preference order. A provider missing here is never selected, even as a
+    answer order. A provider missing here is never selected, even as a
     fallback (§11.5, auxiliary.approved_providers)."""
-    approved = approved_providers()
-    adapters: list = []
-    if "gemini" in approved and (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
-        adapters.append(GeminiAdapter())
-    if "groq" in approved and os.environ.get("GROQ_API_KEY"):
-        adapters.append(GroqAdapter())
-    if "openai" in approved and os.environ.get("OPENAI_API_KEY"):
-        adapters.append(OpenAIAdapter())
-    return adapters
+    return [_adapter(name) for name in _configured_names()]
+
+
+def _note_provider(adapter, *, answered: bool) -> None:
+    # Imported here: the gateway records into the request's run, if any.
+    from app.orchestration.workflow_state import note_model_provider
+    note_model_provider(_provider_name(adapter), answered=answered)
 
 
 def _provider_candidates(primary) -> list:
@@ -116,7 +140,13 @@ def _provider_candidates(primary) -> list:
 
 
 async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
-    """Answer through the first configured provider that works, falling back to
+    output, _ = await _complete_with_provider(prompt, model)
+    return output
+
+
+async def _complete_with_provider(prompt: str, model: str | None = None) -> tuple[str, str]:
+    """(answer, name of the provider that gave it). Answer through the first
+    configured provider that works, falling back to
     the others in preference order.
 
     Adapters fail soft by returning an "[Error…]" string, or raise a typed
@@ -171,9 +201,15 @@ async def _complete_with_fallback(prompt: str, model: str | None = None) -> str:
             # other model, just try the next provider.
             blocked = failure
             logger.warning("%s blocked: account spend limit reached", last_provider)
+            _note_provider(adapter, answered=False)
             continue
+        except Exception:
+            _note_provider(adapter, answered=False)
+            raise
         if not _invalid_output(output):
-            return output
+            _note_provider(adapter, answered=True)
+            return output, _provider_name(adapter)
+        _note_provider(adapter, answered=False)
 
     if blocked is not None:
         raise blocked
@@ -292,18 +328,17 @@ def agent_mode_status() -> dict:
         reasons.append("GROQ_API_KEY is not set")
     if "groq" not in approved_providers():
         reasons.append("groq is not in MODEL_GATEWAY_APPROVED_PROVIDERS")
-    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
-        reasons.append("a Gemini key is set, so Gemini answers and the tool loop is off")
+    elif answering_provider() != "groq":
+        reasons.append(f"{answering_provider()} answers first (MODEL_GATEWAY_PRIMARY_PROVIDER), so the tool loop is off")
     return {"active": not reasons, "reasons": reasons, "tools": tool_registry().names()}
 
 
 def agent_mode_active() -> bool:
     """Agent mode needs the flag AND Groq as the answering provider — the
-    loop speaks the OpenAI-compatible tool-calling API, and when Gemini is
-    configured it answers instead (see _select_adapter)."""
-    gemini_active = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+    loop speaks the OpenAI-compatible tool-calling API. A fallback provider's
+    key (Gemini) does not switch it off; it answers only when Groq fails."""
     return (get_settings().KRITON_AGENT_MODE and bool(os.environ.get("GROQ_API_KEY"))
-            and "groq" in approved_providers() and not gemini_active)
+            and "groq" in approved_providers() and answering_provider() == "groq")
 
 
 async def run_agentic_completion(
@@ -340,6 +375,18 @@ async def run_agentic_completion(
     if hasattr(client, "with_options"):
         # Agent retries are governed by its shared generation budget.
         client = client.with_options(max_retries=0)
+    limits = AgentLimits(
+        # A long request with many deliverables may use a few more steps;
+        # the time budget (max_seconds) is unchanged, so latency stays capped.
+        max_steps=settings.AGENT_MAX_STEPS + extra_steps,
+        max_tool_calls=settings.AGENT_MAX_TOOL_CALLS + (extra_steps + 2 if extra_steps else 0),
+        max_seconds=min(settings.AGENT_MAX_SECONDS, max_seconds) if max_seconds else settings.AGENT_MAX_SECONDS,
+        max_total_tokens=settings.AGENT_MAX_TOKENS,
+        max_completion_tokens=settings.AGENT_MAX_COMPLETION_TOKENS,
+        max_request_tokens=settings.AGENT_MAX_REQUEST_TOKENS,
+        max_cost_usd=settings.AGENT_MAX_COST_USD,
+        price_per_million_tokens=settings.MODEL_PRICE_PER_MILLION_TOKENS,
+    )
     outcome = await run_agent(
         client,
         model=model or GROQ_DEFAULT_MODEL,
@@ -347,18 +394,7 @@ async def run_agentic_completion(
         user_prompt=input_text,
         registry=_tool_registry(),
         granted_permissions=granted_permissions,
-        limits=AgentLimits(
-            # A long request with many deliverables may use a few more steps;
-            # the time budget (max_seconds) is unchanged, so latency stays capped.
-            max_steps=settings.AGENT_MAX_STEPS + extra_steps,
-            max_tool_calls=settings.AGENT_MAX_TOOL_CALLS + (extra_steps + 2 if extra_steps else 0),
-            max_seconds=min(settings.AGENT_MAX_SECONDS, max_seconds) if max_seconds else settings.AGENT_MAX_SECONDS,
-            max_total_tokens=settings.AGENT_MAX_TOKENS,
-            max_completion_tokens=settings.AGENT_MAX_COMPLETION_TOKENS,
-            max_request_tokens=settings.AGENT_MAX_REQUEST_TOKENS,
-            max_cost_usd=settings.AGENT_MAX_COST_USD,
-            price_per_million_tokens=settings.MODEL_PRICE_PER_MILLION_TOKENS,
-        ),
+        limits=limits,
         on_tool_start=on_tool_start,
         on_tool_done=on_tool_done,
         chart_requested=chart_requested,
@@ -375,6 +411,9 @@ async def run_agentic_completion(
     )
     if not outcome.text.strip():
         raise RuntimeError("Agent produced an empty answer")
+    # A failed loop is not a provider failover: the caller retries on the
+    # standard path, which records its own provider.
+    _note_provider(adapter, answered=True)
     return outcome
 
 
@@ -392,18 +431,17 @@ async def run_test_prompt(
     if prompt is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prompt template not found")
 
-    # Model Gateway -> Provider Adapter -> Approved Model. _select_adapter()
-    # picks the first configured real provider (Groq, then OpenAI), falling
-    # back to MockProviderAdapter only when no provider API key is set at all.
-    adapter = _select_adapter()
-    provider_name = type(adapter).__name__.replace("Adapter", "").lower()
-    full_prompt = f"[{prompt.name} {prompt.version}]\n\n{input_text}"
-    # Preferred provider (Gemini when configured) with Groq fallback. The
+    # Model Gateway -> Provider Adapter -> Approved Model: the primary provider
+    # (Groq by default) with the other configured providers as fallbacks,
+    # MockProviderAdapter only when no provider API key is set at all. The
     # optional per-call `model` override (a Groq fast-model name for low-risk
     # questions) is only applied when Groq actually answers — see
-    # _complete_with_fallback.
+    # _complete_with_provider. The record names the provider that answered,
+    # not the one tried first.
+    provider_name = _provider_name(_select_adapter())
+    full_prompt = f"[{prompt.name} {prompt.version}]\n\n{input_text}"
     try:
-        output = await _complete_with_fallback(full_prompt, model)
+        output, provider_name = await _complete_with_provider(full_prompt, model)
     except ProviderRequestRejected:
         raise
     except RuntimeError:

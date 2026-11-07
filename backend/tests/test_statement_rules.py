@@ -26,6 +26,22 @@ def test_statement_requests_are_recognised():
         assert not is_statement_request(question), question
 
 
+def test_a_statement_named_as_where_a_figure_goes_is_not_a_request_to_prepare_it():
+    # Four calculation case studies were given the statement-drafting rules
+    # and went over the composition budget (acceptance_oct22).
+    for question in ("Calculate the total inventory value on the December 31, 2026 balance sheet.",
+                     "Calculate the Net Income Tax Expense reported on the 2026 Income Statement.",
+                     "Calculate the cumulative adjustments required on the December 31, 2026 income statement and balance sheet.",
+                     "Determine whether the British subsidiary's balance sheet translation creates a gain.",
+                     "State the mandatory financial statement reporting consequences for Titan.",
+                     "Prepare the journal entries to record the lease on the balance sheet."):
+        assert not is_statement_request(question), question
+    for question in ("Prepare the income statement, balance sheet and cash flow statement",
+                     "Draft the income statement and balance sheet from the trial balance",
+                     "Prepare the balance sheet in the annual accounts"):
+        assert is_statement_request(question), question
+
+
 def test_statement_rules_ask_for_each_account_under_its_heading():
     # One run listed each expense, another showed only "Operating expenses 574,000".
     from app.orchestration.statement_rules import INSTRUCTIONS
