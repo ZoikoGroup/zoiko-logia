@@ -1208,6 +1208,13 @@ def _two_period_lines(table: Table) -> list[str]:
     return lines + _balance_check_lines(table, first, second) + bridge + _ratio_lines(table, first, second, net_income)
 
 
+# Figures Kriton derives from a file's lines are not the file's own: an
+# answer called its EBITDA "as reported" and its ratios a section "of the
+# spreadsheet" (app retest, 7 Nov 2026).
+COMPUTED = ("computed by Kriton from the file's lines, not stated in the file; label them calculated, never "
+            "\"as reported\" or as a part of the file")
+
+
 # The profit subtotals of such a statement, computed instead of left to the
 # model (QA B01 gross profit 3,800 / 38.00%; B02 EBITDA 1,700 → net income 900).
 def _line_value(table: Table, pattern: str, column: int) -> tuple[str, Decimal] | None:
@@ -1253,7 +1260,7 @@ def _profit_bridge(table: Table, column: int) -> tuple[list[str], Decimal | None
                 result = pretax - tax[1]
                 steps.append(f"net income = {_fmt(float(pretax))} − {tax[0].lower()} {_fmt(float(tax[1]))} = "
                              f"{_fmt(float(result))}")
-    return [f"- Income statement subtotals, {table.headers[column]}: " + "; ".join(steps)], result
+    return [f"- Income statement subtotals, {table.headers[column]} ({COMPUTED}): " + "; ".join(steps)], result
 
 
 # Liquidity, leverage and return (QA C04): current ratio 3,550 ÷ 1,700 = 2.09x,
@@ -1294,8 +1301,8 @@ def _ratio_lines(table: Table, first: int, second: int, net_income: Decimal | No
             parts.append(f"return on average assets = net income {_fmt(float(net_income))} ÷ average total assets "
                          f"{_fmt(float(average))} (({_fmt(float(assets[0]))} + {_fmt(float(assets[1]))}) ÷ 2) = "
                          f"{_pct(net_income, average)}")
-    return [f"- Ratios, {table.headers[second]} (every amount from that column except the opening total assets in "
-            f"the average; copy the workings, do not recompute): " + "; ".join(parts)] if parts else []
+    return [f"- Ratios, {table.headers[second]} ({COMPUTED}; every amount from that column except the opening total "
+            f"assets in the average; copy the workings, do not recompute): " + "; ".join(parts)] if parts else []
 
 
 # The balance sheet within such a statement, totalled per period: "Confirm
@@ -2040,7 +2047,7 @@ def _cash_change_lines(text: str, operating: float) -> list[str]:
     total = operating + flows["investing"] + flows["financing"]
     check = ("agrees with" if total == flows["net change"]
              else f"differs by {_fmt(total - flows['net change'])} from")
-    return [f"- Change in cash from the stated flows: operating {_fmt(operating)} + investing "
+    return [f"- Change in cash from the stated flows ({COMPUTED}): operating {_fmt(operating)} + investing "
             f"{_fmt(flows['investing'])} + financing {_fmt(flows['financing'])} = {_fmt(total)}; it {check} the stated "
             f"net change in cash {_fmt(flows['net change'])}."]
 

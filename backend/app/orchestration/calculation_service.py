@@ -809,7 +809,17 @@ def plain_arithmetic(answer_text: str) -> str:
     # four correct present values were reported as mismatches (23 Oct 2026),
     # and "1 / (1.1 ** 4)", written with spaces, lost its operator too.
     text = latex_to_plain(answer_text)
-    return re.sub(r"(\d)[ \u00a0\u202f]+%", r"\1%", re.sub(r"\*\*", lambda match: _bold_or_power(text, match), text))
+    text = re.sub(r"(\d)[ \u00a0\u202f]+%", r"\1%", re.sub(r"\*\*", lambda match: _bold_or_power(text, match), text))
+    # Thousands grouped by spaces: "(700 + 1 250 + 1 100) = 2 090" was not read
+    # as numbers, and that wrong sum beside a right 2.09x passed (7 Nov 2026).
+    # Only on a line with an equation, so a list of figures is never joined.
+    # "= 2.09 \u00d7" is a ratio ("2.09x"), not a multiplication left open.
+    text = re.sub(r"(\d)\s*\u00d7(?!\s*[\d(\-$\u00a3\u20ac\u20b9])", r"\1x", text)
+    return "\n".join(_SPACED_THOUSANDS.sub(lambda m: re.sub(r"[ \u00a0\u202f\u2009]", ",", m.group(0)), line)
+                     if "=" in line else line for line in text.split("\n"))
+
+
+_SPACED_THOUSANDS = re.compile(r"(?<![\d.,])\d{1,3}(?:[ \u00a0\u202f\u2009]\d{3})+(?![\d,]|\.\d)")
 
 
 def _bold_or_power(text: str, match: re.Match) -> str:

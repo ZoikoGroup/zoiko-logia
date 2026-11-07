@@ -100,6 +100,17 @@ def normalize_markdown_tables(text: str) -> str:
 _BOLD_HEADING = re.compile(r"^\s*(?:\*\*|__)[^*_\n]{1,80}(?:\*\*|__)\s*:?\s*$")
 
 
+# The calculator's own call written into the answer: 'exact calculation input:
+# "3550 / 1700" → 2.088235294117647 (rounded to 2.09)' under each working
+# (app retest, 7 Nov 2026). The working above it already shows the step.
+_TOOL_TRACE = re.compile(r"^[ \t]*(?:[-*•][ \t]*)?(?:exact[ \t]+)?calculation[ \t]+input[ \t]*:[ \t]*[\"“'`].*$\n?",
+                         re.I | re.M)
+
+
+def without_tool_trace(text: str) -> str:
+    return _TOOL_TRACE.sub("", text or "")
+
+
 def separate_headings(text: str) -> str:
     """A blank line after a line that is only a bold heading. Markdown joins
     "**Conversion Ratio**" and the next line into one paragraph, shown as
