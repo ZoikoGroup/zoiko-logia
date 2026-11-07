@@ -1,0 +1,24 @@
+{
+  "adapter_methods": [
+    "start_session(tenant,role,model,source_snapshot)",
+    "attach_fixture(file_path,tenant,ACL)",
+    "send_exact_prompt(question_exact)",
+    "collect_response_artifacts()",
+    "collect_tool_and_policy_audit()",
+    "evaluate_independent_oracles()",
+    "record_immutable_evidence()"
+  ],
+  "intent": "Instrument live chatbot; fixture ZIP alone cannot simulate tenant IAM, chat, actual exports or tool traces",
+  "required_checkpoints": [
+    "RBAC before retrieval",
+    "document injection isolation",
+    "approval transitions",
+    "numeric engine trace",
+    "source as-of and rights",
+    "chart model parity",
+    "PDF/DOCX parity",
+    "accessible UI",
+    "p95 by workload class"
+  ],
+  "state": "IMPLEMENTATION_REQUIRED"
+}

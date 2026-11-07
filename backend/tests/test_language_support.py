@@ -13,6 +13,12 @@ from app.orchestration.language_support import SUPPORT_MATRIX, detect_language, 
     ("Wie hoch ist die Steuer für eine GmbH in Deutschland und was ist der Freibetrag?", "de"),
     ("आयकर अधिनियम की धारा 44AB क्या है?", "hi"),
     ("12,000 / 4", None),
+    # QA L03: two Spanish stopwords only, but the language is asked for by name.
+    ("En español: ¿Cuál fue el beneficio neto de Northbridge en 2025?", "es"),
+    ("Explain IFRS 15 and answer in Spanish.", "es"),
+    ("What is the net income of Northbridge in 2025?", "en"),
+    ("What is the VAT rate in French Polynesia?", "en"),          # a place, not a language request
+    ("Is the German subsidiary's tax return due in May?", "en"),
 ])
 def test_detection_is_conservative(question, expected):
     assert detect_language(question) == expected
@@ -27,7 +33,11 @@ def test_the_matrix_lists_only_english_as_supported():
     assert {row.language for row in SUPPORT_MATRIX} == {"en"}
 
 
-async def test_a_spanish_question_is_not_answered(monkeypatch):
+@pytest.mark.parametrize("question", [
+    "¿Cuál es el plazo para presentar el impuesto de sociedades en España para mi empresa?",
+    "En español: ¿Cuál fue el beneficio neto de Northbridge en 2025?",          # QA L03: unsupported by design
+])
+async def test_a_spanish_question_is_not_answered(monkeypatch, question):
     from unittest.mock import AsyncMock
     from app.orchestration import review, service
     from app.orchestration.schemas import AskKritonRequest
@@ -39,7 +49,7 @@ async def test_a_spanish_question_is_not_answered(monkeypatch):
     monkeypatch.setattr(review, "record_answer", AsyncMock())
     response = await service.ask_kriton(
         db=object(), sync_db=object(), actor_id="u", tenant_id="t", role="Admin",
-        request=AskKritonRequest(query="¿Cuál es el plazo para presentar el impuesto de sociedades en España para mi empresa?"),
+        request=AskKritonRequest(query=question),
     )
     assert response.outcome == "rejected" and response.answer is None
     assert "English only" in response.next_action.message
