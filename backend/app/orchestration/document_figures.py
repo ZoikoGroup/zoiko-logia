@@ -1270,16 +1270,21 @@ def _ratio_lines(table: Table, first: int, second: int, net_income: Decimal | No
 
     current_assets, current_liabilities = rows(_CURRENT_ASSET), rows(_CURRENT_LIABILITY, _DEBT)
     debt, equity = rows(_DEBT), _line_value(table, _EQUITY_LINE.pattern, second)
+    # Each component with its amount: named without amounts, the answer filled
+    # in opening cash 700 for closing 1,200 and wrote "700 + 1,250 + 1,100 =
+    # 2,090" beside the right 2.09x (app retest, 7 Nov 2026).
+    def listed(items: list[tuple[str, Decimal]]) -> str:
+        return " + ".join(f"{n} {_fmt(float(v))}" for n, v in items)
+
     parts = []
     if current_assets and current_liabilities:
         ca, cl = sum(v for _, v in current_assets), sum(v for _, v in current_liabilities)
         if cl:
-            parts.append(f"current ratio = current assets {_fmt(float(ca))} ({', '.join(n for n, _ in current_assets)}) ÷ "
-                         f"current liabilities {_fmt(float(cl))} ({', '.join(n for n, _ in current_liabilities)}) = "
-                         f"{ca / cl:.2f}x")
+            parts.append(f"current ratio = current assets ({listed(current_assets)} = {_fmt(float(ca))}) ÷ current "
+                         f"liabilities ({listed(current_liabilities)} = {_fmt(float(cl))}) = {ca / cl:.2f}x")
     if debt and equity and equity[1]:
         d = sum(v for _, v in debt)
-        parts.append(f"debt-to-equity = {', '.join(n.lower() for n, _ in debt)} {_fmt(float(d))} ÷ equity "
+        parts.append(f"debt-to-equity = debt ({listed(debt)} = {_fmt(float(d))}) ÷ equity "
                      f"{_fmt(float(equity[1]))} = {d / equity[1]:.2f}x")
     if net_income is not None:
         assets = [sum((_to_decimal(r[c]) or Decimal("0")) for r in table.rows if r and c < len(r)
@@ -1289,7 +1294,8 @@ def _ratio_lines(table: Table, first: int, second: int, net_income: Decimal | No
             parts.append(f"return on average assets = net income {_fmt(float(net_income))} ÷ average total assets "
                          f"{_fmt(float(average))} (({_fmt(float(assets[0]))} + {_fmt(float(assets[1]))}) ÷ 2) = "
                          f"{_pct(net_income, average)}")
-    return [f"- Ratios, {table.headers[second]}: " + "; ".join(parts)] if parts else []
+    return [f"- Ratios, {table.headers[second]} (every amount from that column except the opening total assets in "
+            f"the average; copy the workings, do not recompute): " + "; ".join(parts)] if parts else []
 
 
 # The balance sheet within such a statement, totalled per period: "Confirm
