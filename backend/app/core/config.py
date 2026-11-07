@@ -153,6 +153,9 @@ class Settings(BaseSettings):
     ASYNC_DOCUMENT_INGESTION: bool = False
     RATE_LIMIT_STORAGE_URI: str = "memory://"
     MODEL_PROVIDER_CONCURRENCY: int = 8
+    # The provider that answers first; every other configured, approved
+    # provider is a fallback only. A Gemini key no longer makes Gemini answer.
+    MODEL_GATEWAY_PRIMARY_PROVIDER: str = "groq"
     MODEL_REQUEST_MAX_CALLS: int = 20
     DOCUMENT_RETENTION_DAYS: int = 30
     ARTIFACT_RETENTION_DAYS: int = 7

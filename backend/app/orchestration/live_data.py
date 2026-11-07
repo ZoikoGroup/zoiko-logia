@@ -446,7 +446,9 @@ async def fetch_live_data(query: str) -> LiveDataResult:
             )
 
         if market_sources.sources and deterministic_answer is None:
-            deterministic_answer = market_sources.sources[0].snippet
+            # Every company fetched, not the first: a comparison of Tesla,
+            # Nvidia and Amazon must show all three.
+            deterministic_answer = "\n\n".join(s.snippet for s in market_sources.sources if s.snippet) or None
 
     return LiveDataResult(
         sources=sources,
