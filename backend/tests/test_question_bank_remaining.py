@@ -42,9 +42,11 @@ def test_b06_thousands_convert_to_whole_dollars_and_millions():
 
 def test_c04_liquidity_leverage_and_return_on_average_assets():
     block = verified_document_figures(F0, "Show current ratio, debt-to-equity and average-asset ROA for F0.")
-    assert ("current ratio = current assets 3,550 (Cash, Accounts receivable, Inventory) ÷ current liabilities 1,700 "
-            "(Accounts payable, Tax payable, Deferred revenue) = 2.09x") in block
-    assert "debt-to-equity = long-term borrowings 2,200 ÷ equity 3,600 = 0.61x" in block
+    # Each amount is given: named only, the answer used opening cash 700 (app retest, 7 Nov 2026).
+    assert ("current ratio = current assets (Cash 1,200 + Accounts receivable 1,250 + Inventory 1,100 = 3,550) ÷ "
+            "current liabilities (Accounts payable 1,000 + Tax payable 300 + Deferred revenue 400 = 1,700) = 2.09x") in block
+    assert "debt-to-equity = debt (Long-term borrowings 2,200 = 2,200) ÷ equity 3,600 = 0.61x" in block
+    assert "copy the workings, do not recompute" in block
     assert "return on average assets = net income 900 ÷ average total assets 6,750" in block and "= 13.33%" in block
 
 
