@@ -92,6 +92,37 @@ def test_the_calculators_own_call_is_kept_out_of_the_answer():
     assert without_tool_trace("Calculation inputs are listed below.") == "Calculation inputs are listed below."
 
 
+def test_b03_the_balance_sheet_check_is_an_equation_to_state():
+    # Live run of 7 Nov 2026: B03 checked cash and equity, never assets = liabilities + equity.
+    block = verified_document_figures(F0, "Confirm that F0 balance sheet, cash-flow ending cash, and equity "
+                                          "roll-forward reconcile.")
+    assert ("Check: assets 7,500 = liabilities 3,900 + equity 3,600; state it whenever the balance sheet's "
+            "balancing or reconciliation is asked") in block
+
+
+def test_b03_a_balance_sheet_check_the_answer_left_out_is_added():
+    # Live run of 7 Nov 2026: B03 answered on cash and equity only, twice.
+    question = "Confirm that F0 balance sheet, cash-flow ending cash, and equity roll-forward reconcile."
+    figures = verified_document_figures(F0, question)
+    note = service._missing_balance_check(question, "Cash reconciles; equity reconciles.", figures)
+    assert note == ("Balance sheet check (computed by Kriton from the file): FY2024 / Opening: assets 6,000 = "
+                    "liabilities 3,300 + equity 2,700; FY2025 / Closing: assets 7,500 = liabilities 3,900 + equity 3,600.")
+    assert service._missing_balance_check(question, "Total assets 7,500 equal liabilities plus equity.", figures) is None
+    assert service._missing_balance_check("What is FY2025 revenue?", "Revenue is 10,000.", figures) is None
+
+
+def test_the_currency_note_keeps_the_files_scale():
+    # Live run of 7 Nov 2026: F0 ("USD thousands") was answered "Amounts are in USD."
+    from app.orchestration.statement_rules import source_scale, without_currency_symbols
+    assert source_scale(F0) == "thousands"
+    assert source_scale([WebSource(title="tb.csv — s", url="", snippet="Revenue\t10000", source_id="d")]) is None
+    assert without_currency_symbols("Revenue was $10,000.", "USD", "thousands") == (
+        "Revenue was 10,000.\n\nAmounts are in USD thousands.", [])
+    assert without_currency_symbols("Revenue was 10,000 (USD thousands).", "USD", "thousands") == (
+        "Revenue was 10,000 (USD thousands).", [])
+    assert without_currency_symbols("Rent was £96,000.", "GBP") == ("Rent was 96,000.\n\nAmounts are in GBP.", [])
+
+
 def test_j02_the_change_in_cash_is_bridged_from_the_three_flows():
     block = verified_document_figures(F0, "Why did cash increase by 500 although net income was 900?")
     assert ("operating 1,200 + investing -800 + financing 100 = 500; it agrees with the stated net change in cash 500"

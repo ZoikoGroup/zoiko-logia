@@ -158,6 +158,16 @@ def test_quarters_read_from_a_file_are_described_as_a_series_with_their_changes(
     assert "not a series over time" not in text
 
 
+def test_d05_a_pie_of_quarterly_shares_gives_every_share():
+    # Live run of 7 Nov 2026: growth between quarters and only Q4's 31.0% share.
+    from app.orchestration.service import _grounded_domain_fallback
+    query = "Create a pie chart showing quarterly revenue shares of FY2025."
+    text = _grounded_domain_fallback(query, build_document_evidence(query, _f0()))
+    assert "Each one's share of that total: Q1 21%; Q2 23%; Q3 25%; Q4 31%; together 100%." in text
+    line = "Make a line chart of quarterly revenue and label Q4 QoQ growth."
+    assert "share of that total" not in _grounded_domain_fallback(line, build_document_evidence(line, _f0()))
+
+
 def test_d03_a_waterfall_is_the_signed_profit_and_loss_bridge_only():
     # D03 stacked all sixteen statement lines, cash and equity included, to 34,100.
     from app.orchestration.service import _grounded_domain_fallback

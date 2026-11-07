@@ -1337,10 +1337,15 @@ def _balance_check_lines(table: Table, first: int, second: int) -> list[str]:
         totals = {kind: sum((_to_decimal(r[column]) or Decimal("0")) for r in rows if column < len(r))
                   for kind, rows in groups.items()}
         difference = totals["assets"] - totals["liabilities"] - totals["equity"]
-        lines.append(f"- Balance sheet, {table.headers[column]}: total assets {_fmt(float(totals['assets']))}; total "
-                     f"liabilities {_fmt(float(totals['liabilities']))}; equity {_fmt(float(totals['equity']))}; "
-                     f"liabilities + equity {_fmt(float(totals['liabilities'] + totals['equity']))}; "
-                     + ("balances" if difference == 0 else f"does NOT balance: assets differ by {_fmt(float(difference))}"))
+        assets, liabilities, equity = (_fmt(float(totals[k])) for k in ("assets", "liabilities", "equity"))
+        # As an equation to quote: B03 was answered on cash and equity only,
+        # the balance sheet itself never checked (live run, 7 Nov 2026).
+        check = (f"assets {assets} = liabilities {liabilities} + equity {equity}" if difference == 0
+                 else f"assets {assets} ≠ liabilities {liabilities} + equity {equity}")
+        lines.append(f"- Balance sheet, {table.headers[column]}: total assets {assets}; total liabilities {liabilities}; "
+                     f"equity {equity}; liabilities + equity {_fmt(float(totals['liabilities'] + totals['equity']))}; "
+                     + ("balances" if difference == 0 else f"does NOT balance: assets differ by {_fmt(float(difference))}")
+                     + f". Check: {check}; state it whenever the balance sheet's balancing or reconciliation is asked")
     return lines
 
 
