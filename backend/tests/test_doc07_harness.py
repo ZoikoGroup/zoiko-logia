@@ -62,6 +62,9 @@ def test_the_prompt_is_the_exact_question_without_the_testers_instruction(pack):
 @pytest.mark.parametrize("text, expected", [
     ("Gross profit 10,000 − 6,200 = 3,800; gross margin 38.00%.", (True, None)),
     ("Gross profit 3800 and a 38 % margin.", (True, None)),
+    ("Gross profit 3 800 and margin 38.00%.", (True, None)),          # spaced thousands (live run, 7 Nov 2026)
+    ("Gross profit 3 800 and margin 38.00 %.", (True, None)),  # narrow no-break spaces
+    ("Gross  profit  3,800  and  margin  38.00%.", (True, None)),        # repeated spaces
     ("Gross profit 13,800 and margin 38.00%.", (False, "ORACLE_MISMATCH")),       # 13,800 is not 3,800
     ("Gross profit 3,800 and margin 37%.", (False, "ORACLE_MISMATCH")),
 ])

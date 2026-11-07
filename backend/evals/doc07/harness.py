@@ -149,9 +149,13 @@ def fixture_sha(paths: list[Path]) -> str:
 def _figure_present(figure: str, text: str) -> bool:
     if not re.search(r"\d", figure):
         return figure.lower() in text.lower()
-    # 1,200 matches "1,200" and "1200", not "11,200" or "12,005"; 38% matches "38 %".
+    # 1,200 matches "1,200", "1200" and "1 200", not "11,200" or "12,005"; 38% matches "38 %".
     body = re.escape(figure.replace(",", "")).replace("%", r"\s?%")
-    return bool(re.search(rf"(?<![\d.]){body}(?!\d)", text.replace(",", ""), re.I))
+    # The model writes "10 million" with a narrow no-break space (live run, 7 Nov 2026).
+    # …and "0.50  percentage points" with two spaces.
+    plain = re.sub(r"[ \t   ]+", " ", text.replace(",", ""))
+    plain = re.sub(r"(?<=\d) (?=\d{3}(?!\d))", "", plain)
+    return bool(re.search(rf"(?<![\d.]){body}(?!\d)", plain, re.I))
 
 
 def check_oracles(case_id: str, text: str) -> tuple[bool | None, str | None]:

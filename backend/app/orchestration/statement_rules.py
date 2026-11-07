@@ -342,6 +342,19 @@ def source_currency(sources) -> str | None:
     return per_file[0].pop()
 
 
+def source_scale(sources) -> str | None:
+    """"thousands" or "millions" when every uploaded file states that scale:
+    F0 ("USD thousands") was answered "Amounts are in USD." (7 Nov 2026)."""
+    from app.orchestration.document_figures import _SCALE_STATED
+    texts: dict[str, list[str]] = {}
+    for source in sources or []:
+        file = (getattr(source, "title", "") or "").split(" — ")[0]
+        texts.setdefault(file, []).append(getattr(source, "snippet", "") or "")
+    scales = {next((scale for scale, pattern in _SCALE_STATED if pattern.search("\n".join(chunks))), None)
+              for chunks in texts.values()}
+    return scales.pop() if len(scales) == 1 and None not in scales else None
+
+
 def document_amounts_rule(currency: str | None) -> str:
     """Asked of every answer drawn from an uploaded document, not only statements."""
     rule = ("\n- Write every amount from the documents in full, as the documents state it (576,900, not £576.9 k "
@@ -353,7 +366,7 @@ def document_amounts_rule(currency: str | None) -> str:
                    "another or infer one from wording such as \"corporation tax\" or \"Ltd\".\n")
 
 
-def without_currency_symbols(text: str, currency: str | None) -> tuple[str, list[str]]:
+def without_currency_symbols(text: str, currency: str | None, scale: str | None = None) -> tuple[str, list[str]]:
     """Amounts as the document states them, and the currency only as the
     file states it. "Income accounts (£1,862,000) … = £154,400" stood beside
     a GBP table; a "(GBP)" stood on a file that named no currency. Dropping a
@@ -364,8 +377,10 @@ def without_currency_symbols(text: str, currency: str | None) -> tuple[str, list
         return text, []
     stripped = _CURRENCY_SYMBOL.sub("", text)
     if currency:
-        named = currency in stripped
-        return (stripped if named else f"{stripped.rstrip()}\n\nAmounts are in {currency}."), []
+        # The scale with the currency: 10,000 in "USD thousands" is not USD 10,000.
+        named = currency in stripped and (not scale or bool(re.search(r"thousand|'?000s?\b|million", stripped, re.I)))
+        unit = f"{currency} {scale}" if scale else currency
+        return (stripped if named else f"{stripped.rstrip()}\n\nAmounts are in {unit}."), []
     return stripped, ([CURRENCY_UNCONFIRMED_NOTE] if _CURRENCY_CODE.search(stripped) or stripped != text else [])
 
 
