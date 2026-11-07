@@ -4,6 +4,8 @@ B02, B06, C04, E03, F01, H04, J02. The F0 figures are copied inline from
 F0_NB-FIN-v1.xlsx (USD thousands); the statements-1 files stay out of the repo."""
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.orchestration import service
 from app.orchestration.accounting_methods import accounting_method_guidance
 from app.orchestration.document_figures import verified_document_figures
@@ -48,6 +50,26 @@ def test_c04_liquidity_leverage_and_return_on_average_assets():
     assert "debt-to-equity = debt (Long-term borrowings 2,200 = 2,200) ÷ equity 3,600 = 0.61x" in block
     assert "copy the workings, do not recompute" in block
     assert "return on average assets = net income 900 ÷ average total assets 6,750" in block and "= 13.33%" in block
+
+
+@pytest.mark.parametrize("answer, finding", [
+    # App retest of 7 Nov 2026: thousands grouped by spaces and "2.09 ×" were not read.
+    ("(700 + 1 250 + 1 100) ÷ (1 000 + 300 + 400) = 2 090 ÷ 1 700 = 2.09 ×", "2,090 ÷ 1,700 equals 1.23, not 2.09"),
+    ("Current assets = 700 + 1 250 + 1 100 = 2 090", "equals 3050, not 2090"),
+    ("700 + 1 250 + 1 100 = 2 090", "equals 3050, not 2090"),
+])
+def test_c04_a_wrong_sum_written_with_spaced_thousands_is_caught(answer, finding):
+    from app.orchestration.calculation_service import validate_answer_calculations
+    assert any(finding in failure for failure in validate_answer_calculations(answer))
+
+
+@pytest.mark.parametrize("answer", [
+    "1 200 + 1 250 + 1 100 = 3 550", "Ratio = 3,550 / 1,700 = 2.09 ×", "300 × 4 = 1,200", "2 × (3 + 4) = 14",
+    "In 2025 300 units were sold; 300 × 4 = 1 200", "Values: 100 200 300 400",
+])
+def test_correct_or_unrelated_figures_are_not_flagged(answer):
+    from app.orchestration.calculation_service import validate_answer_calculations
+    assert validate_answer_calculations(answer) == []
 
 
 def test_j02_the_change_in_cash_is_bridged_from_the_three_flows():
