@@ -4953,7 +4953,8 @@ async def ask_kriton(
         from app.orchestration.answer_formatting import latex_to_plain, normalize_markdown_tables
         # Before validation, so the arithmetic check reads the same working
         # the user sees (the answer view does not render LaTeX).
-        composed_text = separate_headings(normalize_markdown_tables(latex_to_plain(composed_text)))
+        from app.orchestration.answer_formatting import without_tool_trace
+        composed_text = separate_headings(normalize_markdown_tables(latex_to_plain(without_tool_trace(composed_text))))
         composed_text = normalize_citations(composed_text, {citation.ref_id for citation in rag_citations})
         if document_sources:
             from app.orchestration.document_figures import without_unstated_filing

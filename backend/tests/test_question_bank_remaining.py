@@ -72,6 +72,26 @@ def test_correct_or_unrelated_figures_are_not_flagged(answer):
     assert validate_answer_calculations(answer) == []
 
 
+def test_computed_figures_are_labelled_as_kriton_s_not_the_file_s():
+    # App retest of 7 Nov 2026: "EBITDA (as reported)" and ratios "taken from the
+    # 'Ratios, FY2025 / Closing' section of" the file, which states neither.
+    block = verified_document_figures(F0, "Why did cash increase by 500 although net income was 900?")
+    for line in ("- Income statement subtotals", "- Ratios", "- Change in cash"):
+        row = next(item for item in block.splitlines() if item.startswith(line))
+        assert "computed by Kriton from the file's lines, not stated in the file" in row, line
+
+
+def test_the_calculators_own_call_is_kept_out_of_the_answer():
+    from app.orchestration.answer_formatting import without_tool_trace
+    text = ("Ratio = 3,550 / 1,700 = 2.088235… → rounded to 2.09 ×\n"
+            "exact calculation input: \"3550 / 1700\" → 2.088235294117647 (rounded to 2.09)\n"
+            "- Calculation input: `900 / 6750 * 100` → 13.33\n"
+            "Debt-to-equity = 2,200 / 3,600 = 0.61 ×")
+    assert without_tool_trace(text) == ("Ratio = 3,550 / 1,700 = 2.088235… → rounded to 2.09 ×\n"
+                                        "Debt-to-equity = 2,200 / 3,600 = 0.61 ×")
+    assert without_tool_trace("Calculation inputs are listed below.") == "Calculation inputs are listed below."
+
+
 def test_j02_the_change_in_cash_is_bridged_from_the_three_flows():
     block = verified_document_figures(F0, "Why did cash increase by 500 although net income was 900?")
     assert ("operating 1,200 + investing -800 + financing 100 = 500; it agrees with the stated net change in cash 500"
