@@ -53,6 +53,17 @@ export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const isPublic = PUBLIC_PATHS.includes(pathname);
 
+  // Supabase sends a failed or expired email link to its Site URL when the
+  // redirect target is not allow-listed: "/?error=access_denied&error_code=
+  // otp_expired…" was redirected to /login and the reason was lost (bugs
+  // list, 10 Nov 2026). The callback page explains it and offers a new link.
+  const params = request.nextUrl.searchParams;
+  if (pathname !== "/auth/callback" && (params.has("error_code") || params.has("error_description"))) {
+    const callback = new URL("/auth/callback", request.url);
+    callback.search = request.nextUrl.search;
+    return NextResponse.redirect(callback);
+  }
+
   if (!user && !isPublic) {
     return NextResponse.redirect(new URL("/login", request.url));
   }

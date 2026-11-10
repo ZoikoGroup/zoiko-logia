@@ -256,9 +256,11 @@ export default function ComplianceCalendarPage() {
             <Panel title="Priority obligation queue" subtitle="Soonest first, each with its official source"
               actions={scoped.length > 0 && <Btn onClick={() => downloadIcs(scoped)}><CalendarPlus size={13} /> Add to calendar (.ics)</Btn>}
               footer={<span>Showing {visible.length} of {scoped.length} deadlines</span>}>
-              <p className="mb-3 text-sm text-ink">
-                <strong>{scoped.length}</strong> deadline{scoped.length === 1 ? "" : "s"} from {dueLabel(data.from)} to {dueLabel(data.to)}
-                {soon > 0 && <> · <span className="font-semibold text-bad">{soon} within 7 days</span></>}
+              {/* Two parts that wrap apart, not one run of text: "…to Wed, Feb 3 · 3 within
+                  7 days" crowded together (bugs list, 10 Nov 2026). */}
+              <p className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm text-ink">
+                <span><strong>{scoped.length}</strong> deadline{scoped.length === 1 ? "" : "s"} from {dueLabel(data.from)} to {dueLabel(data.to)}</span>
+                {soon > 0 && <span className="font-semibold text-bad"><span aria-hidden="true" className="mr-2 text-muted">·</span>{soon} within 7 days</span>}
               </p>
               <FilterTabs label="Filter deadlines" active={tab} onChange={setTab} tabs={[
                 { key: "all", label: "All", count: scoped.length },

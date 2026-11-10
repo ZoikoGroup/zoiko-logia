@@ -6,7 +6,7 @@ import { supabase } from "@/lib/supabase";
 import { ApiError } from "@/lib/api";
 import { signInHomeFor } from "@/lib/roles";
 import { BrandMark } from "@/components/layout/AppHeader";
-import { mfaChallengeRequired, provisionAndRefresh } from "@/services/auth.service";
+import { mfaChallengeRequired, provisionAndRefresh, resendConfirmation } from "@/services/auth.service";
 
 /** OAuth (Google / Microsoft) lands here after Supabase's redirect. The browser client
  * auto-exchanges the URL's auth code for a session on load
@@ -26,6 +26,12 @@ export default function AuthCallbackPage() {
   const [adult, setAdult] = useState(false);
   const [busy, setBusy] = useState(false);
   const [confirmedOnly, setConfirmedOnly] = useState(false);
+  // An expired or already-used confirmation link (otp_expired) can be replaced
+  // here instead of sending the person back to sign in with an unverified
+  // address (bugs list, 10 Nov 2026).
+  const [linkExpired, setLinkExpired] = useState(false);
+  const [resendEmail, setResendEmail] = useState("");
+  const [resendNote, setResendNote] = useState("");
   const pending = useRef<{ token: string; metadata: Record<string, unknown> } | null>(null);
 
   async function complete(accessToken: string, metadata: Record<string, unknown>, adultConfirmed?: boolean) {
@@ -62,7 +68,11 @@ export default function AuthCallbackPage() {
       const params = new URLSearchParams(`${window.location.search.slice(1)}&${window.location.hash.slice(1)}`);
       const linkError = params.get("error_description") || params.get("error");
       if (linkError) {
-        setError(`${linkError.replace(/\+/g, " ")}. Please sign in, or request a new link.`);
+        const expired = params.get("error_code") === "otp_expired" || /expired/i.test(linkError);
+        setLinkExpired(expired);
+        setError(expired
+          ? "This confirmation link has expired or was already used. Enter your email to get a new one."
+          : `${linkError.replace(/\+/g, " ")}. Please sign in, or request a new link.`);
         return;
       }
 
@@ -163,6 +173,29 @@ export default function AuthCallbackPage() {
           <p className="text-sm text-ink">
             {error || "Your email address is verified. Sign in to continue."}
           </p>
+          {linkExpired && (
+            <form className="mt-4 grid gap-2 text-left" onSubmit={async (e) => {
+              e.preventDefault();
+              setBusy(true);
+              try {
+                await resendConfirmation(resendEmail.trim());
+                setResendNote("A new confirmation email is on its way. Open the newest one.");
+              } catch (err) {
+                setResendNote(err instanceof Error ? err.message : "Could not send a new link.");
+              } finally {
+                setBusy(false);
+              }
+            }}>
+              <label className="text-xs font-medium text-muted" htmlFor="resend-email">Email address</label>
+              <input id="resend-email" type="email" required value={resendEmail} onChange={(e) => setResendEmail(e.target.value)}
+                className="h-9 rounded-lg border border-line bg-soft px-3 text-sm text-ink outline-none focus:border-brand" />
+              <button type="submit" disabled={busy}
+                className="inline-flex h-9 items-center justify-center rounded-lg bg-brand px-4 text-sm font-bold text-white transition-colors hover:bg-brand-2 disabled:opacity-60">
+                {busy ? "Sending…" : "Send a new confirmation email"}
+              </button>
+              {resendNote && <p role="status" className="text-xs text-muted">{resendNote}</p>}
+            </form>
+          )}
           <button
             type="button"
             onClick={() => router.replace("/login")}
