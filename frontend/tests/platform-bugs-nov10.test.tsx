@@ -53,6 +53,21 @@ describe("Bugs 2, 3, 6, 8: the page code says what it shows", () => {
     expect(page).not.toMatch(/: "—", detail:/);
   });
 
+  it("bug 1: an expired email link reaches the callback, which offers a new one", async () => {
+    const proxy = await read("proxy.ts");
+    expect(proxy).toContain('params.has("error_code") || params.has("error_description")');
+    expect(proxy).toContain('new URL("/auth/callback", request.url)');
+    const callback = await read("app/auth/callback/page.tsx");
+    expect(callback).toContain('params.get("error_code") === "otp_expired"');
+    expect(callback).toContain("Send a new confirmation email");
+  });
+
+  it("bug 5: an empty bundle register says how a bundle is created", async () => {
+    const page = await read("app/source-bundles/page.tsx");
+    expect(page).toContain("No source bundles yet. A bundle is saved each time Kriton answers from governed sources");
+    expect(page).toContain('value: "Not tracked"');
+  });
+
   it("bug 8: the connection form scrolls into view and focuses its first field", async () => {
     const page = await read("app/integrations/page.tsx");
     expect(page).toContain('scrollIntoView?.({ behavior: "smooth", block: "start" })');
