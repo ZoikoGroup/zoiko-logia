@@ -55,6 +55,8 @@ const METRIC_META: Record<string, { label: string; unit: string; higherIsBetter:
   boundary_pass_rate:    { label: "Boundary Pass Rate",      unit: "%",  higherIsBetter: true,  description: "Share of gold answers that pass the professional boundary check." },
 };
 
+const NOT_RUN = "Not run";
+
 function fmt(key: string, val: number | null | undefined): string {
   if (val === null || val === undefined || Number.isNaN(val)) return "—";
   const meta = METRIC_META[key];
@@ -226,10 +228,11 @@ export default function EvaluationGatesPage() {
       <ContextStrip jurisdiction={selected?.datasetId || "Select an evaluation run below"} framework="Recorded threshold set" period={selected?.createdAt?.slice(0, 10) || "No snapshot selected"} />
       {selected && <div className={`rounded-lg border p-4 text-xs font-bold ${eligible ? "border-ok/25 bg-ok/5 text-ok" : "border-bad/25 bg-bad/5 text-bad"}`}>{eligible ? "Evaluation pack eligible for independent release review" : "RELEASE HOLD · Evaluation evidence does not authorize promotion"}</div>}
       {!loadError && <GovernedRegister title="Mandatory gate register" inspector="Gate inspector" records={gateRecords} tabs={["Gate checks", "Test evidence", "Decision trail"]} doctrine="Release decisions require every mandatory gate, current configuration evidence, and independent authorization. Aggregate scores cannot override a failed or unmeasured gate." empty="Choose a run from the evaluation console below to inspect its metric gates." metrics={[
-        { label: "Metric gates", value: selected ? gateRecords.length : "—", detail: "Selected run and threshold set" },
-        { label: "Gates passed", value: selected ? gateRecords.filter(r => r.state === "Passed").length : "—", detail: "Measured thresholds without reported failures", tone: "green" },
-        { label: "Failed gates", value: selected ? gateRecords.filter(r => r.state === "Failed").length : "—", detail: "Review blocking evidence", tone: "red" },
-        { label: "Unmeasured gates", value: selected ? gateRecords.filter(r => r.state === "Unmeasured").length : "—", detail: "Missing measurements cannot establish a pass", tone: "amber" },
+        // "Not run", not a bare "—", before a run is chosen (bugs list, 10 Nov 2026).
+        { label: "Metric gates", value: selected ? gateRecords.length : NOT_RUN, detail: "Selected run and threshold set" },
+        { label: "Gates passed", value: selected ? gateRecords.filter(r => r.state === "Passed").length : NOT_RUN, detail: "Measured thresholds without reported failures", tone: "green" },
+        { label: "Failed gates", value: selected ? gateRecords.filter(r => r.state === "Failed").length : NOT_RUN, detail: "Review blocking evidence", tone: "red" },
+        { label: "Unmeasured gates", value: selected ? gateRecords.filter(r => r.state === "Unmeasured").length : NOT_RUN, detail: "Missing measurements cannot establish a pass", tone: "amber" },
         { label: "Saved evaluation runs", value: history.length, detail: "Available run history" },
       ]} />}
       <div className="space-y-6">
@@ -361,13 +364,15 @@ export default function EvaluationGatesPage() {
                             </div>
                           </td>
                           <td className="py-3 text-right">
-                            <span className={`text-sm font-extrabold font-mono ${value === undefined ? "text-muted" : failed ? "text-bad" : unmeasured ? "text-muted" : "text-ok"}`}>{fmt(key, value)}</span>
+                            {unmeasured || value === undefined || value === null
+                              ? <span className="text-[11px] font-semibold text-muted">Not measured</span>
+                              : <span className={`text-sm font-extrabold font-mono ${failed ? "text-bad" : "text-ok"}`}>{fmt(key, value)}</span>}
                           </td>
                           <td className="py-3 text-right text-xs text-muted font-mono">
                             {target === undefined ? "no threshold" : `${meta.higherIsBetter ? "≥" : "≤"} ${fmt(key, target)}`}
                           </td>
                           <td className="py-3 text-right">
-                            {target === undefined ? <span className="text-[10px] text-muted">—</span>
+                            {target === undefined ? <span className="text-[10px] text-muted" title="No threshold: reported for information, it does not gate the release">Info only</span>
                               : failed ? <XCircle size={16} className="text-bad ml-auto" />
                               : <CheckCircle2 size={16} className="text-ok ml-auto" />}
                           </td>

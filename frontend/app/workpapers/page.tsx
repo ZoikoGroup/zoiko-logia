@@ -165,7 +165,9 @@ export default function WorkpapersPage() {
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)]">
           <div className="min-w-0 space-y-4">
             <Panel title="Workpaper register" subtitle="Accounting working papers, their evidence and review assignments">
-              <form onSubmit={handleCreate} className="mb-3 grid gap-2 rounded-lg border border-dashed border-line bg-soft/50 p-2.5 md:grid-cols-[2fr_1fr_1.4fr_1.4fr_auto]">
+              {/* The selects keep a minimum width: "Reviewer (choose later)" showed as
+                  "Reviewer (chc" (bugs list, 10 Nov 2026). */}
+              <form onSubmit={handleCreate} className="mb-3 grid gap-2 rounded-lg border border-dashed border-line bg-soft/50 p-2.5 md:grid-cols-[2fr_1fr_minmax(9rem,1.4fr)_minmax(10rem,1.4fr)_auto]">
                 <input ref={titleInput} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="New workpaper title, e.g. Revenue recognition FY26"
                   aria-label="Workpaper title" className={inputClass} />
                 <input value={form.period} onChange={(e) => setForm({ ...form, period: e.target.value })} placeholder="Period, e.g. FY2026"
@@ -174,8 +176,9 @@ export default function WorkpapersPage() {
                   <option value="">No client job</option>
                   {engagements.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
                 </select>
-                <select value={form.reviewer_id} onChange={(e) => setForm({ ...form, reviewer_id: e.target.value })} aria-label="Reviewer" className={inputClass}>
-                  <option value="">Reviewer (choose later)</option>
+                <select value={form.reviewer_id} onChange={(e) => setForm({ ...form, reviewer_id: e.target.value })} aria-label="Reviewer" className={inputClass}
+                  title={reviewers.find((r) => r.id === form.reviewer_id)?.name ?? "Reviewer: choose later"}>
+                  <option value="">Reviewer: later</option>
                   {reviewers.map((r) => <option key={r.id} value={r.id}>{r.name} · {r.role}</option>)}
                 </select>
                 <Btn type="submit" variant="primary" disabled={!!busy || !form.title.trim()}><Plus size={13} /> {busy === "create" ? "Creating…" : "Create"}</Btn>

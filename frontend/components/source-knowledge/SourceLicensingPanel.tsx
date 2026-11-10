@@ -29,6 +29,11 @@ const STATUS_TONE: Record<string, "ok" | "warn" | "bad" | "neutral"> = {
 
 const CATEGORIES = ["standards", "tax", "audit", "payroll-compliance", "internal-policies", "education-content"];
 const JURISDICTIONS = ["Global", "UK", "US", "IFRS", "EU", "UAE", "India"];
+// What the source library ingests (backend source_library/service.py
+// _ALLOWED_EXTENSIONS). A .png was accepted by the picker and only rejected
+// after Submit as "Unsupported source file type" (bugs list, 10 Nov 2026).
+const SOURCE_FILE_TYPES = [".pdf", ".docx", ".xlsx", ".pptx", ".csv", ".txt", ".md"];
+const SOURCE_FILE_TYPES_TEXT = "PDF, Word, Excel, PowerPoint, CSV, TXT or Markdown";
 
 const LIST_ITEM =
   "rounded-xl border border-line/50 bg-soft/20 hover:bg-panel hover:shadow-md hover:border-line transition-all duration-200";
@@ -171,10 +176,25 @@ export function SourceLicensingPanel() {
                   <span className="truncate">{file ? file.name : "Attach file (optional)"}</span>
                   <input
                     type="file"
-                    onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                    accept={SOURCE_FILE_TYPES.join(",")}
+                    aria-label="Source document"
+                    onChange={(e) => {
+                      const picked = e.target.files?.[0] ?? null;
+                      const extension = picked ? picked.name.slice(picked.name.lastIndexOf(".")).toLowerCase() : "";
+                      if (picked && !SOURCE_FILE_TYPES.includes(extension)) {
+                        setFile(null);
+                        setFormError(`${picked.name} can't be used as a source: upload a ${SOURCE_FILE_TYPES_TEXT} file. `
+                          + "Images are not accepted as sources.");
+                        e.target.value = "";
+                        return;
+                      }
+                      setFormError("");
+                      setFile(picked);
+                    }}
                     className="hidden"
                   />
                 </label>
+                <p className="mt-1 text-[11px] text-muted">{SOURCE_FILE_TYPES_TEXT}, up to 25 MB.</p>
               </div>
               <div>
                 {formError && <p className="text-xs text-bad mb-2">{formError}</p>}

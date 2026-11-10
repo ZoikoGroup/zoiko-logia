@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle, BadgeCheck, Ban, Clock3, FileSearch, Layers, ListChecks, Plug, RefreshCw, Search, ShieldAlert, Waypoints,
 } from "lucide-react";
@@ -270,6 +270,15 @@ function IntegrationForm({ initial, recordId, data, people, ownerOnly = false, o
 }) {
   const [v, setV] = useState<Partial<IntegrationInput>>(initial);
   const { busy, error, run } = useMutation();
+  // The form opens at the top of the page; "+ Register connection" sits in
+  // the bottom panels, so the click looked like it did nothing (bugs list,
+  // 10 Nov 2026). Bring the form into view and start in its first field.
+  const formRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (ownerOnly) return;
+    formRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    formRef.current?.querySelector("input")?.focus({ preventScroll: true });
+  }, [ownerOnly]);
   const set = (k: keyof IntegrationInput) => (e: { target: { value: string } }) => setV({ ...v, [k]: e.target.value || null });
   const field = (label: string, node: React.ReactNode) => <label className="block text-sm"><span className="mb-1 block text-muted">{label}</span>{node}</label>;
   const owner = field("Accountable owner", <select className={inputClass} value={v.owner_user_id ?? ""} onChange={set("owner_user_id")}>
@@ -286,6 +295,7 @@ function IntegrationForm({ initial, recordId, data, people, ownerOnly = false, o
   }
   const split = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
   return (
+    <div ref={formRef} className="scroll-mt-4">
     <Panel title="Register a connection" meta="Starts pending, disabled until every release gate passes">
       <form className="grid gap-3 md:grid-cols-3" onSubmit={(e) => {
         e.preventDefault();
@@ -312,6 +322,7 @@ function IntegrationForm({ initial, recordId, data, people, ownerOnly = false, o
         </div>
       </form>
     </Panel>
+    </div>
   );
 }
 
