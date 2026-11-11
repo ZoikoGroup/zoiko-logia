@@ -57,6 +57,15 @@ def test_uppercase_jargon_is_not_a_ticker():
     print("test_uppercase_jargon_is_not_a_ticker: PASSED")
 
 
+def test_record_and_accounting_abbreviations_are_not_tickers():
+    """G04 (live run, 11 Nov 2026): "transaction ID" about an attached CSV was
+    answered with market data for the ticker ID."""
+    for query in ("Detect repeated transaction ID and give deduplicated revenue.",
+                  "Reconcile the TB to the GL", "Ageing of AR and AP", "Show COGS and EBITDA in USD"):
+        assert find_ticker(query) == "", query
+    print("test_record_and_accounting_abbreviations_are_not_tickers: PASSED")
+
+
 def test_finds_explicit_ticker_and_known_name():
     assert find_ticker("MSFT share price") == "MSFT"
     assert find_ticker("BARC.L quote") == "BARC.L"
