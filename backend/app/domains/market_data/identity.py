@@ -127,6 +127,14 @@ _TICKER_STOPWORDS = {
     "USA", "VAT", "GST", "TAX", "ROI", "ROE", "IPO", "ETF", "GAAP", "IFRS",
     "EBIT", "FY", "Q1", "Q2", "Q3", "Q4", "K", "Q", "PLC", "LTD", "INC", "LLC",
     "OHLC", "NYSE", "LSE", "API", "PDF", "CSV", "HTTP", "JSON", "AI", "ML",
+    # Record, accounting and currency abbreviations: "Detect repeated
+    # transaction ID and give deduplicated revenue" about an attached file was
+    # answered with market data for the ticker ID (live run, 11 Nov 2026).
+    "ID", "IDS", "UID", "SKU", "PO", "GRN", "TB", "GL", "AR", "AP", "PL", "BS", "CF", "COGS", "OPEX",
+    "CAPEX", "EBITDA", "EBT", "PBT", "PAT", "ROA", "ROCE", "DSO", "DIO", "DPO", "CCC", "NPV", "IRR",
+    "WACC", "KPI", "YOY", "QOQ", "YTD", "MTD", "IAS", "FRS", "ASC", "FASB", "IASB", "HMRC", "IRS",
+    "PAYE", "NIC", "TDS", "ITC", "SSN", "USD", "GBP", "EUR", "INR", "AUD", "CAD", "JPY", "CHF",
+    "XLSX", "DOCX", "QA",
 }
 
 # Names common enough to be worth resolving without a network round-trip. This
