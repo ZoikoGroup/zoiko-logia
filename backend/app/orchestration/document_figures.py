@@ -733,9 +733,15 @@ def _blank_category_lines(table: Table, rows: list[list[str]], category: list[in
                  and amount is not None and amount < len(r) and _to_decimal(r[amount]) is not None]
         if blank and len(blank) <= len(rows) / 2:
             listed = "; ".join(f"{_row_name(r, id_col)} {_fmt(float(_to_decimal(r[amount])))}" for r in blank[:MAX_FINDINGS_LISTED])
+            # QA G06: the shares by quarter add up to 91.80%, shown beside "100.00%".
+            total = sum((_to_decimal(r[amount]) or Decimal("0")) for r in rows if amount < len(r))
+            unassigned = sum(_to_decimal(r[amount]) for r in blank)
+            share = (f" Unassigned {_fmt(float(unassigned))} is {unassigned / total * 100:.2f}% of the total; the "
+                     f"{table.headers[c]} shares below add up to {100 - unassigned / total * 100:.2f}%, not 100%."
+                     if total > 0 else "")
             lines.append(f"- {len(blank)} row(s) have no {table.headers[c]} ({listed}): they are in the totals but in no "
                          f"{table.headers[c]} below. Do not assign them to a {table.headers[c]}; report the known "
-                         f"{table.headers[c]} figures and the unassigned amount separately.")
+                         f"{table.headers[c]} figures and the unassigned amount separately.{share}")
     return lines
 
 
@@ -2100,22 +2106,91 @@ def _receipt_lines(sources: list[WebSource]) -> list[str]:
     return lines
 
 
-_REVENUE_ROW = re.compile(r"^(?!.*deferred)[^\n]*\b(?:revenue|sales|turnover)\b[^\n]*$", re.I | re.M)
+# No leading \b: OCR runs a chart title together ("NorthbridgeFY2025Revenue-$11,000").
+_REVENUE_ROW = re.compile(r"^(?!.*deferred)[^\n]*(?:revenue|sales|turnover)\b[^\n]*$", re.I | re.M)
+# The chart reader's own sum of the printed values ("add up to 10,000").
+_CHART_SUM = re.compile(r"add up to (\d[\d,]*(?:\.\d+)?)", re.I)
+
+
+def _in_millions(value: Decimal) -> str:
+    return f"{_fmt(float(value))} is {_fmt(float(value * 1000))} in whole units and {value / 1000:,.1f} million"
 
 
 def _conversion_line(name: str, scale: str, sources: list[WebSource]) -> str:
-    """QA B06: 10,000 in USD thousands is 10,000,000 and 10.0 million."""
+    """QA B06: 10,000 in USD thousands is 10,000,000 and 10.0 million. QA H02:
+    a chart titled 11,000 whose bars add up to 10,000 — both totals, and the
+    gap between them, converted, so "$11 million" is not taken as unverified."""
     text = "\n".join(s.snippet or "" for s in sources if (s.title or "").split(" — ")[0].strip() == name)
     row = _REVENUE_ROW.search(text)
     numbers = [Decimal(n.replace(",", "")) for n in re.findall(r"\d[\d,]*(?:\.\d+)?", row.group(0))] if row else []
     numbers = [n for n in numbers if n >= 100 and not (1900 <= n <= 2100)]    # not a year
     example = ""
     if numbers:
-        value = numbers[-1]
-        example = (f" For example revenue {_fmt(float(value))} there is {_fmt(float(value * 1000))} in whole units "
-                   f"and {value / 1000:,.1f} million.")
+        values = [numbers[-1]]
+        chart_sum = _CHART_SUM.search(text)
+        if chart_sum and Decimal(chart_sum.group(1).replace(",", "")) != values[0]:
+            values.append(Decimal(chart_sum.group(1).replace(",", "")))
+        example = " For example revenue " + "; the printed values' total ".join(_in_millions(v) for v in values)
+        if len(values) == 2:
+            example += f"; the difference {_in_millions(abs(values[0] - values[1]))}"
+        example += "."
     return (f"Units: {name} states its amounts in {scale}. Multiply by 1,000 for whole units and divide by 1,000 for "
             f"millions; never mix the scales.{example}")
+
+
+def _chart_total_lines(sources: list[WebSource]) -> list[str]:
+    """QA H02: a chart whose title states a total its printed values do not add up to."""
+    lines = []
+    for source in sources:
+        text = source.snippet or ""
+        chart_sum, row = _CHART_SUM.search(text), _REVENUE_ROW.search(text)
+        if not chart_sum or not row:
+            continue
+        numbers = [Decimal(n.replace(",", "")) for n in re.findall(r"\d[\d,]*(?:\.\d+)?", row.group(0))]
+        numbers = [n for n in numbers if n >= 100 and not (1900 <= n <= 2100)]    # not a year
+        total = Decimal(chart_sum.group(1).replace(",", ""))
+        if numbers and numbers[-1] != total:
+            name = (source.title or "").split(" — ")[0].strip()
+            lines.append(f"- {name}: the title states {_fmt(float(numbers[-1]))}; the printed values add up to "
+                         f"{_fmt(float(total))}; they differ by {_fmt(float(abs(numbers[-1] - total)))}. "
+                         "Report the difference.")
+    return lines
+
+
+# A file's own warning about its values (QA G03: "Release state  INTENTIONALLY
+# STALE  DO NOT USE"), which the answer left out. Not bare "stale", "obsolete"
+# or "withdrawn": stale cheques, obsolete inventory and cash withdrawn are entries.
+_STATUS_MARKER = re.compile(r"\b(?:intentionally stale|do not use|superseded)\b", re.I)
+
+
+def _status_marker_lines(sources: list[WebSource]) -> list[str]:
+    lines = []
+    for source in sources:
+        name = (source.title or "").split(" — ")[0].strip()
+        for row in (source.snippet or "").splitlines():
+            if _STATUS_MARKER.search(row) and len(row) <= 200:
+                shown = re.sub(r"\s*\t\s*|\s{2,}", ", ", row.strip()).strip(", ")
+                lines.append(f"- {name} marks its own values: \"{shown}\". State this marking in the answer and do "
+                             "not present the marked values as current or final.")
+                break
+    return lines
+
+
+_CHART_QUESTION = re.compile(r"\b(?:chart|graph|plot)s?\b", re.I)
+
+
+def _unread_chart_lines(sources: list[WebSource], query: str | None) -> list[str]:
+    """QA F04: "Describe the embedded quarterly revenue chart" about a PDF whose
+    graph is a drawing, not text — answered "I'm unable to generate a chart"."""
+    if not query or not _CHART_QUESTION.search(query) or any("[Chart read by position" in (s.snippet or "")
+                                                             for s in sources):
+        return []
+    pages = [s.title for s in sources if _CHART_QUESTION.search(s.snippet or "")]
+    if not pages:
+        return []
+    return [f"- Chart: {pages[0]} names a chart or graph, but its picture was not read (only the document's text "
+            "was). Say so plainly; confirm the chart's values only from figures the text states (for example a "
+            "note listing them) and name where they are stated; do not describe colours, shapes or trends as seen."]
 
 
 def _unit_scale_lines(sources: list[WebSource]) -> list[str]:
@@ -2143,7 +2218,9 @@ def verified_document_figures(sources: list[WebSource], query: str | None = None
     include_top_n = query is None or bool(_RANKING_QUESTION.search(query))
     by_month = query is None or bool(_MONTHLY_QUESTION.search(query))
     tables = tables_from_sources(sources)
-    lines: list[str] = (_unit_scale_lines(sources) + _receipt_lines(sources) + _stated_figure_lines(sources)
+    lines: list[str] = (_unit_scale_lines(sources) + _chart_total_lines(sources) + _status_marker_lines(sources)
+                        + _unread_chart_lines(sources, query) + _receipt_lines(sources)
+                        + _stated_figure_lines(sources)
                         + _bank_reconciliation_lines(tables))
     if query is None or _FORMULA_QUESTION.search(query):
         lines += _formula_check_lines(sources)

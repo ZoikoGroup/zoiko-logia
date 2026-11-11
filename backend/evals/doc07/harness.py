@@ -82,6 +82,7 @@ BLOCKED = {
     "E06": ("runtime", "the unlabelled process sketch (NB-FLOW.png) is not in the fixture pack"),
     "L03": ("design", "Kriton answers in English only by design (language_support.py); not a defect"),
 }
+REVENUE_THOUSANDS_OR_DOLLARS = ("10,000", "10,000,000", "10.0 million", "10 million")
 # The result figures a passing answer must state (Document 01 PASS column).
 # A tuple is a set of alternatives. Inputs, years and refusals are left out.
 ORACLES: dict[str, list] = {
@@ -94,8 +95,11 @@ ORACLES: dict[str, list] = {
     "C05": ["2.2", "1.7", "1.58", "1.185"], "D01": ["2,100", "2,300", "2,500", "3,100"],
     "D02": ["3,100", ("24.00%", "24.0%", "24%")], "D03": ["10,000", "6,200", "2,100", "400", "300", "900"],
     "D04": ["10,000", "6,200", "3,800"], "D05": ["21%", "23%", "25%", "31%"], "F01": ["900"],
-    "F02": ["10,000", "3,800"], "F03": ["10,000", "10,500"], "F05": ["1,200"], "G01": ["10,000"],
-    "G02": ["10,000"], "G04": ["10,000"], "G05": ["10,000,000"], "H01": ["2,100", "2,300", "2,500", "3,100"],
+    "F02": ["10,000", "3,800"], "F03": ["10,000", "10,500"], "F05": ["1,200"],
+    # Document 01 states revenue in USD thousands; G01, G02 and G04's files
+    # hold whole dollars, so 10,000,000 (or "10 million") is the same figure.
+    "G01": [REVENUE_THOUSANDS_OR_DOLLARS], "G02": [REVENUE_THOUSANDS_OR_DOLLARS],
+    "G04": [REVENUE_THOUSANDS_OR_DOLLARS], "G05": ["10,000,000"], "H01": ["2,100", "2,300", "2,500", "3,100"],
     "H02": ["10,000", "11,000", "1,000"], "H04": ["88"], "J01": ["900"], "J02": ["500"], "J04": ["100"],
     "L02": [("37.50%", "37.5%")],
 }

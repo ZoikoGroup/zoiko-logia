@@ -685,6 +685,8 @@ def test_g06_a_row_with_no_quarter_is_named_not_assigned():
     rows = [r.replace("\tQ3\t", "\t\t") for r in _SALES]
     figures = verified_document_figures([_src("\n".join(rows), "blank.csv — Sheet1")])
     assert "1 row(s) have no quarter (NB-3 800,000)" in figures and "Do not assign them to a quarter" in figures
+    # Live run (11 Nov 2026): the quarters' shares, 91.80%, were shown beside a 100.00% total.
+    assert "Unassigned 800,000 is 25.64% of the total; the quarter shares below add up to 74.36%, not 100%." in figures
     assert "Total amount_usd = 3,120,000" in figures and "Q3 =" not in figures
 
 
