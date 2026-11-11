@@ -1,0 +1,47 @@
+# Production override for the live deployment, on top of docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml build
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Building BEFORE `up` keeps the running containers serving while the new
+# images build; `up -d` then replaces each container only once its image is
+# ready. Stopping first and building after left the site down for the whole
+# build, which Cloudflare shows as "502 Bad gateway" (bugs list, bug 7).
+#
+# Required in the environment (or an .env file beside this one) when building:
+#   NEXT_PUBLIC_API_URL            e.g. https://app.zoikologia.com/api/v1
+#   NEXT_PUBLIC_SUPABASE_URL       the Supabase project URL
+#   NEXT_PUBLIC_SUPABASE_ANON_KEY  the public anon key (never the service key)
+#   PUBLIC_APP_ORIGIN              e.g. https://app.zoikologia.com (CORS)
+services:
+  postgres:
+    restart: unless-stopped
+
+  backend:
+    environment:
+      # The live site's origin, not only the local ports of docker-compose.yml.
+      CORS_ORIGINS: '["${PUBLIC_APP_ORIGIN:?set PUBLIC_APP_ORIGIN, e.g. https://app.zoikologia.com}"]'
+      FRONTEND_URL: ${PUBLIC_APP_ORIGIN:?set PUBLIC_APP_ORIGIN}
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?set NEXT_PUBLIC_API_URL}
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:?set NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:?set NEXT_PUBLIC_SUPABASE_ANON_KEY}
+    environment:
+      NODE_ENV: production
+      # Built into the bundle above; repeated so the container shows the same value.
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?set NEXT_PUBLIC_API_URL}
+    ports: !override
+      - "3000:3000"
+    # A frontend that stops answering is restarted (restart: unless-stopped in
+    # docker-compose.yml) and shown as unhealthy in `docker ps`.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 40s

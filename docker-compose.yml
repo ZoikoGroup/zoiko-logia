@@ -31,6 +31,9 @@ services:
 
   backend:
     build: ./backend
+    # A crashed backend came back only by hand; Cloudflare served 502 until
+    # then (bugs list, 10 Nov 2026). The same for the frontend and workers.
+    restart: unless-stopped
     # backend/.env supplies every provider credential (Supabase, Groq, Gemini,
     # Companies House, Finnhub, Polygon, Alpha Vantage, SEC_USER_AGENT). Without
     # this the container started with the empty defaults below and every
@@ -154,6 +157,7 @@ services:
 
   document-worker:
     build: ./backend
+    restart: unless-stopped
     env_file:
       - path: ./backend/.env
         required: false
@@ -170,6 +174,7 @@ services:
 
   retention-scheduler:
     build: ./backend
+    restart: unless-stopped
     env_file:
       - path: ./backend/.env
         required: false
@@ -186,6 +191,7 @@ services:
 
   frontend:
     build: ./frontend
+    restart: unless-stopped
     # Supabase URL + anon key, read by lib/supabase.ts. Requires
     # frontend/.env. Works at runtime because the image runs
     # `npm run dev`; a production `next build` would need these as build args.
