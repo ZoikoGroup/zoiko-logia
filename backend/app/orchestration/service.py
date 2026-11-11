@@ -3303,6 +3303,7 @@ async def ask_kriton(
     # and names (illustrative_diagram.document_query), never from general
     # practice; when the file describes none, the answer says so.
     document_diagram: bool | None = None
+    illustration_not_from_file = False
     if document_sources and not illustrative_diagram and needs_illustration(request.query):
         from app.orchestration.illustrative_diagram import document_query
         drawn = await document_query(
@@ -3311,6 +3312,18 @@ async def ask_kriton(
         document_diagram = bool(drawn)
         if drawn:
             request = request.model_copy(update={"query": drawn})
+        else:
+            # A file of records, not steps (QA E01/E04, live run 11 Nov 2026:
+            # NB-3WAY.csv's three documents): nothing was drawn and the model
+            # made a Sankey of invented flows instead. The standard process is
+            # drawn, labelled as general practice and not taken from the file.
+            illustrated = await illustrated_query(
+                request.query, model_gateway_service.run_grounded_completion, _MODEL_PROVIDER_FAILURE)
+            if illustrated:
+                request = request.model_copy(update={"query": illustrated})
+                illustrative_diagram = True
+                document_diagram = None
+                illustration_not_from_file = True
     await audit_document_retrieval(
         db,
         query_id=query_id,
@@ -3868,7 +3881,10 @@ async def ask_kriton(
     # authoritative over a figure lifted from a spreadsheet. Extraction fails
     # closed — an unreadable or ambiguous table returns empty evidence, which
     # lands on exactly the honest message shown today.
-    if not live_evidence.observations and document_sources:
+    # Not when the request is a process diagram that was drawn (QA E01/E04,
+    # live run 11 Nov 2026): NB-3WAY.csv's quantities were narrated as "3
+    # figures … come to 29" in place of the flow.
+    if not live_evidence.observations and document_sources and not (illustrative_diagram or document_diagram):
         document_evidence = build_document_evidence(request.query, document_sources)
         if document_evidence.observations:
             live_evidence = document_evidence
@@ -4423,6 +4439,11 @@ async def ask_kriton(
     # misapplied the method even with the note (diluted_eps.py).
     from app.orchestration.diluted_eps import verified_eps_block
     grounded_input += verified_eps_block(request.query)
+    # A profit bridge of amounts the question states (QA C05), also evidence
+    # for the figure check below, which does not derive six steps itself.
+    from app.orchestration.stated_profit_bridge import verified_profit_bridge_block
+    stated_bridge_block = verified_profit_bridge_block(request.query)
+    grounded_input += stated_bridge_block
 
     if context_sections:
         from app.domains.model_gateway.agent_budget import request_prompt_estimate
@@ -5484,7 +5505,7 @@ async def ask_kriton(
         # With the earlier user messages the prompt carried (stated_history).
         figure_evidence = "\n".join([figure_evidence_text(request, web_sources, governed_passages, document_sources,
                                                          calculation_result, remembered_calculation), *release_evidence,
-                                     document_figures_block, *stated_history])
+                                     document_figures_block, stated_bridge_block, *stated_history])
         unsupported_figures = unreconciled_figures(
             composed_text,
             figure_evidence + _agent_figure_evidence(agent_outcome, len(rag_citations)) + calculator_results,
@@ -5609,7 +5630,13 @@ async def ask_kriton(
         composed_text = concept_review.text
         shadow_facts.update(concept_corrections=concept_review.corrections, concept_removals=concept_review.removed)
     notice = write_request_notice(request.query)
-    if (execution_plan.write_request and final_text_needs_notice(composed_text, notice)):
+    if execution_plan.write_request and (_MODEL_DOMAIN_REFUSAL in (composed_text or "") or (
+            len((composed_text or "").strip()) < 160 and _GENERIC_REFUSAL.search(composed_text or ""))):
+        # The model declined the whole request as off-topic (QA J03); the
+        # notice says why Kriton does not act, and what it can do instead.
+        from app.orchestration.agent_plan import write_request_offer
+        composed_text = notice + "\n\n" + write_request_offer(notice)
+    elif (execution_plan.write_request and final_text_needs_notice(composed_text, notice)):
         # §10.5: explain the steps, never act; say so first.
         composed_text = notice + "\n\n" + composed_text
     if agent_outcome is not None and "```chart" in (composed_text or ""):
@@ -6092,6 +6119,9 @@ async def ask_kriton(
         from app.orchestration.illustrative_diagram import illustration_wording
         final_text = illustration_wording(final_text)
         limitations.insert(0, ILLUSTRATION_NOTE)
+        if illustration_not_from_file:
+            from app.orchestration.illustrative_diagram import NOT_FROM_FILE_NOTE
+            limitations.insert(0, NOT_FROM_FILE_NOTE)
     if document_diagram is not None:
         from app.orchestration.illustrative_diagram import DOCUMENT_NOTE, NOT_IN_DOCUMENT_NOTE
         limitations.insert(0, DOCUMENT_NOTE if document_diagram else NOT_IN_DOCUMENT_NOTE)

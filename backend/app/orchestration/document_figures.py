@@ -1307,8 +1307,42 @@ def _ratio_lines(table: Table, first: int, second: int, net_income: Decimal | No
             parts.append(f"return on average assets = net income {_fmt(float(net_income))} ÷ average total assets "
                          f"{_fmt(float(average))} (({_fmt(float(assets[0]))} + {_fmt(float(assets[1]))}) ÷ 2) = "
                          f"{_pct(net_income, average)}")
-    return [f"- Ratios, {table.headers[second]} ({COMPUTED}; every amount from that column except the opening total "
-            f"assets in the average; copy the workings, do not recompute): " + "; ".join(parts)] if parts else []
+    parts += _working_capital_days(table, first, second)
+    return [f"- Ratios, {table.headers[second]} ({COMPUTED}; every amount from that column except the opening "
+            f"balances in the averages; copy the workings, do not recompute): " + "; ".join(parts)] if parts else []
+
+
+def _working_capital_days(table: Table, first: int, second: int) -> list[str]:
+    """QA C03: DSO 40.15, DIO 55.93, DPO 50.04, CCC 46.04 days — average
+    balances over the year's revenue and cost of goods sold, 365 days. The
+    answer divided by average revenue and COGS (44.61 / 61.92 / 55.40 days)."""
+    revenue = _line_value(table, r"^\s*(?:revenue|sales|turnover)\s*$", second)
+    cost = _line_value(table, r"cost\s+of\s+(?:goods\s+sold|sales)", second)
+
+    def average(pattern: str) -> tuple[str, Decimal, Decimal, Decimal] | None:
+        for row in table.rows:
+            if row and re.search(pattern, row[0], re.I) and second < len(row):
+                a, b = _to_decimal(row[first]), _to_decimal(row[second])
+                if a is not None and b is not None:
+                    return row[0].strip(), a, b, (a + b) / 2
+        return None
+
+    receivable = average(r"(?:accounts|trade)\s+receivable|^\s*receivables?\s*$")
+    inventory = average(r"^\s*inventor(?:y|ies)\s*$")
+    payable = average(r"(?:accounts|trade)\s+payable|^\s*payables?\s*$")
+    days: dict[str, Decimal] = {}
+    parts = []
+    for key, balance, base in (("DSO", receivable, revenue), ("DIO", inventory, cost), ("DPO", payable, cost)):
+        if balance and base and base[1]:
+            days[key] = balance[3] / base[1] * 365
+            parts.append(f"{key} = average {balance[0].lower()} {_fmt(float(balance[3]))} (({_fmt(float(balance[1]))} + "
+                         f"{_fmt(float(balance[2]))}) ÷ 2) ÷ {base[0].lower()} {_fmt(float(base[1]))} × 365 = "
+                         f"{days[key]:.2f} days")
+    if len(days) == 3:
+        ccc = days["DSO"] + days["DIO"] - days["DPO"]
+        parts.append(f"CCC = DSO {days['DSO']:.2f} + DIO {days['DIO']:.2f} − DPO {days['DPO']:.2f} = {ccc:.2f} days "
+                     f"(the year's revenue and cost of goods sold are the denominators, not their averages)")
+    return parts
 
 
 # The balance sheet within such a statement, totalled per period: "Confirm

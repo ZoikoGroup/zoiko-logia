@@ -196,6 +196,26 @@ def write_request_notice(question: str) -> str:
     return POSTING_REQUEST_NOTICE if _POSTING_REQUEST.search(question or "") else WRITE_REQUEST_NOTICE
 
 
+# What follows the notice when the model declined the whole request: posting
+# an entry or raising an invoice is accounting work, and the model's reply
+# "I'm designed to answer questions related to Accounting… Please ask a
+# question related to these topics" read as off-topic (QA J03, live run
+# 11 Nov 2026).
+WRITE_REQUEST_OFFER = {
+    POSTING_REQUEST_NOTICE: ("I can draft the proposed entry for that review: tell me what the adjustment is for, the "
+                             "accounts to debit and credit, the amount and the period, and I'll set out a balanced "
+                             "entry with its reason for an authorised person to approve and post."),
+    INVOICE_REQUEST_NOTICE: ("I can set out the invoice details for approval once the authoritative price is "
+                             "confirmed."),
+    WRITE_REQUEST_NOTICE: ("Tell me what you need to file, submit or pay and where, and I'll set out the steps and "
+                           "what to check before you do it."),
+}
+
+
+def write_request_offer(notice: str) -> str:
+    return next((offer for start, offer in WRITE_REQUEST_OFFER.items() if notice.startswith(start)), "")
+
+
 def is_posting_request(question: str) -> bool:
     return is_write_request(question) and bool(_POSTING_REQUEST.search(question or ""))
 
