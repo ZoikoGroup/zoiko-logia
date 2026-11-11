@@ -198,6 +198,27 @@ async def test_a_file_diagram_is_drawn_and_labelled_and_a_file_without_steps_say
     assert response.visualization is None and NOT_IN_DOCUMENT_NOTE in response.answer.limitations
 
 
+async def test_e01_e04_a_file_of_records_gets_the_standard_flow_labelled_not_from_the_file(pipeline, monkeypatch):
+    # Live run (11 Nov 2026): NB-3WAY.csv holds a PO, a receipt and an invoice,
+    # not the steps; nothing was drawn and the model made a Sankey of invented flows.
+    from app.orchestration.illustrative_diagram import NOT_FROM_FILE_NOTE, NOT_IN_DOCUMENT_NOTE
+    from app.orchestration.websearch import WebSource
+
+    records = ("record_type\treference\tquantity\tstate\nPURCHASE_ORDER\tPO-NB-001\t10\tAPPROVED_PO\n"
+               "GOODS_RECEIPT\tGR-NB-001\t9\tRECEIVED_9\nSUPPLIER_INVOICE\tINV-NB-001\t10\tUNAPPROVED_EXCEPTION")
+    monkeypatch.setattr(service, "resolve_conversation_document_ids", AsyncMock(return_value=["doc-1"]))
+    monkeypatch.setattr(service, "retrieve_document_sources", AsyncMock(return_value=[
+        WebSource(title="NB-3WAY.csv — rows", url="", snippet=records, source_id="doc-1")]))
+    # The file prompt finds nothing in the file; the standard prompt gives the steps.
+    monkeypatch.setattr(service.model_gateway_service, "run_grounded_completion", AsyncMock(
+        side_effect=lambda prompt, *a, **k: "NONE" if "Using ONLY the document" in prompt else BRANCHED))
+    response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                                        request=AskKritonRequest(query=E01, document_ids=["doc-1"]))
+    assert response.visualization is not None
+    assert response.answer.limitations[:2] == [NOT_FROM_FILE_NOTE, NOTE]
+    assert NOT_IN_DOCUMENT_NOTE not in response.answer.limitations
+
+
 async def test_a_follow_up_unrelated_to_the_chat_file_is_not_answered_from_it(pipeline, monkeypatch):
     from app.orchestration.websearch import WebSource
 

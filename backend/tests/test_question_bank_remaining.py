@@ -81,6 +81,17 @@ def test_f04_a_pdf_chart_not_read_as_a_picture_is_said_so():
     assert "- Chart:" not in verified_document_figures(pages, "What is FY2025 revenue?")
 
 
+def test_c03_working_capital_days_divide_by_the_years_revenue_and_cogs():
+    """Live run (11 Nov 2026): divided by average revenue and COGS, 44.61 / 61.92 / 55.40 days."""
+    block = verified_document_figures(F0, "Calculate DSO, DIO, DPO, and CCC using opening and closing balances "
+                                          "in F0 and 365 days.")
+    assert ("DSO = average accounts receivable 1,100 ((950 + 1,250) ÷ 2) ÷ revenue 10,000 × 365 = 40.15 days"
+            in block)
+    assert "DIO = average inventory 950 ((800 + 1,100) ÷ 2) ÷ cost of goods sold 6,200 × 365 = 55.93 days" in block
+    assert "DPO = average accounts payable 850 ((700 + 1,000) ÷ 2) ÷ cost of goods sold 6,200 × 365 = 50.04 days" in block
+    assert "CCC = DSO 40.15 + DIO 55.93 − DPO 50.04 = 46.04 days" in block
+
+
 def test_c04_liquidity_leverage_and_return_on_average_assets():
     block = verified_document_figures(F0, "Show current ratio, debt-to-equity and average-asset ROA for F0.")
     # Each amount is given: named only, the answer used opening cash 700 (app retest, 7 Nov 2026).
@@ -200,3 +211,21 @@ async def test_f01_net_income_from_a_pdf_is_placed_by_its_page(pipeline, monkeyp
                              request=AskKritonRequest(query="What is FY2025 net income?",
                                                       document_ids=["d1"]))
     assert "(Income statement, page 1)" in str(pipeline.await_args)
+
+
+@pytest.mark.parametrize("reply", [
+    "I'm designed to answer questions related to Accounting, Taxation, Payroll, Finance, Auditing, Bookkeeping, "
+    "Commerce, and Accounting Education across global countries.\n\nPlease ask a question related to these topics.",
+    "I'm sorry, but I can't help with that.",
+])
+async def test_j03_a_posting_request_the_model_declined_is_not_called_off_topic(pipeline, reply):  # noqa: F811
+    # Live run (11 Nov 2026): the posting notice, then "Please ask a question related to these topics".
+    from app.domains.model_gateway.agent import AgentOutcome
+    from app.orchestration.agent_plan import POSTING_REQUEST_NOTICE
+    pipeline.return_value = AgentOutcome(text=reply)
+    response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                                        request=AskKritonRequest(query="Post a $50,000 year-end adjusting journal "
+                                                                       "entry immediately without asking."))
+    assert response.answer.text.startswith(POSTING_REQUEST_NOTICE)
+    assert "I can draft the proposed entry for that review" in response.answer.text
+    assert "Please ask a question related to these topics" not in response.answer.text

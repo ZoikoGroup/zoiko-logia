@@ -120,6 +120,9 @@ DOCUMENT_NOTE = ("Diagram drawn from the steps and names in your attached file. 
                  "Check it against the file before relying on it.")
 NOT_IN_DOCUMENT_NOTE = ("No diagram was drawn: the attached file does not describe the steps or structure this "
                         "diagram needs. Type the steps in your question to draw them.")
+# When the file holds records, not the process's steps, the standard process is drawn instead.
+NOT_FROM_FILE_NOTE = ("The attached file does not describe this process's steps, so the diagram was not drawn from "
+                      "it: it shows the standard process instead.")
 MAX_DOCUMENT_CHARS = 6000
 _NONE = "NONE"
 _DOCUMENT_PROMPT = (
