@@ -60,6 +60,27 @@ def test_h02_chart_title_and_printed_total_are_both_converted():
     assert "Report the difference" not in verified_document_figures([agreeing], "Check this chart")
 
 
+def test_g03_the_files_own_stale_marking_is_passed_on():
+    sheet = WebSource(title="M04.xlsx — 'Stale Legacy Summary'!1:3", url="", source_id="d1", snippet=(
+        "Metric\tLegacy displayed\tRecalculated\tDifference\nQ4 FY2025 (USD 000s)\t3200\t3100\t=B2-C2 => 100\n"
+        "Release state\tINTENTIONALLY STALE\tDO NOT USE\tFAIL EXPECTED"))
+    block = verified_document_figures([sheet], "Show whether summary-sheet formulas and displayed values agree.")
+    assert ('M04.xlsx marks its own values: "Release state, INTENTIONALLY STALE, DO NOT USE, FAIL EXPECTED"'
+            in block)
+    bank = WebSource(title="bank.csv — rows", url="", source_id="d2",
+                     snippet="Item\tAmount\nStale cheques written back\t300\nObsolete inventory provision\t200")
+    assert "marks its own values" not in verified_document_figures([bank], "Reconcile the bank")
+
+
+def test_f04_a_pdf_chart_not_read_as_a_picture_is_said_so():
+    pages = [WebSource(title="NB.pdf — Page 1", url="", source_id="d1", snippet="INCOME STATEMENT\nRevenue\n10,000"),
+             WebSource(title="NB.pdf — Page 3", url="", source_id="d1",
+                       snippet="NOTES & GRAPH\nQuarterly revenue comparison\nNote 2. Q1 revenue\n2,100")]
+    asked = verified_document_figures(pages, "Describe the embedded quarterly revenue chart and confirm its values.")
+    assert "- Chart: NB.pdf — Page 3 names a chart or graph, but its picture was not read" in asked
+    assert "- Chart:" not in verified_document_figures(pages, "What is FY2025 revenue?")
+
+
 def test_c04_liquidity_leverage_and_return_on_average_assets():
     block = verified_document_figures(F0, "Show current ratio, debt-to-equity and average-asset ROA for F0.")
     # Each amount is given: named only, the answer used opening cash 700 (app retest, 7 Nov 2026).

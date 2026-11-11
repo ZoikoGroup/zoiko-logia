@@ -733,9 +733,15 @@ def _blank_category_lines(table: Table, rows: list[list[str]], category: list[in
                  and amount is not None and amount < len(r) and _to_decimal(r[amount]) is not None]
         if blank and len(blank) <= len(rows) / 2:
             listed = "; ".join(f"{_row_name(r, id_col)} {_fmt(float(_to_decimal(r[amount])))}" for r in blank[:MAX_FINDINGS_LISTED])
+            # QA G06: the shares by quarter add up to 91.80%, shown beside "100.00%".
+            total = sum((_to_decimal(r[amount]) or Decimal("0")) for r in rows if amount < len(r))
+            unassigned = sum(_to_decimal(r[amount]) for r in blank)
+            share = (f" Unassigned {_fmt(float(unassigned))} is {unassigned / total * 100:.2f}% of the total; the "
+                     f"{table.headers[c]} shares below add up to {100 - unassigned / total * 100:.2f}%, not 100%."
+                     if total > 0 else "")
             lines.append(f"- {len(blank)} row(s) have no {table.headers[c]} ({listed}): they are in the totals but in no "
                          f"{table.headers[c]} below. Do not assign them to a {table.headers[c]}; report the known "
-                         f"{table.headers[c]} figures and the unassigned amount separately.")
+                         f"{table.headers[c]} figures and the unassigned amount separately.{share}")
     return lines
 
 
@@ -2151,6 +2157,42 @@ def _chart_total_lines(sources: list[WebSource]) -> list[str]:
     return lines
 
 
+# A file's own warning about its values (QA G03: "Release state  INTENTIONALLY
+# STALE  DO NOT USE"), which the answer left out. Not bare "stale", "obsolete"
+# or "withdrawn": stale cheques, obsolete inventory and cash withdrawn are entries.
+_STATUS_MARKER = re.compile(r"\b(?:intentionally stale|do not use|superseded)\b", re.I)
+
+
+def _status_marker_lines(sources: list[WebSource]) -> list[str]:
+    lines = []
+    for source in sources:
+        name = (source.title or "").split(" — ")[0].strip()
+        for row in (source.snippet or "").splitlines():
+            if _STATUS_MARKER.search(row) and len(row) <= 200:
+                shown = re.sub(r"\s*\t\s*|\s{2,}", ", ", row.strip()).strip(", ")
+                lines.append(f"- {name} marks its own values: \"{shown}\". State this marking in the answer and do "
+                             "not present the marked values as current or final.")
+                break
+    return lines
+
+
+_CHART_QUESTION = re.compile(r"\b(?:chart|graph|plot)s?\b", re.I)
+
+
+def _unread_chart_lines(sources: list[WebSource], query: str | None) -> list[str]:
+    """QA F04: "Describe the embedded quarterly revenue chart" about a PDF whose
+    graph is a drawing, not text — answered "I'm unable to generate a chart"."""
+    if not query or not _CHART_QUESTION.search(query) or any("[Chart read by position" in (s.snippet or "")
+                                                             for s in sources):
+        return []
+    pages = [s.title for s in sources if _CHART_QUESTION.search(s.snippet or "")]
+    if not pages:
+        return []
+    return [f"- Chart: {pages[0]} names a chart or graph, but its picture was not read (only the document's text "
+            "was). Say so plainly; confirm the chart's values only from figures the text states (for example a "
+            "note listing them) and name where they are stated; do not describe colours, shapes or trends as seen."]
+
+
 def _unit_scale_lines(sources: list[WebSource]) -> list[str]:
     """One line when the files state different scales, saying how to convert."""
     scales: dict[str, str] = {}
@@ -2176,7 +2218,8 @@ def verified_document_figures(sources: list[WebSource], query: str | None = None
     include_top_n = query is None or bool(_RANKING_QUESTION.search(query))
     by_month = query is None or bool(_MONTHLY_QUESTION.search(query))
     tables = tables_from_sources(sources)
-    lines: list[str] = (_unit_scale_lines(sources) + _chart_total_lines(sources) + _receipt_lines(sources)
+    lines: list[str] = (_unit_scale_lines(sources) + _chart_total_lines(sources) + _status_marker_lines(sources)
+                        + _unread_chart_lines(sources, query) + _receipt_lines(sources)
                         + _stated_figure_lines(sources)
                         + _bank_reconciliation_lines(tables))
     if query is None or _FORMULA_QUESTION.search(query):
