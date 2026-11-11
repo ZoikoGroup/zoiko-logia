@@ -39,7 +39,25 @@ def test_b01_b02_gross_profit_and_the_ebitda_bridge_are_computed():
 
 def test_b06_thousands_convert_to_whole_dollars_and_millions():
     block = verified_document_figures(F0, "Convert F0 FY2025 revenue from USD thousands to whole USD and millions.")
-    assert "revenue 10,000 there is 10,000,000 in whole units and 10.0 million" in block
+    assert "revenue 10,000 is 10,000,000 in whole units and 10.0 million" in block
+
+
+def test_h02_chart_title_and_printed_total_are_both_converted():
+    """Live run (11 Nov 2026): "$11 million" and "$10 million" for a chart in
+    USD thousands were removed as unverified figures."""
+    chart = WebSource(title="H02_chart_total_11000.jpeg — image", url="", source_id="d1", snippet=(
+        "[Chart read by position: the value printed above each category label is Q1 2,100; Q2 2,300; Q3 2,500; "
+        "Q4 3,100; the printed values add up to 10,000 (worked out from the values; the chart prints no total).]\n"
+        "NorthbridgeFY2025Revenue-$11,000 (USD 000s)"))
+    block = verified_document_figures([chart], "What is inconsistent in this document?")
+    assert ("revenue 11,000 is 11,000,000 in whole units and 11.0 million; the printed values' total 10,000 is "
+            "10,000,000 in whole units and 10.0 million; the difference 1,000 is 1,000,000 in whole units and "
+            "1.0 million.") in block
+    assert ("H02_chart_total_11000.jpeg: the title states 11,000; the printed values add up to 10,000; they "
+            "differ by 1,000. Report the difference.") in block
+    agreeing = WebSource(title="c.png — image", url="", source_id="d2",
+                         snippet="the printed values add up to 10,000\nFY2025 Revenue $10,000")
+    assert "Report the difference" not in verified_document_figures([agreeing], "Check this chart")
 
 
 def test_c04_liquidity_leverage_and_return_on_average_assets():

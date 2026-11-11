@@ -2100,22 +2100,55 @@ def _receipt_lines(sources: list[WebSource]) -> list[str]:
     return lines
 
 
-_REVENUE_ROW = re.compile(r"^(?!.*deferred)[^\n]*\b(?:revenue|sales|turnover)\b[^\n]*$", re.I | re.M)
+# No leading \b: OCR runs a chart title together ("NorthbridgeFY2025Revenue-$11,000").
+_REVENUE_ROW = re.compile(r"^(?!.*deferred)[^\n]*(?:revenue|sales|turnover)\b[^\n]*$", re.I | re.M)
+# The chart reader's own sum of the printed values ("add up to 10,000").
+_CHART_SUM = re.compile(r"add up to (\d[\d,]*(?:\.\d+)?)", re.I)
+
+
+def _in_millions(value: Decimal) -> str:
+    return f"{_fmt(float(value))} is {_fmt(float(value * 1000))} in whole units and {value / 1000:,.1f} million"
 
 
 def _conversion_line(name: str, scale: str, sources: list[WebSource]) -> str:
-    """QA B06: 10,000 in USD thousands is 10,000,000 and 10.0 million."""
+    """QA B06: 10,000 in USD thousands is 10,000,000 and 10.0 million. QA H02:
+    a chart titled 11,000 whose bars add up to 10,000 — both totals, and the
+    gap between them, converted, so "$11 million" is not taken as unverified."""
     text = "\n".join(s.snippet or "" for s in sources if (s.title or "").split(" — ")[0].strip() == name)
     row = _REVENUE_ROW.search(text)
     numbers = [Decimal(n.replace(",", "")) for n in re.findall(r"\d[\d,]*(?:\.\d+)?", row.group(0))] if row else []
     numbers = [n for n in numbers if n >= 100 and not (1900 <= n <= 2100)]    # not a year
     example = ""
     if numbers:
-        value = numbers[-1]
-        example = (f" For example revenue {_fmt(float(value))} there is {_fmt(float(value * 1000))} in whole units "
-                   f"and {value / 1000:,.1f} million.")
+        values = [numbers[-1]]
+        chart_sum = _CHART_SUM.search(text)
+        if chart_sum and Decimal(chart_sum.group(1).replace(",", "")) != values[0]:
+            values.append(Decimal(chart_sum.group(1).replace(",", "")))
+        example = " For example revenue " + "; the printed values' total ".join(_in_millions(v) for v in values)
+        if len(values) == 2:
+            example += f"; the difference {_in_millions(abs(values[0] - values[1]))}"
+        example += "."
     return (f"Units: {name} states its amounts in {scale}. Multiply by 1,000 for whole units and divide by 1,000 for "
             f"millions; never mix the scales.{example}")
+
+
+def _chart_total_lines(sources: list[WebSource]) -> list[str]:
+    """QA H02: a chart whose title states a total its printed values do not add up to."""
+    lines = []
+    for source in sources:
+        text = source.snippet or ""
+        chart_sum, row = _CHART_SUM.search(text), _REVENUE_ROW.search(text)
+        if not chart_sum or not row:
+            continue
+        numbers = [Decimal(n.replace(",", "")) for n in re.findall(r"\d[\d,]*(?:\.\d+)?", row.group(0))]
+        numbers = [n for n in numbers if n >= 100 and not (1900 <= n <= 2100)]    # not a year
+        total = Decimal(chart_sum.group(1).replace(",", ""))
+        if numbers and numbers[-1] != total:
+            name = (source.title or "").split(" — ")[0].strip()
+            lines.append(f"- {name}: the title states {_fmt(float(numbers[-1]))}; the printed values add up to "
+                         f"{_fmt(float(total))}; they differ by {_fmt(float(abs(numbers[-1] - total)))}. "
+                         "Report the difference.")
+    return lines
 
 
 def _unit_scale_lines(sources: list[WebSource]) -> list[str]:
@@ -2143,7 +2176,8 @@ def verified_document_figures(sources: list[WebSource], query: str | None = None
     include_top_n = query is None or bool(_RANKING_QUESTION.search(query))
     by_month = query is None or bool(_MONTHLY_QUESTION.search(query))
     tables = tables_from_sources(sources)
-    lines: list[str] = (_unit_scale_lines(sources) + _receipt_lines(sources) + _stated_figure_lines(sources)
+    lines: list[str] = (_unit_scale_lines(sources) + _chart_total_lines(sources) + _receipt_lines(sources)
+                        + _stated_figure_lines(sources)
                         + _bank_reconciliation_lines(tables))
     if query is None or _FORMULA_QUESTION.search(query):
         lines += _formula_check_lines(sources)
