@@ -117,18 +117,6 @@ function timestamp(): number {
   return Date.now();
 }
 
-function ZoikoGlyph({ className = "h-9 w-9" }: { className?: string }) {
-  return (
-    <div className={`${className} relative shrink-0 overflow-hidden rounded-xl bg-[#16799A] shadow-[0_18px_44px_rgba(0,0,0,0.28)]`}>
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_24%_18%,rgba(255,255,255,0.32),transparent_34%)]" />
-      <div className="absolute left-[25%] top-[26%] h-[48%] w-[50%] rounded-sm border-[3px] border-white" />
-      <div className="absolute bottom-[31%] left-[36%] h-[26%] w-[8%] bg-[#F3C437]" />
-      <div className="absolute bottom-[31%] left-[48%] h-[26%] w-[8%] bg-[#F3C437]" />
-      <div className="absolute bottom-[31%] left-[60%] h-[26%] w-[8%] bg-[#F3C437]" />
-    </div>
-  );
-}
-
 /**
  * Keep externally linked citations and uploaded-document evidence visible
  * and verifiable in Kriton's source popup.
@@ -1144,11 +1132,7 @@ export default function AskKritonPage() {
           >
             {focusMode ? "Exit focus" : "Focus mode"}
           </button>
-          <header className="relative z-10 flex h-14 shrink-0 items-center justify-between border-b border-line bg-panel/80 px-4 md:hidden">
-            <div className="flex items-center gap-2">
-              <ZoikoGlyph className="h-8 w-8 rounded-lg" />
-              <span className="font-bold text-ink">Kriton</span>
-            </div>
+          <header className="relative z-10 flex h-14 shrink-0 items-center justify-end border-b border-line bg-panel/80 px-4 md:hidden">
             <button onClick={() => setMobileMenuOpen(true)} aria-label="Open recent chats" className="text-muted">
               <History size={19} />
             </button>

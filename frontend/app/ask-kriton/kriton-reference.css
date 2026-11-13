@@ -1,98 +1,57 @@
-/* Kriton financial research workspace. Scoped to this page; chat/auth logic is unchanged. */
+/* Kriton financial research workspace. Scoped to this page; chat/auth logic is unchanged.
+   Neutral dark greys in the style of common chat assistants: the sidebar is the
+   darkest surface, the main area a step lighter, the input box and the user's
+   messages a step lighter again. No blue; status colours (ok/warn/bad) keep
+   their meaning. */
 .kriton-reference.kriton-page-background {
   color-scheme: dark;
-  --bg: #020304; --panel: #101215; --ink: #f4f6f8;
-  --muted: #a5adb7; --line: #292e35; --soft: #1b2026;
-  --chip: #181d23; --brand: #41b4ff; --brand-2: #1596ec;
-  --info: #77bcff; --bad: #ff9292; --warn: #edc36b; --ok: #70d6a5;
-  background: #101416;
+  --bg: #212121; --panel: #2a2a2a; --ink: #ececec;
+  --muted: #b4b4b4; --line: #3a3a3a; --soft: #303030;
+  --chip: #2f2f2f; --brand: #8a8a8a; --brand-2: #9e9e9e;
+  --info: #e5e5e5; --bad: #ff9292; --warn: #edc36b; --ok: #70d6a5;
+  background: #212121;
   isolation: isolate;
 }
-/* A restrained ledger grid, faded away from the edges. */
+
+/* Sidebar */
 .kriton-reference .kriton-sidebar-background {
-  background: #0b0d0f; backdrop-filter: none;
-  scrollbar-color: #424950 transparent; scrollbar-width: thin;
+  background: #171717; border-color: #2a2a2a; backdrop-filter: none;
+  scrollbar-color: #424242 transparent; scrollbar-width: thin;
 }
 .kriton-reference .kriton-sidebar-background nav > button:first-child {
-  margin-bottom: 14px; border: 1px solid #262a30; border-radius: 14px;
-  background: linear-gradient(115deg, #202225, #111315);
+  margin-bottom: 14px; border: 1px solid #2f2f2f; border-radius: 14px;
+  background: #212121;
 }
 .kriton-reference .kriton-sidebar-background nav > button > span { font-weight: 500; }
-.kriton-reference .kriton-sidebar-background nav > button:hover > span { background: #142331; }
-.kriton-reference .kriton-sidebar-background nav svg { color: #c3cbd3; }
+.kriton-reference .kriton-sidebar-background nav > button:hover > span { background: #2a2a2a; }
+.kriton-reference .kriton-sidebar-background nav svg { color: #d4d4d4; }
 .kriton-reference .kriton-sidebar-background > div:first-child { padding-block: 24px; }
 .kriton-reference .kriton-sidebar-background > div:first-child > div { gap: 10px; }
-.kriton-reference textarea { color: #f4f6f8; }
-.kriton-reference textarea::placeholder { color: #a5adb7; }
+
+/* Text and focus rings */
+.kriton-reference textarea { color: #ececec; }
+.kriton-reference textarea::placeholder { color: #9b9b9b; }
 .kriton-reference button:focus-visible,
 .kriton-reference a:focus-visible,
-.kriton-reference select:focus-visible { outline: 2px solid #61c2ff; outline-offset: 4px; }
+.kriton-reference select:focus-visible { outline: 2px solid #ececec; outline-offset: 4px; }
 
-/* Quiet evidence paths: decorative, never a live status indicator. */
-.kriton-reference.kriton-page-background { background: #02060c; }
-
-/* Use the reference-derived artwork at the actual main-pane dimensions. */
-
-/* One background layer: natural artwork proportions and a quiet reading area. */
-
-.kriton-reference[data-conversation="empty"]::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 0 252px;
-  z-index: 0;
-  pointer-events: none;
-  background:
-    linear-gradient(90deg, #02060cdd 0%, #02060cb3 28%, #02060c55 60%, #02060c11 100%),
-    linear-gradient(0deg, #02060caa 0%, #02060c44 28%, transparent 65%),
-    url("/brand/kriton-finance-moving-lights-v3.jpg") right top / cover no-repeat;
+/* Input box and the user's own messages: flat grey, no glow. */
+.kriton-reference .kriton-composer-surface {
+  /* The project's brand teal (globals.css --brand, dark theme). */
+  border: 1px solid #2f9cc2; border-radius: 24px;
+  background: #303030; box-shadow: none; backdrop-filter: none;
+}
+.kriton-reference .kriton-composer-surface:focus-within {
+  border-color: #4bb4d8; box-shadow: 0 0 0 3px #2f9cc226;
+}
+.kriton-reference .kriton-user-query {
+  border-color: transparent; background: #303030;
+  box-shadow: none; backdrop-filter: none;
 }
 
-.kriton-reference[data-conversation="active"]::before,
+/* Welcome screen: plain, centred, no background artwork. */
+.kriton-reference::before,
 .kriton-reference::after { display: none; }
-
-@media (max-width: 1023px) {
-  .kriton-reference[data-conversation="empty"]::before { opacity: .65; }
-}
-
-@media (max-width: 767px) {
-  .kriton-reference[data-conversation="empty"]::before {
-    inset: 56px 0 0;
-    opacity: .45;
-    background:
-      linear-gradient(0deg, #02060c 5%, #02060caa 55%, #02060c44 100%),
-      url("/brand/kriton-finance-moving-lights-v3.jpg") 75% top / auto 100% no-repeat;
-  }
-}
-.kriton-reference[data-conversation="empty"]::before { filter: blur(3px); }
-.kriton-reference[data-conversation="empty"]::after {
-  display: block;
-  content: "";
-  position: absolute;
-  inset: 0 0 0 252px;
-  z-index: 0;
-  pointer-events: none;
-  background: url("/brand/kriton-review-trails.svg?v=9") center / cover no-repeat;
-  opacity: .7;
-}
-@media (max-width: 767px) {
-  .kriton-reference[data-conversation="empty"]::after { inset: 56px 0 0; opacity: .4; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .kriton-reference[data-conversation="empty"]::after { display: none; }
-}
-.kriton-reference[data-conversation="empty"]::after {
-  background-position: right top;
-  background-size: cover;
-  opacity: 1;
-}
-@media (max-width: 767px) {
-  .kriton-reference[data-conversation="empty"]::after {
-    background-position: 75% top;
-    background-size: auto 100%;
-    opacity: .45;
-  }
-}
-/* Single source of welcome sizing, based on the supplied laptop photograph. */
 .kriton-reference[data-conversation="empty"] .kriton-dashboard-stage {
   max-width: none; padding: 36px 24px; justify-content: center;
 }
@@ -103,60 +62,54 @@
 .kriton-welcome .kriton-welcome-intro { width: 100%; max-width: 820px; }
 .kriton-reference .kriton-welcome-badge {
   margin-bottom: 16px; padding: 5px 10px;
-  border: 1px solid #344b5b; border-radius: 999px;
-  background: #14212bd9; color: #9dd4de;
+  border: 1px solid #3a3a3a; border-radius: 999px;
+  background: #2a2a2a; color: #d4d4d4;
   font-size: 10px; line-height: 16px; letter-spacing: .12em;
 }
 .kriton-welcome h1 {
-  margin: 0; font-size: 48px; font-weight: 700;
-  line-height: 1.1; letter-spacing: -.025em;
+  margin: 0; font-size: 40px; font-weight: 600;
+  line-height: 1.15; letter-spacing: -.02em;
 }
-.kriton-title-accent { color: #85c8d9; }
+.kriton-title-accent { color: #ffffff; }
 .kriton-welcome h1 + p {
-  margin: 16px auto 0; max-width: 620px;
-  color: #b5c4d7; font-size: 12px; line-height: 1.7;
+  margin: 14px auto 0; max-width: 620px;
+  color: #b4b4b4; font-size: 13px; line-height: 1.7;
 }
-.kriton-welcome .kriton-welcome-input { width: 100%; max-width: 760px; margin-top: 30px; }
+.kriton-welcome .kriton-welcome-input { width: 100%; max-width: 760px; margin-top: 28px; }
 .kriton-welcome [data-kriton-composer] { width: 100%; max-width: none; margin: 0; }
-.kriton-welcome .kriton-composer-surface {
-  padding: 8px 10px; border: 1px solid #617786; border-radius: 20px;
-  background: #17222be6; box-shadow: 0 5px 24px #0003;
-  backdrop-filter: none; text-align: left;
-}
-.kriton-welcome .kriton-composer-surface:focus-within {
-  border-color: #73bcb8; box-shadow: 0 0 0 3px #73bcb81a;
-}
+.kriton-welcome .kriton-composer-surface { padding: 8px 10px; text-align: left; }
 .kriton-welcome textarea { min-height: 48px; font-size: 14px; line-height: 21px; }
 .kriton-welcome .kriton-composer-surface > div:last-child { gap: 8px; flex-wrap: wrap; }
 .kriton-welcome .kriton-composer-surface button { font-size: 11px; }
 .kriton-welcome .kriton-composer-surface select { max-width: 150px; font-size: 11px; }
-.kriton-welcome button[type="submit"] {
-  width: 34px; height: 34px; border: 1px solid #4195a7;
-  background: #257d91; color: #fff; box-shadow: none;
+.kriton-reference button[type="submit"] {
+  border: 1px solid #ececec; background: #ececec; color: #000; box-shadow: none;
 }
+.kriton-reference button[type="submit"]:hover:not(:disabled) { background: #ffffff; }
+.kriton-reference button[type="submit"]:disabled { border-color: #4a4a4a; background: #4a4a4a; color: #9b9b9b; }
+.kriton-welcome button[type="submit"] { width: 34px; height: 34px; }
 .kriton-welcome .kriton-quick-modes {
   display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
   width: 100%; max-width: 760px; align-self: center;
-  gap: 7px; margin-top: 10px;
+  gap: 8px; margin-top: 12px;
 }
 .kriton-welcome .kriton-quick-modes button {
-  height: 36px; padding-inline: 8px; border: 1px solid #46566c;
-  border-radius: 10px; background: #101c29e6;
+  height: 36px; padding-inline: 8px; border: 1px solid #3a3a3a;
+  border-radius: 999px; background: transparent; color: #d4d4d4;
   font-size: 11px; font-weight: 500; white-space: nowrap;
   box-shadow: none; backdrop-filter: none;
 }
-.kriton-welcome .kriton-quick-modes button:hover { border-color: #73bcb8; background: #1c2b36; }
-.kriton-welcome .kriton-quick-modes button:last-child { border-color: #467e91; color: #9dd4de; }
+.kriton-welcome .kriton-quick-modes button:hover { border-color: #5a5a5a; background: #2a2a2a; }
 @media (max-width: 767px) {
   .kriton-reference[data-conversation="empty"] .kriton-dashboard-stage { padding: 32px 0; }
-  .kriton-welcome h1 { font-size: clamp(28px, 7vw, 36px); }
+  .kriton-welcome h1 { font-size: clamp(26px, 7vw, 34px); }
   .kriton-welcome h1 + p { max-width: 340px; }
   .kriton-welcome .kriton-welcome-input { margin-top: 24px; }
   .kriton-welcome .kriton-quick-modes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kriton-welcome .kriton-quick-modes button:last-child { grid-column: 1 / -1; }
 }
 
-/* Raise the welcome group slightly without affecting the sidebar or background. */
+/* Raise the welcome group slightly. */
 @media (min-width: 768px) and (min-height: 700px) {
   .kriton-reference[data-conversation="empty"] .kriton-welcome {
     transform: translateY(-40px);
@@ -164,10 +117,7 @@
 }
 
 /* Focus mode is UI-only; the same chat and composer remain mounted. */
-.kriton-reference[data-focus="on"]::before,
-.kriton-reference[data-focus="on"]::after { display: none; }
 .kriton-reference[data-focus="on"] > div > section > header { display: none; }
-.kriton-reference[data-focus="on"] { background: #101416; }
 .kriton-reference[data-focus="on"] .kriton-dashboard-stage { padding-top: 64px; }
 .kriton-reference[data-focus="on"] .kriton-welcome { transform: none; }
 @media (max-width: 767px) {

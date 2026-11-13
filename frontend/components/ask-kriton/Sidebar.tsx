@@ -12,19 +12,10 @@ import {
   Pin,
   PinOff,
   Plus,
-  Search,
   Trash2,
   X,
 } from "lucide-react";
 import type { Conversation } from "@/lib/ask-kriton-storage";
-
-function KritonBrand() {
-  return (
-    <span aria-label="ZoikoLogia" className="inline-flex min-w-0 items-baseline py-1 text-[27px] font-bold leading-9 tracking-[-0.055em]">
-      <span className="text-[#edf3f7]">Zoiko</span><span className="text-[#f28c28]">Logia</span>
-    </span>
-  );
-}
 
 function NavRow({ icon: Icon, label, href, onClick }: { icon: typeof MessageSquare; label: string; href?: string; onClick?: () => void }) {
   const content = (
@@ -229,15 +220,7 @@ type KritonNavigationProps = {
 export function DesktopSidebar(props: RecentsListProps & KritonNavigationProps) {
   return (
     <aside className="kriton-sidebar-background hidden min-h-0 border-r border-line md:flex md:flex-col">
-      <div className="flex items-center justify-between px-5 py-5">
-        <KritonBrand />
-        <button type="button" onClick={props.onOpenChats} aria-label="Search chats" title="Search chats"
-          className="rounded-lg p-1.5 text-muted hover:bg-soft hover:text-ink">
-          <Search size={17} />
-        </button>
-      </div>
-
-      <nav className="space-y-1 px-3">
+      <nav className="space-y-1 px-3 pt-6">
         <NavRow icon={Plus} label="New chat" onClick={props.onNewChat} />
         <NavRow icon={MessageSquare} label="Chats" onClick={props.onOpenChats} />
         <NavRow icon={FolderKanban} label="Projects" onClick={props.onOpenProjects} />
@@ -266,8 +249,7 @@ export function MobileDrawer(props: RecentsListProps & KritonNavigationProps & {
     <div className="fixed inset-0 z-40 md:hidden" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40" onClick={props.onClose} />
       <div className="kriton-sidebar-background relative flex h-full w-[86%] max-w-xs flex-col border-r border-line shadow-2xl">
-        <div className="flex items-center justify-between px-5 py-5">
-          <KritonBrand />
+        <div className="flex items-center justify-end px-5 py-5">
           <button onClick={props.onClose} aria-label="Close menu" className="rounded-lg p-1.5 text-muted hover:bg-soft">
             <X size={18} />
           </button>
