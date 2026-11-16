@@ -19,11 +19,11 @@ function renderSidebar() {
 }
 
 describe("Kriton sidebar", () => {
-  it("opens the chats panel from Chats and from the search icon", () => {
+  it("opens the chats panel from Chats; the sidebar has no separate search icon", () => {
     const handlers = renderSidebar();
     fireEvent.click(screen.getByText("Chats"));
-    fireEvent.click(screen.getByRole("button", { name: "Search chats" }));
-    expect(handlers.onOpenChats).toHaveBeenCalledTimes(2);
+    expect(handlers.onOpenChats).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Search chats" })).toBeNull();
   });
 
   it("wires New chat, Projects and Sources", () => {
