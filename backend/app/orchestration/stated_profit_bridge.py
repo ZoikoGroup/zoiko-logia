@@ -64,6 +64,12 @@ def _millions(value: Decimal) -> str:
 def verified_profit_bridge_block(question: str) -> str:
     if not question or not _ASKS_PROFIT.search(question):
         return ""
+    # A pasted statement to comment on is not a forecast to compute: its
+    # subtotals were read as inputs and a bridge with net income -62,300 was
+    # put beside a statement showing 154,400 (18 Nov 2026).
+    from app.orchestration.pasted_material import review_instruction
+    if review_instruction(question) or re.search(r"^\s*\|.+\|\s*$", question, re.M):
+        return ""
     amounts, tax_rate = _stated(question)
     if not {"revenue", "cost", "operating"} <= amounts.keys():
         return ""

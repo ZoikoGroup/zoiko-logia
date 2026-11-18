@@ -446,3 +446,19 @@ def test_the_open_classification_is_given_as_one_correct_sentence():
                                "administrative expenses and interest received were shown as other operating income")
     assert sentence.endswith("operating profit would be 233,500 (14,900 higher); profit before tax would be unchanged.")
     assert sentence in facts_block(s, query="generate the income statement")
+
+
+def test_a_pasted_statement_to_comment_on_is_reviewed_not_recomputed():
+    """18 Nov 2026: "<income statement> comment on the above" came back as a
+    recomputed bridge, or commented on the engine's own notes."""
+    s = build("northbridge.csv", NORTHBRIDGE)
+    pasted = ("| Description | Amount |\n| --- | --- |\n| **Revenue** |  |\n| Revenue | 1,850,000 |\n"
+              + "| Rent | 96,000 |\n" * 20
+              + "If the interest income and bank charges are re-classified as operating items, operating profit would "
+                "be 233,500 (an increase of 14,900 pp).\ncomment on the above")
+    block = facts_block(s, query=pasted)
+    assert 'The user pasted a statement and asks: "comment on the above"' in block
+    assert "do not comment on them as if the user had written them" in block and "14,900 pp" in block
+    assert fs_engine_chat.reclassification_sentence(s) in block
+    # The pasted words ("re-classified") do not ask for the scenarios.
+    assert "Each choice on its own" not in block and "Margins (management analysis)" not in block

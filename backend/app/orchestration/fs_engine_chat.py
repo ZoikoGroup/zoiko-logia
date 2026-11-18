@@ -281,7 +281,11 @@ def facts_block(s: ChatStatement, format_1: bool = False, query: str | None = No
     distribution costs and administrative expenses apart (Document 01 FS-023).
     The margins, the alternative statement and the scenarios are offered only
     when the question asks for them (analysis_asked); query None keeps them."""
-    detailed = query is None or analysis_asked(query)
+    from app.orchestration.pasted_material import review_instruction
+    instruction = review_instruction(query or "")
+    # Only the instruction asks: the words of pasted material ("re-classified")
+    # are not a request for scenarios.
+    detailed = query is None or analysis_asked(instruction or query)
     f = s.figures
     out = ["\n\n=== Statement figures from the Financial Statements engine (use only these) ===",
            f"Source: {s.filename}; SHA-256 {s.sha256[:16]}…; {s.accounts} accounts. Trial balance: total debits "
@@ -394,7 +398,21 @@ def facts_block(s: ChatStatement, format_1: bool = False, query: str | None = No
         out.append("Engine finding: " + finding)
     out.append("Do not say the statements reconcile, are verified or are complete while a residual, an unplaced "
                "account or a classification review remains.")
-    if not detailed:
+    if instruction:
+        # "<pasted income statement> comment on the above" was answered with a
+        # recomputed bridge, or with comments on these engine notes as if the
+        # user had written them (18 Nov 2026).
+        out.append(
+            f"The user pasted a statement and asks: \"{instruction}\". Comment on the pasted text only, in three short "
+            "parts: (1) Figures: check each amount and subtotal against the engine figures above and say which "
+            "agree and which do not. (2) Presentation and wording: point out a heading repeated by an account of "
+            "the same name, a * with no footnote, a unit on an amount that is not a percentage (\"14,900 pp\"), a "
+            "reclassification sentence that does not match the open classification above (the correct one is: \""
+            + (reclassification_sentence(s) if s.choices else "none is open") + "\"), labels, signs and dates. "
+            "(3) What is missing for a complete draft. The engine figures and findings above are for checking the "
+            "text: do not comment on them as if the user had written them, and do not recompute or restate the "
+            "statement.")
+    elif not detailed:
         out.append("Give only the statement(s) the question asks for, with a short note on the open items above. "
                    "Do not add ratios, margins, an alternative statement, scenario or sensitivity tables, or other "
                    "analysis the question does not ask for: the notes shown with the answer cover the review points, "
