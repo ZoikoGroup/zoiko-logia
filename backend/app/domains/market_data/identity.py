@@ -236,13 +236,60 @@ def find_ticker(query: str) -> str:
     return ""
 
 
+# A stock question: only then is a lowercase ticker ("aapl") or a misspelt
+# name ("aaple", "microsft") read as a company (18 Nov 2026).
+_MARKET_CONTEXT = re.compile(
+    r"\b(?:stocks?|shares?|share\s*price|price|prices|ticker|quotes?|market\s*cap\w*|dividends?|earnings|"
+    r"revenue|valuation|nasdaq|nyse|trading|traded|invest\w*|eps|p/?e)\b", re.I)
+# Single-word names a typo can be corrected to.
+_TYPO_NAMES = sorted({name for name in _WELL_KNOWN if name.isalpha() and len(name) >= 4})
+# Known tickers typed in lowercase, to the table's name ("shop" is a word).
+_LOWER_TICKERS: dict[str, str] = {}
+for _name, (_ticker, _country) in _WELL_KNOWN.items():
+    _base = _ticker.split(".")[0].lower()
+    if len(_base) >= 3 and _base.isalpha() and _base != "shop":
+        _LOWER_TICKERS.setdefault(_base, _name)
+# Ordinary words one letter away from a company name.
+_NOT_A_TYPO = {"apply", "applied", "sell", "sells", "shall", "shelf", "smell", "spell", "metal", "teal", "test",
+               "sales", "share", "shares", "stock", "stocks", "price", "quote", "today", "tell", "soon", "song"}
+
+
+def _canonical_query(query: str) -> str:
+    """The question with lowercase tickers and misspelt well-known names
+    written as the table's name ("aapl stock price" → "apple stock price",
+    "AAPLE share price" → "apple share price"). Unchanged unless it is a stock
+    question."""
+    if not _MARKET_CONTEXT.search(query or ""):
+        return query or ""
+    import difflib
+
+    def fix(match: re.Match) -> str:
+        word = match.group(0)
+        low = word.lower()
+        if low in _WELL_KNOWN or low in _NOT_A_TYPO or _MARKET_CONTEXT.fullmatch(low):
+            return word
+        if low in _LOWER_TICKERS:
+            return _LOWER_TICKERS[low]
+        if len(low) < 4 or not low.isalpha():
+            return word
+        candidates = [name for name in [*_TYPO_NAMES, *_LOWER_TICKERS]
+                      if name[0] == low[0] and abs(len(name) - len(low)) <= 2]
+        best = difflib.get_close_matches(low, candidates, n=1, cutoff=0.8)
+        if not best:
+            return word
+        return _LOWER_TICKERS.get(best[0], best[0])
+
+    return re.sub(r"(?<![\w$.])[A-Za-z][A-Za-z]*(?![\w.])", fix, query)
+
+
 def known_ticker_for_name(query: str) -> tuple[str, str, str]:
     """(ticker, country, matched_name) for a well-known name in the question.
 
     matched_name is a confirmed name — it came from this table, not from
-    guessing at the question's wording — so it is safe to display.
+    guessing at the question's wording — so it is safe to display. In a stock
+    question a lowercase ticker or a misspelt name counts (_canonical_query).
     """
-    lowered = f" {query.lower()} "
+    lowered = f" {_canonical_query(query).lower()} "
     best = ("", "", "")
     best_len = 0
     for name, (ticker, country) in _WELL_KNOWN.items():
@@ -265,7 +312,7 @@ def find_all_known_names(query: str) -> list[tuple[str, str, str]]:
     inside a longer alias if one existed, which is why matches are still
     ranked longest-first per position rather than taken in dict order.
     """
-    lowered = f" {query.lower()} "
+    lowered = f" {_canonical_query(query).lower()} "
     matches: list[tuple[int, str, str, str]] = []  # (position, ticker, country, name)
     for name, (ticker, country) in _WELL_KNOWN.items():
         match = re.search(rf"(?<![a-z0-9]){re.escape(name)}(?:['’]s)?(?![a-z0-9])", lowered)

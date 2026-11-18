@@ -61,7 +61,10 @@ INSTRUCTIONS = (
     # and as a single "Operating expenses 574,000" line in another (30 Oct 2026).
     "- List every account on its own line under its heading (each operating expense under Operating expenses, "
     "each asset and liability under its group), then the heading's subtotal; never show a heading as a single "
-    "total without its accounts. Write the account name alone in the first column, with no leading dash.\n"
+    "total without its accounts. Write the account name alone in the first column, with no leading dash. "
+    # "Revenue / Revenue 1,850,000 / Revenue subtotal 1,850,000" (18 Nov 2026).
+    "A heading with only one account is one line with its amount (Revenue 1,850,000): no separate heading row "
+    "and no subtotal that repeats it. A line marked with * needs a footnote under the table saying what * means.\n"
     # Northbridge TB: interest income inside operating profit and bank charges
     # under finance costs gave 233,500; the verified figures place them now.
     "- Put each account under the heading the verified figures give it: interest income under Finance income and "
@@ -388,7 +391,9 @@ def without_currency_symbols(text: str, currency: str | None, scale: str | None 
 # C05): the heading names a period end the file does not give.
 _DANGLING_PERIOD = re.compile(
     r"\bfor\s+the\s+(?:financial\s+)?(?:year|period)\s+ended\b"
-    r"(?!\s*(?:\d|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b))"
+    # A date in bold or after a colon is a date: "for the year ended **31 March
+    # 2026**" became "reporting period not confirmed 31 March 2026" (18 Nov 2026).
+    r"(?!\s*[*_:,(]*\s*(?:\d|FY\s?\d|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b))"
     # The placeholder after it goes too: "[as per trial balance]", "…", "___".
     r"(?:\s*\[[^\]\n]*\]|\s*(?:…|\.{2,}|_{2,}))?", re.I)
 
@@ -396,6 +401,64 @@ _DANGLING_PERIOD = re.compile(
 def without_dangling_period(text: str) -> str:
     """A period heading with no date says so instead of ending mid-phrase."""
     return _DANGLING_PERIOD.sub("reporting period not confirmed", text)
+
+
+def _row_cells(line: str) -> list[str] | None:
+    stripped = line.strip()
+    if not stripped.startswith("|") or re.fullmatch(r"[\s|:-]*", stripped):
+        return None
+    return [cell.strip() for cell in stripped.strip("|").split("|")]
+
+
+def _plain(cell: str) -> str:
+    return re.sub(r"\s+", " ", cell.replace("*", "").replace("_", " ")).strip().casefold()
+
+
+_TOTAL_WORDS = re.compile(r"\b(?:total|subtotal|profit|loss|net|gross)\b", re.I)
+
+
+def merged_single_account_headings(text: str) -> str:
+    """A heading row with one account of the same name, as one line:
+    "Revenue | " then "Revenue | 1,850,000" (and a "Revenue subtotal" that
+    repeats it) became "Revenue | 1,850,000" (18 Nov 2026). Merged only when
+    the account is the heading's only line: the next row is a heading, a total
+    or the end of the table."""
+    lines = (text or "").splitlines()
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        heading = _row_cells(lines[index])
+        account = _row_cells(lines[index + 1]) if index + 1 < len(lines) else None
+        if (heading and account and len(heading) >= 2 and len(account) == len(heading)
+                and not any(heading[1:]) and any(account[1:])
+                and _plain(heading[0]) and _plain(heading[0]) == _plain(account[0])):
+            after = _row_cells(lines[index + 2]) if index + 2 < len(lines) else None
+            repeat = after is not None and re.fullmatch(
+                rf"(?:total\s+)?{re.escape(_plain(heading[0]))}(?:\s+(?:sub)?total)?", _plain(after[0])) \
+                and [_plain(c) for c in after[1:]] == [_plain(c) for c in account[1:]]
+            following = _row_cells(lines[index + 3 if repeat else index + 2]) \
+                if index + (3 if repeat else 2) < len(lines) else None
+            only_line = (following is None or not any(following[1:]) or "**" in following[0]
+                         or bool(_TOTAL_WORDS.search(following[0])))
+            if only_line:
+                cells = [heading[0], *(f"**{c}**" if heading[0].startswith("**") and c and not c.startswith("**")
+                                       else c for c in account[1:])]
+                out.append("| " + " | ".join(cells) + " |")
+                index += 3 if repeat else 2
+                continue
+        out.append(lines[index])
+        index += 1
+    return "\n".join(out)
+
+
+# "an increase of 14,900 pp": percentage points belong to a percentage, never
+# to an amount (18 Nov 2026).
+_AMOUNT_PP = re.compile(r"\b(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d{3,}(?:\.\d+)?)\s*(?:pp|p\.p\.|percentage\s+points?)\b",
+                        re.I)
+
+
+def without_points_on_amounts(text: str) -> str:
+    return _AMOUNT_PP.sub(r"\1", text or "")
 
 
 def removed_claims_note(removed: list[str]) -> str:

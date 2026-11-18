@@ -679,7 +679,8 @@ export function buildChartOption(spec: ChartSpec): Record<string, unknown> {
       series: [
         {
           type: "pie",
-          radius: ["35%", "62%"],
+          // A full pie, not a ring: a requested pie chart was drawn as a donut (18 Nov 2026).
+          radius: ["0%", "62%"],
           center: ["50%", "46%"],
           data: spec.data ?? [],
           // Each slice states its share: a revenue-share chart showed only

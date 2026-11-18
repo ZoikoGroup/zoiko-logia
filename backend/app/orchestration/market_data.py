@@ -137,7 +137,10 @@ _INTERVAL_WORDS = {"1d": "daily", "1w": "weekly", "1mo": "monthly",
 
 def _history_source(bars: list[OHLCVBar]) -> WebSource:
     first, last = bars[0], bars[-1]
-    tail = bars[-8:]
+    # Every close of a short span ("last 10 days"): with only the last eight,
+    # the first days of a 10-day comparison had no source and were removed
+    # from the answer as unverified (18 Nov 2026).
+    tail = bars if len(bars) <= 31 else bars[-8:]
     series = ", ".join(f"{b.timestamp[:10]}: {b.close:,.2f}" for b in tail)
     cadence = _INTERVAL_WORDS.get(last.interval or "1d", last.interval or "daily")
     return WebSource(
@@ -145,11 +148,17 @@ def _history_source(bars: list[OHLCVBar]) -> WebSource:
         url=f"https://www.google.com/finance/quote/{last.symbol}",
         snippet=(
             f"{last.symbol} {cadence} closes, {len(bars)} bars from "
-            f"{first.timestamp[:10]} to {last.timestamp[:10]}. Most recent — {series}. "
+            f"{first.timestamp[:10]} to {last.timestamp[:10]}. "
+            f"{'Closes' if tail is bars else 'Most recent'} — {series}. "
+            # The figure a pie of several companies is drawn from.
+            f"Average close {sum(b.close for b in bars) / len(bars):,.2f}. "
             f"Historical end-of-day data from {last.provider}; not real-time."
         ),
         provider=last.provider,
         freshness="historical",
+        # The closes, structured, so several companies' histories can be
+        # charted from the fetched numbers (live_data.build_forced_chart).
+        series=[(b.timestamp[:10], round(b.close, 2)) for b in bars],
     )
 
 

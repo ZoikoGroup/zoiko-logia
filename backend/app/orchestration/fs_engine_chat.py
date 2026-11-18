@@ -249,10 +249,43 @@ def _pct(part: Decimal, whole: Decimal) -> str:
     return "not computable (zero denominator)" if not whole else f"{(part / whole * 100):.2f}%"
 
 
-def facts_block(s: ChatStatement, format_1: bool = False) -> str:
+# A question that asks for more than the statement: margins, the other
+# placement, scenarios. Without one, "generate income statement" came back
+# with ratios, a second full statement and a scenario table (18 Nov 2026);
+# the notes shown with the answer already give both operating profits.
+_ANALYSIS_ASKED = re.compile(
+    r"\b(?:ratios?|margins?|kpis?|alternative\w*|scenarios?|sensitivit\w*|reclassif\w*|classif\w*|"
+    r"what\s+if|both|compare|comparison|analy[sz]\w*|performance|effective\s+tax)\b", re.I)
+
+
+def analysis_asked(query: str | None) -> bool:
+    return bool(_ANALYSIS_ASKED.search(query or ""))
+
+
+def reclassification_sentence(s: ChatStatement) -> str:
+    """The open classification in one correct sentence. The model wrote "if
+    the interest income and bank charges are re-classified as operating items
+    ... an increase of 14,900 pp", though bank charges were already operating
+    and 14,900 is an amount (18 Nov 2026)."""
+    moves = " and ".join(f"{c.account.lower()} were shown as {c.alternative.lower()} instead of {c.shown.lower()}"
+                         for c in s.choices)
+    difference = s.alternative["operating_profit"] - s.figures["operating_profit"]
+    direction = "higher" if difference > 0 else "lower"
+    return (f"If {moves}, operating profit would be {_fmt(s.alternative['operating_profit'])} "
+            f"({_fmt(abs(difference))} {direction}); profit before tax would be unchanged.")
+
+
+def facts_block(s: ChatStatement, format_1: bool = False, query: str | None = None) -> str:
     """The figures and findings the answer may use, and how to present them.
     With format_1 (FRS 102 / Companies Act named), the face keeps
-    distribution costs and administrative expenses apart (Document 01 FS-023)."""
+    distribution costs and administrative expenses apart (Document 01 FS-023).
+    The margins, the alternative statement and the scenarios are offered only
+    when the question asks for them (analysis_asked); query None keeps them."""
+    from app.orchestration.pasted_material import review_instruction
+    instruction = review_instruction(query or "")
+    # Only the instruction asks: the words of pasted material ("re-classified")
+    # are not a request for scenarios.
+    detailed = query is None or analysis_asked(instruction or query)
     f = s.figures
     out = ["\n\n=== Statement figures from the Financial Statements engine (use only these) ===",
            f"Source: {s.filename}; SHA-256 {s.sha256[:16]}…; {s.accounts} accounts. Trial balance: total debits "
@@ -300,7 +333,7 @@ def facts_block(s: ChatStatement, format_1: bool = False) -> str:
         f"{_fmt(f['finance_income'])}; finance costs {_fmt(f['finance_costs'])}; net finance "
         f"{_fmt(f['net_finance'])}; profit before tax {_fmt(f['profit_before_tax'])}; tax {_fmt(f['tax'])}; "
         f"profit for the year {_fmt(f['profit_for_the_year'])}.")
-    if f["revenue"]:
+    if f["revenue"] and detailed:
         out.append(f"Margins (management analysis): gross {_pct(f['gross_profit'], f['revenue'])}; operating "
                    f"{_pct(f['operating_profit'], f['revenue'])}; net {_pct(f['profit_for_the_year'], f['revenue'])}; "
                    f"effective tax rate {_pct(f['tax'], f['profit_before_tax'])} (does not validate the tax charge).")
@@ -310,9 +343,13 @@ def facts_block(s: ChatStatement, format_1: bool = False) -> str:
             f"{c.account} {_fmt(c.amount)} shown as {c.shown.lower()}, could be {c.alternative.lower()}"
             for c in s.choices)
             + f". Under the alternative, operating profit is {_fmt(a['operating_profit'])} (a difference of "
-              f"{_fmt(a['operating_profit'] - f['operating_profit'])}); profit before tax is unchanged. State both.")
+              f"{_fmt(a['operating_profit'] - f['operating_profit'])}); profit before tax is unchanged. "
+            + ("State both." if detailed else
+               "Say so beside the statement in this one sentence, copied as written: \""
+               + reclassification_sentence(s) + "\" Do not add an alternative statement or a scenario table."))
         out.append("Evidence that would decide each: " + "; ".join(
             f"{c.account}: {c.evidence or 'the nature of the transactions'}" for c in s.choices) + ".")
+    if s.choices and detailed:
         out.append(
             "Alternative classification, every line in statement order (copy these; do not recompute): revenue "
             f"{_fmt(a['revenue'])}; cost of sales {_fmt(a['cost_of_sales'])}; gross profit {_fmt(a['gross_profit'])}; "
@@ -361,7 +398,105 @@ def facts_block(s: ChatStatement, format_1: bool = False) -> str:
         out.append("Engine finding: " + finding)
     out.append("Do not say the statements reconcile, are verified or are complete while a residual, an unplaced "
                "account or a classification review remains.")
+    if instruction:
+        # "<pasted income statement> comment on the above" was answered with a
+        # recomputed bridge, or with comments on these engine notes as if the
+        # user had written them (18 Nov 2026).
+        out.append(
+            f"The user pasted a statement and asks: \"{instruction}\". Comment on the pasted text only, in three short "
+            "parts: (1) Figures: check each amount and subtotal against the engine figures above and say which "
+            "agree and which do not. (2) Presentation and wording: point out a heading repeated by an account of "
+            "the same name, a * with no footnote, a unit on an amount that is not a percentage (\"14,900 pp\"), a "
+            "reclassification sentence that does not match the open classification above (the correct one is: \""
+            + (reclassification_sentence(s) if s.choices else "none is open") + "\"), labels, signs and dates. "
+            "(3) What is missing for a complete draft. The engine figures and findings above are for checking the "
+            "text: do not comment on them as if the user had written them, and do not recompute or restate the "
+            "statement.")
+    elif not detailed:
+        out.append("Give only the statement(s) the question asks for, with a short note on the open items above. "
+                   "Do not add ratios, margins, an alternative statement, scenario or sensitivity tables, or other "
+                   "analysis the question does not ask for: the notes shown with the answer cover the review points, "
+                   "so do not add a notes section repeating the classification, tax or comparative points.")
     return "\n".join(out)
+
+
+_CELL_NUMBER = re.compile(r"^\(?-?\s*[£$€]?\s*\d[\d,]*(?:\.\d+)?\)?$")
+
+
+def _cell_value(cell: str) -> Decimal | None:
+    text = cell.strip().strip("*").strip()
+    if not _CELL_NUMBER.match(text):
+        return None
+    negative = text.startswith("(") or text.lstrip("(").startswith("-")
+    value = Decimal(re.sub(r"[^\d.]", "", text))
+    return -value if negative else value
+
+
+def _cell_text(value: Decimal, like: str) -> str:
+    """The engine's value written the way the cell wrote its number."""
+    text = like.strip()
+    bold = text.startswith("**") and text.endswith("**")
+    bare = text.strip("*").strip()
+    amount = _fmt(abs(value))
+    if value < 0:
+        amount = f"({amount})" if bare.startswith("(") else f"-{amount}"
+    return f"**{amount}**" if bold else amount
+
+
+# A table column and the engine figure it holds.
+_SCENARIO_COLUMNS = (("operating_profit", re.compile(r"\boperating\s+profit\b", re.I)),
+                     ("net_finance", re.compile(r"\bnet\s+finance\b", re.I)),
+                     ("profit_before_tax", re.compile(r"\bprofit\s+before\s+tax", re.I)))
+
+
+def correct_scenario_rows(text: str, s: ChatStatement) -> tuple[str, list[str]]:
+    """Scenario tables with each row's figures put back to the engine's.
+
+    A row is matched to a placement by its operating profit; its net finance
+    and profit before tax must then be that placement's. "2. Only Interest
+    income moved: operating profit 230,600, net finance (2,200)" was shown
+    beside the engine's -14,200 (18 Nov 2026): table rows are not checked by
+    remove_unsupported_figures. Returns the text and the corrections made."""
+    if not s.balanced or not (s.alternative or s.sensitivities):
+        return text, []
+    scenarios = _scenarios(s)
+    corrections: list[str] = []
+    lines = (text or "").splitlines()
+    columns: dict[str, int] = {}
+    for index, line in enumerate(lines):
+        if not line.lstrip().startswith("|"):
+            columns = {}
+            continue
+        cells = line.strip().strip("|").split("|")
+        if not columns:
+            columns = {key: i for key, pattern in _SCENARIO_COLUMNS for i, cell in enumerate(cells)
+                       if pattern.search(cell)}
+            if "operating_profit" not in columns or len(columns) < 2:
+                columns = {"_none": -1}
+            continue
+        if "_none" in columns or re.fullmatch(r"[\s:|-]*", line):
+            continue
+        shown = _cell_value(cells[columns["operating_profit"]]) if columns["operating_profit"] < len(cells) else None
+        if shown is None:
+            continue
+        matching = [x for x in scenarios if abs(x["operating_profit"]) == abs(shown)]
+        if not matching:
+            continue
+        changed = False
+        for key, column in columns.items():
+            if key == "operating_profit" or column >= len(cells):
+                continue
+            value = _cell_value(cells[column])
+            wanted = {x[key] for x in matching}
+            if value is None or len(wanted) != 1 or value in wanted:
+                continue
+            right = wanted.pop()
+            corrections.append(f"{cells[column].strip()} → {_fmt(right)}")
+            cells[column] = f" {_cell_text(right, cells[column])} "
+            changed = True
+        if changed:
+            lines[index] = "|" + "|".join(cells) + "|"
+    return "\n".join(lines), corrections
 
 
 def statement_notes(s: ChatStatement) -> list[str]:

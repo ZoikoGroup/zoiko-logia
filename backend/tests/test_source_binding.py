@@ -59,7 +59,8 @@ def test_the_preview_stands_in_when_the_full_text_was_not_recorded():
 
 
 def test_step_numbers_and_ordinals_are_not_figures():
-    assert service._figures("Step 1, then 2: Q4 is 3,100 and FY2025 grew 25.00%") == {"3100", "25.00"}
+    # 25.00 and 25 are one figure (trailing zeros dropped, 18 Nov 2026).
+    assert service._figures("Step 1, then 2: Q4 is 3,100 and FY2025 grew 25.00%") == {"3100", "25"}
 
 
 # ── Through the answer pipeline ─────────────────────────────────────────────

@@ -208,6 +208,9 @@ def _figures(text: str) -> set[str]:
     found = set()
     for figure in _ANSWER_FIGURE.findall(text or ""):
         figure = figure.replace(",", "").rstrip(".")
+        # 259.30 in a source and 259.3 in a chart are one figure.
+        if "." in figure:
+            figure = figure.rstrip("0").rstrip(".")
         if len(figure.replace(".", "")) >= 2:
             found.add(figure)
     return found
@@ -421,9 +424,16 @@ _ELLIPTICAL_FOLLOW_UP = re.compile(
     # attached PDF was answered about the World Bank from the web (QA L02).
     r"\bsame\s+(?:company|entity|business|client|organi[sz]ation|firm|period|basis|file|document|report)\b|"
     r"^\W*(?:ok(?:ay)?,?\s+)?now\s+(?:show|do|calculate|compute|give|try|make|run|repeat|redo)\b|"
+    # "analyze on the above" after "what is ipr" analysed unrelated library
+    # sources (18 Nov 2026).
     r"^\s*(?:please\s+)?(?:comment\s+on|review|summari[sz]e|critique|explain|"
     r"give\s+(?:your\s+|me\s+)?(?:comments?|feedback|views?|thoughts)\s+on|what\s+do\s+you\s+think\s+(?:of|about))"
-    r"\s+(?:the\s+)?(?:above|previous|last|your)\b",
+    r"\s+(?:the\s+)?(?:above|previous|last|your)\b|"
+    # "analyze on the above" after "what is ipr" analysed unrelated library
+    # sources (18 Nov 2026). Not "last": "analyse last quarter's sales" is new.
+    r"^\s*(?:please\s+)?(?:(?:analy[sz]e|evaluate|assess|discuss|interpret|elaborate|expand|simplify|break\s+down)"
+    r"(?:\s+(?:on|upon))?|give\s+(?:me\s+)?(?:an?\s+)?analysis\s+(?:on|of))"
+    r"\s+(?:the\s+)?(?:above|previous|your)\b",
     re.I,
 )
 
@@ -597,12 +607,41 @@ _DETERMINISTIC_DOMAIN_HINT = re.compile(
 )
 
 
+# A subject outside Kriton's domains, asked about with nothing from them:
+# "what is ai" was answered with a definition of artificial intelligence
+# (18 Nov 2026). "How is AI used in auditing?" names a domain and is answered.
+_OFF_DOMAIN_SUBJECT = re.compile(
+    r"\b(?:ai|a\.i\.|artificial intelligence|machine learning|deep learning|neural networks?|chat\s?gpt|gpt[- ]?\d*|"
+    r"llms?|large language models?|generative ai|programming|coding|python|javascript|java|c\+\+|html|css|"
+    r"software engineering|operating systems?|computer science|"
+    r"physics|chemistry|biology|astronomy|planets?|solar system|black holes?|photosynthesis|gravity|dinosaurs?|"
+    r"diseases?|symptoms?|covid|cancer|diabetes|medicines?|diet|workouts?|yoga|weight loss|"
+    r"capital of|president of|prime minister of|elections?|politics|political part(?:y|ies)|"
+    r"movies?|films?|songs?|music|singers?|actors?|actress|celebrit(?:y|ies)|cricket|football|soccer|basketball|"
+    r"tennis|olympics|ipl|video games?|anime|poems?|poetry|novels?|"
+    r"recipes?|cooking|weather|horoscope|astrology|dating|jokes?|riddles?)\b",
+    re.I,
+)
+# Words that put a question inside Kriton's domains (finance, accounting,
+# tax, audit, payroll, markets, accounting education).
+_DOMAIN_SUBJECT = re.compile(
+    r"\b(?:account\w*|audit\w*|tax\w*|payroll|bookkeep\w*|financ\w*|invoic\w*|ledger\w*|journal\w*|reconcil\w*|"
+    r"expens\w*|revenues?|profits?|loss(?:es)?|costs?|costing|margins?|pric\w*|budget\w*|cash|balance sheet|"
+    r"stocks?|shares?|market\w*|dividends?|invest\w*|loans?|interest|banks?|banking|salar(?:y|ies)|wages?|"
+    r"pensions?|insurance|gst|vat|tds|ifrs|gaap|ias|acca|cpa|cima|cfa|syllabus|exams?|business\w*|commerce|"
+    r"compan(?:y|ies)|econom\w*|gdp|inflation|currenc(?:y|ies)|exchange rates?|money|income|earnings|assets?|"
+    r"liabilit\w*|equity|depreciat\w*|amorti[sz]\w*|inventor(?:y|ies)|leases?|capital (?:gains?|expenditure|"
+    r"allowances?)|funds?|funding|debits?|credits?|receivables?|payables?|treasury|valuations?|compliance|"
+    r"regulat\w*|fintech|crypto\w*|bitcoin|cfo|controllers?)\b",
+    re.I,
+)
+
+
 def _is_deterministically_out_of_scope(query: str) -> bool:
     text = query or ""
-    return bool(
-        _DETERMINISTIC_OUT_OF_SCOPE.search(text)
-        and not _DETERMINISTIC_DOMAIN_HINT.search(text)
-    )
+    if _DETERMINISTIC_OUT_OF_SCOPE.search(text) and not _DETERMINISTIC_DOMAIN_HINT.search(text):
+        return True
+    return bool(_OFF_DOMAIN_SUBJECT.search(text) and not _DOMAIN_SUBJECT.search(text))
 # Deliberately NOT every verb in extraction.py's _RELATION_VERBS: verbs that
 # read as generic/technical regardless of the named entities ("depends_on",
 # "manages", "contracts_with", "licenses_to") must NOT prove domain by
@@ -1751,13 +1790,23 @@ def _official_rate_question(query: str) -> bool:
     return bool(_OFFICIAL_RATE_QUESTION.search(query or ""))
 
 
+def _statement_notes_shown() -> bool:
+    """The engine's review notes (draft status, framework, classification,
+    tax, workspace) under a statement answer from an uploaded file. Off by
+    default since 18 Nov 2026; KRITON_STATEMENT_NOTES=1 shows them."""
+    return os.getenv("KRITON_STATEMENT_NOTES", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _stock_quote_question(query: str) -> bool:
     """A share-price question. Fetched up front too: in agent mode "Compare
     the current share prices of Tesla, Nvidia and Amazon" ran 73 s and was
     answered "no share price data" while the quote provider had all three
-    (6 Nov 2026), and a failed agent loop falls back with nothing fetched."""
-    from app.domains.market_data.registry import INTENT_QUOTE
-    return detect_market_data_intent(query or "") == INTENT_QUOTE
+    (6 Nov 2026), and a failed agent loop falls back with nothing fetched.
+    A price history too: "compare last 10 days of stock prices of apple,
+    amazon, microsoft in bar chart" was charted from the agent's own figures,
+    which no source verified, and the chart was refused (18 Nov 2026)."""
+    from app.domains.market_data.registry import INTENT_HISTORY, INTENT_QUOTE
+    return detect_market_data_intent(query or "") in (INTENT_QUOTE, INTENT_HISTORY)
 
 
 # A forecast or advice question about a share price needs reasoning; the quote
@@ -4866,6 +4915,7 @@ async def ask_kriton(
     # question wanted one and the model didn't already produce it (via prose
     # or the render_chart tool) — see live_data.build_forced_chart. Runs
     # before validation so the forced chart is checked like any other content.
+    forced_chart = None
     if agent_outcome is None and "```chart" not in composed_text:
         forced_chart = build_forced_chart(request.query, live_result.sources)
         if forced_chart:
@@ -5972,6 +6022,9 @@ async def ask_kriton(
         final_text, currency_notes = without_currency_symbols(final_text, source_currency(document_sources),
                                                               source_scale(document_sources))
         final_text = without_dangling_period(final_text)
+        # "Revenue / Revenue 1,850,000" as one line; no "pp" after an amount (18 Nov 2026).
+        from app.orchestration.statement_rules import merged_single_account_headings, without_points_on_amounts
+        final_text = without_points_on_amounts(merged_single_account_headings(final_text))
         limitations.extend(note for note in currency_notes if note not in limitations)
     balance_check = _missing_balance_check(request.query, final_text, document_figures_block)
     if balance_check and not evidence_gap_only and not is_offdomain_refusal:
@@ -6022,13 +6075,24 @@ async def ask_kriton(
                                        "the statements cannot be called verified, reconciled or final while a review "
                                        "item is open.")
         if engine_statement is not None:
+            # A scenario table's rows are the engine's placements (18 Nov 2026).
+            final_text, corrected = fs_engine_chat.correct_scenario_rows(final_text, engine_statement)
+            if corrected:
+                statement_notes.append(f"{len(corrected)} scenario figure{'s' if len(corrected) != 1 else ''} corrected "
+                                       "to the Financial Statements engine's: " + "; ".join(corrected[:3]) + ".")
             # Every narrative statement figure is the engine's (NB26-08).
             final_text, wrong_figures = fs_engine_chat.remove_unsupported_figures(final_text, engine_statement)
             if wrong_figures:
                 statement_notes.append(f"{len(wrong_figures)} figure{'s' if len(wrong_figures) != 1 else ''} removed "
                                        "from the text because the Financial Statements engine did not compute "
                                        f"{'it' if len(wrong_figures) == 1 else 'them'}: " + "; ".join(wrong_figures[:3]) + ".")
-        limitations[:0] = [note for note in statement_notes if note not in limitations]
+        if _statement_notes_shown():
+            limitations[:0] = [note for note in statement_notes if note not in limitations]
+        elif statement_notes:
+            # Not shown under document answers (18 Nov 2026): the draft status,
+            # framework, classification, tax and workspace notes are logged for
+            # review instead. KRITON_STATEMENT_NOTES=1 shows them again.
+            logger.info("statement_notes_withheld query=%s notes=%s", query_id, json.dumps(statement_notes))
     if (not evidence_gap_only and not is_offdomain_refusal and not uses_user_supplied_structure
             and rag_citations and not re.search(r"\[REF-\d+\]", final_text or "")):
         # Sources found but none cited: their markers are added where a source
@@ -6244,7 +6308,9 @@ async def ask_kriton(
                                              sources=[c.url for c in rag_citations if c.url])
 
     from app.orchestration.answer_formatting import has_retained_agent_chart, missing_visual_message, table_request_answered
-    retained_agent_chart = agent_outcome is not None and has_retained_agent_chart(final_text, agent_outcome.artifacts)
+    retained_agent_chart = (agent_outcome is not None and has_retained_agent_chart(final_text, agent_outcome.artifacts)
+                            # A chart built from the fetched series (build_forced_chart) is the visual.
+                            or bool(forced_chart and forced_chart.strip() in final_text))
     if (detect_explicit_visual_request(request.query) and visualization is None and not secondary_visualizations
             and not retained_agent_chart and not table_request_answered(request.query, final_text)):
         visual_note = missing_visual_message(request.query)
@@ -6541,7 +6607,8 @@ async def _verified_document_figures_context(
                     continue
                 if statement is not None:
                     fs_engine_chat.current_statement.set(statement)
-                    engine_block = fs_engine_chat.facts_block(statement, format_1=bool(_FORMAT_1_NAMED.search(query)))
+                    engine_block = fs_engine_chat.facts_block(statement, format_1=bool(_FORMAT_1_NAMED.search(query)),
+                                                              query=query)
                     # The other files keep the general figures; this one's
                     # come from the engine only, so there is one set of numbers.
                     sources = [s for s in sources if not (s.title or "").startswith(filename)]

@@ -48,6 +48,16 @@ def test_a_market_figure_with_no_company_or_figures_still_asks(question):
 
 
 @pytest.mark.parametrize("question", [
+    "what is current stock price rate of microsoft",
+    "what is the share price of apple",
+    "tesla stock price",
+])
+def test_a_well_known_company_in_lowercase_is_named(question):
+    # Live, 18 Nov 2026: "microsoft" in lowercase was asked which company.
+    assert clarification(build_task_contract(question), task_query=question) is None
+
+
+@pytest.mark.parametrize("question", [
     "What is the share price of Reliance Industries on the NSE?",
     "What was Apple's exact share price at 10:32 am yesterday? Just give me a number.",
     "What is the price of XYZQ123?",
@@ -117,3 +127,14 @@ def test_ifrs_18_cited_for_revenue_is_corrected_to_ifrs_15():
     assert "IFRS 15 (Revenue from Contracts with Customers)" in text and notes
     kept = "IFRS 18 sets out general presentation and disclosure requirements."
     assert correct_standard_references(kept) == (kept, [])
+
+
+def test_a_price_history_is_fetched_up_front_like_a_quote():
+    from app.orchestration.service import _stock_quote_question
+    assert _stock_quote_question("compare last 10 days of stock prices of apple, amazon, microsoft in bar chart")
+    assert _stock_quote_question("what is the share price of Apple")
+
+
+def test_a_figure_with_trailing_zeros_is_the_same_figure():
+    from app.orchestration.service import _figures
+    assert _figures("259.3 and 523.0") == _figures("259.30 and 523.00")

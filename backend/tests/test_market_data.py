@@ -66,6 +66,29 @@ def test_record_and_accounting_abbreviations_are_not_tickers():
     print("test_record_and_accounting_abbreviations_are_not_tickers: PASSED")
 
 
+@pytest.mark.parametrize("query,ticker", [
+    ("aaple stock price", "AAPL"), ("aapl stock price", "AAPL"), ("AAPLE share price", "AAPL"),
+    ("APPLE stock price", "AAPL"), ("appLE stock price", "AAPL"),
+    ("microsft share price", "MSFT"), ("msft stock price", "MSFT"), ("mircosoft stock price", "MSFT"),
+    ("amzon stock price", "AMZN"), ("amzn share price", "AMZN"),
+    ("tesle stock price", "TSLA"), ("tsla price", "TSLA"), ("telsa stock price", "TSLA"),
+    ("nvida stock price", "NVDA"), ("gogle share price", "GOOGL"), ("netflx stock price", "NFLX"),
+])
+def test_any_case_lowercase_ticker_or_misspelt_name_resolves(query, ticker):
+    """18 Nov 2026: "aaple", "aapl", "appLE" in a stock question are Apple."""
+    assert resolve_local(query).ticker == ticker
+
+
+def test_ordinary_words_are_not_corrected_to_companies():
+    from app.domains.market_data.identity import find_all_known_names
+    for query in ("what price shall I sell at", "sell shares today price", "how do I apply this to the share price",
+                  "test the share price", "apply IFRS 15"):
+        assert find_all_known_names(query) == [], query
+    # A typo is only corrected in a stock question.
+    assert find_all_known_names("aaple pie recipe") == []
+    assert [t for t, _, _ in find_all_known_names("compare aaple and microsft share price")] == ["AAPL", "MSFT"]
+
+
 def test_finds_explicit_ticker_and_known_name():
     assert find_ticker("MSFT share price") == "MSFT"
     assert find_ticker("BARC.L quote") == "BARC.L"

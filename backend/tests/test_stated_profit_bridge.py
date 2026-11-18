@@ -37,3 +37,12 @@ def test_no_block_without_the_amounts_or_a_profit_question():
     assert verified_profit_bridge_block("What is net income under IFRS?") == ""
     assert verified_profit_bridge_block("Calculate F0 net income.") == ""
     assert verified_profit_bridge_block("Revenue $12m and COGS $7.2m: what is the gross margin?") == ""
+
+
+def test_a_pasted_statement_to_comment_on_gets_no_profit_bridge():
+    """18 Nov 2026: a pasted income statement with "comment on the above" got a
+    bridge reading its subtotals as inputs (net income -62,300 beside 154,400)."""
+    statement = ("| Line | Amount |\n| --- | --- |\n| Revenue | 1,850,000 |\n| Cost of sales | 1,054,500 |\n"
+                 "| Operating expenses | 576,900 |\n| Depreciation | 52,500 |\n| Profit for the year | 154,400 |\n"
+                 "Net profit before tax 216,400; tax 62,000.\ncomment on the above")
+    assert verified_profit_bridge_block(statement) == ""
