@@ -99,3 +99,39 @@ def test_explicit_period_count_is_honoured_not_the_connectors_full_window():
     assert payload["categories"] == ["2023", "2024", "2025"]
     for series in payload["series"]:
         assert len(series["data"]) == 3
+
+
+def _history(symbol: str, closes: list[float]):
+    from app.domains.market_data.schemas import OHLCVBar
+    from app.orchestration.market_data import _history_source
+    days = ["2026-11-04", "2026-11-05", "2026-11-06", "2026-11-09", "2026-11-10"]
+    return _history_source([OHLCVBar(symbol=symbol, timestamp=day, open=c, high=c, low=c, close=c, volume=1,
+                                      interval="1d", provider="polygon") for day, c in zip(days, closes)])
+
+
+def test_several_companies_price_histories_are_compared_in_one_bar_chart():
+    """18 Nov 2026: "compare last 10 days of stock prices of apple, amazon,
+    microsoft in bar chart" had no chart: only one company's bars were kept."""
+    sources = [_history("AAPL", [349.51, 344.17, 342.37, 350.69, 348.51]),
+               _history("AMZN", [266.03, 260.21, 259.30, 266.93, 270.87]),
+               _history("MSFT", [555.80, 535.93, 530.61, 545.18, 533.16])]
+    payload = _fence_payload(build_forced_chart("compare stock prices of apple, amazon, microsoft in bar chart", sources))
+    assert payload["type"] == "bar" and payload["title"] == "Daily closing prices"
+    assert payload["categories"][0] == "2026-11-04" and len(payload["categories"]) == 5
+    assert [s["name"] for s in payload["series"]] == ["AAPL", "AMZN", "MSFT"]
+    assert payload["series"][1]["data"][2] == 259.3
+    # Every close is in the source text, not only the last eight.
+    assert "2026-11-04: 349.51" in sources[0].snippet
+
+
+def test_one_company_price_history_is_left_to_the_candlestick():
+    assert build_forced_chart("chart apple stock price last 5 days", [_history("AAPL", [1.0, 2.0, 3.0, 4.0, 5.0])]) is None
+
+
+def test_a_pie_of_several_companies_prices_shows_each_average_close():
+    """18 Nov 2026: "...apple, amazon, microsoft in pie chart" was drawn as bars."""
+    sources = [_history("AAPL", [10.0, 20.0, 30.0, 40.0, 50.0]), _history("MSFT", [5.0, 5.0, 5.0, 5.0, 5.0])]
+    payload = _fence_payload(build_forced_chart("compare last 5 days of stock prices of apple and microsoft in pie chart", sources))
+    assert payload["type"] == "pie"
+    assert payload["data"] == [{"name": "AAPL", "value": 30.0}, {"name": "MSFT", "value": 5.0}]
+    assert "Average close 30.00" in sources[0].snippet   # the pie's figure is in the source

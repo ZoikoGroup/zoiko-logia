@@ -98,3 +98,19 @@ async def test_pipeline_does_not_send_the_previous_ifrs_answer_to_tax_research(p
     await pipeline.ask(SCENARIO, history=[Message(role='user', content=IFRS), Message(
         role='assistant', content='PREVIOUS_IFRS_COMPARISON: inventories, revenue, leases and provisions.')])
     assert 'PREVIOUS_IFRS_COMPARISON' not in pipeline.agent.await_args.args[0]
+
+
+@pytest.mark.parametrize("query", [
+    "analyze on the above", "analyse the above", "Analyze the above answer", "evaluate the above",
+    "elaborate on the above", "expand on your answer", "break down the above", "give an analysis of the above",
+    "discuss the previous answer",
+])
+def test_analysing_the_above_is_a_follow_up(query):
+    """18 Nov 2026: "analyze on the above" after "what is ipr" analysed unrelated sources."""
+    assert service._looks_like_contextual_follow_up(query)
+
+
+@pytest.mark.parametrize("query", ["analyze last quarter's sales", "analyse the revenue of apple",
+                                   "evaluate this lease under IFRS 16"])
+def test_a_new_analysis_request_is_not_a_follow_up(query):
+    assert not service._looks_like_contextual_follow_up(query)

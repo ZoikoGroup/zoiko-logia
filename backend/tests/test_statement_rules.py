@@ -111,10 +111,16 @@ def pipeline(monkeypatch):
     return agent
 
 
-async def test_an_income_statement_answer_is_labelled_a_draft_without_a_compliance_claim(pipeline):
+async def test_an_income_statement_answer_is_labelled_a_draft_without_a_compliance_claim(pipeline, monkeypatch):
+    # The review notes are not shown under document answers (18 Nov 2026);
+    # KRITON_STATEMENT_NOTES=1 shows them again.
     response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
                                         request=AskKritonRequest(query="Generate income statement"))
     assert "590,250" in response.answer.text and "compliant with FRS 102" not in response.answer.text
+    assert STATUS_NOTE not in response.answer.limitations and COMPARATIVES_NOTE not in response.answer.limitations
+    monkeypatch.setenv("KRITON_STATEMENT_NOTES", "1")
+    response = await service.ask_kriton(AsyncMock(), MagicMock(), actor_id="u", tenant_id="t", role="ACCOUNTANT",
+                                        request=AskKritonRequest(query="Generate income statement"))
     assert response.answer.limitations[0] == STATUS_NOTE and COMPARATIVES_NOTE in response.answer.limitations
     prompt = str(pipeline.await_args)
     assert "Financial statement rules (ZoikoLogia Document 01)" in prompt
@@ -573,3 +579,35 @@ def test_every_document_answer_is_asked_for_full_amounts_and_the_file_currency_o
     from app.orchestration.statement_rules import document_amounts_rule
     assert "576,900, not £576.9 k" in document_amounts_rule("GBP") and "The documents state GBP" in document_amounts_rule("GBP")
     assert "never carry one document's currency to another or infer one from wording" in document_amounts_rule(None)
+
+
+def test_a_bold_period_date_is_kept():
+    """18 Nov 2026: "for the year ended **31 March 2026**" became
+    "reporting period not confirmed 31 March 2026"."""
+    from app.orchestration.statement_rules import INSTRUCTIONS, without_dangling_period
+    for dated in ("Income Statement for the year ended **31 March 2026** (GBP)",
+                  "Income Statement for the year ended: 31 March 2026"):
+        assert without_dangling_period(dated) == dated
+    assert without_dangling_period("Income Statement for the year ended (GBP)") == \
+        "Income Statement reporting period not confirmed (GBP)"
+    # One account under a heading is one line, not a heading, a row and a subtotal.
+    assert "no subtotal that repeats it" in INSTRUCTIONS
+
+
+def test_a_single_account_heading_is_one_line_and_amounts_have_no_points():
+    """18 Nov 2026: "Revenue / Revenue 1,850,000 / Revenue subtotal" and
+    "an increase of 14,900 pp" under a Northbridge income statement."""
+    from app.orchestration.statement_rules import merged_single_account_headings, without_points_on_amounts
+    table = ("| Line | Amount |\n| --- | --- |\n| **Revenue** |  |\n| Revenue | 1,850,000 |\n"
+             "| **Cost of sales** |  |\n| Cost of sales | 1,054,500 |\n| Cost of sales subtotal | 1,054,500 |\n"
+             "| **Gross profit** | 795,500 |\n| **Finance income** |  |\n| Interest income | 12,000 |\n"
+             "| **Other revenue** |  |\n| Other revenue | 100 |\n| Grants | 50 |")
+    merged = merged_single_account_headings(table)
+    assert "| **Revenue** | **1,850,000** |" in merged and "| **Cost of sales** | **1,054,500** |" in merged
+    assert "subtotal" not in merged and merged.count("Revenue") == 1
+    assert "| **Finance income** |  |\n| Interest income | 12,000 |" in merged      # names differ: kept
+    assert "| Other revenue | 100 |\n| Grants | 50 |" in merged                     # two accounts: kept
+    assert without_points_on_amounts("an increase of 14,900 pp; margin up 0.8 pp") == \
+        "an increase of 14,900; margin up 0.8 pp"
+    from app.orchestration.statement_rules import without_dangling_period
+    assert without_dangling_period("for the year ended FY 2025-26") == "for the year ended FY 2025-26"

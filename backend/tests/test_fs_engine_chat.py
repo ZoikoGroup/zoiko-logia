@@ -409,3 +409,40 @@ def test_the_alternative_statement_is_computed_line_by_line():
     assert "Bank charges 2,900 from administrative expenses to interest payable and similar expenses" in block
     assert "Interest received 12,000 from interest receivable and similar income to other operating income" in block
     assert "The rows under each heading must add up to its subtotal" in block
+
+
+def test_a_statement_request_gets_the_statement_without_unasked_analysis():
+    """18 Nov 2026: "generte income statements" came back with ratios, a second
+    statement and a scenario table; the notes already give every operating profit."""
+    s = build("northbridge.csv", NORTHBRIDGE)
+    plain = facts_block(s, query="generte income statements from this document")
+    assert "Margins (management analysis)" not in plain and "Alternative classification, every line" not in plain
+    assert "Each choice on its own" not in plain and "Give only the statement(s) the question asks for" in plain
+    assert "operating profit is 233,500 (a difference of 14,900)" in plain        # still said once
+    asked = facts_block(s, query="income statement with ratios and both classifications")
+    assert "Margins (management analysis)" in asked and "Show all 4 operating profits" in asked
+
+
+def test_a_scenario_row_is_put_back_to_the_engine_figures():
+    """18 Nov 2026: "Only Interest income moved | 230,600 | (2,200)" beside the engine's -14,200."""
+    s = build("northbridge.csv", NORTHBRIDGE)
+    text = ("| Scenario | Operating profit | Net finance |\n| --- | --- | --- |\n"
+            "| Baseline | 218,600 | (2,200) |\n| Only Interest received moved | 230,600 | (2,200) |\n"
+            "| Only Bank charges moved | 221,500 | (5,100) |\n| Both | **233,500** | (17,100) |")
+    fixed, corrections = fs_engine_chat.correct_scenario_rows(text, s)
+    assert "| 230,600 | (14,200) |" in fixed and corrections == ["(2,200) → -14,200"]
+    assert "| 218,600 | (2,200) |" in fixed and "| 221,500 | (5,100) |" in fixed
+    # A statement table (no scenario columns) is left alone.
+    statement = "| Line | Amount |\n| --- | --- |\n| Operating profit | 218,600 |"
+    assert fs_engine_chat.correct_scenario_rows(statement, s) == (statement, [])
+
+
+def test_the_open_classification_is_given_as_one_correct_sentence():
+    """18 Nov 2026: "if interest income and bank charges are re-classified as
+    operating items ... 14,900 pp" (bank charges were already operating)."""
+    s = build("northbridge.csv", NORTHBRIDGE)
+    sentence = fs_engine_chat.reclassification_sentence(s)
+    assert sentence.startswith("If bank charges were shown as interest payable and similar expenses instead of "
+                               "administrative expenses and interest received were shown as other operating income")
+    assert sentence.endswith("operating profit would be 233,500 (14,900 higher); profit before tax would be unchanged.")
+    assert sentence in facts_block(s, query="generate the income statement")

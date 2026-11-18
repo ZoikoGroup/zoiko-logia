@@ -491,11 +491,35 @@ def build_forced_chart(query: str, sources: list[WebSource]) -> str | None:
     if not wants_visual(query) or not allows_automatic_chart(query):
         return None
     stat_sources = [s for s in sources if s.series and len(s.series) >= 2]
+    # One company's price history is charted from its OHLC bars (candlestick);
+    # several companies' are compared here, one bar series each.
+    price_histories = [s for s in stat_sources if " price history (" in s.title]
+    if price_histories and len(price_histories) < 2:
+        stat_sources = [s for s in stat_sources if s not in price_histories]
     if not stat_sources:
         return None
     period_count = _requested_period_count(query)
     if period_count and period_count >= 2:
         stat_sources = [dataclasses.replace(s, series=s.series[-period_count:]) for s in stat_sources]
+
+    from app.orchestration.response_planner import detect_requested_chart_variant
+    if (len(price_histories) >= 2 and stat_sources == price_histories
+            and detect_requested_chart_variant(query) in ("PIE_CHART", "DONUT_CHART")):
+        # A pie of several companies' prices: each one's average close over
+        # the period, as a share of the companies combined. Ten days of three
+        # prices drawn as a bar chart instead ignored the request (18 Nov 2026).
+        first = min(s.series[0][0] for s in stat_sources)
+        last = max(s.series[-1][0] for s in stat_sources)
+        args = {
+            "type": "pie",
+            "title": f"Average closing price, {first} to {last} (share of the companies combined)",
+            "data": [{"name": s.title.rsplit("—", 1)[-1].split(" price history (", 1)[0].strip(),
+                      "value": round(sum(v for _, v in s.series) / len(s.series), 2)} for s in stat_sources],
+        }
+        try:
+            return build_chart_fence(json.dumps(args))
+        except ChartToolError:
+            return None
 
     if len(stat_sources) == 1:
         source = stat_sources[0]
@@ -519,10 +543,12 @@ def build_forced_chart(query: str, sources: list[WebSource]) -> str | None:
         for source in stat_sources:
             values_by_period = dict(source.series)
             label = source.title.rsplit("—", 1)[-1].strip() if "—" in source.title else source.title
+            label = label.split(" price history (", 1)[0]   # "AAPL price history (…)" → "AAPL"
             series.append({"name": label, "data": [values_by_period[period] for period in ordered_periods]})
         args = {
             "type": "bar",
-            "title": stat_sources[0].title.rsplit("—", 1)[0].strip() if "—" in stat_sources[0].title else "Comparison",
+            "title": "Daily closing prices" if all(s in price_histories for s in stat_sources)
+            else stat_sources[0].title.rsplit("—", 1)[0].strip() if "—" in stat_sources[0].title else "Comparison",
             "categories": ordered_periods,
             "series": series,
         }

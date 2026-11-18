@@ -61,6 +61,11 @@ _OPENING = {"what", "which", "how", "is", "are", "calculate", "compute", "give",
 
 
 def _names_company(text: str) -> bool:
+    # A well-known company typed in lowercase ("stock price of microsoft") is
+    # named: the capitalisation test below alone asked which company (18 Nov 2026).
+    from app.domains.market_data.identity import known_ticker_for_name
+    if known_ticker_for_name(text or "")[0]:
+        return True
     for sentence in re.split(r"(?<=[.?!])\s+|\n", text or ""):
         words = re.findall(r"[A-Za-z][\w&.'-]*", sentence)
         for index, word in enumerate(words):
