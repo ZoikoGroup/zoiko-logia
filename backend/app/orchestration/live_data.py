@@ -102,6 +102,66 @@ async def _no_match() -> None:
     return None
 
 
+_SPAN_ASKED = re.compile(r"\b(?:last|past)\s+(\d{1,3})\s*(day|week|month|year)s?\b", re.I)
+_SPAN_DAYS = {"day": 1, "week": 7, "month": 31, "year": 366}
+
+
+def history_coverage_note(query: str, sources, today=None) -> str:
+    """Say when the provider's prices start later than the span asked for:
+    "last 5 years" came back from November 2024 only, with no word of it
+    (18 Nov 2026)."""
+    from datetime import date, timedelta
+    match = _SPAN_ASKED.search(query or "")
+    starts = [s.series[0][0] for s in sources if getattr(s, "series", None) and " price history (" in (s.title or "")]
+    if not match or not starts:
+        return ""
+    count, unit = int(match.group(1)), match.group(2).lower()
+    wanted = (today or date.today()) - timedelta(days=count * _SPAN_DAYS[unit])
+    first = max(starts)
+    try:
+        short = date.fromisoformat(first[:10]) - wanted > timedelta(days=max(7, _SPAN_DAYS[unit]))
+    except ValueError:
+        return ""
+    if not short:
+        return ""
+    return (f"The market data provider returned prices from {first[:10]} only, so the chart covers less than the "
+            f"{count} {unit}{'s' if count != 1 else ''} asked for.")
+
+
+def add_price_history(evidence: EvidenceModel, market_sources, query: str) -> None:
+    """One share's fetched price bars as chart evidence: OHLC bars, or — when a
+    pie or donut is asked for — each day's close as a slice.
+
+    "give last 10 days stock prices of tesla in pie chart" was drawn as a line
+    chart, "a pie chart isn't available", with "2026-11-04T05:00:00+00:00" on
+    the axis (18 Nov 2026). The slices are labelled for what they are: a share
+    of the closes added together."""
+    from app.orchestration.response_planner import detect_requested_chart_variant
+    evidence.ohlc_subject = market_sources.symbol or evidence.ohlc_subject
+    bars = market_sources.ohlc
+    closes = [(bar.timestamp[:10], bar.close) for bar in bars if bar.close and bar.close > 0]
+    if (detect_requested_chart_variant(query) in ("PIE_CHART", "DONUT_CHART") and len(closes) >= 2
+            and len(closes) == len(bars)):
+        total = sum(close for _, close in closes)
+        symbol = market_sources.symbol or "the share"
+        evidence.composition = [Observation(dimension=day, value=close / total * 100.0, measure="percent")
+                                for day, close in closes]
+        evidence.composition_subject = f"{symbol} daily closing prices, {closes[0][0]} to {closes[-1][0]}"
+        evidence.composition_is_estimated = False
+        evidence.composition_caveat = (
+            f"Each slice is one day's closing price as a share of the {len(closes)} closes added together "
+            f"({total:,.2f}). It compares the days; it is not a part of anything the company holds.")
+        return
+    evidence.ohlc.extend(
+        OHLCBar(
+            # A daily, weekly or monthly bar is labelled by its date.
+            dimension=bar.timestamp[:10] if (bar.interval or "1d") in ("1d", "1w", "1mo") else bar.timestamp,
+            open=bar.open, high=bar.high, low=bar.low, close=bar.close, volume=bar.volume,
+        )
+        for bar in bars
+    )
+
+
 async def fetch_live_data(query: str) -> LiveDataResult:
     """Run the exact-figure connectors concurrently. Never raises — a failing
     connector contributes nothing to either the sources or the evidence.
@@ -436,19 +496,15 @@ async def fetch_live_data(query: str) -> LiveDataResult:
     if market_sources is not None:
         sources.extend(market_sources.sources)
         if market_sources.ohlc:
-            evidence.ohlc_subject = market_sources.symbol or evidence.ohlc_subject
-            evidence.ohlc.extend(
-                OHLCBar(
-                    dimension=bar.timestamp, open=bar.open, high=bar.high,
-                    low=bar.low, close=bar.close, volume=bar.volume,
-                )
-                for bar in market_sources.ohlc
-            )
+            add_price_history(evidence, market_sources, query)
 
         if market_sources.sources and deterministic_answer is None:
             # Every company fetched, not the first: a comparison of Tesla,
             # Nvidia and Amazon must show all three.
             deterministic_answer = "\n\n".join(s.snippet for s in market_sources.sources if s.snippet) or None
+            coverage = history_coverage_note(query, market_sources.sources)
+            if deterministic_answer and coverage:
+                deterministic_answer += "\n\n" + coverage
 
     return LiveDataResult(
         sources=sources,
@@ -498,12 +554,16 @@ def build_forced_chart(query: str, sources: list[WebSource]) -> str | None:
         stat_sources = [s for s in stat_sources if s not in price_histories]
     if not stat_sources:
         return None
+    all_prices = all(" price history (" in s.title for s in stat_sources)
     period_count = _requested_period_count(query)
-    if period_count and period_count >= 2:
+    # "Last 5 years" is a span of price bars, not the last five points: a
+    # five-year comparison was cut to five days (18 Nov 2026).
+    if period_count and period_count >= 2 and not all_prices:
         stat_sources = [dataclasses.replace(s, series=s.series[-period_count:]) for s in stat_sources]
 
     from app.orchestration.response_planner import detect_requested_chart_variant
-    if (len(price_histories) >= 2 and stat_sources == price_histories
+    requested = detect_requested_chart_variant(query) or ""
+    if (len(price_histories) >= 2 and all_prices
             and detect_requested_chart_variant(query) in ("PIE_CHART", "DONUT_CHART")):
         # A pie of several companies' prices: each one's average close over
         # the period, as a share of the companies combined. Ten days of three
@@ -521,10 +581,21 @@ def build_forced_chart(query: str, sources: list[WebSource]) -> str | None:
         except ChartToolError:
             return None
 
+    def chart_type(points: int) -> str:
+        """The type asked for; otherwise a line for a long series, bars for a
+        short comparison. "...in line chart" was drawn as bars (18 Nov 2026)."""
+        if requested in ("STANDARD_LINE", "LINE_CHART", "SPLINE_LINE_CHART", "STEP_LINE_CHART"):
+            return "line"
+        if requested == "AREA_CHART":
+            return "area"
+        if requested in ("BAR_CHART", "GROUPED_BAR_CHART", "STACKED_BAR_CHART"):
+            return "bar"
+        return "line" if points > 12 or len(stat_sources) == 1 else "bar"
+
     if len(stat_sources) == 1:
         source = stat_sources[0]
         args = {
-            "type": "line",
+            "type": chart_type(len(source.series)),
             "title": source.title,
             "categories": [period for period, _ in source.series],
             "series": [{"name": source.title, "data": [value for _, value in source.series]}],
@@ -545,13 +616,21 @@ def build_forced_chart(query: str, sources: list[WebSource]) -> str | None:
             label = source.title.rsplit("—", 1)[-1].strip() if "—" in source.title else source.title
             label = label.split(" price history (", 1)[0]   # "AAPL price history (…)" → "AAPL"
             series.append({"name": label, "data": [values_by_period[period] for period in ordered_periods]})
+        if all_prices:
+            # The provider's name is not a title ("polygon", 18 Nov 2026).
+            cadence = next((word for word in ("weekly", "monthly", "daily")
+                            if f" {word} closes" in (stat_sources[0].snippet or "")), "daily")
+            title = f"{cadence.capitalize()} closing prices, {ordered_periods[0]} to {ordered_periods[-1]}"
+        else:
+            title = stat_sources[0].title.rsplit("—", 1)[0].strip() if "—" in stat_sources[0].title else "Comparison"
         args = {
-            "type": "bar",
-            "title": "Daily closing prices" if all(s in price_histories for s in stat_sources)
-            else stat_sources[0].title.rsplit("—", 1)[0].strip() if "—" in stat_sources[0].title else "Comparison",
+            "type": chart_type(len(ordered_periods)),
+            "title": title,
             "categories": ordered_periods,
             "series": series,
         }
+        if requested == "STACKED_BAR_CHART":
+            args["stacked"] = True
 
     try:
         return build_chart_fence(json.dumps(args))
