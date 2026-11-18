@@ -116,7 +116,7 @@ def test_several_companies_price_histories_are_compared_in_one_bar_chart():
                _history("AMZN", [266.03, 260.21, 259.30, 266.93, 270.87]),
                _history("MSFT", [555.80, 535.93, 530.61, 545.18, 533.16])]
     payload = _fence_payload(build_forced_chart("compare stock prices of apple, amazon, microsoft in bar chart", sources))
-    assert payload["type"] == "bar" and payload["title"] == "Daily closing prices"
+    assert payload["type"] == "bar" and payload["title"] == "Daily closing prices, 2026-11-04 to 2026-11-10"
     assert payload["categories"][0] == "2026-11-04" and len(payload["categories"]) == 5
     assert [s["name"] for s in payload["series"]] == ["AAPL", "AMZN", "MSFT"]
     assert payload["series"][1]["data"][2] == 259.3
@@ -135,3 +135,49 @@ def test_a_pie_of_several_companies_prices_shows_each_average_close():
     assert payload["type"] == "pie"
     assert payload["data"] == [{"name": "AAPL", "value": 30.0}, {"name": "MSFT", "value": 5.0}]
     assert "Average close 30.00" in sources[0].snippet   # the pie's figure is in the source
+
+
+def test_a_pie_of_one_share_shows_each_daily_close():
+    """18 Nov 2026: "give last 10 days stock prices of tesla in pie chart" was
+    a line chart with "a pie chart isn't available"; dates were timestamps."""
+    from app.domains.market_data.schemas import OHLCVBar
+    from app.orchestration.evidence import EvidenceModel
+    from app.orchestration.live_data import add_price_history
+    from app.orchestration.market_data import MarketSourceResult, _history_source
+    days = ["2026-11-04T05:00:00+00:00", "2026-11-05T05:00:00+00:00", "2026-11-06T05:00:00+00:00"]
+    bars = [OHLCVBar(symbol="TSLA", timestamp=d, open=1, high=1, low=1, close=c, volume=1, interval="1d",
+                     provider="polygon") for d, c in zip(days, [100.0, 300.0, 600.0])]
+    result = MarketSourceResult(sources=[_history_source(bars)], ohlc=bars, symbol="TSLA")
+    pie = EvidenceModel()
+    add_price_history(pie, result, "give last 3 days stock prices of tesla in pie chart")
+    assert [(o.dimension, round(o.value)) for o in pie.composition] == [("2026-11-04", 10), ("2026-11-05", 30),
+                                                                      ("2026-11-06", 60)]
+    assert not pie.ohlc and pie.composition_subject == "TSLA daily closing prices, 2026-11-04 to 2026-11-06"
+    assert "not a part of anything the company holds" in pie.composition_caveat
+    line = EvidenceModel()
+    add_price_history(line, result, "give last 3 days stock prices of tesla in line chart")
+    assert [b.dimension for b in line.ohlc] == ["2026-11-04", "2026-11-05", "2026-11-06"] and not line.composition
+
+
+def test_a_comparison_is_drawn_as_the_chart_asked_for():
+    """18 Nov 2026: "compare last 5 years stock price rates of amazon,
+    microsoft, tesla, apple in line chart" was drawn as bars, cut to five
+    days, and titled "polygon"."""
+    sources = [_history("AAPL", [1.0, 2.0, 3.0, 4.0, 5.0]), _history("MSFT", [5.0, 4.0, 3.0, 2.0, 1.0])]
+    line = _fence_payload(build_forced_chart("compare last 5 years stock prices of apple and microsoft in line chart",
+                                             sources))
+    assert line["type"] == "line" and len(line["categories"]) == 5          # not cut to the "last 5" points
+    assert line["title"] == "Daily closing prices, 2026-11-04 to 2026-11-10"
+    bar = _fence_payload(build_forced_chart("compare stock prices of apple and microsoft in bar chart", sources))
+    assert bar["type"] == "bar"
+    area = _fence_payload(build_forced_chart("compare stock prices of apple and microsoft as an area chart", sources))
+    assert area["type"] == "area"
+
+
+def test_a_shorter_history_than_asked_is_said():
+    from datetime import date
+    from app.orchestration.live_data import history_coverage_note
+    sources = [_history("AAPL", [1.0, 2.0, 3.0, 4.0, 5.0])]
+    note = history_coverage_note("last 5 years of apple", sources, today=date(2026, 11, 18))
+    assert note.startswith("The market data provider returned prices from 2026-11-04 only") and "5 years" in note
+    assert history_coverage_note("last 10 days of apple", sources, today=date(2026, 11, 12)) == ""

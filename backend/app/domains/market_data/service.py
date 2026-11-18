@@ -361,7 +361,11 @@ async def fetch_market_data_for_companies(
     if not providers:
         return []
 
-    effective_limit = registry.requested_bars(query) if intent == registry.INTENT_HISTORY else limit
+    # The whole span asked for, as fetch_market_data() does: "last 5 years" of
+    # four companies came back as 400 daily bars from April 2025 (18 Nov 2026).
+    effective_interval, effective_limit = "1d", limit
+    if intent == registry.INTENT_HISTORY:
+        effective_interval, effective_limit = registry.requested_history_window(query)
 
     results: list[MarketResultForCompany] = []
     try:
@@ -369,7 +373,9 @@ async def fetch_market_data_for_companies(
             for ticker, country, name in companies:
                 ref = EntityRef(ticker=ticker, country=country, name=name)
                 try:
-                    outcome = await fetch_for_intent(client, intent, ref, limit=effective_limit)
+                    outcome = await fetch_for_intent(
+                        client, intent, ref, limit=effective_limit,
+                        **({"interval": effective_interval} if intent == registry.INTENT_HISTORY else {}))
                 except Exception as exc:  # noqa: BLE001 — one company's failure must not drop the rest
                     logger.warning(
                         "market_data: comparison fetch failed for %s: %s", name, type(exc).__name__

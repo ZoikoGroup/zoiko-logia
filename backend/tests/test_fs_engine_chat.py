@@ -444,7 +444,9 @@ def test_the_open_classification_is_given_as_one_correct_sentence():
     sentence = fs_engine_chat.reclassification_sentence(s)
     assert sentence.startswith("If bank charges were shown as interest payable and similar expenses instead of "
                                "administrative expenses and interest received were shown as other operating income")
-    assert sentence.endswith("operating profit would be 233,500 (14,900 higher); profit before tax would be unchanged.")
+    assert "operating profit would be 233,500 (14,900 higher); moving only bank charges: 221,500; moving only " \
+           "interest received: 230,600; profit before tax would be unchanged in every case." in sentence
+    assert "not a determination that any of them is appropriate" in sentence                  # D-01 / DC-02
     assert sentence in facts_block(s, query="generate the income statement")
 
 
@@ -462,3 +464,16 @@ def test_a_pasted_statement_to_comment_on_is_reviewed_not_recomputed():
     assert fs_engine_chat.reclassification_sentence(s) in block
     # The pasted words ("re-classified") do not ask for the scenarios.
     assert "Each choice on its own" not in block and "Margins (management analysis)" not in block
+
+
+
+def test_the_review_points_stay_as_one_line_when_the_notes_are_hidden():
+    """ZL-FSR-002 / ZL-FSR-DEC-20261104: draft status, comparatives, framework
+    and tax review stay visible (18 Nov 2026)."""
+    s = build("northbridge.csv", NORTHBRIDGE)
+    notes = statement_notes(s) + ["Framework not confirmed: ... (FRAMEWORK_UNKNOWN).",
+                                  "Prior-year (comparative) figures: not provided ... (SOURCE_MISSING)."]
+    assert fs_engine_chat.compact_status(notes, has_tax=True) == (
+        "Draft only: not approved, audited or filing-ready; prior-year figures: pending; framework not confirmed; "
+        "tax split and reconciliation pending; classification needs evidence.")
+    assert "bank statements" in facts_block(s, query="generate the income statement")      # footnote evidence (E08)

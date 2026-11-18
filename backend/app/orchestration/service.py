@@ -3985,7 +3985,11 @@ async def ask_kriton(
         evidence_sources = document_sources + web_sources
     else:  # DOCUMENTS_THEN_WEB
         evidence_sources = document_sources or web_sources
-    source_texts.update({s.source_id or s.url: s.snippet or "" for s in evidence_sources})
+    # A fetched series is part of what its source states: a chart of 126 daily
+    # closes was "not linked" because the snippet lists only the last eight
+    # (18 Nov 2026).
+    source_texts.update({s.source_id or s.url: (s.snippet or "") + "".join(
+        f"\n{period}: {value}" for period, value in (getattr(s, "series", None) or [])) for s in evidence_sources})
     rag_citations: list[SourceCitation] = [
         SourceCitation(
             ref_id=f"REF-{i + 1}",
@@ -4065,7 +4069,9 @@ async def ask_kriton(
         ):
             deterministic_chart_text = _grounded_domain_fallback(
                 request.query, live_evidence, series_ref=_series_ref(rag_citations, live_evidence))
-        elif live_evidence.composition_subject:
+        # A pie of one share's daily closes (live_data) keeps the fetched
+        # prices as its text; the ownership narration is for holders.
+        elif live_evidence.composition_subject and not live_evidence.ohlc_subject:
             # Real, named PSC/shareholder data (or a confirmed no-PSC-on-record
             # result) from Companies House is itself proof this is an in-domain,
             # answerable ownership question — never let the model free-narrate
@@ -6089,10 +6095,14 @@ async def ask_kriton(
         if _statement_notes_shown():
             limitations[:0] = [note for note in statement_notes if note not in limitations]
         elif statement_notes:
-            # Not shown under document answers (18 Nov 2026): the draft status,
-            # framework, classification, tax and workspace notes are logged for
-            # review instead. KRITON_STATEMENT_NOTES=1 shows them again.
+            # Not shown in full under document answers (18 Nov 2026): logged for
+            # review, with the points ZL-FSR-002 requires kept as one line.
+            # KRITON_STATEMENT_NOTES=1 shows them all again.
             logger.info("statement_notes_withheld query=%s notes=%s", query_id, json.dumps(statement_notes))
+            compact = fs_engine_chat.compact_status(
+                statement_notes, has_tax=bool(engine_statement is not None and engine_statement.figures.get("tax")))
+            if compact not in limitations:
+                limitations.insert(0, compact)
     if (not evidence_gap_only and not is_offdomain_refusal and not uses_user_supplied_structure
             and rag_citations and not re.search(r"\[REF-\d+\]", final_text or "")):
         # Sources found but none cited: their markers are added where a source

@@ -271,8 +271,13 @@ def reclassification_sentence(s: ChatStatement) -> str:
                          for c in s.choices)
     difference = s.alternative["operating_profit"] - s.figures["operating_profit"]
     direction = "higher" if difference > 0 else "lower"
+    # Each choice on its own too (decision D-01 / DC-02: the two endpoints hid
+    # 230,600 and 221,500), and that none of them is a determination (D-01).
+    alone = "; ".join(f"moving only {c.account.lower()}: {_fmt(x['operating_profit'])}" for c, x in s.sensitivities)
     return (f"If {moves}, operating profit would be {_fmt(s.alternative['operating_profit'])} "
-            f"({_fmt(abs(difference))} {direction}); profit before tax would be unchanged.")
+            f"({_fmt(abs(difference))} {direction})" + (f"; {alone}" if alone else "")
+            + "; profit before tax would be unchanged in every case. These are presentation alternatives, not a "
+              "determination that any of them is appropriate: the treatment depends on evidence of each item's nature.")
 
 
 def facts_block(s: ChatStatement, format_1: bool = False, query: str | None = None) -> str:
@@ -346,7 +351,11 @@ def facts_block(s: ChatStatement, format_1: bool = False, query: str | None = No
               f"{_fmt(a['operating_profit'] - f['operating_profit'])}); profit before tax is unchanged. "
             + ("State both." if detailed else
                "Say so beside the statement in this one sentence, copied as written: \""
-               + reclassification_sentence(s) + "\" Do not add an alternative statement or a scenario table."))
+               + reclassification_sentence(s) + "\" Do not add an alternative statement or a scenario table. "
+               # The footnote said "invoices" for bank charges; the engine's
+               # evidence is bank statements (E08, 18 Nov 2026).
+               "A footnote on one of these accounts names the evidence given for it here: "
+               + "; ".join(f"{c.account}: {c.evidence or 'the nature of the transactions'}" for c in s.choices) + "."))
         out.append("Evidence that would decide each: " + "; ".join(
             f"{c.account}: {c.evidence or 'the nature of the transactions'}" for c in s.choices) + ".")
     if s.choices and detailed:
@@ -536,6 +545,28 @@ def statement_notes(s: ChatStatement) -> list[str]:
     if s.source_flags:
         notes.append("Source to review before relying on the figures: " + " ".join(s.source_flags) + " (SOURCE_REVIEW)")
     return notes
+
+
+def compact_status(notes: list[str], has_tax: bool) -> str:
+    """The review notes as one line, shown when the full notes are not
+    (KRITON_STATEMENT_NOTES off). ZL-FSR-002 and decision ZL-FSR-DEC-20261104
+    require the draft status, the missing comparatives, the framework and the
+    tax review to stay visible (18 Nov 2026)."""
+    text = "\n".join(notes)
+    parts = ["Draft only: not approved, audited or filing-ready"]
+    if "(ARITHMETIC_FAIL)" in text:
+        parts.append("the trial balance does not balance")
+    if "(RECONCILIATION_UNRESOLVED)" in text:
+        parts.append("the statements do not reconcile yet")
+    if "(SOURCE_MISSING)" in text or "comparative" in text.lower():
+        parts.append("prior-year figures: pending")
+    if "(FRAMEWORK_UNKNOWN)" in text:
+        parts.append("framework not confirmed")
+    if has_tax or "(TAX_REVIEW)" in text:
+        parts.append("tax split and reconciliation pending")
+    if "(CLASSIFICATION_REVIEW)" in text or "(CLASSIFICATION_UNVERIFIED)" in text:
+        parts.append("classification needs evidence")
+    return "; ".join(parts) + "."
 
 
 WORKSPACE_NOTE = ("To decide the open items with their evidence and take the statements through review, open them "
