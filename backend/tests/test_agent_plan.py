@@ -197,3 +197,19 @@ async def test_an_empty_knowledge_base_search_still_leads_to_the_planned_web_sea
     assert [r.tool for r in outcome.tool_calls] == ["search_knowledge_base", "search_web"]
     assert outcome.text.startswith("IFRS 18 replaces IAS 1") and outcome.sources
     assert outcome.stop_reason == "final_answer"
+
+
+
+def test_a_chart_of_accounts_is_not_a_chart_request():
+    """19 Nov 2026: seven definitions asked together, one of them "What is a
+    chart of accounts?", came back as only "a chart cannot be generated"."""
+    from app.orchestration.response_planner import detect_explicit_visual_request, detect_requested_chart_variant
+    from app.orchestration.websearch import wants_visual
+    for question in ("What is a chart of accounts?", "What is depreciation?\n\nWhat is a chart of accounts?",
+                     "Explain the charts of accounts used by UK companies"):
+        assert "render_chart" not in plan_request(question).tools, question
+        assert not wants_visual(question) and not detect_explicit_visual_request(question), question
+    # A real chart request still is one.
+    for question in ("show the chart of accounts as a pie chart", "show revenue as a bar chart"):
+        assert "render_chart" in plan_request(question).tools and wants_visual(question), question
+    assert detect_requested_chart_variant("show the chart of accounts as a pie chart") == "PIE_CHART"

@@ -15,6 +15,7 @@ behaves.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
@@ -368,19 +369,26 @@ async def fetch_market_data_for_companies(
         effective_interval, effective_limit = registry.requested_history_window(query)
 
     results: list[MarketResultForCompany] = []
+
+    async def one(client, ticker: str, country: str, name: str):
+        ref = EntityRef(ticker=ticker, country=country, name=name)
+        try:
+            return await fetch_for_intent(
+                client, intent, ref, limit=effective_limit,
+                **({"interval": effective_interval} if intent == registry.INTENT_HISTORY else {}))
+        except Exception as exc:  # noqa: BLE001 — one company's failure must not drop the rest
+            logger.warning("market_data: comparison fetch failed for %s: %s", name, type(exc).__name__)
+            return None
+
     try:
         async with make_client() as client:
-            for ticker, country, name in companies:
-                ref = EntityRef(ticker=ticker, country=country, name=name)
-                try:
-                    outcome = await fetch_for_intent(
-                        client, intent, ref, limit=effective_limit,
-                        **({"interval": effective_interval} if intent == registry.INTENT_HISTORY else {}))
-                except Exception as exc:  # noqa: BLE001 — one company's failure must not drop the rest
-                    logger.warning(
-                        "market_data: comparison fetch failed for %s: %s", name, type(exc).__name__
-                    )
-                    continue
+            # All companies at once: one after another, each waiting out the
+            # first provider's rate-limit retries, four companies' history took
+            # ~10 s of the 12 s live-data budget and was then dropped, so "...in
+            # pie chart" fell back to the agent's 365-day tool (19 Nov 2026).
+            outcomes = await asyncio.gather(*(one(client, ticker, country, name)
+                                              for ticker, country, name in companies))
+            for (_ticker, _country, name), outcome in zip(companies, outcomes):
                 if outcome is None:
                     continue
                 result, provider_name = outcome

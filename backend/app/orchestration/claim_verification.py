@@ -320,8 +320,9 @@ def remove_claims(answer: str, claims: list[str], note: str | None = None) -> st
         original = line
         for claim in claims:
             line = line.replace(claim, "").replace("  ", " ")
-        # A bullet whose whole sentence was removed: drop the bare "- ".
-        if line != original and not line.strip(" -*•\t"):
+        # A bullet whose whole sentence was removed: drop the bare "- ", and
+        # a line left with only its citation (" [REF-1]", 19 Nov 2026).
+        if line != original and not re.sub(r"\[REF-\d+\]", "", line).strip(" -*•\t.,;"):
             continue
         # What a removal leaves of a sentence: "must register for VAT." after
         # "Because turnover exceeds £90,000, GreenTech" went (24 Oct 2026).

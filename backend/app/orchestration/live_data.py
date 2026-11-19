@@ -568,13 +568,22 @@ def build_forced_chart(query: str, sources: list[WebSource]) -> str | None:
         # A pie of several companies' prices: each one's average close over
         # the period, as a share of the companies combined. Ten days of three
         # prices drawn as a bar chart instead ignored the request (18 Nov 2026).
-        first = min(s.series[0][0] for s in stat_sources)
-        last = max(s.series[-1][0] for s in stat_sources)
+        # Over the dates every company has: two providers returned 2 and 10
+        # years, and a 2-year average sat beside 10-year ones (19 Nov 2026).
+        shared = set.intersection(*(set(day for day, _ in s.series) for s in stat_sources))
+        if len(shared) < 2:
+            return None
+        first, last = min(shared), max(shared)
+
+        def average(source) -> float:
+            values = [value for day, value in source.series if day in shared]
+            return round(sum(values) / len(values), 2)
+
         args = {
             "type": "pie",
             "title": f"Average closing price, {first} to {last} (share of the companies combined)",
             "data": [{"name": s.title.rsplit("—", 1)[-1].split(" price history (", 1)[0].strip(),
-                      "value": round(sum(v for _, v in s.series) / len(s.series), 2)} for s in stat_sources],
+                      "value": average(s)} for s in stat_sources],
         }
         try:
             return build_chart_fence(json.dumps(args))

@@ -198,6 +198,11 @@ def _jurisdiction_known(context: str, selected: Optional[str]) -> bool:
     text = context or ""
     if selected or detect_jurisdictions(text, infer_from_tax_terms=False):
         return True
+    # Any country, not only those with registered official sources: "the
+    # consumption tax rate in Japan" was asked which country (19 Nov 2026).
+    from app.orchestration.world_countries import names_a_country
+    if names_a_country(text):
+        return True
     # An authority or central bank (RBA, IRAS, ECB), a currency only one
     # country uses (£, ₹, Rs), or a country-specific scheme, form or body the
     # deterministic resolver knows (Flat Rate Scheme, GST Council).
@@ -258,6 +263,35 @@ def _jurisdiction_question(contract, context: str, selected: Optional[str]) -> O
     return f"Which country (and state or province, if relevant) should the {asked} be for?"
 
 
+# Several questions in one message, one per line or sentence, possibly
+# numbered: "1. What is a trial balance? 2. What is a journal entry?" and "What
+# is NPV? What is IRR?" were asked for transaction details and cash flows
+# instead of being answered (19 Nov 2026).
+_PART_SPLIT = re.compile(r"(?<=\?)\s+|\n+")
+_NUMBERING = re.compile(r"^\s*(?:\(?\d{1,2}[.)]|[-*•])\s*")
+_DEFINITION = re.compile(r"^\W*(?:what\s+(?:is|are)|what's|define|explain|describe|meaning\s+of)\b[^?\d]{0,80}\??\s*$", re.I)
+
+
+def _only_asked_to_define(request: str, pattern: re.Pattern) -> bool:
+    """Every part of the message that names the task asks what it is, with no
+    figures: a definition, not a request to work one out. "What is the share
+    price?" and "What is the NPV of this project?" ask for a value and still
+    get their inputs asked for."""
+    parts = [p for p in (_NUMBERING.sub("", part).strip() for part in _PART_SPLIT.split(request or "")) if p]
+    named = [part for part in parts if pattern.search(part)]
+    if not named or any(_REFERENT.search(part) for part in named):
+        return False
+
+    def defines(part: str) -> bool:
+        return bool(_CONCEPT_QUESTION.search(part)
+                    or (_DEFINITION.match(part) and not re.search(r"\bthe\b", part, re.I)))
+
+    if all(defines(part) for part in named):
+        return True
+    # A list of questions, each asking what something is.
+    return len(parts) >= 2 and all(_DEFINITION.match(part) and not _REFERENT.search(part) for part in parts)
+
+
 def missing_inputs(contract, *, task_query: str, context: str, selected_jurisdiction: Optional[str] = None,
                    calculator_matched: bool = False, earlier: Sequence[str] = ()) -> list[str]:
     """The inputs the request still needs, as short phrases (empty when it is
@@ -275,6 +309,8 @@ def missing_inputs(contract, *, task_query: str, context: str, selected_jurisdic
         if calculator_matched and task.name not in ("materiality_judgement", "journal_entry"):
             continue
         if not task.pattern.search(request):
+            continue
+        if _only_asked_to_define(request, task.pattern):
             continue
         # A tax amount only when the contract records one as requested ("How
         # much GST is charged on gold jewellery in India?" asks for the rate);

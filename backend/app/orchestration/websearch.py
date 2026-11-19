@@ -1634,7 +1634,8 @@ _VISUAL_REQUEST = re.compile(
 
 def wants_visual(query: str) -> bool:
     """True when the question asks for a table, chart or diagram."""
-    return bool(_VISUAL_REQUEST.search(query or ""))
+    from app.orchestration.response_planner import without_accounting_chart_terms
+    return bool(_VISUAL_REQUEST.search(without_accounting_chart_terms(query or "")))
 
 
 def _always_send_visual_rules() -> bool:

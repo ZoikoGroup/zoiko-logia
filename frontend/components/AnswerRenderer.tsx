@@ -289,8 +289,10 @@ function restoreRupeeInFormulas() {
 
 /** A pipe-delimited table row: `| a | b |`, with optional leading spaces. */
 const TABLE_ROW = /^ {0,3}\|.*\|\s*$/;
-/** The `|---|:--:|` line that turns pipe rows into a real table. */
-const TABLE_RULE = /^ {0,3}\|[\s:|-]+\|\s*$/;
+/** The `|---|:--:|` line that turns pipe rows into a real table. It needs at
+ * least one dash: a blank spacer row `| | |` matched too, so a balance sheet
+ * with spacer rows was split into fragments shown as raw pipes (19 Nov 2026). */
+const TABLE_RULE = /^ {0,3}\|(?=[^\n]*-)[\s:|-]+\|\s*$/;
 
 /**
  * Make GFM tables render as tables.
@@ -311,7 +313,7 @@ const TABLE_RULE = /^ {0,3}\|[\s:|-]+\|\s*$/;
  * de-indented: at that depth Markdown treats them as a code block, and a code
  * block of pipes is never what was meant.
  */
-function normaliseMarkdownTables(text: string): string {
+export function normaliseMarkdownTables(text: string): string {
   const lines = text.split("\n");
   const out: string[] = [];
 

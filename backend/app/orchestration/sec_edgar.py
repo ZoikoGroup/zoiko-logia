@@ -255,8 +255,13 @@ def resolve_company(query: str, registrants: list[dict]) -> Optional[dict]:
     if best is not None:
         return best
 
+    # A standard's reference is not a ticker: "Explain IFRS 15 and ASC 606" was
+    # answered with Ardmore Shipping's (ticker ASC) SEC revenue (19 Nov 2026).
+    query_without_standards = re.sub(
+        r"\b(?:ASC|ASU|IAS|IFRS|IFRIC|SIC|ISA|ISAE|ISRE|ISQM|FRS|SFAS|FAS|AS|IND\s?AS|SSAP|SAS|PCAOB\s+AS)"
+        r"\s*\d[\d\-/.]*", " ", query)
     uppercase_tokens = {
-        tok for tok in re.findall(r"\b[A-Z][A-Z0-9.\-]{1,4}\b", query)
+        tok for tok in re.findall(r"\b[A-Z][A-Z0-9.\-]{1,4}\b", query_without_standards)
         if tok not in _TICKER_STOPWORDS
     }
     if not uppercase_tokens:

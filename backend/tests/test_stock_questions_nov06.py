@@ -138,3 +138,46 @@ def test_a_price_history_is_fetched_up_front_like_a_quote():
 def test_a_figure_with_trailing_zeros_is_the_same_figure():
     from app.orchestration.service import _figures
     assert _figures("259.3 and 523.0") == _figures("259.30 and 523.00")
+
+
+@pytest.mark.parametrize("question", [
+    "1. What is a trial balance?\n2. What is a journal entry?\n3. What is a ledger?\n4. What is double-entry bookkeeping?",
+    "What is NPV? What is IRR? What is the payback period?", "What is NPV?", "What is a journal entry?",
+])
+def test_definitions_asked_together_are_answered_not_asked_about(question):
+    """19 Nov 2026: a numbered list of definitions was asked for transaction
+    details, and "What is NPV? What is IRR?..." for cash flows."""
+    assert clarification(build_task_contract(question), task_query=question) is None
+
+
+@pytest.mark.parametrize("question", ["Calculate the NPV", "What is the NPV of this project?", "Prepare a journal entry",
+                                      "What is the share price?"])
+def test_a_request_for_a_value_still_asks_for_its_inputs(question):
+    assert clarification(build_task_contract(question), task_query=question)
+
+
+def test_a_removed_sentence_leaves_no_bare_citation():
+    """19 Nov 2026: the UAE corporate tax answer showed two lines of " [REF-1]"."""
+    from app.orchestration.claim_verification import remove_claims
+    text = "**UAE**\n\nThe rate is 9% on profits above AED 375,000. [REF-1]\n- Free zone income is 0%. [REF-2]"
+    assert "[REF-1]" not in remove_claims(text, ["The rate is 9% on profits above AED 375,000."])
+
+@pytest.mark.parametrize("question", ["What is the consumption tax rate in Japan?", "What is the VAT rate in Brazil?",
+                                      "What is the GST rate in Malaysia?"])
+def test_any_named_country_is_not_asked_for(question):
+    """19 Nov 2026: Japan, outside the registered jurisdictions, was asked "Which country?"."""
+    assert clarification(build_task_contract(question), task_query=question) is None
+
+
+def test_a_rate_with_no_country_still_asks_which():
+    question = "What is the standard VAT rate?"
+    assert "country" in (clarification(build_task_contract(question), task_query=question) or "")
+
+
+def test_a_standard_reference_is_not_a_ticker():
+    """19 Nov 2026: "Explain IFRS 15 and ASC 606" was answered with the SEC revenue
+    of Ardmore Shipping, whose ticker is ASC."""
+    from app.orchestration.sec_edgar import resolve_company
+    registrants = [{"ticker": "ASC", "title": "Ardmore Shipping Corp", "cik_str": 1}]
+    assert resolve_company("Explain IFRS 15 and ASC 606.", registrants) is None
+    assert resolve_company("What is ASC revenue?", registrants) is not None

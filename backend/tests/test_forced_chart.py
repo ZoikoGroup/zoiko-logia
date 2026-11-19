@@ -181,3 +181,13 @@ def test_a_shorter_history_than_asked_is_said():
     note = history_coverage_note("last 5 years of apple", sources, today=date(2026, 11, 18))
     assert note.startswith("The market data provider returned prices from 2026-11-04 only") and "5 years" in note
     assert history_coverage_note("last 10 days of apple", sources, today=date(2026, 11, 12)) == ""
+
+def test_a_pie_of_companies_averages_only_the_shared_dates():
+    """19 Nov 2026: one provider returned 2 years, another 10; the pie compared
+    a 2-year average with 10-year ones."""
+    long = _history("AAPL", [10.0, 20.0, 30.0, 40.0, 50.0])
+    short = _stat_source("polygon — MSFT price history (2026-11-06 to 2026-11-10)",
+                         [("2026-11-06", 7.0), ("2026-11-09", 8.0), ("2026-11-10", 9.0)])
+    payload = _fence_payload(build_forced_chart("compare stock prices of apple and microsoft in pie chart", [long, short]))
+    assert payload["title"].startswith("Average closing price, 2026-11-06 to 2026-11-10")
+    assert payload["data"] == [{"name": "AAPL", "value": 40.0}, {"name": "MSFT", "value": 8.0}]

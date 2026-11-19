@@ -283,7 +283,8 @@ def plan_request(question: str, *, has_documents: bool = False, history: bool = 
         # figures: "convert EUR 50,000 at 1.10 USD per EUR" (23 Oct 2026).
         tools.append("calculate")
         reasons.append("figures to compute")
-    if _CHART.search(q):
+    from app.orchestration.response_planner import without_accounting_chart_terms
+    if _CHART.search(without_accounting_chart_terms(q)):   # not "chart of accounts" (19 Nov 2026)
         tools.append("render_chart")
         reasons.append("chart requested")
 

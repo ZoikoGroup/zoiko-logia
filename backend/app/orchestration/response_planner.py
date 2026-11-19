@@ -261,8 +261,18 @@ def _make_plan(query: str, **values) -> ResponsePlan:
     return ResponsePlan(domain=context.domain, subdomain=context.subdomain, **values)
 
 
+# "Chart of accounts" is the list of a company's accounts, not a drawing:
+# seven definitions asked together, one of them "What is a chart of
+# accounts?", came back as only "a chart cannot be generated" (19 Nov 2026).
+_ACCOUNTING_CHART_TERMS = re.compile(r"\bcharts?\s+of\s+accounts?\b", re.I)
+
+
+def without_accounting_chart_terms(text: str) -> str:
+    return _ACCOUNTING_CHART_TERMS.sub(" ", text or "")
+
+
 def detect_explicit_visual_request(query: str) -> bool:
-    q = query or ""
+    q = without_accounting_chart_terms(query or "")
     return bool(
         _EXPLICIT_CHART_HINTS.search(q)
         or _EXPLICIT_GRAPH_HINTS.search(q)
@@ -297,8 +307,9 @@ def detect_preferred_flow_engine(query: str) -> str | None:
 
 
 def detect_requested_chart_variant(query: str) -> str | None:
+    query = without_accounting_chart_terms(query or "")
     for variant, pattern in _CHART_VARIANTS:
-        if pattern.search(query or ""):
+        if pattern.search(query):
             return variant
     return None
 
