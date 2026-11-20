@@ -114,3 +114,75 @@ def test_analysing_the_above_is_a_follow_up(query):
                                    "evaluate this lease under IFRS 16"])
 def test_a_new_analysis_request_is_not_a_follow_up(query):
     assert not service._looks_like_contextual_follow_up(query)
+
+
+@pytest.mark.parametrize("query", ["comment on the above", "Analyze the above", "review your answer",
+                                   "please summarise the above.", "what do you think of the above?"])
+def test_a_message_about_the_previous_answer_uses_it_not_the_web(query):
+    """19 Nov 2026: "comment on the above" after an income statement from an
+    uploaded file was answered "insufficient evidence", or about web results."""
+    from types import SimpleNamespace
+    request = SimpleNamespace(query=query, conversation_history=[
+        Message(role="user", content="generate income statements for this document"),
+        Message(role="assistant", content="| Revenue | 1,850,000 |")])
+    assert service._previous_answer_under_discussion(request) == "| Revenue | 1,850,000 |"
+
+
+@pytest.mark.parametrize("query", ["analyse last quarter's sales", "what is ipr", "comment on IFRS 16 leases",
+                                   "explain this lease under IFRS 16"])
+def test_a_new_question_does_not_reuse_the_previous_answer(query):
+    from types import SimpleNamespace
+    request = SimpleNamespace(query=query, conversation_history=[Message(role="assistant", content="earlier")])
+    assert service._previous_answer_under_discussion(request) is None
+
+@pytest.mark.parametrize("query", ["give me an example", "why?", "tell me more", "explain it in simple terms",
+                                   "who has to pay it?", "how does this apply to a small business?",
+                                   "what are its disadvantages?", "show this as a table", "summarise it in 3 points",
+                                   "explain step 2 in detail", "how is it different from IRR?"])
+def test_a_short_follow_up_builds_on_the_previous_answer(query):
+    """19 Nov 2026: these follow-ups were refused as off-topic, asked "which
+    topic?", or answered "the sources do not establish this"."""
+    assert service._looks_like_contextual_follow_up(query)
+
+
+@pytest.mark.parametrize("query", ["What is IPR?", "What is the VAT rate in Germany?", "Explain IFRS 15",
+                                   "What is goodwill?", "Describe the audit process", "aapl stock price"])
+def test_a_new_question_in_the_same_chat_is_not_a_follow_up(query):
+    assert not service._looks_like_contextual_follow_up(query)
+
+
+def test_reformatting_the_previous_answer_uses_it():
+    from types import SimpleNamespace
+    request = SimpleNamespace(query="convert the above into bullet points",
+                              conversation_history=[Message(role="assistant", content="Auditors plan the audit.")])
+    assert service._previous_answer_under_discussion(request) == "Auditors plan the audit."
+
+
+@pytest.mark.parametrize("query", ["convert the above into bullet points", "How is it different from IRR?"])
+def test_a_follow_up_is_not_taken_for_a_calculation(query):
+    from app.orchestration.clarification_requirements import clarification
+    from app.orchestration.task_contract import build_task_contract
+    assert clarification(build_task_contract(query), task_query=query) is None
+
+@pytest.mark.parametrize("query", [
+    "give me an example", "why?", "tell me more", "explain it in simple terms", "who has to pay it?",
+    "how does this apply to a small business?", "what are its disadvantages?", "show this as a table",
+    "summarise it in 3 points", "explain step 2 in detail", "convert the above into bullet points",
+])
+def test_a_short_follow_up_builds_on_the_previous_answer(query):
+    """19 Nov 2026: follow-ups to a domain answer were refused as off-topic,
+    asked "which topic?", or answered "the sources do not establish this"."""
+    assert service._looks_like_contextual_follow_up(query)
+
+
+@pytest.mark.parametrize("query", ["What is IPR?", "What is the VAT rate in Germany?", "Explain IFRS 15",
+                                   "What is goodwill?", "Describe the audit process", "aapl stock price"])
+def test_a_new_question_is_not_a_follow_up(query):
+    assert not service._looks_like_contextual_follow_up(query)
+
+
+def test_reformatting_the_previous_answer_uses_it_without_the_web():
+    from types import SimpleNamespace
+    for query in ("show this as a table", "convert the above into bullet points"):
+        request = SimpleNamespace(query=query, conversation_history=[Message(role="assistant", content="earlier")])
+        assert service._previous_answer_under_discussion(request) == "earlier", query

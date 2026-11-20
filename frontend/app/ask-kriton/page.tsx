@@ -66,6 +66,8 @@ import {
   chatIdFromUrl,
   chatUrl,
   loadConversations,
+  loadFullConversations,
+  mergeConversations,
   persistConversations,
   sortConversations,
   type Conversation,
@@ -797,6 +799,18 @@ export default function AskKritonPage() {
     if (typeof window === "undefined") return null;
     return chatIdFromUrl(window.location.search, loadConversations());
   });
+  // The full copy of every chat (IndexedDB) replaces the quick one a moment
+  // after load: a ten-question chat had reopened with only its first
+  // question (19 Nov 2026). Merged, so a question asked meanwhile is kept.
+  useEffect(() => {
+    let cancelled = false;
+    void loadFullConversations().then((stored) => {
+      if (cancelled || !stored?.length) return;
+      setConversations((shown) => mergeConversations(shown, stored));
+      setActiveIdState((current) => current ?? chatIdFromUrl(window.location.search, stored));
+    });
+    return () => { cancelled = true; };
+  }, []);
   const [focusMode, setFocusMode] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [sidebarPanel, setSidebarPanel] = useState<"chats" | "projects" | "sources" | null>(null);

@@ -35,4 +35,11 @@ describe("exporting an answer from a file turn", () => {
     expect(conversationHistory([fileTurn], "Now show it as a chart")).toEqual([]);
     expect(conversationHistory([fileTurn])).toEqual([]);
   });
+  // 19 Nov 2026: "comment on the above" after an income statement from a file
+  // was answered "insufficient evidence": the answer was never sent.
+  it.each(["comment on the above", "Analyze the above", "review your answer", "explain this", "Please summarise the above"])(
+    "sends that answer when the request is about it: %s", (query) => {
+      expect(conversationHistory([fileTurn], query).at(-1)).toEqual(
+        { role: "assistant", content: "Released FY2025 revenue is 10,000 (page 1)." });
+    });
 });

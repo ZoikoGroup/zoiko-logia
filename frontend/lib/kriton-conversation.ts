@@ -52,12 +52,18 @@ function replayAnswer(answer: string): string {
  * attached file; the backend re-checks access to that file on this turn. */
 const EXPORTS_ANSWER =
   /\b(?:export|save|download|convert|put|turn)\b[^.?!]{0,40}\b(?:this|that|the|your|previous|last|above)\s+(?:answer|response|reply|explanation)\b|\b(?:export|save|download)\b[^.?!]{0,20}\b(?:the\s+)?above\b/i;
+/** A follow-up about the previous answer itself: "comment on the above" after
+ * an income statement from an uploaded file was answered "insufficient
+ * evidence" — the file's answer is not replayed, so there was nothing to
+ * comment on (19 Nov 2026). */
+const DISCUSSES_ANSWER =
+  /^\W*(?:please\s+|can you\s+|could you\s+|now\s+)?(?:comments?\s+on|review|analy[sz]e|explain|summari[sz]e|evaluate|assess|critique|check|discuss|interpret|simplify|elaborate\s+on|expand\s+on|break\s+down|give\s+(?:me\s+)?(?:your\s+)?(?:an?\s+)?(?:comments?|feedback|views?|thoughts|analysis)\s+(?:on|of)|what\s+do\s+you\s+think\s+(?:of|about))\s*(?:on\s+)?(?:the\s+)?(?:above|previous|this|that|it|your)(?:\s+(?:answer|response|reply|statements?|tables?|results?|summary|report|analysis|one))?\s*[?.!]?\s*$/i;
 /** Backend HISTORY_MESSAGE_CHARS: a longer answer would be exported cut short. */
 const EXPORTED_ANSWER_CHARS = 8000;
 
 export function conversationHistory(turns: Turn[], query = ""): ConversationMessage[] {
   const messages = replayedHistory(turns);
-  if (!EXPORTS_ANSWER.test(query)) return messages;
+  if (!EXPORTS_ANSWER.test(query) && !DISCUSSES_ANSWER.test(query)) return messages;
   const latest = [...turns].reverse().find((turn) => turn.result?.outcome === "answered" && turn.result?.answer?.text?.trim());
   const answer = latest?.result?.answer?.text?.trim() ?? "";
   if (!latest || answer.length > EXPORTED_ANSWER_CHARS || !latest.attachments?.length) return messages;

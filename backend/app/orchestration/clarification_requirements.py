@@ -179,6 +179,9 @@ _CONCEPT_QUESTION = re.compile(
     # A process walk-through ("Show how a draft journal entry becomes an
     # approved posted journal entry", QA case E02) asks how it works, not for an entry.
     r"|(?:show|explain|describe|walk\s+(?:me\s+)?through)\s+how\b[^?.]{0,80}\b(?:becomes?|moves?|flows?|goes|progress(?:es)?)\b"
+    # "How is it different from IRR?" after "What is NPV?" compares the two;
+    # it was asked for cash flows (19 Nov 2026).
+    r"|how\s+(?:is|are|does|do)\s+[\w\s]{0,30}?\b(?:different|differ)\b"
     r"|why\b)", re.I)
 
 # A request about a specific item it never describes ("this project", "the
@@ -311,6 +314,10 @@ def missing_inputs(contract, *, task_query: str, context: str, selected_jurisdic
         if not task.pattern.search(request):
             continue
         if _only_asked_to_define(request, task.pattern):
+            continue
+        # "Convert the above into bullet points" names no currency: not an
+        # exchange (it was asked "the currency of the amount", 19 Nov 2026).
+        if task.name == "fx_conversion" and not (_CURRENCY_NAME.search(request.lower()) or _money_count(request)):
             continue
         # A tax amount only when the contract records one as requested ("How
         # much GST is charged on gold jewellery in India?" asks for the rate);

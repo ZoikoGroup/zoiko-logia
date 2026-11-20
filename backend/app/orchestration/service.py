@@ -446,6 +446,50 @@ _UNDER_SPECIFIED_METRIC_FORMAT = re.compile(
 )
 
 
+# A short message that only makes sense after the previous answer: "give me an
+# example", "explain it in simple terms", "why?", "tell me more", "what are its
+# disadvantages?", "who has to pay it?" were refused as off-topic, asked "which
+# topic?", or answered "the sources do not establish this" (19 Nov 2026).
+_FOLLOW_UP_OPENER = re.compile(
+    r"^\W*(?:ok(?:ay)?,?\s+|so,?\s+|and\s+|but\s+|please\s+|can\s+you\s+|could\s+you\s+|now\s+)?(?:"
+    # "why?", "why is that?", not "Why is it important to reconcile ...?".
+    r"why\s*[?.!]?\s*$|why\s+(?:is|was|does|do|did)\s+(?:it|this|that)\s*[?.!]?\s*$|why\s+not\b|how\s+so\b|tell\s+me\s+more|more\s+(?:details?|info|information|on\s+(?:it|this|that))|go\s+on\b|continue\b|"
+    r"elaborate\b|expand\b|simplify\b|clarify\b|rephrase\b|shorten\b|"
+    r"summari[sz]e\s+(?:it|this|that|them|the\s+above)|"
+    r"give\s+(?:me\s+)?(?:an?\s+|some\s+|more\s+|one\s+)?(?:real[- ]?life\s+|practical\s+|simple\s+|numerical\s+|"
+    r"worked\s+|another\s+)?examples?\b|(?:an?\s+|another\s+)?examples?\s*[?.!]?\s*$|"
+    r"in\s+simple\s+(?:terms|words|language)|"
+    r"explain\s+(?:it|this|that|them|step|again|more|further|in\s+simple|like|with|the\s+(?:above|same))\b|"
+    r"(?:show|present|convert|put|turn|make|rewrite|format|write|list)\s+(?:it|this|that|them|these|the\s+above)\b|"
+    r"what\s+(?:are|is)\s+(?:its|their|the)\s+(?:main\s+)?(?:advantages?|disadvantages?|pros|cons|benefits?|limitations?|"
+    r"risks?|drawbacks?|uses?|purpose|importance|examples?|types?|features?|steps?)\b|"
+    r"who\s+(?:has\s+to|must|should|needs?\s+to|pays?|is\s+responsible)\b|"
+    r"when\s+(?:is|are|does|do|should|must|can)\s+(?:it|this|that|they)\b|"
+    r"how\s+(?:does|do|is|are|would|can|should)\s+(?:it|this|that|they|these)\b|"
+    r"what\s+does\s+(?:it|this|that)\s+mean\b|"
+    r"(?:is|are|does|do|can|should)\s+(?:it|this|that|they|these|those)\b)", re.I)
+# Pronouns only: "this lease" in "evaluate this lease under IFRS 16" is a new
+# subject; "this"/"that" follow-ups are covered by _FOLLOW_UP_OPENER.
+_BACK_REFERENCE = re.compile(r"\b(?:it|its|it's|them|they|their|the\s+above|above|the\s+same)\b", re.I)
+_DUMMY_IT = re.compile(
+    r"\b(?:(?:is|was|isn't|wasn't)\s+it|it\s+(?:is|was|'s|’s))\s+(?:\w+\s+)?(?:important|necessary|possible|better|"
+    r"worth|advisable|required|mandatory|needed|good|bad|wise|true|common|normal|legal|allowed|compulsory)\b", re.I)
+_NEW_SUBJECT = re.compile(r"^\W*(?:what\s+(?:is|are)|define|explain|describe)\s+(?!(?:it|its|this|that|these|those|"
+                          r"them|they|the\s+above)\b)", re.I)
+
+
+def _short_follow_up(text: str) -> bool:
+    words = re.findall(r"[\w'’-]+", text or "")
+    if not words or len(words) > 15:
+        return False
+    if _FOLLOW_UP_OPENER.match(text):
+        return True
+    # "who pays it now?": short and pointing back, not a new subject ("What is
+    # IPR?") nor a dummy "it" ("Why is it important to reconcile ...?").
+    pointing = _DUMMY_IT.sub(" ", text)
+    return len(words) <= 10 and bool(_BACK_REFERENCE.search(pointing)) and not _NEW_SUBJECT.match(text)
+
+
 def _looks_like_contextual_follow_up(query: str) -> bool:
     """Return True only for high-confidence references to an earlier turn.
 
@@ -454,6 +498,8 @@ def _looks_like_contextual_follow_up(query: str) -> bool:
     chart") remains contextual so an earlier jurisdiction is preserved.
     """
     text = query or ""
+    if _short_follow_up(text):
+        return True
     from app.orchestration.calculations.inventory_statement import _inventory_revision
     if _inventory_revision(text) is not None:
         return True
@@ -1788,6 +1834,39 @@ _OFFICIAL_RATE_QUESTION = re.compile(
 
 def _official_rate_question(query: str) -> bool:
     return bool(_OFFICIAL_RATE_QUESTION.search(query or ""))
+
+
+_DISCUSSES_ANSWER = re.compile(
+    r"^\W*(?:please\s+|can you\s+|could you\s+|now\s+)?(?:comments?\s+on|review|analy[sz]e|explain|summari[sz]e|"
+    r"evaluate|assess|critique|check|discuss|interpret|simplify|elaborate\s+on|expand\s+on|break\s+down|"
+    r"give\s+(?:me\s+)?(?:your\s+)?(?:an?\s+)?(?:comments?|feedback|views?|thoughts|analysis)\s+(?:on|of)|"
+    r"what\s+do\s+you\s+think\s+(?:of|about))\s*(?:on\s+)?(?:the\s+)?(?:above|previous|this|that|it|your)"
+    r"(?:\s+(?:answer|response|reply|statements?|tables?|results?|summary|report|analysis|one))?\s*[?.!]?\s*$", re.I)
+
+
+# The previous answer in another form: "show this as a table", "convert the
+# above into bullet points" (19 Nov 2026).
+_REFORMATS_ANSWER = re.compile(
+    r"^\W*(?:please\s+|can\s+you\s+|could\s+you\s+|now\s+)?(?:show|present|convert|put|turn|make|rewrite|format|write|"
+    r"give|list|summari[sz]e)\s+(?:me\s+)?(?:it|this|that|them|the\s+above|the\s+(?:previous|last)\s+answer|your\s+answer)"
+    r"\s+(?:as|in|into|to|in\s+the\s+form\s+of)\b[^?.!\n]{0,40}[?.!]?\s*$", re.I)
+
+
+def _last_answer(request) -> str | None:
+    for message in reversed(list(request.conversation_history or [])):
+        if getattr(message, "role", "") == "assistant" and (getattr(message, "content", "") or "").strip():
+            return message.content.strip()
+    return None
+
+
+def _previous_answer_under_discussion(request) -> str | None:
+    """The previous answer, when this message only asks about it ("comment on
+    the above", "analyse your answer") or for it in another form ("show this
+    as a table"), and the conversation carries it."""
+    query = (request.query or "").strip()
+    if not (_DISCUSSES_ANSWER.match(query) or _REFORMATS_ANSWER.match(query)):
+        return None
+    return _last_answer(request)
 
 
 def _statement_notes_shown() -> bool:
@@ -3157,7 +3236,10 @@ async def ask_kriton(
     self_contained_calculation = is_self_contained_calculation(
         request.query, screened_history(request.conversation_history),
     ) or _structured_visual_query_is_in_domain(request.query) is True
-    needs_web = request.source_scope != "DOCUMENTS_ONLY" and not self_contained_calculation
+    # "comment on the above" after an answer from an uploaded file: the answer
+    # is the material, not a web search (19 Nov 2026).
+    discussed_answer = _previous_answer_under_discussion(request)
+    needs_web = request.source_scope != "DOCUMENTS_ONLY" and not self_contained_calculation and not discussed_answer
     # The plan comes first (ZL-ENG-AGT-01 §02, App. B4): it decides how much
     # work the question needs before anything is fetched. A simple question
     # skips the tool loop; an agent run fetches its own evidence through
@@ -3347,6 +3429,15 @@ async def ask_kriton(
         elif relevant:
             document_sources = [s for s in document_sources if s.source_id in relevant]
             resolved_document_ids = [d for d in resolved_document_ids if d in relevant]
+    # The previous answer is material for a follow-up: commented on or
+    # reformatted on its own ("comment on the above" was answered
+    # "insufficient evidence", or about unrelated web results), and beside the
+    # web for any other follow-up ("give me an example", "why?") (19 Nov 2026).
+    followed_answer = discussed_answer or (_last_answer(request) if resolution.follows_up else None)
+    if followed_answer:
+        from app.orchestration.websearch import WebSource
+        document_sources = [WebSource(title="Your previous answer", url="", snippet=followed_answer,
+                                      provider="conversation", source_id="previous-answer")] + document_sources
     source_texts.update({s.source_id or s.url: s.snippet or "" for s in document_sources})
     # A diagram asked of an attached file is drawn from the file's own steps
     # and names (illustrative_diagram.document_query), never from general
@@ -3907,7 +3998,6 @@ async def ask_kriton(
 
     if live_result.sources:
         web_sources = live_result.sources + web_sources
-    # Memory is guidance only and never joins independent citation evidence.
     # Requests about private documents do not reuse general answer memory.
     memory_guidance = ""
     if (request.source_scope != "DOCUMENTS_ONLY" and not self_contained_calculation
@@ -4114,6 +4204,8 @@ async def ask_kriton(
         if (
             explicit_visual_request and not live_evidence.observations and not run_agent_loop
             and deterministic_chart_text is None
+            # "show this as a table" draws the previous answer, which is in hand.
+            and not followed_answer
         ):
             # Whether an approved prompt template happens to exist is an
             # unrelated operational detail — it must never decide whether a
@@ -4446,6 +4538,14 @@ async def ask_kriton(
             history_start, len(grounded_input),
             render_history,
         ))
+    # A short follow-up to a question Kriton already answered is in scope: "how
+    # is it different from IRR?" after "What is NPV?" was refused as
+    # off-topic, its subject being only in the earlier turn (19 Nov 2026).
+    previous_answer = _last_answer(request) if resolution.follows_up else None
+    if previous_answer and _MODEL_DOMAIN_REFUSAL not in previous_answer and not _is_deterministically_out_of_scope(
+            request.query):
+        grounded_input += ("\n\nThis message is a follow-up to the in-scope question and answer above. Its subject is "
+                           "that earlier topic: answer it in that context, and do not treat it as off-topic.")
     grounded_input += memory_facts_text
     grounded_input += bare_chart_hint(request.query, request.conversation_history)
     # The user's own thumbs-down on this question asks for a re-check
@@ -6017,7 +6117,10 @@ async def ask_kriton(
     jurisdiction_note = jurisdiction_limitation(request.query, removed_statements)
     if jurisdiction_note:
         limitations.append(jurisdiction_note)
-    if document_sources and not evidence_gap_only and not is_offdomain_refusal and (final_text or "").strip():
+    # The previous answer given back for a follow-up is not an uploaded file:
+    # its "£" is kept (19 Nov 2026).
+    uploaded_sources = [s for s in document_sources if getattr(s, "provider", "") != "conversation"]
+    if uploaded_sources and not evidence_gap_only and not is_offdomain_refusal and (final_text or "").strip():
         # Any answer from an uploaded document gives its amounts as the
         # document states them, without "£", the currency only as the file
         # states it, and no dangling "for the year ended" (statement_rules).
@@ -6025,8 +6128,8 @@ async def ask_kriton(
             source_currency, without_currency_symbols, without_dangling_period,
         )
         from app.orchestration.statement_rules import source_scale
-        final_text, currency_notes = without_currency_symbols(final_text, source_currency(document_sources),
-                                                              source_scale(document_sources))
+        final_text, currency_notes = without_currency_symbols(final_text, source_currency(uploaded_sources),
+                                                              source_scale(uploaded_sources))
         final_text = without_dangling_period(final_text)
         # "Revenue / Revenue 1,850,000" as one line; no "pp" after an amount (18 Nov 2026).
         from app.orchestration.statement_rules import merged_single_account_headings, without_points_on_amounts

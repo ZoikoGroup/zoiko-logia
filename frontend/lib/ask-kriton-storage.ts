@@ -108,11 +108,102 @@ export function loadConversations(): Conversation[] {
   return [];
 }
 
+/** How many chats to try keeping when storage is full, most recent first. */
+const FALLBACK_COUNTS = [20, 12, 8, 5, 3, 2, 1];
+
+// ── Full copy in IndexedDB ──────────────────────────────────────────────────
+// localStorage holds about 5 MB, so long chats were cut to their first question
+// or dropped (19 Nov 2026). IndexedDB holds far more: every chat and every
+// question and answer is kept there; localStorage stays as the instant copy
+// the page opens with, replaced by the full copy a moment later.
+const IDB_NAME = "kriton";
+const IDB_STORE = "conversations";
+const IDB_KEY = "all";
+/** Chats kept in the full copy, most recently used first. */
+export const MAX_STORED_CONVERSATIONS = 200;
+
+function openDb(): Promise<IDBDatabase | null> {
+  return new Promise((resolve) => {
+    try {
+      if (typeof indexedDB === "undefined") return resolve(null);
+      const request = indexedDB.open(IDB_NAME, 1);
+      request.onupgradeneeded = () => request.result.createObjectStore(IDB_STORE);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+function saveFullCopy(conversations: Conversation[]): void {
+  void openDb().then((db) => {
+    if (!db) return;
+    try {
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      tx.objectStore(IDB_STORE).put(conversations.slice(0, MAX_STORED_CONVERSATIONS), IDB_KEY);
+      tx.oncomplete = () => db.close();
+      tx.onerror = () => db.close();
+    } catch {
+      db.close();
+    }
+  });
+}
+
+/** Every stored chat in full, or null when IndexedDB is unavailable or empty. */
+export async function loadFullConversations(): Promise<Conversation[] | null> {
+  const db = await openDb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    try {
+      const request = db.transaction(IDB_STORE, "readonly").objectStore(IDB_STORE).get(IDB_KEY);
+      request.onsuccess = () => {
+        db.close();
+        resolve(Array.isArray(request.result) ? recoverInterruptedTurns(request.result) : null);
+      };
+      request.onerror = () => {
+        db.close();
+        resolve(null);
+      };
+    } catch {
+      db.close();
+      resolve(null);
+    }
+  });
+}
+
+/** Both copies of the chats as one: for each chat the more recent version,
+ * and on a tie the one with more questions, so nothing asked is lost. */
+export function mergeConversations(shown: Conversation[], stored: Conversation[]): Conversation[] {
+  const byId = new Map<string, Conversation>();
+  for (const conversation of [...stored, ...shown]) {
+    const other = byId.get(conversation.id);
+    if (!other || conversation.updatedAt > other.updatedAt
+        || (conversation.updatedAt === other.updatedAt && conversation.turns.length > other.turns.length)) {
+      byId.set(conversation.id, conversation);
+    }
+  }
+  return [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/**
+ * Save the chats. Browser storage holds about 5 MB; a full write used to fail
+ * silently, so the stored copy stayed at an old state — a ten-question chat
+ * reopened with only its first question (19 Nov 2026). When storage is full,
+ * the most recently used chats are kept and the oldest dropped, so the chat
+ * being worked on is always saved in full.
+ */
 export function persistConversations(conversations: Conversation[]): void {
-  try {
-    localStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(conversations.slice(0, MAX_CONVERSATIONS)));
-  } catch {
-    /* ignore storage write failures (e.g. private mode / quota) */
+  const sorted = [...conversations].sort((a, b) => b.updatedAt - a.updatedAt);
+  saveFullCopy(sorted);
+  const recentFirst = sorted.slice(0, MAX_CONVERSATIONS);
+  for (const count of [recentFirst.length, ...FALLBACK_COUNTS.filter((n) => n < recentFirst.length)]) {
+    try {
+      localStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(recentFirst.slice(0, count)));
+      return;
+    } catch {
+      /* storage full (or unavailable): try again with fewer, older chats dropped */
+    }
   }
 }
 

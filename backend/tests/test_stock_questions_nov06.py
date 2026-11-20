@@ -181,3 +181,14 @@ def test_a_standard_reference_is_not_a_ticker():
     registrants = [{"ticker": "ASC", "title": "Ardmore Shipping Corp", "cik_str": 1}]
     assert resolve_company("Explain IFRS 15 and ASC 606.", registrants) is None
     assert resolve_company("What is ASC revenue?", registrants) is not None
+
+@pytest.mark.parametrize("question", ["convert the above into bullet points", "how is it different from IRR?"])
+def test_a_reformat_or_comparison_is_not_asked_for_inputs(question):
+    """19 Nov 2026: asked for a currency, and for cash flows."""
+    assert clarification(build_task_contract(question), task_query=question) is None
+
+
+def test_a_real_currency_conversion_still_asks_for_its_currency():
+    # "5,000" names no currency, so which currency is converted from is asked.
+    question = "convert 5,000 into euros"
+    assert "currency" in (clarification(build_task_contract(question), task_query=question) or "")
